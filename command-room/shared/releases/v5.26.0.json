@@ -1,0 +1,5 @@
+{
+  "version": "5.26.0",
+  "headline": "Internal — the activity log now appends in place instead of being rewritten (faster, safer under two machines), a routing miss is recorded instead of guessed, and the licence gate ships switched off. Nothing to do.",
+  "items": []
+}

@@ -1,7 +1,7 @@
 ---
 name: stalled-projects
 surfaces: both
-description: "Surface every project that has gone quiet — no meetings, commitments, or decisions within the threshold — so the CEO can resurrect, snooze, or archive each with one tap. Fires on: 'stalled projects', 'what's stalled', 'which projects went quiet', 'stale projects', 'what's gathering dust', plus 'tune stalled-projects'. Renders a widget with draft re-engagement / status check / keep paused / snooze / archive actions dispatched through the standard path; suppressions learned from repeated dismissals are honored. Does NOT fire on 'who went dark' / 'dormant customers' (dormant-customer-scan — people, not projects), 'warm threads to revive' (thread-resurrection — conversations), or 'list projects' (list-active)."
+description: "Surface every project that has gone quiet — no meetings, commitments, or decisions within the threshold — so the CEO can resurrect, snooze, or archive each with one tap. Fires on: 'stalled projects', 'what's stalled', 'which projects went quiet', 'stale projects', 'what's gathering dust', plus 'tune stalled-projects'. Renders a widget with draft re-engagement / status check / keep paused / snooze / archive actions dispatched through the standard path; suppressions learned from repeated dismissals are honored. Does NOT fire on 'who went dark' / 'dormant customers' (dormant-customer-scan — people, not projects), 'warm threads to revive' (dormant-customer-scan — its threads lens, conversations), or 'list projects' (list-active)."
 ---
 
 ## Recommended Model
@@ -331,6 +331,10 @@ LIFECYCLE1 (2026-08-02): the Pulse chat is retired and this skill inherits the o
 v4.5.2 (C3, FINDINGS F-54): staleness now derives from events at read time via `thread_activity.derive_thread_activity` — the deprecated `thread.last_activity` record stamp can never override events. Adds the mandatory live-check gate (`apply_live_check`, F-57 discipline) and the `pack_run` scan receipt with nag-dedup.
 
 RECL1 (2026-07): the derivation honors user-approved reclassifications (`honor_reclassifications=True` in `stall_detector`). Day-counts are now honest in both directions — a thread borrowing misclassified activity may newly flag (correct), and a thread whose activity was moved onto it stops false-flagging. The `lifecycle` job uses the same call shape, so the F-54 one-day-count contract holds through corrections.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

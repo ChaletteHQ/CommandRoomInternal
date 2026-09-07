@@ -612,11 +612,22 @@ def confirm_pointer_line(n_items: int) -> Optional[str]:
     open person proposals + promotion proposals."""
     if not isinstance(n_items, int) or n_items <= 0:
         return None
+    # HYGIENE9 (f2) — the pointer names a chat that EXISTS. "Commitments
+    # chat" was split into Waiting On and My Plate (CTS1, ruled 2026-07-16)
+    # and the `commitments` task is disabled on that migration; every fleet
+    # workspace is past it, and the v5.27.0 supervised test (A4) still saw
+    # the brief point the reader at the retired chat by name on a workspace
+    # where the split had registered — the brief's prose kept a "pre-CTS1"
+    # fallback the model applied by judgement, and this line was its source. There is no on-disk schedule registry code can
+    # read (registration lives in the Cowork scheduler and is only known to
+    # a fire through the connector's list), so the fallback is DROPPED
+    # rather than made mechanical: one sentence, one chat, the one that
+    # owns the confirm tail.
     if n_items == 1:
         return ("1 item needs a 10-second confirm — "
-                "it's in your Commitments chat.")
+                "it's in your Waiting On chat.")
     return (f"{n_items} items need a 10-second confirm — "
-            "they're in your Commitments chat.")
+            "they're in your Waiting On chat.")
 
 
 __all__ = [

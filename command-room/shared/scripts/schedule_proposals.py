@@ -221,11 +221,22 @@ def propose_later_add_tasks(
     # Queue-readiness OR-path: a standing confirm queue earns the weekly
     # review on its own. Tolerant read — proposal machinery never blocks
     # the Monday note.
+    #
+    # REVIEW CUTB F-4 (2026-09-06): read through the STAFF-MEETING surface,
+    # not the un-named diagnostic projection. The un-named read sees every
+    # open row — including the withheld deal question (M ruling R-B,
+    # `brain_proposals.WITHHELD_KINDS`) and deal rows about orgs that have
+    # since settled — so it could qualify "N suggestions waiting on a
+    # decision" on rows the Staff Meeting would never show. The count now
+    # comes from the same projector the card renders, so the line can never
+    # over-promise. staff-meeting is exempt from the cross-surface daily
+    # dedup and this read writes nothing (propose-never-register).
     n_open_proposals = 0
     try:
         import brain_proposals
 
-        n_open_proposals = len(brain_proposals.load_open_proposals(workspace_root))
+        n_open_proposals = len(
+            brain_proposals.load_open_proposals(workspace_root, "staff-meeting"))
     except Exception:
         pass
     queue_qualified = n_open_proposals >= sm_thresholds["min_open_brain_proposals"]

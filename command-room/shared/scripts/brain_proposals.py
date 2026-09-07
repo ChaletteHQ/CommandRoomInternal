@@ -195,6 +195,19 @@ AUTO_ALLOWED: dict[str, str] = {
     "commitment_merge": "two cross-writer captures of one commitment, "
         "id-level agreement on owner and counterparty + near-verbatim "
         "title — supersede-reversible, nothing observable outside",
+    # DEALNAG1 (M ruling 4, 2026-09-03): a prospect carrying a PAID OR
+    # SIGNED fact — a won deal thread, a payment / signed-agreement /
+    # invoice event — becomes a client without asking. "A question here was
+    # the defect": the workspace already knew, and the morning brief spent
+    # a month asking about a fact on its own record. Legal only through
+    # org_promotion.promote_org (paid-or-signed predicate + a primary-focus
+    # org for the engagement edge + no prior undo), and only because the
+    # registered org_promotion reverser puts the relationship_type and the
+    # engagement edge back. A sizing or engagement record alone is not a
+    # signal and produces neither a promotion nor a proposal.
+    "org_promotion": "a prospect with a paid or signed fact (won deal, "
+        "payment, signed agreement) — relationship flip + engagement edge, "
+        "both reversible",
 }
 
 # The ONLY categories legal on the entity_fact_structured auto class
@@ -219,6 +232,10 @@ _IDENTITY_KINDS = frozenset({
     # asks). person_merge is NEVER in AUTO_ALLOWED (merge_person_into has no
     # reverser — a record merge cannot be undone).
     "person_link", "person_merge",
+    # DEALNAG1 — the auto org promotion. It is applied-then-resolved in the
+    # same run, so it never renders anywhere; the shape is declared for the
+    # ranking table's completeness and for any diagnostic read.
+    "org_promotion",
 })
 # OBJ2 — objective-adjudication proposals (Decision #2 on the Staff Meeting
 # card): a proposed link between a standing objective and a target item.
@@ -287,6 +304,34 @@ ON_DEMAND_KINDS = frozenset({"dormancy"})
 # open still ages out on its own TTL and lands its `brain_proposal_expired`
 # marker. The kind stays parseable forever; the event vocabulary loses nothing.
 RETIRED_KINDS = frozenset({"schedule_add"})
+
+# CUTB / M ruling R-B (2026-09-06) — the mid-confidence DEAL QUESTION is
+# WITHHELD from every named surface. The deal-signals detector's two kinds
+# rendered as a three-way Money row ("likely deal · Confirm / Not relevant
+# (60 days) / Snooze (7 days)") on the Staff Meeting card and as the brief's
+# "Command Room thinks [Org] is a live deal" sentence; the v5.28.0 attended
+# test (B1.4) saw three of them, two about orgs that had been won and
+# converted weeks earlier. M's words: "we want to show less options to
+# clients — they are overwhelmed." The signal is still RECORDED (`propose()`
+# writes the row; `deal_signal_detector.propose_candidates` is unchanged), it
+# still dedups, retires and expires on its own rails, and an org promotes
+# itself only on a paid / signed / won fact (`org_promotion`). What changes
+# is that nobody renders or COUNTS the question: withheld here, at the
+# projector chokepoint, so the brief pointer, the Staff Meeting header, the
+# shape tiles and every downstream total drop with it in one move.
+#
+# `deal_update` goes with `deal_creation`: it is the same detector's same
+# three-verb prompt about the same band of evidence ("looks moved to
+# negotiating", "sounds won", "has a number attached" — language, not a
+# paid or signed fact), and the ruled design rule is fewer verbs per row.
+# `org_money` STAYS: it is a different detector (an account value near a
+# client org), not a deal question, and its confirm is the ONLY door the
+# money field has (HIST1 D4: never estimated, confirm-only) — withholding it
+# would silently retire a feature with no replacement. `surface is None`
+# (the diagnostic / cross-rail dedup read) keeps seeing withheld rows for
+# the same reason it sees demoted and retired ones: a withheld-but-open row
+# must still suppress a duplicate write and still be visible to an audit.
+WITHHELD_KINDS = frozenset({"deal_creation", "deal_update"})
 
 # The overflow line teaches the full-queue phrase (R3.4). Rendered verbatim
 # by surfaces when overflow_count > 0.
@@ -433,6 +478,27 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
                                     "clusters") if data.get(k)},
         })
     return out
+
+
+def open_brain_proposals(workspace_root, *, now_iso: Optional[str] = None,
+                         include_lapsed: bool = False) -> list[dict]:
+    """DEALNAG1 — the open brain-family rows (tombstone- and TTL-filtered),
+    read through the org-scoped seam, with NO surface filter and NO snooze
+    filter: the retirement path (`deal_signal_retire`) must reach a snoozed
+    row too, because a snooze is "ask me later" and a win means there is
+    nothing left to ask. Diagnostic / system consumers only — adjudication
+    surfaces keep reading `load_open_proposals`.
+
+    `include_lapsed=True` (CUTB item 1(c)) keeps rows past their TTL that
+    carry NO tombstone yet — `expire_stale` runs only inside `cleanup`, so a
+    row can be computationally lapsed for weeks while nothing on the ledger
+    says so. The retirement sweep asks for these so a lapsed row about a
+    settled org gets its tombstone too, instead of being neither open nor
+    answered."""
+    now_iso = now_iso or _now_iso()
+    return _open_brain_proposals(_load_events(workspace_root),
+                                 now=None if include_lapsed
+                                 else _parse_ts(now_iso))
 
 
 def propose(
@@ -774,6 +840,19 @@ def _cru_ambiguity_line(query: str, candidates: list, truncated: int = 0) -> str
             f"close that one and leave the rest open.")
 
 
+def _is_policy_chip(ev: dict, data: dict) -> bool:
+    """POLICY1-B F-4 — True for a proposal the transcript closer wrote as an
+    in-row chip: `source_skill: past-meetings` AND `data.signal` (the
+    POLICY1-A field) AND not the non-attendee lane's stamped shape."""
+    if (ev.get("source_skill") or "") != "past-meetings":
+        return False
+    if not isinstance(data.get("signal"), str) or not data.get("signal"):
+        return False
+    if data.get("nonattendee_lane") is True or data.get("auto_close_blocked") is True:
+        return False
+    return True  # F-4: a policy chip lives on the row, never on the card
+
+
 def _adapt_commitment_reviews(workspace_root, *,
                               now_iso: Optional[str] = None,
                               window_now_iso: Optional[str] = None
@@ -817,6 +896,18 @@ def _adapt_commitment_reviews(workspace_root, *,
         # by itself, through the expiry pass, only if it still cannot prove
         # itself — or on demand, via `show watching`.
         if cid in watched:
+            continue
+        # POLICY1-B F-4 (M ruling 2, default in force 2026-09-04: WITHHOLD).
+        # A POLICY chip — the transcript closer's own 0.65–0.80 in-row
+        # evidence, stamped `data.signal` by `apply_transcript_results` —
+        # is evidence riding a row, not a question: it resolves ITSELF at
+        # the four-day window (applies or retracts). It lives on the row
+        # (PLATE1 P7 `data.proposal`) and never renders here as a Staff
+        # Meeting confirm / not-relevant / hold row, nor counts in the
+        # brief's "N things need your eyes". A non-attendee lane row
+        # (`nonattendee_lane`) is NOT a policy chip — it is the one shape
+        # that still needs a person — and keeps rendering.
+        if _is_policy_chip(ev, data):
             continue
         # FS-11: an un-adjudicated review proposal older than its TTL expires
         # instead of accumulating (default TTL only when the writer stamped one;
@@ -2004,6 +2095,43 @@ def mark_shown(workspace_root, proposal_ids, surface: str,
         pass
 
 
+def _drop_settled_money_rows(workspace_root, items: List[dict]) -> List[dict]:
+    """CUTB item 1(b) — drop every deal-signal row (`deal_creation` /
+    `deal_update`) whose org is a client or carries a won deal, or whose
+    thread is terminal. One entities read, only when a deal row is present;
+    any failure degrades to "filter nothing" rather than a dead surface."""
+    deal_rows = [i for i in items
+                 if i.get("kind") in ("deal_creation", "deal_update")]
+    if not deal_rows:
+        return items
+    try:
+        from deal_signal_retire import (RETIRE_KINDS, settled_orgs,
+                                        terminal_deal_threads)
+        from entities_io import entities_collection
+        ent_path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+        if not ent_path.exists():
+            return items
+        raw = json.loads(ent_path.read_text(encoding="utf-8"))
+        ent = raw["entities"] if isinstance(raw.get("entities"), dict) else raw
+        clients = {o.get("id") for o in entities_collection(ent, "orgs")
+                   if isinstance(o, dict)
+                   and o.get("relationship_type") == "client"}
+        settled = set(settled_orgs(ent, _load_events(workspace_root)))
+        terminal = terminal_deal_threads(ent)
+    except Exception:  # pragma: no cover — never a dead surface
+        return items
+
+    def _settled(i: dict) -> bool:
+        if i.get("kind") not in RETIRE_KINDS:
+            return False
+        oid = i.get("org_id")
+        tid = i.get("thread_id")
+        return bool((oid and (oid in clients or oid in settled))
+                    or (tid and tid in terminal))
+
+    return [i for i in items if not _settled(i)]
+
+
 def load_open_proposals(
     workspace_root,
     surface: Optional[str] = None,
@@ -2069,6 +2197,21 @@ def load_open_proposals(
     # duplicate write and still be visible to an audit.
     if surface is not None:
         items = [i for i in items if i.get("kind") not in RETIRED_KINDS]
+    # CUTB / M ruling R-B — the deal question is withheld from every named
+    # surface (see WITHHELD_KINDS). Same posture as the retirement above.
+    if surface is not None:
+        items = [i for i in items if i.get("kind") not in WITHHELD_KINDS]
+    # CUTB item 1(b) — a READ-TIME settled filter. A money row about an org
+    # that is a CLIENT, or that has a WON deal, never renders on a named
+    # surface — whatever the Sunday `deal-signals` job did or did not get to.
+    # The write-time retirement (`deal_signal_retire.retire_settled`) runs
+    # only inside that job, so a proposal opened before the org settled kept
+    # rendering until the job fired; on the v5.28.0 attended test two orgs
+    # won and converted on 08-18 were still "a live deal" on 09-06. Belt to
+    # the withhold's braces: the two filters are independent, and this one
+    # is pinned with the withhold switched off (run_cutb_test [1b]).
+    if surface is not None:
+        items = _drop_settled_money_rows(workspace_root, items)
     # Uniform snooze/decline gate (review F1): a chat_dismissal whose
     # target_id is a projector item id retires that item for the
     # dismissal's TTL — this is what `snooze proposal 7d` and the
@@ -2652,6 +2795,7 @@ __all__ = [
     "ON_DEMAND_SURFACE_HINT",
     "ON_DEMAND_KINDS",
     "RETIRED_KINDS",
+    "WITHHELD_KINDS",
     "OVERFLOW_LINE",
     "BrainProposalError",
     "kind_shape",
@@ -2660,6 +2804,7 @@ __all__ = [
     "PERSON_LOW_CONTEXT_STALE_DAYS",
     "MIGRATED_KINDS",
     "propose",
+    "open_brain_proposals",
     "load_open_proposals",
     "resting_auto_proposals",
     "rank_proposals",

@@ -64,6 +64,11 @@ _OK_STATUSES = frozenset({
     "proposed", "archived", "undone", "reopened", "cleared", "dismissed",
     "snoozed", "sent", "drafted", "registered", "merged", "reassigned",
     "split", "promoted",
+    # PLATE1 P3: `commitment_state.disown_commitment` (`not mine` on the
+    # plate) — one commitment_updated landed: owner cleared, question
+    # written, row parked. A write that happened; the page-set stops
+    # offering the row on THIS page (it re-renders under PARKED next fire).
+    "disowned",
     # WATCHGATE: a weak proposal answered by a bulk gesture is PARKED on
     # watch rather than closed. That is a write that landed and a row that
     # has been dealt with — the page-set should stop offering it, exactly as
@@ -134,6 +139,9 @@ _NOOP_STATUSES = frozenset({
     # WATCHGATE: the row was already parked, so this answer wrote nothing.
     # An honest no-op, not a failure and not a second park.
     "already_watching",
+    # PLATE1 P3: a second `not mine` on an already-disowned row writes
+    # nothing — an honest no-op, never a second question.
+    "already_disowned",
     # ARCHFIX: thread_archive.archive_thread on an already-archived thread
     # writes nothing — no second status_change. Without this row the honest
     # no-op maps to the unknown-status default ("error"), inflating n_errors
@@ -175,10 +183,16 @@ _NOOP_STATUSES = frozenset({
     #     already known to that record.
     #   empty               brain_undo.undo_batch over a batch with nothing
     #     reversible; no change, no failure.
+    #   already             brain_undo.undo_batch (POLICY1-B fix F-9): every
+    #     reverser in the batch answered already_* / not_open — the rows were
+    #     in the restored state before the gesture, nothing moved, no marker
+    #     written. Distinct from `undone` so a second undo never reports the
+    #     first undo's count.
     "already_task", "already_promise", "already_scheduling", "already_agenda",
     "already_open", "already_noted",
     "already_actioned", "already_held", "already_unconfirmed",
     "already_undone", "duplicate_open_legacy", "unchanged", "exists", "empty",
+    "already",
     # BACKFILL2: `backfill_bindings.apply` reached from the binding widget's
     # rail (`backfill_widget.apply_choices`). `no_op` = nothing adjudicated,
     # nothing written (the no-auto fence's operational half); `skipped` = a
@@ -214,6 +228,12 @@ _REFUSED_STATUSES = frozenset({
     # backfill_bindings.apply refused and NOTHING was written. Named so the
     # refusal is a decision on the record, not the unknown-status default.
     "stale_snapshot",
+    # CUT-C item 5 (ATTENDED_TEST_v5.28.0 B2.5): a `push to [date]` that
+    # arrived with NO date is refused by the dispatcher before any writer runs
+    # (`commitment_state.later_missing_ack`). Nothing moved, so the row is
+    # not dealt with: an error outcome, never ok, and the page-set keeps
+    # showing it.
+    "missing_when",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the
@@ -234,6 +254,19 @@ _REFUSED_STATUSES = frozenset({
     #     never-optimistic one.
     "not_individually_named", "not_found", "confirmed_not_closed",
     "has_subitems", "not_open",
+    # ATTRIB1-B door 1 (`attribution_doors.apply_counterparty_pick`): the
+    # three ways a WHO-IS-YOU pick is refused, each writing nothing, each a
+    # decision on the record rather than the unknown-status default:
+    #   malformed      — the tuple was not `confirm_counterparty:<id>:<pid>`,
+    #     so no row was even identified.
+    #   no_question    — the row carries no `who_is_you` question (it was
+    #     answered on another surface, or never asked); the pick has nothing
+    #     to apply and the user still sees the row wherever it lives.
+    #   not_an_option  — the person is not one the question OFFERED. Routing
+    #     the item to somebody the ladder never proposed is a reassignment,
+    #     which is `reassign to [name]`'s contract and not this verb's, so
+    #     the pick refuses and says which verb to use.
+    "malformed", "no_question", "not_an_option",
     # --- APPLYAUDIT1: the refusals the census found unclassified -------------
     # "error" was already the outcome for each of these, but by FALL-THROUGH,
     # and the whole lesson of this defect is that a fall-through hides an

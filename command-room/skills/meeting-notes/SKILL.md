@@ -379,7 +379,8 @@ from event_gate import append_event
 
 routed = route_meeting_captures(
     items,                                  # [{title, kind, due|no_due, owner_id/owner_external,
-                                            #   counterparty_id/counterparty_name, evidence, …}, …]
+                                            #   counterparty_id/counterparty_name, evidence,
+                                            #   span, classification_confidence, …}, …]
     workspace_root="<WORKSPACE>",
     source_ref="granola:<meeting_id>",
     transcript_text=transcript,             # the text you ALREADY loaded — never re-fetch
@@ -390,6 +391,7 @@ routed = route_meeting_captures(
     source_skill="meeting-notes",
     attendee_records=<the meeting's attendee list, or None>,  # ATTENDEE1
     now_iso="<this fire's UTC now, ISO>",
+    meeting_person_ids=<the resolved attendee person ids you will stamp on the meeting event in Step 9a1, or None>,  # ATTRIB1-B A5
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl",
              routed["book"] + routed["review"] + routed["observed"],
@@ -397,7 +399,16 @@ append_event("<WORKSPACE>/_hq/data/events.jsonl",
 
 for line in routed["receipt_lines"]:      # ATTENDEE1 — never optional
     print(line)
+# ATTRIB1-A — carry the declared transcript class onto the meeting event in Step 9a1:
+#   build_meeting_event(..., transcript_class=routed["transcript_class"],
+#                       working_session=routed["summary"]["working_session"])
 ```
+
+**⛔ THE TRANSCRIPT IS CLASSIFIED FIRST, AND THE FLAG IS DERIVED — YOU DO NOT CHOOSE `pending_review` (ATTRIB1-A, 2026-09-02).** Before any row is built the helper declares what kind of transcript this is (`meeting_capture.transcript_class`): `named` (speaker tags carry names), `me_them` (your voice and one collapsed other voice — most real transcripts), `unlabelled` (no markers), or `dictation` (`Me:` is the only voice — you talking to nobody: a working session). The class rides every row as `data.attribution.transcript_class` and comes back as `routed["transcript_class"]` for the `meeting` event. Every row also carries `data.attribution` — `{transcript_class, owner_basis, counterparty_basis, span, turn}` — which is the EVIDENCE the review flag is derived from: `owner_basis` is `inferred` when you resolved an owner id (or the kind is self-owed by definition) and `unknown` when a promise names nobody you could resolve; `counterparty_basis` is `inferred` for a resolved id, `unknown` for a name with no record or a promise with nobody on the other end, `none` for a task. `span` is where the row's own words sit in the transcript (token offsets, located from `evidence` — or from `span` if you pass the verbatim quote) and `turn` is the marker that stretch sits under (`Me` / `Them` / a speaker name). What you owe at extraction is the FACTS, not the verdict: the ids or names you resolved, the verbatim `evidence` (and `span` when you have it), `attribution_ambiguous` / `attribution_unknown` when the guard below applies, and an honest `classification_confidence`. Never pass `pending_review` yourself — a caller that does gets the derived value anyway plus a `capture_contract_violation` note on the row.
+
+**⛔ THE OWNER COMES FROM THE TURN MARKER, THE COUNTERPARTY FROM THE CALENDAR, AND WHEN NEITHER ANSWERS THE ROW ASKS ONE QUESTION (ATTRIB1-B, 2026-09-04).** You still pass the facts; the helper now reads them against the transcript and the roster. The marker decides the owner ONLY when the grammar agrees with it: "I'll send…" under `Me:` is the user's promise (`owner_basis: speaker`); "you'll send…" under `Me:` is the user telling the OTHER party what they will do (owner = the addressee, `inferred`); "I'll send…" under `Them:` on a two-party call is the other attendee's promise (`calendar`); a named speaker's own first-person line is theirs (`speaker`). Disagreement never yields `speaker`. The counterparty resolves down a ladder — the two-party calendar, then a name the turn OPENS with ("Bo, I'll send you…"), then the previous turn's named speaker, then the meeting's resolved people when exactly one is left — and only when every rung fails does the row carry ONE question, `attribution.question = {kind: who_is_you, options: [the other parties], default: the party a heard name spells, or null}`. Pass `meeting_person_ids` (the same ids you stamp on the meeting event in Step 9a1) so the last rung has something to read. **M RULING 2 (night 8, 2026-09-03): `scheduling` and `agenda` rows ask NOTHING.** They book silently with their `counterparty_basis` on the record and the calendar closer finishes them later; the ONE question in the product is the one below, on a `promise`, rendered on the meeting card at most three times. Three fences ride the same pass: the user is NEVER their own counterparty (a self-reference is stripped and the row says `self_counterparty_stripped: true` — EXTRACT1 dragger 4); the user's own item that fails ONLY the consequence test is an ASIDE and goes to `observed` (kept for prep, no question, no row — D11); and every non-commissive speech act the W34 census found — advice ("you should…"), a request nobody accepted ("can you send me…"), a conditional offer the other side declined, speech reported about a third party ("she said she'd…"), and dictation to a tool ("Claude, draft…") — is NAMED on the row as `data.speech_act` (EXTRACT1 dragger 2). It is a LABEL, not a verdict: the row's lane and its `floor_code` are whatever the shipped floor decided, and a row that CLEARS the floor is never labelled — a promise naming a person and a date is a promise whatever nouns it contains. **Quote verbatim, or label the paraphrase (EXTRACT1 dragger 3, D-C):** pass `span` / `evidence` as the transcript's own words; when you genuinely cannot quote, pass `evidence_kind: "paraphrase"` on the item — the fusion guardrail is then honestly `inert` on that row and the label rides it, instead of a false `refused`. A row whose words locate is stamped `evidence_kind: verbatim` for you. The summary carries the tallies: `n_questions`, `n_owner_changed`, `n_self_counterparty`, `n_asides`, `n_paraphrase`, `speech_acts`.
+
+**A dictated working session writes no open item and asks no question.** When the class is `dictation`, every capture goes to the `observed` tier (kept, searchable, feeds prep) — no row on the book, no queue row, no question — and `routed["summary"]["working_session"]` is `True`, which you stamp on the `meeting` event (`working_session=True`). The one exception is the caution rail, which is older and stands: a capture carrying a due date or a money amount ALWAYS surfaces as open, working session or not. Say so in the chat card in one line ("Working session — N notes kept for prep, nothing opened."); never "0 commitments".
 
 **⛔ PASS `attendee_records`, AND RENDER `receipt_lines` (ATTENDEE1).** Hand the helper the attendee list you ALREADY have from the transcript backend — whatever shape it came in: dicts with a name and an email, the connector's own participant block (`"A Name from Org <a@x>, B Name <b@y>"`), or plain strings. `attendee_evidence.normalize_attendee_records` takes all three and, critically, PRESERVES the name↔email pair; the persisted `meeting` event does not (it splits emails into `data.attendees` and names into `data.attendees_external`, two lists with no correspondence), so the pair reaches this helper only if you pass it here.
 
@@ -408,7 +419,7 @@ What it buys: a capture whose counterparty or owner resolved to nobody, but whos
 Omitting `attendee_records` is legal and changes nothing: no records means no evidence, no writer is consulted, and every item routes exactly as it did before this existed.
 
 - `book` — ordinary open commitments.
-- `review` — written `pending_review`, so they land in the **needs-your-call** queue and never in the open book. TWO kinds arrive here: rows refused by the fusion guardrail (`data.fusion_unverified`), and rows the capture floor gated (`data.floor_gated`, with the `FLOOR_*` reason as their `review_reason`).
+- `review` — written `pending_review`, so they land in the **needs-your-call** queue and never in the open book. TWO kinds arrive here: rows refused by the fusion guardrail (`data.fusion_unverified`, `data.fusion_status: refused`), and rows the capture floor gated (`data.floor_gated`, with the `FLOOR_*` reason as their `review_reason` AND its stable code as `data.floor_code`). Every row in every lane also carries `data.fusion_status` (`verified` / `refused` / `inert`) — the guardrail's verdict is written, not just computed.
 - `observed` — kept on file (searchable, feeds prep) with no open item, no count, no row: third-party↔third-party items under party-only, and below-floor items someone else plainly owes.
 - `skipped` — near-empty since M's 2026-08-01 ruling. Nothing below the floor comes here; what is left is the honest residue (an item the canonical builder refused to construct). Never narrate it.
 - Omitting `transcript_text` leaves the fusion check AND the two transcript-reading floor checks below inert; the sentence-level floor and the relevance gate still run. Pass it.
@@ -432,15 +443,15 @@ Everything below describes the SHAPE of an `items` entry and the classification 
 - Self-owed with NO counterparty (the user owes it to nobody but themselves) → `kind: "task"` — tasks live on the triage surface, never enter CRU matching, and never render in commitment aging.
 - Scheduling intent ("set up the call with X", "lock time with Y") → `kind: "scheduling"`.
 - "Let's discuss X" / agenda items → NOT captured (MLK1, 2026-07-21: the discuss list is retired and NO capture path writes `commitment_to_discuss`; pre-MLK1 these wrote that type). A bare "let's discuss X" has no owner, no deliverable, and no consequence — it is below the capture floor by all three of its own conditions, so skip it silently. If the discussion intent IS a real commitment ("Sam will bring the pricing options to Friday's call"), it qualifies on its own terms as `kind: "promise"` / `"scheduling"` through the normal floor. Never write `kind: agenda` either — that label remains registered but unwritten.
-- Genuinely ambiguous → `kind: "promise"` with `data.pending_review: true` (existing flag; surfaces for review, never auto-closed).
+- Genuinely ambiguous → `kind: "promise"` and leave the owner / counterparty fields honest (an unresolved id → the basis reads `unknown` and the helper flags it; surfaces for review, never auto-closed).
 
-**pending_review is default-on for low-confidence attribution (v4.5.2 safety inversion — MANDATORY).** CRU auto-resolution gates on `data.pending_review`: a low-confidence extraction that FORGETS the flag auto-resolves at high match with no human gate. So the rule is inverted — absence of the flag is an ASSERTION of high-confidence attribution, never a default. Set `data.pending_review: true` at capture whenever ANY of these hold:
-- owner attribution is ambiguous or unresolved (incl. every `attribution_ambiguous` / `attribution_unknown` case below);
-- a counterparty is named in the source and still resolves to no person record after the attendee-evidence pass above has run (that pass is the ONLY thing that may answer this condition, and only from a name+email attendee record of this same meeting — it fills in the id, it never waives the check);
-- overall attribution confidence is below 0.75 (the `meeting_capture` builders enforce this floor for decisions; apply the same floor to commitments);
-- the item is a sensitive category (firing / pricing / contract terms) — flag regardless of confidence, same rule the scheduled past-meetings writer runs.
+**pending_review is default-on for low-confidence attribution (v4.5.2 safety inversion — MANDATORY), and since ATTRIB1-A D4 (2026-09-02) it is DERIVED from the evidence in code.** CRU auto-resolution gates on `data.pending_review`, so absence of the flag is an assertion of high-confidence attribution — and that assertion is now made by `meeting_capture.derive_pending_review` from what the row carries, never by the extractor. The row is flagged when ANY of these hold, and under NO other condition:
+- `attribution.owner_basis` is `unknown` — a promise whose owner you could not resolve to an id (every `attribution_ambiguous` / `attribution_unknown` case below lands here);
+- the kind is `promise` and `attribution.counterparty_basis` is `unknown` — a counterparty named in the source that still resolves to no person record after the attendee-evidence pass above has run (that pass is the ONLY thing that may answer this condition, and only from a name+email attendee record of this same meeting — it fills in the id, it never waives the check), or a promise with nobody on the other end;
+- the capture floor gated the row (`data.floor_code`) or the fusion guardrail refused it (`data.fusion_status: refused`);
+- `classification_confidence` is below the surface floor (0.7 baked — `confidence.CONFIDENCE_SURFACE_MIN`; `confidence.surface_min` per workspace) — so pass the number you actually believe. This is the only confidence field: there is no `data.confidence`, and a sensitive category (firing / pricing / contract terms) is expressed the same way — a low `classification_confidence` on that row, not a hand-set flag.
 
-If you cannot assert high confidence, you MUST set the flag. An ambiguous item without `pending_review` is a write defect, not a judgment call.
+What you owe is the honest inputs. An item whose owner you could not resolve and which you write with a made-up `owner_id` is the write defect now — the flag follows the fields.
 
 **Due-date nudge (S2):** every captured commitment proposes a `due` (from meeting language or a sensible default the user can push) OR carries explicit `data.no_due: true`. Undated items surface in the weekly triage, not the aging view — target is < 30% undated.
 
@@ -498,20 +509,40 @@ Same guard applies for `decision` events. The bug class this closes: Granola has
 
 ---
 
-## Step 5e-bis: Close commitments fulfilled by this meeting (v3.11.1 — REQUIRED)
+## Step 5e-bis: Close commitments fulfilled by this meeting (v3.11.1 — REQUIRED; rewritten CUT-A 2026-09-06 under M ruling R-A)
 
-Commitments accumulate as "open" in events.jsonl forever unless something explicitly closes them. Before v3.11.1 only `follow-up-ritual` emitted `commitment_resolved`, which left meeting-notes as the largest open-commitment source — every commitment captured in Step 5e stayed open even when the same meeting that recorded the new commitment had attendees confirming the prior commitment was done. M's 2026-05-20 audit found 191 open commitments in his workspace, many already satisfied.
+Commitments accumulate as "open" in events.jsonl forever unless something explicitly closes them. This step asks ONE question of the meeting — "did this call show a promise already on the book was kept?" — and hands the answer to the policy pass. **You NEVER call `commitment_state.close_commitment` from this step, in either mode.** The v5.28.0 attended test (B1.1) watched this step, told to score and close by hand, recommend five closes on a call that never mentioned four of them; the writer's door now refuses a direct meeting-notes close on transcript evidence by name (`TranscriptCloseWithheldError`), so the only route is the one below.
+
+**The switch (M ruling R-A, 2026-09-06).** Closing on transcript evidence ships OFF. With it off, the most this step may write is a review proposal on the row (`commitment_review_proposed` — the `needs your call` / staff-meeting confirm shape); nothing closes. With it on (M says `turn on closing on evidence`), the tightened POLICY1-B pass closes — only with the meeting's own start time on hand, only a row captured BEFORE that start, only on one verbatim turn that both says done and names the item — stamped `resolved_by: meeting-notes`, on a batch, one `undo` away. The pass reads the switch itself; this step does not branch on it.
 
 **Procedure (run BEFORE emitting new commitments in Step 5e, so a "delivered today" item isn't immediately re-opened):**
 
-1. Load all open commitments for this meeting's `primary_thread_id` AND for each attendee `person_id` via `shared/scripts/cru_match.py::load_open_commitments(events_jsonl_path)`. This handles all 5 commitment shape variants (canonical, flat-new, legacy `owner`, `owner_person_id`-variant, pending-review).
-2. For each open commitment, score it against the transcript using the existing CRU helpers (`cru_match.py` Path 3 — same scorer that past-meetings uses for transcript matches). HIGH-confidence completion language ("delivered", "sent it over", "done", "shipped") on a commitment owned by an attendee → auto-resolve. Schedule-shift language ("pushing to next week", "got delayed") → `commitment_updated`, NOT resolved.
-3. For each auto-resolve, close through `commitment_state.close_commitment(workspace_root, <commitment_id>, resolved_by=<attendee_person_id_or_user_id>, evidence=<≤200-char quote-or-paraphrase from transcript>, source_skill="meeting-notes", source_ref="granola:<meeting_id>")` — THE closure path (Stage B 2026-07, F2; supersedes the build-and-append procedure). It normalizes legacy ids, refuses no-match ids loudly (`CommitmentIdError` → skip, never write an orphan tombstone), is idempotent over the full resolved-id set, and never auto-resolves a `pending_review` item (`PendingReviewError` → leave it for the review surface). The Path 3 scoring in step 2 is unchanged. **`source_ref` (PROV1) is the TRANSCRIPT the close was read out of** — `granola:<meeting_id>`, the meeting's native id prefixed with its provider. The quote in `evidence` names no artifact anyone can open; the pointer does. A close is never blocked for want of one — since SPEC PROVMINT1, omitting it makes the writer mint `session:meeting-notes:<now>` marked `surface_minted`, a pointer at the act rather than at the transcript, and PROV1's bare marker is no longer reachable here. But on this path there is always a meeting, so there is never a reason to omit it: a minted ref on THIS rail is a real transcript pointer thrown away, and the coverage split shows it as exactly that.
-4. **Conservative auto-resolve only.** MEDIUM-confidence matches → emit `commitment_review_proposed` for the confirm queue's one-click confirm surface (the staff meeting and `needs your call` render it), do NOT auto-close. The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day.
-5. **Silent.** Per CONTRACT Rule 24, do NOT narrate "auto-resolved 2 commitments" in the meeting summary. The user sees the result on the next Commitments fire (the resolved item simply doesn't appear).
-6. **Dedup.** Handled by close_commitment itself — it checks the FULL resolved-id set and returns an `already_resolved` result instead of double-writing, so a same-turn race is a true no-op.
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_policy_pass import apply_meeting_closes
+counts = apply_meeting_closes(
+    '<WORKSPACE>',
+    meeting_ref='granola:<meeting_id>',            # THIS transcript's own pointer (PROV1) — also the self-evidence fence
+    transcript_ts='<THIS meeting start ts, offset-carrying or UTC, e.g. 2026-07-28T18:00:00-07:00>',
+    transcript_text='<full transcript text for THIS meeting>',
+    attendee_person_ids=['<resolved attendee person_id 1>', ...],
+    source_skill='meeting-notes',
+)
+print(json.dumps(counts))
+"
+```
 
-Same shape rules as follow-up-ritual's Step "Surface Open Commitments" — the two skills follow the same v3.4.5 decision-CRU pattern.
+- **`meeting_ref` is PROV1 — the TRANSCRIPT the close was read out of** (`granola:<meeting_id>`, the meeting's native id prefixed with its provider), carried onto every close and proposal the pass writes as `source_ref`; it is also the self-evidence fence (a row captured FROM this transcript is never closed by it). A close is never blocked for want of one — since SPEC PROVMINT1, an empty `meeting_ref` makes the writer mint `session:meeting-notes:<now>` marked `surface_minted`, a pointer at the act rather than at the transcript, and PROV1's bare marker is no longer reachable here. But on this path there is always a meeting, so there is never a reason to omit it: a minted ref on THIS rail is a real transcript pointer thrown away, and the coverage split shows it as exactly that.
+- **`transcript_ts` is the MEETING's own start — the same value Step 8 stamps as the `meeting` event's `ts`. Never the processing clock.** "Now" is after every commitment, so a guessed value fences nothing and reads as if it did. Without it every close is refused by name (`NoTranscriptTs` on `close_refusals`) and only proposals write.
+- **What the pass does per open commitment** (`cru_match` Path 3 scorer, `commitment_policy.decide`, then `apply_transcript_results` — the same function Phase 4.6 of the past-meetings orchestrator calls): HIGH-confidence completion language on a row an attendee owns → a CLOSE when the switch is on, a review proposal when it is off (`n_close_withheld` counts it either way); a corroborating match inside the chip band → ONE review proposal per (item, meeting); schedule-shift language → `commitment_updated`, never a resolution; below the bar → nothing. A parent with open sub-items is never closed (SUB1 D3); a `pending_review` target closes only through the transcript door and only when the switch is on.
+- **Conservative by construction.** The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day; that is why the refusals exist and why the switch ships off.
+- **Silent.** Per CONTRACT Rule 24, do NOT narrate "auto-resolved N commitments" or "proposed N" in the meeting summary, and never print a count from `counts` in chat. The user sees a close on the next Commitments fire and a proposal under `needs your call`; the brief's CHANGED line narrates closes (with `undo`) and, while the switch is off, one line saying how many promises look kept.
+- **Dedup.** The pass seeds `already_proposed` from disk (one open proposal per commitment) and `close_commitment` is idempotent over the resolved-id set, so a same-turn race and a re-run are both no-ops.
+- **Re-run.** `process this meeting` on an already-processed meeting re-enters this step exactly as above (Step 9a3's `already_processed` gates capture dedup only, not this step); a whole-day re-run enters Phase 4.6 of the past-meetings orchestrator, which calls the same pass under the same switch.
+
+Same shape rules as follow-up-ritual's Step "Surface Open Commitments" — the two skills call the same entry.
 
 ---
 
@@ -666,7 +697,7 @@ If `[WORKSPACE_ROOT]/_people/_team-config.md` exists, check meeting attendees ag
    - Only suggest this for people who spoke, made decisions, or took action items — not passive attendees.
 
 3. **Check for commitment updates:**
-   - If the meeting resolved or delivered a commitment that's already in a team member's profile (e.g., "Bowie presented the Aspen Project numbers"), update the status cell in the PERSON.md profile TABLE ONLY (a regenerated Tier-2 view) to "Delivered" with today's date — AND close the canonical commitment via `commitment_state.close_commitment(...)` per Step "CRU auto-resolve" above. **NEVER edit the commitment event's `data.status` in events.jsonl (F4)** — in-place status mutation is the forbidden write class; closure is a tombstone append only.
+   - If the meeting resolved or delivered a commitment that's already in a team member's profile (e.g., "Bowie presented the Aspen Project numbers"), update the status cell in the PERSON.md profile TABLE ONLY (a regenerated Tier-2 view) to "Delivered" with today's date — the canonical commitment is closed (or proposed for confirmation, while closing on evidence is off) by Step 5e-bis's `apply_meeting_closes` pass, never by a direct `close_commitment` call from here (CUT-A, M ruling R-A). **NEVER edit the commitment event's `data.status` in events.jsonl (F4)** — in-place status mutation is the forbidden write class; closure is a tombstone append only.
 
 ---
 
@@ -802,6 +833,8 @@ ev = build_meeting_event(
     duration_min=<minutes or omit>,
     ts="<meeting start ISO — backdate to meeting time, not processing time>",
     source_had_attendees=<True when the invite/transcript listed ANY participants>,
+    transcript_class=routed["transcript_class"],                  # ATTRIB1-A — from Step 5e's return
+    working_session=routed["summary"]["working_session"],         # True only for a dictated session
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.meeting")
 ```
@@ -887,6 +920,20 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 ```
 
+**Step 9c-bis — DOOR 1: the meeting card's questions (ATTRIB1-B D8, 2026-09-04).** After the card, render the questions this call left open — at most 3, lowest confidence first, each a pick-list of the meeting's other parties with the likely answer first and tagged. This is the FIRST door for a counterparty the ladder could not resolve; the needs-your-call queue is no longer where the user first meets it. Rendered ONLY through the transport (every gate runs inside it); nothing when the meeting asks nothing:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from attribution_doors import render_card_questions
+
+questions = render_card_questions("<WORKSPACE>", "granola:<meeting_id>",
+                                  persist_dir="<WORKSPACE>/_hq/.system/widgets")
+# None when this meeting left no question. Otherwise pass questions["html"] to
+# mcp__visualize__show_widget as widget_code, verbatim, as a SECOND widget under the card.
+```
+
+A pick arrives through `apply-choices` as `{n: "<commitment id>:<person id>", action: "confirm", src: "meeting-notes"}` and lands through `attribution_doors.apply_counterparty_pick` (the `confirm_counterparty:<id>:<person_id>` verb) — the counterparty is confirmed, the flag clears with `confirmed_by: user_pick`, and one hint line teaches the extractor (D12). No answer inside the review window → a question that HAS a tagged likely answer is APPLIED on its own (`confirmed_by: default_applied`), reversible with `undo`; a question with NO likely answer (no option tagged) is **let go after two days**, and `undo` brings it back. **Say the one that is true for the card in front of you — the widget's header already does (`attribution_doors.card_header`), so repeat its sentence, never a blanket promise:** when every question carries a likely answer, "Leave them and the likely answer applies; `undo` reverses it."; when none does, "Pick who you meant — if nobody does, these are let go after two days (`undo` brings them back)."; when it is a mix, the header says both and so should you. Telling the customer the likely answer applies on a row that will be let go instead is the F-5 defect, and the row's own context line names its fate for exactly that reason.
+
 **Open-items surface — `show_widget` all-batch button widget (v2.10.9+).** Open items are M-only resolutions (a clarification needed, a decision M must make, an action with no resolved owner). They render as a `show_widget`-rendered card with per-item button rows; selections accumulate in widget local state, one "Apply all" button fires the consolidated `apply choices: [...]` payload that `apply-choices` skill catches and dispatches. See `shared/CHAT_ACTION_WIDGET.md` for the full widget spec. Probe results: `PROBE_RESULTS_past-meetings-open-items.md` (workspace root).
 
 **Posting rule:** the post is the rendered widget, surfaced via `mcp__visualize__show_widget` fed the persisted page bytes as `widget_code` per § Transport (never hand-composed HTML). Do NOT paraphrase, do NOT compose chat strings, do NOT prepend or append narration. The widget IS the surface.
@@ -967,6 +1014,10 @@ The full 12-step cascade. Use when the user says "process deep", "full analysis"
 - Does not write person records or project records directly — surfaces suggestions that `people-crm` / `workspace-manager` execute.
 - Does not run as a scheduled task — fires only on explicit user request with a transcript in hand.
 - Does not store raw transcript text in events.jsonl — summaries and source refs only.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

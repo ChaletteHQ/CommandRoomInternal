@@ -67,7 +67,7 @@ being a bare join and became the ARC READ, in this order: which arcs moved
 today (grounded in what happened), which consequence-carrying arcs did NOT
 move (what is waiting, and on whom), and where the day's weight went — one
 sentence relating effort to arcs. Prose only, ZERO new interactions (the
-tomorrow block stays the one interaction, unchanged), and a fence —
+day-close asks nothing since CUT-PLATE — a stated tomorrow renders as fact), and a fence —
 `drop_rows_only` — under which a sentence with no arc attached cannot render
 in the section; the one exemption is the honest empty-day line, which is the
 section saying "no arc moved" rather than a row wearing a heading.
@@ -931,11 +931,24 @@ def compute_what_it_meant(*, rows: Optional[Iterable[dict]] = None,
                           open_rows: Optional[Iterable[dict]] = None,
                           meetings: Optional[Iterable[dict]] = None,
                           for_date=None,
-                          unmoved_cap: int = 2) -> dict:
+                          unmoved_cap: int = 2,
+                          render_unmoved: bool = True) -> dict:
     """TIER 2 — THE ARC READ (SPEC EODARC1). The day against the arcs the
     substrate declares, answered in the spec's order: which arcs MOVED today
     (grounded in what happened), which consequence-carrying arcs did NOT
     (what is waiting, and on whom), and where the day's WEIGHT went.
+
+    CUT-PLATE (2026-09-06) — `render_unmoved=False` KEEPS the unmoved read
+    as data and takes it OFF the screen. The v5.28.0 attended test (B2.2)
+    saw the day-close say "X did not move — 41 days past due" beside the
+    coach's "has now survived 7 closes"; M's ruling is that the evening
+    reads the day in the PLATE's shape (opened / closed / slipped) and
+    shows less. The unmoved sentences are still composed, still fenced,
+    still grounded, and returned under `unmoved` (a list of sentences) with
+    `n_unmoved` — the coach's stillness detector and the receipt read them
+    there — but they are not joined into `text` / `sentences` / `refs`, so
+    nothing prints them. The driver passes False; a direct caller keeps the
+    pre-CUT-PLATE default (True), byte-identical.
 
     A recap lists what changed; a synthesis says what it means for what you
     are running. The fence between the two is `drop_rows_only`, run over
@@ -1002,6 +1015,7 @@ def compute_what_it_meant(*, rows: Optional[Iterable[dict]] = None,
     # hit from today's rows, which is exactly what `moved_keys` measured. An
     # arc that moved never renders here, capped or not.
     n_unmoved = 0
+    unmoved_sentences: List[dict] = []
     if opens:
         candidates = []
         for j in join_to_arcs(opens, all_arcs):
@@ -1030,7 +1044,9 @@ def compute_what_it_meant(*, rows: Optional[Iterable[dict]] = None,
         for _rank, _tie, arc, row, cons in candidates[:unmoved_cap]:
             s = _unmoved_sentence(arc, row, cons, for_date=for_date)
             if s:
-                out.append(s)
+                unmoved_sentences.append(s)
+                if render_unmoved:
+                    out.append(s)
 
     # 3 — WHERE THE DAY'S WEIGHT WENT. One sentence, counted off today's own
     # rows (never against a plan). The meeting shape when the day had two or
@@ -1091,6 +1107,12 @@ def compute_what_it_meant(*, rows: Optional[Iterable[dict]] = None,
     result["n_arcs"] = len(joins)
     result["n_moved"] = len(moved_keys)
     result["n_unmoved"] = n_unmoved
+    # CUT-PLATE — the unmoved read as DATA, whatever `render_unmoved` said:
+    # the same fenced, grounded sentences, kept beside the text so the coach
+    # and the receipt read one record. When `render_unmoved` is True these
+    # are also inside `sentences`; when False they live only here.
+    result["unmoved"] = drop_rows_only(unmoved_sentences, arc_ref_set)["kept"]
+    result["unmoved_rendered"] = bool(render_unmoved)
     result["n_rows_only_dropped"] = fenced["n_dropped"]
     result["empty_day"] = empty_day
     assert_no_score(result["text"], where="what_it_meant")
@@ -1361,8 +1383,14 @@ def build_synthesis(*, ledger: Optional[dict],
                     echo_candidates: Optional[Iterable[dict]] = None,
                     held_ids: Optional[Iterable[str]] = None,
                     workspace_root=None,
-                    now_iso: Optional[str] = None) -> dict:
+                    now_iso: Optional[str] = None,
+                    render_unmoved: bool = True) -> dict:
     """Every synthesis block, composed once, fenced once.
+
+    `render_unmoved` (CUT-PLATE) threads through to `compute_what_it_meant`:
+    the day-close driver passes False so the "did not move" sentences stay
+    on the block as data and off the screen; every other caller keeps the
+    default.
 
     The visibility fence (§3.6) is applied HERE, to every row set that can
     reach a sentence, rather than inside each composer — one call site is one
@@ -1399,7 +1427,8 @@ def build_synthesis(*, ledger: Optional[dict],
                                           arcs=arcs,
                                           open_rows=fenced_open_rows["rows"],
                                           meetings=meetings,
-                                          for_date=for_date)
+                                          for_date=for_date,
+                                          render_unmoved=render_unmoved)
     worth = compute_worth_remembering(decisions=fenced_decisions["rows"],
                                       notes=fenced_notes["rows"])
     slipped_prose = compute_slipped_prose(fenced_slipped["rows"],

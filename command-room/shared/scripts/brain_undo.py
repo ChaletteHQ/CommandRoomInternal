@@ -34,6 +34,14 @@ Two shapes, both resolvable from the substrate alone:
     `data.brain_change_class` reverser. This is the shape LB2's auto
     detectors write (R1 structured-fact person/org creation stamps both
     fields at write time so this module can archive them later).
+    POLICY1-B DD-5 — the id may be a RUN or a GROUP. Automatic closes carry
+    a group batch (`<run>-<8hex>`, one per thread / meeting / source) with
+    `data.parent_batch_id = <run>`; a ref naming the run resolves every
+    group under it (`brain_batch_id == id OR parent_batch_id == id`), a ref
+    naming one group resolves that group alone. `undo <group>`, `undo
+    <run>` and `undo all` (the newest run) are the three verbs; the listing
+    (`recent_auto_batches`) nests groups under their run so a fresh chat can
+    offer all three.
 
 stdlib only. Loud per-item failures collected, never aborts the batch.
 """
@@ -84,6 +92,75 @@ def _reverse_commitment_close(workspace_root, change, *, undone_by, source_skill
         change["commitment_id"],
         reopened_by=undone_by,
         reason=change.get("reason") or "brain undo — batch reversal",
+        source_skill=source_skill,
+    )
+
+
+def _reverse_commitment_due(workspace_root, change, *, undone_by, source_skill):
+    """POLICY1-B (b) — put the due back EXACTLY to what the deferral
+    recorded as `prior_due` (a date, or None = no date)."""
+    from commitment_state import restore_due
+
+    return restore_due(
+        workspace_root,
+        change["commitment_id"],
+        prior_due=change.get("prior_due"),
+        actor_id=undone_by,
+        reason=change.get("reason") or "brain undo — due date put back",
+        source_skill=source_skill,
+    )
+
+
+def _reverse_commitment_close_from_observed(workspace_root, change, *, undone_by,
+                                            source_skill):
+    """POLICY1-B DD-7 / F-1 — an observed-tier guess the calendar closer
+    promoted and closed goes BACK TO ITS TIER; the promoted row is not
+    reopened (no question is manufactured)."""
+    from calendar_close import reverse_observed_close
+
+    return reverse_observed_close(
+        workspace_root, change["commitment_id"],
+        observed_id=change.get("observed_id"), meeting_seq=change.get("meeting_seq"),
+        undone_by=undone_by, source_skill=source_skill)
+
+
+def _reverse_commitment_park(workspace_root, change, *, undone_by, source_skill):
+    """POLICY1-B DD-6 — un-park a row an automatic leg parked."""
+    from commitment_state import unpark_commitment
+
+    return unpark_commitment(
+        workspace_root, change["commitment_id"], unparked_by=undone_by,
+        source_skill=source_skill, reason="brain undo — un-parked")
+
+
+def _reverse_commitment_parks(workspace_root, changes, *, undone_by, source_skill):
+    """F-6 — the batch twin: N parks un-parked under one lock, one scan
+    (`commitment_state.unpark_commitments`). Returns one result per change,
+    in the same order."""
+    from commitment_state import unpark_commitments
+
+    ids = [c["commitment_id"] for c in changes]
+    by_id = {r["commitment_id"]: r for r in unpark_commitments(
+        workspace_root, ids, unparked_by=undone_by, source_skill=source_skill,
+        reason="brain undo — un-parked")}
+    return [by_id.get(c["commitment_id"], {"status": "not_found",
+                                             "commitment_id": c["commitment_id"]})
+            for c in changes]
+
+
+def _reverse_commitment_reassign(workspace_root, change, *, undone_by,
+                                 source_skill):
+    """POLICY1-B F-9 — put the counterparty back EXACTLY to what the
+    reassign recorded as `prior_counterparty_id` (a person, or None)."""
+    from commitment_state import restore_counterparty
+
+    return restore_counterparty(
+        workspace_root,
+        change["commitment_id"],
+        prior_counterparty_id=change.get("prior_counterparty_id"),
+        prior_counterparty_name=change.get("prior_counterparty_name"),
+        actor_id=undone_by,
+        reason=change.get("reason") or "brain undo — counterparty put back",
         source_skill=source_skill,
     )
 
@@ -676,6 +753,122 @@ def _reverse_person_proposal_tombstone(workspace_root, change, *, undone_by,
 # change_class -> {reverse, reverses_via, description}. `reverses_via` names
 # the additive reversing event the callable appends — documentation the
 # tests assert so the registry can't silently drift from the doctrine.
+def _reverse_org_promotion(workspace_root, change, *, undone_by, source_skill):
+    """DEALNAG1 — reverse ONE automatic prospect -> client promotion: flip
+    `relationship_type` back to prospect and put the engagement edge back
+    the way it was (deactivate the edge the promotion CREATED; restore the
+    label / kind / active flag of one it UPDATED). Both writes go through
+    the typed writers, so the reversal is additive history like every other
+    reverser here — records never move, the org_promoted event stays on
+    file, and the change-feed line keeps its refs.
+
+    CUTB item 4 (2026-09-06) — when the receipt says the deal behind the
+    win was MANUFACTURED by the same act (`deal_manufactured`, the
+    `mark [org] won`-with-nothing-on-file path), the undo puts that back
+    too: the thread is archived through `thread_archive.archive_thread`
+    (never deleted) and ONE `deal_won_reversed` marker is written naming
+    the thread and the won event's seq — add-beside, the `deal_won` event
+    and the deal object stay as written. `deal_state.list_closed_deals`,
+    `pipeline_math.won_rate_90d` and `deal_signal_retire.settled_orgs`
+    fold the marker, so the reversed win is in no closed-deals list, no
+    90-day rate and no report. A win the PERSON closed by hand on a real
+    deal is not touched: undoing the promotion restores exactly the state
+    before the automatic act — deal won, org a prospect — and nothing
+    else (an undo that reverses more than the product did is a defect of
+    the same rank as one that reverses less). Idempotent on the marker:
+    a thread already reversed gets no second marker."""
+    org_id = change.get("org_id")
+    if not org_id:
+        raise BrainUndoError(
+            "org_promotion reversal needs org_id on the org_promoted event's "
+            "data (org_promotion.promote_org stamps it — a batch row without "
+            "one is malformed)")
+    from org_writer import update_org
+
+    rec = update_org(workspace_root, org_id, source_skill=source_skill,
+                     relationship_type="prospect")
+    eng_id = change.get("engagement_id")
+    eng_result = None
+    if eng_id:
+        from engagement_writer import update_engagement
+
+        if change.get("engagement_created"):
+            eng_result = update_engagement(
+                workspace_root, eng_id, source_skill=source_skill,
+                is_active=False,
+                label="Engagement edge from an undone promotion")
+        else:
+            fields = {"is_active": bool(change.get("prev_engagement_active",
+                                                   True))}
+            if change.get("prev_engagement_label") is not None:
+                fields["label"] = change["prev_engagement_label"]
+            if change.get("prev_engagement_kind") is not None:
+                fields["kind"] = change["prev_engagement_kind"]
+            eng_result = update_engagement(
+                workspace_root, eng_id, source_skill=source_skill, **fields)
+    out = {"status": "demoted", "org_id": org_id,
+           "relationship_type": rec.get("relationship_type"),
+           "engagement_id": eng_id,
+           "engagement": eng_result}
+    # CUTB item 4 — the manufactured deal goes back too.
+    deal_tid = change.get("deal_thread_id")
+    if change.get("deal_manufactured") is True and deal_tid:
+        from deal_state import won_reversals
+        from event_gate import append_event
+        from thread_archive import archive_thread
+
+        already = won_reversals(workspace_root).get(str(deal_tid))
+        arch = archive_thread(
+            workspace_root, str(deal_tid),
+            reason="undo — this deal was opened by `mark won` with nothing "
+                   "on file, and the person put it back",
+            source_skill=source_skill)
+        out["deal_thread_id"] = str(deal_tid)
+        out["deal_archived"] = arch.get("status")
+        if already is None:
+            ev = {"type": "deal_won_reversed", "source_skill": source_skill,
+                  "primary_thread_id": str(deal_tid),
+                  "org_ids": [org_id],
+                  "data": {"thread_id": str(deal_tid), "org_id": org_id,
+                           "won_seq": change.get("won_seq"),
+                           "reversed_by": undone_by,
+                           "reason": "brain undo — the promotion that opened "
+                                     "and won this deal was put back"}}
+            append_event(_events_path(workspace_root), [ev], holder="brain_undo")
+            out["won_reversed"] = True
+        else:
+            out["won_reversed"] = "already_reversed"
+    return out
+
+
+def _reverse_commitment_preset(workspace_root, change, *, undone_by, source_skill):
+    """QUIET1 D1 — reverse ONE preset stamp (`commitment-policy.preset`):
+    put the PREVIOUS config back exactly through the typed writer, or clear
+    the key when there was none before (the manifest auto_apply's case —
+    a workspace that had no stored posture goes back to having none, and
+    reads the shipped fallback again). The stamp's own
+    `skill_first_run_configured` / `skill_reconfigured` row stays in
+    history; the restore is a second config event (or a wipe plus this
+    batch's `brain_change_undone` marker)."""
+    from skill_config_writer import save_skill_config, wipe_skill_config
+    skill = change.get("skill_name")
+    if not skill:
+        raise BrainUndoError(
+            "commitment_preset reversal needs skill_name on the stamp "
+            "event's data (quiet.stamp_preset stamps it — a batch row "
+            "without one is malformed)")
+    prev = change.get("prev_config")
+    if change.get("prev_config_present") and isinstance(prev, dict):
+        save_skill_config(workspace_root, skill, dict(prev), is_reconfigure=True,
+                          origin="undo",
+                          event_extra={"undone_by": undone_by,
+                                       "restores_batch": change.get("brain_batch_id")})
+        return {"status": "restored", "skill_name": skill, "config": prev}
+    wiped = wipe_skill_config(workspace_root, skill)
+    return {"status": "cleared" if wiped else "already_clear",
+            "skill_name": skill, "config": None}
+
+
 REVERSERS: dict[str, dict] = {
     "commitment_close": {
         "reverse": _reverse_commitment_close,
@@ -704,6 +897,42 @@ REVERSERS: dict[str, dict] = {
     # AUTO_ALLOWED *and* a registered reverser); this build does not touch the
     # other half. Both of these reverse a USER GESTURE, and nothing may make a
     # user gesture on its own.
+    # POLICY1-B (b) — a `push to [date]` deferral. Reverses to the exact
+    # prior due, including NO date (ATTENDED_TEST_v5.27.0 B2.4). A user
+    # gesture: never in AUTO_ALLOWED.
+    # POLICY1-B F-9 — the counterparty a lapse default applied. Reverses
+    # to the exact prior counterparty, including NONE.
+    # POLICY1-B DD-6 / DD-9 — a park an automatic leg wrote (D11's quiet
+    # owed-to-you rows). Un-parks; the row was never closed.
+    # POLICY1-B DD-7 / F-1 — the calendar closer's close of an OBSERVED-tier
+    # guess. Reverses by returning the guess to its tier, never by reopening
+    # the promoted row (which would be a question nobody ever saw).
+    "commitment_close_from_observed": {
+        "reverse": _reverse_commitment_close_from_observed,
+        "reverses_via": "commitment_updated (promotion_reversed)",
+        "description": "put a set-aside scheduling guess the calendar closer "
+                       "closed back where it was, off the plate",
+    },
+    "commitment_park": {
+        "reverse": _reverse_commitment_park,
+        "reverse_many": _reverse_commitment_parks,   # F-6: one lock for a run of parks
+        "reverses_via": "commitment_updated (status_hint null)",
+        "description": "un-park a resting row the product parked on its own",
+    },
+    "commitment_reassign": {
+        "reverse": _reverse_commitment_reassign,
+        "reverses_via": "commitment_reassigned (counterparty_restored; "
+                        "counterparty_cleared when it had none)",
+        "description": "put a counterparty back where it was before a "
+                       "default was applied — including back to nobody",
+    },
+    "commitment_due": {
+        "reverse": _reverse_commitment_due,
+        "reverses_via": "commitment_updated (new_due = prior_due, or "
+                        "new_due null + due_cleared)",
+        "description": "put a deferred due date back exactly where it was — "
+                       "including back to no date",
+    },
     "commitment_confirm": {
         "reverse": _reverse_commitment_confirm,
         "reverses_via": "commitment_updated (review_flags_set)",
@@ -831,6 +1060,51 @@ REVERSERS: dict[str, dict] = {
                        "reclassification events and the child thread "
                        "record stay in history (records never move)",
     },
+    # DEALNAG1 (M ruling 4) — the automatic prospect -> client promotion.
+    # THE reason the auto tier is legal here: both halves of the conversion
+    # are reversible through the typed writers, and the reversal is a
+    # standing answer (org_promotion.undone_promotions never promotes or
+    # asks about that org again).
+    "org_promotion": {
+        "reverse": _reverse_org_promotion,
+        "reverses_via": "relationship_type flip back to prospect + the "
+                        "engagement edge deactivated (created) or restored "
+                        "(updated) — both additive org_updated / "
+                        "engagement_updated events; when the receipt says "
+                        "the deal was manufactured by the same act (CUTB "
+                        "item 4), the thread is archived and ONE "
+                        "deal_won_reversed marker names the won event",
+        "description": "put an org back to prospect after an automatic "
+                       "promotion — the org_promoted receipt stays in "
+                       "history and the org is never auto-promoted again; "
+                       "a deal `mark won` opened with nothing on file goes "
+                       "back too",
+    },
+    # QUIET1 D1 (M ruling 7, 2026-09-03) — the manifest auto_apply that
+    # stamps `light` on every client workspace without a stored posture is
+    # legal ONLY because this reverser exists (same commit — the step-10
+    # mandate). Also the batch `ask me more` / `ask me less` write. The
+    # reversal restores the previous stored config exactly, or clears the
+    # key when there was none.
+    "commitment_preset": {
+        "reverse": _reverse_commitment_preset,
+        "reverses_via": "skill_reconfigured (the previous config written "
+                        "back) or the key cleared when there was none",
+        "description": "put back how often it asks you — the previous "
+                       "setting returns exactly, or the workspace goes back "
+                       "to having no setting at all",
+    },
+    # CUT-A (M ruling R-A, 2026-09-06) — `turn on / off closing on
+    # evidence` (`commitment_policy_pass.set_transcript_closes`). Same
+    # store, same stamp shape, same reverser: the previous stored config
+    # returns exactly (preset and switch together), or the key is cleared.
+    "commitment_transcript_closes": {
+        "reverse": _reverse_commitment_preset,
+        "reverses_via": "skill_reconfigured (the previous config written "
+                        "back) or the key cleared when there was none",
+        "description": "put back whether promises close on meeting "
+                       "evidence — the previous setting returns exactly",
+    },
 }
 
 
@@ -897,13 +1171,24 @@ def _changes_for_sent_reconcile(events: list[dict], audit_seq: int) -> list[dict
     return out
 
 
+PARENT_BATCH_KEY = "parent_batch_id"
+UNDO_GROUP_KEY = "undo_group"
+
+
+def _in_batch(data: dict, batch_id: str) -> bool:
+    """DD-5 — a row belongs to `batch_id` when it IS that batch or sits in a
+    group UNDER that run. A group id matches only its own rows."""
+    return (data.get("brain_batch_id") == batch_id
+            or data.get(PARENT_BATCH_KEY) == batch_id)  # DD-5: a run ref resolves its groups
+
+
 def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
     from event_seq import event_seq
 
     out: list[dict] = []
     for ev in events:
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        if data.get("brain_batch_id") != batch_id:
+        if not _in_batch(data, batch_id):
             continue
         cls = data.get("brain_change_class")
         if not cls:
@@ -918,6 +1203,10 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
         }
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
                     "proposal_seq", "proposal_fingerprint",
+                    # POLICY1-B (b) — the due reverser's anchor. Read with
+                    # `in`, not `is not None`: a prior_due of null IS the
+                    # answer ("it had no date").
+                    "prior_due",
                     # UXR1 D3 — the person_link reverser's re-propose payload
                     # (stamped on the same_as tombstones at auto-link time).
                     "alias", "link_fingerprint", "link_evidence",
@@ -945,8 +1234,30 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # to (for a bound-elsewhere row the primary pair is
                     # unchanged, so the target is the only way to know what
                     # to check before restoring).
-                    "target_thread_id"):
+                    "target_thread_id",
+                    # DEALNAG1 — the org_promotion reverser's anchors: which
+                    # engagement edge to put back, whether the promotion
+                    # created it, and what it looked like before.
+                    "engagement_id", "engagement_created",
+                    "prev_engagement_label", "prev_engagement_active",
+                    "prev_engagement_kind",
+                    # CUTB item 4 — the deal behind the win, and whether the
+                    # same act opened it (then the undo puts it back too).
+                    "deal_thread_id", "won_seq", "deal_manufactured",
+                    # QUIET1 — the commitment_preset reverser's anchors:
+                    # which config store, whether anything was stored
+                    # before, and what it was (a dict, or None).
+                    "skill_name", "prev_config_present", "prev_config",
+                    "brain_batch_id"):
             if data.get(key) is not None:
+                change[key] = data[key]
+        if "prior_due" in data and "prior_due" not in change:
+            change["prior_due"] = data["prior_due"]  # (b): null is a value here
+        for key in ("prior_counterparty_id", "prior_counterparty_name"):
+            if key in data and key not in change:
+                change[key] = data[key]  # F-9: null is a value here too
+        for key in ("observed_id", "meeting_seq"):  # DD-7 / F-1 — the observed reverser's anchors
+            if data.get(key) is not None and key not in change:
                 change[key] = data[key]
         out.append(change)
     return out
@@ -1065,11 +1376,30 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
                 str(bid), {"batch_ref": {"kind": "brain_batch",
                                          "batch_id": str(bid)},
                            "kind": "brain_batch", "n_changes": 0,
-                           "ts": event_time(ev), "classes": set()})
+                           "ts": event_time(ev), "classes": set(),
+                           "parent_ref": None, "group": None,
+                           "children": []})
             slot["n_changes"] += 1
             slot["classes"].add(data.get("brain_change_class"))
             if event_time(ev) > slot["ts"]:
                 slot["ts"] = event_time(ev)
+            # DD-5 — a grouped row names its run and its group key; the run
+            # gets a slot of its own (it may have no rows directly on it).
+            parent = data.get(PARENT_BATCH_KEY)
+            if parent and str(parent) != str(bid):
+                slot["parent_ref"] = str(parent)
+                slot["group"] = str(data.get(UNDO_GROUP_KEY) or "")
+                run = batches.setdefault(
+                    str(parent), {"batch_ref": {"kind": "brain_batch",
+                                                "batch_id": str(parent)},
+                                  "kind": "brain_batch", "n_changes": 0,
+                                  "ts": event_time(ev), "classes": set(),
+                                  "parent_ref": None, "group": None,
+                                  "children": []})
+                run["n_changes"] += 1
+                run["classes"].add(data.get("brain_change_class"))
+                if event_time(ev) > run["ts"]:
+                    run["ts"] = event_time(ev)
         elif ev.get("type") == "sent_reconcile":
             # UNDOGUARD: `int(ev["seq"])` raised ValueError on a non-numeric
             # string and TypeError on a list/dict. event_seq returns None for
@@ -1085,15 +1415,93 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
             batches[key] = {"batch_ref": {"kind": "sent_reconcile",
                                           "seq": audit_seq},
                             "kind": "sent_reconcile", "n_changes": n,
-                            "ts": event_time(ev), "classes": {"commitment_close"}}
+                            "ts": event_time(ev), "classes": {"commitment_close"},
+                            "parent_ref": None, "group": None, "children": []}
 
     out = []
     for slot in batches.values():
         classes = sorted(slot.pop("classes"))
         slot["label"] = _batch_label(classes, slot["n_changes"])
+        if slot.get("group"):
+            slot["label"] = f"{slot['label']} — {_group_phrase(slot['group'])}"
         out.append(slot)
-    out.sort(key=lambda b: b["ts"], reverse=True)
-    return out
+    # DD-5 — nest every group under its run. A group whose run fell outside
+    # the window (or was never stamped) stays a top-level entry.
+    by_id = {b["batch_ref"]["batch_id"]: b for b in out if b["kind"] == "brain_batch"}
+    top = []
+    for b in out:
+        b.setdefault("children", [])
+        b.setdefault("parent_ref", None)
+        b.setdefault("group", None)
+        parent = b.get("parent_ref")
+        if parent and parent in by_id:
+            by_id[parent]["children"].append(b)
+        else:
+            top.append(b)
+    for b in top:
+        b["children"].sort(key=lambda c: c["ts"], reverse=True)
+    top.sort(key=lambda b: b["ts"], reverse=True)
+    return top
+
+
+def _group_phrase(group_key: str) -> str:
+    """The group key as a person would say it: a meeting, a project, or the
+    run itself. Never the raw ref — it is read by the person choosing what
+    to reverse."""
+    g = str(group_key or "")
+    if g.startswith("granola:") or g.startswith("meeting:"):
+        return "one meeting"
+    if g.startswith("project_") or g.startswith("thread_"):
+        return "one project"
+    if g.startswith("gmail:") or g.startswith("mail:") or g.startswith("outlook:"):
+        return "one message"
+    return "the whole run"
+
+
+def newest_run(batches: List[dict]) -> Optional[dict]:
+    """DD-5 `undo all` — the newest listed run (top-level entry). None when
+    nothing automatic is listed."""
+    return batches[0] if batches else None
+
+
+def undo_listing_lines(batches: List[dict]) -> List[str]:
+    """The bare-`undo` listing, numbered newest first, one line per run and
+    one indented line per group under it (DD-5 / DD-10). `1` reverses the
+    run, `1a` / `1b` reverse one group. Labels, never class names."""
+    lines: List[str] = []
+    for i, b in enumerate(batches, 1):
+        day = str(b.get("ts") or "")[:10]
+        lines.append(f"{i}. {b['label']} — {day}")
+        kids = b.get("children") or []
+        for j, c in enumerate(kids):
+            letter = chr(ord("a") + j) if j < 26 else str(j + 1)
+            lines.append(f"   {i}{letter}. {c['label']} (undo just this group)")
+    return lines
+
+
+def batch_ref_for_ordinal(batches: List[dict], token: str) -> Optional[dict]:
+    """`1` -> the run's ref, `1a` -> its first group's ref, `all` -> the
+    newest run. None when the token names nothing listed."""
+    t = str(token or "").strip().lower()
+    if not t:
+        return None
+    if t == "all":
+        run = newest_run(batches)
+        return run["batch_ref"] if run else None
+    import re as _re
+    m = _re.match(r"^(\d+)([a-z]?)$", t)
+    if not m:
+        return None
+    i = int(m.group(1)) - 1
+    if i < 0 or i >= len(batches):
+        return None
+    if not m.group(2):
+        return batches[i]["batch_ref"]
+    j = ord(m.group(2)) - ord("a")
+    kids = batches[i].get("children") or []
+    if j < 0 or j >= len(kids):
+        return None
+    return kids[j]["batch_ref"]
 
 
 # Change class → the phrase a human recognizes. Never the class name itself:
@@ -1106,6 +1514,10 @@ _CLASS_PHRASES = {
     # AUTO_ALLOWED), so these phrases exist for a surface that narrates a
     # USER's own batch. A class name is not a thing anyone said or saw happen.
     "commitment_confirm": "confirmed a captured item",
+    "commitment_due": "moved a due date",
+    "commitment_reassign": "put a name on an item",
+    "commitment_park": "parked a resting item",
+    "commitment_close_from_observed": "closed a set-aside scheduling guess",
     "commitment_done": "said a captured item was already done",
     # SPEC BK1 — never written by an auto detector; the phrase exists for a
     # surface narrating the CEO's OWN batch, and "day_intent ×1" is not a
@@ -1121,6 +1533,12 @@ _CLASS_PHRASES = {
     # BACKFILL2 — the binding-review widget's `bkf_` batch, listed by a bare
     # `undo` in a fresh chat. Never written by an auto detector.
     "binding_backfill": "filed a past record under its project",
+    # DEALNAG1 — what the person actually saw happen in the CHANGED feed.
+    "org_promotion": "promoted a prospect to client",
+    # QUIET1 — the preset stamp (manifest auto_apply, `ask me more/less`).
+    "commitment_preset": "set how often it asks you",
+    # CUT-A — the closing-on-evidence switch (`turn on/off closing on evidence`).
+    "commitment_transcript_closes": "set whether promises close on meeting evidence",
 }
 
 
@@ -1164,24 +1582,18 @@ def undo_batch(
     results: list[dict] = []
     n_undone = 0
     n_errors = 0
-    for change in changes:
-        cls = change["change_class"]
-        entry = REVERSERS.get(cls)
-        if entry is None:
-            results.append({"status": "error", "change": change,
-                            "error": f"no reverser registered for {cls!r}"})
-            n_errors += 1
-            continue
-        try:
-            reversed_result = entry["reverse"](
-                workspace_root, change,
-                undone_by=undone_by, source_skill=source_skill,
-            )
-        except Exception as exc:  # loud per-item, contained per-batch
-            results.append({"status": "error", "change": change,
-                            "error": f"{type(exc).__name__}: {exc}"})
-            n_errors += 1
-            continue
+    n_already = 0   # F-9 (review): a row already in the restored state is not "undone"
+
+    def _record(change, cls, reversed_result):
+        nonlocal n_undone, n_already
+        # REVIEW_POLICY1B F-9 — a reverser answering `already_open` /
+        # `already_unconfirmed` / `already_undone` / `not_open` reversed
+        # nothing: count it apart, write no marker for it.
+        st = (reversed_result or {}).get("status") if isinstance(reversed_result, dict) else None
+        if isinstance(st, str) and (st.startswith("already_") or st == "not_open"):
+            results.append({"status": "already", "change": change, "result": reversed_result})
+            n_already += 1
+            return
         append_event(events_path, {
             "type": "brain_change_undone",
             "source_skill": source_skill,
@@ -1195,17 +1607,71 @@ def undo_batch(
         results.append({"status": "undone", "change": change,
                         "result": reversed_result})
         n_undone += 1
+
+    # POLICY1-B F-9 — reverse NEWEST FIRST (a stack, not a queue). A batch
+    # that wrote a reassign and then a confirm must un-confirm before it
+    # un-reassigns: the confirm reverser refuses a row "touched since the
+    # confirm", and the restore written first would be that touch.
+    # F-6 — a RUN of same-class changes whose reverser offers `reverse_many`
+    # goes through it as one call (one lock, one scan), still newest-first.
+    ordered = list(reversed(changes))  # F-9: LIFO
+    i = 0
+    while i < len(ordered):
+        change = ordered[i]
+        cls = change["change_class"]
+        entry = REVERSERS.get(cls)
+        if entry is None:
+            results.append({"status": "error", "change": change,
+                            "error": f"no reverser registered for {cls!r}"})
+            n_errors += 1
+            i += 1
+            continue
+        many = entry.get("reverse_many")
+        if many is not None:
+            j = i
+            while j < len(ordered) and ordered[j]["change_class"] == cls:
+                j += 1
+            run = ordered[i:j]
+            try:
+                outs = many(workspace_root, run, undone_by=undone_by, source_skill=source_skill)
+            except Exception as exc:
+                for ch in run:
+                    results.append({"status": "error", "change": ch,
+                                    "error": f"{type(exc).__name__}: {exc}"})
+                    n_errors += 1
+                i = j
+                continue
+            for ch, res in zip(run, outs):
+                _record(ch, cls, res)
+            i = j
+            continue
+        try:
+            reversed_result = entry["reverse"](
+                workspace_root, change,
+                undone_by=undone_by, source_skill=source_skill,
+            )
+        except Exception as exc:  # loud per-item, contained per-batch
+            results.append({"status": "error", "change": change,
+                            "error": f"{type(exc).__name__}: {exc}"})
+            n_errors += 1
+            i += 1
+            continue
+        _record(change, cls, reversed_result)
+        i += 1
     status = "undone" if n_undone and not n_errors else (
-        "partial" if n_undone else ("empty" if not changes else "error"))
+        "partial" if n_undone else ("empty" if not changes else
+                                    ("already" if n_already and not n_errors else "error")))
     return {"status": status, "n_undone": n_undone, "n_errors": n_errors,
-            "results": results}
+            "n_already": n_already, "results": results}
 
 
 __all__ = [
     "REVERSERS",
     "RECENT_BATCH_LIST_DAYS",
+    "PARENT_BATCH_KEY", "UNDO_GROUP_KEY",
     "has_reverser",
     "recent_auto_batches",
+    "newest_run", "undo_listing_lines", "batch_ref_for_ordinal",
     "undone_auto_merges",
     "resolve_batch",
     "undo_batch",

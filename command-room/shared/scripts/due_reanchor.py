@@ -111,6 +111,53 @@ def render_due_phrase(due, anchor) -> str:
     return f"due {label}"
 
 
+def render_moved_phrase(when_iso, workspace_path=None) -> str:
+    """THE "moved to …" phrase (CUT-C item 5, ATTENDED_TEST_v5.28.0 B2.5):
+    weekday + date, in the WORKSPACE timezone — "Sunday, Sep 13". The Later…
+    ack used to compose its own weekday from prose and said "Friday, Sep 13"
+    for a Sunday; this is the one deterministic composer, and
+    `commitment_state.apply_later` returns it as `moved_phrase`.
+
+    Input shapes, and the day each names:
+      - a bare `YYYY-MM-DD` (what `parse_later_when` and `apply_later`'s
+        `new_due` carry): that calendar day, no timezone involved — a value
+        that never carried a time must not be shifted;
+      - a full timestamp: the day it falls on in the workspace timezone
+        (`tz.to_local`), so an evening push west of UTC names the evening's
+        own day, never the next UTC day — the HYGIENE9 R4 class;
+      - a timestamp when the workspace tz cannot resolve (no path, tz
+        unconfigured): the calendar day IN THE OFFSET THE INPUT CARRIED — the
+        same rule `commitment_state._later_when` uses for `new_due` — never a
+        UTC re-slice.
+    Empty / unparseable → "" (an ack composes around it; never a crash).
+    """
+    raw = str(when_iso or "").strip()
+    if not raw:
+        return ""
+    d = None
+    if len(raw) == 10 and raw.count("-") == 2:
+        d = parse_date(raw)
+    else:
+        try:
+            dt = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            dt = None
+        if dt is not None:
+            if workspace_path:
+                try:
+                    from tz import to_local
+                    local = to_local(dt, workspace_path=workspace_path)
+                    d = local.date() if local is not None else None
+                except Exception:
+                    d = None
+            if d is None:
+                # the day AS GIVEN, in its own offset (never re-sliced to UTC)
+                d = dt.date()
+    if d is None:
+        return ""
+    return f"{d.strftime('%A')}, {d.strftime('%b')} {d.day}"
+
+
 def render_due_clause(due, anchor) -> str:
     """The bare clause for a "was due {X}" template — no leading "due".
 
@@ -202,4 +249,5 @@ __all__ = [
     "parse_date",
     "render_due_clause",
     "render_due_phrase",
+    "render_moved_phrase",
 ]

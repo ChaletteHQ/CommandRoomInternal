@@ -119,13 +119,11 @@ def _name_index(view: dict) -> dict[str, str]:
 
 
 def _humanize(text: str, name_idx: dict[str, str]) -> str:
-    if not text:
-        return ""
+    """CUT-C item 8: delegates to `narration_names.humanize` — one composer
+    for every prose surface; this name stays for its callers."""
+    from narration_names import humanize
 
-    def _sub(m: re.Match) -> str:
-        return name_idx.get(m.group(0), "").strip() or "(name on file)"
-
-    return _INTERNAL_ID_RE.sub(_sub, str(text)).strip()
+    return humanize(text, name_idx)
 
 
 def _event_date(ev: dict, workspace_path: str | None = None) -> str:

@@ -149,6 +149,18 @@ def _fit_page_size(data_view: dict, wrapper: str, requested: int) -> int:
     quieter way the page boundary moved under the user). The page-set snapshot
     is what actually makes the sentence true: pages 2+ now fit against the
     same frozen view page 1 was fitted against.
+
+    EVERY-PAGE VERIFICATION (REVIEW_CUTC_2026-09-06 F-1, fix round): "later
+    pages can render slightly heavier than page 1" was not true of the plate.
+    Its page 1 is CONFIRM rows (3 verbs, no input field); its DO IT / CHASE /
+    SCHEDULE pages carry a Later… date field per row — on the 13:30 PT book
+    the page-1 anchor picked 14 rows and 9 of 23 pages then overran the budget
+    (18 of 23 once every Later… button carried its field), each delivered as
+    text. So after the page-1 search the anchored size is checked against
+    EVERY page of the view (`_first_over_budget_page`, early exit) and stepped
+    down one row at a time until every page fits or the floor is reached.
+    The fitted size is still deterministic over the same view; the floor-size
+    over_budget flag downstream still covers a single monster row.
     """
     from chat_output_renderer import render_chat_output_widget, paginate_data_view
 
@@ -159,17 +171,38 @@ def _fit_page_size(data_view: dict, wrapper: str, requested: int) -> int:
     hi = max(_MIN_PAGE_SIZE, int(requested))
     lo = _MIN_PAGE_SIZE
     if _fits(hi):
-        return hi
-    if not _fits(lo):
+        size = hi
+    elif not _fits(lo):
         return lo  # floor-size page still over budget → over_budget flags it
-    # Invariant: _fits(lo) is True, _fits(hi) is False. Find the boundary.
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        if _fits(mid):
-            lo = mid
-        else:
-            hi = mid
-    return lo
+    else:
+        # Invariant: _fits(lo) is True, _fits(hi) is False. Find the boundary.
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if _fits(mid):
+                lo = mid
+            else:
+                hi = mid
+        size = lo
+    while size > _MIN_PAGE_SIZE and \
+            _first_over_budget_page(data_view, wrapper, size) is not None:
+        size -= 1
+    return size
+
+
+def _first_over_budget_page(data_view: dict, wrapper: str, size: int):
+    """The number of the first page that renders over the byte budget at
+    `size` rows per page, or None when every page fits. Renders pages in
+    order and stops at the first miss, so a failing size costs a handful of
+    renders and only the accepted size renders the whole view once."""
+    from chat_output_renderer import render_chat_output_widget, paginate_data_view
+
+    first = paginate_data_view(data_view, page=1, page_size=size)
+    total = int((first.get("pagination") or {}).get("total_pages") or 1)
+    for p in range(1, total + 1):
+        probe = first if p == 1 else paginate_data_view(data_view, page=p, page_size=size)
+        if len(render_chat_output_widget(probe, wrapper=wrapper)) > WIDGET_PAGE_BYTE_BUDGET:
+            return p
+    return None
 
 
 def render_and_persist(
@@ -182,6 +215,7 @@ def render_and_persist(
     page_size: Optional[int] = None,
     suppress_ids: Optional[set] = None,
     target: str = "cowork_html",
+    read_only: bool = False,
 ) -> dict:
     """Canonical render-validate-persist transport (delivery = widget_code
     relay of transport["html"], T2 — see module docstring).
@@ -258,6 +292,7 @@ def render_and_persist(
             page=page,
             page_size=page_size,
             suppress_ids=suppress_ids,
+            read_only=read_only,
         )
     if target != "cowork_html":
         raise ValueError(
@@ -267,6 +302,7 @@ def render_and_persist(
     from chat_output_renderer import (
         DEFAULT_PAGE_SIZE,
         render_chat_output_widget,
+        validate_chat_output,
         validate_rendered_widget,
         paginate_data_view,
     )
@@ -289,7 +325,12 @@ def render_and_persist(
                 pagination["suppressed"] = n_suppressed
                 view["pagination"] = pagination
 
-    html = render_chat_output_widget(view, wrapper=wrapper)
+    # SPEC_WIDGETRO1 §2-1 (CUT-C item 9) — `read_only=True` renders the
+    # surface's own row verbs and NO batch footer (no Apply all / Reset /
+    # Snooze rest), and the validator reds a read-only page that carries one.
+    # The would-hold review and the revisit page pass it; a normal plate page
+    # keeps its footer (the default is byte-identical to before).
+    html = render_chat_output_widget(view, wrapper=wrapper, read_only=read_only)
     # EW2+T (F-15): the transport IS the one-call canonical path — the wrapper
     # contract check runs here so no caller can ship a widget whose input
     # buttons lost their wrappers. Passes trivially on button-less HTML.
@@ -297,13 +338,30 @@ def render_and_persist(
     # DECLARED for an org/board/client audience gets the blocking
     # personal-content scan; owner surfaces (commitments, staff-meeting, the
     # brief) are untouched — an absent/unknown tag never escalates to org.
-    validate_rendered_widget(html, surface=data_view.get("surface"))
+    validate_rendered_widget(html, surface=data_view.get("surface"),
+                             read_only=read_only)
 
     # T2.1 (review F-5): a floor-size page can still exceed the budget on
     # monster rows. Flag it so skill text can pre-warn (deliver substance as
     # text) instead of eating a refused relay downstream.
+    text_fallback = None
     if pagination is not None and len(html) > WIDGET_PAGE_BYTE_BUDGET:
         pagination["over_budget"] = True
+        # CUT-C item 7 (ATTENDED_TEST_v5.28.0 B2.6) — the sanctioned text
+        # form of THIS fitted page: numbered by the persisted page's own
+        # display numbers, every row's verbs by display label including the
+        # block one-tap (`plate_view.page_text_fallback`). The skill relays
+        # it byte-exact instead of assembling a text page from pieces — the
+        # shape that reached the customer with "Done" alone on nine of ten
+        # SCHEDULE rows. REVIEW_CUTC F-3: composed for the PLATE source only
+        # (`plate_view.TEXT_FALLBACK_SOURCES`) — the form runs the plate's
+        # banned-word scan, and a needs-your-call / would-hold page over
+        # budget keeps v5.28.0's behaviour: flagged `over_budget`, no text,
+        # never a PlateJargonError.
+        from plate_view import TEXT_FALLBACK_SOURCES, page_text_fallback
+        if data_view.get("source_skill") in TEXT_FALLBACK_SOURCES:
+            text_fallback = page_text_fallback(view)
+            validate_chat_output(text_fallback, surface=data_view.get("surface"))
 
     persist_dir = Path(persist_dir)
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S-%fZ")
@@ -324,6 +382,8 @@ def render_and_persist(
     }
     if pagination is not None:
         result["pagination"] = pagination
+    if text_fallback is not None:
+        result["text"] = text_fallback
     return result
 
 
@@ -382,6 +442,7 @@ def _render_and_persist_slack(
     page: Optional[int] = None,
     page_size: Optional[int] = None,
     suppress_ids: Optional[set] = None,
+    read_only: bool = False,
 ) -> dict:
     """The slack target (SPEC_SLACK1 C-1). Same shape as the cowork path:
     gates → paginate → emit → leak scan + structural contract → persist →
@@ -428,7 +489,7 @@ def _render_and_persist_slack(
                 pagination["suppressed"] = n_suppressed
                 view["pagination"] = pagination
 
-    payload = emit_slack_payload(view, profile)
+    payload = emit_slack_payload(view, profile, read_only=read_only)
 
     # Gate 2 — the leak scan, extended over the Block Kit text render (C-1).
     # Same scanner, same blocking semantics as the cowork HTML path; the

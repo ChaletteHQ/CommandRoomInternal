@@ -1,16 +1,12 @@
----
-name: held-review
-surfaces: both
-description: "See the weak captures Command Room would stop asking about, before any are hidden. Fires on: 'show me what you'd hide', 'what would you hide', 'show me what you would have hidden', 'what would you have hidden', 'show me what you would have held', 'held candidates' — every below-floor capture, grouped by call, count first, each with the plain reason it was too weak. Read-only: looking confirms, drops and changes nothing; one button per row records a single 'wrong to hide' note, once. Also fires on 'turn on held' / 'hide the weak ones', which turns the routing on only after you have read the list, and 'turn off held' / 'stop hiding the weak ones'. Does NOT fire on 'needs your call' / 'clear the queue' / 'unconfirmed extractions' (needs-your-call owns the queue and its confirm/drop verbs), 'commitment triage' (commitment-triage), 'backlog sweep' (commitment-backlog-sweep), or 'end of day' (end-of-day)."
----
+# needs-your-call — Mode: would-hold review ("show me what you'd hide")
 
-# Held review — show me what you'd hide
+**Read-only mode of `needs-your-call`** (SKILLMERGE1 D4, 2026-09-03 — formerly the `held-review` skill; every phrase it answered routes to needs-your-call, whose Routing section sends the held phrases here). The queue and this mode render the SAME rows: the queue is where a row is answered, this mode is where the question *"would it be acceptable to stop asking about these?"* is answered. Nothing here resolves a row. The widget `src`, the `source_skill` on every event this mode writes (`held-review`) and the apply-choices dispatch entry are unchanged — persisted vocabulary stays canonical (`source_skill_compat.FOLDED_SKILL_ALIASES`).
 
 The held tier is a second disposition for the weakest captures: **held** means
 out of sight — not queued, not badged, not counted — and still on disk,
 retrievable on request. Nothing is ever deleted.
 
-It ships **off**, and this skill is the reading chair in front of the switch.
+It ships **off**, and this mode is the reading chair in front of the switch.
 Before anything stops being asked about, somebody looks at exactly what would
 stop being asked about. That is the whole surface: a list, counted, each row
 carrying the reason it was refused at the capture floor.
@@ -22,20 +18,20 @@ weekly ritual and no bar to clear. You read it, and then you decide.
 
 | The user says | Fires |
 |---|---|
-| "show me what you'd hide" / "what would you hide" | this skill, Step 1 |
-| "show me what you would have hidden" / "what would you have hidden" | this skill, Step 1 |
-| "show me what you would have held" / "held candidates" | this skill, Step 1 |
-| "turn on held" / "hide the weak ones" | this skill, Step 3 |
-| "turn off held" / "stop hiding the weak ones" | this skill, Step 4 |
-| "needs your call" / "clear the queue" / "unconfirmed extractions" | needs-your-call |
+| "show me what you'd hide" / "what would you hide" | this mode, Step 1 |
+| "show me what you would have hidden" / "what would you have hidden" | this mode, Step 1 |
+| "show me what you would have held" / "held candidates" | this mode, Step 1 |
+| "turn on held" / "hide the weak ones" | this mode, Step 3 |
+| "turn off held" / "stop hiding the weak ones" | this mode, Step 4 |
+| "needs your call" / "clear the queue" / "unconfirmed extractions" | the queue itself (needs-your-call Step 1) |
 | "triage my commitments" / "commitment triage" | commitment-triage |
 | "clean up my commitments" / "backlog sweep" | commitment-backlog-sweep |
 | "end of day" / "close out my day" | end-of-day |
 
 ### Fences
 
-- **Not needs-your-call.** That skill owns the queue and every verb that
-  resolves a row — confirm, already done, drop, not mine. This skill owns the
+- **Not the queue.** The queue (needs-your-call Steps 1-3) owns every verb that
+  resolves a row — confirm, already done, drop, not mine. This mode owns the
   question *"would it be acceptable to stop asking about these?"* and owns no
   verb that answers a row. The same rows appear in both places; only one of
   them can change anything.
@@ -45,11 +41,11 @@ weekly ritual and no bar to clear. You read it, and then you decide.
   choice about a row, and putting it behind that button would make an
   intentional decision feel like a side effect.
 - **Looking changes nothing.** No row is confirmed, closed, reopened,
-  re-dated, muted or dropped by this skill, ever.
+  re-dated, muted or dropped by this mode, ever.
 
 ## Writer Contract
 
-Read `shared/WORKSPACE_API.md` first. This skill has exactly three writes and
+Read `shared/WORKSPACE_API.md` first. This mode has exactly three writes and
 every one of them goes through `shared/scripts/held_review.py`:
 
 - **the render receipt** → one `held_review_rendered` event per render,
@@ -185,7 +181,7 @@ Never fenced. Reverting to the shipped default is always allowed — a switch
 that is hard to turn off is a switch nobody turns on. Already off is a no-op
 that says so. Relay `res["line"]`.
 
-## What this skill does NOT do
+## What this mode does NOT do
 
 - It does not confirm, drop, close, reopen, re-date or mute any row.
 - It does not decide anything on its own, and it never enables the routing as
@@ -211,6 +207,6 @@ that says so. Relay `res["line"]`.
 - `shared/scripts/needs_review_queue.py` — `build_queue_view` and its
   `scope="would_hold"` selector; the ordinary queue and every verb that
   resolves a row.
-- `skills/needs-your-call/SKILL.md` — the queue these rows live in today.
+- `skills/needs-your-call/SKILL.md` — the queue these rows live in, and the skill this mode belongs to.
 - `skills/end-of-day/SKILL.md` — the fire that routes captures, and where the
   disposition takes effect.

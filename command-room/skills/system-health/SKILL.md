@@ -31,11 +31,17 @@ cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_alarm as ta
 import task_watchdog as tw
+import schedule_refresh as sr
 ws = '<workspace_root>'
 records = <the list_scheduled_tasks result, as a Python list of task dicts>
 verdict = tw.health_verdict(ws, task_records=records)
 installed = json.loads(open('.claude-plugin/plugin.json', encoding='utf-8').read()).get('version', '')
-drift = tw.check_prompt_versions(records, installed)
+stamps = tw.check_prompt_versions(records, installed)   # the diagnostic stamp read — informational
+# CUT-PLATE fix round 1 (REVIEW F-1): the stale-prompt line is keyed to a
+# real BODY drift — a registered bootloader that differs from today's once
+# the stamp is normalized out (the compare Step 1.C writes on) — never to
+# the stamp, which Step 1.C deliberately leaves alone (BRIDGESIL1 §0.2).
+drift = sr.prompt_body_drift(records, plugin_version=installed)
 # TASKALARM1 — the dead-surface table, ALWAYS the current truth. A health
 # check is an explicit ask, and it must answer with what is dark RIGHT NOW —
 # never with 'nothing to report' because the morning brief already alarmed
@@ -50,7 +56,8 @@ print(json.dumps({
     'lines': verdict['lines'],
     'info_lines': verdict['info_lines'],
     'reports': verdict['reports'],
-    'stale_prompts': [f for f in drift if f.get('stale')],
+    'stale_prompts': drift,                                   # task ids with a BODY drift (earns the one line)
+    'stale_stamps': [f for f in stamps if f.get('stale')],   # informational — never earns a line
     'dark_surfaces': dark,
 }))
 "
@@ -95,7 +102,7 @@ When any `late` problem line renders, you may add the generic self-serve list be
 
 > *"I can't tell from here which applies, but the most common reasons a task stops running: (1) the computer was asleep or the lid closed when it was due — it runs at the next chance; (2) your Claude usage limit was reached — it resets on its own, check the usage meter; (3) access to one of your tools — email, calendar, Slack — needs to be re-approved: open the chat once and approve any prompt; (4) after a plugin update, Cowork sometimes needs a full quit-and-reopen."*
 
-If `stale_prompts` is non-empty, add ONE line total: *"Your scheduled chats were set up under an older version — say 'update command room' once and they'll refresh themselves."*
+If `stale_prompts` is non-empty — that list is `schedule_refresh.prompt_body_drift`, the task ids whose registered bootloader BODY differs from the one this plugin composes today once the diagnostic stamp is normalized out — add ONE line total — `schedule_refresh.stale_prompt_notice(drift)`, verbatim (CUT-PLATE, 2026-09-06 — the same sentence the update bridge and the Monday cleanup note say): *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."* (The old wording sent the customer to `update command room`, which is the step that had already failed to reach the chats on the v5.28.0 attended test; the exact phrase that refreshes a registered prompt in place is `set up command room schedules`.) `stale_stamps` never earns this line: a stamp-only difference is not drift (fix round 1, REVIEW F-1 — Step 1.C leaves the stamp alone, so a stamp-keyed line would repeat on every check of every release whose bootloader body did not change, and the phrase could never clear it).
 
 ### Step 3b — full self-report scope (LB1, MANDATORY on a health check — FS-09)
 
@@ -180,6 +187,10 @@ The Tue/Thu quiet-chased-tail sweep shipped Phase 4 (2026-07-02) as the daily co
 - **A still-registered `past-meetings` is a HEALTHY End of Day chat, and the watchdog must never say otherwise (SPEC EOD2).** The rename is propose-only, so most of the fleet will run the predecessor id for a long time — possibly forever, since nothing degrades. Two halves make that silence correct rather than lucky, and both are in code: `check_tasks` answers "is `end-of-day` registered?" and "when did it last fire?" over the SERVING set (`schedule_config.renamed_predecessors`), so a machine with only `past-meetings` reports End of Day as registered and on schedule; and `plain_english_lines` renders that row under the name the customer's Scheduled list shows (`served_by`), so a genuine finding about that chat says "Past Meetings" to a customer whose sidebar says Past Meetings. Never report `end-of-day` as "missing from the schedule" on a workspace that has the predecessor — the fix that sentence recommends (`set up command room schedules`) is fenced from doing it, so the customer would be sent in a circle.
 - **Don't fabricate a diagnosis.** If the watchdog returns a finding you can't explain, surface the finding and the named fix — never speculate about causes beyond the generic self-serve list (which is possibilities, not a diagnosis). "The computer was likely asleep" as an asserted cause is the exact fabricated-narrative class the 2026-07 dogfood catalogued (F-10/F-43/F-47).
 - **An empty scheduler list is a vantage question before it is a finding.** `health_verdict` checks the substrate's registration history first (F-40); trust its `vantage` verdict. A cloud/remote chat reading an empty machine-local registry and reporting "nothing is registered" is the false total-outage failure this skill exists to never repeat.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

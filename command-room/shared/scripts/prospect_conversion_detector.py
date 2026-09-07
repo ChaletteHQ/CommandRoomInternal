@@ -13,17 +13,35 @@ auto-closing commitments). So this is DETECT-AND-SUGGEST: it surfaces a nudge
 ("[Name] looks like a client now — say `[Name] is now a client`"); the CEO
 confirms; the flip happens through the Bug #91 typed-writer path.
 
+**M RULING 4 (2026-09-03) — a paid or signed signal no longer ASKS.** The
+promotion applies itself (`org_promotion.promote_org`: relationship flip +
+engagement edge, `org_promoted` receipt, one CHANGED line, undoable), so a
+settled prospect is NOT a candidate here — asking about a fact the
+workspace has already written down was the defect. This detector is now the
+AMBIGUOUS lane only, which is exactly M's "only genuinely ambiguous cases
+surface at all":
+
 SIGNALS (per prospect org)
-  structural (HIGH confidence — low false-positive):
-    - an ACTIVE engagement of kind client/partner points at the prospect org
-      (you've recorded a client relationship but the org is still 'prospect'); or
-    - an ACTIVE (non-archived) thread/project is affiliated with the prospect org
-      (you're doing the work — it's a client).
+  paid or signed but NOT promotable (HIGH confidence): the org carries a
+    paid or signed fact AND the workspace has no `is_primary_focus` org to
+    hang the client engagement off, so `org_promotion` refuses to guess and
+    skips (`no_primary_focus`). The fact is certain; the destination is
+    not — a real question, and the only one this lane still raises on a
+    settled org.
   textual (MEDIUM confidence):
     - a recent event referencing the org carries client-conversion language
       ('signed', 'engagement agreement', 'kicked off', 'now a client',
       'active client', 'statement of work', 'retainer', ...) — and is not pure
       pursuit-phase noise.
+
+  RETIRED as signals (DEALNAG1 — M's addendum 2026-09-02): an active
+  client/partner ENGAGEMENT record and an active AFFILIATED THREAD. Both
+  used to read as HIGH, and both are what the `new prospect` command writes
+  for the sales conversation itself (a kind=client edge labelled "Active
+  sales conversation" plus a prospect thread) — so a prospect created for
+  sizing, with a first call still weeks out, was "looks like a client now"
+  the next morning. A sizing / engagement record alone is never a client
+  signal; the promotion nudge requires a paid or signed fact.
 
 Pure / substrate-only / no connectors / no mutation. stdlib only.
 """
@@ -165,32 +183,24 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
     prospects = {o["id"]: o for o in orgs if o.get("id") and o.get("relationship_type") == "prospect"}
     if not prospects:
         return []
-
-    # Structural signal A — active client/partner engagement pointing at the prospect.
-    eng_hit: dict[str, str] = {}
-    for e in engagements:
-        to = e.get("to_org_id")
-        if to in prospects and e.get("is_active", True) and e.get("kind") in ("client", "partner"):
-            eng_hit[to] = e.get("kind") or "client"
-
-    # Structural signal B — active thread affiliated with the prospect.
-    thread_hit: dict[str, str] = {}
-    for t in threads:
-        if t.get("status") == "archived":
-            continue
-        affs = set(t.get("affiliation_ids") or [])
-        if t.get("org"):
-            affs.add(t["org"])
-        if t.get("org_id"):
-            affs.add(t["org_id"])
-        for oid in affs & set(prospects):
-            thread_hit.setdefault(oid, t.get("display_name") or t.get("id") or "a project")
+    del engagements  # DEALNAG1 — an engagement record is not a client signal
 
     # Textual signal C — recent org-referencing events with conversion language.
     text_hit: dict[str, str] = {}
+    # REVIEW DEALNAG1 F-3 — ONE door. This read used to be a raw
+    # `event_refs.load_events`, while `org_promotion` (which decides whether
+    # the same org is promoted instead of asked about) reads through the
+    # org-scoped seam. On a workspace with a masked account the two could
+    # disagree about the same fact, and the disagreement would land in the
+    # `no_primary_focus` branch — the one case that still asks. Both sides
+    # now read `events_io.load_events_org_scoped`, so a masked account's
+    # history can neither promote an org nor raise a question about one.
+    events: list[dict] = []
     events_path = workspace_root / "_hq" / "data" / "events.jsonl"
     if events_path.exists():
-        events = event_refs.load_events(events_path)
+        from events_io import load_events_org_scoped
+
+        events, _skipped = load_events_org_scoped(workspace_root)
         # Build thread→org map so thread-tagged events also attribute to the org.
         thread_org = {}
         for t in threads:
@@ -215,17 +225,39 @@ def detect_prospect_conversion_candidates(workspace_root: str | Path) -> list[di
                     snippet = next((m for m in _conversion_markers() if m in text), "")
                     text_hit[oid] = snippet.strip()
 
+    # Paid-or-signed (the ONE structural signal) — a won deal thread or a
+    # paid / signed event, through the shared predicate. Under M's ruling 4
+    # these orgs are PROMOTED automatically, so they surface here ONLY when
+    # the promotion cannot run: no primary-focus org to attach the client
+    # engagement to. An org whose promotion a human UNDID never appears
+    # (the undo is a standing answer), and neither does one already
+    # promoted (it is not a prospect any more).
+    from deal_signal_retire import settled_orgs
+    from org_promotion import primary_focus_org, undone_promotions
+
+    settled = {}
+    if primary_focus_org(ent) is None:
+        undone = undone_promotions(workspace_root, events)
+        settled = {oid: info for oid, info in settled_orgs(ent, events).items()
+                   if oid in prospects and oid not in undone}
+
     candidates: list[dict] = []
     for oid, org in prospects.items():
         name = org.get("canonical_name") or oid
         reasons = []
         confidence = None
-        if oid in eng_hit:
+        if oid in settled:
             confidence = "high"
-            reasons.append(f"an active {eng_hit[oid]} engagement points at them while they're still marked a prospect")
-        if oid in thread_hit:
-            confidence = "high"
-            reasons.append(f"there's an active project ({thread_hit[oid]}) for them")
+            info = settled[oid]
+            since = f" on {info['since']}" if info.get("since") else ""
+            # HYGIENE9 (f) / REVIEW_MERGED_v5280 F-11 — "primary org" and
+            # "engagement" are record words a non-technical reader trips on.
+            tail = ("but I don't know which of your companies they're a "
+                    "client of")
+            if info.get("reason") == "deal_won":
+                reasons.append(f"their deal was marked won{since} while they're still marked a prospect, {tail}")
+            else:
+                reasons.append(f"a paid or signed record{since} points at them while they're still marked a prospect, {tail}")
         if oid in text_hit:
             confidence = confidence or "medium"
             reasons.append(f"recent activity mentions \"{text_hit[oid]}\"")

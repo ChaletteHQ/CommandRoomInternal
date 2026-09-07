@@ -615,9 +615,14 @@ def ready_thresholds(workspace_root) -> tuple[int, float]:
 
 
 def build_gauge(workspace_root: str | Path, *,
-                now_iso: str | None = None) -> dict:
+                now_iso: str | None = None,
+                side: dict | None = None) -> dict:
     """Compute the gauge artifact dict (no write). `now_iso` is a test seam
-    for the `generated` stamp."""
+    for the `generated` stamp (and, QUIET1, for the interaction leg's
+    "today"). `side`, when a dict is handed in, receives what the artifact
+    itself must not carry: `{"interaction_transition": <dict|None>}` — the
+    posture move the interaction leg found against the artifact on disk,
+    which `run_gauge_refresh_job` receipts."""
     root = Path(workspace_root)
     ent_doc = _read_json(root / "_hq" / "data" / "entities.json")
     ent = unwrap_entities(ent_doc) if isinstance(ent_doc, dict) else {}
@@ -706,13 +711,36 @@ def build_gauge(workspace_root: str | Path, *,
         }
 
     generated = now_iso or datetime.now(timezone.utc).isoformat()
-    return {
+    doc = {
         "generated": generated,
         "events_max_seq": _max_human_seq(events),
         "meetings_person_bound_pct": (round(meet_total_pid / meet_total, 4)
                                       if meet_total else None),
         "threads": threads_out,
     }
+    # QUIET1 D2 — the INTERACTION leg, inside this job and never a job of
+    # its own (SPEC_QUIET1 D2: "a daily job leg inside binding-gauge, not a
+    # new job"). It reads the SAME owner-scoped events this measurement just
+    # walked, and its verdict (the effective preset, stepped down after
+    # fourteen silent days, never up) rides the artifact as a compatible
+    # extension the reader passes through. The transition it found — the
+    # step-down or the restore — goes back through `side` so the job can
+    # receipt it (a posture move is an automatic act, and every automatic
+    # act is receipted); the artifact never carries the transition itself,
+    # so a quiet day stays a fixed point.
+    try:
+        import quiet as _quiet
+    except ImportError:  # pragma: no cover — direct-path fallback
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import quiet as _quiet
+    previous = _read_json(root.joinpath(*GAUGE_RELPATH))
+    block, transition = _quiet.gauge_leg(
+        root, events, now_iso=generated,
+        previous_doc=previous if isinstance(previous, dict) else None)
+    doc[_quiet.GAUGE_BLOCK_KEY] = block
+    if isinstance(side, dict):
+        side["interaction_transition"] = transition
+    return doc
 
 
 def write_gauge(workspace_root: str | Path, *,
@@ -848,8 +876,10 @@ def run_gauge_refresh_job(workspace_root, *, apply: bool = False,
             f"nothing was measured and nothing was written.")
 
     t0 = _time.perf_counter()
-    doc = build_gauge(root, now_iso=now_iso)
+    side: dict = {}
+    doc = build_gauge(root, now_iso=now_iso, side=side)
     duration_ms = int((_time.perf_counter() - t0) * 1000)
+    transition = side.get("interaction_transition")
 
     gpath = root.joinpath(*GAUGE_RELPATH)
     existing = _read_json(gpath)
@@ -867,6 +897,11 @@ def run_gauge_refresh_job(workspace_root, *, apply: bool = False,
         "summary": (f"{len(doc['threads'])} thread(s) measured, {n_ready} "
                     f"READY, events_max_seq={doc['events_max_seq']}"
                     + ("" if changed else " (unchanged)")),
+        # QUIET1 — the interaction leg's verdict and the move it found (the
+        # move is receipted below on an applied CHANGE run; a dry run only
+        # reports it).
+        "interaction": dict(doc.get("interaction") or {}),
+        "interaction_transition": transition,
     }
 
     if not apply or not changed:
@@ -879,6 +914,19 @@ def run_gauge_refresh_job(workspace_root, *, apply: bool = False,
     # artifact it would flag the artifact stale forever), then stamp the
     # post-receipt high-water mark and land the artifact.
     _log_gauge_receipt(root, out, fired_via=fired_via)
+    if transition:
+        # QUIET1 D3 — the posture move is an automatic act: ONE receipt row
+        # (`interaction_posture`, step_down or restore), written before the
+        # artifact for the same fixed-point reason as the job receipt. The
+        # brief narrates a step_down exactly once off this row
+        # (`quiet.step_down_narration`); a restore is silent — the person
+        # just answered, and the questions coming back is the answer.
+        try:
+            import quiet as _quiet
+            _quiet.write_posture_event(root, transition, now_iso=now_iso)
+        except Exception as exc:  # noqa: BLE001 — loud, never fatal
+            print(f"[binding-gauge] posture receipt FAILED: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
     try:
         events2, _sk2 = events_io.load_events_owner_scoped(root)
         post_max = _max_human_seq(events2)

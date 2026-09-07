@@ -107,7 +107,7 @@ Onboarding spans the chats below. The chat numbers are kept stable from prior bu
 
 ### Setup widget rendering (Phase 0 widget — direct visualize render)
 
-The Phase 0 setup widget renders as a **single progressive-reveal widget** via `mcp__visualize__show_widget` called directly with the inline HTML from `{SKILL_DIR}/references/step1_widget_v2.html` — bypassing `shared/scripts/chat_output_renderer.py::render_chat_output_widget` and the standard CR brand-strip wrapping. **Four questions** batched in one widget (role / timezone / AI name / email draft posture), Q1 active first, the others dimmed and locked. Q1 has two-level drill-down (top chip → sub-chips → optional refinement textbox). Q2 / Q3 are single-level (top chip → either advance or open textbox for the Other-style chip); Q4 is two simple chips (show-first / auto-queue). Each completed question collapses to a checkmarked summary line and unlocks the next. The final Q4 click fires one consolidated `sendPrompt('apply choices: [...]')` that apply-choices dispatches back to this skill's "Reply handling — Phase 0 setup" section below.
+The Phase 0 setup widget renders as a **single progressive-reveal widget** via `mcp__visualize__show_widget` called directly with the inline HTML from `{SKILL_DIR}/references/step1_widget_v2.html` — bypassing `shared/scripts/chat_output_renderer.py::render_chat_output_widget` and the standard CR brand-strip wrapping. **Five questions** batched in one widget (role / timezone / AI name / email draft posture / check-in cadence), Q1 active first, the others dimmed and locked. Q1 has two-level drill-down (top chip → sub-chips → optional refinement textbox). Q2 / Q3 are single-level (top chip → either advance or open textbox for the Other-style chip); Q4 is two simple chips (show-first / auto-queue); Q5 is three simple chips (daily / a few times a week / rarely — SPEC QUIET1 D1). Each completed question collapses to a checkmarked summary line and unlocks the next. The final Q5 click fires one consolidated `sendPrompt('apply choices: [...]')` that apply-choices dispatches back to this skill's "Reply handling — Phase 0 setup" section below.
 
 **Why direct render, not `render_chat_output_widget`:** (a) Phase 0 is the customer's first widget surface — the brand-strip wrapping earns little before they've seen anything CR-branded; (b) decoupling Phase 0 from the shared renderer means a future renderer regression cannot take down onboarding (the truncation incident of 2026-05-17 was the precipitating cause); (c) the widget is self-contained — fewer moving parts is fewer failure modes. The scheduled-task orchestrators continue to render via `render_chat_output_widget` — that path is unchanged.
 
@@ -221,13 +221,13 @@ All subsequent references use **"Chalette Command Room"** or **"Command Room"**.
 
 If no tools are connected, pivot to the cold start path. Read **{SKILL_DIR}/references/cold-start-path.md** (skill-local) for activation.
 
-### 0c. Setup widget — 4 questions (M1 + SPEC FRP1)
+### 0c. Setup widget — 5 questions (M1 + SPEC FRP1 + SPEC QUIET1)
 
-The Phase 0 setup widget renders four questions in one progressive-reveal HTML widget per the "Setup widget rendering" section at the top of this file. Source: `{SKILL_DIR}/references/step1_widget_v2.html`.
+The Phase 0 setup widget renders five questions in one progressive-reveal HTML widget per the "Setup widget rendering" section at the top of this file. Source: `{SKILL_DIR}/references/step1_widget_v2.html`.
 
-**Seed pre-answers (Spec 3).** Before rendering the widget, do a read-only check for a pre-onboarding brief at the workspace root (`onboarding_seed.find_seed` / `pre_answers` — read-only; the full ingest happens at 1a.0, not here). If the brief supplies **timezone** (Q2) or **AI name** (Q3), those questions render **pre-filled with the brief's value, still editable** — the customer confirms rather than answers from scratch, and a declared `seniority` pre-answers the Q1 sub-chip. The widget still shows all four questions (nothing is removed); the seed just fills the chips it can. Never say "seed"/"brief file"/a path — if anything, "I already had your timezone from our call."
+**Seed pre-answers (Spec 3).** Before rendering the widget, do a read-only check for a pre-onboarding brief at the workspace root (`onboarding_seed.find_seed` / `pre_answers` — read-only; the full ingest happens at 1a.0, not here). If the brief supplies **timezone** (Q2) or **AI name** (Q3), those questions render **pre-filled with the brief's value, still editable** — the customer confirms rather than answers from scratch, and a declared `seniority` pre-answers the Q1 sub-chip. The widget still shows all five questions (nothing is removed); the seed just fills the chips it can. Never say "seed"/"brief file"/a path — if anything, "I already had your timezone from our call."
 
-**The 4 questions:**
+**The 5 questions:**
 
 | Q | Topic | Storage field |
 |---|---|---|
@@ -235,6 +235,7 @@ The Phase 0 setup widget renders four questions in one progressive-reveal HTML w
 | Q2 | Timezone | `workspace.user_timezone` + `workspace.schedule_timezone` |
 | Q3 **M1** | AI name (default "Penelope") | `workspace.brain_name` |
 | Q4 **FRP1** | Email draft posture (show_first / auto_queue) | `email-writer` skill_config `draft_posture` (NOT entities.json — written via `save_skill_config(..., origin="m1_batch")`) |
+| Q5 **QUIET1** | Check-in cadence (daily / few_times_a_week / rarely) | `commitment-policy` skill_config `preset` — `light` for EVERY answer (CUT-D, M ruling 2026-09-06); NOT entities.json; written via `quiet.stamp_onboarding_preset(...)` (origin `m1_batch`), receipted and undoable |
 
 The email-exclusion question was removed in v5 (2026-06-30). Exclusions are no longer collected at onboarding — a customer who wants to hold a domain back says "add [domain] to my exclusion list" any time (handled by `workspace-manager`).
 
@@ -244,9 +245,14 @@ The email-exclusion question was removed in v5 (2026-06-30). Exclusions are no l
 **Q4 wording (rendered inline in the widget — SPEC FRP1):**
 > *"How should I handle email drafts? When you ask me to write an email, I can show you the draft first and only touch Gmail when you click — or drop every draft straight into your Gmail Drafts. You can change this anytime by saying 'tune email-writer.'"*
 
-Q4 is the ONLY ask-first first-run decision batched into onboarding (per SPEC FRP1 D6 — draft posture gates outbound, so it earns a slot like timezone). Every other skill's first-run personalization stays at natural first-fire. Default (and the safe escape if the customer never clicks it) is `show_first`, matching the v3.13.7 lazy email contract.
+Q4 is an ask-first first-run decision batched into onboarding (per SPEC FRP1 D6 — draft posture gates outbound, so it earns a slot like timezone). Every other skill's first-run personalization stays at natural first-fire. Default (and the safe escape if the customer never clicks it) is `show_first`, matching the v3.13.7 lazy email contract.
 
-Note: spec numbering inside Cowork session-notes documents may differ when counting Q1's compound (role + seniority) as two questions. The widget surfaces 4 questions to the customer; the apply-choices payload carries 4 tuples.
+**Q5 wording (rendered inline in the widget — SPEC QUIET1 D1):**
+> *"How often will you check in? Whichever you pick, I start light: a handful of questions a week at most, and your plate shows 40 items at a time. Everything else resolves on its own with the sensible default, and anything I decide for you shows up in your Friday wrap with an undo. Say 'ask me more' whenever you want more."*
+
+Q5 is the interaction posture. **Every answer stamps `light`** (M rulings 2026-09-03 and 2026-09-06: every client seat starts `light`; "Daily" never means `engaged`; the only door up is `ask me more`). The answer itself is kept on the stamp's `triggered_by` line and sets nothing else — no first-brief timing, no second value. An unanswered Q5 (an older widget, a customer who never clicks it) lands in the same place: `light`, which the update bridge also stamps on any workspace with no stored posture.
+
+Note: spec numbering inside Cowork session-notes documents may differ when counting Q1's compound (role + seniority) as two questions. The widget surfaces 5 questions to the customer; the apply-choices payload carries 5 tuples.
 
 **Pre-widget fire-marker (MANDATORY — apply-choices uses this to identify the source skill):**
 
@@ -259,12 +265,12 @@ Before calling `mcp__visualize__show_widget`, append a fire-marker event to `eve
   "type": "onboarding_setup_widget_emitted",
   "source_skill": "command-room-onboarding",
   "phase": "0",
-  "data": {"widget_kind": "step_1_setup_v5"},
+  "data": {"widget_kind": "step_1_setup_v6"},
   "last_writer": "command-room-onboarding"
 }
 ```
 
-`apply-choices` Step 2 reads this event (timestamp within last 60 min) to identify `command-room-onboarding` as the source (it keys on `source_skill`, so the `widget_kind` value is informational, not a match key — older payloads still dispatch). The `widget_kind: step_1_setup_v5` value distinguishes the current widget (4 questions: role / timezone / AI name / email draft posture) from `step_1_setup_v4` (5 questions, + email exclusions), `step_1_setup_v3` (4 questions, M1, + AI name), `step_1_setup_v2` (3 questions), and the pre-v2 `step_1_setup` (4 questions, no sub-chip drill-down).
+`apply-choices` Step 2 reads this event (timestamp within last 60 min) to identify `command-room-onboarding` as the source (it keys on `source_skill`, so the `widget_kind` value is informational, not a match key — older payloads still dispatch). The `widget_kind: step_1_setup_v6` value distinguishes the current widget (5 questions: role / timezone / AI name / email draft posture / check-in cadence) from `step_1_setup_v5` (4 questions, no cadence), `step_1_setup_v4` (5 questions, + email exclusions), `step_1_setup_v3` (4 questions, M1, + AI name), `step_1_setup_v2` (3 questions), and the pre-v2 `step_1_setup` (4 questions, no sub-chip drill-down).
 
 **No renderer pre-flight needed.** The widget bypasses `chat_output_renderer.py` entirely.
 
@@ -273,16 +279,17 @@ Before calling `mcp__visualize__show_widget`, append a fire-marker event to `eve
 1. Read the inline widget HTML from `{SKILL_DIR}/references/step1_widget_v2.html` (inside this skill's folder). The file contains the complete `<div>` markup + `<style>` + `<script>` block — pass it through verbatim, no transformations.
 2. Pass the HTML as the body of a single `mcp__visualize__show_widget` call. NO accompanying markdown chat text, no header line, no "here are your questions" preamble — the widget is the entire surface for Phase 0c per `shared/CHAT_ACTION_WIDGET.md` MUST rule #2.
 
-Q1 chips (top + sub), Q2 / Q3 / Q4 chips are baked into the HTML — do NOT regenerate them dynamically. Any future change to the chip taxonomy is an edit to `{SKILL_DIR}/references/step1_widget_v2.html`, not a string-template patch from this skill.
+Q1 chips (top + sub), Q2 / Q3 / Q4 / Q5 chips are baked into the HTML — do NOT regenerate them dynamically. Any future change to the chip taxonomy is an edit to `{SKILL_DIR}/references/step1_widget_v2.html`, not a string-template patch from this skill.
 
-**Wire shape on submission (4 tuples, `sub` and `input` optional per tuple):**
+**Wire shape on submission (5 tuples, `sub` and `input` optional per tuple):**
 
 ```
 apply choices: [
   {"n":1,"action":"run-company","sub":"holdco","input":"3 portcos, fintech + AI tools"},
   {"n":2,"action":"eastern"},
   {"n":3,"action":"default"},
-  {"n":4,"action":"show_first"}
+  {"n":4,"action":"show_first"},
+  {"n":5,"action":"few_times_a_week"}
 ]
 ```
 
@@ -291,12 +298,13 @@ Examples of the optional fields:
 - `n:2` (timezone) has `action: pacific|mountain|central|eastern` (no `input`) or `action: other` with `input` (required).
 - `n:3` (AI name) has `action: default` (no `input`, customer kept "Penelope") or `action: custom` with `input` (the customer-typed name, required).
 - `n:4` (email draft posture) has `action: show_first` (default) or `action: auto_queue`. No `input`. Routes to email-writer skill_config per Item 4 below (origin `m1_batch`), NOT entities.json.
+- `n:5` (check-in cadence) has `action: daily | few_times_a_week | rarely`. No `input`. Routes to the commitment-policy preset per Item 5 below (origin `m1_batch`), NOT entities.json.
 
 ### Reply handling — Phase 0 setup (apply-choices dispatches here)
 
-When `apply-choices` parses an `apply choices: [...]` payload AND its Step 2 source-identification reads the `onboarding_setup_widget_emitted` fire-marker event with `source_skill: command-room-onboarding` (current `data.widget_kind: step_1_setup_v5`), it dispatches each `{n, action, sub?, input?}` tuple back to this section.
+When `apply-choices` parses an `apply choices: [...]` payload AND its Step 2 source-identification reads the `onboarding_setup_widget_emitted` fire-marker event with `source_skill: command-room-onboarding` (current `data.widget_kind: step_1_setup_v6`), it dispatches each `{n, action, sub?, input?}` tuple back to this section.
 
-Process the tuples in order — 4 for `step_1_setup_v5`. (Earlier widgets emitted a different tuple count — `step_1_setup_v4` = 5 with an email-exclusions item at `n:2`, `step_1_setup_v3` = 4, `step_1_setup_v2` = 3 — and workspaces with prior payloads in `events.jsonl` are unaffected; the route key is `source_skill`, and each Item handler below matches on the tuple's topic rather than a fixed `n`, so a legacy 5-tuple payload's exclusion item is simply ignored and the remaining items still land.)
+Process the tuples in order — 5 for `step_1_setup_v6`. (Earlier widgets emitted a different tuple count — `step_1_setup_v5` = 4 (no cadence item; Item 5 is skipped and the update bridge's stamp supplies `light`), `step_1_setup_v4` = 5 with an email-exclusions item at `n:2`, `step_1_setup_v3` = 4, `step_1_setup_v2` = 3 — and workspaces with prior payloads in `events.jsonl` are unaffected; the route key is `source_skill`, and each Item handler below matches on the tuple's topic rather than a fixed `n`, so a legacy 5-tuple payload's exclusion item is simply ignored and the remaining items still land.)
 
 **Item 1 (role) — map `action` + `sub` to schema-compatible enum + seniority:**
 
@@ -414,6 +422,45 @@ question does NOT re-ask it (`is_configured(workspace_root, "email-writer")` is 
 item 4 is absent (older widget), skip this write — email-writer asks the posture question on its
 own first fire instead. Nothing else email-writer personalizes (sign-off, length) is touched here.
 
+**Item 5 (check-in cadence — SPEC QUIET1 D1) — write the commitment-policy preset, NOT entities.json:**
+
+The interaction posture: how many questions Command Room may ask in a week, across every asker.
+Written through `quiet.stamp_onboarding_preset`, which stamps through `quiet.stamp_preset` (the typed
+`skill_config_writer` path, batch-stamped so a bare `undo` lists it as "set how often it asks you"
+and puts the previous value back exactly) — on a FRESH seat only; see the stored-posture rule below:
+
+| Q5 `action` | commitment-policy `preset` | what it means |
+|---|---|---|
+| `daily` | `light` | up to 5 questions a week; the plate shows 40 at a time |
+| `few_times_a_week` (default) | `light` | the same |
+| `rarely` | `light` | the same |
+
+Every answer stamps `light` (CUT-D, M ruling 2026-09-06). The answer is not lost — it rides the
+receipt's `triggered_by` line (`onboarding Q5: daily`) — but it changes no value. `engaged` is
+reachable only by the customer saying `ask me more` or by the operator command
+(`quiet.py <ws> --stamp engaged --apply`); never from this widget.
+
+**A seat with a posture already stored is left alone (CUT-D R2).** "Every seat STARTS light" is about
+fresh seats. When `commitment-policy.preset` already holds a valid value — the update bridge stamped
+`light` before this widget was answered (the usual order on a new seat), an `engaged` seat is
+re-running onboarding (`restart onboarding`, or the operator's own seat), or the customer already said
+`ask me more` — the call stamps NOTHING (`ran False, skipped True, preset = the stored one`), so a
+re-run can never knock a seat down. The skip is receipted once per seat (`interaction_posture` /
+`onboarding_kept`, the Q5 answer on its `triggered_by` line), which is why the answer is recorded on
+every path: on the stamp's receipt on a fresh seat, on the skip's receipt otherwise. Nothing to undo
+on a skip — nothing changed.
+
+```python
+# Same PLUGIN_ROOT preamble as Item 4; run FROM $PLUGIN_ROOT.
+import sys; sys.path.insert(0, "shared/scripts")
+import quiet
+quiet.stamp_onboarding_preset(workspace_root, item5_action)   # light, whatever the answer; a stored posture is kept
+```
+
+If item 5 is absent (an older widget), skip this write — the update bridge stamps `light` on any
+workspace with no stored posture, so the customer lands on the default either way. Never say
+"preset", "engaged", "light" or "quiet" to the customer; the ack says how many a week.
+
 **Apply-time response (short plain-English ack, NO new widget):**
 
 The customer already confirmed by clicking Finish. Don't re-render the form. Surface a 2–3 line confirmation that names them, their shape, their tz, and their AI by name:
@@ -422,7 +469,7 @@ The customer already confirmed by clicking Finish. Don't re-render the form. Sur
 
 Then immediately enter Phase 1 (don't wait for further customer input — the orchestration takes over from here).
 
-**Deliverable:** widget emitted; on the final Q4 click, the 4 selections write `workspace.shape` + `seniority` + `shape_detail` (when sub-chip picked) + `shape_freetext` (when refinement textbox filled) + `user_timezone` + `schedule_timezone` + `first_go_months` + `brain_name` to entities.json, AND email-writer `draft_posture` to its skill_config (origin `m1_batch`). Checkpoint event written with `phase: "0"`, `status: "in_progress"`.
+**Deliverable:** widget emitted; on the final Q5 click, the 5 selections write `workspace.shape` + `seniority` + `shape_detail` (when sub-chip picked) + `shape_freetext` (when refinement textbox filled) + `user_timezone` + `schedule_timezone` + `first_go_months` + `brain_name` to entities.json, AND email-writer `draft_posture` to its skill_config (origin `m1_batch`), AND the commitment-policy `preset` (origin `m1_batch`, receipted as an undoable batch). Checkpoint event written with `phase: "0"`, `status: "in_progress"`.
 
 **Transition:** Phase 1a begins in Chat 1 — the light scan runs and the workspace is built. (No parallel schedules chat is opened; scheduled tasks are an opt-in the customer sets up after the call.)
 
@@ -578,7 +625,7 @@ After this sub-beat, entities.json has the full primary user + org + project pic
 
 #### 1a.vi — Quick Commands install (silent)
 
-Call `enable-quick-commands` silently. Required placeholders:
+Call `level-up-command-room` (Mode: Quick Commands) silently. Required placeholders:
 - `CEO_DISPLAY_NAME` from `entities.json` `person_001.canonical_name`
 - `LAST_BUILT` ISO timestamp
 
@@ -598,7 +645,7 @@ Call `enable-quick-commands` silently. Required placeholders:
 **No scheduled tasks are registered here.** Onboarding does not create a deep-read task. The sharper last-7-days read is available to the customer on demand later by running `weekly-recap` — Phase 2 points them to it; this phase just builds the chassis from the 60-day scan and opens the home chat.
 
 **CUSTOMER ACTIONS:**
-1. New chat → `install workspace map` → Enter → **Chat 3** opens, completes ~30 sec via `enable-workspace-map`
+1. New chat → `install workspace map` → Enter → **Chat 3** opens, completes ~30 sec via `level-up-command-room` (Mode: Workspace Map)
 
 **OPERATOR:** *"Now open one more new chat — type `show me what you know about me`. That opens [BrainName]'s home chat where you'll spend most of your time with her."*
 

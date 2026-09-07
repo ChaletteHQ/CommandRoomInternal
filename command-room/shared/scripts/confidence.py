@@ -67,17 +67,25 @@ CONFIDENCE_AUTOAPPLY_PEOPLE = 0.85
 # MATCH SCORES — used by CRU layer to decide auto-resolve vs. pending review
 # ---------------------------------------------------------------------------
 
+# POLICY1-A (2026-09-04, D1): the two MATCH thresholds MOVED to
+# `commitment_policy.py` — the one resolution policy home — and are
+# RE-EXPORTED here so the 20+ importers of these names do not move. The
+# values are the same constants (0.55 / 0.30); the per-workspace override file
+# keeps being honoured for both keys (see `get_threshold` below, which
+# delegates the match keys to `commitment_policy.thresholds`). Import
+# direction is ONE way: commitment_policy imports nothing from this module
+# (F10 — a guard test imports it in isolation).
+#
 # Cross-reference match (cru_match.match_send_to_commitments,
-# match_transcript_to_commitments). At or above this score, auto-resolve the
-# matched commitment silently. Below this but >= PENDING, write a
-# commitment_review_proposed event for the confirm queue to surface for
-# one-click confirm.
+# match_transcript_to_commitments). At or above this score, WITH a
+# completion-class signal, a CONFIRMED target closes. Below this but >=
+# PENDING, the match is worth one question (commitment_review_proposed).
 # Used by: cru_match.py HIGH_CONFIDENCE_THRESHOLD.
-MATCH_SCORE_AUTO_RESOLVE = 0.55
-
-# Below auto-resolve, above this: pending review surface. Below this: no action.
-# Used by: cru_match.py PENDING_REVIEW_THRESHOLD.
-MATCH_SCORE_PENDING_REVIEW = 0.30
+from commitment_policy import (  # noqa: E402
+    MATCH_SCORE_AUTO_RESOLVE,
+    MATCH_SCORE_PENDING_REVIEW,
+)
+from commitment_policy import thresholds as _policy_thresholds  # noqa: E402
 
 # Decision-match auto-resolve threshold. Tighter than commitments because
 # decision false-positives lose real history. No pending review path in v3.4.5;
@@ -147,6 +155,13 @@ def get_threshold(name: str, workspace_root=None) -> float:
     the shipped constant. Unknown name → KeyError (a typo should fail loud)."""
     if name not in _BAKED:
         raise KeyError(f"unknown confidence threshold {name!r}")
+    # POLICY1-A — the two match keys read through the policy home's reader
+    # (same file, same validation), so there is ONE answer to "what is the
+    # match bar in this workspace".
+    if name == "MATCH_SCORE_AUTO_RESOLVE":
+        return _policy_thresholds(workspace_root)[0]
+    if name == "MATCH_SCORE_PENDING_REVIEW":
+        return _policy_thresholds(workspace_root)[1]
     if workspace_root is not None:
         ov = load_overrides(workspace_root)
         if name in ov:

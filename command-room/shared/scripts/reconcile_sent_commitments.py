@@ -85,8 +85,11 @@ except Exception:  # pragma: no cover — the contact pass is optional
     CONTACT_GIVE_UP_TRIES = 3
 
 # TTL for the ambiguous confirm proposals that DO stay queued — an unconfirmed
-# commitment_review_proposed older than this expires instead of accumulating.
-REVIEW_PROPOSAL_TTL_DAYS = 14
+# commitment_review_proposed older than this is RETRACTED instead of
+# accumulating. POLICY1-A D8/D15: ONE policy constant (was a private 14 here
+# and nothing at all on the transcript rail); the retract itself is the
+# review-expiry job's second leg.
+from commitment_policy import PROPOSAL_TTL_DAYS as REVIEW_PROPOSAL_TTL_DAYS  # noqa: E402
 
 
 class PrimaryUserUnresolvedError(RuntimeError):
@@ -726,6 +729,217 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
         "summary": summary,
     }
 
+# =============================================================================
+# ATTRIB1-B D9 — DOOR 2: the user's own recap confirms a pending capture.
+# =============================================================================
+#
+# `reconcile_sent` matches sent mail to OPEN commitments and closes them. It
+# never looked at the PENDING captures — the extractor's unconfirmed guesses
+# — so the user's own recap of a meeting ("as discussed, I'll send you the
+# deck Friday") could not confirm the very row it restates. This leg does
+# exactly that, and ONLY that: a sent message to a meeting attendee inside
+# `OWN_RECAP_WINDOW_HOURS` of the capture, whose text matches a pending
+# capture of that meeting at the existing matcher's auto-resolve grade
+# (threshold unchanged), CONFIRMS it — `clear_review_flags` with
+# `confirmed_by: own_recap`. It never closes: a recap restating a promise is
+# evidence the promise is real, not evidence it is done.
+#
+# Self-contained by design (night 8: POLICY1-A routes the CLOSE leg through
+# `decide` in the same file — this leg touches none of that).
+
+# Hours after the capture inside which a sent message reads as the recap of
+# that meeting (D9 / DD-8: "within 48h of the meeting").
+OWN_RECAP_WINDOW_HOURS = 48
+OWN_RECAP_CONFIRMED_BY = "own_recap"
+OWN_RECAP_NOTE = "confirmed by your own recap to an attendee of this meeting"
+
+
+def _parse_ts(value):
+    """ISO → aware UTC datetime, or None."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = _dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return dt.astimezone(_dt.timezone.utc)
+
+
+def _meeting_parties_index(workspace_root) -> dict:
+    """source-ref key → set of resolved person ids on the `meeting` event
+    (top-level `person_ids`, plus `data.attendees` emails resolved against
+    the entity graph). Reads through `events_io.iter_events` — the
+    canonical shard-aware iterator (INDEX1 D5)."""
+    index: dict = {}
+    try:
+        from events_io import iter_events
+        from meeting_capture import (_load_people, _person_emails,
+                                     meeting_ref_keys)
+    except Exception:  # pragma: no cover
+        return index
+    by_email: dict = {}
+    for p in _load_people(workspace_root):
+        for e in _person_emails(p):
+            by_email.setdefault(e, p["id"])
+    try:
+        for ev in iter_events(workspace_root):
+            if ev.get("type") != "meeting":
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            keys = meeting_ref_keys(d.get("source_ref"))
+            if not keys:
+                continue
+            ids = {p for p in (ev.get("person_ids") or []) if isinstance(p, str)}
+            for addr in (d.get("attendees") or []):
+                pid = by_email.get(str(addr or "").strip().lower())
+                if pid:
+                    ids.add(pid)
+            for k in keys:
+                index.setdefault(k, set()).update(ids)
+    except Exception:  # pragma: no cover — degrade to an empty index
+        return {}
+    return index
+
+
+def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
+                             provider=None, source_skill="morning-briefing",
+                             pending_rows=None, now_iso=None) -> dict:
+    """DOOR 2 (D9 / DD-8). Returns `{"n_confirmed", "confirmed":
+    [{commitment_id, title, ts, message_id}], "n_candidates"}`.
+
+    Candidates: pending meeting captures (a `commitment` row with
+    `pending_review` whose source is a meeting) where SOME recipient of the
+    sent message is a resolved party of that meeting, and the send lands
+    inside `OWN_RECAP_WINDOW_HOURS` AFTER the capture (a send before the
+    capture is not its recap — the EVORDER rule, restated). Match: the
+    existing `match_send_to_commitments` at its auto-resolve grade — the
+    threshold is not touched. On match: `clear_review_flags(...,
+    confirmed_by="own_recap")`, pointer = the sent message's own key.
+
+    Never closes. Never writes when `user_person_id` is empty. Idempotent
+    across a day: a row confirmed once is no longer pending and drops out
+    of the candidate set by itself."""
+    out = {"n_confirmed": 0, "confirmed": [], "n_candidates": 0}
+    if not user_person_id or not sent_messages:
+        return out
+    ws = Path(workspace_root)
+    if pending_rows is None:
+        from cru_match import load_needs_review
+        pending_rows = load_needs_review(
+            str(ws / "_hq" / "data" / "events.jsonl"), workspace_root=str(ws))
+    from meeting_capture import meeting_ref_keys
+
+    # F-11 — the index is a SECOND full-history pass, so it is built only
+    # when there is a pending meeting capture to build it for. A run with
+    # nothing pending (the common one) now costs nothing.
+    meeting_rows = [ev for ev in (pending_rows or [])
+                    if meeting_ref_keys((ev.get("data") or {}).get(
+                        "source_ref"))]
+    if not meeting_rows:
+        return out
+    parties = _meeting_parties_index(workspace_root)
+    from commitment_state import CommitmentIdError, clear_review_flags
+
+    # Pending MEETING captures only, keyed by their meeting's parties.
+    candidates: list = []
+    for ev in meeting_rows:
+        d = ev.get("data") or {}
+        keys = meeting_ref_keys(d.get("source_ref"))
+        who: set = set()
+        for k in keys:
+            who |= parties.get(k, set())
+        if not who:
+            continue
+        cap_ts = _parse_ts(ev.get("ts"))
+        if cap_ts is None:
+            continue
+        candidates.append((ev, who, cap_ts))
+    out["n_candidates"] = len(candidates)
+    if not candidates:
+        return out
+
+    window = _dt.timedelta(hours=OWN_RECAP_WINDOW_HOURS)
+    confirmed_ids: set = set()
+    try:
+        from confidence import match_score_auto_resolve
+        auto_threshold = float(match_score_auto_resolve(workspace_root))
+    except Exception:  # pragma: no cover — the shipped constant
+        from confidence import MATCH_SCORE_AUTO_RESOLVE
+        auto_threshold = float(MATCH_SCORE_AUTO_RESOLVE)
+    for msg in sent_messages or []:
+        if not isinstance(msg, dict):
+            continue
+        send_ts = _parse_ts(msg.get("ts"))
+        if send_ts is None:
+            continue
+        recips = {r for r in (msg.get("recipient_person_ids") or [])
+                  if isinstance(r, str) and r}
+        if not recips:
+            continue
+        opens: list = []
+        for ev, who, cap_ts in candidates:
+            if _commitment_id(ev) in confirmed_ids:
+                continue
+            if not (who & recips) or not (cap_ts <= send_ts <= cap_ts + window):
+                continue
+            # The matcher's recipient gate wants the recipient among the
+            # row's people. A pending capture is pending precisely because
+            # its counterparty is unresolved, so the MEETING supplies the
+            # party: the recipients who sat in that meeting are added to a
+            # shallow COPY's `person_ids` for scoring only — the substrate
+            # row is untouched, and the title/body score still decides.
+            copy = dict(ev)
+            copy["person_ids"] = sorted(
+                set(ev.get("person_ids") or []) | (who & recips))
+            opens.append(copy)
+        if not opens:
+            continue
+        mid = str(msg.get("message_id") or "").strip()
+        own_key = primary_artifact_key(provider, mid) if mid else None
+        results = match_send_to_commitments(
+            open_commitments=opens,
+            sender_person_id=user_person_id,
+            recipient_person_ids=list(recips),
+            subject=msg.get("subject"),
+            body=msg.get("body"),
+            recipient_names=msg.get("recipient_names") or [],
+            send_source_ref=own_key,
+            send_ts=msg.get("ts"),
+            workspace_root=workspace_root,
+        )
+        for r in results:
+            # The matcher DEMOTES an auto-resolve-grade match on a pending
+            # row to `pending_review` — a floor against CLOSING a guess. This
+            # leg never closes, so it reads the GRADE: the existing
+            # auto-resolve threshold, untouched, per workspace.
+            if (r.get("score") or 0) < auto_threshold:
+                continue
+            cid = str(r.get("commitment_id") or "")
+            if not cid or cid in confirmed_ids:
+                continue
+            try:
+                res = clear_review_flags(
+                    workspace_root, cid, cleared_by=user_person_id,
+                    source_skill=source_skill, note=OWN_RECAP_NOTE,
+                    source_ref=own_key, mint_now_iso=now_iso,
+                    confirmed_by=OWN_RECAP_CONFIRMED_BY)
+            except CommitmentIdError:
+                continue
+            if res.get("status") != "cleared":
+                continue
+            confirmed_ids.add(cid)
+            out["confirmed"].append({"commitment_id": cid,
+                                     "title": r.get("title") or "",
+                                     "ts": msg.get("ts") or "",
+                                     "message_id": mid})
+    out["n_confirmed"] = len(out["confirmed"])
+    return out
+
 
 def reconcile_and_receipt(
     workspace_root,
@@ -913,6 +1127,26 @@ def reconcile_and_receipt(
         # event construction moved into close_commitment. (Proposal ids come from
         # _commitment_id over the open set, so they are already canonical.)
         events_written = 0
+        # POLICY1-A D8 — the close leg passes through `decide` at the one
+        # table, BEFORE the writer: the sent rail's own grades are its
+        # signals (title at the bar, SENTMATCH delivery, FS-11 unambiguous
+        # moderate), a row policy will not close (a pending target, a
+        # bar-less row) joins the propose list carrying its reason. Nothing
+        # that closed before is refused here — the bars are the rail's own,
+        # named — and nothing new closes.
+        if auto_close:
+            from commitment_policy_pass import policy_gate_closes
+            from cru_match import _is_pending_review as _pending_flag
+            _pending_ids = {str(_commitment_id(c)) for c in opens if _pending_flag(c)}
+            auto_close, _demoted = policy_gate_closes(
+                auto_close, rail="sent", pending_ids=_pending_ids,
+                workspace_root=workspace_root)
+            for _row in _demoted:
+                pending.append(_row)
+                signal_fields["n_graded_close_refused"] += 1
+                refusals = signal_fields["close_refusals"]
+                _why = _row.get("policy_refusal") or "PolicyGate"
+                refusals[_why] = refusals.get(_why, 0) + 1
         if auto_close:
             from commitment_state import close_commitments
             results = close_commitments(
@@ -1202,6 +1436,14 @@ def reconcile_and_receipt(
         from atomic_write import atomic_append_jsonl as _append
         from cru_match import _now_iso as _audit_ts
         # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
+        # ATTRIB1-B D9 — DOOR 2. After the close leg and the proposals, and
+        # self-contained: the user's own recap CONFIRMS a pending capture of
+        # the meeting it restates; it never closes one.
+        recap = confirm_pending_captures(
+            workspace_root, sent_messages or [], user_person_id=user_person_id,
+            provider=provider, source_skill=source_skill)
+        n_recap = int(recap.get("n_confirmed") or 0)
+
         audit_event = {
             "ts": _audit_ts(),
             "type": "sent_reconcile",
@@ -1211,6 +1453,9 @@ def reconcile_and_receipt(
                 "task_id": "reconcile-sent",
                 "kind": "reconcile-sent",
                 "status": "complete",
+                # ATTRIB1-B D9 — pending captures confirmed by the user's own
+                # recap this run (never closed).
+                "n_confirmed_by_recap": n_recap,
                 "fired_via": fired_via,
                 "cursor_from": cursor_before,
                 "cursor_to": cursor_after,
@@ -1301,6 +1546,10 @@ def reconcile_and_receipt(
         if n_opened:
             summary += (f" Started tracking {n_opened} new "
                         f"promise{'s' if n_opened != 1 else ''} from your sent mail.")
+        if n_recap:
+            # D9 / DD-8 — the receipt line, verbatim from the spec.
+            summary += (f" {n_recap} capture{'s' if n_recap != 1 else ''} "
+                        f"confirmed by your own recap.")
         n_contacts = contacts.get("n_added", 0) if isinstance(contacts, dict) else 0
         if n_contacts:
             summary += (
@@ -1380,6 +1629,9 @@ def reconcile_and_receipt(
             # SENTMATCH review F-4 — the same block written to the audit event, so
             # a caller can act on it without re-reading events.jsonl.
             "signal_fields": signal_fields,
+            # ATTRIB1-B D9 — door 2 (additive).
+            "n_confirmed_by_recap": n_recap,
+            "confirmed_by_recap": list(recap.get("confirmed") or []),
             # BUG-3719 capture pass (additive; zeros/None when items not passed).
             "n_opened": n_opened,
             "opened": list(capture["opened"]) if isinstance(capture, dict) else [],

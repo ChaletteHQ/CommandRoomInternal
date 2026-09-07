@@ -295,7 +295,27 @@ Test: does the lead name a dated moment AND say what CHANGED? If the counts alon
 
 **2. Top decisions made** — pull `type: decision` events from the window. Bullets, each with: decision text + project + date + who participated. Omit if zero.
 
-**3. Top commitments captured (you owe / they owe)** — split by `owner_id == primary_user_id`, reading `owner_id` via `cru_match._commitment_field(ev, "owner_id")` which covers every commitment-shape variant per `shared/COMMITMENT_SCHEMA.md` — the canonical `data.owner_id`, the flat-shape top-level `owner_id`, the legacy `owner` (no `_id`), and the `data.owner_person_id` variant that cr-past-meetings actively produces. Reading only `data.owner_id` silently drops shape variants 2–4 from the split (Sam bug report 2026-05-17 — partial fix in v3.4.2 covered shapes 1–2; v3.4.3 extends to all variants after M's own workspace audit found 42% of commitments in non-canonical shapes). Each bullet: commitment text + due date + counterparty + project. Cap at 10 in each direction, surface "+N more" if exceeded.
+**3. Your plate this week — the delta + the PARKED review (SPEC PLATE1 night 2, D7 `wrap`).** ONE call, and it owns every word of this section:
+
+```python
+from plate_view import wrap_cut
+plate = wrap_cut(workspace_root, since_iso=<the resolved window's start, ISO>,
+                 now_iso=<now, ISO>)
+# plate["text"]  -> render VERBATIM (chat body + the .docx section)
+# plate["refused"] -> True on a workspace with no resolvable owner: render
+#                     plate["line"] (one plain sentence) and nothing else (D8)
+```
+
+`text` is `plate_view.render_plate(build_plate(ws, since_iso=…), "wrap")`: *"Your plate this week — N opened · N closed · N slipped"*, then the rows that entered the plate this week in their blocks (DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED), the closures (done / dropped), the rows whose date passed this week and are still open, then **PARKED — still on your plate?** (every resting row, open, with its reason — P2: never hidden, this is the weekly "still on your plate?" sweep), and one pointer to `what's on my plate`. Same model and same words as the plate, the morning brief and the day-close. The pre-PLATE1 by-hand split ("you owe / they owe", `_commitment_field(ev, "owner_id")` over the window's `commitment` events, 10 per direction) is RETIRED — never re-derive the section from the raw events, never re-split by owner, never add a count the helper did not print. No verbs render here (the recap is prose; verbs live on the plate). Drop the section only when `text` is empty (it never is on a resolved workspace — an empty week renders its own one-line form).
+
+**BYTE-EXACT, EVERY PARKED ROW — and it is checked in code (CUT-PLATE, 2026-09-06).** The v5.28.0 attended test (B2.3) saw this section rendered as one sentence — *"171 on the plate now, 38 parked, most untouched 36–54 days"* — and not one Parked row. That is the defect: `plate["text"]` is relayed line for line, never summarised, never re-counted, never trimmed to "the notable ones", and the PARKED review lists every resting row with its reason. Before posting (Phase 5.A), run the fence over the body you are about to post:
+
+```python
+from plate_view import wrap_relay_check
+missing = wrap_relay_check(post_text, plate["text"])   # [] means relayed byte-exact
+```
+
+A non-empty `missing` means a line of the plate cut — usually a Parked row — did not make it into the post. Put the lines back and re-run; never post over a non-empty result, never paraphrase a Parked row, never fold the review into a count. (`plate_view.assert_wrap_relayed` is the raising form.) The same rule reaches the `.docx` section, which carries the same text.
 
 **4. Notable meetings** — rank by (duration × attendee count × first-touch flag for new attendees). Top 6. Each bullet: title + date + duration + attendees + project routing + one-line topic if transcript summary exists.
 
@@ -310,7 +330,14 @@ Test: does the lead name a dated moment AND say what CHANGED? If the counts alon
   - **By-project:** for each project with ≥3 events in the window, render: project name + event count + status badge + one-line "where it landed" + top open commitment. Sort by event count desc.
   - **By-day:** for each day (Mon → today), render: top 3 events (meetings, key emails, decisions) — one bullet each. Sort chronologically.
 
-**8b. What the system did this week (SPEC LB1 — the change-feed roll-up).** One compact block from `change_feed.changes_since(<window start>)` (`shared/scripts/change_feed.py`): the week's totals in plain English — commitments closed from sent mail, items recovered from ad-hoc chats, proposals confirmed/declined, silent expiries, undos. Render the feed's lines verbatim (they carry the counts), cap 4, substance first; append one pointer when open proposals remain (`brain_proposals.card_health_counts` — *"[N] suggestions are waiting on you — say `staff meeting` to review them."*). Drop the whole section on an all-zero week — never pad. This is the value-narration slot: what running Command Room DID, distinct from what the CEO did.
+**8b. What the system did this week (SPEC LB1 — the change-feed roll-up).** One compact block, composed by `narration_names.recap_change_lines(WORKSPACE_ROOT, <window start>, now_iso=<now>, skip_categories=["closed_from_meetings", "closed_from_sent", "unconfirmed_expired", "proposals_retracted", "orgs_promoted"])` (`shared/scripts/narration_names.py` — it wraps `change_feed.changes_since` and substitutes every internal id with the entity's NAME at composition, CUT-C item 8 / ATTENDED_TEST_v5.28.0 B2.3: `project_011` reached this section as prose); render its `texts` verbatim — the week's totals in plain English — items recovered from ad-hoc chats, people added / linked, facts noted, proposals confirmed/declined, undos, maintenance. **Skip the categories 8b-bis owns** (REVIEW_QUIET1 F-4 — one act, one line): `closed_from_meetings`, `closed_from_sent`, `unconfirmed_expired`, `proposals_retracted`, `orgs_promoted` render ONLY inside "Decided for you", never here. Render the remaining feed lines verbatim (they carry the counts), cap 4, substance first; append one pointer when open proposals remain (`brain_proposals.card_health_counts` — *"[N] suggestions are waiting on you — say `staff meeting` to review them."*). Drop the whole section on an all-zero week — never pad. This is the value-narration slot: what running Command Room DID, distinct from what the CEO did.
+
+**8b-bis. Decided for you / Still waiting (SPEC QUIET1 D6 — the one optional touchpoint).** One helper, rendered VERBATIM like the plate cut: `quiet.wrap_sections(WORKSPACE_ROOT, since_iso=<window start>, now_iso=<now>)` (`shared/scripts/quiet.py`). It returns two texts, each `""` when there is nothing to say — print neither heading yourself:
+
+  - `decided_for_you.text` — the heading `## Decided for you this week` plus what the brain settled in the window on its own: the closes on evidence, the lapses, the withdrawn questions, the promotions, the rows parked with a reason — each line carrying its own `undo` phrase as the feed wrote it — and a batch line ONLY for a change the feed has no line for (today: a preset stamp). This helper is the SINGLE owner of those categories (8b skips them), so one act is narrated exactly once. Missing this section breaks nothing: nothing in it waits on the reader, and every line is one `undo` away. At merge, POLICY1-B's per-group `undo <group>` lines slot into this same block, not beside it.
+  - `still_waiting.text` — one sentence: how many questions asked this week are still open on the reader, and how many took their default rather than ask (the weekly budget: at most 5 a week under the default posture). Never a row list; the questions themselves live on the meeting cards and the morning brief.
+
+  Do not add a count the helper did not print, and never re-derive either number from the ledger yourself — the helper reconciles to the same change feed 8b reads.
 
 **8c. Objectives — the weekly touch (SPEC OBJ1, DRAFT — the ONE place objectives ask for anything).** Drop the whole section when no open objectives exist. Otherwise, a fast substrate-only read: `objective_math.load_objective_inputs` → `compute_objective_health` → `recap_rows(health, names_by_person_id=<people map>)` for the status block (one line per objective, worst-first, rendered verbatim — the helper owns status honesty), then `due_self_reports(...)` for the ask block. Two sub-parts, each drop-empty:
 
@@ -336,7 +363,9 @@ Per `shared/CONTRACT.md` Rule 3 dual-surface pattern.
 
 ### 5.A — Inline chat summary
 
-Post the synthesized recap as a markdown chat turn body. Target ~30-60 lines for a typical week (lower bound for quiet weeks, upper for heavy). Use the section structure from Phase 4. Scan-friendly: bold project names, dates in `YYYY-MM-DD` or `Mon DD` format, named people in plain text (no entity-ID leaks).
+Post the synthesized recap as a markdown chat turn body. Target ~30-60 lines for a typical week (lower bound for quiet weeks, upper for heavy). Use the section structure from Phase 4. Scan-friendly: bold project names, dates in `YYYY-MM-DD` or `Mon DD` format, named people in plain text (no entity-ID leaks). **The length target never trims the plate section**: Phase 4 §3's `plate["text"]` is relayed byte-exact — run `plate_view.wrap_relay_check(post_text, plate["text"])` on the body and post only when it returns `[]` (CUT-PLATE).
+
+**MANDATORY narration scan (CUT-C item 8, mirrors apply-choices Step 4) — RUN IT LAST, ON THE WHOLE POST.** 5.C appends the heading link and 5.D may append the closing line AFTER this section composes, so the scan runs on the FINAL text of the chat turn, immediately before posting, never on the 5.A body alone. Run `validate_chat_output(<the whole final chat turn, including anything 5.C and 5.D appended>)` from `chat_output_renderer.py`. It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_`/`bp_`/`pcand:` wire id), an event or field name, a file name or path, a score. ABORT the post and rewrite the offending sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(WORKSPACE_ROOT))` is the one substitution). NEVER catch the error and post anyway.
 
 ### 5.B — Saved `.docx`
 

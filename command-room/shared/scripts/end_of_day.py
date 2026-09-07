@@ -619,6 +619,142 @@ RENDER_ORDER = ("alarm_lines", "coverage", "day_went", "what_it_meant",
 # sentence on the surface is the defect EODSYNTH1 exists to remove.
 COMPUTED_ONLY = ("score", "wins", "slipped", "confirm")
 
+# ---------------------------------------------------------------------------
+# CUT-PLATE (2026-09-06) — THE SCREEN, composed in code.
+# ---------------------------------------------------------------------------
+#
+# The v5.28.0 attended test (B2.2 / B5.7) saw the 5 PM fire render the OLD
+# shape — "did not move… 41 days past due", "has now survived 7 closes", a
+# "What is tomorrow about?" card with Confirm / Edit — while PLATE1-N2's eod
+# cut sat computed and un-rendered on the pack. M's hold: NO decisions block
+# and no question in the day-close; the evening reads the day in the plate's
+# shape (opened / closed / slipped); fewer things on the card.
+#
+# `compose_screen` is the mechanical answer: ONE function composes every line
+# the fire may post, in `SCREEN_ORDER`, and the orchestrator prints
+# `pack["screen"]["text"]` verbatim. `RENDER_ORDER` and `COMPUTED_ONLY` stay
+# byte-identical (they are the receipt's vocabulary — EODSYNTH1's pin); the
+# plate, the coach and the catch-up label are placed here by CODE instead of
+# by instruction. What the screen does NOT carry, by construction: the
+# tomorrow PROPOSAL (computed, receipted, never asked — a stated intent
+# renders as fact), Layer 1 of the coach and its push (`eod_coach.
+# SCREEN_LAYERS`), the arc read's "did not move" sentences (kept as data on
+# `what_it_meant["unmoved"]`), and every row-list EODSYNTH1 R-3 moved to the
+# morning. The health lines — alarms, dark surfaces, the coverage strip when
+# it has a disclosure — render LAST, the same rule the morning brief follows.
+SCREEN_ORDER = ("catchup", "plate", "day_went", "what_it_meant",
+                "worth_remembering", "slipped_prose", "echoes", "coach",
+                "tomorrow", "sign_off", "coverage", "alarm_lines",
+                "dark_surface_lines")
+
+#: A STATED intent renders as fact — the CEO's own word, never a question.
+TOMORROW_STATED_LINE = "Tomorrow is about {what}."
+
+# The prose the day-close no longer prints. Scanned over the composed screen
+# by `compose_screen` itself (loud, in code) and by the suite — the exact
+# shapes the attended test saw.
+SCREEN_RETIRED_PATTERNS = (
+    re.compile(r"\bsurvived\s+\d+\s+closes?\b", re.IGNORECASE),
+    re.compile(r"\bconsecutive\s+close", re.IGNORECASE),
+    re.compile(r"\bdid not move\b", re.IGNORECASE),
+    re.compile(r"\bwhat is tomorrow about\b", re.IGNORECASE),
+)
+
+
+class ScreenShapeError(RuntimeError):
+    """The composed day-close screen carried a retired sentence or an ask."""
+
+
+def screen_shape_violations(text: str) -> list:
+    """Every retired-prose hit and every asking line in `text`, as
+    `(kind, match)` pairs. A question is a line ENDING in `?` that is not a
+    plate row's own ruled reason tag (the plate's CONFIRM / not-mine rows
+    carry "is this real?" / "whose is it?" as their reason, read-only)."""
+    out = []
+    for rx in SCREEN_RETIRED_PATTERNS:
+        for m in rx.finditer(text or ""):
+            out.append(("retired-prose", m.group(0)))
+    for line in (text or "").split("\n"):
+        s = line.rstrip()
+        if s.endswith("?") and not s.startswith("- ") and not s.startswith("#"):
+            out.append(("question", s))
+    return out
+
+
+def compose_screen(pack: dict) -> dict:
+    """CUT-PLATE — the day-close screen, every line, in `SCREEN_ORDER`.
+
+    Returns `{"order", "blocks", "lines", "text", "asks", "widget"}`:
+    `blocks` names the blocks that reached the screen, in order; `text` is
+    what the orchestrator posts verbatim; `asks` is 0 and `widget` is None
+    BY CONSTRUCTION — the day-close renders no question and no card (M's
+    hold, 2026-09-06). Raises `ScreenShapeError` when the composed text
+    carries a retired sentence or an asking line — loud, in code, before
+    the pack is handed out, the same posture as the score fence.
+    """
+    pack = pack or {}
+    blocks: list = []
+    lines: list = []
+
+    def add(name: str, ls) -> None:
+        # A block keeps its OWN blank lines (the plate cut is relayed
+        # byte-exact, blank lines included); a block with nothing but blanks
+        # is not placed.
+        ls = [str(l).rstrip("\n") for l in (ls or []) if l is not None]
+        while ls and not ls[-1].strip():
+            ls.pop()
+        if any(l.strip() for l in ls):
+            blocks.append(name)
+            lines.extend(ls)
+            lines.append("")
+
+    catch = pack.get("catchup") or {}
+    if isinstance(catch, dict) and catch.get("renders"):
+        add("catchup", catch.get("lines") or [])
+    plate = pack.get("plate") or {}
+    if isinstance(plate, dict):
+        if plate.get("refused"):
+            add("plate", [plate.get("line")])
+        elif plate.get("text"):
+            add("plate", str(plate["text"]).rstrip("\n").split("\n"))
+    for b in SYNTHESIS_BLOCKS:
+        blk = pack.get(b) or {}
+        if not isinstance(blk, dict):
+            continue
+        if b == "worth_remembering" and blk.get("lines"):
+            add(b, blk.get("lines"))
+        else:
+            add(b, [blk.get("text")])
+    coach = pack.get("coach") or {}
+    if isinstance(coach, dict):
+        add("coach", [coach.get("text")])
+    tomorrow = pack.get("tomorrow") or {}
+    if isinstance(tomorrow, dict):
+        intent = tomorrow.get("intent") if tomorrow.get("intent_stated") else None
+        items = [str(i.get("text") or "").strip()
+                 for i in ((intent or {}).get("items") or []) if isinstance(i, dict)]
+        items = [t for t in items if t]
+        if items:
+            add("tomorrow", [TOMORROW_STATED_LINE.format(what=" · ".join(items))])
+        elif tomorrow.get("line"):
+            add("tomorrow", [tomorrow["line"]])
+    sign_off = pack.get("sign_off") or {}
+    if isinstance(sign_off, dict):
+        add("sign_off", [sign_off.get("line")])
+    if pack.get("coverage") is not None and coverage_has_disclosure(pack):
+        add("coverage", coverage_render_lines(pack))
+    add("alarm_lines", pack.get("alarm_lines") or [])
+    add("dark_surface_lines", pack.get("dark_surface_lines") or [])
+
+    text = ("\n".join(lines).rstrip("\n") + "\n") if lines else ""
+    bad = screen_shape_violations(text)
+    if bad:
+        raise ScreenShapeError(
+            f"end-of-day screen: retired prose or an ask reached the composed "
+            f"screen (CUT-PLATE, M's hold 2026-09-06): {bad!r}")
+    return {"order": list(SCREEN_ORDER), "blocks": blocks, "lines": lines,
+            "text": text, "asks": 0, "widget": None}
+
 # The synthesis blocks, in their render order. Spelled from the module that
 # composes them so the two can never drift into two orders.
 SYNTHESIS_BLOCKS = ("day_went", "what_it_meant", "worth_remembering",
@@ -1559,9 +1695,19 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
     # nameless and the first_move check has nothing to compare against.
     idx = _win_join_index(events)
     names = _entity_names(workspace_root)
+    # POLICY1-B (c) — a close an undo has since reversed is NOT a close this
+    # surface may count: the row is open at fire time. Folded once, through
+    # the closure chain's own reader, bounded by this fire's `now`.
+    try:
+        from closure_index import reversed_closer_positions as _reversed
+        reversed_at = _reversed(events, until=until)
+    except Exception:  # pragma: no cover — never widen the count on a read failure
+        reversed_at = set()
     out = []
-    for ev in events:
+    for pos, ev in enumerate(events):
         if ev.get("type") not in _CLOSE_TYPES:
+            continue
+        if pos in reversed_at:  # (c): reopened after the close — open at fire time
             continue
         ts = _parse_iso(ev.get("ts"))
         # THE LOWER BOUND IS ALWAYS REAL (SPEC WINSFLOOR1). `_window` never
@@ -3573,7 +3719,8 @@ def overdue_ask_state(row: dict, *, now_iso: Optional[str],
 def apply_overdue_ask(rows: Optional[Iterable[dict]] = None, *,
                       now_iso: Optional[str] = None,
                       ask_after_days: int = OVERDUE_ASK_AFTER_DAYS,
-                      ask: bool = True) -> dict:
+                      ask: bool = True,
+                      workspace_root=None) -> dict:
     """The fatigue rule over a needs-attention LANE (SPEC EODSYNTH1 R-3).
 
     Returns `{"rows", "asked_ids", "resting_ids", "n_resting", "resting_line",
@@ -3592,20 +3739,50 @@ def apply_overdue_ask(rows: Optional[Iterable[dict]] = None, *,
     CEO has already been asked about must not come back as narrative prose the
     next night either — and asks nothing, which is what makes the evening's
     ask count zero.
+
+    QUIET1 D4 — with `workspace_root` (the morning driver passes it) the
+    rows in the `ask` state are submitted through `quiet.submit_questions`
+    as the `overdue_ask` asker before any is stamped `ask_now`: a row the
+    weekly budget cuts is NOT asked this morning — it renders as an
+    ordinary lane row, no `ask_line`, no ask-once marker, and comes back
+    as a question when the budget allows. Below the cut takes the default,
+    which for an overdue row is "keep showing it, don't ask". Without a
+    workspace root the rule is byte-identical to before (pure).
     """
     out, asked, resting = [], [], []
+    verdicts: list = []
     for row in (rows or []):
         if not isinstance(row, dict):
             continue
         verdict = overdue_ask_state(row, now_iso=now_iso,
                                     ask_after_days=ask_after_days)
+        verdicts.append((row, verdict))
+    budget_ok: Optional[set] = None
+    if ask and workspace_root is not None:
+        cands = []
+        for row, verdict in verdicts:
+            cid = str(row.get("commitment_id") or "")
+            if cid and verdict["state"] == ASK_STATE_ASK:
+                cands.append({"commitment_id": cid,
+                              "has_counterparty": bool(row.get("counterparty")
+                                                       or row.get("counterparty_id")
+                                                       or row.get("counterparty_ids")),
+                              "has_date": True,   # overdue means dated
+                              "due": row.get("due"), "ts": row.get("ts") or ""})
+        if cands:
+            import quiet
+            sub = quiet.submit_questions(workspace_root, quiet.ASKER_OVERDUE, cands,
+                                         now_iso=now_iso)
+            budget_ok = {r["commitment_id"] for r in sub["render"]}
+    for row, verdict in verdicts:
         cid = str(row.get("commitment_id") or "")
         if verdict["state"] == ASK_STATE_REST:
             if cid:
                 resting.append(cid)
             continue
         new = dict(row)
-        if ask and verdict["state"] == ASK_STATE_ASK:
+        if (ask and verdict["state"] == ASK_STATE_ASK
+                and (budget_ok is None or cid in budget_ok)):
             new["ask_now"] = True
             new["days_over"] = verdict["days_over"]
             new["ask_line"] = verdict["ask_line"]
@@ -3946,11 +4123,42 @@ def _write_asks(workspace_root, *, ids, rows, source_skill: str,
 def compute_confirm(open_commitments, *, now_iso: str,
                     dismissed_ids: Optional[Iterable[str]] = None,
                     held_ids: Optional[Iterable[str]] = None,
-                    cap: int = MAX_CONFIRM_ROWS) -> dict:
+                    cap: int = MAX_CONFIRM_ROWS,
+                    proposals: Optional[dict] = None) -> dict:
     """`confirm_flow.select_confirm_items`, relocated to this fire.
 
     BK5 owns tiering and decay later; EOD1 only MOVES the selection here, caps
-    it at five, and ranks stakes-then-age.
+    it at five, and ranks stakes-then-evidence-then-age.
+
+    THE RANK READS THE PLATE'S EVIDENCE (PLATE1 night 2, P7 — supersedes
+    EODRANK1 DD-1). Inside the pending-first stake, a row whose newest
+    proposal carries a completion signal outranks one that does not, then a
+    higher proposal score outranks a lower one, then capture recency decides.
+    A proposal here is EVIDENCE RIDING THE ROW, never a question waiting on
+    the reader (M's ruling 2026-09-03: a guess a transcript shows was done
+    closes automatically; the narrow middle band's chip acts or retracts
+    itself at the policy window). Nothing this block feeds may say a
+    proposal is pending or awaiting an answer.
+
+    `has_completion_signal` HAS THREE STATES AND THE VALUE IS NEVER
+    FLATTENED. `True` = the producer looked and found completion language;
+    `False` = it looked and found none; `None` = nobody assessed it (legacy
+    rows, and the sent rail, which computes no completion finding at all).
+    All three rank DIFFERENTLY, by `is` comparison and never by truthiness:
+    `True` (2) outranks `None` (1) outranks `False` (0). That is this
+    block's own job — it ranks what it can prove — and it is also the shape
+    that makes the collapse detectable: a truthiness test would read `None`
+    and `False` as one answer, and nothing downstream would ever say so.
+    The value itself is never rewritten either; the row carries the
+    producer's own answer to the reader, because "assessed and found
+    nothing" and "never assessed" are different facts.
+    The proposal is `data.proposal = {score, evidence, evidence_ts, nags,
+    has_completion_signal?}` — read off the projected row when POLICY1 wrote
+    it there, else off the `proposals` map the driver folds from the stream
+    (`plate_view.fold_proposals_and_hints`), else absent: a row with no
+    proposal ranks after every row with one, and a caller passing nothing
+    gets exactly the pre-night-2 order. Each shown row carries `proposal`
+    (or None) so the reader can see what ranked it.
 
     Held captures are fenced out TWICE, and both are load-bearing:
 
@@ -3986,10 +4194,50 @@ def compute_confirm(open_commitments, *, now_iso: str,
         classes = row.get("classes") or row.get("unconfirmed_classes") or []
         return 1 if "pending_review" in classes else 0
 
-    rows.sort(key=lambda r: (-_stake(r), str(r.get("captured_ts") or "")))
+    by_id = {}
+    for ev in (open_commitments or []):
+        data = ev.get("data") if isinstance(ev, dict) and isinstance(
+            ev.get("data"), dict) else {}
+        if data.get("id"):
+            by_id[str(data["id"])] = data
+    folded = proposals or {}
+
+    def _proposal(row):
+        cid = str(row.get("commitment_id") or "")
+        p = (by_id.get(cid) or {}).get("proposal")
+        if not isinstance(p, dict):
+            p = folded.get(cid)
+        return p if isinstance(p, dict) else None
+
+    def _evidence_rank(row) -> tuple:
+        p = _proposal(row)
+        if not p:
+            return (0, 0, 0.0)
+        try:
+            score = float(p.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        # THREE STATES, THREE TIERS, `is` COMPARISONS — never truthiness.
+        # `if p.get("has_completion_signal"):` reads `None` and `False` as
+        # the same answer, which is the silent collapse this key's whole
+        # contract exists to prevent (POLICY1-A traced the live cost: the
+        # sent rail produces genuine `None`, and flattening it makes "nobody
+        # assessed this" read as "assessed and found nothing"). The order is
+        # what the block is FOR — it ranks what it can prove:
+        #   True  (2) the producer found completion language — strongest
+        #   None  (1) nobody assessed it — unknown, so it outranks…
+        #   False (0) …a row the producer looked at and found nothing in,
+        #             which is evidence AGAINST a one-tap close.
+        signal = p.get("has_completion_signal")
+        tier = 2 if signal is True else 0 if signal is False else 1
+        return (1, tier, score)
+
+    rows.sort(key=lambda r: (-_stake(r),) + tuple(-x for x in _evidence_rank(r))
+              + (str(r.get("captured_ts") or ""),))
     shown = rows[:cap] if cap else rows
     for r in shown:
         r["verbs"] = list(CONFIRM_VERBS)
+        r["proposal"] = _proposal(r)
     return {"rows": shown, "n_total": len(rows),
             "n_more": max(0, len(rows) - len(shown)),
             # EODLEDGER1 — the cap states its denominator. This block bound 5
@@ -4583,7 +4831,8 @@ def compute_catchup_read(*, lateness: dict, window=None, workspace_root=None,
 # The blocks whose rows the EVENING numbers, in numbering order.
 #
 # SPEC EODSYNTH1 R-2/R-3 — THIS TUPLE IS NOW EMPTY, AND THAT IS THE BUILD.
-# The evening's one interaction is the tomorrow block, and it does not resolve
+# The evening asks nothing since CUT-PLATE (the tomorrow proposal is receipted,
+# never rendered); the on-demand tomorrow confirm does not resolve
 # by number: `resolve_intent_confirm` reads the PROPOSAL off the same receipt,
 # so a confirm needs no numbered row and never did. Everything that used to be
 # numbered here — the slipped rows and their push/draft/drop verbs, the confirm
@@ -5202,6 +5451,9 @@ __all__ = [
     "MAX_TOMORROW_ROLLOVER",
     # SPEC EODSYNTH1
     "RENDER_ORDER", "COMPUTED_ONLY", "SYNTHESIS_BLOCKS", "NUMBERED_BLOCKS",
+    # CUT-PLATE — the composed screen
+    "SCREEN_ORDER", "TOMORROW_STATED_LINE", "SCREEN_RETIRED_PATTERNS",
+    "ScreenShapeError", "screen_shape_violations", "compose_screen",
     "SECTION_KEY_MIGRATIONS", "TONE_RETIRED_VALUE", "TONE_SUCCESSOR_VALUE",
     "TONE_PRESERVED_KEY", "migrate_section_config",
     "migrate_section_config_on_disk", "slipped_prose_enabled",

@@ -1,17 +1,17 @@
 ---
 name: relationship-moves
 surfaces: both
-description: "The weekly proactive outreach surface: the top 3 people worth reaching out to THIS week, each with last touch, an evidence-cited why-now, and a pre-drafted opener in the CEO's voice. Fires on: 'relationship moves', 'who should I reach out to' / 'who should I reach out to this week', 'weekly outreach'. Ranks on a code-computed blend of dormancy, live-thread leverage, and overdue commitments; runs as an optional Sunday-evening scheduled task (added via 'change my schedule', not first-install). Does NOT fire on 'who went dark' (dormant-customer-scan — raw detection this skill consumes), 'warm threads to revive' (thread-resurrection), 'follow up with [name]' (follow-up-ritual), or 'balance check' / 'my white space' / 'plan a date night' (balance — PERSONAL ties; the tie field partitions the entity set, so a spouse or parent never appears here). The line: scans DETECT; this RANKS and hands you drafts."
+description: "The weekly proactive outreach surface: the top 3 people worth reaching out to THIS week, each with last touch, an evidence-cited why-now, and a pre-drafted opener in the CEO's voice. Fires on: 'relationship moves', 'who should I reach out to' / 'who should I reach out to this week', 'weekly outreach'. Ranks on a code-computed blend of dormancy, live-thread leverage, and overdue commitments; runs as an optional Sunday-evening scheduled task (added via 'change my schedule', not first-install). Does NOT fire on 'who went dark' (dormant-customer-scan — raw detection this skill consumes), 'warm threads to revive' (dormant-customer-scan — its threads lens), 'follow up with [name]' (follow-up-ritual), or 'balance check' / 'my white space' / 'plan a date night' (balance — PERSONAL ties; the tie field partitions the entity set, so a spouse or parent never appears here). The line: scans DETECT; this RANKS and hands you drafts."
 ---
 
 # Relationship Moves — the weekly outreach action pack
 
-One widget, top 3 people worth reaching out to this week, each with a pre-drafted opener. Not a detection report (that's dormant-customer-scan / thread-resurrection) — this RANKS their signals and hands the CEO ready-to-send drafts.
+One widget, top 3 people worth reaching out to this week, each with a pre-drafted opener. Not a detection report (that's dormant-customer-scan — people lens and threads lens) — this RANKS their signals and hands the CEO ready-to-send drafts.
 
 ## Skill Boundary (v2.1)
 
 - **Is:** a ranked, pre-drafted action pack. The differentiator vs the detection skills is the opener-in-your-voice + the weekly batch framing.
-- **Is NOT** `dormant-customer-scan` (the raw "who's gone quiet" report) or `thread-resurrection` (thread-level revival). This skill CONSUMES their normalized `dormancy_signal` events and turns the top 3 into drafts.
+- **Is NOT** `dormant-customer-scan` (the raw "who's gone quiet" report — its people lens, or its threads lens, formerly `thread-resurrection`). This skill CONSUMES their normalized `dormancy_signal` events and turns the top 3 into drafts.
 
 ## Ranking is CODE, never prose math
 
@@ -43,7 +43,8 @@ cd "$PLUGIN_ROOT" && python3 -c "..."
 ```python
 import sys; sys.path.insert(0, "shared/scripts")
 from relationship_moves import compute_relationship_moves
-# thread_totals: pass {} UNLESS thread-resurrection's Phase 2 already ran in THIS
+# thread_totals: pass {} UNLESS the threads lens (dormant-customer-scan, formerly
+#   thread-resurrection) Phase 2 already ran in THIS
 #   session — then reuse its per-counterparty totals verbatim (commitment +3,
 #   project +2, relationship-tier +2/+1, multi-turn <=+3, direction +1). Never
 #   recompute thread scores ad-hoc inside this skill; {} simply zeroes the
@@ -55,7 +56,7 @@ moves = compute_relationship_moves("<abs workspace root>", top_n=3, thread_total
 
 ### Step 3 — Draft the top-3 openers (email-writer chain)
 
-For each candidate, draft an opener in the CEO's voice via the email-writer chain (intro-broker pattern): build a voice corpus from the CEO's prior `email_drafted` events to this person, fall back to the email-writer Voice Block + the two-step protocol. Seed the opener with the thread-resurrection revival hook when a thread anchors the candidate, else the dormant-customer-scan suggested angle. Drafts are NEVER auto-sent.
+For each candidate, draft an opener in the CEO's voice via the email-writer chain (intro-broker pattern): build a voice corpus from the CEO's prior `email_drafted` events to this person, fall back to the email-writer Voice Block + the two-step protocol. Seed the opener with the threads-lens revival hook (dormant-customer-scan, formerly thread-resurrection) when a thread anchors the candidate, else the people-lens suggested angle. Drafts are NEVER auto-sent.
 
 ### Step 4 — Render ONE widget
 
@@ -90,4 +91,4 @@ Render fewer when fewer qualify — NEVER pad with sub-threshold candidates (pad
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> The weekly proactive outreach surface: the top 3 people worth reaching out to THIS week, each with last touch, a one-line why-now citing real evidence, and a pre-drafted opener in the CEO's voice — actionable via send / draft / snooze 3d buttons. Ranks on a code-computed blend of normalized dormancy (the cooling relationship), live-thread leverage, and overdue commitments. Fires as a Sunday-evening scheduled task and on demand. Triggers: 'relationship moves', 'who should I reach out to', 'who should I reach out to this week', 'weekly outreach'. DOES NOT fire on 'who went dark' / 'dormant customer scan' / 'quiet customers' / 'who hasn't replied in a while' (that's dormant-customer-scan — the raw detection report, not a ranked pre-drafted action pack). DOES NOT fire on 'thread resurrection' / 'warm threads to revive' (that's thread-resurrection — thread-granularity). DOES NOT fire on 'follow up with [name]' (that's follow-up-ritual — a single named follow-up). DOES NOT fire on 'balance check' / 'how's my white space' / 'plan a date night' (that's balance — the PERSONAL white-space surface; `tie: "personal"` people are dropped from this skill's candidate set at the load/score boundary, BAL1 D1.1, and belong to Balance exclusively). The line: dormant-customer-scan and thread-resurrection DETECT; relationship-moves RANKS the detections and hands you drafts.
+> The weekly proactive outreach surface: the top 3 people worth reaching out to THIS week, each with last touch, a one-line why-now citing real evidence, and a pre-drafted opener in the CEO's voice — actionable via send / draft / snooze 3d buttons. Ranks on a code-computed blend of normalized dormancy (the cooling relationship), live-thread leverage, and overdue commitments. Fires as a Sunday-evening scheduled task and on demand. Triggers: 'relationship moves', 'who should I reach out to', 'who should I reach out to this week', 'weekly outreach'. DOES NOT fire on 'who went dark' / 'dormant customer scan' / 'quiet customers' / 'who hasn't replied in a while' (that's dormant-customer-scan — the raw detection report, not a ranked pre-drafted action pack). DOES NOT fire on 'thread resurrection' / 'warm threads to revive' (that's dormant-customer-scan — its threads lens, formerly thread-resurrection; thread-granularity). DOES NOT fire on 'follow up with [name]' (that's follow-up-ritual — a single named follow-up). DOES NOT fire on 'balance check' / 'how's my white space' / 'plan a date night' (that's balance — the PERSONAL white-space surface; `tie: "personal"` people are dropped from this skill's candidate set at the load/score boundary, BAL1 D1.1, and belong to Balance exclusively). The line: dormant-customer-scan and thread-resurrection DETECT; relationship-moves RANKS the detections and hands you drafts.

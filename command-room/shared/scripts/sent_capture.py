@@ -86,6 +86,7 @@ from capture_gate import (  # noqa: E402
     build_observed_event,
     classify_capture,
     gate_commitment_data,
+    stamp_confidence as _stamp_confidence,
     matches_open_commitment,
     observed_from_commitment_event,
     resolve_capture_mode,
@@ -274,8 +275,10 @@ def build_sent_commitment_event(
         "person_ids": pids,
         "data": data,
     }
-    if classification_confidence is not None:
-        event["classification_confidence"] = classification_confidence
+    # CONFCLAMP2 seam 4 of 5 (ATTRIB1-A A2): one confidence vocabulary, one
+    # write seam — clamped where it is written, never passed straight through.
+    _stamp_confidence(event, classification_confidence,
+                      holder="build_sent_commitment_event")
     if (ts or "").strip():
         event["ts"] = ts.strip()  # backdate to when the promise was made
     return event

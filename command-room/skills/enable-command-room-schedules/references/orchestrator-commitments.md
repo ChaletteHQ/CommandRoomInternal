@@ -86,7 +86,7 @@ Per `shared/scripts/cru_match.py` Path 2. Before Phase 3's bucket filter runs, s
 
 Path 2 catches what Path 1 (apply-choices in-Cowork sends) and Path 3 (past-meetings transcripts) can't: standalone sends from native clients that aren't tied to a meeting and didn't go through Cowork.
 
-**Cost:** one bulk mail search per Commitments fire (1-2x/day). Conservative threshold (≥ 0.55) means false positives are rare; medium-confidence matches (0.30 - 0.55) write `commitment_review_proposed` events that the confirm queue surfaces for one-click confirm.
+**Cost:** one bulk mail search per Commitments fire (1-2x/day). The match bar and the pending band are `commitment_policy.py`'s (one home for every closer — no number lives in this file): a match at the bar closes, a match in the band writes ONE `commitment_review_proposed` per (item, message) that the confirm queue surfaces for one-click confirm, and an unanswered one is retracted after `commitment_policy.PROPOSAL_TTL_DAYS`.
 
 **Skip entirely if:**
 - No mail send tool was discovered in Phase 2 (degraded — proceed without scan).
@@ -599,7 +599,7 @@ Missing store → no-op. This hides the chase PROMPT only; the commitment stays 
 
 # Phase 3.6 — CRU review items (Phase 2 Stage E, F5 — the pending band surfaces HERE)
 
-The 0.30–0.55 MEDIUM matches (from apply-choices sends, the 2.5/2.6/2.7 pre-render legs, past-meetings transcripts, AND reconcile-sent's newly-persisted pending band) must not evaporate — this chat is their one-click confirm/deny surface.
+The pending-band MEDIUM matches (the band is `commitment_policy.py`'s; from apply-choices sends, the 2.5/2.6/2.7 pre-render legs, past-meetings transcripts, AND reconcile-sent's newly-persisted pending band) must not evaporate — this chat is their one-click confirm/deny surface.
 
 1. Load via `cru_match.load_open_review_proposals(events_path)` (last-7-days window, already filtered for confirmed/dismissed/otherwise-closed).
 2. Render as a compact **"Did these get handled?"** section at the BOTTOM of the widget (after the 6 buckets, before any fr-items), sub-namespace `r1/r2/...` — same shape as Pulse's CRU-review items. Cap 3 per fire (oldest first; the rest ride future fires — the 7-day window self-prunes). Each row: the commitment title + the proposal's evidence in plain English ("looks like your Tuesday email to Sam covered this"). NO score display beyond "likely".

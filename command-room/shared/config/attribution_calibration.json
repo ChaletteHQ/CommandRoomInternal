@@ -1,0 +1,131 @@
+{
+  "spec": "ATTRIB1 D6",
+  "built": "2026-09-04 (re-measured after the second-eyes fix round)",
+  "what": "Measured precision of a capture by the BASIS PAIR the ATTRIB1-B ladder wrote for it. Derived off-repo by joining the three labelled precision sheets (2026-08-16 CSV census, 2026-08-17 and 2026-08-20 reports) to a replay of the 71-transcript corpus; ONLY THIS TABLE COMMITS. No name, no quote, no meeting id, no row id \u2014 counts only, per PRIVACY_POLICY.md.",
+  "population": "labelled rows joined to the replay: 67 of 158 labelled (the rest are outside the 71-transcript corpus)",
+  "verdicts": {
+    "verified": "a real promise, transcript-verified",
+    "not_a_promise": "junk \u2014 nobody promised it",
+    "uncertain": "the labeller could not tell"
+  },
+  "reading": "`precision` counts UNCERTAIN AGAINST the basis, the same conservative convention the capture-precision gate uses. Small n: no cell here is a threshold, and nothing in the product reads this file yet \u2014 it is the baseline a later confidence calibration is argued from, and it is the number to re-measure after this build has run a week. Re-measured on the post-fix tip: the earlier cut was taken before the dictation class was narrowed, the commitment-strength split landed, and the empty-question shape was refused, so the basis mix it reported is superseded by this one.",
+  "table": [
+    {
+      "owner_basis": "calendar",
+      "counterparty_basis": "calendar",
+      "n": 2,
+      "verified": 2,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "calendar",
+      "counterparty_basis": "inferred",
+      "n": 1,
+      "verified": 1,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "calendar",
+      "counterparty_basis": "none",
+      "n": 1,
+      "verified": 1,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "inferred",
+      "counterparty_basis": "calendar",
+      "n": 16,
+      "verified": 13,
+      "not_a_promise": 1,
+      "uncertain": 2,
+      "precision": 0.812
+    },
+    {
+      "owner_basis": "inferred",
+      "counterparty_basis": "inferred",
+      "n": 14,
+      "verified": 12,
+      "not_a_promise": 1,
+      "uncertain": 1,
+      "precision": 0.857
+    },
+    {
+      "owner_basis": "inferred",
+      "counterparty_basis": "none",
+      "n": 5,
+      "verified": 4,
+      "not_a_promise": 1,
+      "uncertain": 0,
+      "precision": 0.8
+    },
+    {
+      "owner_basis": "inferred",
+      "counterparty_basis": "person_ids",
+      "n": 1,
+      "verified": 1,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "inferred",
+      "counterparty_basis": "unknown",
+      "n": 2,
+      "verified": 2,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "speaker",
+      "counterparty_basis": "calendar",
+      "n": 8,
+      "verified": 7,
+      "not_a_promise": 1,
+      "uncertain": 0,
+      "precision": 0.875
+    },
+    {
+      "owner_basis": "speaker",
+      "counterparty_basis": "inferred",
+      "n": 7,
+      "verified": 5,
+      "not_a_promise": 0,
+      "uncertain": 2,
+      "precision": 0.714
+    },
+    {
+      "owner_basis": "speaker",
+      "counterparty_basis": "person_ids",
+      "n": 1,
+      "verified": 1,
+      "not_a_promise": 0,
+      "uncertain": 0,
+      "precision": 1.0
+    },
+    {
+      "owner_basis": "speaker",
+      "counterparty_basis": "unknown",
+      "n": 4,
+      "verified": 3,
+      "not_a_promise": 0,
+      "uncertain": 1,
+      "precision": 0.75
+    },
+    {
+      "owner_basis": "unknown",
+      "counterparty_basis": "inferred",
+      "n": 5,
+      "verified": 4,
+      "not_a_promise": 1,
+      "uncertain": 0,
+      "precision": 0.8
+    }
+  ]
+}

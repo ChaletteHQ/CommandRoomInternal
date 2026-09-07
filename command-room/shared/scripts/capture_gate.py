@@ -486,6 +486,19 @@ def gate_commitment_data(
             f"({(cp_ids + cp_names)[0]!r}) — a deliverable owed to/by a named "
             f"person is a promise, not a task; reclassify"
         )
+    # EXTRACT1 D-A (dragger 4) — the owner can never be their own
+    # counterparty. Two live rows listed the user on both ends of one
+    # promise; that is not a judgement call, it is a shape that cannot be a
+    # promise. The meeting route strips the self-reference BEFORE it reaches
+    # here (and says so on the row); every other writer, and any caller
+    # that bypasses the route, is refused at this seam.
+    owner = str(data.get("owner_id") or "").strip()
+    if owner and owner in cp_ids:
+        raise error_cls(
+            f"{subject} names its owner ({owner!r}) as its own counterparty "
+            f"— a person cannot owe something to themselves; drop the "
+            f"self-reference or resolve who is really on the other end"
+        )
 
     # Safety inversion (v4.5.2): pending_review defaults ON whenever
     # attribution is not confidently resolved — absence of the flag is not
@@ -1184,12 +1197,20 @@ def matches_open_commitment(
 
 
 def _promoted_ids(events) -> set:
-    return {
-        str((ev.get("data") or {}).get("promoted_from"))
-        for ev in events
-        if ev.get("type") == "commitment"
-        and (ev.get("data") or {}).get("promoted_from")
-    }
+    """Observed ids a promotion took out of the tier — MINUS the ones a
+    later `promotion_reversed` marker put back (POLICY1-B DD-7 / F-1: the
+    calendar closer's undo returns an observed guess to the tier exactly as
+    it was; the promoted commitment stays closed history, never a question)."""
+    promoted: dict = {}
+    reversed_ids: set = set()
+    for ev in events:
+        d = ev.get("data") or {}
+        if ev.get("type") == "commitment" and d.get("promoted_from"):
+            promoted[str(d.get("promoted_from"))] = str(d.get("id") or "")
+        elif ev.get("type") == "commitment_updated" and d.get("promotion_reversed") is True:
+            if d.get("observed_id"):
+                reversed_ids.add(str(d.get("observed_id")))
+    return {oid for oid in promoted if oid not in reversed_ids}
 
 
 def find_corroborations(workspace_root, *, since_ts=None, now=None) -> list:

@@ -22,6 +22,7 @@
     "output_profile": ["density", "visual_bias", "page_cap", "default_format", "format_by_kind", "visual_first"],
     "chat_persona": ["brevity", "explanation_depth", "formality", "encouragement", "humor_ok", "jargon_level", "language", "never_line"],
     "brain_render": ["brain_candor"],
-    "binding_gauge": ["ready_min_substance", "ready_min_ratio"]
+    "binding_gauge": ["ready_min_substance", "ready_min_ratio"],
+    "commitment-policy": ["preset", "auto_close_from_transcript"]
   }
 }

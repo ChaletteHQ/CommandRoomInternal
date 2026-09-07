@@ -2,7 +2,7 @@
 name: command-room-update-bridge
 surfaces: cowork
 slack_fallback: "Updates apply on desktop — open Cowork and run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (the owning enable-* skill), or 'restart onboarding' (command-room-onboarding)."
+description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
@@ -38,7 +38,7 @@ It is **conservative by design.** It does not modify existing data, does not run
 4. **Single confirmation for the install batch, calibration questions for migrations.** The artifact install + migration list goes through one parent confirmation. Migrations that need calibration (Yes/Sometimes/No questions) ask their own question after the parent confirmation — not a duplicate "are you sure?" prompt, but the actual calibration content.
 5. **Cowork-only for the artifact installs.** Mirror the same graceful degradation as `command-room-onboarding` Phase 1a's silent Quick Commands install: if `mcp__cowork__create_artifact` is unavailable, surface the chat-based fallback and skip artifact installs. Workspace migrations work fine without Cowork — keep applying them.
 6. **Surgical edits only on workspace files.** Phase 4.5 migrations append to existing sections; never regenerate, never reorder, never touch unrelated sections. If the target structure is missing (e.g., no `## Preferences` heading in CLAUDE.md), skip with a clear message — don't try to recover. (One sanctioned exception: `claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, and `claude_md_research_rule_v1` may append a whole NEW `## Session Rules` section at end of file when the heading is missing — appending a new section can't mangle existing structure, so it stays surgical/additive. See those migrations' Phase 4.5 entries.)
-7. **NEVER improvise an artifact. (Added v2.7.10 — hotfix.)** The canonical templates shipped WITH this plugin at `skills/enable-workspace-map/references/orgs-map-artifact.html` and `skills/enable-quick-commands/references/quick-commands-artifact.html` are the **only** source. If `mcp__cowork__create_artifact` fails for any reason — payload size limit, tool unavailable, tool error, truncated return, encoding mismatch — DO NOT generate a substitute. DO NOT hand-roll a "compact equivalent." DO NOT inline a different HTML page. DO NOT compress, summarize, or simplify the template on the fly. Surface the failure verbatim to the user, log `artifact_install_failed` with the exact error, and STOP. Hand-rolled substitutes shipped three independent bugs to a real client install on 2026-04-26 (see references/HISTORY.md). Improvising is now a forbidden behavior, not a fallback. If the canonical template is genuinely too large for the tool, that is a packaging problem to fix upstream in the plugin source repo, not a problem to route around in this skill.
+7. **NEVER improvise an artifact. (Added v2.7.10 — hotfix.)** The canonical templates shipped WITH this plugin at `skills/level-up-command-room/references/orgs-map-artifact.html` and `skills/level-up-command-room/references/quick-commands-artifact.html` are the **only** source. If `mcp__cowork__create_artifact` fails for any reason — payload size limit, tool unavailable, tool error, truncated return, encoding mismatch — DO NOT generate a substitute. DO NOT hand-roll a "compact equivalent." DO NOT inline a different HTML page. DO NOT compress, summarize, or simplify the template on the fly. Surface the failure verbatim to the user, log `artifact_install_failed` with the exact error, and STOP. Hand-rolled substitutes shipped three independent bugs to a real client install on 2026-04-26 (see references/HISTORY.md). Improvising is now a forbidden behavior, not a fallback. If the canonical template is genuinely too large for the tool, that is a packaging problem to fix upstream in the plugin source repo, not a problem to route around in this skill.
 8. **Verify every artifact install before logging success. (Added v2.7.10 — hotfix.)** After `create_artifact` returns, sanity-check the install before writing the `artifact_installed` event:
    - **Size check:** Read back the installed artifact byte length. It must be ≥ 80% of the source template's byte length on disk. (Orgs Map source ≈ 30 KB → installed ≥ 24 KB. Quick Commands source size varies → installed ≥ 80% of source.) Anything smaller is a stub or truncation.
    - **Marker check:** Confirm the installed artifact contains a known marker string from the source template — for Orgs Map, the literal `data-artifact="orgs-map"`; for Quick Commands, the literal `data-artifact="quick-commands"`. (If a template doesn't yet have a marker, add one in the plugin source repo first; do not skip the check.)
@@ -108,8 +108,8 @@ The **current Layer 1 default artifact set** (v2.9.0 architectural reset) is:
 
 ```
 CURRENT_DEFAULTS = {
-  orgs-map,                 // enable-workspace-map (simplified nav tree + Refresh + Run cleanup buttons; skill renamed v3.5.0, artifact id preserved)
-  quick-commands            // enable-quick-commands (curated 19-command cheat sheet, block-grid)
+  orgs-map,                 // level-up-command-room, Mode: Workspace Map (simplified nav tree + Refresh + Run cleanup buttons; artifact id preserved across the v3.5.0 rename and the SKILLMERGE1 fold)
+  quick-commands            // level-up-command-room, Mode: Quick Commands (curated cheat sheet, 3 tabs)
 }
 ```
 
@@ -487,12 +487,12 @@ Stop. Log `plugin_update_deferred` with reason `"cowork-not-available"`.
 
 If Cowork is available, install in this order. **Use the renderer pipeline. Do NOT generate the HTML inline. Rule 7 enforcement lives in the architecture: the model never writes the artifact bytes.**
 
-**v2.9.0 architectural reset:** the four prior dashboards (Daily Command Center, People Network, Commitments Tracker, Process Meetings, Daily Today) were retired — their content moved into the 5 daily scheduled chats (Upcoming Meetings, Inbox, Commitments, Pulse, Past Meetings, with the two commitment chats merged in v2.10.2). The two remaining always-installed artifacts are Orgs Map (visual entity tree) and Quick Commands (trigger-phrase cheat sheet). Each has its own enable-* skill; bridge delegates to each.
+**v2.9.0 architectural reset:** the four prior dashboards (Daily Command Center, People Network, Commitments Tracker, Process Meetings, Daily Today) were retired — their content moved into the 5 daily scheduled chats (Upcoming Meetings, Inbox, Commitments, Pulse, Past Meetings, with the two commitment chats merged in v2.10.2). The two remaining always-installed artifacts are Orgs Map (visual entity tree) and Quick Commands (trigger-phrase cheat sheet). Both are Modes of `level-up-command-room` (formerly the enable-workspace-map / enable-quick-commands skills, folded in SKILLMERGE1); the bridge delegates to that skill in silent mode, one Mode per artifact.
 
-1. **Workspace Map** — invoke `enable-workspace-map` in silent mode. Skill runs the renderer pipeline against `enable-workspace-map/references/orgs-map-artifact.html`, calls `create_artifact` with `id: "orgs-map"` (artifact id preserved across the v3.5.0 skill rename for back-compat), runs Rule 8 verification, logs.
-2. **Quick Commands** — invoke `enable-quick-commands` in silent mode. Skill runs the renderer pipeline against `enable-quick-commands/references/quick-commands-artifact.html`, calls `create_artifact` with `id: "quick-commands"`, runs Rule 8 verification, logs.
+1. **Workspace Map** — invoke `level-up-command-room` (Mode: Workspace Map) in silent mode. The mode runs the renderer pipeline against `level-up-command-room/references/orgs-map-artifact.html`, calls `create_artifact` with `id: "orgs-map"` (artifact id preserved across the v3.5.0 skill rename for back-compat), runs Rule 8 verification, logs.
+2. **Quick Commands** — invoke `level-up-command-room` (Mode: Quick Commands) in silent mode. The mode runs the renderer pipeline against `level-up-command-room/references/quick-commands-artifact.html`, calls `create_artifact` with `id: "quick-commands"`, runs Rule 8 verification, logs.
 
-After each enable skill returns, run the **Rule 8 verification block** at the bridge level too — defence-in-depth, since the enable-* skill is the canonical owner but a verification failure here is still a bridge-install failure.
+After each enable skill returns, run the **Rule 8 verification block** at the bridge level too — defence-in-depth, since level-up-command-room is the canonical owner but a verification failure here is still a bridge-install failure.
 
 **Verbatim artifact ids — non-negotiable.** The two canonical ids are:
 
@@ -507,7 +507,7 @@ Do NOT invent variants (`orgs-map-v2`, `quick-commands-canonical`, etc.) — the
 
 **Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
 
-Both enable-* skills have built-in idempotency: if their artifact is already installed (existing `artifact_installed` event), they skip silently. So calling on a partial-install state is safe.
+Both level-up-command-room Modes have built-in idempotency: if their artifact is already installed (existing `artifact_installed` event), they skip silently. So calling on a partial-install state is safe.
 
 **Failure handling per artifact (Rule 7 + Rule 8 enforcement, architectural in v2.7.12+):**
 
@@ -681,7 +681,7 @@ Narrate completion in one line:
 
 **Narrate completion in one line:**
 
-> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up in your next Waiting On and My Plate chats."* (Pre-CTS1 workspace still on the `commitments` task: say "Commitments chat" until the split registers.)
+> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up in your next Waiting On and My Plate chats."*
 
 (Or, for declined): *"Skipped. You can run it later by saying `scan for commitments`."*
 
@@ -1077,6 +1077,16 @@ After Phase 4.7 completes on the full-update intent path, surface this one-line 
 
 Why this is unconditional, not detected: Cowork's VHD-cache refresh timing is opaque to the bridge — some workspaces remount cleanly on the next fire, some serve the stale snapshot for hours. We can't reliably detect from inside this skill whether the next scheduled fire will hit a stale mount. Cheap, plain English, harmless if not needed.
 
+### Post-update stale-prompt check — ONE sentence, only when the refresh did not reach the chats (CUT-PLATE, 2026-09-06)
+
+**What the registered prompt is, so nobody re-registers for the wrong reason.** Each scheduled chat's registered prompt is a thin BOOTLOADER that `cat`s the plugin's orchestrator file at fire time (`references/scheduled-task-bootloader.md`, Step 3). The CONTENT a fire runs is therefore always the installed plugin's — the morning brief's lead, the day-close's plate screen, the wrap's Parked review all reach a fire the moment the plugin is updated, with no re-register. What CAN go stale is the bootloader's own body (its workspace-discovery snippet, its diagnostic version stamp), and Step 1.C above refreshes that in place through `update_scheduled_task(taskId, prompt=…)` — never a re-register, never a new chat.
+
+**The check, on the full-update intent path, after Phase 4.7 and after the readback:** read the registered tasks back (`list_scheduled_tasks`) and compute the BODY drift — `drift = schedule_refresh.prompt_body_drift(records, plugin_version=<installed version>)`: the task ids whose registered bootloader body still differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the same `prompts_equivalent` compare Step 1.C writes on, so a non-empty `drift` after the readback IS "the refresh did not reach the chats"). Then post what `schedule_refresh.stale_prompt_notice(drift)` returns — the ONE pinned sentence, verbatim, or nothing. `task_watchdog.check_prompt_versions(records, <installed version>)` — the stamp read — is INFORMATIONAL here and never earns the sentence: a stamp-only difference is not drift (CUT-PLATE fix round 1, REVIEW F-1 — Step 1.C deliberately leaves the stamp alone, BRIDGESIL1 Ruling §0.2, so a sentence keyed to the stamp would print on every run of every release whose bootloader body did not change, and the phrase it names could never clear it). Post:
+
+> *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."*
+
+It renders ONCE per run, only when a body drift survives the refresh — which happens when this session cannot see the scheduler store the chats live in (a Code / cloud session reads an empty store; the v5.28.0 attended test's Step 0 saw all seven bootloaders still stamped v5.20.0 after two updates for exactly this reason) or when the `update_scheduled_task` call failed. Never a per-task list, never a diagnosis, never a second phrasing — the health check and the Monday cleanup note say this same sentence from the same constant. When the readback shows every stamp current, say nothing.
+
 ### Artifact-only intent (Phase 4.7 skipped)
 
 Skip the schedule registration entirely. After Phase 4 completes, surface this nudge once at the end of the bridge flow:
@@ -1275,10 +1285,10 @@ Since v3.4.1 → v3.4.5, here's what's worth knowing:
 
 2. v3.4.4 — Commitments filter, full shape coverage.
    v3.4.4 fixed a filter that was silently dropping commitments. Your workspace has 47
-   open commitment events that should have been surfacing in your daily Commitments
+   open commitment events that should have been surfacing in your daily Waiting On
    fire but weren't (breakdown by shape: {'flat-new': 6, 'legacy': 19,
-   'owner_person_id-variant': 7, 'other': 15}). Re-fire your Commitments task now to
-   see them, by opening the Waiting On chat in Cowork (pre-CTS1: the Commitments chat) and saying `re-run`. Or wait
+   'owner_person_id-variant': 7, 'other': 15}). Re-fire your Waiting On task now to
+   see them, by opening the Waiting On chat in Cowork and saying `re-run`. Or wait
    for tomorrow's scheduled 8:30 AM fire — same outcome, just a delay.
 
 3. v3.4.5 — Release-manifest system — update command room now plays per-version remediations.
@@ -1398,6 +1408,10 @@ Don't list the add-ons inline. The user can discover them at their pace.
 **`create_artifact` returns success but Rule 8 verification fails. (Added v2.7.10.)** This means the tool accepted the call but what landed in Cowork doesn't match the canonical template — possible causes: tool truncation, encoding mishandling on the wire, payload limit silently clipped the input. Mark the install failed via `artifact_install_failed` with `reason: "verification_failed:<which>"`. Surface to user: *"Workspace Map installed but didn't pass my check — what landed doesn't match the original. Don't pin it yet. Restart Cowork and say `update command room` to retry, or report the problem if it keeps happening."* Do NOT pin, do NOT log `artifact_installed`, do NOT continue to the next artifact in the batch.
 
 **Prior install of a non-canonical "compact equivalent" exists from pre-v2.7.10. (Added v2.7.10.)** Some users (e.g., Dustin Sample's install on 2026-04-26) received a hand-rolled improvised artifact from the v2.7.9 bridge before the Rule 7 + Rule 8 enforcement was in place. Detection: an `artifact_installed` event exists for `workspace_map` or `daily_command_center` but the live artifact fails the Rule 8 verification block (size ≪ 80% of source, or missing the marker string, or contains `â€` mojibake). Action: append an `artifact_install_failed` event with `reason: "non_canonical_predecessor"`, surface to user: *"You have a Workspace Map installed, but it's not the right one — an earlier version installed a broken copy. I'd like to remove it and install the real one. OK to proceed? (yes / no)"* On yes, uninstall the non-canonical artifact (call `mcp__cowork__delete_artifact` with the installed artifact id if the tool exists in this session; otherwise tell the user: *"Right-click the Workspace Map in your Cowork sidebar and choose Remove, then say 'update command room' and I'll install the real one."*) and re-run the install. On no, leave it alone but flag in the next `cleanup`.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

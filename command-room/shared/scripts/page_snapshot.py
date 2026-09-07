@@ -219,9 +219,94 @@ def load_pageset(workspace_root, surface: str, *,
                       age_minutes=round(age.total_seconds() / 60.0, 1))
 
 
+# CUT-C item 6 (ATTENDED_TEST_v5.28.0 B2.5) — the events that REVERSE an
+# applied write. `applied_ids_since` used to keep every answered id for the
+# life of the page-set, so after an `undo` the frozen page still hid the rows
+# the undo had just put back ("the page-set won't re-ask ones you already
+# answered"). A reversal later in the stream than the apply now subtracts
+# the id, so the restored rows render in their original positions.
+#
+# One reversal shape per undo door, keyed on the WRITTEN event (the receipt-
+# honesty rule — a narrated undo that wrote nothing restores nothing):
+#   commitment_reopened                  the S4 reopen (Done / Drop undone)
+#   commitment_updated + restored_by     restore_due (Later… undone), incl.
+#                                        the `due_cleared` back-to-no-date
+#   commitment_updated + promotion_reversed
+#                                        the calendar closer's close undone
+#   commitment_updated + owner_confirmed + reason "triage undo"
+#                                        a Not-mine handed back (the S4 undo's
+#                                        stated reason on confirm_commitment_owner)
+#   commitment_reassigned + counterparty_restored / counterparty_cleared
+#                                        a lapse default's counterparty undone
+#   chat_dismissal_cleared               a Later… snooze / skip lifted (the
+#                                        cleared event carries `target_id`)
+#   brain_change_undone                  the batch undo's marker; its
+#                                        `change_ref` (`seq:N`) names the
+#                                        change event, whose commitment_id
+#                                        is read off the same pass
+_TRIAGE_UNDO_REASON = "triage undo"
+
+
+def _is_undo_action(action) -> bool:
+    """True when an `apply_choices_applied` row is the UNDO gesture itself.
+
+    The dispatcher receipts an undo the same way it receipts an answer — same
+    wire ids, `outcome: "ok"` — so the shape alone cannot tell them apart; the
+    verb can. Matches the bare verb and any `undo <group>` / `undo all` form,
+    case- and space-insensitively, and nothing else (`undone`, a title that
+    merely contains the word, an empty action).
+    """
+    if not isinstance(action, str):
+        return False
+    verb = action.strip().lower()
+    return verb == "undo" or verb.startswith("undo ")
+
+
+def _reversal_target(ev: dict, seq_to_cid: dict) -> str | None:
+    """The wire id a reversal event puts back, or None when `ev` reverses
+    nothing. Pure — reads the event and the seq→commitment map only."""
+    t = ev.get("type")
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    cid = d.get("commitment_id") or d.get("id")
+    if t == "commitment_reopened":
+        return str(cid) if cid else None
+    if t == "commitment_updated":
+        if not cid:
+            return None
+        if d.get("restored_by") or d.get("due_cleared") is True:
+            return str(cid)
+        if d.get("promotion_reversed") is True:
+            return str(cid)
+        if (d.get("owner_confirmed") is True
+                and str(d.get("reason") or "").startswith(_TRIAGE_UNDO_REASON)):
+            return str(cid)
+        return None
+    if t == "commitment_reassigned":
+        if cid and (d.get("counterparty_restored") is True
+                    or d.get("counterparty_cleared") is True):
+            return str(cid)
+        return None
+    if t == "chat_dismissal_cleared":
+        tid = d.get("target_id")
+        if tid in (None, ""):
+            ref = d.get("dismissal_seq")
+            tid = seq_to_cid.get(str(ref)) if ref not in (None, "") else None
+        return str(tid) if tid not in (None, "") else None
+    if t == "brain_change_undone":
+        ref = str(d.get("change_ref") or "")
+        if ref.startswith("seq:"):
+            tid = seq_to_cid.get(ref[4:])
+            return str(tid) if tid else None
+        return None
+    return None
+
+
 def applied_ids_since(workspace_root, since_iso: str | None) -> set:
     """Wire ids (`n`) the user has successfully applied since `since_iso`,
-    read from the substrate's own `apply_choices_applied` audit events.
+    read from the substrate's own `apply_choices_applied` audit events —
+    MINUS every id whose applied write was later REVERSED (an undo of any
+    door; see `_reversal_target`). "Later" is stream order, not the clock:
+    a reversal that sits after the apply in the ledger subtracts it.
 
     Derived rather than registered on purpose: a bookkeeping call a skill can
     forget is a silent regression waiting to happen. Never raises — a
@@ -234,26 +319,49 @@ def applied_ids_since(workspace_root, since_iso: str | None) -> set:
     floor = _parse_ts(since_iso)
     if floor is None:
         return set()
-    out: set = set()
+    applied_at: dict = {}      # n -> stream position of its latest apply
+    reversed_at: dict = {}     # n -> stream position of its latest reversal
+    seq_to_cid: dict = {}      # event seq -> the commitment/target it names
     try:
         from events_io import iter_events
-        for ev in iter_events(workspace_root):
-            if ev.get("type") != "apply_choices_applied":
-                continue
-            ts = _parse_ts(ev.get("ts"))
-            if ts is None or ts < floor:
-                continue
+        for pos, ev in enumerate(iter_events(workspace_root)):
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-            for row in data.get("actions") or []:
-                if not isinstance(row, dict):
+            seq = ev.get("seq")
+            if seq is not None:
+                named = data.get("commitment_id") or data.get("target_id")                     or data.get("id")
+                if named not in (None, ""):
+                    seq_to_cid[str(seq)] = str(named)
+            if ev.get("type") == "apply_choices_applied":
+                ts = _parse_ts(ev.get("ts"))
+                if ts is None or ts < floor:
                     continue
-                if str(row.get("outcome") or "") in _APPLIED_OUTCOMES:
+                for row in data.get("actions") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("outcome") or "") not in _APPLIED_OUTCOMES:
+                        continue
                     n = row.get("n")
-                    if n not in (None, ""):
-                        out.add(str(n))
+                    if n in (None, ""):
+                        continue
+                    # The UNDO GESTURE writes its own applied-row, with the same
+                    # wire ids and an `ok` outcome, AFTER the reversal events it
+                    # produced (REVIEW_MERGED_v5290_2026-09-06 F-1: proved on the
+                    # live book — without this branch the receipt re-registers the
+                    # id at a later stream position than its own reversal, so the
+                    # restored row stays hidden and CUT-C item 6 is inert on the
+                    # real undo door). An undo row IS the reversal, not an apply.
+                    if _is_undo_action(row.get("action")):
+                        reversed_at[str(n)] = pos
+                    else:
+                        applied_at[str(n)] = pos
+                continue
+            target = _reversal_target(ev, seq_to_cid)
+            if target is not None:
+                reversed_at[target] = pos
     except Exception:  # pragma: no cover - defensive
         return set()
-    return out
+    return {n for n, pos in applied_at.items()
+            if reversed_at.get(n, -1) < pos}
 
 
 def suppress_applied(view: dict, applied: set) -> tuple[dict, int]:

@@ -2,7 +2,7 @@
 name: log-resolution
 surfaces: cowork
 slack_fallback: "No shortcut needed here — just tell me what you resolved (for example 'mark the Acme deck done') and I'll log it."
-description: "Logs a `thread_resolved` event to events.jsonl when a LEGACY Command Room dashboard artifact fires its per-click `log resolved:` prompt. Current scheduled-chat widgets and dashboards do NOT route here — their ✓ clicks travel in the consolidated `apply choices: [...]` message handled by apply-choices. Fires silently in chat — minimal response, no clutter. Triggers on the artifact's auto-sent prompts: `log resolved: [id]`, `log resolved: [id] ([kind])`."
+description: "Legacy-only: fires on the per-click 'log resolved:' prompts an old Command Room dashboard artifact auto-sends — 'log resolved: [id]', 'log resolved: [id] ([kind])' — and logs a thread_resolved event to events.jsonl. Current scheduled-chat widgets and dashboards do NOT route here — their ✓ clicks travel in the consolidated 'apply choices: [...]' message handled by apply-choices. Fires silently in chat — minimal response, no clutter."
 ---
 
 # log-resolution

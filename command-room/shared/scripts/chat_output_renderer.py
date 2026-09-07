@@ -780,6 +780,12 @@ class WidgetFeedbackContractError(ValueError):
     """
 
 
+class ReadOnlyContractError(ValueError):
+    """SPEC_WIDGETRO1 §2-1 — a page rendered read-only carries a batch control
+    (Apply all / Reset / Snooze rest / the counter) or lacks its dispatch
+    marker. Raised by validate_rendered_widget(read_only=True)."""
+
+
 class WrapperContractError(ValueError):
     """Raised by `validate_rendered_widget()` when the rendered HTML's
     button-to-wrapper structural invariant is violated.
@@ -2469,7 +2475,8 @@ def scan_rendered_html(html: str, *, surface=None) -> None:
                          vocab_text=vocab_scannable, surface=surface)
 
 
-def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
+def render_chat_output_widget(data: dict, *, wrapper: str = "document",
+                              read_only: bool = False) -> str:
     """Render a full chat output as self-contained HTML for `mcp__visualize__show_widget`.
 
     The orchestrator passes the same data view shape used for `render_chat_output`
@@ -2559,12 +2566,27 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # direct-dispatch mode and validate_rendered_widget reads to exempt the
     # suppressed footer from the F-58 feedback contract.
     single_item = (total == 1)
+    # SPEC_WIDGETRO1 §2-1 (CUT-C item 9, ATTENDED_TEST_v5.28.0 B5.1 / B5.3) —
+    # a READ-ONLY page: the surface declares its own row verbs (one
+    # `wrong to hide`, the four revisit verbs) and NO batch chrome — no
+    # counter, no Apply all, no Reset, and above all no `Snooze rest (1 day)`,
+    # whose handler staged a bare `skip` on every row and dispatched without
+    # Apply on a surface whose prose promises that looking changes nothing.
+    # The `cr-card-readonly` marker is what the JS reads to dispatch a pick
+    # on its own (the single-item path, per row), and what
+    # `validate_rendered_widget(read_only=True)` reads to red a page that
+    # carries any footer control by name.
+    read_only = bool(read_only)
 
     # T2.2 — content renders FIRST; the <style>/<script> scaffold is composed
     # from what the content actually contains (conditional emission).
     parts: list[str] = []
-    parts.append('<div class="cr-card cr-card-single">' if single_item
-                 else '<div class="cr-card">')
+    card_classes = ["cr-card"]
+    if single_item:
+        card_classes.append("cr-card-single")
+    if read_only:
+        card_classes.append("cr-card-readonly")
+    parts.append(f'<div class="{" ".join(card_classes)}">')
     # Brand strip — inline Chalette Command Room stacked logo (v2.12.2+).
     # SVG colors adapted for dark widget background:
     #   "C" stays brand gold #B88B4A (works on either bg)
@@ -2639,7 +2661,8 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # WG1-A D-A5 — batch chrome only on multi-item widgets. A single-item card
     # dispatches directly on click (crSingleDispatch); the counter/Apply/Reset/
     # Snooze-rest footer would be dead chrome, so it is suppressed.
-    if not single_item:
+    # SPEC_WIDGETRO1 §2-1 — and never on a read-only page (see above).
+    if not single_item and not read_only:
         parts.append('<div class="cr-footer">')
         parts.append(
             f'<div class="cr-counter"><strong id="cr-count">0</strong> of {total} selected</div>'
@@ -2692,7 +2715,7 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document") -> str:
     # without the renderer raising. (If the agent then post-mangles the HTML,
     # the orchestrator-side `validate_rendered_widget()` call still catches
     # that downstream — both gates remain useful.)
-    validate_rendered_widget(html)
+    validate_rendered_widget(html, read_only=read_only)
 
     return html
 
@@ -2710,19 +2733,39 @@ import re as _re_mod
 # leaks whole into visible row text. Used by validate_rendered_widget's
 # visible-span check and by the sub-item renderer's label suppression (T3.1
 # FB-13 — a commitment id as a sub-item's visible label is the same class).
+#
+# HYGIENE9 (d2): `pcand:<12 hex>` (the person-candidate wire id) was NOT in
+# this list, so `pcand:53504c35d5f8.` rendered as the held queue's visible row
+# number through the whole v5.27.0 supervised test and this validator let it
+# through. The generic `<prefix>:<hex>` alternative closes the class, not the
+# one instance: any wire id a future surface mints in that shape is refused
+# here whether or not somebody remembers to add its prefix.
 _WIRE_ID_RE = _re_mod.compile(
     r"^(?:bp_[0-9a-f]{6,}"
-    r"|(?:person|cru|org|project|dont_forget|schedule):\S+"
+    r"|(?:person|cru|org|project|dont_forget|schedule|pcand):\S+"
+    r"|[a-z][a-z0-9_]*:[0-9a-f]{6,}"
     r"|(?:commitment_seq|seq|event)_\d+"
     r"|cmt_\S+)$"
 )
+
+# HYGIENE9 (d2): a RAW SCORE in the renderer- or writer-composed part of a
+# row — the context line and the annotations, never the user's own name /
+# subject spans — is refused the same way ("extraction confidence 0.5 below
+# threshold" printed on two plate rows at v5.27.0 B2.5). Same regex as
+# `review_reasons.SCORE_SHAPE_RE` and the plate's P4 gate, spelled here so
+# this module keeps its import posture.
+_SCORE_SHAPE_RE = _re_mod.compile(
+    r"(?:\bconfidence\s+-?\d|\b\d+(?:\.\d+)?\s+below\s+(?:threshold|floor)\b"
+    r"|\bbelow\s+(?:threshold|floor)\b|\b(?:extraction|match)\s+confidence\b)",
+    _re_mod.I)
 
 
 # ============================================================================
 # Post-render structural validator (v2.14.34+)
 # ============================================================================
 
-def validate_rendered_widget(html: str, *, surface=None) -> None:
+def validate_rendered_widget(html: str, *, surface=None,
+                             read_only: bool = False) -> None:
     """Post-render structural assertion: every action button that needs an
     input wrapper has its matching wrapper element in the rendered HTML.
     When `surface` declares an org/board/client/external audience, the
@@ -2874,6 +2917,11 @@ def validate_rendered_widget(html: str, *, surface=None) -> None:
         # element form — either false-hit would silently disable the
         # F-58/F-17 enforcement for the page.
         single_item = '<div class="cr-card cr-card-single">' in html
+        # SPEC_WIDGETRO1 §2-1 — a read-only page is exempt from the batch
+        # footer exactly as a single-item card is (its rows dispatch on
+        # their own); the read-only contract itself is checked below.
+        if read_only:
+            single_item = True
         if 'id="cr-count"' not in html and not single_item:
             feedback_missing.append('live selection counter (id="cr-count")')
         if 'id="cr-apply"' not in html and not single_item:
@@ -2923,6 +2971,36 @@ def validate_rendered_widget(html: str, *, surface=None) -> None:
             f"{sample_lines}{more_note}"
         )
 
+    # SPEC_WIDGETRO1 §2-1 (CUT-C item 9) — THE READ-ONLY CONTRACT, by name.
+    # A page rendered read-only must carry the marker its JS dispatches on
+    # and must carry NONE of the batch controls: no Apply all, no Reset, no
+    # Snooze rest. This is the fence the would-hold review and the revisit
+    # page stand behind; removing the footer suppression reds here.
+    if read_only:
+        ro_violations = []
+        # The ELEMENT form, never the bare token: the widget JS carries the
+        # `.cr-card-readonly` selector string on every page, so a substring
+        # test on the token would pass on a page that has no marker at all.
+        if not _re_mod.search(
+                r'<div class="cr-card(?: cr-card-single)? cr-card-readonly">', html):
+            ro_violations.append("the read-only marker (cr-card-readonly on "
+                                 "the card element) is missing — a pick "
+                                 "would not dispatch")
+        for marker, label in (('id="cr-apply"', "Apply all"),
+                              ('id="cr-clear"', "Reset"),
+                              ('id="cr-skip-all"', "Snooze rest (1 day)"),
+                              ('id="cr-count"', "the selection counter")):
+            if marker in html:
+                ro_violations.append(f"{label} ({marker}) rendered on a "
+                                     f"read-only page")
+        if ro_violations:
+            raise ReadOnlyContractError(
+                "Read-only widget contract broken (SPEC_WIDGETRO1 §2-1):\n  - "
+                + "\n  - ".join(ro_violations)
+                + "\n\nA read-only surface renders its own row verbs and no "
+                "batch chrome — never a bulk mute on a page whose prose "
+                "promises that looking changes nothing.")
+
     # T2.2 display hygiene (RV-5 M feedback): wire ids must never render as
     # VISIBLE row text. Ids live in data-* attributes and action tuples only —
     # "bp_d27b6b5244bb." or "person:135." as a row number/title is plumbing on
@@ -2946,6 +3024,27 @@ def validate_rendered_widget(html: str, *, surface=None) -> None:
             "the dispatch id) and pass a sequential `display_n` for the "
             "visible row number; row titles come from the record's display "
             "name, never its id."
+        )
+
+    # HYGIENE9 (d2) — a raw score in a composed span (context line or
+    # annotation) is refused the same way. Reasons reach these spans through
+    # `review_reasons.render_reason`, which never emits one; this is the
+    # fence that reds if a producer bypasses it.
+    composed_spans = _re_mod.findall(
+        r'<span class="cr-item-(?:context|annotation)">([^<]*)', html
+    )
+    score_leaks = []
+    for text in composed_spans:
+        m = _SCORE_SHAPE_RE.search(_html_mod.unescape(text))
+        if m:
+            score_leaks.append(m.group(0))
+    if score_leaks:
+        raise LeakDetectedError(
+            "A raw score rendered in a row's composed text — refusing to "
+            "post:\n  - " + "\n  - ".join(sorted(set(score_leaks))[:10])
+            + "\nFix at the producer: a stored review reason is re-said by "
+            "review_reasons.render_reason (one whole sentence, no number); "
+            "a floor is ours to know, not the customer's to read."
         )
 
     # SPEC PGUARD1 D2 — personal-content scan, surface-gated BLOCKING. Only
@@ -3671,21 +3770,63 @@ def _render_verb_button(action: str, item_n, *, primary: bool = True,
     CLASS_DISPLAY_LABELS; None → the taxonomy label. The wire attributes
     (data-action) always carry the frozen action id, whatever the label.
 
-    Always input-type "none": Send/Done/Snooze/Nudge/Mine need nothing typed,
-    and Draft's edit surface is the FB-10 inline-editable body. An input-bearing
-    verb rendered as a button (D-A3 — e.g. `theirs to [name]` on a ≤4 confirm
-    row) dispatches its BARE action id and apply-choices asks the follow-up for
-    the missing input; it never carries an inline wrapper here."""
+    Input-type "none" for every verb that needs nothing typed: Send / Done /
+    Snooze / Nudge / Mine, and Draft (its edit surface is the FB-10 inline
+    body). A REQUIRED-input verb rendered as a button (`push to [date]` on a
+    4-verb DO IT / WAIT / PARKED row, `theirs to [name]` on a ≤4 confirm row)
+    carries the SAME F-17 payload the dropdown option carries — `data-input-
+    type`, `data-input-required="1"`, `data-input-thing` — and the caller
+    emits its inline wrapper through `_render_verb_button_input`, so Apply
+    holds with the reason on a button row exactly as on a dropdown row.
+    (REVIEW_CUTC_2026-09-06 F-1: the D-A3 "bare dispatch, apply-choices asks
+    the follow-up" shape put 167 of the 253 Later… controls on the 13:30 PT
+    book behind a button with no date field, and the dispatcher's refusal
+    then told the customer to use a field the row did not have.)"""
     safe_action = _html_mod.escape(action, quote=True)
     safe_n = _html_mod.escape(str(item_n), quote=True)
     label = _html_mod.escape(label if label is not None
                              else _action_display_label(action))
     cls = "cr-action cr-action-primary" if primary else "cr-action cr-action-secondary"
+    input_type, is_required, thing = _verb_button_input(action)
+    if is_required:
+        payload = (f'data-input-type="{input_type}" data-input-required="1" '
+                   f'data-input-thing="{_html_mod.escape(thing, quote=True)}"')
+    else:
+        payload = 'data-input-type="none"'
     return (
         f'<button class="{cls}" type="button" '
         f'data-n="{safe_n}" data-action="{safe_action}" '
-        f'data-input-type="none">{label}</button>'
+        f'{payload}>{label}</button>'
     )
+
+
+def _verb_button_input(action: str) -> tuple[Optional[str], bool, str]:
+    """(input_type, is_required, thing) for a verb rendered as a BUTTON.
+    Only a REQUIRED-input verb (verb_taxonomy.REQUIRED_INPUT_ACTION_IDS)
+    gets an input on the button path; an optional-input verb keeps D-A3's
+    bare dispatch. The type is the option path's (`_detect_input_type`) with
+    the v5.9.1 backstop — a required verb never renders without a field."""
+    is_required = str(action or "").lower() in REQUIRED_INPUT_ACTION_IDS
+    if not is_required:
+        return None, False, ""
+    input_type = _detect_input_type(action) or "when-text"
+    return input_type, True, required_input_thing(action)
+
+
+def _render_verb_button_input(action: str, item_n, item: Optional[dict] = None,
+                              *, label: Optional[str] = None) -> str:
+    """The inline wrapper a required-input BUTTON's F-17 payload points at —
+    the same `.cr-action-input` element the dropdown path emits, so the
+    widget JS (`crWrap` on `(n, action)`, `crValidate` on
+    `dataset.inputRequired`) needs no second code path. "" for any verb that
+    needs no input. Callers stack it in the row's `.cr-item-inputs` block."""
+    input_type, is_required, thing = _verb_button_input(action)
+    if not is_required:
+        return ""
+    return _render_action_input_wrapper(
+        action, item_n, item, input_type=input_type,
+        label=label if label is not None else _action_display_label(action),
+        is_required=True, thing=thing)
 
 
 def _render_primary_button(action: str, item_n) -> str:
@@ -3844,21 +3985,31 @@ def _render_widget_item(item: dict) -> str:
         if len(stripped_actions) <= 4:
             # The ≤4 rule (M ruling row 13): a small row renders EVERY verb as
             # a visible button and emits NO <select>. Primaries lead (gold);
-            # the rest are secondary buttons. Input-bearing verbs dispatch
-            # their bare id and apply-choices asks the follow-up (D-A3) — so
-            # no inline input wrapper is emitted on this path.
+            # the rest are secondary buttons. A REQUIRED-input verb's button
+            # carries the F-17 payload and its inline wrapper stacks below
+            # (REVIEW_CUTC F-1) — Later… on a 4-verb row has its date field.
             controls_html = [_render_verb_button(
                 a, n, primary=True, label=overrides.get(str(a).lower()))
                 for a in primary]
             controls_html += [_render_verb_button(
                 a, n, primary=False, label=overrides.get(str(a).lower()))
                 for a in stripped_actions if a not in primary]
+            for a in stripped_actions:
+                inp = _render_verb_button_input(
+                    a, n, item, label=overrides.get(str(a).lower()))
+                if inp:
+                    inputs_html.append(inp)
         else:
             # ≥5 options: primaries promote to buttons, the tail stays in the
             # dropdown (which keeps inline inputs for input-bearing tail verbs).
             controls_html = [_render_verb_button(
                 a, n, primary=True, label=overrides.get(str(a).lower()))
                 for a in primary]
+            for a in primary:
+                inp = _render_verb_button_input(
+                    a, n, item, label=overrides.get(str(a).lower()))
+                if inp:
+                    inputs_html.append(inp)
             options_html = ['<option value="">— more —</option>' if primary
                             else '<option value="">— leave —</option>']
             for a in tail:
@@ -3932,6 +4083,14 @@ def _render_widget_item(item: dict) -> str:
                     sub_options_html.append(opt)
                     if inp:
                         sub_inputs_html.append(inp)
+            # REVIEW_CUTC F-1 — every verb rendered as a BUTTON on this row
+            # (all of them under the ≤4 rule, the primaries above it) gets
+            # its F-17 wrapper when it requires an input.
+            for a in (sub_stripped if sub_all_buttons else sub_primary):
+                inp = _render_verb_button_input(
+                    a, sub_id, item, label=sub_overrides.get(str(a).lower()))
+                if inp:
+                    sub_inputs_html.append(inp)
             sub_summary_html = (
                 f'<div class="cr-sub-summary">{_md_to_html(sub_summary)}</div>'
                 if sub_summary
@@ -4625,7 +4784,10 @@ const crQ = s => document.querySelectorAll(s);
 const crG = id => document.getElementById(id);
 // WG1-A D-A5 — single-item widgets have no batch footer; a click dispatches
 // directly. The marker is baked on the card by the renderer.
-const crSingleItem = !!document.querySelector('.cr-card-single');
+const crSingleItem = !!document.querySelector('.cr-card-single, .cr-card-readonly');
+// SPEC_WIDGETRO1 — a read-only page has rows but no footer: each pick
+// dispatches ITSELF (never the other rows' armed picks).
+const crReadOnly = !!document.querySelector('.cr-card-readonly');
 
 function crWrap(n, action) {
   // dataset iteration, never CSS attribute selectors (action strings carry
@@ -4817,7 +4979,8 @@ function crSingleDispatch(ctl) {
   // to the multi-select form). If the armed action needs an input that is
   // missing, open its wrapper + show the inline reason and dispatch when the
   // user supplies it (Enter / blur) — never fire an empty required action.
-  const picks = crSelected();
+  const all = crSelected();
+  const picks = crReadOnly ? all.filter(p => p.el === ctl) : all;
   if (!picks.length) return;
   const sel = picks[0];
   if (sel.req) {
@@ -4836,17 +4999,18 @@ function crSingleDispatch(ctl) {
       return;
     }
   }
-  crApplyAll();
+  crApplyAll(crReadOnly ? ctl : null);
 }
 
-function crApplyAll() {
+function crApplyAll(onlyCtl) {
   if (crValidate().length > 0) {
     crUpdateCounter();
     return;
   }
   const choices = [];
   const seen = new Set();
-  crSelected().forEach(sel => {
+  const picked = onlyCtl ? crSelected().filter(p => p.el === onlyCtl) : crSelected();
+  picked.forEach(sel => {
     const choice = { n: sel.n, action: sel.action };
     if (crSrc) choice.src = crSrc;
     const w = crWrap(sel.n, sel.action);

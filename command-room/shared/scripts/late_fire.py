@@ -159,6 +159,7 @@ from schedule_config import (  # noqa: E402
     is_silent_task,
     load_schedule_config,
     schedule_task_id,
+    serving_display_name,
     task_display_name,
 )
 
@@ -848,7 +849,13 @@ def check_lateness(
     out["scheduled_for"] = scheduled.isoformat()
     out["lateness_minutes"] = int(lateness.total_seconds() // 60)
 
-    display = task_display_name(task_id)
+    # CUT-PLATE (2026-09-06) — the fire introduces ITSELF by the surface
+    # it serves: a `past-meetings` registration fires the End of Day pack and
+    # its banner / ack / degrade notice say "End of Day", never the
+    # predecessor's sidebar name (the v5.28.0 attended test saw "your Past
+    # Meetings last ran 5:10 PM Friday" on the day-close). Every other id
+    # resolves to the same name as before.
+    display = serving_display_name(task_id)
     if lateness < LATENESS_TIERS["note"]:
         return out  # tier "none" — run normally, no mention
 

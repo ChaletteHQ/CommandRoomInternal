@@ -406,6 +406,25 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "let agreed work that has gone silent age out "
                        "(reversible, one batch; proposes before it acts)",
     },
+    # POLICY1-B DD-7 — the CALENDAR CLOSER for `scheduling` rows (M ruling
+    # 2, 2026-09-03: scheduling rows book silently and the calendar closer
+    # finishes them). DAILY, ordered AFTER `review-expiry` and `age-out` (both
+    # drains argue from silence and their adjacency is a shipped contract;
+    # this closer argues from EVIDENCE and runs once they are done). Confirm-first for its first
+    # three fires (it plans, closes nothing, leaves the offer as its receipt
+    # line), then closes on one run batch with a group per meeting. It reads
+    # the book AND the observed tier (ATTRIB1-B diverts undated scheduling
+    # rows there). Entry point:
+    # `calendar_close.run_calendar_close_job(ws, apply=True)`.
+    "calendar-close": {
+        "skill": "calendar closer for scheduling rows "
+                 "(shared/scripts/calendar_close.py --workspace <root> "
+                 "--apply — dry-run without the flag)",
+        "nominal_cron": "0 0 * * *",  # daily at the day's first fire, beside review-expiry and binding-gauge (the dispatcher serves by slot, so the spec's :15 offset had no meaning and broke the midnight-served fixture convention)
+        "description": "close a scheduling item once the meeting it was "
+                       "about has happened with the other side in the room "
+                       "(reversible, one batch; proposes before it acts)",
+    },
     # GAUGEJOB1 (memory program R1 prerequisite) — the binding-gauge refresh.
     # READER1 shipped the writer (`binding_gauge.write_gauge`) and the reader
     # (`load_thread_knowledge._load_gauge`) with nothing running the writer on

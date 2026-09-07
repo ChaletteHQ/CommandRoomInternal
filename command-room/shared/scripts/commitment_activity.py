@@ -134,8 +134,15 @@ _SUBSTANTIVE_UPDATE_KEYS = SUBSTANTIVE_UPDATE_KEYS
 #   item would read as freshly active to every staleness surface the morning
 #   after the evening asked about it — the same inversion the watch mark had,
 #   for the same reason.
+# `status_hint` / `unparked` — POLICY1-B DD-6 (fix F-4). The park hint is
+#   the product filing "this rests" on a row nobody touched; the un-park is
+#   the product noticing movement that ALREADY happened. Neither is the
+#   promise moving. Without this the quiet-lane park reset the very clock
+#   that parked it and the plate read "no movement 47 days — updated today".
+#   `status_hint` is a PRESENT-KEY test (the un-park writes null).
 _BOOKKEEPING_MARKER_KEYS = ("watch_set", "watch_cleared",
-                            "asked_set", "asked_cleared")
+                            "asked_set", "asked_cleared", "unparked")
+_BOOKKEEPING_PRESENT_KEYS = ("status_hint",)
 
 
 def _is_bookkeeping_update(ev: dict) -> bool:
@@ -156,7 +163,8 @@ def _is_bookkeeping_update(ev: dict) -> bool:
     if (ev.get("type") or ev.get("event")) != "commitment_updated":
         return False
     d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    if not any(d.get(k) for k in _BOOKKEEPING_MARKER_KEYS):
+    if not (any(d.get(k) for k in _BOOKKEEPING_MARKER_KEYS)
+            or any(k in d for k in _BOOKKEEPING_PRESENT_KEYS)):  # F-4: a park is a note, not movement
         return False
     return not any(d.get(k) not in (None, "", False)
                    for k in _SUBSTANTIVE_UPDATE_KEYS)

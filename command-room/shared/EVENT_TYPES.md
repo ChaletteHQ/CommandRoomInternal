@@ -282,9 +282,11 @@ The two Part 2 types are registered up front per the wave pattern
 | `deal_created` | deal_state.create_deal / adopt_deal | pipeline-tracker (open-set + digest deltas), board-pack-assembler (§7 pipeline appendix) |
 | `deal_updated` | deal_state.update_deal | pipeline-tracker (digest deltas) |
 | `deal_stage_changed` | deal_state.set_stage | pipeline-tracker (days-in-stage, digest moved-list), board-pack-assembler (§7 stage table) |
-| `deal_won` | deal_state.close_deal(outcome='won') | board-pack-assembler (§2 wins), value-receipt, operator-report, pipeline-tracker (won-rate tile, won-cycle median) |
+| `deal_won` | deal_state.close_deal(outcome='won') | board-pack-assembler (§2 wins), value-receipt, operator-report, pipeline-tracker (won-rate tile, won-cycle median), `deal_signal_retire.settled_orgs` (DEALNAG1 — a paid-or-signed fact: settles the org for the deal-signals creation lane and qualifies a prospect for the "looks like a client" nudge; `close_deal` also retires the org's / thread's open deal-signal proposals in the same turn via `brain_proposal_resolved` with `user_action: superseded`, `resolved_by: system`, `note: deal_won|deal_lost`; the prospect -> client flip in `org_writer.update_org` does the same with `note: converted`) |
+| `deal_won_reversed` | `brain_undo._reverse_org_promotion` — CUTB item 4 (2026-09-06): written ONCE per thread when a person undoes a promotion whose deal was MANUFACTURED by the same act (`deal_state.win_org_without_deal`, the `mark [org] won`-with-nothing-on-file path; the `org_promoted` receipt carries `deal_thread_id` + `won_seq` + `deal_manufactured`). Add-beside (the `promotion_reversed` precedent): the `deal_won` event and the deal object stay as written, the thread is archived through `thread_archive.archive_thread`, and this marker names the thread + the won event's seq. A win the person closed by hand on a real deal is never marked — undoing that promotion restores exactly the state before the automatic act | `deal_state.won_reversals` / `list_closed_deals` (the reversed win is not a closed deal), `deal_state.load_deal_events` -> `pipeline_math.won_rate_90d` (not in the 90-day rate; the pipeline-tracker / operator-report / board-pack tiles read that), `deal_signal_retire.settled_orgs` (not a paid-or-signed fact) |
 | `deal_lost` | deal_state.close_deal(outcome='lost') | board-pack-assembler (§4 concerns — the "lost-deal events" it already reads), pipeline-tracker (loss-pattern readout, won-rate tile) |
 | `deal_update_proposed` | `brain_proposals.propose()` on `kind: deal_update`/`deal_creation` (LB1 — written alongside the generic `brain_proposal` for the consumers named here; detector = `shared/scripts/deal_signal_detector.py`) | pipeline-tracker, cleanup |
+| `org_promoted` | `org_promotion.promote_org` — the automatic prospect -> client promotion on a paid or signed fact (DEALNAG1, M ruling 4 of 2026-09-03: promotions apply themselves, they are not decisions to route to a chat). THE RECEIPT for that promotion (the event is the receipt) and the undo anchor: it carries `brain_batch_id` + `brain_change_class: org_promotion`, plus the prior engagement label / kind / active flag the registered reverser puts back. Written only after the org flip and the engagement edge have landed | change_feed (the morning brief's ONE CHANGED line, with the standing `undo`), brain_undo (`recent_auto_batches` grouping + `_changes_for_brain_batch` -> the `org_promotion` reverser), `org_promotion.undone_promotions` (an undone promotion is a standing answer: never promoted or asked again) |
 | `deal_update_dismissed` | `brain_proposals.resolve_proposal()` on a declined deal-kind proposal (LB1 — written alongside `brain_proposal_resolved`) | proposal_ledger carries the decline cooldown (resolve_proposal appends the ledger row; propose() reads active_cooldowns) — this event is the substrate record + usage-report signal |
 
 Hard rules:
@@ -743,6 +745,41 @@ Hard rules:
   default). In the session lane (`SESSION_RESOLVED_SOURCES`, today the
   workspace-manager catch-all) absence itself refuses at the writer — a chat
   close must state which door it came through.
+  **`match` (POLICY1-A, 2026-09-04 — CLOSEID2 R6):** the closer resolved
+  the id by SCORING THE SUBSTRATE (the transcript pass, the sent-mail and
+  reply rails). It is the honest door for a matcher — never `id`, which
+  means a rendered surface embedded the id. The writer requires a numeric
+  `data.match_score` and a non-empty quote beside it, and refuses the
+  retired fixed evidence string `Past meeting transcript (…)` from any
+  transcript-rail or `match`-door close (`FixedEvidenceError`): evidence is
+  the completion turn, verbatim, or nothing closes.
+- **The machine confirmation (POLICY1-A, M ruling 2026-09-03) — `confirmed_by`.**
+  A capture the extractor flagged `pending_review` may now be closed by
+  EVIDENCE rather than by a person: `close_commitment(confirmed_by=
+  "transcript", …)` lifts the pending guard for that one call, `user_confirmed`
+  stays False, and the closure carries `data.confirmed_by: "transcript"` with
+  `data.resolution_reason: auto_closed_transcript_evidence`
+  (`event_types.AUTO_TRANSCRIPT_CLOSE_REASON`), the verbatim completion turn as
+  `data.evidence`, a real `data.source_ref`, and the run's batch so one `undo`
+  reverses it. The door REFUSES without the quote or without the pointer.
+  `event_types.is_automatic_transcript_close(data)` is the one reader that
+  tells such a close from a human one — Loop-4 calibration uses it to keep the
+  machine from grading its own bar. A transcript close also
+  carries `data.brain_batch_id` (the fire's `cru_<UTC>-<8hex>`) +
+  `data.brain_change_class: commitment_close`, so `brain_undo` lists and
+  reverses the fire, and `data.signal` (completion | schedule_shift |
+  new_ask | title_match).
+- **Proposal lifecycle (POLICY1-A D4/D15).** A `commitment_review_proposed`
+  written by a rail carries `data.source_ref` (the evidence's own pointer —
+  the second key of "ONE proposal per (item, source_ref), ever"),
+  `data.signal`, and — on a RE-SCORE of the same pair — a TOP-LEVEL
+  `supersedes_seq` naming the prior proposal (`match_score` is never edited;
+  readers take the newest and treat the superseded seq as closed). A
+  `commitment_review_dismissed` written by the review-expiry job's retract
+  leg carries `data.proposal_seq` (exactly which proposal is withdrawn),
+  `data.resolution_reason: policy_retracted` and `data.brain_batch_id`; it
+  is a dismissal, never a closure. A legacy seq-less dismissal keeps its
+  pre-POLICY1 meaning (every open proposal on the commitment).
 - **The ambiguity row (CLOSEID1).** A refused name-close lands as exactly ONE
   `commitment_review_proposed` via `commitment_state.propose_ambiguous_close`
   — an ambiguity is one either/or question, never one yes/no row per
@@ -882,12 +919,60 @@ Hard rules:
   one. Capture policy (modes + per-org overrides) is SCL1 directives under
   `scan-for-commitments`; full contract in `COMMITMENT_SCHEMA.md`
   § Observed tier.
+- **POLICY1-B DD-5 — the three undo keys on every AUTOMATIC act** (transcript
+  closes, chip closes, sweep closes, calendar closes, quiet-lane parks):
+  `brain_batch_id` is the GROUP batch (`<run>-<8hex>`, one per meeting /
+  project / source — `commitment_policy.group_stamps`), `parent_batch_id` the
+  run, `undo_group` the key the group was formed on. `brain_undo` resolves a
+  run ref to every group under it and a group ref to that group alone; the
+  bare-`undo` listing nests groups under runs.
+- **POLICY1-B DD-7 — the calendar closer's vocabulary (fix round 1, RV-2):**
+  `confirmed_by: "calendar"` (`event_types.AUTO_CLOSE_CONFIRMED_BY_CALENDAR`,
+  reader `is_automatic_calendar_close`) on a `commitment_resolved` written by
+  `calendar_close` for an OBSERVED-tier scheduling guess — the machine door,
+  beside `transcript`, never `user_confirmed`; the close also carries
+  `calendar_close: true`, `meeting_seq`, `from_observed: true`, `observed_id`
+  and `brain_change_class: commitment_close_from_observed` (its own class:
+  `brain_undo.REVERSERS` runs `calendar_close.reverse_observed_close`, which
+  writes NO reopen). That reverser's marker is a `commitment_updated` carrying
+  **`promotion_reversed: true`** + `observed_id` + `meeting_seq` +
+  `reversed_by` on the promoted row: `capture_gate._promoted_ids` reads it
+  (the guess is live on its tier again; `live_observed`, `promote_observed`,
+  `find_corroborations` inherit), `calendar_close._undone_pairs` reads it (a
+  standing answer on that meeting), and `closure_index.reversed_closer_positions`
+  reads it as the REVERSAL of that close for every closed-in-window reader
+  (`end_of_day.closures_since`, `plate_view._delta`, `change_feed`) — reversed
+  set only; `ClosureIndex.is_closed` still says the promoted row is closed.
+  A second marker is never written (`already_reversed`). The job's `pack_run`
+  receipt (`task_id: calendar-close`) carries **`data.offered`** — one
+  `{commitment_id, meeting_seq, tier, n_offers_before}` per (row, meeting)
+  pair the fire OFFERED rather than closed; `calendar_close.offers_so_far`
+  reads it back as the per-row confirm-first counter (three offers, then the
+  close). Book-tier calendar closes carry `calendar_close: true` +
+  `meeting_seq` with the ordinary `commitment_close` class.
 - `commitment_update` is drift; the gate rewrites it to `commitment_updated`.
 - `commitment_updated` — writers: the `push to [date]` verb via
   `commitment_state.apply_later`'s defer leg
-  (`data: {commitment_id, new_due, pushed_by, reason}`) — THE writer for that
+  (`data: {commitment_id, new_due, prior_due, pushed_by, reason,
+  brain_change_class: commitment_due, brain_batch_id?}`) — THE writer for that
   verb since APPLYAUDIT1, which retired the per-surface hand-appends that
-  preceded it (their shape carried no `pushed_by`), the CRU schedule-shift
+  preceded it (their shape carried no `pushed_by`); **POLICY1-B (b):
+  `prior_due` is the row's effective due at write time, `null` when it had
+  none, and is what the reverser restores.** The sanctioned CLEAR /
+  RESTORE: `commitment_state.restore_due` writes the same type with
+  `new_due: <the prior date>` or `new_due: null` + **`due_cleared: true`**
+  (undated again), carrying the due it replaced as `prior_due`; the
+  `commitment_due` reverser in `brain_undo` calls it, and so does a surface's
+  per-item undo off `apply_later`'s returned `prior_due`. **POLICY1-B DD-6 —
+  the PARK HINT:** `commitment_state.park_commitment` writes the same type
+  with `status_hint: "parked"` + `park_reason` (+ `brain_change_class:
+  commitment_park`, `brain_batch_id` / `parent_batch_id` / `undo_group` when
+  an automatic leg parked it); `unpark_commitment` writes `status_hint: null`
+  + `unparked: true` with the movement in `reason`. The loader folds the
+  NEWEST update carrying the `status_hint` key (null ends the hint) onto the
+  projected row as `status_hint` / `park_reason` / `status_hint_ts`;
+  `plate_view` renders PARKED from that projection; the `commitment_park`
+  reverser un-parks. The row is never closed by a park. The CRU schedule-shift
   path (`cru_match.build_commitment_updated_event`,
   `data: {commitment_id, change_summary, evidence}`), and the S4 `fix wording`
   verb (`commitment_state.edit_commitment_wording`,
@@ -895,7 +980,9 @@ Hard rules:
   consumer (Phase 2 Stage A + v4.6.0 S4):** the commitment-state projector —
   `cru_match.load_open_commitments` folds the latest `data.new_due` (variants
   `due` / `due_date` accepted) into the returned commitment's effective
-  `data.due`, so a deferred item stops rendering overdue, and folds the latest
+  `data.due`, so a deferred item stops rendering overdue — and, since
+  POLICY1-B (b), folds an explicit `due_cleared: true` as `due: null`
+  (undated again; a scope-only update still erases nothing), and folds the latest
   `data.new_title` / `data.new_summary` (each field independently, newest
   wins) into the projected item's wording — the original text stays in
   history, append-only (mis-extracted summaries were uncorrectable before
@@ -1214,3 +1301,73 @@ the NAIVE terminal fold go red.
   a user confirm is a bug, not a style choice. The lane records TONE/SHAPE
   changes only; nothing in it may alter contract-guaranteed output machinery
   (EXEC1 header, ASK block, leak scan, receipts, canonical actions).
+
+## Routing corrections (SPEC ROUTEMISS1, 2026-09-02)
+
+The catch-all promised for five months that a routing correction would be
+appended to a `_hq/ROUTER_MISSES.md` log "reviewed weekly" — a prose contract
+with no trigger, no writer and no reviewer; the file never existed on any
+workspace. ROUTEMISS1 replaces the prose file with ONE typed event and ONE
+rendered view. The correction verb is a Cowork chat verb (no hook): the verb
+handler re-dispatches the CEO's real request in the same turn and logs the
+miss as a side effect.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `router_miss` | `router_miss.log_router_miss` ONLY (builds the row through `router_miss.build_router_miss_event`, appends via `event_gate.append_event`) — fired by workspace-manager's "Routing corrections" handler when the CEO's correction remainder re-dispatched to a DIFFERENT skill than the one that just ran. Never after a draft (a voice correction — "no, I meant 'regards'"), never after a disambiguation question ("no, I meant the other Acme"), never with an empty `meant` (the handler asks instead). `data: {said, meant, resolved_to, routed_to, source: "user", session_ref}`. **`routed_to` is null unless the previous turn was a scheduled fire** — `router_miss.previous_turn_skill` returns the newest event's task id iff that event is a `pack_run`, else None; there is no session-local state and the field is never inferred from the phrase (DD-2). | `shared/scripts/render_router_misses.py` — the OWNER-facing `_hq/views/ROUTER_MISSES.md` view (reads through `events_io.load_events_owner_scoped`; regenerated changed-only by cleanup Phase 3.5d4 as the weekly backstop) and its `monday_note_line` — cleanup's Monday-note leg: ≥3 corrections resolving to the same skill in 28 days → one plain-English sentence naming the skill and the phrases; below that, silence. `tests/run_no_jargon_in_rendered_views_test.py` renders and scans the view. |
+
+Hard rules:
+
+- **The payload is the CEO's own words.** `said` / `meant` may carry any name.
+  Only owner-facing surfaces read this type; no org, board, client or external
+  composer may — and a `router_miss` payload NEVER becomes a
+  `tests/triggers.yaml` row without a human rewriting it into placeholder
+  vocabulary. `tests/gen_negative_rows.py` reads FENCES from skill
+  descriptions, never events.
+- **No auto-tuning.** Nothing edits a skill description from this data — the
+  view and the Monday line are pointers for a reviewed change (SKILLMERGE1's
+  fold ledger is the downstream), never a writer.
+- **Never narrated by name.** The acknowledgement clause in the verb handler
+  and the Monday-note line say "redirect" / "correction" in plain English; the
+  event type is not customer vocabulary.
+- **Not the fossil `correction`.** The pre-registry fossil list carries an
+  unrelated `correction` type; it stays a fossil. This is a new, consumed type.
+
+## Quiet lane (SPEC QUIET1 — correct when ignored, 2026-09-05)
+
+A seat that reads a five-line brief and does nothing else stays correct:
+the preset ladder, the silence step-down and the weekly question budget
+live in `shared/scripts/quiet.py`. Two typed rows carry their receipts.
+
+| Type | Writer | Named consumers |
+|---|---|---|
+| `interaction_posture` | `quiet.write_posture_event` ONLY. Written by the `binding-gauge` job's interaction leg (`binding_gauge.run_gauge_refresh_job` → `quiet.gauge_leg`) on a CHANGE run when the effective preset MOVES: `data.action: "step_down"` (fourteen silent days — `from_preset` → `to_preset`, one level, never up) or `"restore"` (the person answered; back to `configured_preset`). Also `"restore"` with `by_user: true` + `triggered_by` from `quiet.restore_effective` — the person said `ask me more` on a stepped seat and the effective preset returned to the stored one on the spot (REVIEW_QUIET1 F-1); this by-user row IS an answer for the silence clock. And by `quiet.step_down_narration` with `data.action: "narrated"` + `data.narrates_seq` the ONE time the morning brief hands out the step-down line. And by `quiet.stamp_onboarding_preset` with `data.action: "onboarding_kept"` (CUT-D R2, 2026-09-06) — the onboarding Q5 stamp found a posture already stored (an `engaged` seat re-running onboarding, or the update bridge's `light` landing first) and left it alone: ONE row per seat, `from_preset == to_preset == configured_preset` (a receipt of a skip, not a move), `triggered_by: "onboarding Q5: <answer>"` + `answer` so the setup answer is never lost; not an answer for the silence clock, not a step. `data: {action, from_preset, to_preset, configured_preset, days_silent, narrates_seq?, triggered_by?, answer?}`. | `quiet.step_down_narration` (the once-only marker: a step_down whose seq is already named by a `narrated` row is never narrated again; a restore resets), `quiet.effective_preset` (the verdict itself rides the gauge artifact's `interaction` block — this row is its receipt), the QUIET1 replay report. |
+| `question_budget_spent` | `quiet.submit_questions` ONLY — one row per submission that asked or deferred anything (drop-empty), from the three askers `meeting_card` (`attribution_doors.card_questions`), `overdue_ask` (`end_of_day.apply_overdue_ask` with a workspace root) and `age_out_offer` (`commitment_backlog_sweep.run_age_out_job`'s offer line). `data: {asker, preset, limit, used_before, n_submitted, n_asked, n_deferred, asked_ids, deferred_ids}`. A POLICY1 chip is NOT a question and never appears here (`quiet.NOT_QUESTIONS`, refused by name). | `quiet.question_budget` (`used` = distinct (asker, id) pairs in the rolling week), `quiet.wrap_sections` ("still waiting"), `quiet.return_summary` ("N need you"), `value_receipt._window_metrics` via `quiet.receipt_counters` ("asked you M questions"). |
+
+Hard rules:
+
+- **Never a question class.** The budget ranks and cuts questions the product
+  already asks (M ruling 2026-09-03: no new question classes). Nothing may
+  submit a candidate that is not already one of the three askers' own rows.
+- **Never a step up on its own.** `interaction_posture` with `action:
+  step_down` is written only from a configured posture to the one below it;
+  `restore` only back to the configured one. `ask me more` / `ask me less`
+  and the manifest stamp change the STORED key through
+  `skill_config_writer.save_skill_config` (batch-stamped, class
+  `commitment_preset`, reverser registered) — they never write this row.
+- **The closing-on-evidence switch (CUT-A, M ruling R-A 2026-09-06).** The
+  same store carries a second key, `auto_close_from_transcript` (default
+  OFF, read by identity — anything but the literal `true` is off). Written
+  ONLY by `commitment_policy_pass.set_transcript_closes` (`turn on / off
+  closing on evidence`) as a `skill_reconfigured` / `skill_first_run_configured`
+  row stamped `brain_batch_id: qtc_…` + `brain_change_class:
+  commitment_transcript_closes` + `prev_config` — the `commitment_preset`
+  reverser puts the previous config back exactly. Readers:
+  `commitment_policy.transcript_closes_enabled` (the one reader) through
+  `commitment_policy_pass._closes_enabled`, consulted by
+  `apply_transcript_results`, `resolve_stale_chips`,
+  `calendar_close.run_calendar_close_job` and `change_feed.changes_since`.
+  A preset stamp carries this key over untouched.
+- **Narrated once.** The brief prints the step-down line the first time
+  `quiet.step_down_narration` hands it out; the `narrated` marker is written
+  in the same call, so a re-run says nothing.

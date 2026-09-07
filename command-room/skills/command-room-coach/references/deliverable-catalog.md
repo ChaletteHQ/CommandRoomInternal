@@ -120,7 +120,7 @@ These are coach's M1-fire bread-and-butter. Each one composes `go` / `tell me ab
 **Target entity:** project
 **Signal condition:** A project with ≥2 decisions raised in scan window that have no `decision_resolved` or `decision_reaffirmed` event. Or any future-self conditional that fired on the project (per coach Phase 2B Insight 4).
 **Trigger chain:** `go [project name]` → `review my decisions`
-**Composes with:** `decision-revisit`
+**Composes with:** `decision-log` (revisit mode — formerly `decision-revisit`)
 **Synthesis spine:** every unresolved decision tied to the project + each one's framing-for-closure (the read that would close it) + per-decision action widget (Reaffirm / Supersede / Snooze).
 **Wow line:** The user opens it and realizes how many pending decisions on one thread have been quietly aging.
 **Render template:**
@@ -343,7 +343,7 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 **Target entity:** workspace
 **Signal condition:** Decision-event count ≥10 across last 90 days AND ≥3 of those decisions have subsequent events that either contradict or validate them.
 **Trigger chain:** `decision durability audit` (or `review my decisions` at workspace scope)
-**Composes with:** `decision-revisit`
+**Composes with:** `decision-log` (revisit mode — formerly `decision-revisit`)
 **Synthesis spine:** every decision × subsequent events × original named-conditions → three lists (validated, contradicted, conditions-no-longer-hold) with named evidence per row.
 **Wow line:** The user sees which decisions the workspace has been quietly validating or contradicting in the background.
 **Render template:**

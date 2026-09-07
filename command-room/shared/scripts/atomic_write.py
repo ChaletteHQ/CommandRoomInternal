@@ -49,11 +49,12 @@ USAGE:
     atomic_write_text(path, content_string)
     atomic_write_json(path, dict_or_list, indent=2)
 
-For event-stream-style files (events.jsonl, staging_emissions.jsonl) where
-appends are far more common than rewrites, use atomic_append_jsonl which
-opens the existing file, copies its content + the new line(s), and atomic-
-renames the result. Slightly more expensive than naive O_APPEND but
-guarantees no concurrent reader sees a partial line.
+For event-stream-style files use atomic_append_jsonl. Since SPEC INDEX1
+Phase A (2026-09-02) it has TWO paths: `events.jsonl` is TRUE-APPENDED
+(`O_APPEND|O_BINARY`, one write, fsync, read-back, under the writer lock —
+the ledger is never rewritten and the cost of an append no longer grows with
+the history); every other JSONL file keeps the whole-file read + atomic
+rename, because its contract is whole-file. See `atomic_append_jsonl`.
 
     from atomic_write import atomic_append_jsonl
     atomic_append_jsonl(path, [event_dict_1, event_dict_2])
@@ -66,6 +67,32 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
+
+
+def _license_gate_check(path) -> None:
+    """LICGATE1 SPIKE — delete with `license_gate.py` before any release.
+
+    Placed in `atomic_write_text` because it is the deepest seam: the JSONL
+    append path and `atomic_write_json` both funnel through here, so ONE call
+    covers every substrate write without touching either caller.
+
+    Imported with the same lazy, twice-defensive shape as `_clock1()` above —
+    this module sits at the bottom of the import graph and the writer must keep
+    working if the probe is absent. A missing gate means "cannot evaluate",
+    which is a write that proceeds.
+    """
+    try:
+        import license_gate
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            import license_gate
+        except Exception:
+            return
+    except Exception:
+        return
+    license_gate.check(path)
 
 
 def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
@@ -85,6 +112,7 @@ def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
     that silent corruption into a loud FileNotFoundError.
     """
     path = Path(path)
+    _license_gate_check(path)
     if create_parents:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.is_dir():
@@ -159,7 +187,11 @@ def _read_seqhw(events_path: Path) -> int | None:
         return None
 
 
-def _write_seqhw(events_path: Path, max_seq: int) -> None:
+def _write_seqhw(events_path: Path, max_seq: int) -> bool:
+    """Advance the `.seqhw` sidecar. Returns True on success, False when the
+    write failed. Never raises: for the repair / reconcile callers the sidecar
+    is a guard, not a hard dependency. The APPEND path (INDEX1 Phase A, R2)
+    reads the False and refuses to stay silent — see `_note_seqhw_write_failed`."""
     import datetime as _dt
     try:
         atomic_write_json(
@@ -167,8 +199,173 @@ def _write_seqhw(events_path: Path, max_seq: int) -> None:
             {"max_seq": int(max_seq),
              "updated": _dt.datetime.now(_dt.timezone.utc).isoformat()},
         )
+        return True
     except Exception:
-        pass  # the sidecar is a guard, never a hard dependency of the write
+        return False
+
+
+class SeqHighWaterError(Exception):
+    """Raised AFTER a successful events append when the `.seqhw` sidecar could
+    not be advanced AND the rescan marker that would force the next append to
+    re-derive the maximum from the whole file could not be written either
+    (INDEX1 Phase A, R2). The batch IS on disk — the message says so — but the
+    seq allocator has lost both of its safety nets, and silence here is how a
+    reused seq would enter the ledger."""
+
+
+class AppendVerificationError(Exception):
+    """Raised when the post-append read-back does not find the batch at the
+    end of the events file (INDEX1 Phase A, R4). The classic shape is a POSIX
+    inode swap: another process replaced the file (rotation / repair outside
+    the writer lock) between our open and our write, so the bytes landed on
+    the orphaned inode. The batch is set aside in a `.appendverify-*.jsonl`
+    side file (NOT the `.quarantine-*` family, so it is never auto-replayed —
+    a false negative must not become a duplicate) and `.seqhw` is NOT
+    advanced."""
+
+
+def _rescan_marker_path(events_path: Path) -> Path:
+    """`events.jsonl.seqhw.rescan.json` — present when a previous append could
+    not advance `.seqhw`. Forces the next append to derive the maximum from a
+    full scan (R2) instead of the bounded tail, then clears itself."""
+    return events_path.with_name(events_path.name + ".seqhw.rescan.json")
+
+
+def _note_seqhw_write_failed(events_path: Path, intended_max_seq: int,
+                             holder: str) -> None:
+    """R2 — a failed `.seqhw` advance after a successful append must not
+    silently allow a reused seq. Write the rescan marker (best-effort, two
+    ways); if even that fails, raise SeqHighWaterError."""
+    import datetime as _dt
+    marker = _rescan_marker_path(events_path)
+    body = {
+        "reason": "seqhw_write_failed",
+        "detected": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "intended_max_seq": int(intended_max_seq),
+        "holder": holder,
+    }
+    try:
+        atomic_write_json(marker, body)
+        return
+    except Exception:
+        pass
+    try:
+        with open(marker, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps(body) + "\n")
+        return
+    except Exception:
+        pass
+    raise SeqHighWaterError(
+        f"the batch (max seq {int(intended_max_seq)}) IS on disk, but the "
+        f".seqhw high-water sidecar could not be advanced and the rescan "
+        f"marker {marker.name} could not be written either (holder={holder}). "
+        f"Until one of them can be written, the seq allocator has no witness "
+        f"against a clobbered file. Check disk space / permissions on "
+        f"{marker.parent}."
+    )
+
+
+def _clear_rescan_marker(events_path: Path) -> None:
+    try:
+        _rescan_marker_path(events_path).unlink()
+    except OSError:
+        pass
+
+
+# INDEX1 Phase A — the append path opens the ledger in BINARY mode on every
+# platform. On Windows a text-mode CRT fd rewrites "\n" as "\r\n" on write,
+# and a CRLF ledger is a different file from the one every reader parses;
+# `O_BINARY` exists only on Windows, so the flag is 0 elsewhere.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+# How much of the ledger's tail the appender reads to learn the two facts it
+# needs — the max human-counter seq and the newest timestamp. 64 KiB is ~100
+# rows of the operator's ledger (≈700 B/row) and ~10x the largest batch any
+# writer produces; the read is O(1) in file size, which is the whole point
+# of Phase A. A tail that disagrees with `.seqhw` falls back to a full scan
+# (see `_read_stamp_write`), so a smaller-than-ideal window costs time, never
+# correctness.
+_TAIL_READ_BYTES = 64 * 1024
+
+
+class _TailView:
+    """What the bounded tail read learned. `text` is the decoded run of
+    COMPLETE lines inside the window (a partial first line is dropped when
+    the window starts mid-file); `raw_all` is the untrimmed window bytes;
+    `whole_file` says the window covered the file from byte 0, in which case
+    `text` is the entire ledger and the tail max IS the file max."""
+
+    __slots__ = ("text", "raw_all", "size", "ends_with_newline", "whole_file")
+
+    def __init__(self, text: str, raw_all: bytes, size: int,
+                 ends_with_newline: bool, whole_file: bool) -> None:
+        self.text = text
+        self.raw_all = raw_all
+        self.size = size
+        self.ends_with_newline = ends_with_newline
+        self.whole_file = whole_file
+
+
+def _read_events_tail(path: Path, encoding: str = "utf-8",
+                      max_bytes: int | None = None) -> _TailView:
+    """Bounded tail read of a JSONL ledger (INDEX1 Phase A, R1).
+
+    Opens read-only in binary, seeks to `size - max_bytes`, reads to EOF, and
+    drops the (possibly partial) first line when the window started mid-file
+    so every line in `text` is a complete, newline-delimited record. An
+    absent file reads as empty. Raises OSError for anything else — the
+    appender must not allocate against a ledger it could not read.
+    """
+    if max_bytes is None:
+        max_bytes = _TAIL_READ_BYTES
+    try:
+        fd = os.open(str(path), os.O_RDONLY | _O_BINARY)
+    except FileNotFoundError:
+        return _TailView("", b"", 0, True, True)
+    try:
+        size = os.fstat(fd).st_size
+        start = max(0, size - int(max_bytes))
+        if start:
+            os.lseek(fd, start, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = size - start
+        while remaining > 0:
+            b = os.read(fd, min(remaining, 1 << 20))
+            if not b:
+                break
+            chunks.append(b)
+            remaining -= len(b)
+        raw_all = b"".join(chunks)
+    finally:
+        os.close(fd)
+    whole_file = start == 0
+    raw = raw_all
+    if not whole_file:
+        nl = raw.find(b"\n")
+        raw = raw[nl + 1:] if nl >= 0 else b""
+    ends_with_newline = size == 0 or raw_all.endswith(b"\n")
+    return _TailView(raw.decode(encoding, errors="replace"), raw_all, size,
+                     ends_with_newline, whole_file)
+
+
+def _append_bytes(path: Path, payload: bytes) -> None:
+    """True append (INDEX1 Phase A, R5): `O_APPEND|O_WRONLY|O_CREAT` in binary
+    mode, the payload written as ONE `os.write` (the loop only runs again on
+    a short write, which regular files do not produce short of disk-full),
+    then `os.fsync`. No temp file, no rename — the ledger is never rewritten
+    on the append path, so a concurrent reader holding the file open never
+    forces a Windows `os.replace` sharing-violation retry, and the cost of an
+    append no longer grows with the history."""
+    fd = os.open(str(path), os.O_APPEND | os.O_WRONLY | os.O_CREAT | _O_BINARY,
+                 0o644)
+    try:
+        view = memoryview(payload)
+        while len(view):
+            n = os.write(fd, view)
+            view = view[n:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 # EPOCH_THRESHOLD — any seq at/above this is a nano-epoch artifact (1.77e18…),
@@ -461,9 +658,20 @@ def atomic_append_jsonl(
 ) -> list[dict[str, Any]]:
     """Append one or more JSON-line records to a JSONL file atomically.
 
-    Reads the existing file (if any), constructs the full new content, and
-    writes it via atomic_write_text. This is more expensive than O_APPEND but
-    guarantees no concurrent reader sees a partial line.
+    TWO WRITE PATHS (SPEC INDEX1 Phase A, 2026-09-02):
+      * `events.jsonl` — TRUE APPEND. A bounded tail read (last 64 KiB,
+        complete lines only) yields the max seq and the newest timestamp;
+        seq is allocated from max(file max, `.seqhw`) + 1; the batch lands
+        via `O_APPEND|O_WRONLY|O_CREAT|O_BINARY`, one write, fsync; the write
+        is read back and must be the file's suffix before `.seqhw` advances.
+        A torn tail (no trailing newline) is healed by leading the batch with
+        a newline and recorded through the FS-15 read-alarm sidecar — never
+        truncated. Append cost is independent of the history's size, and the
+        ledger is never rewritten on this path (rotation, reconcile_forward
+        and the repair tools keep their whole-file rewrite — out of scope).
+      * every other JSONL file — read the existing file, construct the full
+        new content, write via atomic_write_text (their contract is
+        whole-file).
 
     RETURNS the written event copies AS STAMPED (BUG-8330 item 7) — for
     events.jsonl that means the allocated `seq` and `ts` are readable from
@@ -489,9 +697,9 @@ def atomic_append_jsonl(
     Use for events.jsonl, staging_emissions.jsonl, classifier_feedback.jsonl,
     .backfill_cursor — anything Cowork or cross-machine sync reads.
 
-    For very large append-heavy files (events.jsonl on heavy users >50K
-    events), prefer batched appends (call once with N events at a time, not
-    once per event) — the cost is the read+rewrite, not the write itself.
+    Batched appends (one call with N events) are still preferred where a
+    writer has N related events — a batch is one lock hold, one fsync and one
+    referentially-linked unit for the FS-04 / CLOCKTS1 set-aside paths.
 
     DEFENSIVE WRAP (v3.13.8.1 — Bug #68):
     Accepts either a list of dicts (canonical) OR a single dict. A single
@@ -523,6 +731,11 @@ def atomic_append_jsonl(
     feedback, etc.), no auto-stamping happens — those files have their own
     schema contracts.
     """
+    # LICGATE1 — the true-append fast path (INDEX1 Phase A) writes events.jsonl
+    # through _append_bytes and never reaches atomic_write_text, so the gate
+    # has to sit here too. Checked BEFORE the writer lock so a refusal never
+    # holds it. Fail-open shape is inside _license_gate_check.
+    _license_gate_check(path)
     # Defensive wrap — tolerate single-dict callers (Bug #68 fix)
     if isinstance(events, dict):
         events = [events]
@@ -635,22 +848,60 @@ def atomic_append_jsonl(
         existing = ""
         existing_max_seq = 0
         existing_newest_ts = None
-        if path.exists():
+        tail: _TailView | None = None
+        hw_guard_on = is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0"
+        hw: int | None = None
+        rescan = False
+        if is_events:
+            # INDEX1 Phase A (R1/R3) — a BOUNDED tail read replaces the
+            # whole-file read. ONE parse pass over the tail gives both answers
+            # the writer needs (SPEC SYNC1's seq contract plus CLOCK1's
+            # corroboration input): the max human-counter seq and the newest
+            # timestamp. Every writer appends rows whose seq is >= everything
+            # before them (stale explicit seqs are reassigned below), so on a
+            # ledger written by this appender the tail max IS the file max.
+            tail = _read_events_tail(path, encoding=encoding)
+            existing_newest_ts, existing_max_seq = _scan_events_text(
+                path, tail.text)
+            if hw_guard_on:
+                hw = _read_seqhw(path)
+            # WHEN THE TAIL IS NOT ENOUGH — fall back to the full scan the old
+            # path always paid. Three cases, all rare on a healthy ledger:
+            #   * `.seqhw` is absent or unreadable and the window did not
+            #     cover the file: a fresh or legacy ledger may be
+            #     non-monotonic mid-file (the operator's has 71 such spots
+            #     from the pre-appender era), and with no high-water to
+            #     corroborate the tail, only the file itself can say.
+            #   * a previous append could not advance `.seqhw` and left the
+            #     rescan marker (R2): the sidecar is known to be behind.
+            #   * the tail max is BELOW `.seqhw`: either a clobbered stale
+            #     lineage (FS-04 below will refuse) or a legitimate ledger
+            #     whose maximum sits mid-file. The full scan tells them
+            #     apart, so the refusal keeps exactly its old semantics —
+            #     "the FILE's max seq regressed below the high-water" — and a
+            #     non-monotonic legacy ledger is never refused by mistake.
+            #   * the high-water guard is OFF (CR_SEQ_HIGHWATER=0, the
+            #     emergency hatch): with no sidecar to corroborate the tail,
+            #     the allocator pays the old whole-file scan rather than
+            #     trust a window it cannot check.
+            rescan = _rescan_marker_path(path).exists()
+            needs_full = (not tail.whole_file) and (
+                (not hw_guard_on) or hw is None or rescan
+                or existing_max_seq < hw)
+            if needs_full:
+                full_newest, full_max = _scan_events_text(
+                    path, path.read_text(encoding=encoding, errors="replace"))
+                existing_max_seq = max(existing_max_seq, full_max)
+                if full_newest is not None and (
+                        existing_newest_ts is None
+                        or full_newest > existing_newest_ts):
+                    existing_newest_ts = full_newest
+        elif path.exists():
+            # Non-events files keep the whole-file read + atomic rewrite:
+            # their contract is whole-file (SPEC INDEX1 D6).
             existing = path.read_text(encoding=encoding)
             if existing and not existing.endswith("\n"):
                 existing = existing + "\n"
-            # v3.13.8.3 Bug #74 — scan tail for max human-counter seq while we
-            # already have the content read. Mirrors next_seq.py contract:
-            # ignore non-dict / non-numeric / nano-epoch (>=1e10) seqs. Factored
-            # into _file_max_seq (SPEC SYNC1) so the read path + events_freshness
-            # share one seq-scan contract.
-            if is_events:
-                # ONE parse pass, two answers (SPEC SYNC1's seq contract plus
-                # CLOCK1's corroboration input). The newest timestamp in the
-                # ledger is the one thing that can prove the machine clock is
-                # behind, and taking it here costs the writer nothing extra.
-                existing_newest_ts, existing_max_seq = _scan_events_text(
-                    path, existing)
 
         # v3.13.8.3 Bug #74 + #75 — auto-stamp seq + ts for events.jsonl writes.
         # Shallow-copy each event to avoid mutating caller's dicts.
@@ -658,7 +909,12 @@ def atomic_append_jsonl(
             import datetime as _dt
             EPOCH_THRESHOLD = _EPOCH_THRESHOLD
             evs = [{**ev} for ev in evs]
-            next_seq_val = existing_max_seq + 1
+            # R1 — the allocation base is max(file max, .seqhw), NEVER the
+            # sidecar alone: a sidecar that fell behind the file (a failed
+            # advance, a repair that moved the file without it) must not hand
+            # out a seq the ledger already holds. With the guard on and no
+            # regression, the two agree and this is the file max.
+            next_seq_val = max(existing_max_seq, hw if hw is not None else 0) + 1
             # CLOCK1 — a stale machine clock must not stamp the permanent
             # ledger. `clock_stamp` returns the machine reading unchanged
             # unless the ledger PROVES the clock is behind, in which case it
@@ -851,8 +1107,11 @@ def atomic_append_jsonl(
         # to the stale lineage and let the clobber win again), QUARANTINE the
         # batch to a side file so nothing is lost, drop a LOUD marker, and RAISE.
         # CR_SEQ_HIGHWATER=0 disables (emergencies / intentional resets).
-        if is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0":
-            hw = _read_seqhw(path)
+        if hw_guard_on:
+            # `hw` was read once, above, alongside the tail (INDEX1 Phase A);
+            # `existing_max_seq` is the tail max, promoted to the full-file max
+            # whenever the tail disagreed with the sidecar — so this comparison
+            # keeps its exact meaning: the FILE regressed below the high-water.
             # No `path.exists()` here (second-eyes fix 2026-07-20): an ABSENT
             # events.jsonl with a live .seqhw is the most-regressed view possible
             # (a partial mount) and is never legitimate — rotation always leaves
@@ -892,15 +1151,137 @@ def atomic_append_jsonl(
                     f"check or the morning brief."
                 )
 
-        atomic_write_text(path, existing + new_lines, encoding=encoding)
+        if not is_events:
+            atomic_write_text(path, existing + new_lines, encoding=encoding)
+        else:
+            # INDEX1 Phase A (R4/R5) — TRUE APPEND. The ledger is opened
+            # O_APPEND in binary mode and the batch lands as one write + fsync.
+            # Nothing before the appended bytes is touched, ever.
+            assert tail is not None
+            lines_bytes = new_lines.encode(encoding)
+            payload = lines_bytes
+            if tail.size > 0 and not tail.ends_with_newline:
+                # TORN TAIL (R4 / SPEC D7). The file does not end in a newline:
+                # a crash or a mid-append sync left a partial last line. Never
+                # truncate — history is additive. Lead the batch with a newline
+                # so the fragment stays a complete, skippable junk line (the
+                # defensive readers already tolerate interior junk), and put
+                # the heal ON THE RECORD through the FS-15 read-alarm sidecar
+                # — the same sidecar `events_io._iter_file` uses for the
+                # truncation signature — so it surfaces in system-health and
+                # the brief instead of vanishing. Recorded in BOTH shapes: a
+                # fragment that will not parse (a mid-append crash or sync
+                # flush) and an unterminated line that does parse (a hand
+                # edit); this appender always terminates its rows, so either
+                # shape means something other than the appender wrote here.
+                payload = b"\n" + lines_bytes
+                frag = tail.raw_all.rsplit(b"\n", 1)[-1]
+                frag_parses = False
+                try:
+                    frag_parses = isinstance(
+                        json.loads(frag.decode(encoding, errors="replace")),
+                        dict)
+                except (ValueError, TypeError):
+                    frag_parses = False
+                try:
+                    from read_alarm import record_read_alarm
+                except ImportError:
+                    import sys as _sys
+                    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                    try:
+                        from read_alarm import record_read_alarm
+                    except Exception:
+                        record_read_alarm = None
+                except Exception:
+                    record_read_alarm = None
+                if record_read_alarm is not None:
+                    shape = ("unparseable fragment" if not frag_parses
+                             else "parseable row missing its terminator")
+                    record_read_alarm(
+                        path,
+                        f"torn tail healed by appender ({shape}): {len(frag)} "
+                        f"unterminated byte(s) kept as a skippable line "
+                        f"before appending {len(evs)} event(s)",
+                        reader=f"atomic_append_jsonl:{holder}",
+                    )
+            _append_bytes(path, payload)
 
-        # FS-04 — advance the high-water mark AFTER a clean write.
-        if is_events and os.environ.get("CR_SEQ_HIGHWATER", "1") != "0":
+            # R4 — READ BACK before trusting the write. On POSIX a rotation or
+            # repair that replaced the file between our open and our write
+            # leaves the bytes on an orphaned inode; on any platform a write
+            # that did not land must not advance `.seqhw`. Re-open, read a
+            # window at least as large as the batch, and require (a) the
+            # batch bytes to be PRESENT in the live file's tail and (b) the
+            # file's last complete line to parse to the stamped seq. (b) is
+            # the contract; (a) is what decides between "our write never
+            # landed" (raise, side-file, do not advance) and "something else
+            # wrote after us outside the lock" (the batch IS in the ledger, so
+            # raising would set aside a duplicate — say so on stderr instead).
+            verify = _read_events_tail(
+                path, encoding=encoding,
+                max_bytes=max(_TAIL_READ_BYTES, len(lines_bytes) + 1024))
+            landed = lines_bytes in verify.raw_all
+            last_seq_expected = evs[-1].get("seq") if evs else None
+            last_line_ok = False
+            try:
+                last_line = verify.raw_all.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+                parsed_last = json.loads(last_line.decode(encoding))
+                last_line_ok = (isinstance(parsed_last, dict)
+                                and parsed_last.get("seq") == last_seq_expected)
+            except (ValueError, TypeError):
+                last_line_ok = False
+            if landed and not last_line_ok:
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[atomic_append_jsonl] read-back: the batch landed but "
+                    f"the last line of {path.name} is not its final row (seq "
+                    f"{last_seq_expected}) — another writer appended OUTSIDE "
+                    f"the writer lock (holder={holder}).\n"
+                )
+            if not landed:
+                import datetime as _dt
+                stamp = _dt.datetime.now(_dt.timezone.utc).strftime(
+                    "%Y%m%dT%H%M%S%fZ")
+                side = path.with_name(path.name + f".appendverify-{stamp}.jsonl")
+                try:
+                    atomic_write_text(side, new_lines, encoding=encoding)
+                except Exception:
+                    pass
+                try:
+                    atomic_write_json(
+                        path.with_name(path.name + ".appendverify.json"), {
+                            "detected": _dt.datetime.now(
+                                _dt.timezone.utc).isoformat(),
+                            "reason": "batch_not_at_file_tail_after_append",
+                            "n_events": len(evs),
+                            "side_file": str(side),
+                            "holder": holder,
+                        })
+                except Exception:
+                    pass
+                raise AppendVerificationError(
+                    f"appended {len(evs)} event(s) but the read-back does not "
+                    f"find them at the end of {path.name} — the file was "
+                    f"replaced under the writer (rotation / repair outside the "
+                    f"lock, or a sync swap). The batch is preserved at "
+                    f"{side.name}; .seqhw was NOT advanced (holder={holder})."
+                )
+
+        # FS-04 — advance the high-water mark AFTER a clean, verified write.
+        if hw_guard_on:
             new_max = max((int(e["seq"]) for e in evs
                            if isinstance(e.get("seq"), (int, float))
                            and not isinstance(e.get("seq"), bool)
                            and e["seq"] < 10**10), default=existing_max_seq)
-            _write_seqhw(path, max(new_max, existing_max_seq))
+            target = max(new_max, existing_max_seq, hw if hw is not None else 0)
+            if _write_seqhw(path, target):
+                # A successful advance retires any pending rescan marker: the
+                # sidecar is the file's max again.
+                if rescan:
+                    _clear_rescan_marker(path)
+            else:
+                # R2 — never silent. Marker or raise; the batch is on disk.
+                _note_seqhw_write_failed(path, target, holder)
 
         # SPEC A3 — maintain the source_ref dedup index while still holding the
         # writer lock (events branch only). Best-effort: an index failure must
@@ -1590,6 +1971,8 @@ __all__ = [
     "multi_write_context",
     "AtomicWriteLockError",
     "SubstrateRegressionError",
+    "SeqHighWaterError",
+    "AppendVerificationError",
     "check_substrate_regression",
     "events_freshness",
     "read_rev_sidecar",

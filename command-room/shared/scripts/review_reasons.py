@@ -139,10 +139,185 @@ def review_reason_still_holds(ws, reason, cache: Optional[dict] = None,
     projected commitment, needed by the row-aware clause classes."""
     if cache is None:
         cache = {}
+    # ATTRIB1-B F-2 — A ROW THAT IS STILL ASKING IS NOT SATISFIED.
+    #
+    # The collision this closes: the ladder's ONE question is minted from a
+    # counterparty NAME the extractor heard, and capture_gate stamps that
+    # same row "counterparty 'X' has no person record". The clause check
+    # then resolves X against the entity graph, finds the person, and
+    # concludes the doubt is gone — while `counterparty_id` is STILL UNSET,
+    # because resolving a name at read time does not write one. The row
+    # dropped off the queue, out of door 1 (which reads the projection) and
+    # out of A6's lapse-default (same projection), so the only question M
+    # allows and the mechanism that makes it safe were both inert.
+    #
+    # The conservative reading is the true one: `attribution.question` is
+    # this build's own statement that the row does not know who "you" is.
+    # It outranks any clause-level satisfaction — the question is the
+    # doubt, not the sentence describing it.
+    if isinstance(row, dict):
+        d = row.get("data") if isinstance(row.get("data"), dict) else row
+        attr = (d or {}).get("attribution")
+        q = attr.get("question") if isinstance(attr, dict) else None
+        if isinstance(q, dict) and q.get("options"):
+            return True
     clauses = [c.strip() for c in str(reason or "").split(";") if c.strip()]
     if len(clauses) != 1:
         return True
     return clause_still_holds(ws, clauses[0], cache, row=row) is not False
+
+
+# ---------------------------------------------------------------------------
+# HYGIENE9 (c)/(d2) — the render-time composer: stored clause -> WHOLE SENTENCE
+# ---------------------------------------------------------------------------
+#
+# A stored `review_reason` is a GATING INPUT (the clause checks above,
+# cru_match, commitment_dedup, confirm_flow, identity_reconcile all read the
+# stamp text) and is never rewritten. What the customer READS is composed
+# here, at render, once, for every surface that prints a reason: the plate
+# and its brief / day-close / wrap cuts (`plate_view.plain_words`), the held
+# queue, commitment triage, waiting-on and the Staff Meeting card
+# (`surface_drivers._display_review_reason`).
+#
+# Two defects this replaces (v5.27.0 supervised test, 2026-09-04; PLATE1-N2
+# review F-3):
+#   * a RAW SCORE reached the plate — "extraction confidence 0.5 below
+#     threshold" is the stamp `capture_gate` writes, and the old path passed
+#     every clause it did not know verbatim;
+#   * a word-by-word substitution table mangled its own input — "substrate
+#     seq 12" became "the record an earlier record", "unconfirmed extraction
+#     — stuck on an unowned line" became "not confirmed yet extraction —
+#     quiet on an no owner line" — and PLATE1 night 2 carried those into the
+#     Friday wrap's prose and .docx.
+#
+# The rule: a KNOWN clause shape maps to one whole sentence, with no number
+# in it (a floor is ours to know, not the customer's to read). An unknown
+# clause (model-composed prose is the common case on a live book) keeps its
+# words, with the internal vocabulary re-said phrase-first so nothing
+# ungrammatical is produced — and then passes the hard-leak scrub: a clause
+# that STILL carries a score shape or a wire id after that is replaced whole
+# by `FALLBACK_SENTENCE`, never printed. So the output of `render_reason` can
+# carry neither shape, by construction; the plate's P4 gate and the widget
+# validator pin the same two shapes from the other side.
+
+# Exact / parametrised clause shapes -> the sentence the customer reads.
+# `\1` back-references keep the quoted name; nothing else from the stamp
+# survives.
+REASON_SENTENCES = (
+    (re.compile(r"^counterparty '(.+)' has no person record$", re.I),
+     r"'\1' isn't in your contacts yet"),
+    (re.compile(r"^no resolved owner$", re.I), "no owner on record"),
+    (re.compile(r"^no identifiable owner$", re.I), "no owner on record"),
+    (re.compile(r"^(?:low extraction confidence"
+                r"|extraction confidence\s+\S+\s+below threshold)$", re.I),
+     "the extractor wasn't sure this was a real commitment"),
+    (re.compile(r"^extraction confidence\s+.*?\bis not a number\b.*$", re.I),
+     "the extractor's confidence on this one was unreadable, so it's here "
+     "for a look"),
+    (re.compile(r"^match (?:score|confidence)\s+\S+\s+below floor$", re.I),
+     "it only loosely matched the source"),
+    (re.compile(r"^no (?:resolved )?counterparty (?:identified )?for a "
+                r"promise$", re.I),
+     "it's a promise with nobody named on the other side"),
+    (re.compile(r"^observed tier$", re.I), "heard, not promised"),
+    (re.compile(r"^substrate seq\s*#?\s*\d+$", re.I), "from an earlier record"),
+    (re.compile(r"^same-name collision on an auto contact capture$", re.I),
+     "two contacts share this name, so it couldn't be filed automatically"),
+)
+
+# The fallback table for a clause no shape above knows: PHRASE-level rows
+# first (so a multi-word internal term is re-said as one unit), then the
+# single words. Every replacement is chosen to keep the sentence readable
+# in place — "an unowned line" -> "an ownerless line", not "an no owner
+# line". This is `plate_view.PLAIN_WORDS` (same object, one table).
+FALLBACK_WORDS = (
+    (re.compile(r"^counterparty '(.+)' has no person record$", re.I),
+     r"'\1' isn't in your contacts yet"),
+    (re.compile(r"\bunconfirmed extraction\b", re.I),
+     "a capture not confirmed yet"),
+    (re.compile(r"\bsubstrate seq\s*#?\s*\d+\b", re.I), "an earlier record"),
+    (re.compile(r"\bseq\s*#?\s*\d+\s+substrate\b", re.I), "an earlier record"),
+    (re.compile(r"\bseq\s*#?\s*\d+\b", re.I), "an earlier record"),
+    (re.compile(r"\bobserved tier\b", re.I), "heard, not promised"),
+    # Fix round F-6 — "score" is re-said as a WORD the reader has a model
+    # for, never as "confidence" (that word plus a number is the exact shape
+    # the scrub refuses, so the old row collapsed every unknown "match
+    # score…" clause to the generic sentence). The number itself, if any,
+    # is handled by the composer's decimal rule.
+    (re.compile(r"\bmatch score\b", re.I), "how closely it matched"),
+    (re.compile(r"\bcounterparty\b", re.I), "the other person"),
+    (re.compile(r"\bunconfirmed\b", re.I), "not confirmed yet"),
+    (re.compile(r"\bpending_review\b", re.I), "waiting on you"),
+    (re.compile(r"\bneeds_review\b", re.I), "waiting on you"),
+    (re.compile(r"\bunowned\b", re.I), "ownerless"),
+    (re.compile(r"\bstuck\b", re.I), "quiet"),
+    (re.compile(r"\bno resolved owner\b", re.I), "no owner on record"),
+    (re.compile(r"\bscore\b", re.I), "rating"),
+    (re.compile(r"\btier\b", re.I), "level"),
+    (re.compile(r"\bsubstrate\b", re.I), "the record"),
+    (re.compile(r"\borchestrator\b", re.I), "the scheduled run"),
+)
+
+# The two shapes no rendered reason may carry (v5.27.0 test, B2.5 and A2/C):
+# a score — "confidence 0.5", "0.55 below threshold", "below floor" — and a
+# wire id — `pcand:53504c35d5f8`, `bp_…`, `cmt_…`, `person:…`, or any
+# `<prefix>:<hex>` a future surface mints. Shared with the plate gate and the
+# widget validator so all three fences are the same two regexes.
+SCORE_SHAPE_RE = re.compile(
+    r"(?:\bconfidence\s+-?\d|\b\d+(?:\.\d+)?\s+below\s+(?:threshold|floor)\b"
+    r"|\bbelow\s+(?:threshold|floor)\b|\b(?:extraction|match)\s+confidence\b)",
+    re.I)
+WIRE_ID_SHAPE_RE = re.compile(
+    r"(?:\b[a-z][a-z0-9_]*:[0-9a-f]{6,}\b"
+    r"|\b(?:person|cru|org|project|dont_forget|schedule|pcand):\S+"
+    r"|\bbp_[0-9a-f]{6,}\b|\bcmt_[A-Za-z0-9_]+\b"
+    r"|\b(?:commitment_seq|seq|event)_\d+\b)")
+
+FALLBACK_SENTENCE = "the extractor flagged this one for a look"
+# Fix round F-6 — a DECIMAL in an unknown clause is a score in practice
+# ("match score 0.4 below the floor, twice"): the words may be new, the
+# number is still not the customer's to read. Composer-only: the plate gate
+# and the widget validator keep the two named shapes, because a context
+# line legitimately carries other numbers (counts, dates).
+_DECIMAL_RE = re.compile(r"\b\d+\.\d+\b")
+
+
+def carries_hard_leak(text) -> Optional[str]:
+    """The name of the shape `text` carries ("score" / "wire id"), or None.
+    The one predicate the composer, the plate gate and the widget validator
+    share, so a shape added here is fenced on every surface at once."""
+    s = str(text or "")
+    if SCORE_SHAPE_RE.search(s):
+        return "score"
+    if WIRE_ID_SHAPE_RE.search(s):
+        return "wire id"
+    return None
+
+
+def render_clause(clause) -> str:
+    """One stored clause -> the sentence the customer reads. Never a score,
+    never a wire id: a clause that would still carry one is replaced whole."""
+    text = str(clause or "").strip()
+    if not text:
+        return ""
+    for pat, repl in REASON_SENTENCES:
+        if pat.match(text):
+            return pat.sub(repl, text)
+    out = text
+    for pat, repl in FALLBACK_WORDS:
+        out = pat.sub(repl, out)
+    if carries_hard_leak(out) or _DECIMAL_RE.search(out):
+        return FALLBACK_SENTENCE
+    return out
+
+
+def render_reason(reason) -> str:
+    """A stored `review_reason` (one or more `; `-joined clauses) -> the
+    customer's sentences, joined the same way. Display only: the stored
+    string is a gating input and is never written back."""
+    clauses = [c.strip() for c in str(reason or "").split(";")]
+    rendered = [render_clause(c) for c in clauses if c]
+    return "; ".join(r for r in rendered if r)
 
 
 __all__ = [
@@ -152,4 +327,12 @@ __all__ = [
     "owner_external_of",
     "clause_still_holds",
     "review_reason_still_holds",
+    "REASON_SENTENCES",
+    "FALLBACK_WORDS",
+    "FALLBACK_SENTENCE",
+    "SCORE_SHAPE_RE",
+    "WIRE_ID_SHAPE_RE",
+    "carries_hard_leak",
+    "render_clause",
+    "render_reason",
 ]

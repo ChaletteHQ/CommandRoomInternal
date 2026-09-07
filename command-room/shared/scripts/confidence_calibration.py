@@ -76,7 +76,15 @@ def load_review_outcomes(workspace_root) -> List[dict]:
                 proposed.setdefault(cid, {"commitment_id": cid,
                                           "match_score": float(score)})
         elif t == "commitment_resolved" and cid:
-            resolved.add(cid)
+            # POLICY1-A (M ruling 2026-09-03) — the product now closes some
+            # rows on its own transcript evidence. Those closes are real and
+            # they are on the ledger, but they are NOT the CEO saying "yes,
+            # that band was right": counting them here would let the machine
+            # grade its own bar and walk the override file down. Same doctrine
+            # as REFINT1's drain tombstones, one event type over.
+            from event_types import is_automatic_transcript_close
+            if not is_automatic_transcript_close(data):
+                resolved.add(cid)
         elif t == "commitment_review_dismissed" and cid:
             # REFINT1 — a SYSTEM tombstone is not the CEO saying "not
             # relevant". The dangling-row drain terminally dismisses

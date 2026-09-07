@@ -1,18 +1,20 @@
 ---
 name: commitment-triage
 surfaces: both
-description: "Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path with undo. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate'. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale to-dos (30d+) surface as 'still on your plate?'; every action is an append and the ack offers one-tap undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
+description: "Your plate. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate'. Every open commitment grouped by what it wants next — DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED, then by project, then Overdue / This week / Later / No date. One widget, four verbs (done / later / drop / not mine), one Apply, everything through the single closure path with undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
 ---
 
 # commitment-triage
 
-The housekeeping surface for the whole open set (Phase 2 Stage D, S4). The
-daily Waiting On + My Plate chats (CTS1) surface the actionable SUBSET (capped, filtered,
-chase-drafted); this skill renders EVERYTHING open, oldest first, so the user
-can burn down rot in one sitting. Client grounding: repeated customer asks
-for one-click "move this to done" and complaints that items were "not going
-away"; one live workspace opened with 71 open items, many junk — the capture
-floor plus this surface is the fix.
+**This surface is the plate** (SPEC PLATE1, 2026-09-03). Every open
+commitment renders in ONE shape — the action block it wants next, then its
+project, then its horizon — and every row carries the same four verbs. The
+brief, the day-close, the Friday wrap and the board read the SAME shape from
+the same code (`shared/scripts/plate_view.py`); this skill is the full,
+verb-bearing view of it. Client grounding: repeated customer asks for
+one-click "move this to done", complaints that items were "not going away",
+and the operator book at 279 rows sorted by age — age is a maintenance
+signal, not a plan.
 
 ## Writer Contract
 
@@ -25,164 +27,87 @@ existing event is the forbidden write class this skill was built to replace.
 It also appends suppression rules to `_hq/config/commitment-rules.md`
 (atomic write; create the file with a one-line header if absent).
 
-## Step 1 — Load the projected open set
+## Step 1 — The plate model (ONE grouping, in code)
 
 ```python
 # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
 import sys; sys.path.insert(0, "shared/scripts")
-from cru_match import load_open_commitments
-from commitment_activity import derive_commitment_movement
-from commitment_state import count_commitments, stale_tasks, commitment_kind
-from primary_user import resolve_primary_user
-
-opens = load_open_commitments("<WORKSPACE>/_hq/data/events.jsonl")
-user_id = resolve_primary_user("<WORKSPACE>")
-# v4.6.0 MC2 — THE per-commitment movement map (one derivation, every surface):
-# powers headline["stuck"]/["blocked"] and the stale-task age below.
-movement = derive_commitment_movement("<WORKSPACE>/_hq/data/events.jsonl")
-counts = count_commitments(opens, user_person_id=user_id, now_iso="<now ISO>",
-                           movement=movement)
-stale = stale_tasks(opens, "<now ISO>", movement=movement)   # 30d+ no-MOVEMENT tasks — "still on your plate?"
+from plate_view import build_plate, render_plate
+view = build_plate("<WORKSPACE>", now_iso="<now ISO>")   # resolves the primary user itself
+out = render_plate(view, "plate", True)                    # owns every word
 ```
 
-The loader is THE projector — deferrals and reclassification markers are
-already applied (effective due, effective kind). Never re-derive either from
-raw events. Header counts come from `counts["headline"]` — the one bucket
-export (v4.5.2 R4 + v4.6.0 MC2): render `total` / `you_owe` / `owed_to_you` /
-`unowned` / `unconfirmed` (plus `overdue` and `stuck` where the header shows
-them) VERBATIM, never hand-rolled. `stuck` is the real movement metric (no
-movement 21+ days, or blocked on a named person; `blocked` ⊆ `stuck`) — omit
-the segment when the key is absent (not computed, never 0). These are by construction the same numbers the morning brief
-and the daily Waiting On / My Plate chats show (F-47 P2b / F-56: four different open
-counts in one day came from each surface folding buckets its own way —
-unowned and unconfirmed are their own lines everywhere, never folded into
-owed-to-you). `pending_review` rows are the `unconfirmed` bucket; they are
-excluded from you-owe/owed-to-you until confirmed.
+`build_plate` is THE grouping — no surface re-derives a block. It calls the
+canonical readers in this order and nothing else: `load_open_commitments` →
+`split_pending_review` → `render_clusters` → `classify_commitments` →
+`bucket_of`, reads the full history through `events_io`, and places every
+top-level open row in exactly ONE block:
 
-**INTAKE (2026-07-31):** `unconfirmed` is now a POINTER count, not a slice of
-`total` — an unconfirmed extraction is a queue member, not an open
-commitment, so it counts in that one tile and nowhere else. This surface
-still pins anything unconfirmed 7+ days in the labelled Unconfirmed block
-below; every OTHER pending row is out of the
-age sections entirely and belongs to the **needs-your-call** queue. The
-driver adds the one-line pointer for those — relay it, don't re-derive it.
-**UNCONFEXP1 (2026-08-30, M's ruling):** unconfirmed extractions no longer
-escalate until answered — they nag for `UNCONFIRMED_NAG_DAYS` (default 2
-days) and then lapse automatically via the daily `review-expiry` drain,
-reversibly (one batch, one `undo`). The 7-day pin therefore reaches only
-rows real movement has kept alive past their window.
+- **CONFIRM** — a row carrying a question (`data.question`), an extractor's
+  guess (`pending_review`), or no owner on record. A row with a question is
+  a question, not work: CONFIRM beats every other rule. Overdue questions
+  render FIRST inside the block with the OVERDUE badge, and their **Done**
+  confirms and closes in one tap (P3).
+- **DO IT** — you owe it.
+- **CHASE** — owed to you and quiet longer than the other party's cadence or
+  5 days, whichever is shorter.
+- **WAIT** — owed to you, still inside that window (a nudge you already sent
+  resets the clock).
+- **SCHEDULE** — `kind: scheduling`, not on the calendar yet.
+- **PARKED** — a row you said isn't yours (`not mine` — it waits for someone
+  to claim it, never lapses to dropped), a parked hint, or an undated personal
+  task with no movement for 30 days. **PARKED renders open with its reason
+  line, never hidden** (P2 / OVERDUE1 D3: the resting item stays on the book).
 
-## Step 2 — Sort + annotate (the full-list layout, delivered by design in pages)
+Level 2 is the project (`primary_thread_id`; "No project" last). Level 3 is
+the horizon from the effective due in the workspace timezone: Overdue · This
+week · Later · No date. One line per real-world item (CLUSTER1, default-on):
+a cluster's survivor carries "+N more like it". Sub-items ride their parent
+as a `steps done/total` chip and never render as rows (SUB1). Observed-tier
+rows never render (D5).
 
-The full-list layout is THE triage design — M picked it over the capped
-7-item daily-chat variant during the v4.5.1 dogfood (F-18): the full open set
-is surfaced, oldest first, nothing dropped. What CHANGED at T2 is delivery, not
-the layout: because the widget_code transport carries one page at a time (Bug
-#67 — there is no whole-widget carrier), the full list is delivered as pages of
-~10 rows (`page=N`, `show more` re-fires the next page). Every open item still
-reaches a page in the same order; the ordering, sections, tiles, and verbs
-below are unchanged — the reader just pages through them instead of scrolling
-one giant widget. One page's worth of the layout:
+**Header numbers** come from `count_commitments(..., user_person_id=...)`
+— the view carries `counts` (the `["headline"]` export verbatim) and
+`block_totals`; the block totals partition that same headline, pinned by
+`tests/run_plate1_test.py`. Never hand-roll a number, never fold unowned or
+a guess into a direction.
 
-- **Header stat tiles** from the bucket export: pass `counters` in the data
-  view with `Open` / `You owe` / `Owed to you` / `Unowned` / `Unconfirmed`
-  (+ `Undated` if room) — values VERBATIM from `counts["headline"]`, never
-  hand-rolled.
-- **One line per real-world item (CLUSTER1, default-on):** the driver
-  render-clusters the OPEN sections — rows the shipped duplicate scorer
-  joins (shared wording + shared roster counterparty + captured within
-  days; precision over recall) fold under the oldest row's line as
-  `+N folded` with a read-only expand, and the cluster line carries a
-  `keep as one` tap whose ids the row itself embeds (`data.id` +
-  `data.folded_ids` — dispatch via apply-choices to
-  `commitment_cluster.apply_cluster_merge`, one `clu_` batch, one undo).
-  The header leads with the information count ("N items (M open)"); the
-  tiles keep their reconciled true counts. A cluster is a display fact —
-  ignoring it or answering rows individually writes nothing. With nothing
-  clustering the view is byte-identical to before CLUSTER1. Nothing here
-  auto-merges: that stays confined to `commitment_dedup.auto_merge_eligible`.
-- **Unconfirmed block — renders FIRST, above every age section (v4.6.1
-  W4b escalation):** anything unconfirmed 7+ days pins to
-  a dedicated **"Unconfirmed"** section at the TOP of the widget —
-  unconfirmed items don't age into the pool. Since UNCONFEXP1 (M's
-  2026-08-30 ruling) they also don't escalate until answered: the daily
-  `review-expiry` drain lapses anything past its nag window
-  (`UNCONFIRMED_NAG_DAYS`, default 2 quiet days), reversibly, so this pin
-  reaches only rows real movement kept alive.
-  Build it in code: `from confirm_flow import select_unconfirmed_escalation`
-  → `esc = select_unconfirmed_escalation(opens, "<now ISO>")`; render
-  `esc["pin"]` rows with their `days_unconfirmed` age and `review_reason`
-  in plain English ("captured 12 days ago — still unconfirmed"). Verbs are
-  the confirm cluster: `mine` / `theirs to [name]` / `make task` / `drop`
-  (duplicate-flagged rows: `merge` / `keep both` / `drop`), dispatched
-  exactly per apply-choices § the commitments confirm-section handlers
-  (source `commitment-triage`). Rows in `esc["propose_drop"]` (30+ days)
-  additionally lead with the question **"sat unconfirmed for [N] days —
-  drop it?"** — Drop stays a manual click, never automatic. These rows are
-  EXCLUDED from the age sections below (no double-surfacing); they still
-  count in `headline["unconfirmed"]` and nowhere else. **Rows whose ONLY
-  amber class is `unowned` do NOT pin here (BUG-8330 item 13)** — this
-  block was the bounded pinned page 145 unowned rows sat in without
-  draining; they drain through the Unowned lane below instead.
-- **Unowned lane (BUG-8330 item 13) — after the Unconfirmed block, before
-  the age sections:** every open row with no resolvable owner (the same
-  `bucket_of` membership as the Unowned tile; suspected duplicates keep
-  their pin for merge adjudication), oldest first, titled **"Unowned —
-  oldest first"**. Verbs: `mine` / `theirs to [name]` / `drop` — claim it,
-  route it, or let it go, dispatched per apply-choices' confirm-section
-  handlers. Stored `attribution_candidates` from capture render on the row
-  as owner proposals ("maybe: [names]") — the driver builds all of this;
-  never hand-compose the lane.
-- **Age sections**, oldest first (event ts via `event_time`): a `30+ DAYS
-  OLD` section title above the aged block, the rest below. No confidence
-  filter, no cap-by-bucket — this is the full-set surface.
-- Per row context tag: age in days, effective due (or "undated"), kind
-  (`task` rows labeled plainly — "task (yours)"), and for `stale` members the
-  literal nudge **"still on your plate?"**. Stale keys on days since last
-  MOVEMENT (v4.6.0 MC2 — the same derivation as the stuck metric; capture ts
-  is the floor), so a task the user touched last week never gets the nudge.
-  For stuck rows, `commitment_activity.classify_commitments(opens, movement,
-  now_iso)` gives the row detail (days_since_movement, blocked_on) — same
-  map, never a re-derivation.
-- `pending_review` rows render with their `review_reason` and only offer
-  explicit confirm-shaped actions (done / drop / not mine) — an explicit
-  click IS user confirmation (`user_confirmed=True`); nothing here
-  auto-resolves them. Every such row MUST pass `reduced_verbs_reason` so the
-  reduced verb set is explained on-surface in one line (F-59), e.g.:
-  *"Fewer options — the owner is unconfirmed; clicking Done, Drop, or Not
-  mine confirms it."*
-- Rows carrying `data.suspected_duplicate_of` (capture-time semantic dedup,
-  v4.6.0 C4) render as **"looks like a duplicate of [other item's title] —
-  merge, or keep both?"** with the suspect NEXT TO the item it points at,
-  never age-buried. "Keep both" = clear the flag via `commitment_updated`
-  (pending_review cleared, note "confirmed distinct"); merge = the flow
-  below.
-- **Counterparty-unresolved batch (CTS1 §8.2(b) — OPT-IN, resumable, never a wall):**
-  after the age sections are built, compute the orphaned-promise set in code:
-  `from surface_split import counterparty_unresolved` → `orphans = [c for c in
-  opens if counterparty_unresolved(c, user_id)]`. When non-empty, append ONE
-  offer row at the BOTTOM of the widget (not a section of 49 rows): **"N of
-  your promises have no person attached — knock out a few?"** with actions
-  `confirm` (start a bite) / `skip`. On `confirm`, re-render a bite of ~5
-  orphan rows (oldest first), each carrying the drip verbs — `reassign to
-  [name]` (attaches the named person as COUNTERPARTY on these rows — the CTS1
-  dispatch nuance documented in apply-choices § cr-commitments) and
-  `make task` (demote to Personal) — plus `drop`. After a bite applies, offer
-  the next bite ("M left — another 5?"); any skip ends the run, and the next
-  run re-offers from wherever it left off (resumable by construction:
-  resolved rows leave the set — which is why the retirement of the weekly
-  fire costs this nothing: resumability was never a property of the cadence). Also summonable on demand: "fix my orphaned
-  promises" / "who were these for" in this chat starts a bite directly.
-  NEVER auto-demote — Bug #103 says most of these are REAL promises whose
-  counterparty linking failed; the human attaches or demotes, one tap each.
-- **No size fallback (T2):** the full open set renders by DESIGN as pages of
-  up to `chat_output_renderer.DEFAULT_PAGE_SIZE` rows — 15 — (`page=N`), each
-  relayed as `widget_code` per § Transport; `show
-  more` re-fires the next page. Never chunk mid-page, never right-size a page
-  below its design cap, never drop rows to fit a "transmission ceiling" (those
-  ceilings were byte-relay artifacts; a 199-commitment live fire proved the
-  relay wall — pagination is the fix). Every open item reaches a page; the
-  full-list layout renders the full list, one page at a time.
+**No primary user → no lanes.** `build_plate` REFUSES when the workspace's
+primary user cannot be resolved (`{"error": <one plain line>}`); the
+renderer prints that one line and nothing else. Never render a plate that
+reads "you owe 0 / owed to you N" because the pointer was unset — say the
+line, and let the update bridge's `write_user_pointer` action (or `set my
+name`) fix the pointer.
+
+## Step 2 — The shape and the words (`render_plate` owns both)
+
+`render_plate(view, surface, verbs)` is the ONLY renderer. Surfaces pass
+`surface` (`plate` here; `brief` / `eod` / `wrap` / `board` for the other
+adoptions) and `verbs`. It composes:
+
+- the block titles and their one-clause subtitle ("DO IT (12) — you owe
+  these"), the project headings, the horizon labels;
+- one row line: title · the other person's NAME · due · badges · "+N more
+  like it" · steps chip · the reason line · one evidence chip (the newest
+  open proposal's evidence, else the last movement — "you nudged them Aug
+  28"). Never an id, a score, a seq, or a tier word;
+- the collapsed-count line for WAIT and SCHEDULE ("12 waiting — say `show
+  waiting`"); DO IT, CHASE, CONFIRM and PARKED open by default (D2, P2);
+- the verb strip: exactly **Done · Later… · Drop · Not mine** on every row
+  (D4); CONFIRM rows carry Done · Drop · Not mine with the one-line
+  "fewer options" note (F-59).
+
+A jargon gate runs on the renderer's own words: the words *unconfirmed*,
+*stuck*, *unowned*, *pending_review*, ids and scores never render (P4 —
+NUMBERS1's plain-words list is folded in). Stored review reasons are re-said
+in plain words for display only; the stored clause is never rewritten.
+
+**Orphaned promises (CTS1 §8.2(b), on demand, resumable):** rows with no
+person attached (`from surface_split import counterparty_unresolved`) are a
+CONFIRM question like any other; the bite-sized batch — "fix my orphaned
+promises" / "who were these for" — still runs from this chat exactly as
+before: ~5 oldest orphan rows per bite with `reassign to [name]` / `make
+task` / `drop`, resumable by construction, never auto-demoted (Bug #103).
 
 ## Merging duplicates (chat-phrase path; the Merge verb ships in the W4b confirm flow, v4.6.1)
 
@@ -286,16 +211,17 @@ How the family renders and behaves on this surface:
 Prose uses the same words as the verb row — **Add sub-items** (F-13 P2a).
 
 
-## Step 3 — Render the widget (ONE driver call — T2.2)
+## Step 3 — Render the widget (ONE driver call)
 
-**The entire load → project → build → fit → persist pipeline is ONE CLI
-invocation** (`shared/scripts/surface_drivers.py` — it executes Steps 1–2's
-canonical helpers internally; those steps above remain the normative spec of
-what the view contains, never a to-do list of separate commands):
+**The entire load → group → render → fit → persist pipeline is ONE CLI
+invocation** (`shared/scripts/surface_drivers.py plate` — it runs Step 1's
+`build_plate` + `render_plate` internally and hands the data view to
+`widget_transport.render_and_persist`; Steps 1–2 above are the normative
+spec of what the view contains, never a to-do list of separate commands):
 
 ```bash
 # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
-python3 shared/scripts/surface_drivers.py commitments \
+python3 shared/scripts/surface_drivers.py plate \
     --workspace "<WORKSPACE>" --page 1
 ```
 
@@ -306,72 +232,123 @@ markers. **Relay the bytes between the markers to `mcp__visualize__show_widget`
 as `widget_code`, byte-exact.** `widget_transport.render_and_persist` (all
 validators + the byte-budget fit + the audit persist into
 `_hq/.system/widgets/`) already ran inside the call — there is nothing else
-to prepare. A `show more` reply re-fires the SAME one-command driver with
-`--page N+1`, which slices the page-set page 1 froze — not a fresh read
-(PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question
-asked ONCE"). If `CR-PAGINATION` carries `refreshed`, `suppressed`, or
-`clamped`, SAY it in one line before the rows — those flags exist so the
-system never quietly serves something other than what was asked.
+to prepare. The plate is delivered by DESIGN as pages of up to
+`chat_output_renderer.DEFAULT_PAGE_SIZE` rows in block order (CONFIRM → DO
+IT → CHASE → WAIT → SCHEDULE → PARKED); a `show more` reply re-fires the
+SAME one-command driver with `--page N+1`, which slices the page-set page 1
+froze — not a fresh read (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A
+page-set is ONE question asked ONCE"). If `CR-PAGINATION` carries
+`refreshed`, `suppressed`, or `clamped`, SAY it in one line before the rows.
+Never chunk mid-page, never drop rows to fit — every open item reaches a
+page.
 
 **Idempotent single call (RV-3 — the double-render fix):** run the driver
 exactly ONCE per page per fire. If you already hold the driver's output for
 the requested page, relay it — never re-run "to refresh" or "to be safe"
 (each re-run persists a duplicate audit page; that IS the double-render
 defect). Never hand-compose or post-process the HTML (the zero-manipulation
-contract: the persisted file IS the render), and never fall back to
-assembling the view yourself with piecemeal commands — the driver is the only
-sanctioned build path for this surface.
+contract: the persisted file IS the render). **The widget is relayed
+byte-exact and NEVER re-assembled from pieces** — not "with earlier
+styling", not "from the driver's rows", not to fit: a page assembled by
+hand carries no F-17 hold, so a Later… with no date reaches Apply (CUT-C
+item 5, ATTENDED_TEST_v5.28.0 B2.5). When `CR-PAGINATION` carries
+`over_budget`, the driver ALSO prints the page's TEXT form on stdout between
+`CR-WIDGET-TEXT-BEGIN` and `CR-WIDGET-TEXT-END` (this is the transport's
+`transport["text"]`: numbered by the same display numbers the persisted page
+holds, every row's verbs named including Follow-up call / Nudge) — relay
+EXACTLY the block between those two markers, byte-exact, instead of the
+widget, and say in one line that the page came as text because it was too
+large for the widget; a typed `follow-up call 265` then dispatches by number
+against the persisted page (CUT-C item 7, B2.6; REVIEW_CUTC F-2: the markers
+are the only place the text form reaches you — never compose one). Never fall
+back to assembling the view yourself with piecemeal commands — the driver is
+the only sanctioned build path for this surface.
 
-The rendered widget is the standard all-batch surface per
-`shared/CHAT_ACTION_WIDGET.md` § "Commitment Triage": header stat tiles from
-the bucket export, the Unconfirmed block first, age sections oldest-first,
-a **Done** one-tap button per row (t3 FB-4) with the tail verbs in the
-row's `— more —` dropdown (T2.2 row diet; wire format unchanged).
-Actions per row (display labels come from
-`shared/scripts/verb_taxonomy.py` — never restate them in widget HTML):
+**Narration around the widget:** one line naming what the page is ("CONFIRM
+first — 9 questions, 3 of them overdue; then DO IT"), the collapsed-count
+lines the render carries (`quick_read`), and nothing about lanes, buckets or
+tiles. The three tiles the widget shows are DO IT / CHASE / WAIT — the only
+numbers on this surface (D9); the brief shows one attention number and a
+pointer instead (NUMBERS1 R-1), never these three.
 
-- promise/scheduling rows: `resolved` (**Done**, the button) · `push to
-  [date]` (**Later…**) · `drop` · `not mine` · `make task` · `never track
-  this` (**Never track (permanent)**) — `skip` stays dispatchable but its
-  dropdown option is suppressed by the t3 FB-3 merge (**Later…** covers it;
-  the footer Snooze rest still mutes).
-- task rows: `resolved` (**Done**, the button) · `push to [date]`
-  (**Later…**) · `drop` · `promote` (**Make it a commitment**) · `never
+Every row embeds the commitment's `data.id` VERBATIM (widget identity
+contract, Stage B) with `source_skill: "commitment-triage"` so tuples carry
+`src` for stateless dispatch (W4). Row verbs (display labels from
+`shared/scripts/verb_taxonomy.py` — never restated in widget HTML):
+
+- every row: `resolved` (**Done**, the button) · `push to [date]`
+  (**Later…**) · `drop` · `not mine` — the four verbs, no more (D4);
+- CONFIRM rows: `resolved` · `drop` · `not mine` (Done confirms + closes).
+
+**Board rows (BOARD1 — the artifact still renders the pre-plate row set
+until night 2 adopts the board; its verb lines are kept here only so the
+board's parity pin has a source):**
+
+- promise/scheduling rows: `resolved` · `push to [date]` · `drop` · `not
+  mine` · `make task` · `never track this` — `skip` stays dispatchable but
+  its dropdown option is suppressed (t3 FB-3).
+- task rows: `resolved` · `push to [date]` · `drop` · `promote` · `never
   track this` — same `skip` suppression.
 - sub-item rows (SUB1, nested under their parent): the same per-kind set
-  MINUS `never track this` (suppression keys on capture shape — children
-  aren't captures). `add subitems [items]` (**Add sub-items**) is a
-  chat-phrase verb like `split into [items]` — it does not render as a
-  dropdown option; see § Sub-items.
+  MINUS `never track this`. `add subitems [items]` is a chat-phrase verb
+  like `split into [items]` — see § Sub-items.
 
 **Posting-block rule (t3 FB-11):** chat prose around the widget names ONLY
 the controls the rendered card visibly offers, using their exact labels —
-"tap **Done**, or pick from the row's menu (**Later…**, **Drop**, …)".
-Never enumerate verbs the card doesn't show, and never describe a dropdown
-row as if it had buttons. Same-vocabulary rule (F-13 P2a) still applies to
-every verb you do name. A Later… pick requires a date or a number of days:
+"tap **Done**, or pick from the row's menu (**Later…**, **Drop**, **Not
+mine**)". Never enumerate verbs the card doesn't show, and never describe a
+dropdown row as if it had buttons. Same-vocabulary rule (F-13 P2a) applies
+to every verb you name. A Later… pick requires a date or a number of days:
 the widget holds Apply and names the missing input inline (F-17) — never
 mention Apply being "stuck"; the widget explains itself.
-
-Every row embeds the commitment's `data.id` VERBATIM (widget identity
-contract, Stage B). Pass `source_skill: "commitment-triage"` in the data view
-so tuples carry `src` for stateless dispatch (W4).
 
 ## Step 4 — Dispatch
 
 Handled by `apply-choices` § `commitment-triage` (all writes through
-`commitment_state`; see that section for the exact calls). The consolidated
-ack is plain English ("Closed 6, deferred 2, made 3 tasks — the list is down
-to N.") and ALWAYS ends with:
+`commitment_state`; see that section for the exact calls). The four verbs:
 
-> *Say `undo` to reverse this triage.*
+- **Done** → `close_commitment(..., resolution="done", user_confirmed=True,
+  resolved_by_match="id")` — the id came off the persisted page (CLOSEID2).
+  On a CONFIRM row it confirms and closes in ONE tap: a row whose `pending`
+  flag is true (an extractor's guess) goes through
+  `needs_review_queue.done_items(..., source_skill="apply-choices")` (the
+  DONE1 twin — that writer accepts only the dispatcher's own name); every
+  other CONFIRM row (no owner on record, a system question) is a real item
+  and closes through `close_commitment` like any row.
+- **Later…** → `apply_later` (your own item moves its date; someone else's
+  leaves the view until then).
+- **Drop** → `close_commitment(..., resolution="dropped")`.
+- **Not mine** → `commitment_state.disown_commitment` — the owner is
+  cleared and the row PARKS with "whose is this?"; it never closes and the
+  unconfirmed drain never lapses it (P3). Name the real owner ("that's
+  Quinn's") and it ROUTES via `reassign to [name]` instead.
 
-`undo` (same chat) reopens every closed item via `reopen_commitment`,
+Two blocks carry ONE more tap, because they want one more thing than a
+decision (D4 — the wire ids are the shipped ones, not new verbs):
+
+- **CHASE → Nudge** (`nudge`) — drafts the chase email on click, draft
+  posture, nothing sends. Same handler as the Waiting On delegated row.
+- **SCHEDULE → Follow-up call** (`follow-up call`) — drafts the invite
+  request for a meeting that was agreed and never booked. Nothing books
+  itself.
+
+Neither renders on any other block, and `verbs=False` surfaces (the board,
+the day-close, the wrap, a would-hold read) carry neither. CONFIRM's own
+one-tap is the attribution pick-list, which the capture lane owns; until it
+lands CONFIRM shows its three verbs.
+
+The consolidated ack is plain English ("Closed 6, moved 2, parked 1 — DO IT
+is down to N.") and ALWAYS ends with:
+
+> *Say `undo` to reverse this.*
+
+`undo` (same chat) reopens every closed item via `reopen_commitment`, hands a
+disowned item back to its previous owner via `confirm_commitment_owner`,
 reverses reclassifications, AND lifts every mute the batch wrote (via
-`mute_ledger.clear_dismissals` — v4.6.0 S4, the F-20 P3a fix: undo used to
-reopen items while their snoozes stayed in force) — all additive; history
-keeps the tombstone, the reopen, and the clear. Never narrate event-type
-names (CONTRACT Rule 4/9).
+`mute_ledger.clear_dismissals`) — all additive; history keeps the tombstone,
+the reopen, and the clear. Never narrate event-type names (CONTRACT Rule
+4/9). `show waiting`, `show scheduling`, `not mine` and `undo <block>` are
+replies on an open plate — never treat one as a fresh trigger.
 
 ## Publish the board (BOARD1 — the artifact surface, copy-paste apply)
 
@@ -453,10 +430,16 @@ they were sections of this pass that happened to be read on a Friday.
   surface only (S5); CRU never chases them (`cru_match.cru_eligible`).
 - Never deletes or rewrites history — additive events only (F4/§3.1).
 
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
+**In-chat replies (PLATE1)** — DOES NOT fire on 'show waiting' / 'show scheduling' / 'not mine' / 'undo the parked block' (replies on an OPEN plate — no skill's trigger; ROUTEMISS1 hand rows in tests/triggers.yaml pin that this skill never fires on them).
+
 **Board triggers (BOARD1)** — 'publish my triage board' / 'put my triage on a page' / 'refresh my board' / 'triage board' fire § Publish the board, NOT the widget path. Same surface, different serialization. These live here rather than in the description because the description sits within 13 characters of the G11a cap: adding them needs a deliberate trim decision, not a silent one. DOES NOT fire on 'board pack' / 'board deck' / 'prep the board meeting' (board-pack-assembler — a governance document, not this list).
 
-> Batch review of the FULL open commitment set, sorted by age — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate' (QUICKCMD2, 2026-08-28 — the on-demand ask the my-plate scheduled task never had a chat trigger for). On demand only: the OPT-IN Friday-afternoon scheduled chat was retired in TASKRET1 (2026-08-17) until the review-tier backlog model settles — `add commitment triage` is refused warmly and the skill is otherwise unchanged. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
+> Your plate — the FULL open commitment set grouped by the action it wants next (PLATE1; formerly sorted by age) — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate' (QUICKCMD2, 2026-08-28 — the on-demand ask the my-plate scheduled task never had a chat trigger for). On demand only: the OPT-IN Friday-afternoon scheduled chat was retired in TASKRET1 (2026-08-17) until the review-tier backlog model settles — `add commitment triage` is refused warmly and the skill is otherwise unchanged. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).

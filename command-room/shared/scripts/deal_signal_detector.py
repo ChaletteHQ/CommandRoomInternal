@@ -45,6 +45,7 @@ if str(_HERE) not in sys.path:
 
 import event_refs  # noqa: E402
 from entities_io import entities_collection  # noqa: E402
+from text_clip import PROPOSAL_EVIDENCE_MAX_CHARS, clip  # noqa: E402
 from prospect_conversion_detector import (  # noqa: E402
     _conversion_markers,
     _event_org_ids,
@@ -259,6 +260,29 @@ def detect_deal_signals(workspace_root: str | Path, *,
         return []
     events = event_refs.load_events(events_path)
 
+    # DEALNAG1 — a SETTLED org (a won deal thread, or a paid / signed
+    # event on file) is never a creation candidate. `org_deal_coverage`
+    # reads a terminal deal as "no coverage" — correct for the confirm
+    # handler, wrong as a creation premise: a deal that was WON is a
+    # pipeline record, not the lack of one, and the live brief re-proposed
+    # two just-won clients as "likely deal · no pipeline record" the Sunday
+    # after their wins. The predicate is shared with the conversion nudge
+    # (deal_signal_retire.settled_orgs — one helper, never forked).
+    from deal_signal_retire import settled_orgs
+
+    settled = settled_orgs(ent, events)
+    covered |= set(settled)
+    # CUTB item 1(a) (v5.28.0 attended test B2.1 / B4.1) — a CLIENT org is
+    # never a creation target. The genesis lane below fires on any
+    # sales-typed meeting on an uncovered tracked org, and `tracked` holds
+    # clients for the UPDATE lane (a client's open deal is real pipeline);
+    # nothing excluded a client from genesis, so a client whose won deal
+    # thread had been archived, or who was converted by hand with no deal
+    # thread at all, was "likely deal · no pipeline record" the next Sunday.
+    # A client relationship is a coverage premise beside won / paid / signed.
+    covered |= {oid for oid, o in tracked.items()
+                if o.get("relationship_type") == "client"}
+
     candidates: list[dict] = []
     seen: set[str] = set()
 
@@ -397,6 +421,44 @@ def detect_deal_signals(workspace_root: str | Path, *,
     return candidates
 
 
+def _asked_before(workspace_root: str | Path) -> set[tuple[str, str]]:
+    """(fingerprint, evidence) pairs this detector has EVER proposed — open,
+    tombstoned (answered / expired / retired) or computationally lapsed.
+    Org-scoped full-history read through events_io (the projector's own
+    seam).
+
+    CUTB item 2 (v5.28.0 attended test B4.2: a proposal "had already
+    expired once and re-fired" on the same Aug 6 evidence). The DEALNAG1
+    form keyed on TOMBSTONED proposals only, and `brain_proposal_expired`
+    is written by `expire_stale`, which runs only inside `cleanup` — so a
+    row that aged out with no cleanup fire was neither open (the projector
+    drops it past TTL) nor asked (no tombstone), and the next Sunday
+    re-proposed it on identical evidence. Every prior proposal counts now:
+    one ask per (item, evidence) EVER, whatever the ledger got round to
+    saying about it. An open twin is already caught by `propose()`'s own
+    open-fingerprint dedup; listing it here changes nothing.
+
+    The evidence is compared CLIPPED-to-clipped: `propose()` stores
+    `clip(evidence, PROPOSAL_EVIDENCE_MAX_CHARS)`, and a candidate longer
+    than the budget never matched its own stored row (the second hole)."""
+    from events_io import load_events_org_scoped
+
+    ws = Path(workspace_root)
+    if not (ws / "_hq" / "data" / "events.jsonl").exists():
+        return set()
+    events, _skipped = load_events_org_scoped(ws)
+    out: set[tuple[str, str]] = set()
+    for ev in events:
+        if ev.get("type") != "brain_proposal":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("detector") != _DETECTOR:
+            continue
+        out.add((str(d.get("fingerprint") or ""),
+                 clip(str(d.get("evidence") or ""), PROPOSAL_EVIDENCE_MAX_CHARS)))
+    return out
+
+
 def propose_candidates(workspace_root: str | Path, candidates: list[dict]) -> dict:
     """Propose each detected candidate through the Living Brain rails
     (tier=confirm; ledger cooldown + open-fingerprint dedup enforced inside
@@ -408,9 +470,21 @@ def propose_candidates(workspace_root: str | Path, candidates: list[dict]) -> di
     Returns {n_proposed, n_suppressed}. Never writes a deal field."""
     import brain_proposals
 
+    asked = _asked_before(workspace_root)
     n_proposed = 0
     n_suppressed = 0
     for c in candidates:
+        # DEALNAG1 / POLICY1 D3 — one proposal per (item, evidence) EVER.
+        # Expiry writes no cooldown, so the Sunday after a row expired the
+        # detector re-proposed the same fingerprint on the same dated
+        # evidence (live: expired and re-proposed the same day). A row that
+        # was already asked — answered, expired or retired — comes back
+        # only with NEW evidence (the evidence string carries its source
+        # date, so a fresh signal is a fresh ask).
+        if (c["fingerprint"],
+                clip(c["evidence"], PROPOSAL_EVIDENCE_MAX_CHARS)) in asked:
+            n_suppressed += 1
+            continue
         action_tuples = [
             {"action": "confirm proposal"},
             {"action": "dismiss proposal"},
@@ -441,12 +515,29 @@ def propose_candidates(workspace_root: str | Path, candidates: list[dict]) -> di
 
 
 def run_deal_signal_job(workspace_root: str | Path, *, fired_via: str = "scheduled") -> dict:
-    """The `deal-signals` MAINTENANCE_JOBS entry point: detect → propose each
+    """The `deal-signals` MAINTENANCE_JOBS entry point: retire settled nags →
+    promote every settled prospect (M ruling 4 — automatic, receipted,
+    undoable) → detect → propose each
     candidate through the Living Brain rails (tier=confirm, ledger cooldown +
     open-dedup enforced inside propose()) → write the job's pack_run receipt.
     Returns {n_candidates, n_proposed, n_suppressed, receipt}."""
     from receipts import log_receipt
+    from deal_signal_retire import retire_settled
+    from org_promotion import promote_settled_prospects
 
+    # DEALNAG1 — retire FIRST: every standing row whose premise the
+    # substrate already contradicts (a won / lost thread, a settled org)
+    # goes before the detector looks for new signal, and the counts ride
+    # this job's own pack_run receipt (the honesty artifact for the sweep).
+    retired = retire_settled(workspace_root, source_skill=_DETECTOR)
+    # DEALNAG1 (M ruling 4) — then PROMOTE: every prospect carrying a paid
+    # or signed fact becomes a client here, automatically, with a receipt
+    # (`org_promoted`), one CHANGED line and an undo. It runs BEFORE
+    # detection so the creation lane sees the settled substrate, and it is
+    # the backlog / other-door path — a won close promotes on the spot
+    # inside `deal_state.close_deal`.
+    promoted = promote_settled_prospects(workspace_root,
+                                         source_skill=_DETECTOR)
     candidates = detect_deal_signals(workspace_root)
     counts = propose_candidates(workspace_root, candidates)
     n_proposed = counts["n_proposed"]
@@ -457,10 +548,20 @@ def run_deal_signal_job(workspace_root: str | Path, *, fired_via: str = "schedul
         fired_via=fired_via,
         surfaced=n_proposed,
         extra_data={"n_candidates": len(candidates),
-                    "n_suppressed": n_suppressed},
+                    "n_suppressed": n_suppressed,
+                    "n_retired": retired["n_retired"],
+                    "retired_by_reason": retired["by_reason"],
+                    "n_promoted": promoted["n_promoted"],
+                    "promotion_batch_id": promoted["batch_id"],
+                    "n_promotions_skipped": len(promoted["skipped"])},
     )
     return {"n_candidates": len(candidates), "n_proposed": n_proposed,
-            "n_suppressed": n_suppressed, "receipt": receipt}
+            "n_suppressed": n_suppressed, "n_retired": retired["n_retired"],
+            "retired_by_reason": retired["by_reason"],
+            "n_promoted": promoted["n_promoted"],
+            "promoted": promoted["promoted"],
+            "promotions_skipped": promoted["skipped"],
+            "promotion_batch_id": promoted["batch_id"], "receipt": receipt}
 
 
 def validate_deal_signals_ran(workspace_root: str | Path) -> dict:

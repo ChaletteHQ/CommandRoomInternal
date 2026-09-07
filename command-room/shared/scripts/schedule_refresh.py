@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -393,6 +394,169 @@ def _announce_line(ev: dict) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# CUT-PLATE (2026-09-06) — THE ONE SENTENCE FOR A STALE REGISTERED PROMPT.
+#
+# What the registered prompt IS: a thin bootloader that `cat`s the plugin's
+# orchestrator file at fire time (scheduled-task-bootloader.md, Step 3), so
+# a plugin update reaches every scheduled chat WITHOUT a re-register — the
+# content the fire runs is always the installed plugin's. What can go stale
+# is the bootloader's own body (its discovery snippet, its diagnostic
+# version stamp): Step 1.C of `set up command room schedules` refreshes it
+# in place (`update_scheduled_task(taskId, prompt=…)` — no re-register), and
+# `update command room` runs that same step on the full-update path.
+#
+# The v5.28.0 attended test (Step 0) found all seven bootloaders still
+# stamped v5.20.0 after two updates: the Code-session run could not see
+# Cowork's scheduler store, and the earlier runs had not applied the refresh
+# either. When a registered BODY still differs from the composed one AFTER
+# an update's Step 1.C readback, the customer needs exactly one sentence
+# naming the exact phrase to type — not a per-task list, not a diagnosis,
+# and never twice in one run. The three surfaces that can see the drift
+# (the update bridge, the health check, the Monday cleanup note) all say
+# THIS sentence, so it cannot drift into three.
+#
+# What the sentence is KEYED TO (CUT-PLATE fix round 1, REVIEW F-1): a real
+# body drift — `prompt_body_drift`, the same `prompts_equivalent` compare
+# Step 1.C writes on — never the diagnostic version stamp. Step 1.C
+# normalizes the stamp away (BRIDGESIL1 Ruling §0.2: a stamp-only diff
+# writes NOTHING), so on any release where the bootloader body is unchanged
+# a stamp-keyed notice would print on every `update command room`, every
+# `health check` and every Monday note forever, and the phrase it names
+# could never clear it. `task_watchdog.check_prompt_versions` (the stamp
+# read) stays informational.
+# ---------------------------------------------------------------------------
+STALE_PROMPT_NOTICE = (
+    "Your scheduled chats are still running the setup from an older Command "
+    "Room. Type `set up command room schedules` once and they'll be brought "
+    "current — nothing else changes."
+)
+
+_PLUGIN_ROOT = _HERE.parent.parent
+BOOTLOADER_TEMPLATE_RELPATH = (
+    "skills/enable-command-room-schedules/references/scheduled-task-bootloader.md"
+)
+ORCHESTRATOR_MAP_RELPATH = (
+    "skills/enable-command-room-schedules/references/orchestrator-map.json"
+)
+BOOTLOADER_BODY_MARKER = (
+    "## The bootloader template (everything below this heading is the "
+    "registered prompt body)"
+)
+# The workspace basename Step 1.B bakes into every bootloader (template
+# Step 1: `WORKSPACE="$SESSION_DIR/mnt/<WORKSPACE_BASENAME>"`).
+_BAKED_BASENAME_RE = re.compile(r'WORKSPACE="\$SESSION_DIR/mnt/([^"/\\]+)"')
+
+
+def bootloader_template_body(plugin_root=None) -> str:
+    """The registered prompt body of the shipped template — everything
+    below the canonical marker line, exactly as `enable-command-room-
+    schedules` Step 1.B splits it (same marker, same lstrip)."""
+    root = Path(plugin_root) if plugin_root else _PLUGIN_ROOT
+    full = (root / BOOTLOADER_TEMPLATE_RELPATH).read_text(encoding="utf-8")
+    if BOOTLOADER_BODY_MARKER not in full:
+        raise ValueError("bootloader template missing its canonical marker line")
+    return full.split(BOOTLOADER_BODY_MARKER, 1)[1].lstrip("\n").lstrip()
+
+
+def orchestrator_filename(task_id: str, plugin_root=None) -> Optional[str]:
+    """`orchestrator-map.json` lookup; None for an id that has no chat
+    orchestrator (a silent task, or an id this plugin does not know)."""
+    root = Path(plugin_root) if plugin_root else _PLUGIN_ROOT
+    try:
+        omap = json.loads((root / ORCHESTRATOR_MAP_RELPATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    val = omap.get(task_id) if isinstance(omap, dict) else None
+    return val if isinstance(val, str) and val else None
+
+
+def compose_bootloader_body(task_id: str, *, workspace_basename: str,
+                            plugin_version: str, plugin_root=None,
+                            orchestrator_filename_override: Optional[str] = None) -> str:
+    """Step 1.B's composition, in code: the four substitutions over the
+    shipped template body. Raises on an unknown task id, a path-shaped
+    basename or a placeholder left unsubstituted — the same hard checks
+    the skill's inline Python asserts."""
+    basename = (workspace_basename or "").strip()
+    if not basename or "/" in basename or "\\" in basename:
+        raise ValueError(
+            f"workspace_basename must be a bare folder basename, got {basename!r}")
+    fname = orchestrator_filename_override or orchestrator_filename(task_id, plugin_root)
+    if not fname:
+        raise KeyError(f"{task_id}: no orchestrator in orchestrator-map.json")
+    body = (bootloader_template_body(plugin_root)
+            .replace("<TASK_ID>", task_id)
+            .replace("<ORCHESTRATOR_FILENAME>", fname)
+            .replace("<WORKSPACE_BASENAME>", basename)
+            .replace("<PLUGIN_VERSION>", str(plugin_version or "")))
+    for ph in ("<TASK_ID>", "<ORCHESTRATOR_FILENAME>", "<WORKSPACE_BASENAME>", "<PLUGIN_VERSION>"):
+        if ph in body:
+            raise ValueError(f"{task_id}: unsubstituted {ph} after compose")
+    return body
+
+
+def baked_basename(registered_prompt: str) -> Optional[str]:
+    """The workspace basename a registered bootloader was bound to, read off
+    its own Step 1 line; None for a legacy prompt that predates baking."""
+    m = _BAKED_BASENAME_RE.search(registered_prompt or "")
+    return m.group(1) if m else None
+
+
+def prompt_body_drift(task_records, *, plugin_version: str,
+                      workspace_basename: Optional[str] = None,
+                      plugin_root=None) -> list[str]:
+    """Task ids whose REGISTERED bootloader body differs from the one this
+    plugin composes today, after the stamp is normalized out of both sides —
+    exactly the set Step 1.C rewrites (`prompts_equivalent` False). Read
+    this off a readback taken AFTER the refresh and it is the set the
+    refresh did not reach.
+
+    A stamp-only difference is never drift. Ids with no chat orchestrator
+    (silent tasks) are skipped. Each body is composed against the basename
+    the registered prompt itself bakes in, so a moved workspace is not
+    mistaken for a stale body (`task_watchdog` owns the binding check);
+    `workspace_basename` is the fallback for a legacy prompt that bakes
+    none — without either, that record is skipped (informational).
+    """
+    drift: list[str] = []
+    for rec in task_records or []:
+        if not isinstance(rec, dict):
+            continue
+        tid = rec.get("taskId")
+        registered = rec.get("prompt") or ""
+        if not tid or not orchestrator_filename(tid, plugin_root):
+            continue
+        basename = baked_basename(registered) or (workspace_basename or "").strip()
+        if not basename:
+            continue
+        try:
+            composed = compose_bootloader_body(
+                tid, workspace_basename=basename, plugin_version=plugin_version,
+                plugin_root=plugin_root)
+        except (KeyError, ValueError):
+            continue
+        if not prompts_equivalent(composed, registered):
+            drift.append(tid)
+    return drift
+
+
+def stale_prompt_notice(drift, findings=None) -> str:
+    """The ONE line to say when `prompt_body_drift` is non-empty after the
+    readback — a registered body the refresh did not reach; `""` when every
+    body is current, whatever the stamps say. `findings` (the
+    `task_watchdog.check_prompt_versions` stamp read) is accepted for the
+    record and never decides: passing it AS the drift raises, so a caller
+    cannot key the sentence to the stamp by accident (REVIEW F-1 — that was
+    the repeating nag). Always the same sentence, whatever the count: one
+    sentence per run, never per task."""
+    if any(isinstance(d, dict) for d in (drift or [])):
+        raise TypeError(
+            "stale_prompt_notice decides on prompt_body_drift (task ids), "
+            "never on check_prompt_versions findings — the stamp is informational")
+    return STALE_PROMPT_NOTICE if drift else ""
+
+
 def announce_lines(workspace_root, *, cap: int = ANNOUNCE_CAP,
                    record: bool = True, now: Optional[_dt.datetime] = None) -> list[str]:
     """SPEC BRIDGESIL1 item 2: one announce line per silent-applied semantic
@@ -433,6 +597,16 @@ __all__ = [
     "DECISION_PRESERVE",
     "SEMANTIC_FIELDS",
     "prompts_equivalent",
+    "STALE_PROMPT_NOTICE",
+    "BOOTLOADER_TEMPLATE_RELPATH",
+    "ORCHESTRATOR_MAP_RELPATH",
+    "BOOTLOADER_BODY_MARKER",
+    "bootloader_template_body",
+    "orchestrator_filename",
+    "compose_bootloader_body",
+    "baked_basename",
+    "prompt_body_drift",
+    "stale_prompt_notice",
     "plan_schedule_refresh",
     "apply_schedule_refresh",
     "log_schedule_refreshed",

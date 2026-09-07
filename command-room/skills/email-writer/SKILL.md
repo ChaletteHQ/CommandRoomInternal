@@ -63,7 +63,7 @@ Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
 
 ## Chained invocation (invoked as a sub-step — SPEC EW1, hardened SPEC EW2+T)
 
-Other skills and mid-task turns hand email drafts off to THIS skill instead of composing email text themselves (CONTRACT Rule 30; `shared/EMAIL_DRAFT_PROTOCOL.md` scope — thread-resurrection's chained revival draft is the original pattern). When invoked that way:
+Other skills and mid-task turns hand email drafts off to THIS skill instead of composing email text themselves (CONTRACT Rule 30; `shared/EMAIL_DRAFT_PROTOCOL.md` scope — dormant-customer-scan's chained revival draft (threads lens, formerly thread-resurrection) is the original pattern). When invoked that way:
 
 - **Skip trigger parsing** (Phase 1's input shapes) — the handoff carries recipient + topic + any source context (thread, meeting, document) instead of a trigger phrase.
 - **Everything else follows the normal flow:** entity-resolve on the recipient (the mandate above), the voice block + customer override (B1), recipient context load (Phase 2), the two-pass critique + voice-tell gate (Phase 3), subject synthesis (Phase 3.5), and the editable-widget render per EMAIL_DRAFT_PROTOCOL (Phase 4 — lazy creation; event writes fire from apply-choices as usual).
@@ -310,7 +310,7 @@ This phase is render-only:
 4. **Post** by handing `transport["html"]` to `mcp__visualize__show_widget`. Never hand-compose or post-process the HTML; never post-process `transport["html"]` (`shared/CHAT_ACTION_WIDGET.md` § Transport).
 5. **Stop and wait.** This skill's main path ends with the widget on screen. The user's click hands off to `apply-choices`, which fires the matching seam-resolved mail tool lazily per the action semantics below.
 
-This matches the contract scheduled tasks use for email drafts (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1 — lazy draft creation) and means downstream skills that chain through email-writer (intro-broker, follow-up-ritual, thread-resurrection, inbox-triage's reply paths) inherit the editable-widget + approval-gate surface for free.
+This matches the contract scheduled tasks use for email drafts (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1 — lazy draft creation) and means downstream skills that chain through email-writer (intro-broker, follow-up-ritual, dormant-customer-scan's threads lens, inbox-triage's reply paths) inherit the editable-widget + approval-gate surface for free.
 
 Pre-v3.13.0, email-writer surfaced drafts as a text block in chat — forcing back-and-forth chat-turn edits to revise the body. v3.13.0 added the widget but kept eager connector-draft creation as a back-compat carryover. v3.13.7 reverses the eager model: the widget is now the only end-user-visible side effect; mail-backend writes are click-gated through apply-choices. Same widget surface, lazy state change.
 
@@ -587,6 +587,10 @@ If `voice_block_last_refreshed` is >12 months old, or corrections log has >20 ro
 ```
 Quick note: your writing voice profile hasn't been refreshed in a while (last update: [date]). When you have a moment, say "tune my email drafts" and we'll refresh it so your drafts stay tuned to how you actually write.
 ```
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

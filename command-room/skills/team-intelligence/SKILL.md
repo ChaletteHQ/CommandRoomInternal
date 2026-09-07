@@ -13,7 +13,7 @@ description: "Never walk into a 1:1 cold again — the team layer: who owns what
 ## Writer Contract
 
 - **Reads from:** `_hq/data/entities.json` person records filtered to `reports_to_id = CEO` or members of any primary-focus org (`is_primary_focus: true`).
-- **Writes:** `commitment` events (and closures through `commitment_state.close_commitment`) to `_hq/data/events.jsonl` with v2.2 shape (`primary_thread_id` + `org_ids[]`). This is the ONLY commitment write this skill performs — per-person commitment/overload/drift signal is DERIVED from those events at read time, never stored on person records (the pre-P1.7 contract listed `open_commitments[]` / `delivered_commitments[]` / `overload_signal` / `drift_signal` person-record fields no step ever wrote — a phantom write path). Overdue is a derived state, not an event type.
+- **Writes:** `commitment` events to `_hq/data/events.jsonl` with v2.2 shape (closures on meeting evidence come ONLY through the same python entry meeting-notes Step 5e-bis uses — `commitment_policy_pass.apply_meeting_closes`, which honours the closing-on-evidence switch (CUT-A, M ruling R-A 2026-09-06); this skill never calls `commitment_state.close_commitment` on a transcript, and the writer refuses it by name if it tries) (`primary_thread_id` + `org_ids[]`). This is the ONLY commitment write this skill performs — per-person commitment/overload/drift signal is DERIVED from those events at read time, never stored on person records (the pre-P1.7 contract listed `open_commitments[]` / `delivered_commitments[]` / `overload_signal` / `drift_signal` person-record fields no step ever wrote — a phantom write path). Overdue is a derived state, not an event type.
 - **Produces (not data-layer writes):** 1:1 brief .docx files at `_hq/meetings/` via `brief_path.get_brief_path(workspace_root, "call_prep", "1-1 <name>", date)` — the one home for all meeting-prep briefs, shared with call-prep; team-pulse reports saved to `_hq/briefings/`.
 - **Does not write to:** `aliases.json`, `classifier_feedback.jsonl`. Does not create new person records — that's people-crm's job; team-intelligence only extends existing records it has scope authority over.
 - **Conflict boundary:** shares `person` entity with people-crm. people-crm owns record lifecycle and core fields; team-intelligence adds NO person-record fields — its signal lives in events.
@@ -400,6 +400,16 @@ The CEO can always directly update person files:
 - Does not share team data externally — all team intelligence is the CEO's private view.
 - Does not replace 1:1s — prepares briefs for them and tracks commitments between them.
 - Does not generate coaching plans or development paths — surfaces patterns; the CEO decides.
+
+## Before you post — the narration scan (CUT-C item 8, added at the v5.29.0 cut)
+
+This skill composes prose the CEO reads (the 1:1 brief, the "what is [name] working on" answer, the team
+table). Before posting ANY of it, run `validate_chat_output(<the whole text you are about to post>)` from
+`shared/scripts/chat_output_renderer.py`. It raises on a raw entity id (`person_014`, `project_011`), a
+commitment or proposal id, a decimal confidence score and the banned internal words. **NEVER catch the error
+and post anyway** — fix the text (resolve ids to names through `narration_names.humanize`) and re-run. The
+guard G51 derives its scope from the skills that call `render_and_persist` / `run_surface(`, which this skill
+does not; the rule holds here by this paragraph, so do not remove it.
 
 ## Routing (full trigger corpus)
 

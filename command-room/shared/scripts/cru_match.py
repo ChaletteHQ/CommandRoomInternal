@@ -120,6 +120,9 @@ from typing import Any, Iterable, Optional
 # for back-compat — existing callers can keep importing the old names.
 from confidence import MATCH_SCORE_AUTO_RESOLVE, MATCH_SCORE_PENDING_REVIEW
 import confidence as _confidence
+# POLICY1-A — the one resolution home: the quote, the signal field, the
+# fixed-string refusal and the proposal-ledger readers (D4/D5/D15).
+import commitment_policy as _policy
 
 # Read-side timestamp normalization (Phase 1 Foundation) — ts → timestamp →
 # date. History is never rewritten; readers normalize.
@@ -1257,6 +1260,7 @@ def load_open_commitments(
     closure = build_closure_index(events)
     # commitment id → latest due-shifting update (Stage A fold; see docstring).
     due_updates: dict[str, dict] = {}
+    hint_updates: dict[str, dict] = {}   # POLICY1-B DD-6
     # commitment id → latest wording update per field (v4.6.0 S4 fold: the
     # `fix wording` verb writes commitment_updated with data.new_title /
     # data.new_summary; each field folds independently, newest wins; the
@@ -1415,8 +1419,24 @@ def load_open_commitments(
                 or ev.get("commitment_id")
             )
             new_due = d.get("new_due") or d.get("due") or d.get("due_date")
+            # POLICY1-B DD-6 — the park hint: the NEWEST `commitment_updated`
+            # that carries the `status_hint` key at all (an explicit null is
+            # an un-park and ENDS the hint; an update without the key leaves
+            # it alone).
+            if target and "status_hint" in d:
+                hint_updates[str(target)] = {
+                    "status_hint": d.get("status_hint") or None,
+                    "park_reason": d.get("park_reason") or d.get("reason") or "",
+                    "seq": ev.get("seq"), "ts": ev.get("ts") or ""}
             if target and new_due:
                 due_updates[str(target)] = {"due": new_due, "seq": ev.get("seq")}
+            elif target and d.get("due_cleared") is True:
+                # POLICY1-B (b) — the sanctioned CLEAR (`restore_due` back to
+                # no date): the newest update wins per target, and this one
+                # says "undated again". Only the explicit marker clears; a
+                # scope-only update still erases nothing.
+                due_updates[str(target)] = {"due": None, "seq": ev.get("seq"),
+                                            "cleared": True}  # (b): undated again
             # S4 wording fold: explicit new_title / new_summary only — the
             # CRU schedule-shift path's change_summary is prose describing
             # WHAT changed, never the new wording, and must not clobber the
@@ -1440,6 +1460,24 @@ def load_open_commitments(
                     "owner_id": d.get("new_owner_id"),
                     "owner_name": d.get("new_owner_name"),
                     "clear_flags": bool(d.get("review_flags_cleared")),
+                    "seq": ev.get("seq"),
+                    "idx": idx,
+                }
+            # PLATE1 P3 — the DISOWN fold (commitment_state.disown_commitment,
+            # the `not mine` verb): owner cleared + a `whose_is_this`
+            # question with the user's provenance. Ordered with the other
+            # adjudications (latest wins): a later Mine / reassign re-owns
+            # the item and clears the question; a later disown re-asks.
+            # Keyed on the explicit `owner_cleared` boolean, so an ordinary
+            # update can never accidentally orphan an item.
+            if target and d.get("owner_cleared"):
+                confirmations[str(target)] = {
+                    "owner_id": None,
+                    "owner_name": None,
+                    "clear_flags": False,
+                    "disown": True,
+                    "question": d.get("question"),
+                    "question_by": d.get("question_by"),
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
@@ -1517,13 +1555,19 @@ def load_open_commitments(
                 or d.get("target_id")
                 or ev.get("commitment_id")
             )
-            if target and (d.get("new_owner_id") or d.get("new_counterparty_id")):
+            # POLICY1-B F-9 — a RESTORE (`counterparty_restored`) is folded
+            # too, including the cleared shape that names no id.
+            restored = d.get("counterparty_restored") is True
+            if target and (d.get("new_owner_id") or d.get("new_counterparty_id")
+                           or (restored and d.get("counterparty_cleared") is True)):
                 reassignments[str(target)] = {
                     "new_owner_id": d.get("new_owner_id"),
                     "new_counterparty_id": d.get("new_counterparty_id"),
                     "new_owner_name": d.get("new_owner_name"),
                     "new_counterparty_name": d.get("new_counterparty_name"),
                     "confirmed": bool(d.get("confirmed")),
+                    "restored": restored,
+                    "cleared": d.get("counterparty_cleared") is True,
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
@@ -1616,9 +1660,20 @@ def load_open_commitments(
         if upd:
             # In-memory copy with the EFFECTIVE due — data.due is first in
             # the alias chain, so it wins over a variant data.due_date or a
-            # flat top-level due. History on disk is untouched.
+            # flat top-level due. History on disk is untouched. (b): a
+            # cleared due projects as None — undated, like a row that never
+            # had one.
             patch["due"] = upd["due"]
             patch["due_updated_by_seq"] = upd["seq"]
+        hu = hint_updates.get(cid)
+        if hu:
+            # DD-6 — the park hint on the projected row (P7 shape). None
+            # means "parked once, un-parked since": the key is set to None
+            # so a reader cannot mistake an ended hint for a standing one.
+            patch["status_hint"] = hu["status_hint"]
+            patch["park_reason"] = hu["park_reason"] if hu["status_hint"] else None
+            patch["status_hint_ts"] = hu["ts"]
+            patch["status_hint_by_seq"] = hu["seq"]
         wu = wording_updates.get(cid)
         if wu:
             # S4 wording fold: EFFECTIVE title/summary from the latest `fix
@@ -1661,11 +1716,31 @@ def load_open_commitments(
                 if entry.get("score") is not None:
                     patch["suspected_duplicate_score"] = entry["score"]
                 patch["review_flagged_by_seq"] = entry["seq"]
+            elif kind == "reassign" and entry.get("restored"):
+                # POLICY1-B F-9 — a restore puts the COUNTERPARTY back (to a
+                # person, or to none) and touches nothing else: no pending
+                # flag, no question — those are other reversers' to restore,
+                # and a restore must leave the projection exactly as it was
+                # before the write it reverses.
+                if entry.get("cleared"):
+                    patch["counterparty_id"] = None   # F-9: none again
+                    patch["counterparty_name"] = None
+                else:
+                    patch["counterparty_id"] = entry.get("new_counterparty_id")
+                    patch["counterparty_name"] = entry.get("new_counterparty_name")
+                patch["reassigned_by_seq"] = entry["seq"]
             elif kind == "reassign":
                 # An UNCONFIRMED reassignment stamps pending_review (the item
                 # sits in the unconfirmed bucket and never enters chase — no
                 # auto-email on a guessed owner); a confirmed one clears it
                 # (the reassignment IS the adjudication).
+                # PLATE1: routing the item to a person answers an open
+                # `whose_is_this` question. Keys are touched ONLY when a
+                # question is actually there — a projection with no question
+                # stays byte-identical to the pre-PLATE1 reader.
+                if (c.get("data") or {}).get("question"):
+                    patch["question"] = None
+                    patch["question_by"] = None
                 if entry.get("new_owner_id"):
                     patch["owner_id"] = entry["new_owner_id"]
                     if entry.get("new_owner_name"):
@@ -1682,11 +1757,27 @@ def load_open_commitments(
                     patch["review_reason"] = (
                         "reassigned — confirm the new owner before this is chased"
                     )
+            elif entry.get("disown"):
+                # PLATE1 P3 — `not mine`: the owner is CLEARED (not routed),
+                # and the open question rides the projection with its
+                # provenance. pending_review is untouched: the item is not an
+                # extractor's guess, it is a real item whose owner is now an
+                # open question — the plate parks it, the drain skips it.
+                patch["owner_id"] = ""
+                patch["owner_name"] = None
+                patch["question"] = entry.get("question")
+                patch["question_by"] = entry.get("question_by")
+                patch["question_seq"] = entry["seq"]
             else:
                 # W4b Mine / Keep both: the explicit user click IS the
                 # adjudication — pending_review clears, review_reason drops;
                 # Keep both additionally clears the C4 duplicate flags
                 # (confirmed distinct — both items stay open).
+                # PLATE1: a re-own also ANSWERS an open question (keys
+                # touched only when one is there — byte-identity otherwise).
+                if (c.get("data") or {}).get("question"):
+                    patch["question"] = None
+                    patch["question_by"] = None
                 if entry.get("owner_id"):
                     patch["owner_id"] = entry["owner_id"]
                     if entry.get("owner_name"):
@@ -2916,7 +3007,13 @@ def match_transcript_to_commitments(
             else:
                 recommendation = "no_action"
 
-        if recommendation == "auto_resolve" and _is_pending_review(ev):
+        # POLICY1-A — record WHY the ladder demoted, before it demotes. The
+        # pending flag is no longer a refusal in itself (M ruling 2026-09-03:
+        # a guess with completion evidence closes as done); the STRUCTURAL
+        # fences below still are, and the caller must be able to tell them
+        # apart from one `recommendation` string.
+        demoted_pending = recommendation == "auto_resolve" and _is_pending_review(ev)
+        if demoted_pending:
             recommendation = "pending_review"
         # MC1: never whole-close a multi-counterparty commitment on a single
         # transcript match — a mention that the deliverable was "sent" doesn't
@@ -2932,8 +3029,19 @@ def match_transcript_to_commitments(
                 ev, workspace_root=workspace_root):
             recommendation = "partial_received"
         # SUB1 D3: never auto-close a parent with open sub-items — propose.
-        if recommendation == "auto_resolve" and parent_blocks_auto_resolve(ev):
+        # POLICY1-A: computed for EVERY row (the result carries it), and it
+        # also holds a row the pending flag already demoted — the structural
+        # fence outranks the ruling that lifted the flag.
+        parent_blocks = parent_blocks_auto_resolve(ev)
+        if recommendation in ("auto_resolve", "pending_review") and parent_blocks:
             recommendation = "pending_review"
+        # POLICY1-A DD-3 — the matcher carries the QUOTE: the completion
+        # turn it scored (speaker marker stripped, verbatim, <= 240 chars)
+        # and the turn's index, plus the four-word signal the orchestrator's
+        # fixed f-string used to carry, as a field. Every proposal and every
+        # transcript close downstream writes THIS, never a fixed string
+        # (`build_pending_review_event` / `close_commitment` refuse it).
+        _q = _policy.completion_quote(transcript_text, title)
         results.append({
             "commitment_id": _commitment_id(ev),
             "score": score,
@@ -2944,6 +3052,15 @@ def match_transcript_to_commitments(
             "has_completion_signal": has_completion,
             "has_schedule_shift_signal": has_schedule_shift,
             "has_new_ask_signal": has_new_ask,
+            "evidence_quote": _q["quote"],
+            "evidence_turn_index": _q["turn_index"],
+            # POLICY1-A — the two demotion causes, named (see above).
+            "parent_blocks": bool(parent_blocks),
+            "demoted_pending": bool(demoted_pending),
+            "signal": _policy.signal_value(has_completion=has_completion,
+                                          has_schedule_shift=has_schedule_shift,
+                                          has_new_ask=has_new_ask),
+            "pending_review": _is_pending_review(ev),
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -3767,6 +3884,9 @@ def build_pending_review_event(
     title: str,
     has_completion_signal: Optional[bool] = None,
     evidence_ts: Optional[str] = None,
+    source_ref: Optional[str] = None,
+    supersedes_seq: Optional[int] = None,
+    signal: Optional[str] = None,
 ) -> dict:
     """Build a `commitment_review_proposed` event — the confirm queue
     surfaces these as one-click `confirm / skip` items. Used for MEDIUM-
@@ -3803,7 +3923,27 @@ def build_pending_review_event(
 
     Both are OMITTED from `data` when None, so a caller that passes neither
     writes the byte-identical event it wrote before.
+
+    POLICY1-A (D4 / D5 / D15):
+      * `evidence` that begins with the retired fixed f-string
+        (`Past meeting transcript (`) RAISES `FixedEvidenceError` — a
+        proposal carries the words that triggered it or it is not built.
+      * `source_ref` — the evidence's own pointer (`granola:<id>`, a message
+        key). It is the second half of the proposal ledger's key: ONE
+        proposal per (commitment, source_ref), ever.
+      * `supersedes_seq` — a RE-SCORE of the same (commitment, source_ref):
+        the prior proposal's seq, stamped TOP-LEVEL (the SUPERSEQ vocabulary
+        event_types registers). `match_score` is never edited; readers take
+        the newest and treat the superseded seq as closed.
+      * `signal` — one of commitment_policy.SIGNAL_VALUES, the four words the
+        f-string used to carry, as a field.
+    All three are OMITTED when None (legacy shape byte-identical).
     """
+    _policy.refuse_fixed_evidence(evidence, where="build_pending_review_event")
+    if signal is not None and signal not in _policy.SIGNAL_VALUES:
+        raise ValueError(
+            f"build_pending_review_event: signal {signal!r} is not one of "
+            f"{_policy.SIGNAL_VALUES}")
     if not str(title or "").strip():
         raise ReviewProposalTitleError(
             "refusing to propose a review with no title for commitment "
@@ -3818,11 +3958,20 @@ def build_pending_review_event(
         "evidence": clip(evidence) if evidence else "",
         "title": title,
     }
-    if has_completion_signal is not None:
-        data["has_completion_signal"] = bool(has_completion_signal)
+    if isinstance(has_completion_signal, bool):
+        # Three-state key, written by IDENTITY (POLICY1-B guard). None is not
+        # written at all ("never assessed"). F-7: a NON-BOOL is not an
+        # assessment either — it is left unwritten (unassessed), never
+        # coerced to True or False (the base wrote `bool(1)`; the first cut
+        # of this branch wrote `1 is True` = False — both invent a finding).
+        data["has_completion_signal"] = has_completion_signal
     if evidence_ts:
         data["evidence_ts"] = str(evidence_ts)
-    return {
+    if source_ref:
+        data["source_ref"] = str(source_ref)
+    if signal is not None:
+        data["signal"] = signal
+    ev = {
         "seq": next_seq,
         "ts": _now_iso(),
         "type": "commitment_review_proposed",
@@ -3830,6 +3979,11 @@ def build_pending_review_event(
         "primary_thread_id": primary_thread_id,
         "data": data,
     }
+    if supersedes_seq is not None:
+        if isinstance(supersedes_seq, bool) or not isinstance(supersedes_seq, int):
+            raise ValueError("build_pending_review_event: supersedes_seq must be an int seq")
+        ev["supersedes_seq"] = supersedes_seq
+    return ev
 
 
 def build_commitment_review_dismissed_event(
@@ -3838,21 +3992,39 @@ def build_commitment_review_dismissed_event(
     primary_thread_id: str,
     source_skill: str,
     next_seq: int,
+    proposal_seq: Optional[int] = None,
+    resolution_reason: Optional[str] = None,
+    brain_batch_id: Optional[str] = None,
 ) -> dict:
     """Build a `commitment_review_dismissed` event (v2.14.7+). Written when
     the user clicks Skip on a CRU review item — the underlying commitment
     stays open, but this specific review-proposed event is closed and won't
     re-surface for 30 days.
+
+    POLICY1-A D15 — the RETRACT shape: `proposal_seq` names exactly WHICH
+    proposal is withdrawn (a legacy dismissal with no seq closes every open
+    proposal on the commitment — the pre-POLICY1 reading, kept for the rows
+    on disk); `resolution_reason` = commitment_policy.RETRACT_REASON under the
+    shared lapse key, so the calibration reader (`is_non_dismissal_closure`
+    family) can tell a system retract from a human's Skip; `brain_batch_id`
+    = the run it rode in. All three OMITTED when None (legacy shape).
     """
+    data: dict = {"commitment_id": commitment_id}
+    if proposal_seq is not None:
+        if isinstance(proposal_seq, bool) or not isinstance(proposal_seq, int):
+            raise ValueError("build_commitment_review_dismissed_event: proposal_seq must be an int seq")
+        data["proposal_seq"] = proposal_seq
+    if resolution_reason:
+        data["resolution_reason"] = str(resolution_reason)
+    if brain_batch_id:
+        data["brain_batch_id"] = str(brain_batch_id)
     return {
         "seq": next_seq,
         "ts": _now_iso(),
         "type": "commitment_review_dismissed",
         "source_skill": source_skill,
         "primary_thread_id": primary_thread_id,
-        "data": {
-            "commitment_id": commitment_id,
-        },
+        "data": data,
     }
 
 
@@ -3929,6 +4101,20 @@ def load_open_review_proposals(
             if cid:
                 review_closed_for_commitment.add(cid)
 
+    # POLICY1-A D4/D15 — a proposal a later RE-SCORE superseded
+    # (`supersedes_seq`) or a seq-addressed RETRACT dismissed is closed too.
+    # Read through the policy ledger (order-aware), so this reader and the
+    # plate's P7 fold cannot fork on what "open" means. A seq-addressed
+    # dismissal closes ONE proposal; only a legacy (seq-less) dismissal keeps
+    # closing every proposal on the commitment (the set above).
+    _closed_seqs = _policy.closed_proposal_seqs(events)
+    _seq_addressed_dismissals = {
+        (ev.get("data") or {}).get("commitment_id")
+        for ev in events
+        if (ev.get("type") or ev.get("event") or "") == "commitment_review_dismissed"
+        and isinstance((ev.get("data") or {}).get("proposal_seq"), int)
+    }
+
     out: list[dict] = []
     for ev in review_proposed:
         cid = (ev.get("data") or {}).get("commitment_id")
@@ -3937,8 +4123,10 @@ def load_open_review_proposals(
         if cid in closed_commitment_ids:
             # Underlying commitment already resolved by another path — review is moot
             continue
-        if cid in review_closed_for_commitment:
-            # User already skipped this review
+        if ev.get("seq") in _closed_seqs:
+            continue
+        if cid in review_closed_for_commitment and cid not in _seq_addressed_dismissals:
+            # User already skipped this review (legacy, seq-less dismissal)
             continue
         out.append(ev)
 

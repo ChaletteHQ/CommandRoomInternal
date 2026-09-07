@@ -130,13 +130,23 @@ VERB_TAXONOMY = (
          ("commitment-triage", "commitments"), family="commitment",
          notes="Added to the daily chat's confirm section (v4.6.1 W4b) — same "
                "dispatch as triage."),
-    _row("not mine", "Not mine", "commitment_resolved",
-         "Close as someone else's item (cross-attendee capture).",
+    _row("not mine", "Not mine", "commitment_updated",
+         "Not yours — the owner is cleared and the item parks with the "
+         "question 'whose is this?' until someone claims it. Nothing closes.",
          ("commitment-triage",), family="commitment",
-         notes="Bare 'not mine' (no name) still closes as dropped. When the "
+         notes="PLATE1 P3 (2026-09-03): on the plate (src commitment-triage) "
+               "`not mine` DISOWNS via commitment_state.disown_commitment — "
+               "one commitment_updated (owner_cleared + question "
+               "whose_is_this, question_by user_verb); the row moves to "
+               "PARKED, the review-expiry drain exempts it, and it never "
+               "lapses to dropped (a decline is not a closure). Undo = "
+               "confirm_commitment_owner back to previous_owner_id. When the "
                "user NAMES the real owner ('that's actually Quinn's'), the "
-               "item ROUTES instead via `reassign to [name]` (S4) — W4b's "
-               "Theirs → [name] confirm verb dispatches the same event."),
+               "item ROUTES instead via `reassign to [name]` (S4). The "
+               "needs-your-call queue's own `not mine` "
+               "(needs_review_queue.not_mine_items, src needs-your-call / "
+               "cr-brain) is a different source and keeps its close — an "
+               "extractor's guess declined IS let go."),
     _row("fix wording [text]", "Fix wording", "commitment_updated",
          "Correct a mis-extracted title/summary; the item re-renders with "
          "the new text and the original stays in history.",
@@ -345,7 +355,7 @@ VERB_TAXONOMY = (
                "states its duration (the F-59 mute contract)."),
     _row("snooze 30d", "Snooze (30 days)", "decision_revisit_scheduled",
          "Push the decision-revisit window out 30 days.",
-         ("decision-revisit",), mute_ttl_days=30, family="mute"),
+         ("decision-revisit", "decision-log"), mute_ttl_days=30, family="mute"),
     _row("hold", "Hold — parked till you answer (14 days)", "chat_dismissal",
          "Park this until you answer; it stops re-rendering for 14 days.",
          ("staff-meeting", "cr-brain"), mute_ttl_days=14, family="mute",
@@ -470,7 +480,11 @@ VERB_TAXONOMY = (
          ("commitments", "dont-forget"), family="work"),
     _row("follow-up call", "Follow-up call", None,
          "Draft a 15-min sync invite instead of an email chase.",
-         ("commitments",), family="work"),
+         ("commitments", "commitment-triage"), family="work",
+         notes="PLATE1 night 2 (2026-09-04): the SCHEDULE block's one-tap on "
+               "the plate — an agreed meeting that never reached the "
+               "calendar. Same wire id, same handler, second surface (F-59: "
+               "one id per behaviour). Draft posture; nothing books itself."),
     _row("investigate", "Investigate", None,
          "Read-only cross-reference pull ('tell me about …').",
          ("dont-forget",), family="work"),
@@ -493,7 +507,13 @@ VERB_TAXONOMY = (
     # --- Review / proposal confirmations -------------------------------------
     _row("confirm", "Confirm", None,
          "Apply the proposed change to the person record.",
-         ("dont-forget", "commitments", "cr-brain"), family="review"),
+         ("dont-forget", "commitments", "cr-brain", "meeting-notes"),
+         family="review",
+         notes="ATTRIB1-B door 1: on the meeting card's who-is-you question "
+               "the SUB-ITEM id is `<commitment id>:<person id>` and this verb "
+               "on it is the pick — apply-choices dispatches "
+               "attribution_doors.apply_counterparty_pick (the "
+               "`confirm_counterparty:<id>:<person_id>` token)."),
     _row("show these", "Show these", None,
          "Expand this grouped row into its own items, each with its own "
          "buttons.",
@@ -764,7 +784,7 @@ VERB_TAXONOMY = (
     _row("wrong to hide", "Wrong to hide", "held_review_objection",
          "Tell me this one should never be hidden. One note, recorded once — "
          "the row itself does not move and nothing comes back to be cleared.",
-         ("held-review",), family="review",
+         ("held-review", "needs-your-call"), family="review",
          notes="HELDREVIEW1. The held-tier review's ONLY verb, and "
                "deliberately not one of needs_review_queue."
                "QUEUE_ROW_ACTIONS: the review asks 'is this list acceptable?' "
@@ -779,13 +799,13 @@ VERB_TAXONOMY = (
     _row("revisit", "Revisit now", None,
          "Open deliberation — decision-memo-composer pre-filled with the "
          "original framing.",
-         ("decision-revisit",), family="decision"),
+         ("decision-revisit", "decision-log"), family="decision"),
     _row("still valid", "Still valid", "decision_reaffirmed",
          "Reaffirm the original decision.",
-         ("decision-revisit",), family="decision"),
+         ("decision-revisit", "decision-log"), family="decision"),
     _row("replace", "Replace it", "decision_superseded",
          "Capture the new decision and supersede the original.",
-         ("decision-revisit",), family="decision"),
+         ("decision-revisit", "decision-log"), family="decision"),
     _row("decide [text]", "Decide", "decision",
          "Log the decision (your text folds into the rationale).",
          ("decision-memo-composer", "past-meetings"), input="optional",
@@ -813,8 +833,12 @@ VERB_TAXONOMY = (
     _row("nudge", "Nudge", None,
          "Chase a delegated item — composes the nudge email on click (draft "
          "posture; nothing sends until you do).",
-         ("commitments",), family="work",
-         notes="WG1-A D-A4. The delegated row's ruled PRIMARY verb (was a "
+         ("commitments", "commitment-triage"), family="work",
+         notes="PLATE1 night 2 (2026-09-04): also the CHASE block's one-tap "
+               "on the plate — the same behaviour on a second surface, so "
+               "the wire id is REUSED rather than a `draft chase` minted "
+               "beside it (F-59). "
+               "WG1-A D-A4. The delegated row's ruled PRIMARY verb (was a "
                "compose-on-demand draft with no standing verb). Compose-on-"
                "CLICK, not compose-at-render: apply-choices routes it to the "
                "chase-draft / email-writer chain (draft posture) so scheduled "

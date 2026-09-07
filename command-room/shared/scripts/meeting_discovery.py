@@ -1168,8 +1168,16 @@ def _close_proposals(*, open_commitments, attendee_person_ids, transcript_text,
             continue
         resolution = "supersede" if rec == "supersede" else "auto_resolve"
         strength = close_proposal_strength()
+        # Three states, read by identity (POLICY1-B / the truthiness intake):
+        # True = completion language found; False = looked and found none
+        # (a title match); None = the producer never assessed it — which is
+        # its own honest word, not "title match".
+        _sig = r.get('has_completion_signal')
+        _sig_word = ('completion language' if _sig is True
+                     else 'title match' if _sig is False
+                     else 'completion not assessed')
         evidence = ("A meeting the user did not attend "
-                    f"({'completion language' if r.get('has_completion_signal') else 'title match'})"
+                    f"({_sig_word})"
                     f" — {NONATTENDEE_STRENGTH_REASON}")
         ev = build_pending_review_event(
             commitment_id=r["commitment_id"],

@@ -360,6 +360,15 @@ def _window_metrics(events, start_dt: datetime, end_dt: datetime, commitments_by
         "objectives_completed": objectives_completed,
         "objectives_drift_flagged": len(objectives_drift_ids),
     }
+    # QUIET1 D9 — the two counters a seat that never opens a widget cares
+    # about: what closed WITHOUT them, and how often they were asked.
+    # Counted by `quiet.receipt_counters` from the written closures and the
+    # budget receipts (never a plan), over the same half-open window.
+    try:
+        import quiet as _quiet
+        metrics.update(_quiet.receipt_counters(events, start_dt, end_dt))
+    except Exception:  # pragma: no cover — a missing module never blanks a receipt
+        metrics.update({"closed_untouched": 0, "questions_asked": 0})
     return metrics
 
 
@@ -488,6 +497,14 @@ def _count_bullets(metrics: dict) -> list:
     add(m.get("objectives_completed", 0),
         f"{m.get('objectives_completed', 0)} "
         f"{_plural(m.get('objectives_completed', 0), 'objective')} completed")
+    # QUIET1 D9 — both drop-empty like every line above.
+    add(m.get("closed_untouched", 0),
+        f"{m.get('closed_untouched', 0)} "
+        f"{_plural(m.get('closed_untouched', 0), 'commitment')} closed "
+        "that you never touched")
+    add(m.get("questions_asked", 0),
+        f"asked you {m.get('questions_asked', 0)} "
+        f"{_plural(m.get('questions_asked', 0), 'question')} this period")
 
     if not lines:
         lines.append("No recorded activity in this window yet.")

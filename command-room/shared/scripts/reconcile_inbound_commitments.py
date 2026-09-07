@@ -97,7 +97,8 @@ CHANGE_CLASS = "commitment_close"
 
 # TTL for the confirm proposals this rail queues, mirroring the sent rail's so
 # an un-adjudicated proposal expires instead of accumulating.
-REVIEW_PROPOSAL_TTL_DAYS = 14
+# POLICY1-A D8/D15 — ONE TTL, the policy constant (was a private 14).
+from commitment_policy import PROPOSAL_TTL_DAYS as REVIEW_PROPOSAL_TTL_DAYS  # noqa: E402
 
 
 def _clock_now(workspace_root=None):
@@ -812,6 +813,23 @@ def reconcile_inbound_and_receipt(
                             .strftime("%Y%m%dT%H%M%SZ"))
 
     events_written = 0
+    # POLICY1-A D8 — the close leg passes through `decide` (see the sent
+    # rail): a thread-anchored reply (REPLYCLOSE R1) and completion at the
+    # bar close; a title echo without completion and a pending target are
+    # demoted to the propose list with the policy's reason.
+    if auto_close:
+        from commitment_policy_pass import policy_gate_closes
+        from cru_match import _is_pending_review as _pending_flag
+        _pending_ids = {str(_commitment_id(c)) for c in opens if _pending_flag(c)}
+        auto_close, _demoted = policy_gate_closes(
+            auto_close, rail="inbound", pending_ids=_pending_ids,
+            workspace_root=workspace_root)
+        for _row in _demoted:
+            pending.append(_row)
+            signal_fields["n_graded_close_refused"] += 1
+            refusals = signal_fields["close_refusals"]
+            _why = _row.get("policy_refusal") or "PolicyGate"
+            refusals[_why] = refusals.get(_why, 0) + 1
     if auto_close:
         from commitment_state import close_commitments
         results = close_commitments(

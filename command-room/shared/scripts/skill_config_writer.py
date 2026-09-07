@@ -129,6 +129,8 @@ def save_skill_config(
     schema_version: int = 1,
     is_reconfigure: bool | None = None,
     origin: str | None = None,
+    event_extra: dict[str, Any] | None = None,
+    event_ts: str | None = None,
 ) -> None:
     """Persist config atomically + emit skill_first_run_configured (or _reconfigured) event.
 
@@ -141,6 +143,15 @@ def save_skill_config(
         is_reconfigure: if None (default), auto-detected by checking whether a
                         config already exists for this skill. If True, emits
                         skill_reconfigured. If False, emits skill_first_run_configured.
+        event_extra: QUIET1 — extra keys merged ADDITIVELY into the emitted
+                     event's `data` (never overriding the four standard keys).
+                     The preset stamp uses it to ride the event as a
+                     `brain_batch` (`brain_batch_id` + `brain_change_class` +
+                     the previous config) so `undo` can list and reverse it.
+        event_ts: QUIET1 — an explicit ISO `ts` for the emitted event (a test
+                  seam and a backfill door, exactly as the gate honours a
+                  caller-supplied ts). Default: now. The config file's
+                  `configured_at` always stays the wall clock.
 
     Side effects:
         - Writes config to `_hq/data/skill_config/<skill_name>.json` via atomic_write_json.
@@ -191,16 +202,20 @@ def save_skill_config(
     # Emit the substrate event. No hand-stamped seq (BUG-8330 item 7) —
     # appender allocates in-lock.
     event_type = "skill_reconfigured" if is_reconfigure else "skill_first_run_configured"
+    data: dict[str, Any] = {}
+    if isinstance(event_extra, dict):
+        data.update(event_extra)
+    data.update({
+        "skill_name": skill_name,
+        "schema_version": schema_version,
+        "config_snapshot": config,
+        "origin": origin,
+    })
     event = {
-        "ts": now_iso,
+        "ts": event_ts if isinstance(event_ts, str) and event_ts.strip() else now_iso,
         "type": event_type,
         "source_skill": skill_name,
-        "data": {
-            "skill_name": skill_name,
-            "schema_version": schema_version,
-            "config_snapshot": config,
-            "origin": origin,
-        },
+        "data": data,
     }
     # atomic_append_jsonl accepts either a list or a single dict
     atomic_append_jsonl(events_path, event)

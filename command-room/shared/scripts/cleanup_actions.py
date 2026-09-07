@@ -46,7 +46,7 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parent
 import sys
@@ -57,6 +57,7 @@ from atomic_write import atomic_write_text  # noqa: E402
 from event_time import event_time  # noqa: E402
 import render_decision_log  # noqa: E402
 import render_master_tracker  # noqa: E402
+import render_router_misses  # noqa: E402
 
 
 # --- D6: stale lock-file sweep (archive-move, never delete) --------------------
@@ -878,6 +879,24 @@ def regenerate_master_tracker_if_changed(root: str | Path) -> dict[str, Any]:
     end-session hand-render that froze M's tracker from 2026-06-11) would
     otherwise persist for weeks until the next end-session caught it."""
     return render_master_tracker.regenerate_if_changed(root)
+
+
+def regenerate_router_misses_if_changed(root: str | Path) -> dict[str, Any]:
+    """Regenerate `_hq/views/ROUTER_MISSES.md` (SPEC ROUTEMISS1) from the
+    routing corrections on the log, writing only if the content changed. Thin
+    wrapper over the view's owner so cleanup records into actions_taken ONLY
+    when `changed` is True. This is the weekly backstop: the verb handler
+    regenerates on each write, but a workspace where the last correction
+    predates the renderer, or where a write path skipped the regen, would
+    otherwise carry a stale (or absent) view indefinitely."""
+    return render_router_misses.regenerate_if_changed(root)
+
+
+def router_misses_monday_line(root: str | Path) -> Optional[str]:
+    """The Monday-note sentence for repeated redirects (SPEC ROUTEMISS1 D3),
+    or None when no skill was redirected to 3+ times in 28 days — cleanup
+    adds nothing in that case. Read-only; names no event type."""
+    return render_router_misses.monday_note_line(root)
 
 
 # --- D5 / D7: read-only staleness flags ----------------------------------------

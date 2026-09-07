@@ -1,0 +1,30 @@
+{
+  "version": "5.29.0",
+  "headline": "Closing on evidence is switched off until you turn it on. Every client seat now starts light: at most five questions a week, the plate shows forty at a time with overdue and this-week items always up. The morning brief leads with one number, the day-close shows what opened, closed and slipped, and the Friday wrap lists everything parked. Won clients are never nagged as live deals, and a deal undone is undone everywhere.",
+  "items": [
+    {
+      "id": "v5290_stamp_light_preset",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.stamp_light_preset",
+      "action_function": "stamp_light_preset",
+      "notice_template": "I set this workspace to ask you less: at most {budget_per_week} questions a week, the ones that matter most first, and your plate shows 40 items at a time with the oldest resting under Parked — overdue and this-week items always stay up. Everything else takes its sensible default and shows up in your Friday wrap under 'Decided for you'. Say 'undo' to put it back the way it was, or 'ask me more' if you want more.",
+      "fallback_prompt_template": "A small setting change (how often Command Room asks you) is pending; it will retry on the next update."
+    },
+    {
+      "id": "v5290_announce_closing_on_evidence_off",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Closing on evidence is off until you turn it on. Command Room no longer closes a promise because a meeting transcript sounded like it was kept. The pass that did that was tightened (a close now needs the meeting's own time, a promise older than the meeting, and one turn that both says 'done' and names the item) and then switched off, pending a replay on a real book. While it is off, a promise a meeting shows was kept becomes a suggestion under 'needs your call', the morning brief says how many look kept, stale suggestions withdraw themselves instead of closing, and booked-meeting rows are offered rather than closed. Say 'turn on closing on evidence' to let those close on their own (each close carries the words that closed it and 'undo' reverses a fire); say 'turn off closing on evidence' to stop. Nothing on your plate moved.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5290_announce_three_surfaces_and_deals",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Three things you will notice. (1) Your morning brief now opens with one number — how many items are on your plate — with the top moves and one pointer; the warnings and the other counts sit below it. Your day-close shows what opened, closed and slipped today and asks you nothing; the Friday wrap lists everything parked, with the reason. Your scheduled chats pick the new shape up on their own at their next fire. (2) The Staff Meeting no longer asks whether a company is a live deal; that signal is kept quietly and a company becomes a client only when something is paid, signed or won — one line in your brief, 'undo' puts it back. A company you already won is never nagged about it again. 'Mark X won' with no deal on file now says so and does it openly. (3) Later… on your plate holds until you give it a date, an undone Later goes back to no date, rows you undo come back on the page, and the plate shows nine rows a page so every row keeps its buttons.",
+      "action": "announce_only"
+    }
+  ]
+}

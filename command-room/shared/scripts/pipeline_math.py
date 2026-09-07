@@ -231,16 +231,31 @@ def won_rate_90d(deal_events: list[dict], today,
                  min_terminal: int = WON_RATE_MIN_TERMINAL) -> Optional[float]:
     """wins / (wins + losses) over deal_won + deal_lost events inside the
     window. None (drop the tile) below `min_terminal` terminal events —
-    a 2-for-2 quarter must not render a misleading 100%."""
+    a 2-for-2 quarter must not render a misleading 100%.
+
+    CUTB item 4 (2026-09-06): a `deal_won` whose thread carries a later
+    `deal_won_reversed` marker (an undo put the manufactured deal back) is
+    not a win — folded here so the tile and the report agree with the
+    closed-deals list. `deal_state.load_deal_events` carries the marker."""
     today_d = _as_date(today)
     if today_d is None:
         raise ValueError(f"won_rate_90d needs a parseable today, got {today!r}")
     floor = today_d - datetime.timedelta(days=window_days)
+    reversed_threads: set = set()
+    for ev in deal_events or []:
+        if ev.get("type") == "deal_won_reversed":
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if d.get("thread_id"):
+                reversed_threads.add(str(d["thread_id"]))
     wins = losses = 0
     for ev in deal_events or []:
         et = ev.get("type")
         if et not in ("deal_won", "deal_lost"):
             continue
+        if et == "deal_won" and reversed_threads:
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if str(d.get("thread_id") or "") in reversed_threads:
+                continue  # CUTB item 4 — the win was put back by an undo
         ts = _as_date(ev.get("ts"))
         if ts is None or ts < floor or ts > today_d:
             continue

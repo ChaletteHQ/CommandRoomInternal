@@ -694,7 +694,14 @@ def gate_events(
                     f"id (holder={holder}) — an id-less reassignment is a dead "
                     "letter. Write through commitment_state.reassign_commitment."
                 )
-            if not (data.get("new_owner_id") or data.get("new_counterparty_id")):
+            # POLICY1-B F-9 — the ONE admitted id-less shape: a restore back
+            # to NO counterparty (`counterparty_cleared` + `counterparty_restored`,
+            # written by commitment_state.restore_counterparty). It routes the
+            # item back to where it was before a default was applied.
+            cleared_restore = (data.get("counterparty_cleared") is True
+                               and data.get("counterparty_restored") is True)  # 4b exception (F-9)
+            if not (data.get("new_owner_id") or data.get("new_counterparty_id")
+                    or cleared_restore):
                 raise EventGateError(
                     "commitment_reassigned event names no new_owner_id or "
                     f"new_counterparty_id (holder={holder}) — a reassignment "

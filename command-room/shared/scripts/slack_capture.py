@@ -67,6 +67,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from capture_gate import gate_commitment_data  # noqa: E402
+from capture_gate import stamp_confidence as _stamp_confidence  # noqa: E402
 
 # SPEC PROV2 — identity comparisons on STORED source pointers route through
 # Layer A4's derivation, never a raw `==` (guard G30).
@@ -370,8 +371,10 @@ def build_slack_commitment_event(
         "person_ids": pids,
         "data": data,
     }
-    if classification_confidence is not None:
-        event["classification_confidence"] = classification_confidence
+    # CONFCLAMP2 seam 5 of 5 (ATTRIB1-A A2): one confidence vocabulary, one
+    # write seam — clamped where it is written, never passed straight through.
+    _stamp_confidence(event, classification_confidence,
+                      holder="build_slack_commitment_event")
     ts_iso = _slack_ts_to_iso(message_ts)
     if ts_iso:
         event["ts"] = ts_iso  # backdate to when the promise was made

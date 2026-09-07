@@ -16,11 +16,11 @@ Applies to **every skill that emits a recipient-bound email draft, regardless of
 - `email-writer` (direct-draft surface)
 - `intro-broker` (double-opt-in + direct-forward drafts)
 - `follow-up-ritual` (per-attendee post-meeting follow-up drafts)
-- `thread-resurrection` (revival draft via chained email-writer)
+- `dormant-customer-scan`, threads lens — formerly `thread-resurrection` (revival draft via chained email-writer)
 - `inbox-triage` (Reply Now bucket drafts)
 - Any future skill that emits a recipient-bound draft
 
-This includes email drafts that arise as **sub-steps of another skill's work or of a longer multi-step turn**: chain email-writer (the thread-resurrection precedent; CONTRACT Rule 30), don't compose inline.
+This includes email drafts that arise as **sub-steps of another skill's work or of a longer multi-step turn**: chain email-writer (the thread-revival precedent — now dormant-customer-scan's threads lens; CONTRACT Rule 30), don't compose inline.
 
 Every skill in this list MUST render its draft surface as a chat-action widget via `widget_transport.render_and_persist(data_view, wrapper="fragment")` — the full validator chain runs inside — passing `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code` (`shared/CHAT_ACTION_WIDGET.md` § Transport, Bug #67). Plain-text previews in chat are NOT a valid alternative — they break editability and force back-and-forth chat-turn revisions. See §1 (lazy creation), §2 (numbered actions), §3c (Zapier-threaded send) for the per-action semantics every emitter follows.
 

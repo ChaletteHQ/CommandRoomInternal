@@ -209,7 +209,7 @@ The router's job is to make the common case invisible (just works) and the rare 
 - workspace-manager runs the fuzzy-router check on every turn where no specialist skill fired cleanly.
 - Name detection is cheap (single pass over input string against `_hq/ALIASES.md` + `_hq/PEOPLE.md`). Run it on every turn, even when a specialist skill matched — the detected name is still useful context for that skill.
 - When routing, workspace-manager invokes the specialist by adding a system note to the turn: "User said X. Detected name: Y. Routing to skill: Z. Context loaded." This makes failures traceable.
-- When a router decision turns out wrong (user corrects it), append to `_hq/ROUTER_MISSES.md`. Use the miss log to improve intent descriptions weekly.
+- When a router decision turns out wrong (the user corrects it — 'wrong skill', 'that should have been X', a 'no, I meant X' redirect), workspace-manager's "Routing corrections" handler re-dispatches the remainder as the real request and logs a `router_miss` event through `router_miss.log_router_miss` (SPEC ROUTEMISS1). The rendered view `_hq/views/ROUTER_MISSES.md` (`render_router_misses.py`) and cleanup's Monday-note line are what a human reads to sharpen intent descriptions — no description is ever auto-edited from it.
 
 ---
 

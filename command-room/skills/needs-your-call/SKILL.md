@@ -1,7 +1,7 @@
 ---
 name: needs-your-call
 surfaces: both
-description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Confirming makes an ordinary open commitment; dropping closes it; nothing clears until you name it. Also 'show watching' / 'what are you watching' / 'what's on watch' — the read-only watch list. Also the project-binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to' — past records naming a project they were never filed under; one tap: Bind / Not this project. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'revisit' a decision (decision-revisit), 'clean up my workspace' / 'maintenance' (cleanup)."
+description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Nothing clears until you name it. Read-only modes: 'show watching' / 'what's on watch' (the watch list); 'show me what you'd hide' / 'what would you hide' / 'held candidates' (the would-hold review, formerly held-review — looking changes nothing; 'turn on held' / 'turn off held' are its switches). Also the project-binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'revisit' a decision (decision-log), 'clean up my workspace' / 'maintenance' (cleanup)."
 ---
 
 # needs-your-call
@@ -145,8 +145,11 @@ tap away (expand, read-only, display numbers kept). What to know:
 | "unconfirmed extractions" | this skill |
 | "show watching" / "what are you watching" / "what's on watch" | this skill, Step 4 |
 | "review project bindings" / "backfill bindings" / "which project does this belong to" | this skill, Step 5 (BACKFILL2) |
+| "show me what you'd hide" / "what would you hide" / "show me what you would have hidden" / "what would you have hidden" / "show me what you would have held" / "held candidates" | this skill, **Mode: would-hold review** — `references/held-review-mode.md` Step 1 (read-only; formerly the held-review skill, SKILLMERGE1 D4) |
+| "turn on held" / "hide the weak ones" | the would-hold mode, Step 3 (`references/held-review-mode.md`) |
+| "turn off held" / "stop hiding the weak ones" | the would-hold mode, Step 4 (`references/held-review-mode.md`) |
 | "triage my commitments" / "commitment triage" | commitment-triage |
-| "revisit the [X] decision" / "revisit" a decision | decision-revisit |
+| "revisit the [X] decision" / "revisit" a decision | decision-log (revisit mode) |
 | "clean up my workspace" / "maintenance" / "deep clean" | cleanup |
 | "backfill commitments" / "scan for commitments" | scan-for-commitments |
 | "show my list" / "my list" | show-my-list |
@@ -169,14 +172,26 @@ tap away (expand, read-only, display numbers kept). What to know:
 - **Not commitment-backlog-sweep.** That reads months of mail for evidence
   that confirmed promises were already kept. It deliberately excludes every
   unconfirmed extraction and says so in its digest.
-- **Not decision-revisit, not cleanup, not scan-for-commitments** (the
+- **Not decision-log's revisit mode, not cleanup, not scan-for-commitments** (the
   BACKFILL2 neighbours). "Revisit" is a DECISION verb and stays with
-  decision-revisit. "Clean up my workspace" / "maintenance" / "deep clean"
+  decision-log (its revisit mode, formerly decision-revisit). "Clean up my workspace" / "maintenance" / "deep clean"
   are the tidying pass — cleanup — even though the binding review is a
   hygiene act; the review is a one-tap adjudication sitting, not a sweep.
   "Backfill commitments" / "scan for commitments" is the historic
   commitment scan (scan-for-commitments) — a different backfill of a
   different ledger. Only the three binding stems (Step 5) route here.
+- **The would-hold review is a MODE of this skill, and it is read-only**
+  (SKILLMERGE1 D4 — formerly `held-review`). "Show me what you'd hide"
+  renders the same queue filtered to the below-floor captures
+  (`build_queue_view(..., scope="would_hold")`), grouped by call, count
+  first, each row with the plain reason it was too weak — and carries
+  exactly ONE verb, `wrong to hide`, which records a note and moves nothing.
+  None of this skill's resolving verbs (confirm / already done / drop /
+  not mine) exist on that surface, ever: a list whose reading could also
+  resolve a row would make looking destructive. The switches (`turn on
+  held` / `turn off held`) are typed phrases handled in the mode file,
+  never a button. Follow `references/held-review-mode.md` verbatim when a
+  held phrase fires.
 - **The staff meeting shows the same rows, and that is on purpose**
   (CAPTUREFLOW §C). Its "FROM YOUR MEETINGS" section renders the first few
   meeting groups from THIS queue, through the same builder and the same
@@ -184,6 +199,16 @@ tap away (expand, read-only, display numbers kept). What to know:
   This skill is still on-demand only and registers no scheduled task; the
   staff meeting is already scheduled, and the fold is a section there, not an
   appointment of its own.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+## Routing (full trigger corpus)
+
+The complete trigger family and fences for this skill (the description is budget-capped by G11; everything here is binding at fire time and enforced by tests/triggers.yaml).
+
+> The queue: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. The watch list: 'show watching', 'what are you watching', 'what's on watch'. The would-hold review (Mode, read-only — formerly held-review, folded in SKILLMERGE1 2026-09-03): 'show me what you'd hide', 'what would you hide', 'show me what you would have hidden', 'what would you have hidden', 'show me what you would have held', 'held candidates'; its switches: 'turn on held', 'hide the weak ones', 'turn off held', 'stop hiding the weak ones'. The binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. DOES NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' / 'my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'end of day' / 'close out my day' (end-of-day), 'clean up my workspace' / 'maintenance' / 'deep clean' (cleanup), 'backfill commitments' / 'scan for commitments' (scan-for-commitments), or 'revisit the [topic] decision' (decision-log).
 
 ## Writer Contract
 

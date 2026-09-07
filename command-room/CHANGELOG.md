@@ -1,5 +1,119 @@
 # Command Room — Changelog
 
+## v5.29.0 — 2026-09-06 — Closing on evidence is off until you turn it on; every client starts light; the plate shape reaches the brief, the day-close and the wrap; won clients are never nagged
+
+**Night-9 commitments train (HYGIENE9 → POLICY1-B → QUIET1) plus the merge-morning cut lanes built to M's rulings of 2026-09-06 after the v5.28.0 attended test returned HOLD (`handoffs/ATTENDED_TEST_v5.28.0_2026-09-04.md`, `NIGHT9_MERGE_MORNING_ADDENDUM_2026-09-06.md`, `RULINGS_CUT_v5290_2026-09-06.md`). Eight lanes, each with an independent second-eyes review and fix rounds, merged in order on `6434bc90`; hand-merges and hygiene by the coordinator; a final adversarial review of the merged tree (`REVIEW_MERGED_v5290_2026-09-06.md`).** Fleet stays v5.25.0 until M says promote.
+
+### What shipped
+
+- **R-A — the transcript closing-on-evidence pass ships OFF by default (CUT-A).** One workspace switch (`auto_close_from_transcript`, off, fail-to-off) in front of every path that could close a promise on transcript evidence: the past-meetings pass, the review-expiry chip leg, the calendar closer, meeting-notes / follow-up-ritual / team-intelligence processing and the re-run path; the writer refuses a forged close from a prose closer while off. Off, a kept-looking promise becomes a review proposal, stale chips withdraw, booked meetings are offered not closed, and the brief says how many look kept. `turn on closing on evidence` / `turn off closing on evidence` flip it by word, receipted. The tightened POLICY1-B pass (single completion turn naming the item, the meeting's start time on hand, the row older than the meeting, the machine as closer) stays in the tree; the replay over M's Sep 3–4 calls recommends **zero closes and zero wrong closes** (98 refusals by class) — the criterion for re-enabling, which M gives by word.
+- **POLICY1-B — closing on evidence, part two.** Per-group undo (`undo 1` / `undo 1a` / `undo all`), the completion-turn bar, a due date can be cleared (`restore_due`, so an undone Later goes back to no date), an undone close is never "closed today", the observed-tier calendar closer with exact undo, parks instead of asks for quiet owed-to-you rows, the three-state completion signal read by identity everywhere with a guard.
+- **QUIET1 — correct when ignored.** `light` for every client seat including existing ones (the manifest `auto_apply`, receipted, `undo` real), the operator stamped `engaged` by command; a question budget of 5 a week across every asker; a one-level step-down after 14 quiet days, never up, narrated once; `ask me more` restores on the spot; the plate cap (40 light / 25 quiet) that **never rests an overdue or this-week item (CUT-D, M's ruling)**; the wrap's "Decided for you" / "Still waiting"; the return header; the receipt counters. Onboarding starts every seat light whatever the answer (CUT-D).
+- **CUT-PLATE — the plate shape reaches the fires.** The morning brief's first line is the attention number; warnings and other counts sit below it. End of Day renders opened / closed / slipped and asks nothing. The Friday wrap lists every Parked row with its reason. The registered scheduled chats read the plugin's orchestrator fresh at each fire, so the shape arrives on update; `update command room` says once, and only on real drift, to type `set up command room schedules`.
+- **CUT-B — deals (R-B).** The mid-confidence "likely deal" question is withheld from the Staff Meeting card and every count; the signal is recorded silently and promotes only on paid / signed / won. A won or client org never nags as a live deal. An expired deal signal stays expired on unchanged evidence. `mark [org] won` with no deal on file does it openly with a receipt and an undo; a deal undo clears the win from the closed-deals list, the 90-day won-rate tile and the pipeline report. Two promotions in one second no longer share an undo batch.
+- **CUT-C — the widget.** Later… holds Apply and names the missing date on every row shape (the plate shows nine rows a page so every row keeps its date field); rows you undo come back on the frozen page; Schedule rows carry `follow-up call` on the text path and an over-budget page returns a numbered text form; raw ids never reach narration (one id→name composer, a mandatory leak-scan step on 28 rendering skills, guard G51); read-only pages carry no Apply all / Reset / Snooze rest.
+- **HYGIENE9.** No wire id or raw score on a customer row; the plate's due phrase anchored to the workspace's day; the brief points at the Waiting On chat; the two heaviest suites run in the solo lane; a guard against vacuous test pins; the battery chain and reaper in `scripts/dev/`, scoped to a worktree.
+
+### Release manifest
+
+One `auto_apply` (`stamp_light_preset`: every seat with no stored posture starts `light`; a stored posture is left alone; `undo` real) and two `announce_only` items (closing on evidence off with the two verbs; the three surfaces and the deal changes, with the one thing to type).
+
+### Rulings owed to M (all built to the recommended default)
+
+R-A(ii) the calendar closer sits behind the same switch; the R-A re-enable criterion is now "zero wrong closes on M's calls" (the Erick slides row was re-promised on the call, not kept — two independent readings); a withheld close on an unconfirmed guess still writes a proposal; the onboarding question now changes nothing and can go; "slipped" counts the window's last day; the overdue pile is un-capped by design (the lever is inflow, night 10).
+
+### Verification
+
+Eight independent reviews with fix rounds and re-verifies; guard tier 81/0 and every lane suite green on the merged tree; the final battery and the adversarial merged-tree review recorded in `handoffs/REVIEW_CUT_v5290_2026-09-06.md`.
+
+## v5.28.0 — 2026-09-04 — Promises the meetings show were kept close themselves; the plate reaches every daily surface; a won deal quiets its own nag
+
+**Night-8 commitments train: five reviewed builds merged in order (HARNESS1 → DEALNAG1 → PLATE1 night 2 → ATTRIB1-B + EXTRACT1 → POLICY1-A), each with an independent second-eyes review and fix rounds, then a final adversarial review of the MERGED result. Built to M's 2026-09-03 rulings, two of which reversed the reviewers' recommendations: a guess with a completion signal closes as done rather than asking, and no lane adds a question class.**
+
+### What shipped
+
+- **POLICY1-A — closing on evidence.** An unconfirmed guess that a later transcript shows was kept now closes as done automatically, with the verbatim completion-turn quote on the row, receipted and undoable as one batch. No question, no proposal. The 0.65–0.80 band writes one in-row chip that applies its own evidence or withdraws at a four-day window; nothing waits on the customer. One threshold home (`commitment_policy.py`). The door this rests on refuses to close anything without both a verbatim quote and a real pointer, pinned directly and by a removal proof. The automatic close passes the same screen a human confirm click passes, so it cannot close a row the product stamped never-auto-close (meetings the customer did not attend). A withdrawn chip is recorded as a system lapse, never as the customer's dismissal. Measured on the operator's book: question-shaped writes 763 → 5; 141 rows would auto-close of which 123 were in reality later dropped as never real — the trade M accepted, and the number to re-measure as capture improves.
+- **PLATE1 night 2 — the plate everywhere.** The morning brief leads with ONE attention number and one pointer instead of six; the day-close renders today's opened / closed / slipped in the plate shape and ranks confirm rows on the completion signal; the Friday wrap carries the week's delta plus the parked review; the sidebar dashboard adopts the same model; one-taps for chase and schedule. M's "a proposal is never a question" is mechanical: a cut making that claim refuses to render, and the adopted templates are scanned. The completion signal keeps three states end to end (looked and found / looked and found nothing / never looked), ranked by identity. Also clears the `run_plate1_test` goldens that had flipped red on main every evening since the v5.27.0 cut. Board adoption deliberately deferred with reasons.
+- **ATTRIB1-B + EXTRACT1 — capture, part two.** Owner from the turn marker behind a grammar fence; counterparty ladder calendar → vocative → named speaker → the meeting's own people → the meeting card, which asks at most three questions per meeting with the likely answer pre-selected and applies it after two days (or lets the item go where no likely answer exists, and says so). Scheduling and agenda rows book silently per ruling 2. Speech-act labels (advice, a request nobody accepted, dictation) ride beside the shipped floor verdicts — never replacing them, after a merge-time regression showed the shipped exchange-window rescue keys on those verdicts. The dictation filter's product vocabulary is per-workspace and off by default. On 71 real calls: review flags on two-party calls 63% → 33%, no confirmed row regressed, defaulted rows stay in the queue 8/29 → 29/29. Stated honestly: the 95% counterparty target is not met and cannot be by this design (ceiling near 76%; the persisted roster resolves name and email independently), and dragger 2 is a relabelling pass, not the precision pass its spec targeted.
+- **DEALNAG1 — the won-deal nags.** A payment, a signed agreement or a closed-won engagement retires the deal signal with a receipt and never re-proposes it, and promotes the prospect to client on the spot — entity updated, `org_promoted` receipt, one line in the brief's changed feed, undo reverses both halves. Without a paid or signed signal nothing is proposed at all. If the receipt fails to write, both record writes roll back, and a doubly-failed write reports itself honestly rather than claiming recovery. The changed feed no longer credits the customer with actions the machine took. On the operator's book: standing deal nags 3 → 1, "looks like a client" questions 3 → 0.
+- **HARNESS1 — battery hygiene.** Per-suite timeout map (five heavy mutation suites at 1,800 s, the rest 900 s; the summary names the ceiling); a guard that fails with the file list if the working tree carries CRLF; UTF-8 stdout on the fleet scripts; the worktree recipe in DEVELOPMENT.md; the upgrade-matrix test taught the `auto_apply` manifest shape it had been rejecting since the v5.27.0 cut. Plus, from the capture lane: a guard-tier check that every mutation anchor matches exactly once in its own target file (336 anchors), so a build that reshapes a pinned line reds the battery on the spot.
+
+### Release manifest
+
+One `auto_apply` (`migrate_legacy_commitment_kinds`: labels older commitments by kind, 402 rows on the operator's book, idempotent, receipted — its notice deliberately does NOT offer `undo`, because none exists for that migration) and two `announce_only` items (closing on evidence; the plate everywhere plus the meeting card plus won-deal promotion).
+
+### Rulings owed to M
+
+F-4 of the merged review: the 0.65–0.80 chip still renders as a confirm / not-relevant / hold question on the Staff Meeting card and counts in the brief's pointer — an existing question class, about five a month, self-withdrawing at four days; accept as-is or withhold from that card. Also open: whether `invoice_sent` counts as a paid signal (it now promotes); whether a won company stays skipped forever or wakes on the next sales-typed meeting.
+
+### Verification
+
+Six independent second-eyes reviews with fix rounds and a final adversarial review of the merged tree (`handoffs/REVIEW_NIGHT8_BATCH_2026-09-04.md`, `REVIEW_MERGED_v5280_2026-09-04.md`, per-lane records alongside). Full battery on merged main on an idle machine: see the batch record for the exact figure; the two heaviest mutation suites pass alone (62/0 in 458 s, 66/0 in 151 s) and exceed the ceiling only under 12-worker contention — filed to move them to the solo lane. Every coordinator error of the night is listed in the batch record so contaminated numbers are not mistaken for evidence.
+
+## v5.27.0 — 2026-09-03 — The plate groups by what each item wants next, captures carry their evidence, and five skills fold into the ones they belonged to
+
+**Night-7 commitments train: three reviewed builds merged in order (SKILLMERGE1 → PLATE1 night 1 → ATTRIB1-A), full battery green on main after every merge.** First of the commitments-first nights ruled by the operator on 2026-09-03; the closing-rules spec (POLICY1 v2) was re-issued and reviewed the same night and builds next.
+
+### What shipped
+
+- **PLATE1 (night 1)** — `what's on my plate` / `triage my commitments` render one shape: six blocks by what the row wants next (CONFIRM · DO IT · CHASE · WAIT · SCHEDULE · PARKED), then by project ("No project" last), then by horizon (Overdue · This week · Later · No date); four verbs on every row (done · not mine · later · drop), dispatched through the standing apply-choices rail with the CLOSEID2 door; PARKED renders open with its reason; the jargon gate now also refuses the NUMBERS1 banned words on this surface and re-says stored writer text instead of refusing a whole plate. `not mine` disowns the row and parks it under a "whose is this?" question that review-expiry does not lapse. New `shared/scripts/plate_view.py` (`build_plate` / `render_plate`) is the only grouping code; `commitment-triage` deletes its private age grouping. A workspace whose owner cannot be resolved gets one plain line instead of "you owe 0 / owed to you 231"; the `write_user_pointer` release action writes the owner pointer once on update (manifest item below). On the operator book (copy): 282 age-sorted rows → CONFIRM 109 · DO IT 101 · CHASE 66 · WAIT 13 · SCHEDULE 17 · PARKED 37. Brief, end-of-day, wrap and board adoptions are night 2.
+- **ATTRIB1-A** — every meeting capture now carries `data.attribution` (transcript class, owner basis, counterparty basis, span), a `floor_code` on every gated row, and a `fusion_status` verdict on every row; `pending_review` is DERIVED from that evidence (a builder passed a conflicting literal logs a `capture_contract_violation` note and keeps the derivation; the route seam pops any literal from prose). Transcript class is declared before extraction; a `dictation` transcript (only the user's voice) writes one meeting event with `working_session: true` and routes its captures to the observed tier — kept for prep, never a to-do, never dropped. `classification_confidence` is the one capture-confidence field (the five capture writers stamp it through `stamp_confidence`). Replay on the 71-transcript set: 2-party flag rate 50% → 44%, 3+-party 33% → 27%, 0 regressions on confirmed rows. Owner/counterparty ladder, the meeting-card question door and the own-recap door are ATTRIB1-B (next).
+- **SKILLMERGE1 (through D4)** — 68 skills → 63: `enable-workspace-map` and `enable-quick-commands` fold into `level-up-command-room`, which now installs three sidebar dashboards including the new **My Open Commitments** (`install my commitments`; refuses when the workspace owner is unresolved; rows through the INTAKE seam); `thread-resurrection` folds into `dormant-customer-scan` (threads lens); `decision-revisit` into `decision-log` (revisit mode); `held-review` into `needs-your-call` (read-only would-hold mode). Every trigger phrase kept and pinned in `tests/triggers.yaml`; old skill names stay as canonical aliases so persisted widget clicks keep their meaning; the doc skill count is rendered from the tree and guarded (G17). D5–D7 (scan-for-commitments, show-my-list, log-resolution) are a second night.
+
+### Release manifest
+
+One `auto_apply` (`write_user_pointer`: records the workspace owner once, idempotent, receipted) and two `announce_only` items (the plate; fewer front doors).
+
+### Verification
+
+Three independent second-eyes reviews with fix rounds (`handoffs/REVIEW_NIGHT7_BATCH_2026-09-03.md`, per-lane records alongside); serial full batteries on every branch tip (579/0 · 579/0 · 580/0) and on main after each merge: 578/1, 578/2, **581/1** — every red line a >900 s TIMEOUT on the two heaviest mutation suites under load, each re-run solo on the final tip green (attendee1 66/0, staffcut 62/0; harness ceiling bug filed); replay report `_hq/audit-reports/ATTRIB1A_REPLAY_2026-09-03.md` (counts only).
+
+## v5.26.1 — 2026-09-02 — The dormant licence gate now covers the appended activity log
+
+**Patch on v5.26.0, staging only. No user-visible behavior change; empty release manifest.**
+
+### Root cause
+
+The operator's Cowork Test 1b against the licence-gate spike (fixture workspace, sentinel armed) showed `log a commitment` still landing (seq 35). Not a route-around — the canonical writer never refused. The spike's check sits in `atomic_write_text`, and INDEX1A (shipped in the same v5.26.0 cut) moved `events.jsonl` onto the true-append fast path through `_append_bytes`, which never reaches `atomic_write_text`. Entity files were blocked; the ledger was not. The spike was reviewed on 2026-09-01 against a main that still rewrote the ledger through the text writer.
+
+### Fix
+
+`atomic_append_jsonl` calls `_license_gate_check(path)` at its entry, before the writer lock, so a refusal never holds the lock. The fail-open shape (sentinel absent, unreadable, or import failure → write proceeds) is unchanged. Proof in a temp workspace: unarmed append seq 1; armed append refused with the paused message, file unchanged; disarmed append seq 2.
+
+### Files touched
+
+- `shared/scripts/atomic_write.py` — one call added at the top of `atomic_append_jsonl`.
+
+### Customer migration impact
+
+None. With no `.license_expired` sentinel in `_hq/data/` the gate is inert; nothing fans out until a promote.
+
+### What's NOT in this ship
+
+The real gate (signed, dated token; SPEC_LICGATE1) — written after Test 1b records its verdict. Intake: the v5.26.0 what's-new headline named the licence gate on a customer-facing surface.
+
+### Verification
+
+Full battery on the fix branch before merge: **TOTAL: 578 passed, 0 failed**.
+
+## v5.26.0 — 2026-09-02 — The activity log appends in place, routing misses get a record, and the licence gate rides along switched off
+
+**Night-6 batch, merged after the operator's 12/12 attended test of v5.25.0 (`handoffs/ATTENDED_TEST_v5.25.0_2026-09-02.md`). Full battery green on main after the merges.** No user-visible behavior change; empty release manifest.
+
+### What shipped
+
+- **INDEX1A** — `events.jsonl` is now a true append (SPEC_INDEX1 Phase A, built to the review-fixed design R1–R7): one `os.write` under the writer lock, a bounded 64 KiB tail read for max seq and newest ts, the seq-regression guard kept, post-write read-back before the `.seqhw` witness advances. A batch the read-back cannot find is set aside in an `.appendverify-*` side file (never the quarantine family, which auto-replays); a witness that cannot advance leaves a `.seqhw.rescan.json` marker forcing one full scan on the next append. Per-append latency on the operator ledger: median 119.5 → 17.9 ms. `reconcile_forward` / `rotate_events` / repairs keep their rewrite (out of scope). At merge: `substrate_health.substrate_alarm_lines` gains one plain-English line for each of the two markers (the review's item 3), so a set-aside batch is never silent.
+- **ROUTEMISS1** — a `router_miss` event records the user's phrase and the skill that should have fired when routing misses, with an owner-facing view (`ROUTER_MISSES.md`) and a Monday cleanup line; the trigger runner gains a generated negative corpus from every fence phrase in the skill descriptions (283 phrases → 203 asserted green, 80 quarantined with reasons, the six `no, I meant …` control rows). At merge: `router_miss` joins `personal_leak._PERSONAL_EVENT_TYPES` (the miss log quotes the user's own words). Carried to SKILLMERGE1: the 100 already-pinned fence phrases still emit as green rows (harmless duplicate assertions; that spec owns the fence ledger).
+- **LICGATE1 spike (dormant)** — `license_gate.py` + `ed25519_verify.py` and a sentinel check at the write chokepoint. With no `.license_expired` sentinel in `_hq/data/` the gate is inert and fails open on every ambiguity; the real gate (SPEC_LICGATE1) follows the operator's Test 1b. `LICGATE1_SPIKE_RUNBOOK.md` lives at the repo root and does not fan out.
+
+### Release manifest
+
+Empty `items` — internal only; `last_applied_version` advances.
+
+### Verification
+
+Two independent second-eyes reviews (`handoffs/REVIEW_NIGHT6_BATCH_2026-09-02.md`, batteries 577/0 on each branch); LICGATE1 spike reviewed GREEN 2026-09-01 and rebased clean (0 conflicts) onto the merged main; full battery on main after the three merges: **TOTAL: 578 passed, 0 failed**.
+
 ## v5.25.0 — 2026-09-02 — The brief reads memory, bindings get a one-tap review, carried-out decisions retire, and the gauge calibrates itself per workspace
 
 **Six reviewed builds via `train-v525` (full battery green after every merge; zero integration breaks).** Closes the memory/routing program's planned build list: every planned surface reads the canonical reader, the propose-confirm backfill has its widget lane, and the client-migration bridge action exists — dormant — for the day the operator says go.

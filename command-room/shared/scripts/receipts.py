@@ -111,6 +111,7 @@ CANONICAL_TASK_IDS = frozenset({
     "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
     "review-expiry",  # REVSCHED1 — the weekly unconfirmed-pile drain job inside `maintenance` (never a task of its own; see maintenance_dispatcher.MAINTENANCE_JOBS)
     "age-out",       # SWEEPSCHED1 — the weekly CONFIRMED-pile drain job inside `maintenance` (never a task of its own; sibling of review-expiry, different pile, different bar)
+    "calendar-close",  # POLICY1-B DD-7 — the daily calendar closer for scheduling rows inside `maintenance` (never a task of its own; confirm-first for three fires)
     # EOD2 — the 5 PM chat's taskId was RENAMED to `end-of-day`, but the
     # RECEIPT id deliberately did NOT move: `end_of_day.TASK_ID` still writes
     # `past-meetings`, so the day-close series is ONE continuous history
@@ -325,6 +326,10 @@ RECEIPT_TYPES: dict[str, dict] = {
     # or "applied"; a refusal that never reached a plan carries neither and is
     # therefore not counted.
     "age-out":            {"types": frozenset({"pack_run"})},
+    # POLICY1-B DD-7 — the calendar closer's receipt, the same scheduled-job
+    # shape; written on a proposing fire and an applying fire alike (the
+    # `mode` on it IS the confirm-first counter, like age-out's).
+    "calendar-close":     {"types": frozenset({"pack_run"})},
     # GAUGEJOB1 — the daily binding-gauge refresh job's receipt. `pack_run`,
     # the standard scheduled-job shape: the dispatcher's dueness rule reads it
     # and self-limits the refresh to daily on any day with substrate

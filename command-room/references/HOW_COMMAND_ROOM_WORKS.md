@@ -25,7 +25,7 @@ Command Room is a Claude Code plugin distributed via the Cowork marketplace. The
 
 - **The substrate**: every meeting, email, decision, commitment, and intel item flows into a structured event log (`events.jsonl`) + a relationship/project graph (`entities.json`). This is the moat. Everything else is read or write against it.
 - **The daily loop**: 6 scheduled Cowork chats fire on cron (~7-9 AM weekdays). They synthesize what's happened, surface what needs attention, and draft replies. Most days the operator spends 5-15 minutes triaging the output of these chats.
-- **The on-demand surface**: ~47 skills accessible by trigger phrase. Writing (email, memo, one-pager, decision-memo, board-pack), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (decision-revisit, thread-resurrection, dormant-customer-scan), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
+- **The on-demand surface**: <!-- skill-count -->63 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo, board-pack), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
 - **Voice calibration**: every writing skill runs voice calibration on every fire so drafts sound like the operator. The voice corpus grows over time as the operator sends sent-mail samples.
 
 What it is NOT:
@@ -251,7 +251,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 
 ## The on-demand surface — skills by intent
 
-About 47 skills total in `skills/`. Organized here by user intent so you can find the right one quickly.
+<!-- skill-count -->63 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
 
 ### "Brief me on something"
 
@@ -263,8 +263,8 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 | `cleanup` | `clean up my workspace`, `tidy up`, `maintenance`, `deep clean` | Weekly self-maintenance (Sundays). Auto-fixes safe issues, heals substrate corruption, surfaces only what needs eyes. No scores, no dashboard. |
 | `operator-report` | `operator report`, `what did you save me`, `monthly recap` | CEO-facing "Operating Lift" report — what would have slipped, what got captured, conservative time-saved estimate. |
 | `transcript-search` | `what did anyone say about [topic]`, `meetings about [topic]` | Cross-meeting topic search returning meeting hits with snippets. |
-| `decision-revisit` (v3.8.0+) | `what decisions should I revisit`, `decision audit`, `decisions to revisit` | Surfaces decisions worth re-examining based on time elapsed + contradictory signal + named-condition shifts. Companion to decision-log; pure substrate skill. |
-| `thread-resurrection` (v3.8.0+) | `what conversations went silent`, `warm threads to revive`, `thread resurrection` | Mirror of dormant-customer-scan but for THREADS not PEOPLE. Cross-graph awareness — surfaces commitment chase as an alternative when relevant. |
+| `decision-log` (Mode: revisit — formerly `decision-revisit`, folded in SKILLMERGE1) | `what decisions should I revisit`, `decision audit`, `decisions to revisit` | Surfaces decisions worth re-examining based on time elapsed + contradictory signal + named-condition shifts. Companion to decision-log; pure substrate skill. |
+| `dormant-customer-scan` (Mode: threads — formerly `thread-resurrection`, folded in SKILLMERGE1) | `what conversations went silent`, `warm threads to revive`, `thread resurrection` | Mirror of dormant-customer-scan but for THREADS not PEOPLE. Cross-graph awareness — surfaces commitment chase as an alternative when relevant. |
 | `board-pack-assembler` (v3.8.0+) | `build the board pack for [date]`, `assemble the board pack`, `prep for the [date] board meeting` | Multi-page board pack composed from events.jsonl + decision-log + entities.json + QuickBooks. The purest substrate consumer in the plugin. |
 
 ### "Tell me about a person/relationship"
@@ -312,9 +312,9 @@ About 47 skills total in `skills/`. Organized here by user intent so you can fin
 | `command-room-onboarding` | First install (auto), `set up command room`, `restart onboarding` | 6-phase M1 onboarding (~40 min) distributed across 13 chats. |
 | `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Reconciles missing dashboards + applies workspace migrations + plays release manifests (v3.4.5+). |
 | `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the 7 scheduled chats (6 daily + 1 weekly Friday Wrap, v3.11.0+). |
-| `enable-workspace-map` (renamed v3.5.0 from `enable-orgs-map`) | `install workspace map`, `enable workspace map`, `rebuild workspace map` | Installs the Workspace Map sidebar artifact. |
-| `enable-quick-commands` | `install quick commands` | Installs the Quick Commands cheat-sheet sidebar artifact. |
-| `level-up-command-room` | `level up command room`, `add dashboards` | Umbrella menu of optional Layer 2 dashboards. Empty as of v3.11.0 — Commitment Cockpit retired and folded into the Commitments scheduled chat. |
+| `level-up-command-room` (Mode: Workspace Map — formerly `enable-workspace-map`, folded in SKILLMERGE1) | `install workspace map`, `enable workspace map`, `rebuild workspace map` | Installs / refreshes the Workspace Map sidebar artifact (id `orgs-map`). |
+| `level-up-command-room` (Mode: Quick Commands — formerly `enable-quick-commands`, folded in SKILLMERGE1) | `install quick commands`, `rebuild quick commands` | Installs / rebuilds the Quick Commands cheat-sheet sidebar artifact (id `quick-commands`). |
+| `level-up-command-room` (menu + Mode: My Open Commitments) | `level up command room`, `show me dashboards`, `install my commitments` | The one sidebar-dashboards skill: the menu of the three artifacts, plus the My Open Commitments dashboard (id `my-commitments`, read-only, grouped by person and org). |
 
 ### "Pull in / file existing context"
 
@@ -434,7 +434,7 @@ command-room/
 ├── CHANGELOG.md                       # All releases, newest first
 ├── README.md                          # Marketplace-facing description
 │
-├── skills/                            # ~46 skills, one directory each
+├── skills/                            # <!-- skill-count -->63 skills, one directory each
 │   ├── morning-briefing/SKILL.md
 │   ├── inbox-triage/SKILL.md
 │   ├── workspace-manager/SKILL.md

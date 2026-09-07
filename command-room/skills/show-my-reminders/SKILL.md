@@ -1,7 +1,7 @@
 ---
 name: show-my-reminders
 surfaces: both
-description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Does NOT fire on 'show my list' / 'my list' / 'add to my list' (show-my-list, the discuss-later queue), 'remind me to revisit' (decision-revisit), 'remind me what' retrieval (decision-log), or 'balance check' / 'my white space' / 'plan a date night' (balance — proactive + relationship-aware, not a reminder dump; it READS personal reminders but never manages them)."
+description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Does NOT fire on 'show my list' / 'my list' / 'add to my list' (show-my-list, the discuss-later queue), 'remind me to revisit' (decision-log — its revisit mode), 'remind me what' retrieval (decision-log), or 'balance check' / 'my white space' / 'plan a date night' (balance — proactive + relationship-aware, not a reminder dump; it READS personal reminders but never manages them)."
 ---
 
 # show-my-reminders
@@ -169,10 +169,10 @@ heard of reminders gets the safe behavior by default.
   to show-my-list — it explains the retirement; never treat it as a
   reminder capture.
 - **Not the commitments lane.** "push [commitment] to [date]" inside the
-  Commitments chat is that orchestrator's verb (writes `commitment_updated`);
+  Waiting On / My Plate chats is that orchestrator's verb (writes `commitment_updated`);
   "push the reminder" here writes `reminder_updated`. Same word, different
   ledgers — resolve by what's in context.
-- **Not decision-revisit** ("remind me to revisit the pricing decision") and
+- **Not decision-log's revisit mode** ("remind me to revisit the pricing decision") and
   not retrieval ("remind me what we decided") — those route to their owners.
 
 ## What this skill does NOT do

@@ -43,6 +43,43 @@ _LEGACY_ALIASES = {
 }
 
 
+# SKILLMERGE1 (2026-09-03) — skills FOLDED into an absorber. The old name stays
+# a canonical alias forever (the MLK1 rule: a persisted widget click, a
+# `source_skill` already on disk, a `holder=` in a lock receipt — all keep
+# their meaning). `normalize_source_skill` deliberately does NOT rewrite these:
+# `held-review` on an event means the held-review surface wrote it, and a
+# reader filtering on the ABSORBER must accept the folded name (and vice
+# versa) — that join is `source_skill_matches`, below. Add a row per fold;
+# never remove one (events written under the old name are on client disks).
+FOLDED_SKILL_ALIASES = {
+    "enable-workspace-map": "level-up-command-room",   # D2 — Mode: Workspace Map
+    "enable-orgs-map": "level-up-command-room",        # the pre-v3.5.0 spelling of the same installer
+    "enable-quick-commands": "level-up-command-room",  # D3 — Mode: Quick Commands
+    "thread-resurrection": "dormant-customer-scan",    # D8 — Mode: threads (the threads lens)
+    "decision-revisit": "decision-log",                # D9 — Mode: revisit
+    "held-review": "needs-your-call",                  # D4 — Mode: would-hold review (read-only)
+}
+
+
+def absorbing_skill(name):
+    """The live skill that answers for `name` today: the absorber for a folded
+    skill, `name` itself otherwise (None / non-str returned unchanged)."""
+    if not isinstance(name, str):
+        return name
+    return FOLDED_SKILL_ALIASES.get(name, name)
+
+
+def fold_family(name):
+    """Every canonical spelling that means the same surface as `name`: the
+    absorber plus every folded skill that maps to it. A reader filtering on
+    either the old or the new name matches events written under both."""
+    canon = absorbing_skill(name)
+    fam = {canon} | {k for k, v in FOLDED_SKILL_ALIASES.items() if v == canon}
+    if isinstance(name, str):
+        fam.add(name)
+    return fam
+
+
 def normalize_source_skill(value):
     """Canonicalize a source_skill value to its current bare form.
 
@@ -70,7 +107,12 @@ def source_skill_matches(event_value, *canonical) -> bool:
         # matches both legacy 'cr-commitments' and bare 'commitments'
     """
     ev = normalize_source_skill(event_value)
-    return any(ev == normalize_source_skill(c) for c in canonical)
+    for c in canonical:
+        target = normalize_source_skill(c)
+        if ev == target or ev in fold_family(target):
+            return True
+    return False
 
 
-__all__ = ["normalize_source_skill", "source_skill_matches"]
+__all__ = ["normalize_source_skill", "source_skill_matches",
+           "FOLDED_SKILL_ALIASES", "absorbing_skill", "fold_family"]

@@ -236,10 +236,17 @@ def load_extraction_hints(workspace_root) -> List[str]:
             if ln.strip().startswith(("-", "*"))]
 
 
+# ATTRIB1-B A7 — the cap on the hint file, as a PLAIN GUARD (not a knob):
+# at the cap the OLDEST bullet rotates out before the new one lands, so the
+# file the extractor reads every fire is bounded. LEARN1 owns consumption
+# and any smarter rotation policy; this is the floor under it.
+HINT_CAP = 50
+
+
 def append_extraction_hint(workspace_root, hint: str) -> bool:
     """Append one approved exemplar to `_hq/data/extraction-hints.md` (additive,
-    deduped; creates with a header if absent). Returns True on write. Never
-    raises."""
+    deduped; creates with a header if absent; capped at `HINT_CAP` bullets —
+    the oldest rotates out). Returns True on write. Never raises."""
     hint = (hint or "").strip()
     if not hint:
         return False
@@ -256,6 +263,17 @@ def append_extraction_hint(workspace_root, hint: str) -> bool:
                         "cru_match reads them for resolution language.\n\n")
         if not existing.endswith("\n"):
             existing += "\n"
+        # The cap: drop the OLDEST bullet line(s) until one slot is free.
+        lines = existing.split("\n")
+        bullet_idx = [i for i, ln in enumerate(lines)
+                      if ln.strip().startswith(("-", "*"))]
+        while len(bullet_idx) >= HINT_CAP:
+            del lines[bullet_idx[0]]
+            bullet_idx = [i for i, ln in enumerate(lines)
+                          if ln.strip().startswith(("-", "*"))]
+        existing = "\n".join(lines)
+        if not existing.endswith("\n"):
+            existing += "\n"
         try:
             from atomic_write import atomic_write_text
             atomic_write_text(path, existing + f"- {hint}\n", holder="extraction_hints")
@@ -266,9 +284,51 @@ def append_extraction_hint(workspace_root, hint: str) -> bool:
         return False
 
 
+# ATTRIB1-B D12 — the answers feed the extractor. One line per door-1 pick
+# and per `not mine` / `drop` on a meeting capture, in the shape the
+# extractor can read as a few-shot exemplar. The wording carries the
+# transcript CLASS so a hint learned on a `me_them` call is read in that
+# light. Workspace-side only (names are fine here; nothing reaches the repo).
+_ATTRIBUTION_VERDICTS = ("counterparty", "dropped", "not_mine")
+
+
+def attribution_hint_line(*, verdict: str, title: str, transcript_class: str = "",
+                          counterparty_name=None, kind: str = "") -> str:
+    """The ONE hint sentence for an adjudication, or "" for an unknown
+    verdict / empty title. Pure."""
+    title = " ".join(str(title or "").split())
+    if not title or verdict not in _ATTRIBUTION_VERDICTS:
+        return ""
+    cls = f" on a {transcript_class} transcript" if transcript_class else ""
+    kind = f" ({kind})" if kind else ""
+    if verdict == "counterparty":
+        who = str(counterparty_name or "").strip() or "the person you picked"
+        return (f"When '{title}'{kind} was heard{cls}, 'you' meant {who} — "
+                f"resolve the counterparty that way next time.")
+    if verdict == "not_mine":
+        return (f"'{title}'{kind}, heard{cls}, was NOT the user's item — "
+                f"do not own it to the user.")
+    return (f"'{title}'{kind}, heard{cls}, was not a promise — do not "
+            f"capture this shape.")
+
+
+def append_attribution_hint(workspace_root, *, verdict: str, title: str,
+                            transcript_class: str = "", counterparty_name=None,
+                            kind: str = "") -> bool:
+    """D12 — append the adjudication's hint line (dedup + cap apply). Returns
+    True on write; never raises."""
+    line = attribution_hint_line(verdict=verdict, title=title,
+                                 transcript_class=transcript_class,
+                                 counterparty_name=counterparty_name, kind=kind)
+    if not line:
+        return False
+    return append_extraction_hint(workspace_root, line)
+
+
 __all__ = [
     "WINDOW_HOURS", "MIN_CLUSTER", "CAP", "PASS_NAME",
     "is_resolution_miss", "find_recent_meeting", "load_misses",
     "cluster_misses", "propose_hints",
     "load_extraction_hints", "append_extraction_hint",
+    "HINT_CAP", "attribution_hint_line", "append_attribution_hint",
 ]

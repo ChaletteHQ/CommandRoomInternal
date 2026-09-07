@@ -74,7 +74,8 @@ _REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared")
 # (balance.record_actioned — a code writer since OI-3 B-1 2026-07-26; it was
 # prose-only, which is what that finding closed). Type pinned in both SKILL
 # prose sites, equality asserted by run_fu_pretest_pins_test.
-_PERSONAL_EVENT_TYPES = ("balance_nudge_suggested", "balance_nudge_actioned")
+_PERSONAL_EVENT_TYPES = ("balance_nudge_suggested", "balance_nudge_actioned",
+                         "router_miss")  # ROUTEMISS1 at-merge: the miss log quotes the user's own phrasing
 
 
 # ---------------------------------------------------------------------------

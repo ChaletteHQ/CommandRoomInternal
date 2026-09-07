@@ -427,7 +427,9 @@ def _build_content(workspace_root: Path) -> tuple[str, dict[str, Any]]:
     # confidence floor only decides which ROWS render in the table below —
     # provisional items are still open commitments and stay in the headline
     # (reporting len(shown) here was the tracker's Bug-#85-class divergence).
-    open_count = count_commitments(open_commitments)["total"]
+    # PLATE1 D8: `total` is user-independent — the tracker never renders a
+    # direction bucket, so it is the one reader allowed the no-user degrade.
+    open_count = count_commitments(open_commitments, unresolved_ok=True)["total"]
     if shown:
         body += [
             "## Open Commitments (across all threads)", "",

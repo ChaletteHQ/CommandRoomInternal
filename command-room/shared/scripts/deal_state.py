@@ -121,12 +121,14 @@ def _find_org(data: dict, org_id: str) -> Optional[dict]:
                  if o.get("id") == org_id), None)
 
 
-def _append(ws: Path, event, source_skill: str) -> None:
+def _append(ws: Path, event, source_skill: str) -> list:
     """Gated append. Takes one event or a list — a list lands in ONE append, so
-    two events written for the same transition cannot half-land."""
+    two events written for the same transition cannot half-land. Returns the
+    written rows (seq-stamped) — CUTB item 4 reads the `deal_won` seq off it
+    for the promotion receipt."""
     from event_gate import append_event
     events = [event] if isinstance(event, dict) else list(event)
-    append_event(_events_path(ws), events, holder=source_skill)
+    return append_event(_events_path(ws), events, holder=source_skill)
 
 
 def _require_deal_thread(thread: Optional[dict], thread_id: str) -> dict:
@@ -457,6 +459,7 @@ def close_deal(
     value: Optional[float] = None,
     convert_prospect: bool = False,
     source_skill: str = "pipeline-tracker",
+    deal_manufactured: bool = False,
 ) -> dict:
     """THE closure path. Every deal terminal — 'mark [deal] won/lost',
     '[Name] signed', 'we lost the [deal]', a confirmed detector proposal —
@@ -473,19 +476,30 @@ def close_deal(
         deal value; None leaves it untouched. Never estimated.
       - `convert_prospect=True` (D6 — ONLY for a user-EXPLICIT win
         declaration like "[Name] signed" / "closed the deal with [Name]"):
-        when the deal's org is a prospect, atomically runs the SAME
-        conversion path workspace-manager's "[Name] is now a client" uses —
-        org_writer.update_org flip + engagement edge. One utterance, one
-        result. Preconditions (a resolvable primary-focus org) are checked
-        BEFORE any write so a refused conversion leaves nothing half-done.
-        With convert_prospect=False on a prospect-org win, the return
-        carries `conversion_suggestion` for the skill to render — the org is
-        NOT touched (acceptance §7 item 5). Detector-observed signals never
-        set this flag.
+        when the deal's org is a prospect, the win converts it — and since
+        CUTB item 3 (2026-09-06) that conversion runs through the SAME
+        receipted, undoable path an automatic promotion uses
+        (`org_promotion.promote_org`: `org_promoted` receipt, batch id, the
+        CHANGED line, `undo`). The old inline conversion wrote NO receipt
+        and NO batch — a person who said "[Name] signed" got a client with
+        no CHANGED line and nothing to undo (v5.28.0 attended test B4.2).
+        What the flag still means: the person's explicit word overrides a
+        standing undo (`explicit=True` — a prior `undo` never blocks a
+        conversion the person just asked for by name). Preconditions (a
+        resolvable primary-focus org) are still checked BEFORE any write
+        so a refused conversion leaves nothing half-done. With
+        convert_prospect=False on a prospect-org win, DEALNAG1's automatic
+        promotion runs instead (M ruling 4) — same path, same receipt.
+        Detector-observed signals never set this flag.
+      - `deal_manufactured=True` is set ONLY by `win_org_without_deal` (the
+        `mark [org] won` path when no deal was on file): it is stamped on
+        the promotion receipt so `undo` knows to put the deal back too
+        (thread archived, the won event reversed — CUTB item 4).
 
     Returns {"status": "closed", "outcome", "thread_id", "org_id",
-    "converted": bool, "conversion_suggestion": str|None, "event": {...}}
-    or {"status": "already_closed", ...}.
+    "converted": bool, "promoted": bool, "promotion_batch_id": str|None,
+    "conversion_suggestion": str|None, "won_seq": int|None,
+    "event": {...}} or {"status": "already_closed", ...}.
     """
     ws = Path(workspace_root)
     if outcome not in DEAL_OUTCOMES:
@@ -579,29 +593,16 @@ def close_deal(
         if loss_note:
             ev_data["loss_note"] = str(loss_note)[:300]
 
-    converted = False
-    if focus_org is not None:
-        # The SAME path workspace-manager's "[Name] is now a client" runs
-        # (Bug #91 conversion): typed-writer org flip + engagement edge.
-        import engagement_writer
-        import org_writer
-        flipped = org_writer.update_org(
-            ws, org_id, relationship_type="client", source_skill=source_skill)
-        assert flipped.get("relationship_type") == "client" and "stage" not in flipped, \
-            "conversion failed or wrote a stage field"
-        existing = engagement_writer.find_existing_engagement(
-            ws, from_org_id=focus_org["id"], to_org_id=org_id)
-        if existing:
-            engagement_writer.update_engagement(
-                ws, existing["id"], label="Active client", is_active=True,
-                source_skill=source_skill)
-        else:
-            engagement_writer.create_engagement(
-                ws, from_org_id=focus_org["id"], to_org_id=org_id,
-                kind="client", label="Active client",
-                inferred_from=["prospect_converted"],
-                source_skill=source_skill)
-        converted = True
+    # CUTB item 3 — the explicit conversion is NOT run inline any more. It
+    # goes through `org_promotion.promote_org` below (receipt, batch id,
+    # CHANGED line, undo) exactly like the automatic one; `explicit_convert`
+    # only records that the person asked for it by name. The `deal_won`
+    # event keeps its `converted_prospect` stamp for that utterance (the
+    # payload contract), written before the promotion lands because the
+    # receipt must FOLLOW the fact it names (PID1) and needs this event's
+    # seq.
+    explicit_convert = focus_org is not None
+    if explicit_convert:
         ev_data["converted_prospect"] = True
 
     event = {
@@ -619,10 +620,79 @@ def close_deal(
         to_append.append(thread_archive.build_status_change_event(
             thread_id, from_status=from_status, reason=archive_reason,
             source_skill=source_skill))
-    _append(ws, to_append, source_skill)
+    written = _append(ws, to_append, source_skill)
+    won_seq = None
+    if outcome == "won":
+        from event_seq import event_seq as _event_seq
+        try:
+            won_seq = _event_seq((written or [None])[0])
+        except Exception:  # noqa: BLE001 — the seq is an anchor, not a gate
+            won_seq = None
+
+    # DEALNAG1 — the outcome retires every open deal-signal proposal bound
+    # to this thread or org in the SAME turn (superseded, note=deal_won /
+    # deal_lost). A won deal's "is a live deal" nag was surviving the win by
+    # weeks because nothing here told the proposal its question was
+    # answered. Best-effort: a retirement failure must never unwind a close
+    # that already landed on the record.
+    n_retired = 0
+    retire_error = None
+    try:
+        from deal_signal_retire import retire_deal_proposals
+
+        r1 = retire_deal_proposals(
+            ws, reason=f"deal_{outcome}", source_skill=source_skill,
+            thread_id=thread_id,
+            org_id=org_id if org_id and org_id != "personal" else None)
+        n_retired = r1["n_retired"]
+    except Exception as exc:  # noqa: BLE001
+        # REVIEW DEALNAG1 F4 — best-effort, but never SILENT: a broken
+        # import or a gate refusal here would regress the whole fix with no
+        # trace, and "0 retired" would read as "nothing to retire".
+        n_retired = 0
+        retire_error = f"{type(exc).__name__}: {exc}"
+        print(f"close_deal: deal-signal retirement failed for {thread_id}: "
+              f"{retire_error}", file=sys.stderr)
+
+    # DEALNAG1 (M ruling 4, 2026-09-03) — a WON deal on a prospect org
+    # PROMOTES it, automatically, with a receipt and an undo. The old
+    # behavior returned `conversion_suggestion` for the skill to render as
+    # "say `[Name] is now a client`" — a question about a fact the
+    # workspace had just written down, which is the defect the ruling
+    # names. CUTB item 3 (2026-09-06): the explicit `convert_prospect=True`
+    # family ("[Name] signed") comes through HERE too now — `not converted`
+    # used to be the switch that sent every explicit conversion round the
+    # silent inline path with no receipt and no undo. Preconditions live in
+    # org_promotion (a primary-focus org, no prior undo unless explicit); a
+    # skip returns the suggestion so the person still learns the manual
+    # path. The receipt carries the deal that drove it (`deal_thread_id`,
+    # `won_seq`) and whether this call manufactured that deal
+    # (`deal_manufactured`) — the anchors `undo` puts back (item 4).
+    promoted = False
+    promotion_skipped = None
+    promotion_batch_id = None
+    if outcome == "won" and org_is_prospect and org_id:
+        try:
+            from org_promotion import promote_org
+
+            pres = promote_org(ws, org_id, reason="deal_won",
+                               since=new_deal.get("closed_at") or "",
+                               source_skill=source_skill,
+                               deal_thread_id=thread_id, won_seq=won_seq,
+                               deal_manufactured=bool(deal_manufactured),
+                               explicit=explicit_convert)
+            promoted = pres.get("status") == "promoted"
+            if promoted:
+                promotion_batch_id = pres.get("batch_id")
+            else:
+                promotion_skipped = pres.get("reason")
+        except Exception as exc:  # noqa: BLE001
+            promotion_skipped = f"{type(exc).__name__}: {exc}"
+            print(f"close_deal: automatic promotion failed for {org_id}: "
+                  f"{promotion_skipped}", file=sys.stderr)
 
     suggestion = None
-    if outcome == "won" and org_is_prospect and not converted:
+    if outcome == "won" and org_is_prospect and not promoted:
         org_name = (org or {}).get("canonical_name") or org_id
         suggestion = f"{org_name} is now a client"
 
@@ -631,10 +701,114 @@ def close_deal(
         "thread_id": thread_id,
         "outcome": outcome,
         "org_id": org_id,
-        "converted": converted,
+        "converted": promoted,
+        "promoted": promoted,
+        "promotion_batch_id": promotion_batch_id,
+        "promotion_skipped": promotion_skipped,
         "conversion_suggestion": suggestion,
+        "deal_manufactured": bool(deal_manufactured),
+        "won_seq": won_seq,
+        "n_proposals_retired": n_retired,
+        "retire_error": retire_error,
         "event": event,
     }
+
+
+def win_org_without_deal(
+    workspace_root,
+    org_id: str,
+    *,
+    name: Optional[str] = None,
+    value: Optional[float] = None,
+    source_skill: str = "pipeline-tracker",
+) -> dict:
+    """CUTB item 3 (2026-09-06) — `mark [org] won` when the org has NO deal
+    record. The v5.28.0 attended test (B4.2) saw the chat manufacture a deal
+    from a detector proposal and close it in the same breath, with no
+    receipt naming the invention, no CHANGED line and no undo. The
+    coordinator's ruling (M's act-don't-ask preference): CREATE THE DEAL
+    OPENLY — one receipt that says so, the promotion through the receipted
+    path, and an `undo` that puts everything back (thread archived, won
+    event reversed, org a prospect again).
+
+    Honest no-ops, nothing written: an OPEN deal on file (`has_open_deal` —
+    the ordinary `mark [deal] won` owns it; the return names the thread(s)),
+    a deal already closed won (`already_closed`), an org already a client
+    with no deal at all (`already_client`), and — REVIEW CUTB F-1 — no
+    primary-focus org set (`no_primary_focus`: the D6 posture, checked
+    BEFORE `create_deal`; the return carries the one-line `ack` that says
+    why). Otherwise: `create_deal` (stage lead, `deal.source` names this
+    path) -> `close_deal(..., won, convert_prospect=True,
+    deal_manufactured=True)`. `convert_prospect=True` because `mark [org]
+    won` IS the person's explicit word, exactly like `[Name] signed`: the
+    promotion runs `explicit=True`, so a standing undo of an EARLIER
+    automatic promotion never orphans the deal this act just invented
+    (F-1's shape: a won deal on the books with no batch and no undo). The
+    return is `close_deal`'s plus `manufactured_deal: True`, `deal_name`,
+    `receipt_line` (the sentence the ack MUST carry, verbatim) and `ack`
+    (receipt_line + the promotion's own sentence with the standing
+    `undo`)."""
+    ws = Path(workspace_root)
+    data = _load_entities(ws)
+    org = _find_org(data, org_id)
+    if org is None:
+        raise DealStateError(
+            f"org_id={org_id!r} does not reference an existing org — resolve "
+            "the name first; never invent an org to hang a win on.")
+    org_name = org.get("canonical_name") or org_id
+    opens = [r for r in list_open_deals(ws) if r.get("org_id") == org_id]
+    if opens:
+        return {"status": "has_open_deal", "org_id": org_id,
+                "org_name": org_name,
+                "thread_ids": [r["thread_id"] for r in opens],
+                "deal_names": [r["name"] for r in opens]}
+    won = [r for r in list_closed_deals(ws)
+           if r.get("org_id") == org_id
+           and (r.get("deal") or {}).get("outcome") == "won"]
+    if won:
+        last = won[-1]
+        return {"status": "already_closed", "org_id": org_id,
+                "org_name": org_name, "thread_id": last["thread_id"],
+                "outcome": "won",
+                "closed_at": (last.get("deal") or {}).get("closed_at")}
+    if org.get("relationship_type") == "client":
+        return {"status": "already_client", "org_id": org_id,
+                "org_name": org_name}
+    # REVIEW CUTB F-1 — the promotion's one blocking precondition is checked
+    # BEFORE the deal is written. Without this, `create_deal` + `close_deal`
+    # landed a closed-won deal on the books (closed-deals list, won-rate
+    # tile) and THEN the promotion skipped `no_primary_focus`: an automatic
+    # write with no batch and no `undo`. Same honest-no-op family as above.
+    from org_promotion import primary_focus_org
+    if primary_focus_org(data) is None:
+        return {"status": "no_primary_focus", "org_id": org_id,
+                "org_name": org_name,
+                "ack": (f"Nothing on file for {org_name} and no primary-focus "
+                        f"org is set, so I did not open a deal — tell me which "
+                        f"of your orgs this client is for first.")}
+
+    deal_name = (name or "").strip() or f"{org_name} deal"
+    thread = create_deal(
+        ws, name=deal_name, org_id=org_id, stage="lead", value=value,
+        source="opened by `mark [org] won` — no deal was on file",
+        source_skill=source_skill)
+    # `convert_prospect=True`: the person's own word (F-1) — the promotion
+    # runs `explicit=True`, so a prior undo of an automatic promotion does
+    # not leave the manufactured deal standing with nothing to reverse it.
+    res = close_deal(ws, thread["id"], "won", source_skill=source_skill,
+                     convert_prospect=True, deal_manufactured=True)
+    receipt_line = (f"No deal was on file for {org_name}, so I opened one "
+                    f"and closed it won.")
+    if res.get("promoted"):
+        ack = (f"{receipt_line} {org_name} is a client now — say `undo` to "
+               f"put it all back.")
+    else:
+        ack = (f"{receipt_line} {org_name} is still marked a prospect — say "
+               f"`{org_name} is now a client` and I'll convert them.")
+    res.update({"manufactured_deal": True, "deal_name": deal_name,
+                "org_name": org_name, "receipt_line": receipt_line,
+                "ack": ack})
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -677,15 +851,49 @@ def list_open_deals(workspace_root) -> list[dict]:
     return out
 
 
+def won_reversals(workspace_root) -> dict[str, dict]:
+    """CUTB item 4 — thread_id -> the `deal_won_reversed` marker `brain_undo`
+    wrote when a promotion whose deal was manufactured by `mark [org] won`
+    was undone. Add-beside vocabulary (the `promotion_reversed` precedent):
+    the `deal_won` event and the deal object are never rewritten; every won
+    reader folds THIS. Org-scoped full-history read through events_io."""
+    from events_io import load_events_org_scoped
+
+    ws = Path(workspace_root)
+    if not _events_path(ws).exists():
+        return {}
+    try:
+        events, _skipped = load_events_org_scoped(ws)
+    except Exception:  # noqa: BLE001 — a reader never raises
+        return {}
+    out: dict[str, dict] = {}
+    for ev in events:
+        if ev.get("type") != "deal_won_reversed":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        tid = d.get("thread_id")
+        if tid:
+            out[str(tid)] = {"won_seq": d.get("won_seq"),
+                             "reversed_by": d.get("reversed_by"),
+                             "ts": ev.get("ts"), "seq": ev.get("seq")}
+    return out
+
+
 def list_closed_deals(workspace_root) -> list[dict]:
     """Closed deals (terminal outcome on the deal object). Same row shape as
     list_open_deals plus the deal carries outcome/closed_at — the won-cycle
-    and won-rate inputs pipeline_math reads."""
+    and won-rate inputs pipeline_math reads.
+
+    CUTB item 4: a won deal whose win was REVERSED by an undo
+    (`won_reversals`) is not a closed deal — it is not listed here, so the
+    pipeline report, the won-cycle median and every closed-deals consumer
+    drop it in one move."""
     ws = Path(workspace_root)
     try:
         data = _load_entities(ws)
     except (OSError, json.JSONDecodeError):
         return []
+    reversed_won = won_reversals(ws)
     out: list[dict] = []
     for t in _threads(data):
         if not isinstance(t, dict) or t.get("kind") != "deal":
@@ -693,6 +901,8 @@ def list_closed_deals(workspace_root) -> list[dict]:
         deal = t.get("deal") if isinstance(t.get("deal"), dict) else None
         if not deal or deal.get("outcome") not in DEAL_OUTCOMES:
             continue
+        if deal.get("outcome") == "won" and t.get("id") in reversed_won:
+            continue  # CUTB item 4 — the win was put back by an undo
         out.append({
             "thread_id": t.get("id"),
             "name": t.get("canonical_name") or t.get("display_name") or t.get("id"),
@@ -714,7 +924,10 @@ def load_deal_events(workspace_root) -> tuple[list[dict], list[dict]]:
         return [], []
     events, skipped = load_events_defensively(p)
     deal_types = {"deal_created", "deal_updated", "deal_stage_changed",
-                  "deal_won", "deal_lost"}
+                  "deal_won", "deal_lost",
+                  # CUTB item 4 — the won-reversal marker rides along so
+                  # `pipeline_math.won_rate_90d` can fold it.
+                  "deal_won_reversed"}
     return [e for e in events if e.get("type") in deal_types], skipped
 
 
@@ -732,7 +945,9 @@ __all__ = [
     "update_deal",
     "set_stage",
     "close_deal",
+    "win_org_without_deal",
     "list_open_deals",
     "list_closed_deals",
+    "won_reversals",
     "load_deal_events",
 ]

@@ -17,7 +17,7 @@ When the subject names a project, person, or org ("board review of the Acme acqu
 - **Use boardroom for:** multi-lens evaluation of ONE subject. Many perspectives, one thing → a conflict map.
 - **Use `stress-test` for:** single-lens failure-mode depth on one plan (pre-mortem / inversion). One lens, deep.
 - **Use `decision-memo-composer` for:** structured tradeoff between 2–4 named options with weighted criteria.
-- **Use `decision-revisit` for:** re-examining a past decision against new signal.
+- **Use `decision-log`'s revisit mode for:** re-examining a past decision against new signal (formerly `decision-revisit`).
 - **Use `board-pack-assembler` for:** the monthly board-meeting reporting artifact (KPIs, financials) — not deliberation.
 - **Use `advisor-export` for:** forging / importing the Advisor Profile persona packs that boardroom can seat as guest directors.
 
@@ -123,6 +123,10 @@ A final pass over all verdicts builds the **conflict map**: each disagreement, t
 1. A **chat summary**: the verdict line per seat (Support/Oppose/Conditional) + the conflict map headline + the board's asks. No internal IDs, phases, or jargon (leak-clean per `shared/CHAT_ACTION_WIDGET.md`).
 2. The **board memo `.docx`** — rendered through `make_brief(brief_kind="board_review", ...)` per GATE1 above — surfaced as an H2 clickable link via `shared/scripts/chat_output_renderer.py::doc_headline_link()` over `brief_path.py::get_brief_artifact_url()` — never plain-text path narration. Memo sections (sync rule: mirrors `output_contract_validator.py` `RULES_BY_KIND["board_review"]` — edit both or neither): Subject & framing → Verdicts (table) → Conflict map (the core) → Per-seat detail → The board's asks.
 3. One `board_convened` event appended to the substrate.
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

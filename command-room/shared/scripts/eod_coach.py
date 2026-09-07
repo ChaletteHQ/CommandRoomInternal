@@ -154,6 +154,17 @@ TEMPLATE_PRIORITY = {"stillness": 0, "mention": 1, "survival": 2}
 PACKS_DIRNAME = ("_hq", ".system", "briefs")
 PACK_GLOB = "end-of-day-pack-*.json"
 
+# CUT-PLATE (2026-09-06) — WHAT THE COACH PUTS ON THE SCREEN. The v5.28.0
+# attended test (B2.2) saw the day-close say "has now survived 7 closes" and
+# "7 consecutive closes — 7 evenings the plan did not move, not one delay";
+# M's ruling is the plate's shape (opened / closed / slipped) and less on the
+# card. Layer 1 (the counted patterns) and the push line are still computed,
+# still deduped (COACHONE1), still persisted on the pack as `patterns`,
+# `push`, `push_state` and the presentation-only `layer1` — and are NOT part
+# of `coach["text"]`. Only the intent-vs-outcome delta (the CEO's own stated
+# intent against the day's record) reaches the screen.
+SCREEN_LAYERS = ("delta",)
+
 # ---------------------------------------------------------------------------
 # Templates. Counted claims only — no template below carries a denominator
 # against a PLAN (the shape `eod_synthesis.SCORE_PATTERNS` bans); every
@@ -267,11 +278,26 @@ def read_prior_packs(workspace_root, *, before_for_date: Optional[str] = None,
 def _unmoved_sentences_of(wim_block: Optional[dict]) -> List[dict]:
     """The unmoved-arc sentences off ONE `what_it_meant` BLOCK (today's own,
     already fenced and composed, or a prior pack's persisted copy of the
-    same shape)."""
+    same shape).
+
+    CUT-PLATE (2026-09-06): the block carries the unmoved read as DATA under
+    `unmoved` even when it is no longer joined into `sentences` (the
+    day-close screen stopped printing "did not move"). Both spellings are
+    read, deduped by (text, refs), so a pack persisted before or after the
+    change counts the same streak."""
     if not isinstance(wim_block, dict):
         return []
-    return [s for s in (wim_block.get("sentences") or [])
-            if isinstance(s, dict) and s.get("kind") == "unmoved"]
+    out: List[dict] = []
+    seen: set = set()
+    for s in list(wim_block.get("unmoved") or []) + list(wim_block.get("sentences") or []):
+        if not isinstance(s, dict) or s.get("kind") != "unmoved":
+            continue
+        key = (str(s.get("text") or ""), tuple(str(r) for r in (s.get("refs") or [])))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
 
 
 def _unmoved_sentences(pack: dict) -> List[dict]:
@@ -757,8 +783,19 @@ def build_coach(*, workspace_root, for_date: str,
     ]
     pattern_render_block = syn.compose(render_sentences)
 
-    parts = [t for t in (pattern_render_block["text"], delta.get("text"),
-                          push.get("text")) if t]
+    # CUT-PLATE — Layer 1 + the push are PRESENTATION-COMPUTED (the
+    # COACHONE1 dedup still governs this text) but NOT on the screen. They
+    # ride the pack as `layer1`; `text` is the delta alone (`SCREEN_LAYERS`).
+    layer1_parts = [t for t in (pattern_render_block["text"], push.get("text")) if t]
+    layer1_text = "\n".join(layer1_parts)
+    layer1_refs: List[str] = []
+    for block in (pattern_render_block, push):
+        for r in (block.get("refs") or []):
+            if r not in layer1_refs:
+                layer1_refs.append(r)
+    syn.assert_no_score(layer1_text, where="coach.layer1")
+
+    parts = [t for t in (delta.get("text"),) if t]
     text = "\n".join(parts)
     refs: List[str] = []
     for block in (pattern_render_block, delta, push):
@@ -772,6 +809,9 @@ def build_coach(*, workspace_root, for_date: str,
         "text": text,
         "refs": refs,
         "renders": bool(text),
+        "screen_layers": list(SCREEN_LAYERS),
+        "layer1": {"text": layer1_text, "refs": layer1_refs,
+                   "renders": bool(layer1_text)},
         "patterns": pattern_block,
         "delta": delta,
         "push": push,
@@ -783,7 +823,7 @@ def build_coach(*, workspace_root, for_date: str,
 
 
 __all__ = [
-    "BLOCK_COACH",
+    "BLOCK_COACH", "SCREEN_LAYERS",
     "CAP_PATTERNS", "CAP_DELTA", "CAP_PUSH",
     "MIN_PRIOR_PACKS", "MAX_PRIOR_PACKS",
     "STILLNESS_MIN_STREAK", "MENTION_MIN_COUNT", "SURVIVAL_MIN_STREAK",

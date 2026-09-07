@@ -1205,6 +1205,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "pipeline-digest": "Pipeline Digest",  # PIPE1 Part 2 → TASKRET1 READINESS-RETIRED taskId (row kept forever for legacy renders). The on-demand pipeline report is untouched.
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
     "review-expiry": "Unconfirmed Cleanup",  # REVSCHED1 §3-2 — silent weekly unconfirmed-pile drain (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
+    "calendar-close": "Booked Meeting Check",  # POLICY1-B DD-7 — the daily calendar closer for scheduling rows (a maintenance JOB, not a task). Names what is checked (a meeting that got booked with the other side), not the mechanism
     "age-out": "Silent Work Cleanup",  # SWEEPSCHED1 — silent weekly confirmed-pile drain (a maintenance JOB, not a task; same reason for the row). "Silent Work", not "Age Out": the render is read by a CEO, and the noun has to name what is being cleared rather than the mechanism clearing it
     "meeting-capture": "Meeting Capture",  # EODSPEED1 — the incremental End of Day capture pass (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
     "binding-gauge": "Memory Coverage Check",  # GAUGEJOB1 — the daily binding-gauge refresh (a maintenance JOB, not a task; same reason for the row). "Memory Coverage Check", not "Binding Gauge": the render is read by a CEO, and the noun has to name what is being measured rather than the mechanism measuring it
@@ -1788,6 +1789,26 @@ def task_display_name(task_id: str) -> str:
     return task_id.removeprefix("cr-").replace("-", " ").title()
 
 
+def serving_display_name(task_id: str) -> str:
+    """CUT-PLATE (2026-09-06) — the name of the SURFACE a task id serves.
+
+    A RENAMED predecessor (`past-meetings`) fires the successor's pack
+    (`end-of-day`), and the fire introduces itself IN ITS OWN CHAT — the
+    lateness banner, the re-run ack, the degrade notice. The v5.28.0
+    attended test saw that chat say "your Past Meetings last ran 5:10 PM
+    Friday"; M's ruling is that the fire introduces itself as End of Day.
+    So the SELF-introduction names the served surface (`renamed_to`), while
+    `task_display_name` — the name the customer's Scheduled sidebar shows,
+    which the watchdog and the health check deliberately keep (SPEC EOD2)
+    — is unchanged. Every other id resolves exactly as before.
+    """
+    spec = RETIRED_TASKS.get(task_id) or {}
+    successor = spec.get("renamed_to")
+    if successor:
+        return task_display_name(successor)
+    return task_display_name(task_id)
+
+
 SCHEDULE_CONFIG_CHANGED = "schedule_config_changed"
 
 
@@ -1984,6 +2005,7 @@ __all__ = [
     "load_schedule_view",
     "workspace_time_to_machine",
     "DISPLAY_NAMES",
+    "serving_display_name",
     "CronParseError",
     "parse_cron",
     "cron_to_english",

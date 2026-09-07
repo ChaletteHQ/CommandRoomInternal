@@ -328,19 +328,60 @@ def later_route(ev: dict, user_person_id) -> str:
     return "snooze"
 
 
-def parse_later_when(text, now_iso: str):
+def _now_calendar_day(now_iso, workspace_path=None):
+    """The calendar day `now_iso` falls on WHERE THE USER IS — the anchor for
+    "N days from today" (REVIEW_CUTC_2026-09-06 F-4; the HYGIENE9 R4 class).
+
+      - a bare `YYYY-MM-DD` → that day (a value that never carried a time is
+        not shifted);
+      - a timestamp with a workspace → the day in the workspace timezone
+        (`tz.to_local`, naive read as UTC per its contract): an evening push
+        stamped `2026-09-07T01:30:00Z` is 18:30 PT on Sep 6, and "7" counts
+        from Sep 6 — never from the next UTC day;
+      - a timestamp with no workspace (or a tz that cannot resolve) → the day
+        in the offset the input carried, the same rule `_later_when` and
+        `due_reanchor.render_moved_phrase` use — never a UTC re-slice of an
+        offset-carrying stamp;
+      - unparseable → None.
+    """
+    raw = str(now_iso or "").strip()
+    if not raw:
+        return None
+    if len(raw) == 10 and raw.count("-") == 2:
+        return _parse_date(raw)
+    if workspace_path is not None:
+        try:
+            from tz import to_local
+            local = to_local(raw, workspace_path=workspace_path)
+            if local is not None:
+                return local.date()
+        except Exception:
+            pass
+    try:
+        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return _parse_date(raw)
+
+
+def parse_later_when(text, now_iso: str, workspace_path=None):
     """Deterministic slice of the 'Later…' when-input (t3 FB-3): a bare
     number of days ("5", "5 days", "5d") or an ISO date ("2026-08-01",
     full timestamps accepted). Returns the target date as an ISO date
     string, or None when the text needs the orchestrator's natural-language
     date parsing ("friday", "next week") — None is a hand-off, not an error.
 
-    A number parses as now + N days; 0 and negatives are rejected (None) so
-    a typo like "-3" falls through to the NL layer's clearer error surface.
+    A number parses as TODAY + N days, where today is the calendar day
+    `now_iso` falls on in the WORKSPACE timezone when `workspace_path` is
+    given (`_now_calendar_day` — REVIEW_CUTC F-4: the day used to be sliced
+    off `now_iso` as given, so a UTC clock stamp after 17:00 PT counted from
+    the next day and "7" on a Sunday evening landed on Monday). Callers pass
+    the workspace root; `now_iso` may be the UTC clock stamp. 0 and negatives
+    are rejected (None) so a typo like "-3" falls through to the NL layer's
+    clearer error surface.
     """
     if not text or not isinstance(text, str):
         return None
-    today = _parse_date(now_iso)
+    today = _now_calendar_day(now_iso, workspace_path)
     if today is None:
         return None
     s = text.strip().lower()
@@ -414,8 +455,19 @@ def apply_later(
     source_skill: str,
     reason: str = "pushed to a later date",
     surface: str = "",
+    brain_batch_id: Optional[str] = None,
 ) -> dict:
     """THE `push to [date]` writer (APPLYAUDIT1 part 3).
+
+    POLICY1-B (b) — ATTENDED_TEST_v5.27.0 B2.4: the deferral carries
+    `prior_due` (the row's EFFECTIVE due at write time, `None` when it had
+    none) and `brain_change_class: commitment_due`, so `restore_due` — the
+    registered reverser — can put the row back EXACTLY, including back to
+    no date. Before this the product said, verbatim, "there's no sanctioned
+    way to clear a due date, only to set one." `brain_batch_id` is optional:
+    a surface that batches its taps may stamp it so a bare `undo` lists the
+    deferral; a per-item undo calls `restore_due(prior_due=...)` directly
+    off this writer's return.
 
     `later_route` decides WHERE a Later… click lands; until now nothing
     performed the landing. Every surface that offers the verb — commitment
@@ -484,14 +536,22 @@ def apply_later(
             return {"status": "not_open", "commitment_id": cid}
         route = later_route(target, actor_id)
         if route == "defer":
+            # (b) — the row's EFFECTIVE due right now, read through the ONE
+            # projection (the loader's fold: capture due + every later
+            # deferral + any clear), so the reverser can restore it exactly.
+            prior_due = effective_due(events_path, cid)
             data: dict = {
                 "commitment_id": cid,
                 # N-2: the day the user NAMED, in their own offset — never
                 # a slice off the UTC stamp (that is the day-shift bug).
                 "new_due": calendar_day,
+                "prior_due": prior_due,   # (b): None means "it had no date"
                 "pushed_by": actor_id,
                 "reason": (reason or "")[:200],
+                "brain_change_class": DUE_CHANGE_CLASS,
             }
+            if brain_batch_id:
+                data["brain_batch_id"] = str(brain_batch_id)
             if isinstance(target.get("seq"), int):
                 data["commitment_seq"] = target["seq"]
             ev = {
@@ -536,10 +596,459 @@ def apply_later(
             }
         from event_gate import append_event
         append_event(events_path, [ev], holder=source_skill)
-    return {"status": "deferred" if route == "defer" else "snoozed",
-            "commitment_id": cid, "route": route,
-            "when": calendar_day if route == "defer" else utc_stamp,
-            "event": ev}
+    out = {"status": "deferred" if route == "defer" else "snoozed",
+           "commitment_id": cid, "route": route,
+           "when": calendar_day if route == "defer" else utc_stamp,
+           "event": ev}
+    if route == "defer":
+        out["prior_due"] = ev["data"].get("prior_due")
+    # CUT-C item 5 (ATTENDED_TEST_v5.28.0 B2.5 — "Friday, Sep 13" for a
+    # Sunday): the ack RELAYS this string; it never composes a weekday. Both
+    # legs name the calendar day the user NAMED (the `new_due` written on the
+    # defer leg; the day the row is back on the snooze leg — a bare date
+    # means "back ON that day", per `_later_when`), rendered by the one
+    # composer `due_reanchor.render_moved_phrase` in the workspace timezone.
+    from due_reanchor import render_moved_phrase
+    out["moved_phrase"] = render_moved_phrase(calendar_day, workspace_root)
+    return out
+
+
+# CUT-C item 5 (ATTENDED_TEST_v5.28.0 B2.5) — THE DISPATCHER'S REFUSAL of a
+# Later… that arrived with no date. The widget contract (F-17,
+# shared/CHAT_ACTION_WIDGET.md) holds Apply on the missing value, so a
+# `push to [date]` with an empty input can only reach apply-choices from a
+# page that was NOT the transport's (hand-assembled from pieces, the shape
+# the v5.28.0 runner admitted to). `apply_later` already raises on an empty
+# `when_iso`; the dispatcher must never reach it on that shape, and must
+# never turn the gap into a free question ("when do you want it back?" —
+# no new question classes, M 2026-09-03). It says what is missing and how to
+# give it, in ONE line, and re-offers the row. `later_needs_input` is the
+# test; `later_missing_ack` is the line; the receipt outcome is an error
+# (the row stays on the page — a refusal never suppresses it).
+LATER_MISSING_STATUS = "missing_when"
+LATER_MISSING_INPUT_ACK = (
+    "Later… on item {n} needs a date — pick a date or a number of days on "
+    "that row and Apply again. Nothing moved.")
+
+
+def later_needs_input(when_input) -> bool:
+    """True when a `push to [date]` arrived with NO usable when-input (None,
+    empty, whitespace, or a non-string payload) — the dispatcher refuses it
+    with `later_missing_ack` instead of calling `apply_later`."""
+    if when_input is None:
+        return True
+    if isinstance(when_input, dict):
+        when_input = when_input.get("when") or when_input.get("input") or ""
+    if not isinstance(when_input, str):
+        return True
+    return not when_input.strip()
+
+
+def later_missing_ack(display_n) -> dict:
+    """The one-line refusal for a date-less Later…, plus the handler result
+    the receipt derives its outcome from (`status: missing_when` → error,
+    never ok — the row was not dealt with). Names the missing input and how
+    to supply it; asks nothing."""
+    n = str(display_n if display_n not in (None, "") else "?")
+    return {"status": LATER_MISSING_STATUS,
+            "ack": LATER_MISSING_INPUT_ACK.format(n=n)}
+
+
+# POLICY1-B DD-6 / D10 — PARKED IS A HINT, NOT A STATE. A `commitment_updated`
+# carrying `status_hint: "parked"` + `park_reason` leaves the row OPEN, on the
+# plate, in the brief's lane, rendered under PARKED with its reason line —
+# never hidden, never a closure. Un-parking writes `status_hint: null` with
+# the movement that caused it. The loader (`cru_match.load_open_commitments`)
+# folds the NEWEST hint onto the projected row; `plate_view` reads it there
+# (P7). Every park an automatic leg writes carries the change class so `undo`
+# un-parks it by name.
+PARK_CHANGE_CLASS = "commitment_park"
+STATUS_HINT_PARKED = "parked"
+
+
+def park_commitment(
+    workspace_root,
+    commitment_id,
+    *,
+    reason: str,
+    parked_by: str,
+    source_skill: str,
+    brain_batch_id: Optional[str] = None,
+    extra_data: Optional[dict] = None,
+) -> dict:
+    """DD-6 — park an OPEN row: one `commitment_updated` with
+    `status_hint: parked` + `park_reason`. Refuses (writes nothing) a closed
+    row (`not_open`) and an already-parked row (`already_parked`). A reason
+    is required: a parked row with no reason line is a hidden row."""
+    if not str(reason or "").strip():
+        raise ValueError("park_commitment needs a reason — a parked row "
+                         "renders its reason line, and one with none is hidden")
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"park_commitment:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        if effective_status_hint(events_path, cid) == STATUS_HINT_PARKED:
+            return {"status": "already_parked", "commitment_id": cid}
+        data: dict = dict(extra_data or {})
+        data.update({
+            "commitment_id": cid,
+            "status_hint": STATUS_HINT_PARKED,
+            "park_reason": str(reason).strip()[:200],
+            "reason": str(reason).strip()[:200],
+            "parked_by": parked_by,
+            "brain_change_class": PARK_CHANGE_CLASS,
+        })
+        if brain_batch_id:
+            data["brain_batch_id"] = str(brain_batch_id)
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {"type": "commitment_updated", "source_skill": source_skill,
+              "primary_thread_id": target.get("primary_thread_id") or "",
+              "data": data}
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "parked", "commitment_id": cid, "event": ev}
+
+
+def unpark_commitment(
+    workspace_root,
+    commitment_id,
+    *,
+    unparked_by: str,
+    source_skill: str,
+    reason: str = "movement",
+    movement_ref: Optional[str] = None,
+) -> dict:
+    """DD-6 — un-park: one `commitment_updated` with `status_hint: null`
+    (an explicit null, so the fold sees the hint END); the movement that
+    caused it rides in `reason` (no separate field — G29: a field nobody
+    reads is a dead field). `already_open` when the row is not parked."""
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"unpark_commitment:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        if effective_status_hint(events_path, cid) != STATUS_HINT_PARKED:
+            return {"status": "already_open", "commitment_id": cid}
+        why = str(reason or "movement").strip()
+        if movement_ref:
+            why = f"{why} ({movement_ref})"
+        data: dict = {
+            "commitment_id": cid,
+            "status_hint": None,
+            "unparked": True,
+            "reason": why[:200],
+            "unparked_by": unparked_by,
+        }
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {"type": "commitment_updated", "source_skill": source_skill,
+              "primary_thread_id": target.get("primary_thread_id") or "",
+              "data": data}
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "unparked", "commitment_id": cid, "event": ev}
+
+
+def park_commitments(workspace_root, rows, *, parked_by: str, source_skill: str) -> list:
+    """F-6 — park MANY rows under ONE lock with ONE index scan and ONE
+    open-set read, N events in one append. `rows` are
+    `{commitment_id, reason, brain_batch_id?, extra_data?}`. Per-row statuses
+    mirror `park_commitment` (`parked` / `not_open` / `already_parked` /
+    `refused` for a blank reason / `not_found`); nothing raises per row."""
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    from event_gate import append_event
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    results: list = []
+    with events_writer_lock(events_path, holder=f"park_commitments:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        hints = _effective_status_hints(events_path)
+        evs: list = []
+        for row in rows or []:
+            rid = row.get("commitment_id")
+            reason = str(row.get("reason") or "").strip()
+            if not reason:
+                results.append({"status": "refused", "commitment_id": rid,
+                                "detail": "a park needs a reason"})
+                continue
+            try:
+                cid = normalize_commitment_id(rid, index)
+            except CommitmentIdError:
+                results.append({"status": "not_found", "commitment_id": rid})
+                continue
+            target = index["by_id"][cid]
+            if _currently_closed(index, cid, target.get("seq")):
+                results.append({"status": "not_open", "commitment_id": cid})
+                continue
+            if hints.get(cid) == STATUS_HINT_PARKED:
+                results.append({"status": "already_parked", "commitment_id": cid})
+                continue
+            data: dict = dict(row.get("extra_data") or {})
+            data.update({"commitment_id": cid, "status_hint": STATUS_HINT_PARKED,
+                         "park_reason": reason[:200], "reason": reason[:200],
+                         "parked_by": parked_by, "brain_change_class": PARK_CHANGE_CLASS})
+            if row.get("brain_batch_id"):
+                data["brain_batch_id"] = str(row["brain_batch_id"])
+            if isinstance(target.get("seq"), int):
+                data["commitment_seq"] = target["seq"]
+            ev = {"type": "commitment_updated", "source_skill": source_skill,
+                  "primary_thread_id": target.get("primary_thread_id") or "", "data": data}
+            evs.append(ev)
+            hints[cid] = STATUS_HINT_PARKED   # a second row for the same id in one batch is already_parked
+            results.append({"status": "parked", "commitment_id": cid, "event": ev})
+        if evs:
+            append_event(events_path, evs, holder=source_skill)
+    return results
+
+
+def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
+                       source_skill: str, reason: str = "movement") -> list:
+    """F-6 — the batch twin of `unpark_commitment`: one lock, one scan, one
+    open-set read, N `status_hint: null` events in one append. Statuses per
+    row: `unparked` / `not_open` / `already_open` / `not_found`."""
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    from event_gate import append_event
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    results: list = []
+    with events_writer_lock(events_path, holder=f"unpark_commitments:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        hints = _effective_status_hints(events_path)
+        evs: list = []
+        for rid in commitment_ids or []:
+            try:
+                cid = normalize_commitment_id(rid, index)
+            except CommitmentIdError:
+                results.append({"status": "not_found", "commitment_id": rid})
+                continue
+            target = index["by_id"][cid]
+            if _currently_closed(index, cid, target.get("seq")):
+                results.append({"status": "not_open", "commitment_id": cid})
+                continue
+            if hints.get(cid) != STATUS_HINT_PARKED:
+                results.append({"status": "already_open", "commitment_id": cid})
+                continue
+            data: dict = {"commitment_id": cid, "status_hint": None, "unparked": True,
+                          "reason": str(reason or "movement").strip()[:200],
+                          "unparked_by": unparked_by}
+            if isinstance(target.get("seq"), int):
+                data["commitment_seq"] = target["seq"]
+            ev = {"type": "commitment_updated", "source_skill": source_skill,
+                  "primary_thread_id": target.get("primary_thread_id") or "", "data": data}
+            evs.append(ev)
+            hints[cid] = None
+            results.append({"status": "unparked", "commitment_id": cid, "event": ev})
+        if evs:
+            append_event(events_path, evs, holder=source_skill)
+    return results
+
+
+def _effective_status_hints(events_jsonl_path) -> dict:
+    """{open commitment id: status_hint or None} in ONE open-set read."""
+    try:
+        from cru_match import _commitment_id as _cid_of, load_open_commitments
+        return {_cid_of(r): ((r.get("data") or {}).get("status_hint") or None)
+                for r in load_open_commitments(events_jsonl_path)}
+    except Exception:  # pragma: no cover
+        return {}
+
+
+def effective_status_hint(events_jsonl_path, commitment_id):
+    """The row's `status_hint` as the open-set projection sees it (None when
+    none, or the row is not open)."""
+    try:
+        from cru_match import _commitment_id as _cid_of, load_open_commitments
+        for row in load_open_commitments(events_jsonl_path):
+            if _cid_of(row) == str(commitment_id):
+                return (row.get("data") or {}).get("status_hint") or None
+    except Exception:  # pragma: no cover
+        return None
+    return None
+
+
+# POLICY1-B F-9 — the reassign change class and the counterparty-clear
+# marker. A `commitment_reassigned` carrying `counterparty_restored: true`
+# puts the counterparty back to `new_counterparty_id` (a person) or, with
+# `counterparty_cleared: true` and `new_counterparty_id: null`, to NONE —
+# and touches nothing else on the projection (no pending flag, no question):
+# the flags are the `commitment_confirm` reverser's to restore. The gate's
+# 4b rule admits the cleared shape ONLY with the marker.
+REASSIGN_CHANGE_CLASS = "commitment_reassign"
+COUNTERPARTY_CLEARED_KEY = "counterparty_cleared"
+COUNTERPARTY_RESTORED_KEY = "counterparty_restored"
+
+
+def effective_parties(events_jsonl_path, commitment_id) -> dict:
+    """The row's owner / counterparty as the OPEN-SET projection sees them
+    now, or None for each — through the loader, so writer and readers agree."""
+    try:
+        from cru_match import _commitment_id as _cid_of, load_open_commitments
+        for row in load_open_commitments(events_jsonl_path):
+            if _cid_of(row) == str(commitment_id):
+                d = row.get("data") or {}
+                return {"owner_id": d.get("owner_id") or None,
+                        "counterparty_id": d.get("counterparty_id") or None,
+                        "counterparty_name": d.get("counterparty_name") or None}
+    except Exception:  # pragma: no cover
+        pass
+    return {"owner_id": None, "counterparty_id": None, "counterparty_name": None}
+
+
+def restore_counterparty(
+    workspace_root,
+    commitment_id,
+    *,
+    prior_counterparty_id,
+    prior_counterparty_name=None,
+    actor_id: str,
+    source_skill: str,
+    reason: str = "counterparty put back",
+    brain_batch_id: Optional[str] = None,
+) -> dict:
+    """POLICY1-B F-9 — put a row's counterparty back EXACTLY: to
+    `prior_counterparty_id`, or to NONE when it is None. ONE
+    `commitment_reassigned` through the gate carrying `counterparty_restored`
+    (and `counterparty_cleared` + `new_counterparty_id: null` for the none
+    case — the 4b exception). The projection restores the counterparty and
+    nothing else. A closed row moves nothing."""
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"restore_counterparty:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        current = effective_parties(events_path, cid)
+        pid = str(prior_counterparty_id).strip() if prior_counterparty_id else None
+        data: dict = {
+            "commitment_id": cid,
+            "reassigned_by": actor_id,
+            "reason": (reason or "")[:200],
+            "confirmed": False,
+            "new_counterparty_id": pid,
+            "prior_counterparty_id": current.get("counterparty_id"),
+            "prior_counterparty_name": current.get("counterparty_name"),
+            COUNTERPARTY_RESTORED_KEY: True,
+            "brain_change_class": REASSIGN_CHANGE_CLASS,
+        }
+        if pid and prior_counterparty_name:
+            data["new_counterparty_name"] = str(prior_counterparty_name)
+        if pid is None:
+            data[COUNTERPARTY_CLEARED_KEY] = True
+        if brain_batch_id:
+            data["brain_batch_id"] = str(brain_batch_id)
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_reassigned",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "restored", "commitment_id": cid, "counterparty_id": pid,
+            "cleared": pid is None, "event": ev}
+
+
+# POLICY1-B (b) — the due-change class and its two markers. A
+# `commitment_updated` carrying `due_cleared: true` (and `new_due: null`)
+# means UNDATED AGAIN: the loader folds it (`cru_match.load_open_commitments`
+# — the ONE projection) and every reader of `due` on the open set sees None,
+# exactly as it sees a row that never had a date. Legacy readers that test
+# `new_due` truthily do not see the clear and keep the last date; the loader
+# is the reader that matters, and it is the one updated.
+DUE_CHANGE_CLASS = "commitment_due"
+DUE_CLEARED_KEY = "due_cleared"
+
+
+def effective_due(events_jsonl_path, commitment_id):
+    """The row's due as the OPEN-SET projection sees it now (capture due +
+    later deferrals + any clear), or None. Reads through the loader so the
+    writer and the readers agree on one value."""
+    try:
+        from cru_match import _commitment_id as _cid_of, load_open_commitments
+        for row in load_open_commitments(events_jsonl_path):
+            if _cid_of(row) == str(commitment_id):
+                d = row.get("data") or {}
+                v = d.get("due")
+                return str(v) if v else None
+    except Exception:  # pragma: no cover — a read failure must not block a write
+        return None
+    return None
+
+
+def restore_due(
+    workspace_root,
+    commitment_id,
+    *,
+    prior_due,
+    actor_id: str,
+    source_skill: str,
+    reason: str = "due date put back",
+    brain_batch_id: Optional[str] = None,
+) -> dict:
+    """POLICY1-B (b) — put a row's due back EXACTLY: to `prior_due` (a
+    calendar day) or, when `prior_due` is None, to NO DATE. The sanctioned
+    "clear the due" write: ONE `commitment_updated` through the same gate,
+    `new_due: <date>` or `new_due: null` + `due_cleared: true`, carrying the
+    due it replaced as `prior_due` (so a restore is itself restorable).
+
+    This is what the `commitment_due` reverser calls, and what a surface's
+    per-item undo calls with the `prior_due` the deferral returned. A row
+    that is closed moves nothing (`not_open`). An unparseable `prior_due`
+    refuses before the lock — a restore must never write a date it cannot
+    read back."""
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    new_due = None
+    if prior_due not in (None, ""):
+        calendar_day, _utc = _later_when(str(prior_due))
+        new_due = calendar_day
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"restore_due:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        current = effective_due(events_path, cid)
+        data: dict = {
+            "commitment_id": cid,
+            "new_due": new_due,
+            "prior_due": current,
+            "restored_by": actor_id,
+            "reason": (reason or "")[:200],
+            "brain_change_class": DUE_CHANGE_CLASS,
+        }
+        if new_due is None:
+            data[DUE_CLEARED_KEY] = True
+        if brain_batch_id:
+            data["brain_batch_id"] = str(brain_batch_id)
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "restored", "commitment_id": cid, "due": new_due,
+            "cleared": new_due is None, "event": ev}
 
 
 def _within_recent_window(activity_iso: Optional[str], now_iso: str,
@@ -624,14 +1133,51 @@ def bucket_of(commitment_event: dict,
     return BUCKET_UNOWNED
 
 
+# ---------------------------------------------------------------------------
+# PLATE1 D8 (2026-09-03) — no surface renders lanes without a primary user
+# ---------------------------------------------------------------------------
+
+# The one plain line every surface renders when it cannot tell whose
+# workspace this is. Spelled once: the plate, the brief, the daily chats and
+# the counting API all say the same sentence, and none of them render a
+# "you owe 0 / owed to you 231" lane in its place (the F-56 class: the
+# operator book read exactly that for weeks because the pointer was unset).
+PRIMARY_USER_REFUSAL_LINE = (
+    "I could not work out whose workspace this is, so I can't sort what's "
+    "yours from what's owed to you. Nothing was rendered — update Command "
+    "Room and the update sets the owner pointer for you.")
+
+
+class PrimaryUserUnresolvedError(ValueError):
+    """`count_commitments` was asked to bucket by direction with no primary
+    user. Before PLATE1 the call DEGRADED (you_owe=0, everything owed to
+    you) and every surface rendered that lie as numbers. Now it refuses;
+    the surface renders `PRIMARY_USER_REFUSAL_LINE` and no lanes. A caller
+    that genuinely needs only the user-independent numbers (total / overdue
+    / undated) passes `unresolved_ok=True` and gets the old degrade — and
+    must never render a direction bucket from that result."""
+
+    def __init__(self, message: str = PRIMARY_USER_REFUSAL_LINE):
+        super().__init__(message)
+
+
 def count_commitments(
     open_commitments: list[dict],
     *,
     user_person_id: Optional[str] = None,
     now_iso: Optional[str] = None,
     movement: Optional[dict] = None,
+    unresolved_ok: bool = False,
 ) -> dict:
     """Canonical commitment counts over an already-loaded open set (pure).
+
+    PLATE1 D8 (2026-09-03): `user_person_id=None` RAISES
+    `PrimaryUserUnresolvedError` unless the caller passes
+    `unresolved_ok=True`. The degrade documented below ("nothing matches the
+    user, so every owned item reads as owed_to_you") is exactly the number
+    the operator book rendered for weeks with the pointer unset; a surface
+    must refuse with one plain line instead of rendering it. The escape is
+    for user-independent readers only (the tracker's `total`).
 
     THE one place the open/overdue/undated/by-direction math lives. Every
     number a surface renders about open commitments comes from this function —
@@ -739,6 +1285,8 @@ def count_commitments(
     ABSENT when the workspace has no sub-items — the MC2 "absent, never a
     guessed 0" rule.
     """
+    if user_person_id is None and not unresolved_ok:
+        raise PrimaryUserUnresolvedError()
     from cru_match import partition_subitems
     top_level, sub_items = partition_subitems(open_commitments)
     you_owe = they_owe = unowned = overdue = undated = 0
@@ -1250,9 +1798,16 @@ def compute_brief_state(
 
     # Counts come from THE counting API — the brief header, the coach headline,
     # and commitment_counts() are the same number by construction (Stage A).
+    # PLATE1 D8 — the brief and the day-close adopt the plate in night 2.
+    # Until then a pack on an unresolvable workspace still BUILDS (the
+    # scheduled fire must not crash), but it carries the refusal line under
+    # `primary_user_unresolved` so the adopted brief prints that line and no
+    # lanes. The degrade is explicit here, never the silent default.
+    primary_user_unresolved = None if user_person_id else PRIMARY_USER_REFUSAL_LINE
     counts = count_commitments(
         open_commitments, user_person_id=user_person_id, now_iso=now_iso,
         movement=commitment_movement,
+        unresolved_ok=user_person_id is None,
     )
 
     # SUB1 D2/D5 — needs_attention iterates TOP-LEVEL you-owe items only: a
@@ -1402,6 +1957,8 @@ def compute_brief_state(
 
     return {
         "counts": counts,
+        # PLATE1 D8 — None when the user resolved; the one plain line otherwise.
+        "primary_user_unresolved": primary_user_unresolved,
         "needs_attention": needs_attention,
         "dropped": dropped,
         "meeting_linked": meeting_linked,
@@ -1650,7 +2207,31 @@ VALID_RESOLUTIONS = ("done", "dropped", "superseded")
 # does not exist: the writer refuses it unconditionally, because a
 # session-resolved id never inherits the pre-confirmed status of a
 # surface-resolved one.
-RESOLVED_BY_MATCH_VALUES = ("id", "number", "title", "session")
+# `match` (POLICY1-A, CLOSEID2 R6 / review F5): the closer resolved the id by
+# SCORING THE SUBSTRATE — a matcher's door, stated honestly. It is not "id"
+# (no surface embedded it) and it is not "session" (no model picked it): the
+# ledger records that the target was chosen by a title/evidence match, and the
+# writer requires `data.match_score` beside it so the claim is gradable.
+RESOLVED_BY_MATCH_VALUES = ("id", "number", "title", "session", "match")
+MATCH_DOOR = "match"
+# CUT-A — the prose closers whose direct transcript close the door refuses
+# (kept in sync with `commitment_policy_pass.TRANSCRIPT_PROSE_CLOSERS`; spelled
+# here too so the writer never imports the pass it is a door for). Widened
+# 2026-09-06 with `team-intelligence` (REVIEW_CUTA F2: its Writes contract
+# still named this writer as its closer). Compared lower-cased.
+_TRANSCRIPT_PROSE_CLOSERS = frozenset({"meeting-notes", "follow-up-ritual", "team-intelligence"})
+
+
+def _transcript_closes_on(workspace_root) -> bool:
+    """CUT-A belt (F1b) — the writer's own read of the closing-on-evidence
+    switch, by identity through `commitment_policy.transcript_closes_enabled`
+    (the policy module, not the pass — the writer never imports the pass it
+    is a door for). Any failure to read is OFF; never fails open."""
+    try:
+        from commitment_policy import transcript_closes_enabled as _tce
+        return _tce(workspace_root) is True
+    except Exception:  # noqa: BLE001 — an unreadable switch is OFF
+        return False
 MATCH_KEY = "resolved_by_match"
 
 # CLOSEID2 — the SESSION LANE: skills whose closes arrive from an ad-hoc chat
@@ -1696,6 +2277,21 @@ class OpenSubitemsError(ValueError):
     (SUB1 D3). A silent close would orphan the children; the caller must
     either close/drop the children first or pass close_subitems=True from an
     explicit user confirmation ("this also closes its N open sub-items")."""
+
+
+class TranscriptCloseWithheldError(ValueError):
+    """CUT-A (M ruling R-A, 2026-09-06) — refused a DIRECT transcript-evidence
+    close from a prose closer. meeting-notes Step 5e-bis and follow-up-ritual
+    used to tell the model to call this writer itself, with no policy pass, no
+    refusals and no switch (the v5.28.0 attended test's B1.1 re-run went
+    through exactly that door). Those steps now call
+    `commitment_policy_pass.apply_meeting_closes`; a call that still arrives
+    here from one of them (or team-intelligence) on a meeting pointer
+    (`granola:`), with no user confirmation and either not through the policy
+    pass's `match` door or while closing on evidence is OFF, is refused by
+    name so a model that ignores the prose — or hand-stamps the pass's own
+    `match` fields — still cannot close. The message states the rule and the
+    ON verb only; it never names a bypass argument (REVIEW_CUTA F1a)."""
 
 
 class AmbiguousTargetError(ValueError):
@@ -1814,7 +2410,38 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
             if new_kind and isinstance(v, int) and not isinstance(v, bool):
                 kind_by_seq[v] = new_kind
 
-    return _index_dict()
+    # POLICY1-A F1 — ONE projection of `pending_review`. The writers' guards
+    # used to test the RAW capture flag on `by_id[cid]`, while every matcher
+    # reads the FOLDED row from `load_open_commitments` (owner_confirmed /
+    # review_flags_cleared / review_flags_set / reassignment / the BUG-8330
+    # re-evaluation). A row captured pending and later confirmed by "Mine" or
+    # "Keep both" therefore recommended `auto_resolve` and was refused at the
+    # writer — 11 open rows on the operator's book could never auto-close.
+    # The index now carries the loader's own verdict per open id, computed
+    # from the SAME event snapshot inside the same lock, and
+    # `_projected_pending_review` reads it (raw flag only as the fallback for
+    # a row the loader did not project, e.g. a masked account).
+    pending_by_id: dict[str, bool] = {}
+    try:
+        from cru_match import load_open_commitments as _load_open
+        for row in _load_open(events_jsonl_path, events=events):
+            pending_by_id[_commitment_id(row)] = _is_pending_review(row)
+    except Exception:  # pragma: no cover — the raw flag stays the floor
+        pending_by_id = {}
+    out = _index_dict()
+    out["pending_by_id"] = pending_by_id
+    return out
+
+
+def _projected_pending_review(index: dict, cid: str, target: dict) -> bool:
+    """POLICY1-A F1 — the writer-side pending guard reads the loader's
+    projection (see `_scan_commitment_index`), never the raw capture flag
+    alone. Falls back to the raw flag for an id the projection does not
+    carry, so nothing that was refused before is silently admitted."""
+    proj = index.get("pending_by_id") if isinstance(index, dict) else None
+    if isinstance(proj, dict) and cid in proj:
+        return bool(proj[cid])
+    return _is_pending_review(target)
 
 
 def _resolve_survivor(superseded_onto: dict, cid: str) -> str:
@@ -2006,6 +2633,7 @@ def close_commitment(
     resolution: str = "done",
     primary_thread_id: Optional[str] = None,
     user_confirmed: bool = False,
+    confirmed_by: Optional[str] = None,
     extra_data: Optional[dict] = None,
     close_subitems: bool = False,
     resolved_by_match: Optional[str] = None,
@@ -2029,8 +2657,19 @@ def close_commitment(
       resolution: done | dropped | superseded (S1's one closure vocabulary).
       primary_thread_id: defaults to the commitment event's own thread.
       user_confirmed: True ONLY for an explicit user action (✓ click, typed
-        "mark done", one-click confirm). pending_review commitments refuse to
-        close without it — no path may AUTO-resolve them (PendingReviewError).
+        "mark done", one-click confirm). A pending_review commitment refuses
+        to close without it OR without `confirmed_by` (below).
+      confirmed_by: POLICY1-A (M ruling 2026-09-03) — the NON-HUMAN door on a
+        pending_review target: evidence, named. `"transcript"` is the only
+        caller today (a later meeting said the work was done and the match met
+        the close bar), and it lifts the pending guard for THIS call only.
+        `user_confirmed` stays False — nobody was asked — and the closure
+        carries `data.confirmed_by`, so every reader can tell a machine
+        confirmation from a human one. It REQUIRES the words that justify it:
+        a non-empty `evidence` quote and a real `source_ref`; without either
+        the close is refused and nothing is written. It does NOT lift any
+        other guard: a cascade over a pending sub-item, a name-picked target
+        and the session lane all refuse exactly as before.
       extra_data: optional additional data keys (e.g. Bug #51's
         resolved_via_wrapper_seq). Never overrides the canonical keys.
       resolved_by_match: CLOSEID1/CLOSEID2 — HOW the caller picked this
@@ -2126,6 +2765,68 @@ def close_commitment(
             f"invalid resolved_by_match {resolved_by_match!r} "
             f"(allowed: {RESOLVED_BY_MATCH_VALUES}, or None when unstated)"
         )
+    # POLICY1-A — the machine confirmation door. Evidence is the whole of
+    # its authority, so it is refused without a quote and without a pointer.
+    if confirmed_by is not None:
+        confirmed_by = str(confirmed_by).strip()
+        if not confirmed_by:
+            raise ValueError(
+                f"refusing to close {commitment_id!r}: confirmed_by was passed "
+                "empty. State what confirmed it (e.g. 'transcript') or pass "
+                "nothing.")
+        if not str(evidence or "").strip():  # the door's own QUOTE refusal
+            raise ValueError(
+                f"refusing to close {commitment_id!r}: confirmed_by="
+                f"{confirmed_by!r} needs the words that confirmed it — the "
+                "verbatim completion turn — as evidence. A machine "
+                "confirmation with nothing to read is exactly the row nobody "
+                "can grade.")
+        if not str(source_ref or "").strip():  # the door's own POINTER refusal
+            raise ValueError(
+                f"refusing to close {commitment_id!r}: confirmed_by="
+                f"{confirmed_by!r} needs a real source_ref (the meeting or "
+                "message the evidence came from). The minted surface receipt "
+                "is not a source for a close nobody asked about.")
+    # CUT-A (R-A) — belt-and-braces for the prose closers: a meeting-notes /
+    # follow-up-ritual / team-intelligence close on transcript evidence must
+    # come through the policy pass (`resolved_by_match='match'`) AND only while
+    # closing on evidence is ON, or be a user's own tap. The pass itself never
+    # reaches this door while OFF; the switch is read here too (REVIEW_CUTA
+    # F1b) so a caller that hand-stamps the pass's own `match` fields cannot
+    # walk round the belt. User taps, log-resolution, apply-choices and the
+    # mail rails all pass this door untouched. Compares are case-folded
+    # (REVIEW_CUTA F2): `Meeting-Notes` on `GRANOLA:x` is the same call.
+    _prose_closer = str(source_skill or "").strip().lower() in _TRANSCRIPT_PROSE_CLOSERS
+    _meeting_ref = str(source_ref or "").strip().lower().startswith("granola:")
+    _closes_on = _transcript_closes_on(workspace_root) if (_prose_closer and _meeting_ref) else False  # CUT-A belt (F1b): the match door opens only while closing on evidence is ON
+    if (_prose_closer and _meeting_ref and not user_confirmed
+            and (resolved_by_match != MATCH_DOOR or not _closes_on)):  # CUT-A belt: a prose closer never closes on a transcript directly
+        raise TranscriptCloseWithheldError(
+            f"refusing to close {commitment_id!r}: {source_skill} may not close "
+            "on transcript evidence directly — a transcript close comes only "
+            "through commitment_policy_pass.apply_meeting_closes (the policy "
+            "pass, which honours its three refusals), and only while closing "
+            "on evidence is on (the verb is `turn on closing on evidence`). "
+            "Nothing was written.")
+    # POLICY1-A — the matcher's door must be gradable and quoted. `match`
+    # requires a numeric `extra_data.match_score` and a non-empty evidence
+    # string; and the retired fixed f-string ("Past meeting transcript (...)")
+    # is refused from ANY transcript-rail close (D5 / DD-3) — evidence is the
+    # completion turn, verbatim, or nothing closes.
+    if resolved_by_match == MATCH_DOOR:
+        ms = (extra_data or {}).get("match_score") if isinstance(extra_data, dict) else None
+        if not isinstance(ms, (int, float)) or isinstance(ms, bool):
+            raise ValueError(
+                f"refusing to close {commitment_id!r}: resolved_by_match='match' "
+                "needs a numeric extra_data['match_score'] beside it — a matcher "
+                "door without its score is a claim nobody can grade")
+        if not str(evidence or "").strip():
+            raise ValueError(
+                f"refusing to close {commitment_id!r}: resolved_by_match='match' "
+                "needs the words that matched as evidence (the completion turn)")
+    if source_skill == "past-meetings" or resolved_by_match == MATCH_DOOR:
+        from commitment_policy import refuse_fixed_evidence as _refuse_fixed
+        _refuse_fixed(evidence, where=f"close_commitment({source_skill})")
     # PROV1 — resolve the pointer BEFORE the lock. A malformed ref refuses with
     # nothing written and no lock held; a missing one is MINTED here (PROVMINT1),
     # once, for the parent and every cascade child — so a cascade reads as one
@@ -2245,12 +2946,21 @@ def close_commitment(
                 "that did not render.",
                 candidates=[], query="")
 
-        if _is_pending_review(target) and not user_confirmed:
+        # POLICY1-A F1 — the SAME projection the matcher read (see
+        # `_projected_pending_review`): a row the user confirmed ("Mine" /
+        # "Keep both") is not pending here either.
+        #
+        # M ruling 2026-09-03 — TWO doors lift this guard now: an explicit
+        # user action (`user_confirmed`) and named evidence (`confirmed_by`,
+        # validated above: a quote and a pointer). Silence still refuses.
+        if (_projected_pending_review(index, cid, target)
+                and not user_confirmed and not confirmed_by):
             raise PendingReviewError(
                 f"commitment {cid!r} is pending_review — extraction flagged it as "
                 "uncertain, so it may only close on an explicit user confirmation "
-                "(pass user_confirmed=True from a user-initiated action). Surface "
-                "it for review instead of auto-resolving."
+                "(pass user_confirmed=True from a user-initiated action) or on "
+                "named evidence (confirmed_by=, with the quote and its source). "
+                "Surface it for review instead of auto-resolving."
             )
 
         # SUB1 D3 — no silent cascade, no silently-orphaned children.
@@ -2274,7 +2984,7 @@ def close_commitment(
             # ack must say WHICH child blocked and why (F-59).
             if not user_confirmed:
                 for k in open_kids:
-                    if _is_pending_review(k):
+                    if _projected_pending_review(index, _commitment_id(k), k):
                         raise PendingReviewError(
                             f"sub-item {_commitment_id(k)!r} "
                             f"({(_commitment_field(k, 'title') or '')!r}) of "
@@ -2337,6 +3047,13 @@ def close_commitment(
         data.pop(MATCH_KEY, None)
         if resolved_by_match is not None:
             data[MATCH_KEY] = resolved_by_match
+        # POLICY1-A — WHO/WHAT confirmed it. Popped first for the same reason
+        # the door is: this is a statement THIS writer makes about how it was
+        # called, so a caller must not be able to smuggle one in through
+        # extra_data and make an ordinary close read as a confirmed one.
+        data.pop("confirmed_by", None)
+        if confirmed_by:
+            data["confirmed_by"] = confirmed_by
         # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
         # through extra_data, and the marker can never sit next to a real ref.
         # PROVMINT1: the GRAIN marker is popped with them — it is a statement
@@ -2750,7 +3467,7 @@ def supersede_commitment(
                 "auto_predicate — the §4c carve-out records WHY it did not "
                 "ask, or it is a bare override of the pending-review floor"
             )
-        if _is_pending_review(superseded) and not (user_confirmed or auto_merge):
+        if _projected_pending_review(index, _commitment_id(superseded), superseded) and not (user_confirmed or auto_merge):
             raise PendingReviewError(
                 f"commitment {superseded_cid!r} is pending_review — a merge "
                 "adjudicates a suspected duplicate, so it may only happen on "
@@ -2914,6 +3631,8 @@ def reassign_commitment(
     new_counterparty_name: Optional[str] = None,
     reason: str = "",
     confirmed: bool = False,
+    brain_batch_id: Optional[str] = None,
+    brain_change_class: Optional[str] = None,
 ) -> dict:
     """THE reassignment writer (v4.6.0 S4). Today "not mine" DISCARDS a
     cross-attendee capture; this ROUTES it instead — the item leaves the
@@ -2949,6 +3668,9 @@ def reassign_commitment(
         target = index["by_id"][cid]
         if _currently_closed(index, cid, target.get("seq")):
             return {"status": "not_open", "commitment_id": cid}
+        # POLICY1-B F-9 — what the projection said BEFORE this write, so a
+        # reverser can put the row back exactly (including "no counterparty").
+        prior = effective_parties(events_path, cid)
         data: dict = {
             "commitment_id": cid,
             "reassigned_by": reassigned_by,
@@ -2963,8 +3685,13 @@ def reassign_commitment(
                 data["new_owner_name"] = new_owner_name
         if new_counterparty_id:
             data["new_counterparty_id"] = new_counterparty_id
+            data["prior_counterparty_id"] = prior.get("counterparty_id")   # F-9: None = it had none
+            data["prior_counterparty_name"] = prior.get("counterparty_name")
             if new_counterparty_name:
                 data["new_counterparty_name"] = new_counterparty_name
+        if brain_batch_id:
+            data["brain_batch_id"] = str(brain_batch_id)
+            data["brain_change_class"] = brain_change_class or REASSIGN_CHANGE_CLASS
         ev = {
             "type": "commitment_reassigned",
             "source_skill": source_skill,
@@ -2974,6 +3701,100 @@ def reassign_commitment(
         from event_gate import append_event
         append_event(events_path, [ev], holder=source_skill)
     return {"status": "reassigned", "commitment_id": cid, "event": ev}
+
+
+# ---------------------------------------------------------------------------
+# PLATE1 P3 (2026-09-03) — `not mine` disowns; it never closes
+# ---------------------------------------------------------------------------
+
+# The question vocabulary a user verb can write onto an open commitment.
+# ATTRIB1 owns the full vocabulary (`who_is_you`, `whose_is_this`, ...);
+# PLATE1 defines the one its verb writes. A row carrying a question is a
+# question, not work: `plate_view` puts it in CONFIRM (system-written) or
+# PARKED (user-written — the user already answered "not mine", the open
+# question is for someone else), and the review-expiry drain never lapses a
+# user-written one to `dropped` (a decline must not become a closure).
+QUESTION_WHOSE_IS_THIS = "whose_is_this"
+QUESTION_BY_USER_VERB = "user_verb"
+QUESTION_BY_SYSTEM = "system"
+DISOWN_REASON_DEFAULT = "you said this isn't yours"
+
+
+def _commitment_id_of(ev: dict) -> str:
+    d = ev.get("data") or {}
+    return d.get("id") or f"commitment_seq_{ev.get('seq')}"
+
+
+def disown_commitment(
+    workspace_root,
+    commitment_id,
+    *,
+    disowned_by: str,
+    source_skill: str,
+    reason: str = DISOWN_REASON_DEFAULT,
+) -> dict:
+    """THE `not mine` writer (PLATE1 P3). Before: `not mine` CLOSED the item
+    as dropped (a cross-attendee capture discarded). Now it DISOWNS: the
+    owner is cleared, a `whose_is_this` question is written with the user's
+    provenance, and the item stays OPEN on the book — parked on the plate,
+    exempt from the unconfirmed drain, never lapsing to dropped.
+
+    Appends ONE `commitment_updated` carrying `data.owner_cleared: true`,
+    `data.question: "whose_is_this"`, `data.question_by: "user_verb"`. The
+    projector folds all three (owner_id -> "", question + provenance ride the
+    projected item). `previous_owner_id` rides the event so `undo` can hand
+    the item back through `confirm_commitment_owner`.
+
+    Guards: id normalization over legacy spellings, loud CommitmentIdError
+    on no match, refuses a CLOSED item ({"status": "not_open"}), an already
+    disowned item is a no-op ({"status": "already_disowned"}, nothing
+    written), scan->append inside the writer lock (R1c).
+    """
+    from pathlib import Path as _Path
+    from writer_lock import events_writer_lock
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"disown_commitment:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid}
+        # Idempotent: read the PROJECTED owner (the index carries the raw
+        # capture; a prior disown is a later commitment_updated). A second
+        # event that says nothing new is noise in an append-only log.
+        from cru_match import load_open_commitments, _commitment_field
+        current = None
+        for ev in load_open_commitments(events_path):
+            if _commitment_id_of(ev) == cid:
+                current = ev
+                break
+        prev_owner = _commitment_field(current, "owner_id") if current else None
+        cur_d = (current.get("data") or {}) if current else {}
+        if (current is not None and not prev_owner
+                and cur_d.get("question") == QUESTION_WHOSE_IS_THIS
+                and cur_d.get("question_by") == QUESTION_BY_USER_VERB):
+            return {"status": "already_disowned", "commitment_id": cid}
+        data: dict = {
+            "commitment_id": cid,
+            "owner_cleared": True,
+            "previous_owner_id": prev_owner or "",
+            "question": QUESTION_WHOSE_IS_THIS,
+            "question_by": QUESTION_BY_USER_VERB,
+            "disowned_by": disowned_by,
+            "reason": (reason or "")[:200],
+        }
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "disowned", "commitment_id": cid,
+            "previous_owner_id": prev_owner or "", "event": ev}
 
 
 def confirm_commitment_owner(
@@ -3050,6 +3871,7 @@ def clear_review_flags(
     mint_now_iso=None,
     brain_batch_id: Optional[str] = None,
     brain_change_class: Optional[str] = None,
+    confirmed_by: Optional[str] = None,
 ) -> dict:
     """THE Keep-both writer (v4.6.1 W4b / C4). A suspected duplicate the
     user adjudicates as a real, separate item: appends a `commitment_updated`
@@ -3083,6 +3905,13 @@ def clear_review_flags(
     additive mirror of this very event, so the reversal path is the shipped one
     and nothing here forks a second way to un-clear a row. They travel together
     or raise, per the house rule (see `supersede_commitment`).
+
+    ATTRIB1-B A10 — `confirmed_by` names the DOOR the confirmation came
+    through (`user_pick` — the meeting card; `own_recap` — the user's own
+    sent recap; `default_applied` — the lapse applied the ladder's default).
+    Optional; None writes the byte-identical pre-A10 event. It is
+    provenance the change feed and the replay read; it never changes the
+    fold.
     """
     if (brain_batch_id is None) != (brain_change_class is None):
         raise ValueError(
@@ -3113,6 +3942,8 @@ def clear_review_flags(
         if brain_batch_id is not None:
             data["brain_batch_id"] = brain_batch_id
             data["brain_change_class"] = brain_change_class
+        if confirmed_by:
+            data["confirmed_by"] = str(confirmed_by)[:60]
         ev = {
             "type": "commitment_updated",
             "source_skill": source_skill,
@@ -3776,7 +4607,7 @@ def split_commitment(
         parent = index["by_id"][cid]
         if _currently_closed(index, cid, parent.get("seq")):
             return {"status": "already_resolved", "commitment_id": cid}
-        if _is_pending_review(parent) and not user_confirmed:
+        if _projected_pending_review(index, _commitment_id(parent), parent) and not user_confirmed:
             raise PendingReviewError(
                 f"commitment {cid!r} is pending_review — a split adjudicates "
                 "the item, so it may only happen on an explicit user action "
@@ -3901,7 +4732,7 @@ def add_subitems(
         parent = index["by_id"][cid]
         if _currently_closed(index, cid, parent.get("seq")):
             return {"status": "not_open", "commitment_id": cid}
-        if _is_pending_review(parent) and not user_confirmed:
+        if _projected_pending_review(index, _commitment_id(parent), parent) and not user_confirmed:
             raise PendingReviewError(
                 f"commitment {cid!r} is pending_review — decomposing "
                 "adjudicates the item, so it may only happen on an explicit "
@@ -4246,6 +5077,7 @@ __all__ = [
     "OpenSubitemsError",
     "AmbiguousTargetError",
     "RESOLVED_BY_MATCH_VALUES",
+    "MATCH_DOOR",
     "SESSION_RESOLVED_SOURCES",
     "MAX_AMBIGUOUS_CANDIDATES",
     "AMBIGUITY_EVIDENCE_SHAPE",
@@ -4306,4 +5138,9 @@ __all__ = [
     "parse_later_when",
     "apply_later",
     "LATER_SNOOZE_VIA",
+    # CUT-C item 5 — the date-less Later… refusal
+    "LATER_MISSING_STATUS",
+    "LATER_MISSING_INPUT_ACK",
+    "later_needs_input",
+    "later_missing_ack",
 ]

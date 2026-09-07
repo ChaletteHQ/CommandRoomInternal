@@ -310,7 +310,7 @@ Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
 
 **Why this finally works.** Enforcement is on the EVENT, not a narration: the reconcile-sent task's success is a `sent_reconcile` audit event a validator reads back from `events.jsonl` — a cursor delta backed by a scan count can't be faked the way a sentence can (the gamed v3.18.9 receipt gate is in references/HISTORY.md § Bug #98). The brief can't fake "closed N" either — it reads the real `commitment_resolved` events or it has nothing to report.
 
-**Substrate alarms (FS-04/05/06/15 — MANDATORY, LOUD, render at the very top of the brief).** The one-command brief driver supplies these — `surface_drivers.build_morning_brief_pack` (CLI: `python3 shared/scripts/surface_drivers.py morning-brief --workspace <WS> --mode <scheduled|manual>`) returns `alarm_lines` from `substrate_health.substrate_alarm_lines(WORKSPACE_ROOT)`; run the driver ONCE per fire (t3 FB-9) and place its blocks rather than re-deriving them piecemeal. Any returned line renders verbatim as a pinned alert at the TOP of the brief, above the synthesis lead — these are the log-clobber, unreadable-records, read-time corruption (a file that failed to read during an earlier fire, even if it reads fine now — the sync-cache window), and duplicate-entry alarms. They are the surface FS-04/FS-15 exist for: a silently-degraded substrate must never let the brief report confident-but-wrong counts. Empty list → render nothing. Never suppress an alarm because it's "not today's news."
+**Substrate alarms (FS-04/05/06/15 — MANDATORY, LOUD, rendered verbatim inside `pack["health_lines"]`, LAST — CUT-PLATE).** The one-command brief driver supplies these — `surface_drivers.build_morning_brief_pack` (CLI: `python3 shared/scripts/surface_drivers.py morning-brief --workspace <WS> --mode <scheduled|manual>`) returns `alarm_lines` from `substrate_health.substrate_alarm_lines(WORKSPACE_ROOT)`; run the driver ONCE per fire (t3 FB-9) and place its blocks rather than re-deriving them piecemeal. Any returned line renders verbatim inside `pack["health_lines"]`, at the END of the brief (after Suggested next steps, before the closing preps chip — never above the number; CUT-PLATE, M's rule: numbers first, health at the end) — these are the log-clobber, unreadable-records, read-time corruption (a file that failed to read during an earlier fire, even if it reads fine now — the sync-cache window), and duplicate-entry alarms. They are the surface FS-04/FS-15 exist for: a silently-degraded substrate must never let the brief report confident-but-wrong counts. Empty list → render nothing. Never suppress an alarm because it's "not today's news."
 
 ### Step 3b: Aggregate commitments from events.jsonl (v2.7.15+, v3.4.5+ shape-aware)
 
@@ -491,13 +491,24 @@ lane = cap_needs_attention(state["needs_attention"], now_iso="<the fire's ISO no
 
 Never re-rank what it hands back and never top the section up from your own Step-3 scan: a 14-day rotation inside the function pins any item that has sat below the fold too long into the visible set, so nothing is suppressed forever, and reordering breaks that. The cap is a RENDER bound and never a silence — `state["counts"]` stays unfiltered and the header numbers still count everything (the :299 doctrine). The scheduled fire gets the same lane pre-capped on `brief_state.needs_attention` from `surface_drivers.build_morning_brief_pack`; this is the same bound on the path you drive yourself, so the two fires agree.
 
-Render `state["counts"]` as the commitments line and `lane["shown"]` as the "ball is on you" items. `state["dropped"]` is for diagnostics only — it explains why an item was suppressed (`calendar_action` / `email_reply` / `recent_activity`); never surface it in chat. If you can't fetch a given input (connector down), pass what you have — the function degrades gracefully (a missing `threads`/`calendar_events`/`thread_activity` just means that drop isn't applied; the item surfaces, which is the safe direction).
+`state["counts"]` is computed and logged, never rendered as a line (PLATE1 night 2 / NUMBERS1 R-1 — the brief's one number is the plate's, Step 3i). `lane["shown"]` is the GATED you-owe lane: it is what the drops and the fatigue rule were computed over, and on the driven path (`surface_drivers.py morning-brief`, Step 3h/3i) the driver folds its verdicts into the plate's cut — the rows that PRINT are `pack["plate"]["rows"]`. `state["dropped"]` is for diagnostics only — it explains why an item was suppressed (`calendar_action` / `email_reply` / `recent_activity`); never surface it in chat. If you can't fetch a given input (connector down), pass what you have — the function degrades gracefully (a missing `threads`/`calendar_events`/`thread_activity` just means that drop isn't applied; the item surfaces, which is the safe direction).
+
+### Step 3i: The plate's brief cut — ONE number, the top rows, one pointer (SPEC PLATE1 night 2)
+
+The commitments the brief shows are the PLATE's — the same model `what's on my plate` renders (`shared/scripts/plate_view.py`: action block → project → horizon), cut for this surface by the one renderer. `surface_drivers.py morning-brief` (Step 3h — the driver, run once, last) already built it as `pack["plate"]`:
+
+- `line` — ONE number: "[N] on your plate today" (DO IT + CHASE). The only commitment number on this surface.
+- `rows` — at most 5: the top DO IT rows then the top CHASE rows, each `{id, block, verb, line, ask_line}`; `line` leads with `Do:` / `Chase:` (the block's verb — what the row wants). Rows the brief's own gates dropped this fire are already left out (`excluded_ids`); a row the fatigue rule is asking about carries its `ask_line` as its label.
+- `pointer` — "…and N more — say `what's on my plate` for the rest." when the plate holds more than the cut; empty otherwise (render nothing).
+- `refused` + `line` — on a workspace with no resolvable owner: the one plain sentence, no rows (D8).
+
+**They render FIRST (CUT-PLATE, 2026-09-06 — M's rule: "we want to show less options to clients — they are overwhelmed").** The driver composes `pack["lead"]` — the number line, then the rows, then the one pointer — and Step 4 prints it verbatim as the FIRST content of the brief, directly under the header: no warning, no paragraph, no CHANGED line and no reminder above it. The counts that used to compete with the number sit below the fold (`pack["fold_lines"]`: the resting line and the queue pointer, plus Step 3g's confirm pointer) and every health line goes LAST (`pack["health_lines"]`: the substrate alarms — the duplicate-entry warning included — the watchdog, the dark-surface and schedule-refresh lines). The driver's own fence (`surface_drivers.assert_number_leads`) refuses a pack whose composed order puts any count above the number; `tests/run_cutplate_test.py` runs the same scanner over this template. Nothing here is re-derived by hand: no second load, no re-ranking, no hand-composed pointer. Direct/one-off invocations that cannot run the driver call the same two functions — `plate_view.build_plate(workspace_root, now_iso=…)` then `plate_view.render_plate(view, "brief", False, exclude_ids=<ids of state["dropped"]>, ask_lines=<{id: ask_line} from the lane>)` — and render the returned `text` verbatim.
 
 ### Step 3e: ONE gated source for EVERY "ball is on you" actionable — including Top 3 moves (v3.18.9+ — MUST-language enforcement gate, Bug #93)
 
 > **Every actionable anywhere in the digest that tells the CEO they owe someone an action — "reply to X", "follow up with Y", "book / lock / propose a time with Z", "send the X to W", "get back to V" — MUST be drawn from the gated candidate set, NOT synthesized freehand from your raw inbox/calendar reads. There are two legitimate sources, and ONLY these two: (1) an item in `state["needs_attention"]` (already survived the 3c/3c-bis/7-day drops), or (2) an inbox-derived item that you have personally run through the Step 3c latest-sender check AND the Step 3c-bis calendar check this fire. If an actionable came from neither path, it does not appear — not in Needs attention, not in Top 3 moves, not in Suggested next steps.**
 
-This closes the #93 trust-killer. The Top-3-moves and Suggested-next-steps sections are written in Step 4 as a *separate synthesis* over the morning's inbox/calendar scan — and that synthesis bypassed `compute_brief_state` entirely, so items the gates had already dropped (a meeting booked days out, a thread the CEO already replied to) reappeared at the very top of the brief as "do this now" (live failures in references/HISTORY.md § Bug #93). Telling the CEO to redo finished work is the same trust-killer as the #85 class.
+This closes the #93 trust-killer. The Top-3-moves and Suggested-next-steps sections are written in Step 4 as a *separate synthesis* over the morning's inbox/calendar scan — and that synthesis bypassed `compute_brief_state` entirely, so items the gates had already dropped (a meeting booked days out, a thread the CEO already replied to) reappeared at the head of the brief as "do this now" (live failures in references/HISTORY.md § Bug #93). Telling the CEO to redo finished work is the same trust-killer as the #85 class.
 
 The rule, concretely:
 1. **Tracked-commitment actionables** (you owe X per events.jsonl) come ONLY from `state["needs_attention"]`. If `compute_brief_state` dropped it (it's in `state["dropped"]`), it is handled — it may NOT be promoted into Top 3 moves on your own judgment that it "still feels open". The function already applied the calendar / latest-sender / recent-activity drops; second-guessing it is the bug.
@@ -527,7 +538,7 @@ rems = load_active_reminders(
 
 Render rules (M's four settled choices, 2026-07-08):
 
-- **Pinned** (`status == "pinned"`): renders EVERY day until cleared or pushed — a pinned reminder never auto-fades. Each row carries the three affordances as plain chat phrases — done (*"done with the reminder"*), defer (*"defer it to [day]"* / *"push it to [day]"* — same move, and the taxonomy's widget label is **Later…**), keep — plus the daily ask ("Still want this pinned?" phrasing varies naturally). Rows with `escalation == "bold"` render bold (pinned + ignored 3 days); rows with `escalation == "top"` (7 days) LEAVE this section and render at the very top of the brief (see the template). A reminder with `ref` renders its context inline ("about: the Rio chase") but done/push/keep only ever write reminder events — never a commitment closure. If the user ALSO says the underlying item is done, that closes separately through the canonical closure path.
+- **Pinned** (`status == "pinned"`): renders EVERY day until cleared or pushed — a pinned reminder never auto-fades. Each row carries the three affordances as plain chat phrases — done (*"done with the reminder"*), defer (*"defer it to [day]"* / *"push it to [day]"* — same move, and the taxonomy's widget label is **Later…**), keep — plus the daily ask ("Still want this pinned?" phrasing varies naturally). Rows with `escalation == "bold"` render bold (pinned + ignored 3 days); rows with `escalation == "top"` (7 days) LEAVE this section and render directly under the lead — the number first, the pin second (CUT-PLATE; see the template). A reminder with `ref` renders its context inline ("about: the Rio chase") but done/push/keep only ever write reminder events — never a commitment closure. If the user ALSO says the underlying item is done, that closes separately through the canonical closure path.
 - **Upcoming reminders** (`status == "upcoming"`, within 3 days): lighter render — one line each, no ask, no affordance row.
 - `status == "scheduled"` rows do NOT render in the brief (they show in `show my reminders`).
 - Both sections render only when non-empty (never pad). Reminder rows never mention `personal`, event names, ids, or the word "reminder lane" — plain English only.
@@ -535,7 +546,7 @@ Render rules (M's four settled choices, 2026-07-08):
 
 ### Step 3g: Confirm-section pointer count (v4.6.1 W4b — one number, read-only)
 
-The daily Waiting On chat (CTS1 — the re-scoped Commitments chat) opens with the "Needs a quick confirm" section (W4b; the selector covers every unadjudicated amber capture younger than the 7-day escalation pin). The brief carries ONE pointer line when that section will be non-empty — never the rows themselves (the Waiting On chat is the triage point; the brief just points). Compute the count with the same selectors that chat uses, over the open set Step 3 already loaded:
+The daily Waiting On chat (CTS1 — the re-scoped daily commitments surface) opens with the "Needs a quick confirm" section (W4b; the selector covers every unadjudicated amber capture younger than the 7-day escalation pin). The brief carries ONE pointer line when that section will be non-empty — never the rows themselves (the Waiting On chat is the triage point; the brief just points). Compute the count with the same selectors that chat uses, over the open set Step 3 already loaded:
 
 ```python
 from confirm_flow import (select_confirm_items, select_promotion_proposals,
@@ -551,7 +562,7 @@ n_confirm = (len(select_confirm_items(opens, "<now ISO>", dismissed_ids=dismisse
 pointer = confirm_pointer_line(n_confirm)   # None when the section is empty
 ```
 
-`pointer` is the exact line the template renders — when it is None the line is OMITTED entirely (never pad, never render "0 items"). These items are ALREADY inside `headline["unconfirmed"]` (they count nowhere else); the pointer adds no numbers to the commitments line, and reminders (Step 3f) are a different lane entirely — never fold the two.
+`pointer` is the exact line the template renders — when it is None the line is OMITTED entirely (never pad, never render "0 items"). These items are ALREADY inside `headline["unconfirmed"]` (they count nowhere else); the pointer adds no numbers to the commitments line, and reminders (Step 3f) are a different lane entirely — never fold the two. **It renders BELOW THE FOLD (CUT-PLATE):** with the driver's `pack["fold_lines"]`, near the end of the digest, never above the plate's number.
 
 ### Step 3h: The money carve-out + the queue pointer (SPEC FB-20 — the brief is read-only)
 
@@ -569,14 +580,16 @@ money_lines = money_prose_lines(queue, cap=3)   # pack["money_lines"]
 count = len(queue)                              # pack["queue_pointer"]["count"]
 ```
 
-- **`money_lines` — THE ONE EXCEPTION.** Money-class proposals (deal signals) are the single class the brief still names outright, as digest PROSE, one sentence each: *"Command Room thinks Northwind is a live deal — say `staff meeting` to confirm."* Money may never go silent — a deal signal sitting unmentioned for a day is the one silence with a price tag. These sentences are **propose-only and carry no verbs**: never attach buttons, never invent a "confirm?" affordance, never act on one from a brief turn. The confirm is a chat phrase at the staff meeting. Place them with NEEDS ATTENTION in the digest body. Empty → nothing renders; **never** pad an all-clear ("no new deals today" — never).
-- **`queue_pointer.line` — the handoff.** ONE line, verbatim, as the digest's last content line before SUGGESTED FIRST MOVE: *"7 things need your eyes — say `staff meeting`."* That is the brief's entire adjudication affordance. The count comes from the same projector the staff meeting renders (same surface, same held/mute filters), so it can never over-promise — **never recount it, never adjust it, never round it, never soften it into "a few things."** Nothing queued → the driver returns an empty line and nothing renders (drop-empty; never "0 things need your eyes", never an all-clear pad).
+- **`money_lines` — THE ONE EXCEPTION, narrowed by M ruling R-B (2026-09-06).** Money-class proposals are the single class the brief still names outright, as digest PROSE, one sentence each — and since R-B that means the ACCOUNT-VALUE ask only (`org_money`: *"Command Room spotted an account value for Northwind — say `staff meeting` to confirm."*). **The deal question is silent: "Command Room thinks [Org] is a live deal" no longer renders anywhere.** The deal-signals detector still records its `deal_creation` / `deal_update` proposals, but the projector withholds them from every named surface (`brain_proposals.WITHHELD_KINDS`), so they put no sentence here, no row on the Staff Meeting card and nothing in the pointer count; an org becomes a client only on a paid / signed / won fact, automatically, and the person hears about THAT as the CHANGED line with `undo` (DEALNAG1 / M ruling 4). Never re-derive a deal sentence from the detector, a proposal event or a meeting card — if the pack's `money_lines` is empty about deals, the brief is silent about deals. The sentences that remain are **propose-only and carry no verbs**: never attach buttons, never invent a "confirm?" affordance, never act on one from a brief turn. The confirm is a chat phrase at the staff meeting. Place them with NEEDS ATTENTION in the digest body. Empty → nothing renders; **never** pad an all-clear ("no new deals today" — never).
+- **`queue_pointer.line` — the handoff.** ONE line, verbatim, BELOW THE FOLD — it is the last of `pack["fold_lines"]`, printed in the fold block near the end of the digest, never above the plate's number (CUT-PLATE): *"7 things need your eyes — say `staff meeting`."* That is the brief's entire adjudication affordance. The count comes from the same projector the staff meeting renders (same surface, same held/mute filters), so it can never over-promise — **never recount it, never adjust it, never round it, never soften it into "a few things."** Nothing queued → the driver returns an empty line and nothing renders (drop-empty; never "0 things need your eyes", never an all-clear pad).
 - The Step 3g confirm-pointer stays as-is — it counts the Waiting On chat's OWN confirm section; this is the cross-detector queue. An item can legitimately appear in both; that is not a bug.
 - **First-run gate (FRP1) — RETIRED with the card.** `skill_config/system-health.json` key `daily_confirm_card` no longer gates this surface: there is no card to gate, and the two blocks above are substrate truth the brief always owes. The key is still read by the surfaces that do render the card. (An `"off"` value never suppressed the queue anyway — it reached the user through the Staff Meeting and `what's waiting on me`, which is now the only path by design.)
 
 ## Step 4: Build the Digest
 
 Format the output as a structured, scannable digest. Skip any section that has nothing to report — never pad an empty section into existence. (The template below shows every POSSIBLE section; a typical day renders a handful.)
+
+**THE NUMBER LEADS (CUT-PLATE, 2026-09-06 — read before the template).** The first content under the header is `pack["lead"]` verbatim: the plate's one number, the top rows, one pointer. Every other count in the brief either folds into that pointer or sits below the fold (`pack["fold_lines"]` + Step 3g's confirm pointer + the dated-personal echo, printed together near the end), and the health lines — the duplicate-entry warning, a stale-view alarm, the watchdog, the dark-surface and schedule-refresh lines — are `pack["health_lines"]`, printed LAST. The v5.28.0 attended test saw the opposite order (a warning, a paragraph, CHANGED, then the number, with four counts competing around it); the driver now refuses that order (`assert_number_leads`) and this template is scanned for it.
 
 **Relationship-grouped thread layout (v2.2):** Active threads render in groups derived from the org tree, not a fixed home/side split. Authoritative rules — read these in order before rendering:
 
@@ -609,7 +622,43 @@ Test: does the lead name a dated moment AND say what CHANGED in the business? If
 ```
 Morning briefing — [Day, Month DD, YYYY]
 
-[Escalated reminders — ONLY rows with escalation == "top" (pinned + ignored 7 days). Renders FIRST, above the synthesis lead, per M's escalation choice. Skip entirely when none.]
+[THE LEAD — `pack["lead"]["lines"]` VERBATIM, in order, the FIRST content of the brief (CUT-PLATE 2026-09-06; SPEC PLATE1 night 2 — D7 `brief`; NUMBERS1 R-1, M 2026-08-22: "these numbers are so big"). Nothing but the header (and the persona-permitted intro line) sits above it: no warning, no paragraph, no CHANGED, no reminder. It is the plate's ONE number, then the top rows numbered from 1 (at most 5: the top DO IT rows then the top CHASE rows — `plate_view.render_plate(view, "brief")` owns the cut and every word, including the leading `Do:` / `Chase:` block verb, which is what the row wants, never a button: this surface is read-only prose, FB-20), then ONE pointer.]
+[N] on your plate today
+1. Do: [title] · [name] · due [date] · OVERDUE — [evidence chip]
+2. Do: [ask line — "…— 8 days overdue. Done, new date, or drop?"]
+3. Chase: [title] · [name] — quiet [N] days — [evidence chip]
+…and [N] more — say `what's on my plate` for the rest.
+[The number line is `pack["plate"]["line"]` VERBATIM — one number, the
+plate's own. `N` = DO IT + CHASE on the plate (`plate_view.build_plate` block
+totals) — the same number `what's on my plate` shows, by construction. Zero →
+the line reads "Nothing is waiting on you today." (the renderer's own words;
+never compose either). The six-number inventory line that used to sit here is
+RETIRED from the rendered brief — un-rendered, not unbuilt:
+`state["counts"]["headline"]` is still computed and still logged on the
+`brief_state` event for trends, receipts and the book page. Never add a
+second number beside the plate's: no "you owe / owed to you / no clear owner
+/ overdue" inventory, no block totals (those live on `plate` and `board` only
+— P4). The rows are `pack["plate"]["rows"][*].line` VERBATIM, in the order
+given: a row carrying an `ask_line` prints that line as its label (the
+fatigue rule's question — OVERDUE1 / EODSYNTH1 R-3 — rides the row it asked
+about); the pointer is `pack["plate"]["pointer"]` verbatim when non-empty
+(never invent one, never round the count). Never re-rank, never top the
+section up from your own scan, never add a row the pack did not hand you.
+The driver already applied the brief's gates AT THE CUT: a plate row that
+compute_brief_state dropped this fire (calendar action / email reply /
+recent activity — `pack["plate"]["excluded_ids"]`) is not printed, while the
+one number still counts it (it is the plate's number). `mark done [n]`
+resolves `n` against `pack["plate"]["rows"][n-1].id` — that list, in that
+order, is what the receipt records as `needs_attention_ids` (Step 3b /
+BRIEFFIX1 Item C). `brief_state.needs_attention` stays on the pack as the
+gated lane the drops and the ask were computed over; it is not a second row
+list to render. On a workspace whose owner cannot be resolved
+`pack["plate"]["refused"]` is true and `line` is the one plain refusal
+sentence: print it here and render NO rows (D8 — no surface renders lanes
+without a primary user). `brief_state.resting_line` does NOT print here — it
+is a count, and it sits below the fold with the other counts.]
+
+[Escalated reminders — ONLY rows with escalation == "top" (pinned + ignored 7 days). Renders directly under the lead, above the synthesis lead, per M's escalation choice (CUT-PLATE moved it under the number: the number is the first thing, the pin is the second). Skip entirely when none.]
 📌 **You've been carrying this [N] days: [summary]** — done, defer it to a day, or say keep.
 
 [Synthesis lead — one-line theme = the exec-header VERDICT (EXEC1 element 1).] Distill the day in a single sentence:
@@ -619,6 +668,8 @@ Match Friday Wrap's lead-paragraph pattern — one anchor moment + theme. Skip
 if nothing distinctive (then jump to commitments line).
 
 [The 30-second contract — the three EXEC1 lines, rendered right after the synthesis lead (chat-surface form per shared/EXECUTIVE_OUTPUT_STANDARD.md element 1). This SUBSUMES the standalone "Momentum delta" line below — CHANGED absorbs it; do not render both.]
+[QUIET1 D7 — the return summary. When the driver pack carries `changed.return_summary` (the person has not answered or opened a surface for two days or more), print its `header` VERBATIM as the line directly above CHANGED — *"While you were out (19 days): 14 closed on evidence, 9 parked, 3 need you."* — and let the CHANGED lines beneath it be the feed over that longer window (the pack already widened `changed.since_ts`). Never a row list, never more than the pack's three lines. When `return_summary` is null, print nothing here.]
+[QUIET1 D3 — the step-down line. When the pack carries a non-empty `quiet_line`, print it VERBATIM once, directly after CHANGED: *"I've stopped asking — the next answer you give brings the questions back, or say `ask me more`."* The driver marks it narrated the moment it hands it out, so a re-run gets an empty `quiet_line` and prints nothing — never compose this sentence yourself.]
 CHANGED   [what moved since yesterday's brief — named people/threads + numbers/dates, OR "Nothing material since [last brief]." LB1: this line now ALSO carries what the system did on its own — fold in `change_feed.changes_since(<last brief ts>)` (Step 3a-bis), one to three of its lines max, substance first (closures/recoveries before housekeeping), drop-empty. The feed's closed-from-sent line keeps its `undo` affordance verbatim. One narration slot — never a separate reconcile tail line or a second "what I did" block. **MANDATORY (FS-09): when `changes_since` returns any lines, CHANGED MUST cite them — you may NOT write "Nothing material" over a non-empty feed. The feed lines are traceable to audit events; report them, don't editorialize them away.**]  (this is the former Momentum-delta line)
 DECIDE    [Your one decision today: X — when a decision-shaped item exists (a decision_pending item on today's meeting threads, or a decide-shaped needs_attention item — both already in compute_brief_state, NO new fetch). Else: "Nothing — execution day."]
 NEEDED    [the single most important reader-action today, OR "Nothing from you."]
@@ -633,42 +684,12 @@ Pinned
 Upcoming reminders
 · [summary] — from [Weekday]
 
-[Reminders are the user's own pins — NOT commitments. They never appear in the commitments line below, Needs Attention, or Top 3 moves, and nothing chases them.]
+[Reminders are the user's own pins — NOT commitments. They never appear in the lead, Needs Attention, or Top 3 moves, and nothing chases them.]
 
-[Commitments with context, not raw counts. Every number comes verbatim from
-state["counts"]["headline"] — the one bucket export (v4.5.2 R4). ONE line,
-ONE template — the pre-R4 "they owe · stuck" form is retired.]
-Commitments: [Y] you owe (+[delta] since [last_brief_date], [closed_yesterday] closed) · [Z] owed to you · [U] unowned · [C] unconfirmed · [O] overdue · [S] stuck
-[Omit a zero bucket from the line (never pad); omit the whole line when headline["total"] is 0.]
-
-[Dated-Personal echo (CTS1 §4.2, RULED 2026-07-16) — ONE line under the
-commitments line, rendered ONLY when at least one owner-me effective-kind-task
-item is DUE TODAY (surface_split.partition_surfaces(opens, user_id)["personal"]
-filtered to effective due == today):]
-[N] personal item[s] due today — they're on your My Plate chat.
-[DATED items only — never echo the undated Personal tail here (the 30+ day
-stale tail rides Friday triage's "still on your plate?" sweep, and the full
-list is the My Plate chat's job). Zero dated-today → omit the line entirely.]
-[The overdue number is exactly what it says — items past their due date; never
-attach a movement definition to it (R1b).]
-[The stuck number is headline["stuck"] — the REAL movement metric (v4.6.0 MC2:
-commitment_activity.py derives last movement per commitment from state-change
-events, capture ts as floor; compute_and_log_brief_state supplies it
-automatically). Inline define it on first mention — legitimate again because
-the code now computes exactly this:
-("stuck" = no movement in 21+ days, or blocked on a named person)
-When headline["blocked"] > 0, say who the wait is on in plain English, e.g.
-"2 of them waiting on people you've already chased". If headline carries NO
-"stuck" key (movement derivation unavailable), OMIT the segment — never render
-0 for a number that wasn't computed.]
-
-[Confirm pointer — Step 3g's `pointer` line VERBATIM, its own line right
-after the commitments line. Renders ONLY when the confirm section is
-non-empty (pointer is not None) — omit entirely otherwise. ONE line, never
-the items themselves, never a count folded into the commitments line above,
-and placed clear of the reminders sections (different lane — reminders are
-the user's own pins; this points at captures awaiting a confirm). v4.6.1 W4b.]
-[N] new items need a 10-second confirm — they're in your Waiting On chat. [Pre-CTS1 workspaces still on the `commitments` task: say "Commitments chat" until the split registers.]
+[No overdue count and no movement count render on this surface any more —
+both are inventory (NUMBERS1 D1/D3). The plate's rows carry their own
+OVERDUE badge and their own "quiet N days" reason, which is where a reader
+meets those facts: on the item, not as a total.]
 
 [Top 3 moves before noon — the answer to "what should I do." This is the most important section. Surface it right after commitments so it's seen in the first 15 seconds.]
 Top 3 moves today
@@ -708,11 +729,11 @@ This week ahead: [Wed/Thu light · 3 demos Friday · Acme contract due Mon].
 [One line. Keeps the user oriented past today without dragging the brief long.]
 
 Needs attention
+[THE ROWS ARE IN THE LEAD (CUT-PLATE). The plate's numbered rows — `pack["plate"]["rows"]`, `Do:` / `Chase:` — print at the top of the brief, once, and are never repeated here. This section carries only what is left: the money sentences and the promotion-detector lines below. Skip the heading when both are empty.]
 🟡 [Item waiting on user sign-off / etc.] — [context]
-⚡ [Aging cluster] — [N] commitments aged past [threshold] in [project]
 🔄 [Prospect that looks converted] looks like a client now ([reason]) — say `[Name] is now a client`
-[One 🔄 line per detector candidate, rendered verbatim from its `render_line` — render ALL of them, never a subset (Bug #92b). If the detector returns nothing, skip only the 🔄 lines.]
-[If nothing: skip this section.]
+[One 🔄 line per detector candidate, rendered verbatim from its `render_line` — render ALL of them, never a subset (Bug #92b). If the detector returns nothing, skip only the 🔄 lines — never an all-clear. DEALNAG1 + M's ruling 4 (2026-09-03): a prospect with a PAID OR SIGNED fact is not asked about at all — the promotion applies itself (`org_promotion`), and the person hears about it as ONE line in the CHANGED feed with the standing `undo`, never as a question. What is left here is the ambiguous lane only: signing LANGUAGE in recent activity (medium), and the one settled org whose promotion could not run because no primary-focus org is set. A sizing or engagement record alone (the `new prospect` command's own kind=client "Active sales conversation" edge, an active prospect thread) is NOT a client signal and produces nothing — no line, no proposal, silence. Do not re-derive a candidate from the entities file.]
+[If nothing at all: skip this section — but a non-empty `pack["plate"]["rows"]` is never nothing.]
 
 Overnight inbox ([X] worth your attention from [Y] total)
 📧 [Sender]: [one-line summary] — [why ranked first: "first because it gates today's 4:45 call"]
@@ -766,9 +787,38 @@ omit the "Sources:" header entirely.]
 Sources: [optional — only if cited]
 - [Title — date](url)
 
+[BELOW THE FOLD (CUT-PLATE) — the counts that used to compete with the
+number, together, one line each, verbatim: `pack["fold_lines"]` in the order
+given (the resting line, then the queue pointer), then Step 3g's confirm
+pointer, then the dated-personal echo. Each line renders only when non-empty;
+none may ever move above the lead. The queue pointer's count is the driver's,
+computed from the same projector the staff meeting renders — never recount
+it, never round it, never soften it.]
+[N] overdue items are resting until you answer them — they're on your plate, say `what's on my plate`.
+[N] things need your eyes — say `staff meeting`.
+[N] new items need a 10-second confirm — they're in your Waiting On chat. [Render Step 3g's `pointer` VERBATIM — it is the exact string `confirm_flow.confirm_pointer_line` returns. Never substitute another chat name: the daily commitments surface is Waiting On (+ My Plate) on every workspace since CTS1, and the retired `commitments` task is not a chat the reader can open.]
+[N] personal item[s] due today — they're on your My Plate chat.
+[Dated-Personal echo (CTS1 §4.2, RULED 2026-07-16) — rendered ONLY when at
+least one owner-me effective-kind-task item is DUE TODAY
+(surface_split.partition_surfaces(opens, user_id)["personal"] filtered to
+effective due == today). DATED items only — never echo the undated Personal
+tail here (the 30+ day stale tail rides Friday triage's "still on your
+plate?" sweep, and the full list is the My Plate chat's job). Zero
+dated-today → omit the line entirely.]
+
 Suggested next steps
 [If the Top 3 moves section above captured the morning's shape, this section is optional or
 collapsed. Otherwise: 3-5 more specific next-action items by project.]
+
+[THE END — `pack["health_lines"]` VERBATIM, LAST (CUT-PLATE): the substrate
+alarms (the duplicate-entry warning, a stale view, unreadable entries — FS-04/
+05/06/15 + SYNC1), then the watchdog line, the dark-surface lines and the
+schedule-refresh lines. They used to open the brief; M's rule puts them at
+the end — never above the number, never softened, never dropped, never
+re-narrated. Empty → nothing renders. Only the closing preps chip line (below)
+comes after them, because WALKSMALL1 makes that chip the digest's last line.]
+⚠ [N] duplicate entry number(s) in your activity log (from two machines writing at once) — harmless to read, but worth a cleanup pass.
+[N] of your background tasks need attention — say health check for the detail.
 
 Today's preps: [9:00](_hq/meetings/Call_Prep_[slug]_[date].docx) · [11:00](_hq/meetings/Call_Prep_[slug]_[date].docx)
 [THE CLOSING REPEAT (SPEC WALKSMALL1 Part B). ONE line, last in the digest,
@@ -817,9 +867,13 @@ The Morning Brief chat IS the surface. The `morning-brief` orchestrator (registe
   Same helper, same `pack_run` shape, same field the scheduled fire writes — never a hand-rolled receipt. `skipped_leg(SKIP_NO_LEG)` states the honest reason: this path never had a prep leg, which is different from a leg that failed and different again from a leg suppressed by lateness. If the section did not render, there is nothing to number and no receipt is owed.
 - **Same link conversion (SPEC BRIEFFIX1 Item A).** A document link is a card that either opens or does not, and that does not depend on how the brief was triggered. Whatever is about to reach chat goes through `chat_output_renderer.absolutize_doc_links(text, <workspace root>)` first; the workspace-relative form is for what is written to disk, never for what is posted.
 
+### The narration scan — both modes (CUT-C item 8, MANDATORY)
+
+The pack builder already scans every line it composes (`surface_drivers.build_morning_brief_pack` runs `validate_chat_output` over the plate cut, the CHANGED / DECIDE / NEEDED lines, the money lines and every pointer). Whatever YOU compose on top of the pack — the opening paragraph, a per-project sentence, a Pinned note, the sign-off — is scanned the same way before it posts: run `validate_chat_output(<the composed digest text>)` from `chat_output_renderer.py`; it raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, a wire id), an event or field name, a path or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize`). NEVER catch the error and post anyway.
+
 ## Tone
 
-Direct and specific, like a calm chief of staff. **Opening order (the one canonical answer):** (1) the personified intro line from the Personification section — `"Morning, {first_name} — {brain_name} here with today's read."` — renders first and is the ONLY greeting permitted, AND it renders only if the persona block permits: when the workspace CLAUDE.md persona block (`## How {brain_name} talks to …`) says skip pleasantries or its Never-line forbids greeting openers, omit the intro line and open directly with (2); (2) the `Morning briefing — [Day, Month DD, YYYY]` header; (3) the synthesis lead. No other greeting anywhere ("Good morning!" / "Here's what's happening!" — never). The content itself reads as friendly plain English, not engineer status-board ("3 commitments aging past 14 days" is fine; "DRIFT: 3 commitments aged past threshold" is not). Per CONTRACT Rule 4 — no all-caps section headers, no scores, no internal mechanism names.
+Direct and specific, like a calm chief of staff. **Opening order (the one canonical answer):** (1) the personified intro line from the Personification section — `"Morning, {first_name} — {brain_name} here with today's read."` — renders first and is the ONLY greeting permitted, AND it renders only if the persona block permits: when the workspace CLAUDE.md persona block (`## How {brain_name} talks to …`) says skip pleasantries or its Never-line forbids greeting openers, omit the intro line and open directly with (2); (2) the `Morning briefing — [Day, Month DD, YYYY]` header; (3) THE LEAD — `pack["lead"]` verbatim: the plate's one number, the top rows, one pointer (CUT-PLATE — the number is the first thing the reader meets); (4) the synthesis lead. No other greeting anywhere ("Good morning!" / "Here's what's happening!" — never). The content itself reads as friendly plain English, not engineer status-board ("3 commitments aging past 14 days" is fine; "DRIFT: 3 commitments aged past threshold" is not). Per CONTRACT Rule 4 — no all-caps section headers, no scores, no internal mechanism names.
 
 ## Gotchas
 

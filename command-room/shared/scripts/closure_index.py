@@ -170,6 +170,77 @@ class ClosureIndex:
         return self.event_at.get(last_close)
 
 
+def reversed_closer_positions(events, *, until=None) -> set:
+    """POLICY1-B (c) — the closer events a LATER reopen has reversed.
+
+    Returns the set of append positions (indices into `events`) of closer
+    events (`CLOSER_TYPES`) for which a `commitment_reopened` naming the
+    same target was appended AFTER them — and, when `until` (an aware
+    datetime or ISO string) is given, no later than `until`. A close that
+    was undone before a surface fires is not a close that surface may
+    count: End of Day on 2026-09-04 listed a row among "3 promises closed
+    today" that an undo had reopened a minute earlier (ATTENDED_TEST
+    v5.27.0 B4.4). The same fold `is_closed` uses, asked per closer event.
+
+    A reopen followed by a RE-close leaves the re-close standing (its
+    position is after the reopen), so only the closes the reopen actually
+    reversed are returned."""
+    try:
+        from event_time import parse_ts as _pts
+    except Exception:  # pragma: no cover
+        _pts = None
+    limit = None
+    if until is not None:
+        if isinstance(until, str) and _pts is not None:
+            limit = _pts(until)
+        elif not isinstance(until, str):
+            limit = until
+    closes_by_target: dict = {}   # target -> [positions of closes not yet reversed]
+    closes_by_seq: dict = {}
+    reversed_at: set = set()
+    for idx, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("type") or ev.get("event") or ""
+        if et in CLOSER_TYPES:
+            cid = closer_target_id(ev)
+            if cid:
+                closes_by_target.setdefault(cid, []).append(idx)
+            for sv in closer_target_seqs(ev):
+                closes_by_seq.setdefault(sv, []).append(idx)
+        elif et == "commitment_reopened":
+            if limit is not None:
+                when = _pts(ev.get("ts")) if _pts is not None else None
+                if when is not None and when > limit:
+                    continue
+            target, sv = reopen_target(ev)
+            for pos in closes_by_target.pop(target, []) if target else []:
+                reversed_at.add(pos)
+            if sv is not None:
+                for pos in closes_by_seq.pop(sv, []):
+                    reversed_at.add(pos)
+        elif et == "commitment_updated":
+            # POLICY1-B RV-1 (REVIEW_POLICY1B re-verify @ 8ecdaeef) — the
+            # calendar closer's OBSERVED-side undo writes no reopen: the
+            # promoted row stays closed history and a `promotion_reversed`
+            # marker returns the guess to its tier. For every "closed in this
+            # window" reader that marker IS the reversal of that close — the
+            # customer put the guess back, and the evening must not report
+            # it closed. REVERSED-SET ONLY: `ClosureIndex.is_closed` is
+            # untouched (the promoted row is, and stays, closed).
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if d.get("promotion_reversed") is not True:
+                continue
+            if limit is not None:
+                when = _pts(ev.get("ts")) if _pts is not None else None
+                if when is not None and when > limit:
+                    continue
+            target = str(d.get("commitment_id") or d.get("target_id") or "")
+            for pos in closes_by_target.pop(target, []) if target else []:  # RV-1: the marker reverses the observed close
+                reversed_at.add(pos)
+    return reversed_at
+
+
 def build_closure_index(events) -> ClosureIndex:
     """One pass over `events` (append order) → a ClosureIndex."""
     index = ClosureIndex()

@@ -189,7 +189,7 @@ does loose-input resolution lands without one of these markers.
 - workspace-manager
 - people-crm
 - transcript-search
-- thread-resurrection
+- dormant-customer-scan's threads lens (formerly thread-resurrection, folded in SKILLMERGE1 2026-09-03)
 - intro-broker
 - follow-up-ritual
 - calendar-writer

@@ -1,0 +1,30 @@
+{
+  "version": "5.27.0",
+  "headline": "Your plate now groups by what each item wants next, captures from meetings carry their evidence, and five small skills fold into the ones they belonged to. One silent fix: workspaces without an owner pointer get one written.",
+  "items": [
+    {
+      "id": "v5270_write_user_pointer",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.write_user_pointer",
+      "action_function": "write_user_pointer",
+      "notice_template": "I recorded who this workspace belongs to, so your plate and counts read from the right side (you owe / owed to you) from now on. Nothing for you to do.",
+      "fallback_prompt_template": "I could not work out whose workspace this is from your records. Say 'set my name' followed by your name and I will file it; until then the plate shows one line instead of guessing."
+    },
+    {
+      "id": "v5270_announce_plate_and_capture",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two things you will notice. (1) Say 'what's on my plate': instead of one long list by age you get six groups in this order — Confirm, Do it, Chase, Wait, Schedule, Parked — each by project, then by when. Four actions on every row: done, not mine, later, drop. Parked items stay visible with the reason. (2) Commitments captured from meetings now record why they were believed and why any of them was held back for review, and a session where only you were talking is kept as notes rather than turned into to-dos. Nothing to do on your side.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5270_skillmerge1_fewer_front_doors",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Fewer front doors, same phrases. Five small skills folded into the ones they belonged to: the sidebar dashboards now live in one place (say \"level up command room\" to see Workspace Map, Quick Commands and the new My Open Commitments — \"install my commitments\" adds it), \"warm threads to revive\" and \"what conversations went quiet\" are the threads lens of the dormant-customer scan, \"what decisions should I revisit\" and \"decision audit\" are the revisit mode of your decision log, and \"show me what you'd hide\" is a read-only view inside needs-your-call. Every phrase you already use still works; nothing pinned to your sidebar changed.",
+      "action": "announce_only"
+    }
+  ]
+}

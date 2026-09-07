@@ -316,10 +316,68 @@ INGEST_KILL_REASON = "ingest_killed"
 # calibration bands off events no human ever adjudicated
 # (confidence_calibration.load_review_outcomes is the named reader).
 DANGLING_TARGET_REASON = "target_never_created"
+
+# POLICY1-A (M ruling 2026-09-03) — the reason an AUTOMATIC close states about
+# itself: a later transcript said the work was done, the match met the close
+# bar, and nobody was asked. It rides RESOLUTION_REASON_KEY on a
+# `commitment_resolved` with `resolution: done` and travels with
+# `data.confirmed_by: "transcript"` and the verbatim completion turn as the
+# evidence.
+#
+# It is deliberately NOT in NON_DISMISSAL_RESOLUTION_REASONS: that frozenset
+# names LAPSES (a `dropped` nobody answered), and this is a `done`. It has its
+# own reader below for the one thing that must not mistake it for a human:
+# Loop-4 calibration measures the confirm-rate of each band from proposal
+# outcomes, and counting the machine's own closes as confirmations would teach
+# the calibrator that its band is right on evidence no person ever graded
+# (confidence_calibration.load_review_outcomes is the named reader).
+AUTO_TRANSCRIPT_CLOSE_REASON = "auto_closed_transcript_evidence"
+AUTO_CLOSE_CONFIRMED_BY = "transcript"
+# POLICY1-B DD-7 (fix F-1) — the calendar closer's door, ADDED BESIDE the
+# transcript's, never displacing it: a scheduling row (or an observed-tier
+# scheduling guess) closed because the meeting it was about happened with
+# the other side present. Same writer door (`close_commitment(confirmed_by=)`,
+# requires a quote and a pointer), its own word so readers can tell them apart.
+AUTO_CLOSE_CONFIRMED_BY_CALENDAR = "calendar"
+AUTO_CLOSE_CONFIRMED_BY_VALUES = (AUTO_CLOSE_CONFIRMED_BY, AUTO_CLOSE_CONFIRMED_BY_CALENDAR)
+
+
+def is_automatic_transcript_close(data) -> bool:
+    """True when this `commitment_resolved` event's data marks the machine's
+    own close on transcript evidence (M ruling 2026-09-03). Takes the event's
+    `data` dict so neither the KEY nor the values are ever hand-spelled at a
+    call site."""
+    if not isinstance(data, dict):
+        return False
+    if str(data.get(RESOLUTION_REASON_KEY) or "").strip().lower() == AUTO_TRANSCRIPT_CLOSE_REASON:
+        return True
+    return str(data.get("confirmed_by") or "").strip().lower() == AUTO_CLOSE_CONFIRMED_BY
+
+
+def is_automatic_calendar_close(data) -> bool:
+    """POLICY1-B DD-7 — True when this `commitment_resolved` data marks the
+    calendar closer's own close of an UNCONFIRMED guess (`confirmed_by:
+    calendar`). Kept apart from the transcript reader on purpose: Loop-4
+    calibration and the feed's `closed_unconfirmed` count are the
+    transcript's; this one has its own feed line."""
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("confirmed_by") or "").strip().lower() == AUTO_CLOSE_CONFIRMED_BY_CALENDAR
+# POLICY1-A (M ruling 2026-09-03, REVIEW_MERGED_v5280 F-2) — the review-expiry
+# job's chip leg WITHDRAWS a standing chip nobody answered inside
+# `PROPOSAL_TTL_DAYS`: a `commitment_review_dismissed` naming the proposal
+# (`data.proposal_seq`) under this reason. It is the system retracting its own
+# evidence line, not the customer saying "not relevant" — so it is IN the
+# frozenset below for exactly the reason the dangling drain is: Loop-4
+# calibration must not count it as a dismissal, and the independent-touch bar
+# on `undo confirm` must not refuse the customer's own undo with "you skipped
+# its review row" over a row the machine withdrew (probe P6 found both).
+POLICY_RETRACT_REASON = "policy_retracted"
 NON_DISMISSAL_RESOLUTION_REASONS: FrozenSet[str] = frozenset({
     REVIEW_EXPIRY_REASON,
     INGEST_KILL_REASON,
     DANGLING_TARGET_REASON,
+    POLICY_RETRACT_REASON,
 })
 
 # REFINT1 — the commitment-REFERENCE family: event types whose data points at

@@ -443,6 +443,35 @@ def check_ts_review(workspace_root) -> dict:
     }
 
 
+def check_append_markers(workspace_root) -> dict:
+    """INDEX1A follow-up (night-6 review, item 3): the two side markers the
+    true-append writer leaves behind when it could NOT fully trust its own
+    write. Neither is data loss — that is the point of surfacing them:
+      - `events.jsonl.appendverify-<stamp>.jsonl` — a batch whose post-write
+        read-back did not find it in the live tail; the batch is set aside
+        there (deliberately NOT the quarantine family that `reconcile_forward`
+        auto-replays) and is NOT in the ledger until someone looks.
+      - `events.jsonl.seqhw.rescan.json` — the `.seqhw` witness could not be
+        advanced after an append; the next append does a one-time full scan
+        to allocate seqs. Harmless if it clears itself; persistent = the
+        sidecar is unwritable (permissions / sync lock).
+    Read-only; every failure reads as "nothing to report"."""
+    out = {"n_appendverify": 0, "rescan_pending": False}
+    try:
+        ws = Path(workspace_root)
+        p = _events_path(ws)
+        parent = p.parent
+        if parent.is_dir():
+            prefix = p.name + ".appendverify-"
+            out["n_appendverify"] = sum(
+                1 for child in parent.iterdir()
+                if child.name.startswith(prefix) and child.name.endswith(".jsonl"))
+            out["rescan_pending"] = (parent / (p.name + ".seqhw.rescan.json")).is_file()
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
@@ -566,6 +595,25 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
             f"Nothing was lost — it is held next to your activity log waiting "
             f"on a decision. Ask me to show you what is waiting."
         )
+    # INDEX1A — the true-append writer's two side markers (night-6 review,
+    # item 3: "silent to the user until system_health lines exist").
+    am = check_append_markers(workspace_root)
+    if am["n_appendverify"] > 0:
+        n = am["n_appendverify"]
+        lines.append(
+            f"⚠ {n} batch{'es' if n != 1 else ''} of recent changes could not "
+            f"be confirmed as written to your activity log and {'were' if n != 1 else 'was'} "
+            f"set aside next to it instead. Nothing is lost, but those changes "
+            f"are not in your counts until they are replayed. Ask me to show "
+            f"you what is waiting."
+        )
+    if am["rescan_pending"]:
+        lines.append(
+            "⚠ The activity log's position marker could not be updated on the "
+            "last write, so the next write will re-scan the whole log first. "
+            "Harmless once; if this line stays, the log's sidecar file is not "
+            "writable (a sync lock or permissions) and writes are slowing down."
+        )
     dup = check_duplicate_seqs(workspace_root)
     if dup["n_duplicated"] > 0:
         lines.append(
@@ -586,5 +634,6 @@ __all__ = [
     "check_duplicate_seqs",
     "check_future_ts",
     "check_ts_review",
+    "check_append_markers",
     "substrate_alarm_lines",
 ]

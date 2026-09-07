@@ -112,6 +112,7 @@ from capture_gate import (  # noqa: E402
     OBSERVED_TYPE,
     classify_capture,
     gate_commitment_data,
+    stamp_confidence as _stamp_confidence,
     matches_open_commitment,
     observed_from_commitment_event,
     resolve_capture_mode,
@@ -463,8 +464,10 @@ def build_inbound_commitment_event(
         "person_ids": pids,
         "data": data,
     }
-    if classification_confidence is not None:
-        event["classification_confidence"] = classification_confidence
+    # CONFCLAMP2 seam 3 of 5 (ATTRIB1-A A2): one confidence vocabulary, one
+    # write seam — clamped where it is written, never passed straight through.
+    _stamp_confidence(event, classification_confidence,
+                      holder="build_inbound_commitment_event")
     if (ts or "").strip():
         event["ts"] = ts.strip()  # backdate to when the message arrived
     return event

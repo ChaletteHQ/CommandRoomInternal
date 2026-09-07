@@ -113,7 +113,7 @@ Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/eve
 
 # Phase 4 — Post the recap
 
-Output the rendered markdown recap as the chat turn body. Follow the exact format from `skills/weekly-recap/SKILL.md` Phase 4 — Headline, Top Decisions, Commitments Captured (You Owe / They Owe), Notable Meetings, Email Threads of Note, New People Surfaced, Anomalies, By-Project Breakdown, What Now. Omit sections with no real content (the skill's "no placeholders" rule).
+Output the rendered markdown recap as the chat turn body. Follow the exact format from `skills/weekly-recap/SKILL.md` Phase 4 — Headline, Top Decisions, Your Plate This Week (the plate's `wrap` cut — `plate_view.wrap_cut`, rendered verbatim, EVERY Parked row with its reason, and checked before posting with `plate_view.wrap_relay_check(post_text, plate["text"])`, which must return `[]` — CUT-PLATE, 2026-09-06; SPEC PLATE1 night 2), Notable Meetings, Email Threads of Note, New People Surfaced, Anomalies, By-Project Breakdown, What the System Did, Decided for You / Still Waiting (`quiet.wrap_sections`, rendered verbatim — SPEC QUIET1 D6; both drop-empty), What Now. Omit sections with no real content (the skill's "no placeholders" rule).
 
 **Tone:** crisp, direct, no preamble. The recap stands on its own — don't introduce it with "Here's your week" or "Wrapping up the week." If the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`), apply it to the chat framing — it outranks this section's tone defaults (STYLE1 D6).
 

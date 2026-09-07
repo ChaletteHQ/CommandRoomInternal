@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover — direct-path fallback
     from text_clip import clip  # noqa: E402
 
 import datetime as _dt
+import json
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -128,8 +129,18 @@ def build_meeting_event(
     status: Optional[str] = None,
     ts: Optional[str] = None,
     source_had_attendees: Optional[bool] = None,
+    transcript_class: Optional[str] = None,
+    working_session: Optional[bool] = None,
 ) -> dict:
     """The one sanctioned constructor for a `meeting` event (BUG-8244).
+
+    ATTRIB1-A (DD-1 / A1): `transcript_class` is the class `transcript_class()`
+    declared for this meeting's transcript before extraction — pass
+    `routed["transcript_class"]` — and `working_session=True` marks a DICTATED
+    working session (one voice, nobody else on the call): its captures were
+    kept on the observed tier and no open item, no question and no queue row
+    was written for it. Both are additive and optional; a value outside
+    `TRANSCRIPT_CLASSES` is refused rather than written.
 
     Before this existed the `meeting` event was the ONLY primary event with no
     builder: 16 writer sites improvised 4 incompatible attendee shapes, the
@@ -205,6 +216,16 @@ def build_meeting_event(
         data["status"] = str(status).strip()
     if source_had_attendees and not (pids or emails or external):
         data["binding_missing"] = True
+    if transcript_class is not None:
+        tc = str(transcript_class or "").strip()
+        if tc not in TRANSCRIPT_CLASSES:
+            raise ValueError(
+                f"meeting event transcript_class {transcript_class!r} is not "
+                f"one of {sorted(TRANSCRIPT_CLASSES)} — pass "
+                f"routed['transcript_class'], never a hand-typed label")
+        data["transcript_class"] = tc
+    if working_session:
+        data["working_session"] = True
 
     ev: dict = {
         "type": "meeting",
@@ -239,10 +260,15 @@ def build_meeting_commitment_event(
     primary_thread_id: Optional[str] = None,
     person_ids: Optional[List[str]] = None,
     classification_confidence: Optional[float] = None,
-    pending_review: bool = False,
+    pending_review: Optional[bool] = None,
     review_reason: str = "",
     urgency: Optional[str] = None,
     source_skill: str = "meeting-notes",
+    attribution: Optional[dict] = None,
+    floor_code: str = "",
+    fusion_status: str = "",
+    strict_attribution: bool = False,
+    evidence_kind: Optional[str] = None,
 ) -> dict:
     """One extracted meeting commitment → one canonical `commitment` event
     dict, with the SHARED capture block enforced in code (v4.6.1 W4c
@@ -252,17 +278,40 @@ def build_meeting_commitment_event(
     the same way slack_capture / session_sweep already had it in code — the
     transcript writers no longer depend on prose alone to run the block.
 
+    ATTRIB1-A (D4 / D5 / D7 / DD-4) — the flag is EVIDENCE, not a literal:
+      * `attribution` is the typed basis `derive_attribution` produced
+        ({transcript_class, owner_basis, counterparty_basis, span, turn}).
+        `route_meeting_captures` always supplies one. A caller that passes
+        none gets one derived here from the item's own fields (class
+        `unknown`, no span) with a tell on stderr — the legacy burn-in
+        posture, same as a kind-less row on the non-strict append path — and
+        `strict_attribution=True` (the route's posture) REFUSES instead. A
+        malformed attribution is refused on both paths.
+      * `floor_code` / `fusion_status` are the admission verdict's own codes
+        and are WRITTEN on the row (`data.floor_code` on every gated row,
+        `data.fusion_status` on every row). Before this build the verdict
+        computed both and the row kept neither.
+      * `pending_review` is DERIVED — `derive_pending_review` — from the
+        attribution, the floor/fusion verdict and the confidence floor.
+        `None` (the default) means the caller states nothing. An explicit
+        value that disagrees with the derived one is NOT honoured: the row
+        keeps the derived flag and carries a `capture_contract_violation`
+        note saying what the caller asked for, so the contradiction is
+        diagnosable on the record instead of silently winning.
+
     Construction only — append the batch through `event_gate.append_event`
     (ids minted and seq stamped inside the writer lock; C4's semantic dedup
     fires there). Raises ValueError on anything the extraction must go back
     and do."""
     try:
-        from capture_gate import gate_commitment_data, parse_iso_date
+        from capture_gate import (gate_commitment_data, parse_iso_date,
+                                  stamp_confidence)
     except ImportError:  # pragma: no cover — direct-path import
         import sys as _sys
 
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from capture_gate import gate_commitment_data, parse_iso_date
+        from capture_gate import (gate_commitment_data, parse_iso_date,
+                                  stamp_confidence)
 
     title = (title or "").strip()
     if not title:
@@ -305,16 +354,79 @@ def build_meeting_commitment_event(
     # parameter stays for caller compat; the value is dropped. Historic
     # rows keep their field (append-only). Wire a real reader before ever
     # re-adding the stamp — guard G29 fails a writer-without-reader field.
-    if pending_review:
-        data["pending_review"] = True
-        if review_reason:
-            data["review_reason"] = review_reason
+
+    # ATTRIB1-A DD-4 — the basis rides the row, validated before the gate
+    # runs so a malformed one never reaches the write.
+    if attribution is None:
+        if strict_attribution:
+            raise ValueError(
+                f"meeting commitment '{title}' carries no attribution — the "
+                f"strict path refuses it (DD-4): route the item through "
+                f"route_meeting_captures, which derives the basis, or pass "
+                f"derive_attribution(...) explicitly")
+        attribution = derive_attribution(
+            {"title": title, **data}, tclass=None, hay_spans=None, turns=None)
+        import sys as _sys_attr
+        _sys_attr.stderr.write(
+            f"[meeting_capture] attribution derived by the builder for "
+            f"'{title[:60]}' (transcript class unknown, no span) — pass the "
+            f"item through route_meeting_captures so the basis is real\n")
+    validate_attribution(attribution, subject=f"meeting commitment '{title}'")
+    data["attribution"] = dict(attribution)
+    # ATTRIB1-A D5 / D7 — the verdict's codes are written, not just computed.
+    fc = str(floor_code or "").strip()
+    if fc:
+        if not FLOOR_CODE_RE.match(fc):
+            raise ValueError(
+                f"meeting commitment '{title}' floor_code {floor_code!r} is "
+                f"not a FLOOR_* code — pass the verdict's floor_code")
+        data["floor_code"] = fc
+    fs = str(fusion_status or "").strip()
+    if fs:
+        if fs not in (FUSION_VERIFIED, FUSION_REFUSED, FUSION_INERT):
+            raise ValueError(
+                f"meeting commitment '{title}' fusion_status {fusion_status!r} "
+                f"is not verified/refused/inert")
+        data["fusion_status"] = fs
+    # EXTRACT1 dragger 3 — the evidence's relation to the transcript, when
+    # the writer knows it. Refuses a label outside the enum.
+    ek = str(evidence_kind or "").strip()
+    if ek:
+        if ek not in EVIDENCE_KINDS:
+            raise ValueError(
+                f"meeting commitment '{title}' evidence_kind {evidence_kind!r} "
+                f"is not one of {sorted(EVIDENCE_KINDS)}")
+        data["evidence_kind"] = ek
 
     gate_commitment_data(
         data,
         subject=f"meeting commitment {source_ref}",
         classification_confidence=classification_confidence,
     )
+
+    # ATTRIB1-A D4 — the gate's own stamp (the v4.5.2 inversion) is folded
+    # into the DERIVED flag: its reasons are a subset of the attribution's on
+    # the meeting path, and where they are not (an unresolved counterparty
+    # NAME on a non-promise) the attribution rule wins. One source of truth.
+    gate_reason = str(data.pop("review_reason", "") or "")
+    data.pop("pending_review", None)
+    derived, why = derive_pending_review(
+        data, floor_code=fc, fusion_status=fs,
+        classification_confidence=classification_confidence)
+    if derived:
+        data["pending_review"] = True
+        data["review_reason"] = (str(review_reason or "").strip()
+                                 or gate_reason or "; ".join(why))
+    if pending_review is not None and bool(pending_review) != derived:
+        data[CAPTURE_CONTRACT_VIOLATION] = (
+            f"caller passed pending_review={bool(pending_review)!r}; derived "
+            f"{derived!r} from attribution "
+            f"({'; '.join(why) if why else 'no basis says review'}) — the "
+            f"derived value stands")
+        import sys as _sys_ccv
+        _sys_ccv.stderr.write(
+            f"[meeting_capture] capture_contract_violation on "
+            f"'{title[:60]}': {data[CAPTURE_CONTRACT_VIOLATION]}\n")
 
     data["status"] = "open"
     if due_str and parse_iso_date(due_str):
@@ -338,8 +450,11 @@ def build_meeting_commitment_event(
         "person_ids": pids,
         "data": data,
     }
-    if classification_confidence is not None:
-        ev["classification_confidence"] = classification_confidence
+    # CONFCLAMP2 seam 1 of 5 (ATTRIB1-A A2): one confidence vocabulary, one
+    # write seam — `classification_confidence` is the capture's confidence
+    # and it is clamped where it is written.
+    stamp_confidence(ev, classification_confidence,
+                     holder="build_meeting_commitment_event")
     return ev
 
 
@@ -398,8 +513,15 @@ def build_decision_event(
         "person_ids": list(person_ids or []),
         "data": data,
     }
-    if classification_confidence is not None:
-        ev["classification_confidence"] = classification_confidence
+    # CONFCLAMP2 seam 2 of 5 (ATTRIB1-A A2).
+    try:
+        from capture_gate import stamp_confidence as _stamp_confidence
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from capture_gate import stamp_confidence as _stamp_confidence
+    _stamp_confidence(ev, classification_confidence,
+                      holder="build_decision_event")
     return ev
 
 
@@ -581,6 +703,23 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
                 "n_floor_gated", "n_deduped", "n_fusion_inert"):
         if key in summary:
             out[key] = int(summary.get(key) or 0)
+    # ATTRIB1-A A1 — rows the dictation rule sent to the observed tier. Its
+    # own line, not a member of the tuple above: that tuple is PREC1's P3
+    # mutation anchor (drop `n_fusion_inert` and the pin must red).
+    if "n_working_session" in summary:
+        out["n_working_session"] = int(summary.get("n_working_session") or 0)
+    # ATTRIB1-B / EXTRACT1 — the ladder's and the draggers' own tallies, each
+    # on its own line for the same P3 reason. Counts only, never a name.
+    for key in ("n_questions", "n_owner_changed", "n_self_counterparty",
+                "n_asides", "n_paraphrase"):
+        if key in summary:
+            out[key] = int(summary.get(key) or 0)
+    # ATTRIB1-A DD-1 — the class the transcript was declared to be. A label
+    # from a closed enum, never a name; it is what lets the re-measure read
+    # the flag rate PER CLASS off the receipts alone.
+    tclass = routed.get("transcript_class") if isinstance(routed, dict) else None
+    if tclass in TRANSCRIPT_CLASSES:
+        out["transcript_class"] = tclass
     floor_reasons: dict = {}
     for verdict in (routed.get("verdicts") or []):
         v = verdict or {}
@@ -724,6 +863,15 @@ def meeting_binding_audit(workspace_root, source_ref: str) -> dict:
         out["found"] = True
         if data.get("binding_missing"):
             out["binding_missing_flagged"] = True
+        # ATTRIB1-A — the two stamps DD-1/A1 put on the meeting event, read
+        # back the same way the binding is, so the closing summary can say
+        # "dictated working session" instead of "0 commitments". Additive:
+        # the keys appear only when the event carries them, so the audit's
+        # shape on an unstamped meeting is byte-identical.
+        if data.get("transcript_class") in TRANSCRIPT_CLASSES:
+            out["transcript_class"] = data.get("transcript_class")
+        if data.get("working_session"):
+            out["working_session"] = True
         if (meeting_person_ids(ev) or attendee_emails_of(ev)
                 or (data.get("attendees_external") or [])):
             out["bound"] = True
@@ -1017,6 +1165,39 @@ FLOOR_NOT_ACCEPTED = "discussed, never accepted as a commitment"
 #       rest of the transcript before writing it.
 FLOOR_DONE_IN_MEETING = "already done during the call, nothing left afterwards"
 FLOOR_SUPERSEDED_IN_MEETING = "taken back later in the same conversation"
+# EXTRACT1 dragger 2 (2026-09-04) — the NON-COMMISSIVE speech acts the W34
+# census found read as promises.
+#
+# THEY ARE A LABEL, NOT A FLOOR VERDICT, and that distinction was learned the
+# hard way (2026-09-04, `run_exchange_window_test` 91/122 on this branch).
+# The first cut made them floor verdicts returned from the hedge branch, so
+# a declined request that had returned `FLOOR_NOT_ACCEPTED` since v5.19.0
+# started returning "a request received, not accepted here" instead. Two
+# things broke, and only the first was visible:
+#
+#   1. NAMING. `FLOOR_NOT_ACCEPTED` is customer-visible, it is the key
+#      `capture_counts.floor_reasons` tallies, and EXCH1 pins it in 122
+#      checks. Renaming it silently re-buckets every historical comparison.
+#   2. BEHAVIOUR, which is worse. EXCH1's rescue — an offer the NEXT TURN
+#      accepted beats the one-line "never accepted" verdict — keys on
+#      `FLOOR_NOT_ACCEPTED`. A hedged row that matched the advice or
+#      reported shape returned a verdict outside that guard, so the rescue
+#      never ran and a genuinely accepted offer stayed gated.
+#
+# So the floor's vocabulary is EXACTLY what it was, and these five ride
+# BESIDE the verdict as `data.speech_act`: the row still routes wherever the
+# shipped floor sends it, and it can additionally say what shape it is. A
+# lane that wants to name something must add a field, never rename a verdict
+# another feature reads.
+SPEECH_ACT_ADVICE = "advice offered, not a promise made"
+SPEECH_ACT_REQUEST = "a request received, not accepted here"
+SPEECH_ACT_CONDITIONAL_DECLINED = "a conditional offer the other side declined"
+SPEECH_ACT_REPORTED = "reported about someone else, not promised here"
+SPEECH_ACT_DICTATION = "dictated to a tool, not promised to a person"
+SPEECH_ACT_VALUES = frozenset((
+    SPEECH_ACT_ADVICE, SPEECH_ACT_REQUEST, SPEECH_ACT_CONDITIONAL_DECLINED,
+    SPEECH_ACT_REPORTED, SPEECH_ACT_DICTATION,
+))
 
 # The same five conditions under their STABLE names.
 #
@@ -1036,6 +1217,15 @@ FLOOR_CODE_RETOLD = "FLOOR_RETOLD"
 FLOOR_CODE_NOT_ACCEPTED = "FLOOR_NOT_ACCEPTED"
 FLOOR_CODE_DONE_IN_MEETING = "FLOOR_DONE_IN_MEETING"
 FLOOR_CODE_SUPERSEDED_IN_MEETING = "FLOOR_SUPERSEDED_IN_MEETING"
+# The stable names for the LABEL (not floor codes — the floor's code table
+# below is exactly the shipped one).
+SPEECH_ACT_CODES = {
+    SPEECH_ACT_ADVICE: "ADVICE",
+    SPEECH_ACT_REQUEST: "REQUEST",
+    SPEECH_ACT_CONDITIONAL_DECLINED: "CONDITIONAL_DECLINED",
+    SPEECH_ACT_REPORTED: "REPORTED",
+    SPEECH_ACT_DICTATION: "DICTATION",
+}
 
 # Every key a receipt written from here can carry, plus the one bucket a READER
 # needs for the receipts that already exist.
@@ -1048,6 +1238,16 @@ FLOOR_CODES = {
     FLOOR_DONE_IN_MEETING: FLOOR_CODE_DONE_IN_MEETING,
     FLOOR_SUPERSEDED_IN_MEETING: FLOOR_CODE_SUPERSEDED_IN_MEETING,
 }
+# EXTRACT1 dragger 3 — how the row's `evidence` relates to the transcript.
+# `verbatim`: the words locate in the transcript (the span is real).
+# `paraphrase`: the extractor could not quote and SAID SO (D-C) — the
+# fusion guardrail is then honestly INERT rather than falsely REFUSED, and
+# the row still says its evidence is a restatement. An unlabelled string that
+# does not locate keeps `refused`: that is the writer defect this label
+# exists to name.
+EVIDENCE_VERBATIM = "verbatim"
+EVIDENCE_PARAPHRASE = "paraphrase"
+EVIDENCE_KINDS = frozenset((EVIDENCE_VERBATIM, EVIDENCE_PARAPHRASE))
 FLOOR_CODE_VALUES = frozenset(FLOOR_CODES.values())
 # FLOOR2 C1: the catch-all bucket is itself spelled as a FLOOR_ code, so the
 # WRITE-side invariant is total — every key `capture_telemetry` can emit
@@ -1143,6 +1343,976 @@ TIER_BOOK = "book"
 TIER_REVIEW = "review"
 TIER_OBSERVED = "observed"
 TIER_SKIP = "skip"
+
+# =============================================================================
+# ATTRIB1-A — the transcript is CLASSIFIED before extraction, every row carries
+# a typed attribution basis, and `pending_review` is derived from it.
+# =============================================================================
+#
+# The Sep 1 capture analysis: most real transcripts arrive as `Me:` / `Them:`
+# (the backend collapses every non-user voice into one), a minority carry
+# named speakers, a few carry no marker at all, and a handful are one voice
+# talking to nobody (a dictated working session). Nothing in the capture path
+# read any of that — the `Me`/`Them` marker's only consumer was EXCH1's
+# acceptance check — and the review flag was a literal six unrelated
+# conditions shared. This block is the A lane of the fix: declare the class,
+# write the basis, derive the flag. The owner/counterparty LADDER (marker →
+# calendar → vocative → named speaker → person_ids → ask) is the B lane; the
+# bases it will write are already in the enum below so no row written tonight
+# has to be rewritten.
+TRANSCRIPT_CLASS_NAMED = "named"          # speaker tags carry names
+TRANSCRIPT_CLASS_ME_THEM = "me_them"      # user vs one collapsed other voice
+TRANSCRIPT_CLASS_UNLABELLED = "unlabelled"  # no turn markers at all
+TRANSCRIPT_CLASS_DICTATION = "dictation"  # `Me:` turns only — one voice
+TRANSCRIPT_CLASS_UNKNOWN = "unknown"      # no transcript reached the capture
+TRANSCRIPT_CLASSES = frozenset((
+    TRANSCRIPT_CLASS_NAMED, TRANSCRIPT_CLASS_ME_THEM,
+    TRANSCRIPT_CLASS_UNLABELLED, TRANSCRIPT_CLASS_DICTATION,
+    TRANSCRIPT_CLASS_UNKNOWN,
+))
+
+# The basis vocabulary. `speaker` / `calendar` / `vocative` / `person_ids`
+# are the B-lane ladder's rungs (DD-2 / DD-3 / A5); tonight's writer stamps
+# `inferred` (the extractor resolved an id and nothing has checked it against
+# the transcript yet), `unknown` (nothing resolved) and `none` (a counterparty
+# slot that does not apply — a task has nobody on the other end by
+# definition).
+BASIS_SPEAKER = "speaker"
+BASIS_CALENDAR = "calendar"
+BASIS_VOCATIVE = "vocative"
+BASIS_PERSON_IDS = "person_ids"
+BASIS_INFERRED = "inferred"
+BASIS_UNKNOWN = "unknown"
+BASIS_NONE = "none"
+OWNER_BASES = frozenset((BASIS_SPEAKER, BASIS_CALENDAR, BASIS_VOCATIVE,
+                         BASIS_INFERRED, BASIS_UNKNOWN))
+# ATTRIB1-B A6 — the basis a row carries once the lapse applied the
+# ladder's pre-selected default (never written at capture; written by the
+# review-expiry drain through `commitment_state.apply_counterparty_default`).
+BASIS_DEFAULT_APPLIED = "default_applied"
+COUNTERPARTY_BASES = frozenset((BASIS_CALENDAR, BASIS_VOCATIVE, BASIS_SPEAKER,
+                                BASIS_PERSON_IDS, BASIS_INFERRED,
+                                BASIS_UNKNOWN, BASIS_NONE,
+                                BASIS_DEFAULT_APPLIED))
+
+# ATTRIB1-B DD-3 / D3 — the ONE question a row may carry when the ladder
+# cannot resolve the counterparty: `{kind: who_is_you, options: [person
+# ids], default: person id | None}`. Nothing else is ever asked on a row.
+QUESTION_WHO_IS_YOU = "who_is_you"
+
+# M RULING 2, night 8 (2026-09-03) — NO ADDITIONAL QUESTIONS. The reviewer
+# recommended folding `scheduling` into the D4 promise clause so an
+# unresolved counterparty would ask (REVIEW_ATTRIB1A F4 (b)); M REVERSED it.
+# `scheduling` and `agenda` rows stay SPEC-LITERAL: they book silently,
+# carry `counterparty_basis: unknown` on the record for a reader, ask
+# nothing, and the calendar closer (POLICY1-B) is what finishes them. So the
+# ladder mints its ONE question on a `promise` only, and the only questions
+# in the product tonight are D8 door 1's <=3 per meeting, each rendered with
+# its answer pre-selected.
+PROMISE_CLAUSE_KINDS = frozenset(("promise",))
+
+# EXTRACT1 D-A / dragger 4 — the user can never be their own counterparty.
+# The route STRIPS the self-reference before the build and says so; the
+# builder's seam (`capture_gate.gate_commitment_data`) REFUSES one that
+# reaches it. Two layers, one rule, never a deletion.
+SELF_COUNTERPARTY_NOTE = (
+    "the owner was also written as the counterparty — the self-reference "
+    "was stripped; whoever is on the other end is unresolved"
+)
+
+# D11 — an aside: the user's own item that fails ONLY the consequence test
+# (no date, no counterparty, no consequence language). Kept on the observed
+# tier where prep can see it; never a question, never a queue row.
+ASIDE_REASON = (
+    "an aside — nothing depends on it, so it is kept for prep and never asked"
+)
+
+# A1 (ruled 2026-09-02): a dictated working session routes to the OBSERVED
+# tier — captures kept for prep, no open item, no question, no queue row.
+# Never "extract nothing": that contradicted the 2026-08-01 no-silent-drop
+# ruling and M's own EXTRACT1 D-B ("keep capturing working sessions").
+WORKING_SESSION_REASON = (
+    "dictated working session — kept for prep, no open item and no question"
+)
+
+# DD-4 — the note a row carries when its caller asked for a flag value the
+# evidence does not support. Provenance for the reviewer; never a lane.
+CAPTURE_CONTRACT_VIOLATION = "capture_contract_violation"
+
+# A turn marker as the transcript backends write it: `Me:` / `Them:` (the
+# collapsed shape), `Speaker N:` (a diarizer with no names), or a one-to-three
+# token capitalised name. Markers are INLINE in real transcripts (` Me: `
+# mid-line, not line-initial — the review's census found a line-initial regex
+# matches nothing), so the anchor is "start of text or after whitespace".
+_SPEAKER_LABEL_RE = re.compile(
+    r"(?:(?<=\s)|^)(Me|Them|Speaker \d{1,2}|"
+    r"[A-Z][a-z]+(?: [A-Z][A-Za-z'.-]+){0,2}):\s"
+)
+# A named label counts as a SPEAKER only when it recurs: a one-off
+# `Note:` / `Decision:` in prose is a heading, not a voice.
+_NAMED_MIN_TURNS = 2
+_LABEL_STOPLIST = frozenset((
+    "note", "notes", "action", "actions", "action items", "summary",
+    "decision", "decisions", "topic", "topics", "agenda", "question",
+    "questions", "answer", "update", "updates", "context", "example",
+    "step", "status", "next steps", "takeaways", "attendees", "participants",
+    "date", "time", "title", "subject", "re", "ps", "fyi", "todo", "goal",
+    "goals", "outcome", "outcomes", "background", "recap", "meeting",
+))
+
+
+def transcript_turns(transcript_text) -> list:
+    """Every turn marker in the transcript, in order:
+    `[(label, marker_start, body_start)]` — `label` is the marker text as
+    written (`Me`, `Them`, `Speaker 2`, `Bo Sample`), `marker_start` the char
+    offset where it begins and `body_start` where the turn's words begin.
+    Pure. A transcript with no markers yields `[]`."""
+    text = str(transcript_text or "")
+    out = []
+    for m in _SPEAKER_LABEL_RE.finditer(text):
+        out.append((m.group(1), m.start(1), m.end()))
+    return out
+
+
+def _norm_person_name(name) -> str:
+    return " ".join(str(name or "").lower().replace(".", " ").split())
+
+
+def _is_user_name(name, user_names) -> bool:
+    """Does an attendee name spell the primary user? Exact normalised match,
+    or a first-token match against a single-token user name (the workspace's
+    `user_first_name`). Never a substring."""
+    n = _norm_person_name(name)
+    if not n:
+        return False
+    for u in user_names or ():
+        un = _norm_person_name(u)
+        if not un:
+            continue
+        if n == un:
+            return True
+        if " " not in un and n.split()[0] == un:
+            return True
+        if " " not in n and un.split()[0] == n:
+            return True
+    return False
+
+
+def transcript_class(transcript_text, attendee_records=None,
+                     user_names=()) -> dict:
+    """DD-1 — ONE classifier, run FIRST, pure.
+
+    Returns `{"class", "n_me", "n_them", "named_speakers", "generic_labels",
+    "other_party_ids", "n_other", "turns"}`:
+
+      class            `named` when speaker tags carry names (with or without
+                       a `Me:` beside them); `me_them` when the user's voice
+                       and ONE collapsed other voice alternate (a `Them:`-only
+                       file is the same collapse and reads the same);
+                       `dictation` when `Me:` is the only marker — one voice,
+                       nobody answering (A1: the me-only MARKER census, not a
+                       calendar head-count); `unlabelled` when the text has
+                       no markers; `unknown` when there is no text.
+      named_speakers   the recurring name labels, as written, in first-seen
+                       order (`Speaker N` labels are counted separately as
+                       `generic_labels` — a diarizer that names nobody gives
+                       the owner ladder nothing to resolve).
+      other_party_ids  the meeting's attendees other than the user, keyed by
+                       email when the record has one else by name — from the
+                       SAME `attendee_records` the caller already holds
+                       (ATTENDEE1's pair-preserving normaliser). Person-id
+                       resolution is the B lane's job; the key is what it
+                       resolves from.
+      turns            `transcript_turns(...)`, so callers that need the turn
+                       of a span do not re-scan.
+
+    `attendee_records=None` / `user_names=()` are legal and leave
+    `other_party_ids` empty — the class itself never depends on the calendar.
+    """
+    text = str(transcript_text or "")
+    turns = transcript_turns(text)
+    n_me = n_them = 0
+    named_counts: dict = {}
+    named_order: list = []
+    generic: dict = {}
+    for label, _s, _b in turns:
+        low = label.lower()
+        if low == "me":
+            n_me += 1
+        elif low == "them":
+            n_them += 1
+        elif low.startswith("speaker "):
+            generic[label] = generic.get(label, 0) + 1
+        elif low in _LABEL_STOPLIST:
+            continue
+        else:
+            if label not in named_counts:
+                named_order.append(label)
+            named_counts[label] = named_counts.get(label, 0) + 1
+    named = [n for n in named_order if named_counts[n] >= _NAMED_MIN_TURNS]
+
+    if not text.strip():
+        cls = TRANSCRIPT_CLASS_UNKNOWN
+    elif named:
+        cls = TRANSCRIPT_CLASS_NAMED
+    elif n_me and n_them:
+        cls = TRANSCRIPT_CLASS_ME_THEM
+    elif n_me:
+        cls = TRANSCRIPT_CLASS_DICTATION
+    elif n_them:
+        cls = TRANSCRIPT_CLASS_ME_THEM
+    else:
+        cls = TRANSCRIPT_CLASS_UNLABELLED
+
+    others: list = []
+    if attendee_records is not None:
+        try:
+            from attendee_evidence import normalize_attendee_records
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from attendee_evidence import normalize_attendee_records
+        for rec in normalize_attendee_records(attendee_records):
+            name = str((rec or {}).get("name") or "").strip()
+            email = str((rec or {}).get("email") or "").strip().lower()
+            if name and _is_user_name(name, user_names):
+                continue
+            key = email or name
+            if key and key not in others:
+                others.append(key)
+
+    return {
+        "class": cls,
+        "n_me": n_me,
+        "n_them": n_them,
+        "named_speakers": named,
+        "generic_labels": sorted(generic),
+        "other_party_ids": others,
+        "n_other": len(others),
+        "turns": turns,
+    }
+
+
+def _span_of_item(item: dict, hay_spans) -> Optional[tuple]:
+    """D7 — where the item's own words sit in the transcript's token stream,
+    as `(start, end)` indices into `_fusion_token_spans(transcript)`. The
+    extractor may pass `span` as the verbatim quote (located here by the
+    fusion anchor rule) or as an explicit `[start, end]` pair (accepted when
+    in range); failing both, the evidence-then-title anchor the fusion check
+    itself uses. None when nothing locates or there is no transcript — and
+    then `fusion_status` says why (`refused` or `inert`)."""
+    if not hay_spans:
+        return None
+    hay = [s[0] for s in hay_spans]
+    raw = (item or {}).get("span")
+    if (isinstance(raw, (list, tuple)) and len(raw) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool)
+                    for x in raw)
+            and 0 <= raw[0] < raw[1] <= len(hay)):
+        return (int(raw[0]), int(raw[1]))
+    if isinstance(raw, str) and raw.strip():
+        at = _locate_span(hay, raw)
+        if at:
+            return at
+    return _evidence_anchor(_probe_data(item), hay_spans)
+
+
+def turn_of_span(turns, hay_spans, span) -> Optional[str]:
+    """The marker label of the turn a span starts in (`Me` / `Them` / a name /
+    `Speaker N`), or None when the transcript carries no markers or the span
+    precedes the first one. Pure; the B-lane owner rule reads this."""
+    if not turns or not hay_spans or not span:
+        return None
+    start_char = hay_spans[span[0]][1]
+    label = None
+    for lab, marker_start, _body in turns:
+        if marker_start <= start_char:
+            label = lab
+        else:
+            break
+    return label
+
+
+def derive_attribution(item: dict, *, tclass, hay_spans, turns) -> dict:
+    """The A-lane basis for one item, from what the extractor handed over:
+
+      owner_basis         `inferred` when an owner id is resolved, or when the
+                          kind is self-owed by definition (task / scheduling /
+                          agenda — the same presumption `classify_capture`
+                          makes); `unknown` for a promise with no resolved
+                          owner. The marker-and-calendar rungs that turn
+                          `inferred` into `speaker` / `calendar` are DD-2.
+      counterparty_basis  `inferred` when a counterparty id is resolved;
+                          `unknown` when only a name was heard or a promise
+                          names nobody; `none` when the kind has no
+                          counterparty slot.
+      span                `_span_of_item` — token offsets, or None.
+      turn                `turn_of_span` — the marker the span sits under.
+      transcript_class    the meeting's declared class.
+
+    Pure. Never writes a `question` (the doors are the B lane)."""
+    data = _probe_data(item or {})
+    kind = data.get("kind")
+    if str(data.get("owner_id") or "").strip():
+        owner_basis = BASIS_INFERRED
+    elif kind in ("task", "scheduling", "agenda"):
+        owner_basis = BASIS_INFERRED
+    else:
+        owner_basis = BASIS_UNKNOWN
+    try:
+        from commitment_parties import counterparty_ids as _cp_ids
+        cp_ids = _cp_ids(data)
+    except Exception:  # pragma: no cover — degrade to the scalar field
+        cp_ids = [data["counterparty_id"]] if data.get("counterparty_id") else []
+    # The NAME side is read off the raw fields on purpose (F28): this is a
+    # "was a name heard at all" test for a basis label, never a roster read
+    # that can close or chase, so the workspace-threaded reader is not owed.
+    cp_names = [n for n in ([data.get("counterparty_name")]
+                            + list(data.get("counterparty_names") or []))
+                if str(n or "").strip()]
+    if cp_ids:
+        cp_basis = BASIS_INFERRED
+    elif cp_names:
+        cp_basis = BASIS_UNKNOWN
+    elif kind == "promise":
+        cp_basis = BASIS_UNKNOWN
+    else:
+        cp_basis = BASIS_NONE
+    span = _span_of_item(item or {}, hay_spans) if hay_spans else None
+    cls = (tclass or {}).get("class") if isinstance(tclass, dict) else tclass
+    if cls not in TRANSCRIPT_CLASSES:
+        cls = TRANSCRIPT_CLASS_UNKNOWN
+    return {
+        "transcript_class": cls,
+        "owner_basis": owner_basis,
+        "counterparty_basis": cp_basis,
+        "span": [span[0], span[1]] if span else None,
+        "turn": turn_of_span(turns, hay_spans, span) if span else None,
+    }
+
+
+# =============================================================================
+# ATTRIB1-B — the owner comes from the turn marker (when the grammar agrees),
+# the counterparty from the calendar, and when neither answers the row asks
+# ONE specific question with the likely answer pre-selected.
+# =============================================================================
+#
+# DD-2 with the A4 person-agreement fence (G1): the marker wins ONLY when the
+# grammatical person of the item's own words agrees with it. First person in
+# a `Me` turn is the user speaking (`speaker`); second person in a `Me` turn
+# ("you'll send…") is the user telling the OTHER party what they will do —
+# owner = the addressee, basis `inferred`; second person in a `Them` turn is
+# the other party assigning the user. Disagreement never yields `speaker`.
+# The census behind the fence: wrong-marker shapes are ~40% as common as the
+# right one, so a marker read without its grammar would mis-own two rows in
+# five of the ones it touched.
+#
+# DD-3 / A5 — the ladder: calendar-2p → vocative → named speaker → meeting
+# `person_ids` (single candidate) → ask. Each rung is cheap and precise; the
+# vocative rung expects ~1.4% of turns (the corrected census), the
+# `person_ids` rung is where the substrate already has the answer.
+#
+# Everything here is PURE: the route resolves the attendee roster once and
+# hands it down; nothing reads a clock or the log.
+
+# Grammatical person of a commissive, in the FUSION vocabulary (contractions
+# pre-split, no punctuation): "i ll send" / "we re going to" is first person,
+# "you ll send" / "can you send" is second. Anchored on the pronoun-verb pair
+# so a stray "you" inside "I'll send you the deck" never reads as second
+# person — the OBJECT pronoun is not the subject. Earliest match wins.
+# FIRST PERSON, AND HOW STRONGLY. Split in the fix round (REVIEW_ATTRIB1B
+# F-6): the class used to carry `should` / `could` / `want to` beside
+# `will`, so "we should probably pull the vendor list together" earned
+# `owner_basis: speaker` — the STRONGEST basis, indistinguishable on the row
+# from "I will send it" — which wrote an owner id, cleared the floor's owner
+# test and booked a hedged group suggestion unflagged. A guess recorded as a
+# fact, and a precision regression in the direction this spec exists to fix.
+#
+# So the marker's authority is now proportional to the commitment:
+#   STRONG   `will` / `'ll` / `'m going to` / `gonna` / `let me` /
+#            `promise` / `committed` / `need to` / `have to` — a commissive.
+#            The marker names its speaker: basis `speaker` (or `calendar`).
+#   WEAK     `should` / `could` / `would` / `want to` / `plan to` / `might`
+#            — a suggestion or an intention. Still first person, so the
+#            marker still says WHO is talking, but the row is graded
+#            `inferred` at most, no id is written from it, and the floor
+#            judges the row the extractor actually produced.
+_FIRST_PERSON_STRONG_RE = re.compile(
+    r"""(?ix)
+      \b(?:i|we)\s+(?:ll|will|
+                      need\s+to|have\s+to|gotta|got\s+to|
+                      m\s+(?:going\s+to|gonna)|re\s+(?:going\s+to|gonna))\b
+    | \blet\s+me\b
+    | \bi\s+(?:just\s+)?(?:promised?|committed)\b
+    """
+)
+_FIRST_PERSON_WEAK_RE = re.compile(
+    r"""(?ix)
+      \b(?:i|we)\s+(?:can|could|would|should|d|m|am|re|are|might|
+                      want\s+to|plan\s+to|intend\s+to|hope\s+to|
+                      was\s+going\s+to)\b
+    """
+)
+
+_SECOND_PERSON_RE = re.compile(
+    r"""(?ix)
+      \byou\s+(?:ll|will|can|could|would|should|d|re|are|
+                  need\s+to|have\s+to|gotta|want\s+to|
+                  re\s+(?:going\s+to|gonna))\b
+    | \b(?:can|could|would|will|did)\s+you\b
+    | \b(?:please|just)\s+(?:send|share|get|give|shoot|draft|forward|
+                              book|schedule|set\s+up|put|pull|loop)\b
+    | \byou\s+(?:guys|two|all)\s+(?:ll|will|can|could|should)\b
+    """
+)
+_THIRD_PERSON_RE = re.compile(
+    r"""(?ix)
+      \b(?:he|she|they)\s+(?:ll|will|can|could|would|should|d|re|is|are|
+                             said|says|told|promised|
+                             s\s+(?:going\s+to|gonna)|re\s+(?:going\s+to|gonna))\b
+    """
+)
+
+PERSON_FIRST = "first"
+PERSON_SECOND = "second"
+PERSON_THIRD = "third"
+# F-6 — the two strengths of first person. `first` is a commissive the
+# marker may name its speaker for; `first_weak` is a suggestion, which the
+# marker identifies but never certifies.
+PERSON_FIRST_WEAK = "first_weak"
+
+
+def grammatical_person(text) -> Optional[str]:
+    """Which grammatical person the commissive in `text` is spoken in:
+    `first` / `second` / `third`, or None when the words carry no subject
+    pronoun bound to a verb. Earliest pair wins — the subject of the
+    commissive is what the marker has to agree with. Pure."""
+    norm = _normalize_for_fusion(text)
+    if not norm:
+        return None
+    best = None
+    for label, rx in ((PERSON_FIRST, _FIRST_PERSON_STRONG_RE),
+                      (PERSON_FIRST_WEAK, _FIRST_PERSON_WEAK_RE),
+                      (PERSON_SECOND, _SECOND_PERSON_RE),
+                      (PERSON_THIRD, _THIRD_PERSON_RE)):
+        m = rx.search(norm)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), label)
+    return best[1] if best else None
+
+
+# The vocative at the HEAD of a turn: "Bo, I'll send you…" / "thanks Bo, …".
+# Head only, never a substring of the body (D3): a name mid-sentence is a
+# mention, not an address. Read from the RAW turn body, matched
+# case-insensitively against attendee first names.
+_VOCATIVE_RE = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|thanks|thank\s+you|ok|okay|so|yeah|yes|and|"
+    r"well|alright|great|cool|right|um|uh)[\s,]+){0,3}"
+    r"([A-Za-z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*,",
+    re.I,
+)
+
+
+def vocative_at_head(turn_body) -> str:
+    """The name a turn opens by addressing, or "". Pure."""
+    m = _VOCATIVE_RE.match(str(turn_body or "")[:80])
+    return m.group(1).strip() if m else ""
+
+
+def turn_index_of_span(turns, hay_spans, span) -> Optional[int]:
+    """The index into `turns` of the turn a span starts in, or None (no
+    markers, or the span precedes the first). Pure."""
+    if not turns or not hay_spans or not span:
+        return None
+    start_char = hay_spans[span[0]][1]
+    idx = None
+    for i, (_lab, marker_start, _body) in enumerate(turns):
+        if marker_start <= start_char:
+            idx = i
+        else:
+            break
+    return idx
+
+
+def turn_body_text(transcript_text, turns, idx) -> str:
+    """The words of turn `idx` (from its body start to the next marker)."""
+    if idx is None or not turns or idx >= len(turns):
+        return ""
+    text = str(transcript_text or "")
+    start = turns[idx][2]
+    end = turns[idx + 1][1] if idx + 1 < len(turns) else len(text)
+    return text[start:end]
+
+
+def span_text(hay_spans, span) -> str:
+    """The transcript's own characters under a token span, verbatim."""
+    if not hay_spans or not span:
+        return ""
+    s0 = hay_spans[span[0]]
+    s1 = hay_spans[min(span[1], len(hay_spans)) - 1]
+    return str(s0[3])[s0[1]:s1[2]]
+
+
+def _load_people(workspace_root) -> list:
+    """The workspace's people records, or [] (never raises)."""
+    if not workspace_root:
+        return []
+    try:
+        raw = json.loads((Path(workspace_root) / "_hq" / "data" /
+                          "entities.json").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    ent = raw["entities"] if isinstance(raw.get("entities"), dict) else raw
+    people = ent.get("people") if isinstance(ent, dict) else None
+    return [p for p in (people or []) if isinstance(p, dict) and p.get("id")]
+
+
+def _person_emails(rec: dict) -> list:
+    out: list = []
+    emails = rec.get("emails") if isinstance(rec.get("emails"), list) else []
+    for e in emails:
+        if isinstance(e, str) and e.strip():
+            out.append(e.strip().lower())
+    single = rec.get("email")
+    if isinstance(single, str) and single.strip() \
+            and single.strip().lower() not in out:
+        out.append(single.strip().lower())
+    return out
+
+
+def _person_name(rec: dict) -> str:
+    return str(rec.get("canonical_name") or rec.get("name") or "").strip()
+
+
+def resolve_meeting_parties(*, workspace_root, attendee_records=None,
+                            meeting_person_ids=None, user_id=None,
+                            user_names=()) -> dict:
+    """The roster the ladder reads, resolved ONCE per meeting.
+
+    Returns `{"user_id", "user_names", "others": [{"person_id", "name",
+    "first"}], "by_first": {first-name: [person_id, …]}, "by_name_key":
+    {…}}`. `others` is every resolved party other than the user, in
+    first-seen order, from the caller's `meeting_person_ids` (the ids the
+    writer will stamp on the `meeting` event — A5's rung) and from
+    `attendee_records` resolved against the entity graph by EXACT email or
+    EXACT canonical name (never a first-name or substring match: that is the
+    vocative rung's job, and it is asked about, not assumed). A record
+    nothing resolves is not a party the ladder can name and is left out.
+    Pure apart from one entities.json read."""
+    people = _load_people(workspace_root)
+    by_id = {p["id"]: p for p in people}
+    by_email: dict = {}
+    by_name: dict = {}
+    for p in people:
+        for e in _person_emails(p):
+            by_email.setdefault(e, p["id"])
+        nk = _norm_person_name(_person_name(p))
+        if nk:
+            by_name.setdefault(nk, p["id"])
+    others: list = []
+    seen: set = set()
+
+    def _add(pid, source):
+        if pid and pid != user_id and pid not in seen:
+            seen.add(pid)
+            rec = by_id.get(pid) or {}
+            name = _person_name(rec) or pid
+            others.append({"person_id": pid, "name": name,
+                           "first": name.split()[0].lower() if name else "",
+                           # WHICH rung this party came from: `calendar` when
+                           # the caller handed the attendee list over,
+                           # `person_ids` when only the meeting event's own
+                           # resolved people were available (A5's rung).
+                           "source": source})
+
+    # F-7 — the ATTENDEE LIST IS READ FIRST, and a party the list also
+    # names is upgraded to `calendar` below. `_add` is first-wins on
+    # `source`, and the prose tells every caller to pass both lists, so
+    # reading the meeting ids first labelled every agreeing party
+    # `person_ids` and made the calendar rung invisible whenever it was
+    # right. The basis has to name the evidence that actually resolved the
+    # party, or the replay's split is an artefact of iteration order.
+    if attendee_records is not None:
+        try:
+            from attendee_evidence import normalize_attendee_records
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from attendee_evidence import normalize_attendee_records
+        for rec in normalize_attendee_records(attendee_records):
+            name = str((rec or {}).get("name") or "").strip()
+            email = str((rec or {}).get("email") or "").strip().lower()
+            if name and _is_user_name(name, user_names):
+                continue
+            pid = by_email.get(email) if email else None
+            if not pid and name:
+                pid = by_name.get(_norm_person_name(name))
+            if pid:
+                _add(pid, BASIS_CALENDAR)
+    for pid in (meeting_person_ids or []):
+        if isinstance(pid, str) and pid.strip():
+            _add(pid.strip(), BASIS_PERSON_IDS)
+    by_first: dict = {}
+    for o in others:
+        if o["first"]:
+            by_first.setdefault(o["first"], []).append(o["person_id"])
+    by_name_key = {_norm_person_name(o["name"]): o["person_id"]
+                   for o in others if o["name"]}
+    return {"user_id": user_id, "user_names": tuple(user_names or ()),
+            "others": others, "by_first": by_first,
+            "by_name_key": by_name_key}
+
+
+def _resolve_label(label, parties) -> Optional[str]:
+    """A named speaker label → a party id, or None (`Me` / `Them` /
+    `Speaker N` / an unknown name all resolve to nothing here). The user's
+    own name label resolves to the user."""
+    if not label:
+        return None
+    low = str(label).strip().lower()
+    if low in ("me", "them") or low.startswith("speaker "):
+        return None
+    parties = parties or {}
+    if parties.get("user_id") and _is_user_name(
+            label, parties.get("user_names") or ()):
+        return parties["user_id"]
+    key = _norm_person_name(label)
+    pid = parties.get("by_name_key", {}).get(key)
+    if pid:
+        return pid
+    first = key.split()[0] if key else ""
+    hits = parties.get("by_first", {}).get(first) or []
+    return hits[0] if len(hits) == 1 else None
+
+
+def _first_name_match(name, parties) -> Optional[str]:
+    """A heard name → the ONE party whose first name it spells, or None."""
+    key = _norm_person_name(name)
+    if not key:
+        return None
+    pid = (parties or {}).get("by_name_key", {}).get(key)
+    if pid:
+        return pid
+    hits = (parties or {}).get("by_first", {}).get(key.split()[0]) or []
+    return hits[0] if len(hits) == 1 else None
+
+
+def attribute_owner(item: dict, *, tclass, turn_label, person, parties,
+                    prev_label=None) -> tuple:
+    """DD-2 + A4 — `(owner_id, basis)` for one item.
+
+    `turn_label` is the marker the item's span sits under; `person` is
+    `grammatical_person(<the span's words>)`; `parties` is
+    `resolve_meeting_parties(...)`. The marker decides ONLY when the grammar
+    agrees with it (G1); otherwise the extractor's own resolution stands as
+    `inferred`, or `unknown` when it resolved nothing. Pure."""
+    data = _probe_data(item or {})
+    kind = data.get("kind")
+    user_id = (parties or {}).get("user_id")
+    others = [o["person_id"] for o in (parties or {}).get("others") or []]
+    two_party = bool(user_id) and len(others) == 1
+    extracted = str(data.get("owner_id") or "").strip()
+
+    def _fallback():
+        # The A-lane rule, verbatim: a resolved id or a self-owed kind is
+        # `inferred`; a promise with nobody resolved is `unknown`.
+        if extracted:
+            return (extracted, BASIS_INFERRED)
+        if kind in ("task", "scheduling", "agenda"):
+            return (user_id or "", BASIS_INFERRED)
+        return ("", BASIS_UNKNOWN)
+
+    label = str(turn_label or "").strip().lower()
+    # F-6 — a WEAK first person ("we should probably…") is a suggestion, not
+    # a commissive: the marker still says who is talking, but nothing here
+    # certifies an owner from it. It falls through to what the extractor
+    # itself resolved, which is what the floor then judges.
+    if person == PERSON_FIRST_WEAK:
+        return _fallback()
+    if label == "me" and user_id:
+        if person == PERSON_FIRST:
+            return (user_id, BASIS_SPEAKER)
+        if person == PERSON_SECOND:
+            # "you'll send…" in the user's mouth: the addressee owns it.
+            if two_party:
+                return (others[0], BASIS_INFERRED)
+            if extracted and extracted != user_id:
+                return (extracted, BASIS_INFERRED)
+            return ("", BASIS_UNKNOWN)
+        return _fallback()
+    if label == "them" and user_id:
+        if person == PERSON_FIRST:
+            if two_party:
+                return (others[0], BASIS_CALENDAR)
+            if extracted and extracted != user_id:
+                return (extracted, BASIS_INFERRED)
+            return ("", BASIS_UNKNOWN)
+        if person == PERSON_SECOND:
+            # The other party assigning the user ("you'll send me…").
+            return (user_id, BASIS_INFERRED)
+        return _fallback()
+    speaker = _resolve_label(turn_label, parties)
+    if speaker:
+        if person == PERSON_FIRST:
+            return (speaker, BASIS_SPEAKER)
+        if person == PERSON_SECOND:
+            addressee = _resolve_label(prev_label, parties)
+            if addressee and addressee != speaker:
+                return (addressee, BASIS_INFERRED)
+            if extracted and extracted != speaker:
+                return (extracted, BASIS_INFERRED)
+            return ("", BASIS_UNKNOWN)
+    return _fallback()
+
+
+def attribute_counterparty(item: dict, *, owner_id, parties, vocative="",
+                           prev_label=None, meeting_person_ids=None) -> tuple:
+    """DD-3 / A5 — `(counterparty_id, basis, question, self_ref)` for one
+    item.
+
+    The ladder, in order: the extractor's own resolved id (`inferred`, or
+    `calendar` when it IS the two-party other side) → calendar-2p → vocative
+    → named speaker of the previous turn → the meeting's resolved people
+    minus the owner when exactly one remains (`person_ids`) → ask
+    (`unknown` + the ONE `who_is_you` question, options = the parties other
+    than the owner, default = the party a heard name spells, else None).
+
+    EXTRACT1 D-A (dragger 4) — a HARD fence first: the owner is never their
+    own counterparty. A self-reference is dropped before the ladder runs
+    and reported as `self_ref` so the route can say so on the row.
+
+    A kind with no counterparty slot (task / agenda) returns `none`. Pure."""
+    data = _probe_data(item or {})
+    kind = data.get("kind")
+    owner_id = str(owner_id or "").strip()
+    user_id = (parties or {}).get("user_id")
+    others = [o["person_id"] for o in (parties or {}).get("others") or []]
+    party_ids = ([user_id] if user_id else []) + others
+
+    try:
+        from commitment_parties import counterparty_ids as _cp_ids
+        cp_ids = list(_cp_ids(data))
+    except Exception:  # pragma: no cover — degrade to the scalar field
+        cp_ids = [data["counterparty_id"]] if data.get("counterparty_id") else []
+    cp_names = [n for n in ([data.get("counterparty_name")]
+                            + list(data.get("counterparty_names") or []))
+                if str(n or "").strip()]
+    self_ref = bool(owner_id) and owner_id in cp_ids
+    cp_ids = [c for c in cp_ids if c != owner_id]
+
+    if kind not in PROMISE_CLAUSE_KINDS:
+        if cp_ids:
+            return (cp_ids[0], BASIS_INFERRED, None, self_ref)
+        if cp_names:
+            return ("", BASIS_UNKNOWN, None, self_ref)
+        return ("", BASIS_NONE, None, self_ref)
+
+    candidates = [p for p in party_ids if p != owner_id]
+    two_party = bool(user_id) and len(others) == 1
+    # WHERE each resolved party came from, so rung 1 (the calendar the
+    # caller handed over) and rung 4 (the meeting event's own resolved
+    # people) report the basis they actually stood on rather than one
+    # name for both.
+    source_of = {o["person_id"]: o.get("source") or BASIS_CALENDAR
+                 for o in (parties or {}).get("others") or []}
+    if cp_ids:
+        one_other = (two_party and owner_id in party_ids
+                     and candidates == [cp_ids[0]])
+        basis = (source_of.get(cp_ids[0], BASIS_CALENDAR) if one_other
+                 else BASIS_INFERRED)
+        return (cp_ids[0], basis, None, self_ref)
+    # Rung 1 / rung 4 - exactly one other party: whoever is not the owner.
+    if two_party and owner_id in party_ids and len(candidates) == 1:
+        return (candidates[0], source_of.get(candidates[0], BASIS_CALENDAR),
+                None, self_ref)
+    # Rung 2 — the vocative at the head of the turn.
+    if vocative:
+        pid = _first_name_match(vocative, parties)
+        if pid and pid != owner_id:
+            return (pid, BASIS_VOCATIVE, None, self_ref)
+    # Rung 3 — a named transcript: the previous turn's speaker.
+    prev = _resolve_label(prev_label, parties)
+    if prev and prev != owner_id:
+        return (prev, BASIS_SPEAKER, None, self_ref)
+    # A5's `person_ids` rung is NOT a separate branch, and the fix round
+    # deleted the one that pretended to be (REVIEW_ATTRIB1B F-8): the
+    # meeting's resolved people are folded into the roster by
+    # `resolve_meeting_parties`, so they reach the one-other-party branch
+    # above and report themselves through `source_of`. A branch that could
+    # only fire when that branch had already fired was unreachable code
+    # wearing a rung's name.
+    pool = [p for p in candidates]
+    # Rung 5 — ask. The heard name, when it spells exactly one party, is
+    # the pre-selected default; otherwise there is no best guess.
+    default = None
+    for n in cp_names:
+        hit = _first_name_match(n, parties)
+        if hit and hit != owner_id and hit in pool:
+            default = hit
+            break
+    # F-5 — a question with nothing to offer is not a question. When the
+    # roster names nobody else, the row says `counterparty_basis: unknown`
+    # and STOPS THERE: door 1 could never render it, the lapse could never
+    # answer it, and minting one anyway made `n_questions` count rows the
+    # product cannot ask about. The doubt is on the record either way.
+    if not pool:
+        return ("", BASIS_UNKNOWN, None, self_ref)
+    question = {"kind": QUESTION_WHO_IS_YOU, "options": pool,
+                "default": default}
+    return ("", BASIS_UNKNOWN, question, self_ref)
+
+
+def attribute_item(item: dict, *, tclass, hay_spans, turns, transcript_text,
+                   parties, meeting_person_ids=None) -> dict:
+    """The B-lane basis for one item: the A-lane shape from
+    `derive_attribution` with the owner and counterparty rungs applied, plus
+    the patches the route writes back onto the item (`owner_id` /
+    `counterparty_id` when a rung resolved one) and the `question` when the
+    ladder must ask.
+
+    Returns `{"attribution", "owner_id", "counterparty_id", "self_ref",
+    "owner_changed"}`. Pure."""
+    base = derive_attribution(item, tclass=tclass, hay_spans=hay_spans,
+                              turns=turns)
+    span = base.get("span")
+    idx = turn_index_of_span(turns, hay_spans, tuple(span) if span else None)
+    turn_label = turns[idx][0] if idx is not None else None
+    prev_label = None
+    if idx is not None:
+        for j in range(idx - 1, -1, -1):
+            if turns[j][0] != turn_label:
+                prev_label = turns[j][0]
+                break
+    words = span_text(hay_spans, tuple(span)) if span else ""
+    person = grammatical_person(words) or grammatical_person(
+        (item or {}).get("evidence") or "")
+    parties = dict(parties or {})
+    parties.setdefault("user_names", ())
+    owner, owner_basis = attribute_owner(
+        item, tclass=tclass, turn_label=turn_label, person=person,
+        parties=parties, prev_label=prev_label)
+    body = turn_body_text(transcript_text, turns, idx) if idx is not None else ""
+    voc = vocative_at_head(body)
+    cp, cp_basis, question, self_ref = attribute_counterparty(
+        item, owner_id=owner, parties=parties, vocative=voc,
+        prev_label=prev_label, meeting_person_ids=meeting_person_ids)
+    extracted_owner = str((item or {}).get("owner_id") or "").strip()
+    attribution = dict(base)
+    attribution["owner_basis"] = owner_basis
+    attribution["counterparty_basis"] = cp_basis
+    if question is not None:
+        attribution["question"] = question
+    return {
+        "attribution": attribution,
+        "owner_id": owner,
+        "counterparty_id": cp,
+        "self_ref": self_ref,
+        "owner_changed": bool(owner) and bool(extracted_owner)
+        and owner != extracted_owner,
+    }
+
+
+def validate_attribution(attribution, *, subject: str = "capture") -> None:
+    """DD-4 — refuse a basis the enum does not know. Raises ValueError."""
+    if not isinstance(attribution, dict):
+        raise ValueError(f"{subject}: attribution must be a dict, got "
+                         f"{type(attribution).__name__}")
+    if attribution.get("transcript_class") not in TRANSCRIPT_CLASSES:
+        raise ValueError(
+            f"{subject}: attribution.transcript_class "
+            f"{attribution.get('transcript_class')!r} is not one of "
+            f"{sorted(TRANSCRIPT_CLASSES)}")
+    if attribution.get("owner_basis") not in OWNER_BASES:
+        raise ValueError(
+            f"{subject}: attribution.owner_basis "
+            f"{attribution.get('owner_basis')!r} is not one of "
+            f"{sorted(OWNER_BASES)}")
+    if attribution.get("counterparty_basis") not in COUNTERPARTY_BASES:
+        raise ValueError(
+            f"{subject}: attribution.counterparty_basis "
+            f"{attribution.get('counterparty_basis')!r} is not one of "
+            f"{sorted(COUNTERPARTY_BASES)}")
+    span = attribution.get("span")
+    if span is not None and not (
+            isinstance(span, (list, tuple)) and len(span) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool)
+                    for x in span) and 0 <= span[0] < span[1]):
+        raise ValueError(
+            f"{subject}: attribution.span must be null or [start, end] token "
+            f"offsets with start < end, got {span!r}")
+    q = attribution.get("question")
+    if q is not None:
+        # F-9 — a CLOSED shape. Ruling 2 makes this validator the one thing
+        # standing between the product and a second question class, so it
+        # refuses unknown keys (a free-text prompt smuggled inside the
+        # question object) and refuses the empty option list (F-5: a
+        # question nothing can render).
+        ok = (isinstance(q, dict) and q.get("kind") == QUESTION_WHO_IS_YOU
+              and set(q) <= {"kind", "options", "default"}
+              and isinstance(q.get("options"), list) and q["options"]
+              and all(isinstance(o, str) and o for o in q["options"])
+              and (q.get("default") is None
+                   or (isinstance(q.get("default"), str)
+                       and q["default"] in q["options"])))
+        if not ok:
+            raise ValueError(
+                f"{subject}: attribution.question must be exactly "
+                f"{{kind: {QUESTION_WHO_IS_YOU!r}, options: [person ids] "
+                f"(non-empty), default: one of them or null}} and nothing "
+                f"else, got {q!r}")
+
+
+def derive_pending_review(data: dict, *, floor_code: str = "",
+                          fusion_status: str = "",
+                          classification_confidence=None,
+                          workspace_root=None) -> tuple:
+    """D4 — THE rule for the review flag on a meeting capture. Returns
+    `(flag, reasons)`; the flag is True iff ANY of:
+
+      * `attribution.owner_basis == unknown`
+      * `kind` in `PROMISE_CLAUSE_KINDS` (a `promise` only — M's ruling 2,
+        night 8: `scheduling` / `agenda` ask nothing) and
+        `attribution.counterparty_basis == unknown`
+      * a floor verdict (`floor_code` non-empty) or a fusion refusal
+      * `classification_confidence` below the surface floor, or malformed —
+        the prose's "<0.75" sentence, which names THIS field (A2)
+
+    Nothing else may set it. Reads `data.attribution` (which is why the
+    builder writes the basis before it runs). Pure apart from the floor
+    accessor, which resolves a per-workspace override exactly as the gate
+    does."""
+    reasons: list = []
+    attr = data.get("attribution") if isinstance(data, dict) else None
+    attr = attr if isinstance(attr, dict) else {}
+    if str(floor_code or "").strip():
+        reasons.append(f"below the capture floor ({floor_code})")
+    if str(fusion_status or "").strip() == FUSION_REFUSED:
+        reasons.append(FUSION_REVIEW_REASON)
+    if attr.get("owner_basis") == BASIS_UNKNOWN:
+        reasons.append("no resolved owner")
+    if (data or {}).get("kind") in PROMISE_CLAUSE_KINDS \
+            and attr.get("counterparty_basis") == BASIS_UNKNOWN:
+        reasons.append("no resolved counterparty for a promise")
+    try:
+        from capture_gate import (CONFIDENCE_BELOW_FLOOR, CONFIDENCE_MALFORMED,
+                                  classify_confidence_for_floor)
+        from confidence import surface_min as _surface_min
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from capture_gate import (CONFIDENCE_BELOW_FLOOR, CONFIDENCE_MALFORMED,
+                                  classify_confidence_for_floor)
+        from confidence import surface_min as _surface_min
+    branch = classify_confidence_for_floor(
+        classification_confidence, _surface_min(workspace_root))
+    if branch == CONFIDENCE_BELOW_FLOOR:
+        reasons.append(
+            f"extraction confidence {classification_confidence} below threshold")
+    elif branch == CONFIDENCE_MALFORMED:
+        reasons.append(
+            f"extraction confidence {classification_confidence!r} is not a "
+            f"number")
+    return (bool(reasons), reasons)
 
 _FLOOR_STOPWORDS = frozenset(
     "a an the to of for and or on in with by at from about that this it its "
@@ -1305,7 +2475,8 @@ def _probe_data(item: dict) -> dict:
     for key in ("due", "no_due", "owner_id", "owner_external",
                 "counterparty_id", "counterparty_name", "counterparty_ids",
                 "counterparty_names", "attribution_ambiguous",
-                "attribution_unknown", "attribution_candidates"):
+                "attribution_unknown", "attribution_candidates",
+                "evidence_kind"):
         if item.get(key) not in (None, "", [], False):
             data[key] = item[key]
     return data
@@ -1381,6 +2552,11 @@ def capture_floor_reason(data: dict) -> str:
     # to read and this condition stays silent rather than guessing.
     if evidence.strip() and _HEDGE_LANG_RE.search(evidence) \
             and not _COMMIT_LANG_RE.search(evidence):
+        # THIS VERDICT IS EXCH1'S AND IT DOES NOT MOVE. The dragger-2
+        # shapes name the row through `data.speech_act` (see the banner on
+        # the speech-act block); they do not rename what the floor returns,
+        # because EXCH1's rescue keys on this exact value and 122 shipped
+        # checks pin it.
         return FLOOR_NOT_ACCEPTED
 
     # (3) a real consequence — someone is waiting, a date depends on it, or
@@ -1400,6 +2576,214 @@ def capture_floor_reason(data: dict) -> str:
     if _CONSEQUENCE_RE.search(blob):
         return ""
     return FLOOR_NO_CONSEQUENCE
+
+
+# =============================================================================
+# EXTRACT1 dragger 2 — speech acts that are NOT commissives (2026-09-04).
+# =============================================================================
+#
+# The W34 census (40 open-book captures, transcript-anchored) put six rows on
+# the book that nobody promised: advice recast as the listener's commitment,
+# a request received and never accepted, a conditional offer the other side
+# declined, speech reported about a third party, and the user dictating to
+# his own AI tool. Each is a SHAPE the sentence shows on its own (advice,
+# reported, dictation) or the exchange shows (request, conditional-declined
+# — those read the reply turn). Each routes to REVIEW with its own named
+# reason and stable code; none may delete (M, 2026-08-01, and the 50%/33%
+# measurement behind it).
+#
+# All patterns are in the NORMALIZED FUSION VOCABULARY (contractions split,
+# no punctuation) — a pattern written with an apostrophe matches nothing.
+#
+# D-B (M, 2026-08-21): dictation is detected as a speech SHAPE so working
+# sessions keep being captured; it needs its OWN precision evidence, so it
+# is its own class and never pooled with the others.
+
+# Advice: telling the listener what THEY should do, or what the speaker
+# would do in their place. "You should look at your cost model" is not a
+# promise by anyone.
+_ADVICE_RE = re.compile(
+    r"""(?ix)
+      \byou\s+(?:should|ought\s+to|might\s+want\s+to|may\s+want\s+to)\b
+    | \bif\s+i\s+were\s+you\b
+    | \bi\s+would\s+(?:look\s+at|start|try|consider|think\s+about|
+                        recommend|suggest|go\s+with|focus\s+on)\b
+    | \bmy\s+(?:advice|suggestion|recommendation)\b
+    | \bi\s+(?:d\s+)?(?:recommend|suggest)\b
+    """
+)
+
+# A request: the speaker asking the LISTENER to do something. Second person
+# and directive; whether it became a promise is the reply's business — the
+# EXCH1 acceptance check rescues an accepted one exactly as it rescues the
+# hedge class.
+# DELIBERATELY ABSENT (PREC1 hardening, measured on the live corpus and
+# pinned by `run_prec1_hardening_test`): `I need you to`, `would like you
+# to`, `when you get a chance` — directives that produced REAL work. A
+# request class that swallowed them would gate promises; this one carries
+# only the interrogative and the bare imperative-to-me shapes.
+_REQUEST_RE = re.compile(
+    r"""(?ix)
+      \b(?:can|could|would|will)\s+you\s+(?:please\s+)?
+        (?:send|share|shoot|forward|give|put|add|drop|email|text|get|
+           pull|book|schedule|set\s+up|loop|invite|make|draft|write)\b
+    | \b(?:please\s+)?(?:send|share|shoot|forward|give|put|add|drop|email|
+                          text|get|pull|invite)\s+(?:me|us)\b
+    """
+)
+
+# A conditional offer: "if you want, I can…" / "I could … if you'd like".
+_CONDITIONAL_OFFER_RE = re.compile(
+    r"""(?ix)
+      \bif\s+you\s+(?:want|d\s+like|need|prefer|guys\s+want)\b
+    | \bif\s+(?:that\s+s\s+|it\s+s\s+)?(?:helpful|useful|easier)\b
+    | \b(?:i|we)\s+(?:can|could)\b.{0,60}\bif\b
+    | \bif\b.{0,60}\b(?:i|we)\s+(?:can|could)\b
+    """
+)
+
+# Reported speech about a THIRD party — what he/she/they said they would do,
+# or what the speaker told someone else in another room.
+_REPORTED_RE = re.compile(
+    r"""(?ix)
+      \b(?:he|she|they)\s+(?:said|says|mentioned|told\s+(?:me|us)|promised)\s+
+        (?:that\s+)?(?:he|she|they)\s+
+        (?:d|would|ll|will|could|might|
+           (?:s|is|re|are|was|were)\s+(?:going\s+to|gonna))\b
+    | \b(?:he|she|they)\s+(?:s|is|re|are|was|were)\s+(?:going\s+to|gonna)\b
+    | \bi\s+(?:said|told\s+(?:him|her|them))\s*(?:well\s*)?
+        (?:i\s+(?:d|would|ll|will|can|could)|let\s+me)\b
+    | \bi\s+(?:was\s+)?(?:explaining|telling)\s+(?:him|her|them)\b
+    """
+)
+
+# Dictation: the speaker addressing a tool, not a person — an AI by name,
+# an instruction aimed at "it", or the vocabulary of a working session on
+# the product itself. The shape M ruled on (2026-08-21) — his own prompts
+# read off a Granola recording of a working session.
+# UNAMBIGUOUS — a named tool being addressed, an instruction aimed at "it"
+# with the verb attached, or a deploy of the thing being worked on. These
+# fire on any workspace and cost nothing when they do not.
+#
+# DELETED IN THE FIX ROUND (REVIEW_ATTRIB1B F-3), and they were not
+# judgement calls: `(?:tell|ask|have|make|get|let)\s+it\s+to` matched the
+# commonest delivery phrasings in business English — "I'll get it to you by
+# Friday", "I'll have it to you Monday" — and gated them as dictation with
+# a reason that is factually wrong on the row; and the bare nouns `the
+# (ai|bot|assistant|model|agent)` read, in a client's mouth, as the
+# financial MODEL, the listing AGENT, the executive ASSISTANT. The class had
+# been earning its precision from one operator's vocabulary (264 "claude"
+# mentions in his corpus), which is exactly what spec §0 D-B forbids:
+# dictation needs its OWN precision evidence, never evidence borrowed from
+# the other shapes.
+_DICTATION_RE = re.compile(
+    r"""(?ix)
+      \b(?:claude|chatgpt|copilot)\b
+    | \b(?:tell|ask)\s+it\s+to\s+
+        (?:draft|write|generate|build|make|update|rewrite|summari[sz]e|
+           run|fix|check|read|pull|push|add|remove)\b
+    | \b(?:push|pushed|deploy|deployed|merge|merged|ship|shipped)\s+
+        (?:it\s+|that\s+|this\s+)?(?:in)?to\s+(?:prod|production|main)\b
+    """
+)
+
+# THE RESIDUAL PRODUCT VOCABULARY — real dictation markers in a workspace
+# that BUILDS software, ordinary nouns in one that does not ("the branch
+# manager", "the repo access", "the prompt I gave the agency"). Behind a
+# per-workspace flag, DEFAULT OFF, so a client workspace fires near zero by
+# construction rather than by hope.
+_DICTATION_PRODUCT_RE = re.compile(
+    r"""(?ix)
+      \bthe\s+(?:skill|prompt|orchestrator|plugin|worktree|repo)\b
+    | \b(?:draft|write|generate|build|update|rewrite)\s+(?:me\s+)?
+        (?:a|the|that|this)\s+(?:prompt|skill|spec|widget|schema)\b
+    """
+)
+
+# The flag, and its default. `_hq/config/capture.json` -> {"dictation_
+# product_vocabulary": true}. Read through a tiny cached accessor so the
+# floor stays pure-ish (one file read per workspace per process) and so an
+# unreadable config reads as OFF — the safe direction for a class whose
+# false positive destroys a real promise.
+DICTATION_PRODUCT_SETTING = "dictation_product_vocabulary"
+_DICTATION_PRODUCT_CACHE: dict = {}
+
+
+def dictation_product_vocabulary(workspace_root=None) -> bool:
+    """Is this a workspace where product nouns mean dictation? Default
+    False; never raises."""
+    if not workspace_root:
+        return False
+    key = str(workspace_root)
+    if key in _DICTATION_PRODUCT_CACHE:
+        return _DICTATION_PRODUCT_CACHE[key]
+    val = False
+    try:
+        p = Path(workspace_root) / "_hq" / "config" / "capture.json"
+        if p.exists():
+            val = bool((json.loads(p.read_text(encoding="utf-8")) or {}).get(
+                DICTATION_PRODUCT_SETTING))
+    except Exception:
+        val = False
+    _DICTATION_PRODUCT_CACHE[key] = val
+    return val
+
+
+def speech_act_reason(evidence, *, workspace_root=None) -> str:
+    """The SENTENCE-level speech-act LABEL for one evidence string: one of
+    `SPEECH_ACT_DICTATION` / `SPEECH_ACT_REPORTED` / `SPEECH_ACT_ADVICE` /
+    `SPEECH_ACT_REQUEST`, or "" when the words are not one of those shapes
+    (or there are no words). Order is by how unambiguous the shape is; the
+    first hit names the row.
+
+    THIS NAMES A ROW, IT DOES NOT ROUTE ONE. The caller stamps it as
+    `data.speech_act` beside whatever verdict the shipped floor reached —
+    see the banner above for what happened the one time it was a verdict.
+
+    Deliberately BLIND to a first-person future commissive in the same
+    sentence: "you should send it, and I'll review it" is two acts, and the
+    promise half is the one the extractor should have captured — the row
+    goes to review so a human can split it, never to the book on the
+    advice half. Pure."""
+    norm = _normalize_for_fusion(evidence)
+    if not norm:
+        return ""
+    if _DICTATION_RE.search(norm):
+        return SPEECH_ACT_DICTATION
+    if dictation_product_vocabulary(workspace_root) \
+            and _DICTATION_PRODUCT_RE.search(norm):
+        return SPEECH_ACT_DICTATION
+    if _REPORTED_RE.search(norm):
+        return SPEECH_ACT_REPORTED
+    if _ADVICE_RE.search(norm):
+        return SPEECH_ACT_ADVICE
+    if _REQUEST_RE.search(norm):
+        return SPEECH_ACT_REQUEST
+    return ""
+
+
+def conditional_declined_reason(data: dict, transcript_text=None) -> str:
+    """EXTRACT1 dragger 2, the EXCHANGE-level shape: a conditional offer
+    ("if you want, I can…") that the reply turn DECLINED. Reads the same
+    acceptance window EXCH1 reads; inert without a transcript or an anchor.
+    "" when the offer was accepted, unanswered, or was not conditional.
+
+    Like its four siblings this is a LABEL, not a verdict: it is stamped as
+    `data.speech_act` and changes no routing. A row this fires on is one the
+    transcript layer may or may not gate for its own reasons; naming the
+    shape does not decide that. Pure."""
+    evidence = str((data or {}).get("evidence") or "")
+    norm = _normalize_for_fusion(evidence)
+    if not norm or not _CONDITIONAL_OFFER_RE.search(norm):
+        return ""
+    tail = _tail_after_evidence(data, transcript_text, ACCEPTANCE_WINDOW_WORDS)
+    if not tail:
+        return ""
+    if accepted_in_exchange(data, transcript_text)["accepted"]:
+        return ""
+    if _ACCEPTANCE_DECLINE_RE.search(tail):
+        return SPEECH_ACT_CONDITIONAL_DECLINED
+    return ""
 
 
 # The fusion check's OWN token class — deliberately narrower than
@@ -1442,6 +2826,14 @@ def fusion_status(data: dict, transcript_text) -> str:
         # has to say so — this is the exact shape behind FLOOR3_REPLAY §3.
         return FUSION_INERT
     data = data or {}
+    if str(data.get("evidence_kind") or "") == EVIDENCE_PARAPHRASE:
+        # EXTRACT1 dragger 3 (D-C) — the extractor SAID this is a
+        # restatement, not a quote. There is nothing verbatim to look for, so
+        # the honest verdict is INERT; refusing a labelled paraphrase would
+        # be the false `refused` the label exists to prevent. The label
+        # itself rides the row, so the blind spot is visible rather than
+        # silent.
+        return FUSION_INERT
     for field in ("evidence", "title"):
         needle = _normalize_for_fusion(data.get(field))
         words = needle.split()
@@ -1746,6 +3138,16 @@ _FUTURE_TIME_RE = re.compile(
 # junk yield saturates at 30 (3 -> 6 items) and the false-positive count does
 # not move until 60.
 DISCHARGE_WINDOW_WORDS = 30
+# EXTRACT1 dragger 1 (2026-09-04) — the RECALL gap in this check. Both W34
+# misses had the same shape: the stored quote was the other party's REQUEST
+# ("add me to it", "send that over"), and the act that discharged it was
+# performed by the user in a LATER turn — further out than 30 tokens, and in
+# words the cue class did not carry ("I just added you", "I invited you").
+# So when the evidence is a second-person request, the tail is read to the
+# end of the answering turn instead (~60 tokens), and the discharge class
+# gains the past-tense provisioning verbs. Measured on the replay: see the
+# ATTRIB1B replay report, "dragger 1" row.
+DISCHARGE_REQUEST_WINDOW_WORDS = 60
 
 _IN_ROOM_DISCHARGE_RE = re.compile(
     r"""(?ix)
@@ -1753,6 +3155,19 @@ _IN_ROOM_DISCHARGE_RE = re.compile(
       \b(?:that|it|this)\s+s\s+going\s+out\b
     | \b(?:that|it|this)\s+is\s+going\s+out\b
     | \b(?:i|we)\s+just\s+sent\s+(?:it|that|you)\b
+      # EXTRACT1 dragger 1 — the past-tense provisioning verbs: the room
+      # reporting an add / invite / share that just happened, first person,
+      # with the object bound so "I added" alone never fires.
+    | \b(?:i|we)\s+(?:just\s+)?(?:added|invited)\s+
+        (?:you|him|her|them)\b
+        (?!(?:\s+\w+){0,6}\s+(?:last|yesterday|earlier|before|ago|
+                                previously|already)\b)
+    | \b(?:i|we)\s+just\s+(?:shared|forwarded|created|booked|uploaded|
+                              dropped|added|invited)\s+
+        (?:you|him|her|them|it|that|this)\b
+    | \b(?:i|we)\s+(?:ve|have)\s+just\s+(?:added|invited|sent|shared|
+                                       forwarded|created|booked)\b
+    | \bjust\s+added\s+(?:you|him|her|them)\b
       # instant provision
     | \bi\s+got\s+you\s+(?:right\s+now|on\s+(?:that|this|it))\b
       # the speaker's own hands on it, in the room
@@ -2131,6 +3546,23 @@ def _tail_after_evidence(data: dict, transcript_text, window: int):
     return " ".join([s[0] for s in spans][at[1]:at[1] + window])
 
 
+# EXTRACT1 dragger 1 — the completion stated in the evidence itself, past
+# tense, first person, object bound. Fusion vocabulary.
+_PAST_COMPLETION_RE = re.compile(
+    r"""(?ix)
+      \b(?:i|we)\s+(?:just\s+)?(?:added|invited)\s+(?:you|him|her|them)\b
+        (?!(?:\s+\w+){0,6}\s+(?:last|yesterday|earlier|before|ago|
+                                previously|already)\b)
+    | \b(?:i|we)\s+just\s+(?:added|invited|shared|forwarded|created|booked|
+                              uploaded|sent)\s+
+        (?:you|him|her|them|it|that|this)\b
+    | \b(?:i|we)\s+(?:ve|have)\s+just\s+(?:added|invited|sent|shared|
+                                       forwarded|created|booked)\s+
+        (?:you|him|her|them|it|that|this)\b
+    """
+)
+
+
 def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
     """J-1 — the item was DISCHARGED inside the meeting. "" when it was not, or
     when the check cannot establish that it was.
@@ -2204,8 +3636,20 @@ def done_in_meeting_reason(data: dict, transcript_text=None) -> str:
     # however plainly the meeting discharged it — a measured 15% of the live
     # population, and a cap on this whole layer rather than a rounding error.
     # See the intake item on fusion running inert without leaving a trace.
-    tail = _tail_after_evidence(data, transcript_text, DISCHARGE_WINDOW_WORDS)
+    # EXTRACT1 dragger 1 — a REQUEST is discharged by the other speaker, in
+    # their own turn, which starts after the request ends: read further.
+    window = DISCHARGE_WINDOW_WORDS
+    if grammatical_person(evidence) == PERSON_SECOND:
+        window = DISCHARGE_REQUEST_WINDOW_WORDS
+    tail = _tail_after_evidence(data, transcript_text, window)
     if tail and _IN_ROOM_DISCHARGE_RE.search(tail):
+        return FLOOR_DONE_IN_MEETING
+    # EXTRACT1 dragger 1 — the completion in the row's OWN words, past
+    # tense ("there we go, I just added him"). Only when no first-person
+    # future commissive follows it in the same evidence — "I sent the draft
+    # and I'll send the final Friday" is a promise with a preamble.
+    if ev_norm and _PAST_COMPLETION_RE.search(ev_norm) \
+            and not _RECOMMIT_RE.search(ev_norm):
         return FLOOR_DONE_IN_MEETING
 
     if parse_iso_date(data.get("due")) or carries_due_or_money(data):
@@ -2442,6 +3886,7 @@ def admit_meeting_capture(
     transcript_text=None,
     capture_context: Optional[dict] = None,
     org_override: Optional[str] = None,
+    workspace_root=None,
 ) -> dict:
     """The admission verdict for ONE meeting-extracted item. Pure.
 
@@ -2453,7 +3898,12 @@ def admit_meeting_capture(
     Returns {"tier": book|review|observed|skip, "reason": str,
              "floor_reason": str, "floor_code": str, "fusion_reason": str,
              "fusion_status": str, "relevance_reason": str,
-             "superseding_quote": str}.
+             "speech_act": str, "superseding_quote": str}.
+
+    `speech_act` (EXTRACT1 dragger 2) is a LABEL for a row the floor is
+    already holding — advice / a request nobody accepted / a declined
+    conditional offer / reported speech / dictation to a tool — and it
+    changes no verdict and no lane. "" on a row that clears the floor.
 
     `floor_reason` is the sentence a human reads on the row; `floor_code` is the
     same verdict's stable name, and it is what a tally is keyed by. Both are ""
@@ -2466,6 +3916,7 @@ def admit_meeting_capture(
     could never be anchored is exactly as unverified as a booked one; hiding
     that behind an early return would rebuild the blind spot one tier down."""
     data = _probe_data(item)
+    evidence_text = str(data.get("evidence") or "")
 
     # Computed once, up front, and carried on every return path. Pure, so
     # hoisting it above the floor changes no verdict — PRECEDENCE (floor, then
@@ -2474,6 +3925,17 @@ def admit_meeting_capture(
     fusion_state = fusion_status(data, transcript_text)
 
     floor = capture_floor_reason(data)
+    # EXTRACT1 dragger 2 — the LABEL, computed only for a row the shipped
+    # floor is already holding. Two reasons it is scoped that way: a row
+    # that clears the floor is a real promise whatever nouns it contains
+    # (REVIEW_ATTRIB1B F-3 — eight of twelve booked rows naming a tool are
+    # real promises), and naming a row nobody is holding would put a
+    # speech-act sentence on the book.
+    speech_act = ""
+    if floor:
+        speech_act = speech_act_reason(evidence_text,
+                                       workspace_root=workspace_root) \
+            or conditional_declined_reason(data, transcript_text)
     # EXCH1 — acceptance in a following turn beats absence of acceptance in
     # the trigger line. The NOT_ACCEPTED condition is the one floor verdict
     # that is a claim about the EXCHANGE ("never accepted") computed from one
@@ -2485,6 +3947,7 @@ def admit_meeting_capture(
     if floor == FLOOR_NOT_ACCEPTED \
             and accepted_in_exchange(data, transcript_text)["accepted"]:
         floor = ""
+        speech_act = ""
     if floor:
         # Below the floor — and since M's 2026-08-01 ruling that is a routing
         # verdict, never a deletion (see the PRECEDENCE note above).
@@ -2505,10 +3968,26 @@ def admit_meeting_capture(
         owner = str(data.get("owner_id") or "")
         someone_else_owes = bool(owner and user_id and owner != user_id)
         tier = TIER_OBSERVED if (someone_else_owes and not rail) else TIER_REVIEW
+        # ATTRIB1-B D11 — an ASIDE: the user's own item whose ONLY floor
+        # failure is the consequence test (no date, no counterparty, no
+        # consequence language — the rail already said no date/money). It
+        # goes to the OBSERVED tier: kept, feeds prep, no question, no row.
+        # Before this it became a guess that asked. The reason names it so
+        # the receipt tallies it apart from a floor gate (`FLOOR_NO_
+        # CONSEQUENCE` stays the code — the aside is the user-owned case of
+        # that one verdict, not a new enum member).
+        if (floor == FLOOR_NO_CONSEQUENCE and not rail and user_id
+                and owner == user_id):
+            return {"tier": TIER_OBSERVED, "reason": ASIDE_REASON,
+                    "floor_reason": floor,
+                    "floor_code": floor_reason_code(floor),
+                    "fusion_reason": "", "fusion_status": fusion_state,
+                    "relevance_reason": "", "speech_act": speech_act,
+                    "superseding_quote": "", "aside": True}
         return {"tier": tier, "reason": floor, "floor_reason": floor,
                 "floor_code": floor_reason_code(floor),
                 "fusion_reason": "", "fusion_status": fusion_state,
-                "relevance_reason": "",
+                "relevance_reason": "", "speech_act": speech_act,
                 "superseding_quote": ""}
 
     fusion = (FUSION_REVIEW_REASON if fusion_state == FUSION_REFUSED else "")
@@ -2516,7 +3995,7 @@ def admit_meeting_capture(
         return {"tier": TIER_REVIEW, "reason": fusion, "floor_reason": "",
                 "floor_code": "",
                 "fusion_reason": fusion, "fusion_status": fusion_state,
-                "relevance_reason": "",
+                "relevance_reason": "", "speech_act": speech_act,
                 "superseding_quote": ""}
 
     # FLOOR2 — the second floor layer, the one that reads the MEETING. It runs
@@ -2542,6 +4021,8 @@ def admit_meeting_capture(
                 "floor_code": deeper["code"],
                 "fusion_reason": "", "fusion_status": fusion_state,
                 "relevance_reason": "",
+                "speech_act": speech_act or conditional_declined_reason(
+                    data, transcript_text),
                 "superseding_quote": deeper["quote"]}
 
     ctx = capture_context or {}
@@ -2564,7 +4045,7 @@ def admit_meeting_capture(
     return {"tier": tier, "reason": verdict["reason"], "floor_reason": "",
             "floor_code": "",
             "fusion_reason": "", "fusion_status": fusion_state,
-            "relevance_reason": verdict["reason"],
+            "relevance_reason": verdict["reason"], "speech_act": speech_act,
             "superseding_quote": ""}
 
 
@@ -2779,6 +4260,7 @@ def route_meeting_captures(
     source_skill: str = "meeting-notes",
     attendee_records=None,
     now_iso: Optional[str] = None,
+    meeting_person_ids=None,
 ) -> dict:
     """THE meeting-capture admission path. Both meeting legs call this — it is
     the one place the floor, the fusion guardrail and party-only scoping run,
@@ -2837,6 +4319,15 @@ def route_meeting_captures(
     render: an auto-creation with no receipt is the CAPTUREFLOW silent-drop
     class inverted.
 
+    ATTRIB1-B — `meeting_person_ids` is the list of resolved person ids the
+    caller will stamp on the `meeting` event (Step 9a1 / Phase 4 step 8);
+    with `attendee_records` it is the roster the owner/counterparty ladder
+    reads (`resolve_meeting_parties`). Both default None: the ladder then
+    has no calendar and every rung that needs one is inert — the A-lane
+    basis stands. The route PATCHES `owner_id` / `counterparty_id` onto an
+    item when a rung resolved one, and writes the ladder's ONE question on
+    the row when none did (`attribution.question`).
+
     Construction only, plus that one seam — append `book + review + observed`
     through `event_gate.append_event` in ONE call, exactly as before."""
     try:
@@ -2871,17 +4362,140 @@ def route_meeting_captures(
     # is counting extractions rather than rows.
     n_fusion_inert = 0
 
-    # PASS 1 — the verdict for every item. Separated from the write so PASS 2
-    # can compare items to each other; before FLOOR3 this loop routed and BUILT
-    # in one walk, which is why nothing ever noticed a batch holding the same
-    # act twice.
     staged = [dict(raw or {}) for raw in (items or [])]
+
+    # PASS 1a — ATTRIB1-A DD-1: the transcript's class, declared ONCE for the
+    # meeting, before any row is judged. `unknown` when no transcript reached
+    # this call (the fusion check is inert for the same reason).
+    tclass = transcript_class(
+        transcript_text, attendee_records=attendee_records,
+        user_names=ctx.get("user_names") or ()) if transcript_text else {
+            "class": TRANSCRIPT_CLASS_UNKNOWN, "turns": [],
+            "other_party_ids": [], "n_other": 0, "named_speakers": [],
+            "n_me": 0, "n_them": 0, "generic_labels": []}
+    hay_spans = _fusion_token_spans(transcript_text) if transcript_text else []
+    turns = tclass.get("turns") or []
+    # ATTRIB1-B — the roster the ladder reads, resolved ONCE per meeting.
+    parties = resolve_meeting_parties(
+        workspace_root=workspace_root, attendee_records=attendee_records,
+        meeting_person_ids=meeting_person_ids, user_id=ctx.get("user_id"),
+        user_names=ctx.get("user_names") or ())
+    n_questions = 0
+    n_owner_changed = 0
+    n_self_ref = 0
+    n_paraphrase = 0
+    from collections import Counter as _Counter
+    speech_act_tally = _Counter()
+
+    # PASS 1b — ATTRIB1-B: the ladder runs BEFORE the verdicts, and what it
+    # resolves is patched onto the item.
+    #
+    # THE ORDERING IS THE POINT, and it is the one place this lane departs
+    # from ATTENDEE1's seam (which deliberately sits AFTER the verdicts so
+    # routing is untouched). The capture floor's FIRST condition is "an
+    # identifiable person owns it" — and a first-person promise under a `Me`
+    # marker HAS one: the transcript says so. Judging that row before reading
+    # the marker gates it `FLOOR_NO_OWNER` and puts a question in front of
+    # the user that the transcript already answered, which is the whole
+    # defect this spec exists to fix. So the marker and the calendar are read
+    # first, the ids land on the item, and the floor then judges a row whose
+    # owner is known. The lane change this produces is intended and is
+    # reported per class in the replay.
+    #
+    # It only ever ADDS resolution: nothing here removes an id the extractor
+    # supplied (the one exception is the self-counterparty strip, which is a
+    # hard fence, and the row says it happened). The build-time call below
+    # re-derives on the patched item, so an id the ATTENDEE1 seam fills in
+    # later still counts.
+    attributed_by_idx: dict = {}
+    for idx, item in enumerate(staged):
+        got = attribute_item(item, tclass=tclass, hay_spans=hay_spans,
+                             turns=turns, transcript_text=transcript_text,
+                             parties=parties,
+                             meeting_person_ids=meeting_person_ids)
+        attributed_by_idx[idx] = got
+        got_attr = got["attribution"]
+        # ONLY WHAT THE ROOM ACTUALLY SAID WRITES AN ID.
+        #
+        # Every rung the ladder stands on is evidence: the turn marker with
+        # the grammar agreeing (`speaker`), the two-party calendar
+        # (`calendar`), the vocative, the previous named speaker, the
+        # meeting's resolved people — and the A4 addressee case, which reads
+        # `inferred` per the amendment but is a reading of the SAME marker
+        # ("you'll send…" in the user's turn).
+        #
+        # The ONE thing that is not evidence is the self-owed PRESUMPTION:
+        # an item with no owner at all whose kind (task / scheduling /
+        # agenda) means "mine by definition". `classify_capture` has always
+        # made that presumption for RELEVANCE, and it must stay exactly
+        # that — a presumption. Writing it onto the row would turn "nobody
+        # said whose this is" into "the user owns it", a guess recorded as a
+        # fact, and the floor would then read a resolved owner where the
+        # transcript named none. So it stays a BASIS on the record, never an
+        # id, and `_has_owner_signal` keeps judging the row the extractor
+        # actually produced.
+        presumed_self_owed = (
+            not str(item.get("owner_id") or "").strip()
+            and _probe_data(item).get("kind") in ("task", "scheduling",
+                                                  "agenda")
+            and got_attr.get("owner_basis") == BASIS_INFERRED
+            and got["owner_id"] == (parties or {}).get("user_id"))
+        patched = dict(item)
+        if got["owner_id"] and not presumed_self_owed \
+                and got["owner_id"] != str(item.get("owner_id") or "").strip():
+            patched["owner_id"] = got["owner_id"]
+            patched.pop("owner_external", None)
+        if got["self_ref"]:
+            own = got["owner_id"] or str(patched.get("owner_id") or "")
+            if patched.get("counterparty_id") == own:
+                patched["counterparty_id"] = None
+            if isinstance(patched.get("counterparty_ids"), list):
+                patched["counterparty_ids"] = [
+                    c for c in patched["counterparty_ids"] if c != own]
+        if got["counterparty_id"] \
+                and not str(patched.get("counterparty_id") or "").strip() \
+                and not patched.get("counterparty_ids"):
+            patched["counterparty_id"] = got["counterparty_id"]
+        staged[idx] = patched
+
+    # PASS 1c — the verdict for every item, now that it says who owns it.
+    # Separated from the write so PASS 2 can compare items to each other;
+    # before FLOOR3 this loop routed and BUILT in one walk, which is why
+    # nothing ever noticed a batch holding the same act twice.
     for item in staged:
         verdict = admit_meeting_capture(
             item, transcript_text=transcript_text, capture_context=ctx,
-            org_override=override)
+            org_override=override, workspace_root=workspace_root)
         verdicts.append({"title": str(item.get("title") or "").strip(),
                          **verdict})
+
+    # A1 — a dictated working session: one voice, nobody on the other end.
+    # Every item the observed writer will take goes to the OBSERVED tier:
+    # kept, searchable, feeds prep — no open item, no question, no queue row.
+    # The caution rail is older and stands: a dated or money item ALWAYS
+    # surfaces as open, so it keeps the verdict it already has.
+    n_working_session = 0
+    if tclass.get("class") == TRANSCRIPT_CLASS_DICTATION:
+        try:
+            from capture_gate import carries_due_or_money as _rail
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from capture_gate import carries_due_or_money as _rail
+        for item, verdict in zip(staged, verdicts):
+            if verdict["tier"] not in (TIER_BOOK, TIER_REVIEW):
+                continue
+            if _rail(_probe_data(item)):
+                continue
+            verdict["tier"] = TIER_OBSERVED
+            verdict["reason"] = WORKING_SESSION_REASON
+            verdict["working_session"] = True
+            n_working_session += 1
+
+    for _v in verdicts:
+        if _v.get("speech_act"):
+            speech_act_tally[SPEECH_ACT_CODES.get(_v["speech_act"],
+                                                  "OTHER")] += 1
 
     # PASS 2 — fold twins of one act into one row (FLOOR3 E).
     collapsed = collapse_duplicate_captures(staged, verdicts, transcript_text)
@@ -2941,6 +4555,34 @@ def route_meeting_captures(
         n_auto_created = int(seeded["n_created"])
         n_already_on_file = int(seeded.get("n_already_on_file") or 0)
 
+    # PASS 2c — HYGIENE9 (d): THE ROSTER IS RE-RESOLVED AFTER THE SEAM.
+    #
+    # `parties` was resolved ONCE at the top of this function, against the
+    # graph as it stood BEFORE the seam above created anyone. So on the very
+    # fire that turned an attendee into a person record, the ladder's
+    # two-party calendar rung still read a roster without them: the row that
+    # NAMED the person got its id from the seam's patch, and every other
+    # promise on the same call — the first-person "I'll send it over" that
+    # names nobody — stayed counterparty-unresolved, stamped pending, and
+    # asked a question the attendee list had already answered. The ATTRIB1-B
+    # reviewer measured the design ceiling on the operator's book at ~76 %
+    # and named this ordering as the one change that moves a LIVE number
+    # (REVIEW_ATTRIB1B_2026-09-04, "make the live-versus-replay gap real").
+    #
+    # Only when the seam CREATED someone: an unchanged graph resolves to the
+    # same roster, so re-resolving would spend a read to learn nothing, and
+    # the pass-3 tallies (`same_cp` — which basis stands) stay byte-identical
+    # for every fire the seam left alone. The seam itself stays AFTER the
+    # verdicts (survivors only) — hoisting it would widen person creation to
+    # rows that are never booked, which is a durable write ATTENDEE1 bounded
+    # on purpose. Nothing here removes an id; the build below re-derives on
+    # the enlarged roster and fills in what it now resolves, basis `calendar`.
+    if n_auto_created:
+        parties = resolve_meeting_parties(
+            workspace_root=workspace_root, attendee_records=attendee_records,
+            meeting_person_ids=meeting_person_ids, user_id=ctx.get("user_id"),
+            user_names=ctx.get("user_names") or ())
+
     # PASS 3 — build the survivors, in batch order.
     for idx, item in enumerate(staged):
         if idx not in keep:
@@ -2954,6 +4596,56 @@ def route_meeting_captures(
         # is the same question in all three, and a stamp that only marks the
         # book lane would leave the queue's own rows reading as verified.
         inert = verdict.get("fusion_status") == FUSION_INERT
+        # ATTRIB1-A — the basis for THIS row, computed AFTER the ATTENDEE1
+        # seam (so an id that pass filled in counts as resolved) and BEFORE
+        # the build (so the derived flag reads it). ATTRIB1-B: the owner and
+        # counterparty rungs run here, and what they resolve is PATCHED onto
+        # the item so the builder, the gate and the party test all read one
+        # answer. The self-counterparty fence (EXTRACT1 D-A) strips the
+        # self-reference and the row says so — never a drop.
+        # Re-derived on the item AS IT NOW STANDS — pass 1b already patched
+        # what the ladder resolved, and the ATTENDEE1 seam above may have
+        # filled an id since, which this reading counts. The pass-1b result
+        # is what the TALLIES read: `owner_changed` is a statement about the
+        # extractor's guess, and by now the item carries the answer.
+        pre = attributed_by_idx.get(idx) or {}
+        attributed = attribute_item(
+            item, tclass=tclass, hay_spans=hay_spans, turns=turns,
+            transcript_text=transcript_text, parties=parties,
+            meeting_person_ids=meeting_person_ids)
+        attribution = attributed["attribution"]
+        # WHICH RUNG the row stood on is pass 1b's answer, and it has to
+        # survive its own success: once the ladder has written the id onto
+        # the item, a re-derivation sees a resolved counterparty and reports
+        # the generic `inferred`, losing the fact that the VOCATIVE (or the
+        # previous speaker, or the calendar) is what resolved it. So the
+        # earlier basis stands whenever nothing has changed the ids since —
+        # and when the ATTENDEE1 seam HAS filled one in, the fresh reading
+        # wins, because then the row really was resolved by that seam.
+        same_owner = str(item.get("owner_id") or "").strip() == str(
+            (pre.get("owner_id") or "")).strip()
+        same_cp = str(item.get("counterparty_id") or "").strip() == str(
+            (pre.get("counterparty_id") or "")).strip()
+        # HYGIENE9 (d) — and when the FRESH reading resolves a counterparty
+        # the item still lacks (the roster grew in pass 2c), the fresh
+        # reading wins for the same reason: the row really was resolved by
+        # the calendar now, and the pending stamp below reads this basis.
+        fresh_cp = bool(attributed["counterparty_id"]) \
+            and not str(item.get("counterparty_id") or "").strip() \
+            and not item.get("counterparty_ids")
+        if pre.get("attribution") and same_owner and same_cp and not fresh_cp:
+            attribution = pre["attribution"]
+        if pre.get("owner_changed"):
+            n_owner_changed += 1
+        if pre.get("self_ref"):
+            n_self_ref += 1
+        if attributed["counterparty_id"] and not str(
+                item.get("counterparty_id") or "").strip() \
+                and not item.get("counterparty_ids"):
+            item = dict(item)
+            item["counterparty_id"] = attributed["counterparty_id"]
+        if attribution.get("question") is not None:
+            n_questions += 1
 
         if tier == TIER_OBSERVED:
             try:
@@ -2980,6 +4672,28 @@ def route_meeting_captures(
                 if inert:
                     obs_ev.setdefault("data", {})["fusion_inert"] = True
                     n_fusion_inert += 1
+                # ATTRIB1-A D5 / D7 / DD-4 on the observed lane too: the
+                # verdict's codes and the basis ride every row that is
+                # written, whichever tier wrote it.
+                obs_data = obs_ev.setdefault("data", {})
+                obs_data["fusion_status"] = verdict.get("fusion_status") \
+                    or FUSION_INERT
+                if floor_gated and verdict.get("floor_code"):
+                    obs_data["floor_code"] = verdict["floor_code"]
+                obs_data["attribution"] = attribution
+                if verdict.get("working_session"):
+                    obs_data["working_session"] = True
+                if pre.get("self_ref"):
+                    obs_data["self_counterparty_stripped"] = True
+                if verdict.get("speech_act"):
+                    obs_data["speech_act"] = verdict["speech_act"]
+                _ek = str(item.get("evidence_kind") or "").strip()
+                if not _ek and verdict.get("fusion_status") == FUSION_VERIFIED:
+                    _ek = EVIDENCE_VERBATIM
+                if _ek in EVIDENCE_KINDS:
+                    obs_data["evidence_kind"] = _ek
+                    if _ek == EVIDENCE_PARAPHRASE:
+                        n_paraphrase += 1
                 observed.append(obs_ev)
                 continue
             except Exception as exc:
@@ -3037,8 +4751,32 @@ def route_meeting_captures(
             if item.get(k) not in (None, "", [], False)
         }
         kwargs.pop("attribution_candidates", None)
+        kwargs.pop("span", None)
+        # ATTRIB1-A — the builder derives the flag from these; the route
+        # never hands it a literal `pending_review` — an item that carries one
+        # (older prose, a hand-built caller) has it DROPPED here, so the
+        # contract-violation note fires only on a direct builder caller and a
+        # scheduled fire can never note every low-confidence row (REVIEW
+        # ATTRIB1A F1). D5: the floor code on
+        # every gated row. D7: the fusion verdict on every row. DD-4: the
+        # basis, on the strict path.
+        kwargs.pop("pending_review", None)
+        kwargs.pop("review_reason", None)
+        kwargs["attribution"] = attribution
+        kwargs["floor_code"] = verdict.get("floor_code") if floor_gated else ""
+        kwargs["fusion_status"] = verdict.get("fusion_status") or FUSION_INERT
+        kwargs["strict_attribution"] = True
+        # EXTRACT1 dragger 3 — the label. The extractor's own `paraphrase`
+        # label rides through; a row whose words LOCATED is `verbatim`; an
+        # unlabelled row that did not locate carries no label (its
+        # `fusion_status: refused` is the honest statement there).
+        ek = str(item.get("evidence_kind") or "").strip()
+        if not ek and verdict.get("fusion_status") == FUSION_VERIFIED:
+            ek = EVIDENCE_VERBATIM
+        kwargs["evidence_kind"] = ek or None
+        if ek == EVIDENCE_PARAPHRASE:
+            n_paraphrase += 1
         if tier == TIER_REVIEW:
-            kwargs["pending_review"] = True
             kwargs["review_reason"] = verdict["reason"]
         try:
             ev = build_meeting_commitment_event(title, **kwargs)
@@ -3057,6 +4795,19 @@ def route_meeting_captures(
             continue
         if attribution_extra:
             ev["data"].update(attribution_extra)
+        if verdict.get("speech_act"):
+            # EXTRACT1 dragger 2 — WHAT SHAPE this row is, beside the
+            # verdict that routed it. The floor decided the lane; this says
+            # what a human would call the sentence.
+            ev["data"]["speech_act"] = verdict["speech_act"]
+        if pre.get("self_ref"):
+            # EXTRACT1 D-A — the row says the self-reference was stripped.
+            # Whether it then flags is the derived rule's call (an
+            # unresolved counterparty on a promise asks; a task books).
+            ev["data"]["self_counterparty_stripped"] = True
+            if ev["data"].get("pending_review") and not str(
+                    ev["data"].get("review_reason") or "").strip():
+                ev["data"]["review_reason"] = SELF_COUNTERPARTY_NOTE
         if absorbed.get(idx):
             # FLOOR3 E — a COUNT of the twins that folded in, never their
             # titles: this rides an event whose counts reach the receipt, and
@@ -3100,6 +4851,10 @@ def route_meeting_captures(
         # always did plus two empties.
         "auto_created": auto_created,
         "receipt_lines": auto_receipt,
+        # ATTRIB1-A DD-1 — the class this meeting's transcript was declared
+        # to be. The caller stamps it on the `meeting` event
+        # (`build_meeting_event(transcript_class=...)`).
+        "transcript_class": tclass.get("class"),
         "summary": {
             "n_book": len(book),
             "n_review": len(review),
@@ -3128,6 +4883,31 @@ def route_meeting_captures(
             # audited population 20 of 131 rows were in this class and the
             # substrate recorded none of them.
             "n_fusion_inert": n_fusion_inert,
+            # ATTRIB1-A A1 — rows sent to the observed tier BECAUSE the
+            # transcript is a dictated working session. A subset of
+            # `n_observed`; never added to another count. `working_session`
+            # is the meeting-level fact the caller stamps on the `meeting`
+            # event.
+            "n_working_session": n_working_session,
+            "working_session": tclass.get("class") == TRANSCRIPT_CLASS_DICTATION,
+            # ATTRIB1-B — the ladder's own tallies. `n_questions` is the
+            # number of rows that carry a `who_is_you` question (door 1
+            # renders at most 3 of them); `n_owner_changed` is how many rows
+            # the grammar fence re-owned away from the extractor's guess;
+            # `n_self_counterparty` is dragger 4's yield. Counts only; each
+            # is a subset of nothing and is never added to another number.
+            "n_questions": n_questions,
+            "n_owner_changed": n_owner_changed,
+            "n_self_counterparty": n_self_ref,
+            "n_asides": sum(1 for v in verdicts if v.get("aside")),
+            # EXTRACT1 dragger 3 — rows whose evidence the extractor LABELLED
+            # a paraphrase (the fusion guardrail was honestly inert on them).
+            # The rate a re-measure needs; never added to another count.
+            "n_paraphrase": n_paraphrase,
+            # EXTRACT1 dragger 2 — rows carrying a speech-act label, by
+            # shape. Counts only; a subset of the rows the floor held, and
+            # never added to another number.
+            "speech_acts": dict(speech_act_tally),
         },
     }
 
@@ -3153,6 +4933,19 @@ __all__ = [
     "FLOOR_NOT_ACCEPTED",
     "FLOOR_DONE_IN_MEETING",
     "FLOOR_SUPERSEDED_IN_MEETING",
+    "SPEECH_ACT_ADVICE",
+    "SPEECH_ACT_REQUEST",
+    "SPEECH_ACT_CONDITIONAL_DECLINED",
+    "SPEECH_ACT_REPORTED",
+    "SPEECH_ACT_DICTATION",
+    "SPEECH_ACT_VALUES",
+    "SPEECH_ACT_CODES",
+    "EVIDENCE_VERBATIM",
+    "EVIDENCE_PARAPHRASE",
+    "EVIDENCE_KINDS",
+    "DISCHARGE_REQUEST_WINDOW_WORDS",
+    "speech_act_reason",
+    "conditional_declined_reason",
     "FLOOR_CODE_NO_OWNER",
     "FLOOR_CODE_NO_DELIVERABLE",
     "FLOOR_CODE_NO_CONSEQUENCE",
@@ -3194,4 +4987,46 @@ __all__ = [
     "transcript_floor_reason",
     "admit_meeting_capture",
     "route_meeting_captures",
+    # ATTRIB1-A
+    "TRANSCRIPT_CLASS_NAMED",
+    "TRANSCRIPT_CLASS_ME_THEM",
+    "TRANSCRIPT_CLASS_UNLABELLED",
+    "TRANSCRIPT_CLASS_DICTATION",
+    "TRANSCRIPT_CLASS_UNKNOWN",
+    "TRANSCRIPT_CLASSES",
+    "BASIS_SPEAKER",
+    "BASIS_CALENDAR",
+    "BASIS_VOCATIVE",
+    "BASIS_PERSON_IDS",
+    "BASIS_INFERRED",
+    "BASIS_UNKNOWN",
+    "BASIS_NONE",
+    "OWNER_BASES",
+    "COUNTERPARTY_BASES",
+    "WORKING_SESSION_REASON",
+    "CAPTURE_CONTRACT_VIOLATION",
+    "transcript_turns",
+    "transcript_class",
+    "turn_of_span",
+    "derive_attribution",
+    "validate_attribution",
+    "derive_pending_review",
+    # ATTRIB1-B
+    "BASIS_DEFAULT_APPLIED",
+    "QUESTION_WHO_IS_YOU",
+    "PROMISE_CLAUSE_KINDS",
+    "SELF_COUNTERPARTY_NOTE",
+    "ASIDE_REASON",
+    "PERSON_FIRST",
+    "PERSON_SECOND",
+    "PERSON_THIRD",
+    "grammatical_person",
+    "vocative_at_head",
+    "turn_index_of_span",
+    "turn_body_text",
+    "span_text",
+    "resolve_meeting_parties",
+    "attribute_owner",
+    "attribute_counterparty",
+    "attribute_item",
 ]

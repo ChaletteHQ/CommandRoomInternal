@@ -2096,7 +2096,8 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
     confirmed, pending_rows = split_pending_review(load_open_commitments(
         str(_events_path(ws)), workspace_root=str(ws)))
     confirmed_open = {_commitment_id(ev) for ev in confirmed}
-    pending_ids = {_commitment_id(ev) for ev in pending_rows}
+    pending_by_id = {_commitment_id(ev): ev for ev in pending_rows}
+    pending_ids = set(pending_by_id)
     # OBSERVED1 — the set-aside rows this queue now also answers (same
     # routing rule as confirm_items: id membership; the id schemes cannot
     # collide). REVIEW E1 — the observed index is a second full-log scan, so
@@ -2166,11 +2167,36 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
                         "status": status})
         if status == "closed":
             n_dropped += 1
+            # ATTRIB1-B D12 — a drop / not-mine on a MEETING capture (a row
+            # that carries a typed basis) teaches the extractor one line.
+            # Never fatal: the close already landed.
+            _attribution_hint_on_drop(workspace_root, pending_by_id.get(cid),
+                                      evidence)
         else:
             n_already += 1
     return {"results": results, "n_dropped": n_dropped,
             "n_already": n_already, "n_refused": n_refused,
             "n_failed": n_failed}
+
+
+def _attribution_hint_on_drop(workspace_root, ev, evidence) -> bool:
+    """D12 — one hint line for a dropped / not-mine meeting capture."""
+    if not isinstance(ev, dict):
+        return False
+    d = ev.get("data") or {}
+    attr = d.get("attribution") if isinstance(d.get("attribution"), dict) else None
+    if not attr:
+        return False
+    try:
+        from extraction_hints import append_attribution_hint
+        return append_attribution_hint(
+            workspace_root,
+            verdict="not_mine" if evidence == NOT_MINE_EVIDENCE else "dropped",
+            title=str(d.get("title") or ""),
+            transcript_class=str(attr.get("transcript_class") or ""),
+            kind=str(d.get("kind") or ""))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -2345,8 +2371,12 @@ def _touch_phrase(ev: dict) -> str:
 
 
 def _is_system_question(event_type: str, data: dict) -> bool:
-    """True for a `commitment_updated` that is only the SYSTEM ASKING — the
-    SPEC OVERDUE1 overdue-ask mark (`asked_set` / `asked_cleared`).
+    """True for an event that is only the SYSTEM SPEAKING, never a decision:
+    a `commitment_updated` that is the SPEC OVERDUE1 overdue-ask mark
+    (`asked_set` / `asked_cleared`), or — REVIEW_MERGED_v5280 F-2 — a
+    `commitment_review_dismissed` whose reason is in
+    `NON_DISMISSAL_RESOLUTION_REASONS` (the review-expiry chip leg
+    withdrawing its own evidence line; the dangling drain's tombstone).
 
     The independent-touch bar exists so an undo cannot silently step over
     somebody ELSE'S later decision. That reasoning is about a decision. An
@@ -2373,9 +2403,23 @@ def _is_system_question(event_type: str, data: dict) -> bool:
     two sets are unaffected — this is a payload-level exemption inside the
     one function that reads the bar, exactly where the scope belongs.
     """
+    d = data if isinstance(data, dict) else {}
+    if event_type == "commitment_review_dismissed":
+        # REVIEW_MERGED_v5280 F-2 — a SYSTEM dismissal is not a decision
+        # either: the review-expiry job withdrawing its own chip
+        # (`policy_retracted`) and the dangling drain's terminal tombstone
+        # (`target_never_created`) both carry a reason inside
+        # `NON_DISMISSAL_RESOLUTION_REASONS`, and refusing the customer's
+        # undo of their OWN confirm with "you skipped its review row" over a
+        # row the machine withdrew is the wrong direction for this bar. A
+        # human's Skip carries no such reason and stays a touch.
+        try:
+            from event_types import is_non_dismissal_closure
+        except Exception:  # pragma: no cover — never widen on an import failure
+            return False
+        return is_non_dismissal_closure(d)
     if event_type != "commitment_updated":
         return False
-    d = data if isinstance(data, dict) else {}
     if not (d.get("asked_set") or d.get("asked_cleared")):
         return False
     from commitment_activity import SUBSTANTIVE_UPDATE_KEYS
@@ -2830,7 +2874,22 @@ def build_queue_data_view(view: dict, *, header: str | None = None,
     entirely otherwise."""
     sections = []
     if candidate_section and (candidate_section.get("items") or []):
-        sections.append(candidate_section)
+        # HYGIENE9 (d2) — a candidate row's `n` is its WIRE id (`pcand:<hex>`,
+        # what apply-choices dispatches on) and the shared renderer prints
+        # `display_n` — falling back to `n` when a row has none. Candidate
+        # rows arrive without one (the one row shape serves three surfaces;
+        # the Staff Meeting card stamps its own), so on this surface the
+        # wire id rendered as the visible row number: `pcand:53504c35d5f8.`
+        # led the held queue through the whole v5.27.0 supervised test (A2,
+        # B1.2, C). The visible label is `P1`, `P2`, … — lettered so it can
+        # never collide with the commitment rows' `1..N`, which `confirm N`
+        # resolves by number. The wire id itself is untouched.
+        items = []
+        for i, it in enumerate(candidate_section.get("items") or [], start=1):
+            row = dict(it)
+            row.setdefault("display_n", f"P{i}")
+            items.append(row)
+        sections.append({**candidate_section, "items": items})
     for group in view.get("groups") or []:
         items = []
         for row in group.get("items") or []:

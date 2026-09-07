@@ -375,12 +375,18 @@ def chart_to_block(chart: dict) -> dict:
 # the emitter
 # ---------------------------------------------------------------------------
 
-def emit_slack_payload(data: dict, profile: dict) -> dict:
+def emit_slack_payload(data: dict, profile: dict, *,
+                       read_only: bool = False) -> dict:
     """The SAME data view the cowork widget renders → {"blocks", "text"}.
 
     Called ONLY by `widget_transport.render_and_persist(target="slack")`
     (gates run there). The `text` value is the mrkdwn notification fallback —
-    a numbered digest, never the whole payload."""
+    a numbered digest, never the whole payload.
+
+    SPEC_WIDGETRO1 §2-1 (CUT-C item 9) — `read_only=True` is the slack twin
+    of the cowork read-only page: the rows keep the verbs the surface
+    declares and the batch footer (Apply selected / Snooze rest) is not
+    emitted."""
     src = data.get("source_skill")
     blocks: list[dict] = []
     fallback_lines: list[str] = []
@@ -471,9 +477,10 @@ def emit_slack_payload(data: dict, profile: dict) -> dict:
                 fb += f" — {item['context_tag']}"
             fallback_lines.append(fb)
 
-    if any_actions:
+    if any_actions and not read_only:
         # The batch footer, ported: the LISTENER accumulates selections per
         # thread and composes ONE `apply choices: [...]` on Apply (C-3).
+        # SPEC_WIDGETRO1 §2-1 — never on a read-only surface.
         blocks.append({"type": "actions", "block_id": "cr_footer",
                        "elements": [
                            {"type": "button", "action_id": "cr_apply_all",

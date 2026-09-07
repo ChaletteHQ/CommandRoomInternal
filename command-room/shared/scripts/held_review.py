@@ -370,10 +370,16 @@ def render_review_page(workspace_root, *, page: int = 1,
     page_view = nrq.paginate_groups(data_view, page=page, max_rows=max_rows)
     gp = page_view.pop("group_pagination")
     rows = max(1, gp["rows_on_page"])
+    # SPEC_WIDGETRO1 §2-1 (CUT-C item 9, ATTENDED_TEST_v5.28.0 B5.1) — the
+    # reading chair renders READ-ONLY: its one row verb stays, the shared
+    # batch footer (Apply all / Reset / `Snooze rest (1 day)`) does not
+    # render, and the transport's validator reds the page if it ever does.
+    # The apply-choices dispatcher fence on `skip` / `skip all` stays as the
+    # second belt (a persisted pre-cut page can still carry the footer).
     transport = render_and_persist(
         data_view=page_view, wrapper="fragment",
         persist_dir=str(persist_dir or (ws / "_hq" / ".system" / "widgets")),
-        page=1, page_size=rows)
+        page=1, page_size=rows, read_only=True)
     fitted = (transport.get("pagination") or {}).get("total_pages") or 1
     if fitted > 1:
         gp = dict(gp)

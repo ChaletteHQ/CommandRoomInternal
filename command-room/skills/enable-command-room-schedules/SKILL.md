@@ -887,7 +887,7 @@ just plugged in overnight): System Settings → Displays/Power → prevent
 sleeping when plugged in. If a task ever looks like it "stopped
 working," a sleeping computer is the most common reason — not an error.
 
-Your Commitments chats will be added in a follow-up session once
+Your Waiting On and My Plate chats will be added in a follow-up session once
 you've been logging meetings for a couple of weeks. They work best
 once there's some history for them to draw on.
 
@@ -984,7 +984,7 @@ Re-firing this skill detects existing schedules. Surfaces:
 
 > *"Command Room schedules already configured. [N] scheduled chats running. Want to add, change, remove, or reset? (add / change / remove / reset / nothing)"*
 
-(`[N]` is the count of currently-enabled registered taskIds — typically 5 on a fresh M1 install, up to 7 once the Commitments chats have been added.)
+(`[N]` is the count of currently-enabled registered taskIds — typically 5 on a fresh M1 install, up to 7 once the Waiting On and My Plate chats have been added.)
 
 - `add` — only useful if a future version adds new chats
 - `change` — list existing, ask which + new cron. THIS is the calibration entry path (v2.9.2+ doesn't ask cadence questions at first install; explicit `change` request opens that conversation).
@@ -1025,7 +1025,7 @@ Tombstones (back-compat pointers; don't reference directly in new schedules):
 
 Plus shared specs:
 - `SHARED_CHAT_OUTPUT_PROTOCOL.md` (in this `references/` folder) — universal chat-output rules (the 10 rules that apply across every orchestrator)
-- `shared/EMAIL_DRAFT_PROTOCOL.md` (in the plugin's `shared/` folder, moved out of this skill's `references/` in v3.13.3 to reflect its universal scope — referenced by email-writer / intro-broker / follow-up-ritual / inbox-triage / thread-resurrection as well as the scheduled orchestrators) — email-draft mechanics (lazy creation, Gmail/Outlook MCP defensive handling)
+- `shared/EMAIL_DRAFT_PROTOCOL.md` (in the plugin's `shared/` folder, moved out of this skill's `references/` in v3.13.3 to reflect its universal scope — referenced by email-writer / intro-broker / follow-up-ritual / inbox-triage / dormant-customer-scan's threads lens (formerly thread-resurrection) as well as the scheduled orchestrators) — email-draft mechanics (lazy creation, Gmail/Outlook MCP defensive handling)
 - `PROJECT_MAPPING_RULES.md` (in this `references/` folder) — deterministic 4-rule project resolution + plain-English unrouted heuristic
 
 (Note: `STAGING_CONVENTION.md` and `PROVENANCE_FRONT_MATTER.md` were retired in v3.12.0. Deliverables route through `_hq/meetings/` via `brief_writer.py` per `MD_DELIVERABLE_POLICY.md`; `_hq/staging/` is now a forbidden path per the leak scanner.)

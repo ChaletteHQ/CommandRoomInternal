@@ -24,7 +24,7 @@ When a step below says AUTOMATIC, run it. The safety copy, the archive, and the 
 - **Use cleanup for:** the weekly (or on-demand) workspace maintenance pass — safe auto-fixes, substrate self-heal, and the short Monday note. Retired audit phrases ("weekly audit", "system review", "scan everything") redirect here.
 - **Use `weekly-recap` for:** "weekly recap" / "what happened this week" — the week-in-review narrative, not maintenance.
 - **Use `system-health` for:** "health check" / "system health" / "is everything running" — the scheduled-task watchdog (moved out of cleanup in Phase 3/W1).
-- **Use `level-up-command-room` for:** "level up command room" — the opt-in add-ons menu.
+- **Use `level-up-command-room` for:** "level up command room" — the sidebar dashboards (install / refresh Workspace Map, Quick Commands, My Open Commitments).
 - **Does NOT fire on** bare "clean up [a thing]" (an email, a doc, a list) — only workspace-shaped cleanup fires it.
 - **Maintenance-shaped phrases run Step 0 below, NOT a cleanup pass** — "run my maintenance", "run maintenance now", "run maintenance", bare "maintenance" (EW2+T, F-14).
 
@@ -111,7 +111,7 @@ The prose checks 1a–1j below remain the broader, judgment-driven sweep layered
 - **1g. File size & bloat** — against WORKSPACE_SCHEMA.md targets: SESSION_NOTES >150 lines, PROJECT_BRAIN >4KB, PERSON files >3KB, MASTER_TRACKER >2KB, `_hq/briefings/` >30, `_people/prep/` >20, `_hq/cleanup-reports/` >12, any .md >10KB.
 - **1h. Team health (if `_people/` exists)** — else skip entirely. Last interaction, open/overdue commitments per member; flag 14+ days silent, 3+ overdue, profiles >30 days stale.
 - **1i. Content accuracy** — cross-reference docs vs recent session notes to find drift (stale contexts, dormant "active" projects, undocumented people/decisions).
-- **1j. Prospects that look converted (Bug #92 — detect-and-nudge, NEVER auto-flip).** Run `shared/scripts/prospect_conversion_detector.py::detect_prospect_conversion_candidates(workspace_root)`. For any candidate, add a line to the Monday note's "worth a glance" tier — *"[Name] looks like a client now ([reason]) — say `[Name] is now a client` to convert."* This is the weekly backstop for the real-time coach nudge. Cleanup does NOT change `relationship_type` itself — it only surfaces the suggestion; the CEO runs the Bug #91 conversion.
+- **1j. Prospects that look converted (Bug #92 — detect-and-nudge, NEVER auto-flip).** Run `shared/scripts/prospect_conversion_detector.py::detect_prospect_conversion_candidates(workspace_root)`. DEALNAG1 + M's ruling 4 (2026-09-03): a paid or signed fact (a won deal thread, a `deal_won` / invoice / payment / agreement event) PROMOTES the org automatically — `org_promotion` does the flip with a receipt and an undo, so it never reaches this note. What the detector still returns is the ambiguous lane: signing language, and a settled org that could not be promoted because no primary-focus org is set. A sizing or engagement record alone never qualifies for either. Render what the detector returns, never re-derive a candidate from the entities file. For any candidate, add a line to the Monday note's "worth a glance" tier — *"[Name] looks like a client now ([reason]) — say `[Name] is now a client` to convert."* This is the weekly backstop for the real-time coach nudge. Cleanup does NOT change `relationship_type` itself — it only surfaces the suggestion; the CEO runs the Bug #91 conversion.
 - **1k. Commitment write-contract violations (Phase 2 Stage D, S4 — flag-only).** `integrity_check.run_checks` now emits `C17.cleanup_keys` (any event carrying `_cleanup_*` keys — the signature of a hand-rolled in-place edit) and `C17.inplace_status` (commitment events with a closed-family `data.status`; legacy rows read fine forever, but GROWTH week-over-week means an active F4 mutation writer). Surface both in the Monday note as contract violations in plain English (*"something edited your activity log the unsafe way this week — nothing lost, but worth flagging"*). Cleanup NEVER rewrites the rows itself — F4 applies to cleanup too; commitment closure is `close_commitment()` appends only.
 
 ## Phase 2: Auto-Fix Sweep (does it, doesn't ask)
@@ -603,6 +603,22 @@ print(json.dumps({'people': rp.regenerate_changed(ws), 'orgs': ro.regenerate_cha
 
 Record into `actions_taken[]` only the entities actually refreshed (both `refreshed` lists). Never hand-edit a history view — the renderers own the whole file. An archived entity's view is pruned to `_archive` on status change by the archive path, never deleted here.
 
+### 3.5d4 — Regenerate the routing-corrections view + the repeated-redirect line (SPEC ROUTEMISS1)
+
+`_hq/views/ROUTER_MISSES.md` is a VIEW over the routing corrections the CEO voiced in chat ("wrong skill", "that should have been…", a "no, I meant…" redirect — workspace-manager's handler writes one event per correction and re-renders on write). Cleanup is the weekly backstop for a missed regen and the ONLY place the repeated-redirect sentence is produced. Changed-only, so a quiet workspace is a true no-op:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import cleanup_actions as ca
+ws = '<workspace_root>'
+r = ca.regenerate_router_misses_if_changed(ws)
+print(json.dumps({'changed': r['changed'], 'total': r['total'], 'recent': r['recent'], 'repeated': r['repeated'], 'monday_line': ca.router_misses_monday_line(ws)}))
+"
+```
+
+Record into `actions_taken[]` only when `changed` is True. If `monday_line` is non-null, add it VERBATIM to the Monday note's "worth a glance" tier — it is already plain English (*"Three times this month you had to redirect me to call prep; the phrases were: …"*). A null adds nothing: no line, no "routing was fine" filler (COVERQUIET1 posture). Never name the event type, never paraphrase the CEO's phrases, and never propose a description edit from it — the line is a pointer for whoever tunes this Command Room, not an instruction.
+
 ### 3.5e — Flag stale analytical views + nudge a paused insight-generator (D5)
 
 The analytical views (`RELATIONSHIPS.md`, `TIMELINE.md`, `COMMITMENT_AGING.md`, `DORMANT.md`, `THEMES.md`) are **NOT cleanup's job to regenerate** — they're `insight-generator`'s expensive lazy synthesis (per `references/VIEW_GENERATION.md`). cleanup's job is to **flag honestly** when they've fallen behind the substrate, and to surface the real root cause (a paused insight-generator) — the forensic gap was that cleanup neither regenerated NOR actually flagged, and insight-generator wasn't firing, so nobody owned it.
@@ -679,7 +695,7 @@ print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
 
 **Vantage guard (F-40):** if `vantage` is non-null, this session cannot see the machine-local scheduler (cloud/remote chat, or a different computer than the one the tasks run on) — the Monday note carries the single `vantage['line']` sentence instead of any per-task registration claims, and layers 2–4 are skipped for this fire. Never report tasks as unregistered from a blind vantage.
 
-**2. Registered-prompt drift (W4).** With the same records in hand, read the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` and run `tw.check_prompt_versions(records, installed_version)`. Any `stale: True` finding → one Monday-note line: *"Your scheduled chats were set up under an older version — say 'update command room' once and they'll refresh themselves."* (One line total, not per task; unstamped legacy prompts are informational and add nothing.)
+**2. Registered-prompt drift (W4).** With the same records in hand, read the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` and run `drift = schedule_refresh.prompt_body_drift(records, plugin_version=installed_version)` — the task ids whose registered bootloader BODY differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the compare Step 1.C writes on). A non-empty `drift` → one Monday-note line, `schedule_refresh.stale_prompt_notice(drift)` verbatim (CUT-PLATE, 2026-09-06 — the same sentence the update bridge and the health check say): *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."* (One line total, not per task. `tw.check_prompt_versions` — the stamp read — is informational and never earns the line: a stamp-only difference is not drift (fix round 1, REVIEW F-1 — Step 1.C leaves the stamp alone, BRIDGESIL1 §0.2, so a stamp-keyed line would repeat every Monday of every release whose bootloader body did not change); an unstamped legacy prompt adds nothing either.)
 
 **3. Scheduled-output self-audit (R10 — transcripts).** For each scheduled-chat thread that FIRED this week (per the watchdog reports / `lastRunAt`), read its session transcript via the session-info tools (`list_sessions` -> the scheduled-chat thread -> `read_transcript`; proven to work from scheduled sessions, 2026-07-01) and verify BOTH halves of the fire happened:
    - **rendered** — the transcript shows the widget/digest actually posted (a `show_widget` call or the digest text), and
@@ -883,6 +899,7 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 **Beats the CLEAN1 scan feeds into Beat 1 (include only the ones with real findings — omit zeros):**
 - **Orphan folders found** (Phase 1.0 `orphan_folder`): *"I noticed [N] folders that aren't tracked yet — [names]. Want me to register or archive them?"* FLAG only; never moved.
 - **Session-notes backfilled** (Phase 3c, D3): *"[N] projects were missing a notes file — I started one for each so they stay current."* (Only counts files actually created; the helper never overwrites existing notes.)
+- **Repeated redirects** (Phase 3.5d4, ROUTEMISS1): when `monday_line` is non-null, that ONE sentence verbatim — it names the skill in words and quotes the CEO's own phrases. Null adds nothing.
 - **Stale insight views** (Phase 3.5e, D5): the single line — *"A few of your insight pages are behind — say `run insights` and I'll bring them current."* Add the >14-day insight-generator nudge when `insight_nudge.stale` is True.
 - **Long-unconfirmed items** (Phase 3i, v4.6.1 W4b): when `stale_unconfirmed` is non-empty, ONE line — *"[N] captured to-dos have sat unconfirmed for over a month — say `triage my commitments` and I'll queue them up to drop or keep."* PROPOSE only (the drop is a click on the triage surface, never automatic); omit on zero. Keep this line out of the watchdog cluster below — it's a substrate-hygiene item, not a schedule finding.
 - **Living Brain card health** (Phase 3j, LB1): when `health["open"] > 0` or `health["expired_in_window"] > 0`, ONE line — *"[N] suggestions are waiting on your yes/no — say `staff meeting` to run through them. [M] older ones expired quietly without an answer this month."* (Drop either half at zero; drop the line when both are zero.) This is the queue-rot visibility line — if the expired half keeps growing, the card cadence or the detectors need tuning, and this line is the evidence. Substrate-hygiene item — keep it out of the watchdog cluster.

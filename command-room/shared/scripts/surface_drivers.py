@@ -89,6 +89,113 @@ _TASK_VERBS = ["resolved", "push to [date]", "drop", "promote",
 MONEY_PROSE_CAP = 3
 
 
+# ---------------------------------------------------------------------------
+# CUT-PLATE (2026-09-06) — THE NUMBER LEADS THE BRIEF.
+#
+# The v5.28.0 attended test (B2.1 / A4) saw the morning brief open with
+# "1 duplicate entry number(s) in your activity log", then a paragraph, then
+# CHANGED / DECIDE / NEEDED, and only THEN "170 on your plate today" — with
+# four or five other counts competing around it. M's standing rule ("we want
+# to show less options to clients — they are overwhelmed") and PLATE1-N2 R-1
+# / NUMBERS1 say the opposite: the FIRST line of the brief is the attention
+# number, then the top moves, then ONE pointer; every other count either
+# folds into that pointer or sits below the fold; the duplicate-entry
+# warning and any health line go to the END, never above the number.
+#
+# This is made MECHANICAL where the driver composes the pack:
+#   pack["lead"]          {lines, text} — plate.line FIRST, then the plate
+#                         rows, then the one pointer. The orchestrator prints
+#                         it verbatim as the first content block.
+#   pack["fold_lines"]    the count lines that sit BELOW the fold, in order:
+#                         the resting line, the queue pointer.
+#   pack["health_lines"]  alarm_lines + watchdog + dark-surface + schedule-
+#                         refresh lines — the END of the brief, verbatim.
+# ...and `assert_number_leads` is the fence: it scans the composed order
+# (lead, fold, health) and RAISES `BriefOrderError` when any count-shaped
+# sentence precedes the number line. The same scanner is run over the
+# rendered templates by `tests/run_cutplate_test.py`, so the prose the
+# model follows cannot drift back either.
+# ---------------------------------------------------------------------------
+
+#: The plate's own number line — the ONE line that may lead. `[N]` is the
+#: template's placeholder for the number, accepted so the same scanner reads
+#: the SKILL.md template and a live render alike.
+NUMBER_LINE_RE = re.compile(
+    r"^\s*(?:\[N\]|N|\d+)\s+on your plate today\s*$"
+    r"|^\s*Nothing is waiting on you today\.\s*$")
+
+#: Count-shaped sentences — a number (or the template's `[N]` / `[X]` / `[Y]`
+#: placeholder) counting workspace items. Named so a red says WHICH shape.
+_NUM = r"(?:\[[NXY]\]|\d+)"
+COUNT_SHAPES = (
+    ("things-need-your-eyes", re.compile(
+        rf"{_NUM}\s+(?:things?|items?)\s+need", re.I)),
+    ("duplicate-entry-warning", re.compile(
+        rf"{_NUM}\s+duplicate entry", re.I)),
+    ("resting-overdue", re.compile(
+        rf"^\W*{_NUM}\s+overdue item", re.I)),
+    ("and-N-more", re.compile(
+        rf"(?:^|\s)(?:…|\.\.\.)?and\s+{_NUM}\s+more\b", re.I)),
+    ("N-new-items", re.compile(
+        rf"^\W*{_NUM}\s+new items?\b", re.I)),
+    ("N-personal-items", re.compile(
+        rf"^\W*{_NUM}\s+personal item", re.I)),
+    ("N-background-tasks", re.compile(
+        rf"^\W*{_NUM}\s+of your background", re.I)),
+    ("N-count-noun", re.compile(
+        rf"^\W*{_NUM}\s+(?:relationships?|opened|closed|slipped|open\b|"
+        rf"promises?|commitments?|proposals?|suggestions?|guesses|"
+        rf"batch(?:es)?|questions?|older items?|entries)", re.I)),
+    ("inventory-line", re.compile(
+        rf"{_NUM}\s+you owe\s*·", re.I)),
+)
+
+
+class BriefOrderError(RuntimeError):
+    """A count-shaped sentence sits above the plate's number line. Loud, in
+    code, before the pack reaches a chat turn — the same posture as the
+    plate's jargon gate and EODSYNTH1's score fence."""
+
+
+def count_shaped_before_number(text: str, *, number_line: str = "") -> list:
+    """The count-shaped lines that precede the plate's number line in
+    `text`, as `(shape, line)` pairs. Empty list = the number leads.
+
+    `number_line`, when given, is the plate's OWN lead line and anchors the
+    scan even when it is not a number: a workspace with no resolvable owner
+    leads with the one plain refusal sentence (D8), and a plate the loader
+    could not read leads with its one-line apology — both are the plate's
+    line, and nothing may sit above either.
+
+    A text with NO number line at all returns a single
+    `("no-number-line", "")` finding: the number cannot lead if it is not
+    there. Blank lines and lines without a number are never findings."""
+    lines = [l for l in (text or "").split("\n")]
+    idx = next((i for i, l in enumerate(lines)
+                if NUMBER_LINE_RE.match(l)
+                or (number_line and l.strip() == number_line.strip())), None)
+    if idx is None:
+        return [("no-number-line", "")]
+    out = []
+    for l in lines[:idx]:
+        if not l.strip():
+            continue
+        for name, rx in COUNT_SHAPES:
+            if rx.search(l):
+                out.append((name, l))
+                break
+    return out
+
+
+def assert_number_leads(text: str, *, where: str = "morning-brief",
+                        number_line: str = "") -> None:
+    hits = count_shaped_before_number(text, number_line=number_line)
+    if hits:
+        raise BriefOrderError(
+            f"{where}: the plate's number must be the first count in the "
+            f"brief (CUT-PLATE, PLATE1-N2 R-1); found {hits!r} above it")
+
+
 def _clock_now(workspace_root=None):
     """CLOCK1 - the corroborated UTC instant this module stamps from.
 
@@ -352,7 +459,11 @@ def _display_review_reason(ws: Path, raw, cache: dict) -> str:
     person record (entity_resolve ladder — the same one brain_proposals
     uses; A6: one home for the matcher) it renders as "'X' — contact added
     ✓" so the row stops telling the CEO to do something they already did.
-    Every other clause class passes through verbatim.
+    Every other clause class is re-said as ONE WHOLE SENTENCE by the shared
+    composer (`review_reasons.render_clause`, HYGIENE9 (c)/(d2)) — it used
+    to pass through verbatim, which is how "extraction confidence 0.5 below
+    threshold" reached the held queue's "why it's here" line at v5.27.0.
+    The composer never returns a score or a wire id.
 
     DISPLAY-ONLY: the STORED review_reason is a gating input (cru_match /
     commitment_dedup / confirm_flow / identity_reconcile read it) and is
@@ -363,14 +474,19 @@ def _display_review_reason(ws: Path, raw, cache: dict) -> str:
     entities.json internally, so the memo IS the read fence), and reasons
     with no eligible clause never load the resolver at all.
     """
+    from review_reasons import render_clause
+
     raw = str(raw)
     if "has no person record" not in raw:
-        return raw
+        return "; ".join(r for r in (render_clause(c) for c in raw.split(";"))
+                         if r)
     out = []
-    for clause in raw.split("; "):
+    for clause in (c.strip() for c in raw.split(";")):
         m = _RR_NO_PERSON_RE.match(clause)
         if not m:
-            out.append(clause)
+            rendered = render_clause(clause)
+            if rendered:
+                out.append(rendered)
             continue
         name = m.group(1)
         # Shared verdict (review_reasons._resolves_to_person semantics via
@@ -1768,6 +1884,53 @@ def _brief_thread_activity(workspace_root) -> dict:
         return {}
 
 
+def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
+                       ask: dict) -> dict:
+    """PLATE1 night 2 — `build_plate` -> `render_plate("brief")` for the
+    morning pack, with the brief's gates applied at the cut (see the call
+    site). Never raises into the fire: a render the jargon gate refuses or a
+    loader error comes back as the refusal shape with `error` set, so the
+    pack still builds and the orchestrator prints ONE line instead of lanes."""
+    from commitment_state import PRIMARY_USER_REFUSAL_LINE
+    from plate_view import build_plate, render_plate
+
+    refusal = {"refused": True, "line": PRIMARY_USER_REFUSAL_LINE,
+               "attention": 0, "rows": [], "pointer": "", "text": "",
+               "excluded_ids": [], "block_totals": {}}
+    if not user_id:
+        return refusal
+    dropped = {str(r.get("commitment_id") or "")
+               for r in (state.get("dropped") or []) if isinstance(r, dict)}
+    asks = {str(r.get("commitment_id") or ""): r["ask_line"]
+            for r in (ask.get("rows") or [])
+            if isinstance(r, dict) and r.get("ask_line")}
+    try:
+        view = build_plate(ws, user_person_id=user_id, now_iso=now_iso)
+        if not view.get("ok"):
+            out = dict(refusal)
+            out["line"] = view.get("error") or PRIMARY_USER_REFUSAL_LINE
+            return out
+        rendered = render_plate(view, "brief", False, exclude_ids=dropped,
+                                ask_lines=asks)
+    except Exception as exc:  # noqa: BLE001 — the fire must not crash
+        out = dict(refusal)
+        out["line"] = ("I couldn't read your plate this morning — say "
+                       "`what's on my plate` and I'll try again.")
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    lines = rendered["text"].split("\n")
+    return {
+        "refused": False,
+        "line": lines[0],
+        "attention": rendered["attention"],
+        "rows": rendered["rows"],
+        "pointer": rendered.get("pointer") or "",
+        "text": rendered["text"],
+        "excluded_ids": sorted(dropped & {r["id"] for r in view["rows"]}),
+        "block_totals": rendered["block_totals"],
+    }
+
+
 def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
                              now_iso: str | None = None) -> dict:
     """t3 FB-9 — the morning brief's mandatory substrate blocks, assembled,
@@ -1781,7 +1944,8 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     Returns (and persists to `_hq/.system/briefs/`) the pack:
 
       alarm_lines    substrate_health.substrate_alarm_lines — render
-                     VERBATIM at the very top of the brief (FS-04/05/06/15).
+                     VERBATIM inside `health_lines`, LAST (FS-04/05/06/15;
+                     CUT-PLATE — they were the top until v5.28.0).
                      This block is ALSO this entry point's mount-freshness
                      answer, and the reason it does NOT take the hard refusal
                      `run_board` / `run_surface` take. A stale view here is
@@ -1883,9 +2047,27 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     alarm_lines = list(substrate_alarm_lines(ws) or [])
 
     since_ts = _last_brief_ts(ws, now_iso)
+    # QUIET1 D7 — the CHANGED window runs from the last user answer or
+    # opened surface once the person has been away two days or more, not
+    # from yesterday's brief: coming back is a summary with undo, never a
+    # wall. `return_summary` is the "While you were out (N days): …" header
+    # plus counts; the three feed lines beneath it are the same lines as
+    # always, over the longer window. While the person is around, the
+    # window and the lines are byte-identical to before.
+    import quiet as _quiet
+    since_ts, return_meta = _quiet.brief_window(ws, since_ts, now_iso)
     feed = changes_since(ws, since_ts, now_iso=now_iso, max_lines=3)
     changed_lines = [l.get("text", "") for l in (feed.get("lines") or [])
                      if l.get("text")]
+    return_summary = _quiet.return_summary(ws, now_iso) if return_meta else None
+    # QUIET1 D3 — the one line that says the product stopped asking. Written
+    # into the ledger as narrated the moment it is handed out, so a re-run
+    # or tomorrow's brief cannot say it twice. Empty when there is nothing
+    # to say.
+    try:
+        quiet_line = _quiet.step_down_narration(ws, now_iso=now_iso, mark=True)
+    except Exception:
+        quiet_line = ""
 
     opens = load_open_commitments(_events_path(ws))
     try:
@@ -1952,9 +2134,13 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # question at the bottom of a five-row list is a question that gets
     # scrolled past.
     import end_of_day as _eod
+    # QUIET1 D4 — the workspace root hands the morning's asks to the weekly
+    # question budget (the `overdue_ask` asker); a row the budget cuts
+    # stays on the lane unasked and unmarked.
     _ask = _eod.apply_overdue_ask(
         lane["shown"], now_iso=now_iso,
-        ask_after_days=_eod.overdue_ask_after_days(ws), ask=True)
+        ask_after_days=_eod.overdue_ask_after_days(ws), ask=True,
+        workspace_root=ws)
     brief_state = {
         "headline": (state.get("counts") or {}).get("headline") or {},
         "needs_attention": _ask["rows"],
@@ -1975,6 +2161,27 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "resting_line": _ask["resting_line"],
         "ask_after_days": _ask["ask_after_days"],
     }
+
+    # PLATE1 night 2 — THE BRIEF'S CUT OF THE PLATE (D7 `brief`, NUMBERS1
+    # R-1). ONE attention number + one pointer, and the top DO IT / CHASE
+    # rows with the block's verb. Same model, same renderer, same words as
+    # `what's on my plate`; the brief passes only its surface and its gates:
+    #   * `exclude_ids` — the rows compute_brief_state DROPPED this fire
+    #     (calendar action / email reply / recent activity). A "Do:" line for
+    #     an item the CEO already handled is the Bug #93 class; the plate's
+    #     rows are not gated, so the gate is applied HERE, at the brief's
+    #     cut. The attention NUMBER still counts them (it is the plate's
+    #     number and reads the same on every surface).
+    #   * `ask_lines` — the fatigue rule's question rides the row it asked
+    #     about (OVERDUE1 / EODSYNTH1 R-3), verbatim, as its label.
+    # `asked_ids` is then narrowed to the rows the cut actually PRINTS: a
+    # question the reader never saw is not a question (OVERDUE1's own rule).
+    # An unresolvable primary user refuses with the one plain line and no
+    # rows — the packs no longer degrade quietly (D8).
+    plate = _brief_plate_block(ws, now_iso=now_iso, user_id=user_id,
+                               state=state, ask=_ask)
+    brief_state["asked_ids"] = [i for i in _ask["asked_ids"]
+                                if i in {r["id"] for r in plate["rows"]}]
 
     try:
         watchdog = brief_watchdog_line(ws)
@@ -2051,6 +2258,23 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     money_lines = money_prose_lines(queue, cap=MONEY_PROSE_CAP)
     queue_pointer = {"count": len(queue), "line": _pointer_line(len(queue))}
 
+    # CUT-PLATE — THE NUMBER LEADS (see the module constants). The lead is
+    # the plate's own cut verbatim: the number line, the rows, the ONE
+    # pointer. The count lines that used to compete with it sit below the
+    # fold, and every health line — the duplicate-entry warning included —
+    # goes to the END. The fence runs over the composed order here, so a
+    # driver that ever re-orders these lists reds before the pack is handed
+    # out rather than on a customer's screen.
+    lead_lines = ([plate["line"]] + [r["line"] for r in plate["rows"]]
+                  + ([plate["pointer"]] if plate.get("pointer") else []))
+    fold_lines = [l for l in (brief_state.get("resting_line"),
+                              queue_pointer["line"]) if l]
+    health_lines = (list(alarm_lines) + ([watchdog] if watchdog else [])
+                    + list(dark_surface_lines)
+                    + list(schedule_refresh_announce_lines))
+    assert_number_leads("\n".join(lead_lines + fold_lines + health_lines),
+                        number_line=plate["line"])
+
     # Leak-scan every text line the pack hands the orchestrator. Loud by
     # design — there is no widget validator behind this one any more.
     #
@@ -2067,6 +2291,10 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # their real leak scan — not skipped, just scanned at the right layer.
     scannable = "\n".join(
         alarm_lines + changed_lines + ([watchdog] if watchdog else [])
+        # QUIET1 — the return header and the step-down line are printed
+        # verbatim by the orchestrator, so they are scanned like the rest.
+        + ([return_summary["header"]] if return_summary else [])
+        + ([quiet_line] if quiet_line else [])
         + dark_surface_lines
         + schedule_refresh_announce_lines
         + money_lines
@@ -2075,6 +2303,8 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         # orchestrator prints verbatim, so it is scanned like every other one.
         + ([brief_state["needs_attention_more_line"]]
            if brief_state.get("needs_attention_more_line") else [])
+        # PLATE1 night 2 — the renderer's own two lines of the plate cut.
+        + [plate["line"]] + ([plate["pointer"]] if plate.get("pointer") else [])
     )
     if scannable.strip():
         validate_chat_output(scannable)
@@ -2084,8 +2314,28 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "mode": mode,
         "now": now_iso,
         "alarm_lines": alarm_lines,
-        "changed": {"since_ts": since_ts, "lines": changed_lines},
+        "changed": {"since_ts": since_ts, "lines": changed_lines,
+                    # QUIET1 D7 — present only when the person has been
+                    # away: {"header", "lines", "counts", "days", "since_ts"}.
+                    # The orchestrator prints `header` ABOVE the CHANGED
+                    # lines, verbatim, and nothing else from it.
+                    "return_summary": return_summary},
+        # QUIET1 D3 — "" or the one step-down line; printed verbatim once.
+        "quiet_line": quiet_line,
         "brief_state": brief_state,
+        # PLATE1 night 2 — the plate's brief cut: `line` (ONE number),
+        # `rows` (top DO IT / CHASE with the block verb, gated), `pointer`,
+        # `text` (the cut verbatim), `refused` + `line` on a no-user
+        # workspace. The orchestrator renders it in the NEEDS ATTENTION
+        # slot and records `rows[*].id` as `needs_attention_ids`.
+        "plate": plate,
+        # CUT-PLATE — the mechanical order. `lead` prints FIRST (verbatim,
+        # the number then the rows then the pointer); `fold_lines` print
+        # below the fold, in order; `health_lines` print LAST. The fields
+        # they are composed from stay on the pack for their existing readers.
+        "lead": {"lines": lead_lines, "text": "\n".join(lead_lines)},
+        "fold_lines": fold_lines,
+        "health_lines": health_lines,
         "watchdog_line": watchdog,
         "dark_surface_lines": dark_surface_lines,
         "schedule_refresh_announce_lines": schedule_refresh_announce_lines,
@@ -2107,6 +2357,39 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         pass  # the pack in hand is what matters; the audit copy is best-effort
 
     return pack
+
+
+def _eod_plate_block(ws, *, now_iso: str, since_iso) -> dict:
+    """PLATE1 night 2 — `build_plate(since_iso)` -> `render_plate("eod")`.
+    Never raises into the fire; a no-user workspace or a render the jargon
+    gate refuses comes back as the refusal shape (`refused`, one `line`)."""
+    from commitment_state import PRIMARY_USER_REFUSAL_LINE
+    from plate_view import build_plate, render_plate
+
+    since = since_iso.isoformat() if hasattr(since_iso, "isoformat") else since_iso
+    refusal = {"refused": True, "line": PRIMARY_USER_REFUSAL_LINE, "text": "",
+               "delta": {"n_opened": 0, "n_closed": 0, "n_slipped": 0,
+                         "since": since},
+               "attention": 0, "block_totals": {}}
+    try:
+        view = build_plate(ws, now_iso=now_iso, since_iso=since)
+        if not view.get("ok"):
+            out = dict(refusal)
+            out["line"] = view.get("error") or PRIMARY_USER_REFUSAL_LINE
+            return out
+        rendered = render_plate(view, "eod", False)
+    except Exception as exc:  # noqa: BLE001
+        out = dict(refusal)
+        out["line"] = "I couldn't read your plate this evening."
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    return {"refused": False, "line": rendered["text"].split("\n")[0],
+            "text": rendered["text"], "delta": rendered["delta"],
+            "attention": rendered["attention"],
+            "block_totals": rendered["block_totals"],
+            "opened_ids": [r["id"] for r in view["delta"]["opened"]],
+            "closed_ids": [c["id"] for c in view["delta"]["closed"]],
+            "slipped_ids": [r["id"] for r in view["delta"]["slipped"]]}
 
 
 def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
@@ -2394,8 +2677,24 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         _p.count(n_in=len(brief_state["needs_attention"]),
                  out=len(slipped.get("rows") or []))
     with phases.phase(eod.PHASE_CONFIRM) as _p:
+        # PLATE1 night 2 (P7 / EODRANK1 DD-1 superseded) — the confirm
+        # block ranks on the evidence the plate renders: the newest
+        # proposal riding the row (`data.proposal` when the resolution
+        # policy wrote it there; the stream fold otherwise). One read, the
+        # events_io seam, tolerant of the field being absent (main today).
+        # The proposal is EVIDENCE, not a question: a guess a transcript
+        # shows was done closes itself, and the middle band's chip acts or
+        # retracts itself at the policy window (M's ruling 2026-09-03).
+        try:
+            import events_io as _events_io
+            from plate_view import fold_proposals_and_hints as _fold
+            _all_events = _events_io.load_all(ws)
+            _proposals, _ = _fold(_all_events, now_iso=now_iso)
+        except Exception:  # noqa: BLE001 — ranking is a bonus, never a crash
+            _proposals = {}
         confirm = eod.compute_confirm(opens, now_iso=now_iso,
-                                      held_ids=held_ids)
+                                      held_ids=held_ids,
+                                      proposals=_proposals)
         # PERSONLOOP1 §0-3 — the confirm block's second half. It rides INSIDE
         # the confirm block rather than as a new pack block, so `BLOCK_ORDER`
         # and every `blocks_rendered` claim are unchanged, and
@@ -2412,6 +2711,20 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         confirm["person_telemetry"] = _pcand["telemetry"]
         _p.count(out=len(confirm.get("rows") or [])
                  + len(confirm.get("person_rows") or []))
+        # PLATE1 night 2 — THE DAY'S DELTA IN THE PLATE SHAPE (D7 `eod`).
+        # Computed here, carried on the pack and its persisted copy, and
+        # RENDERED NOWHERE on the scheduled fire: EODSYNTH1 (M, 2026-08-23)
+        # stands — 5 PM is wind-down, no lists; `RENDER_ORDER` and
+        # `COMPUTED_ONLY` are byte-pinned and this build touches neither
+        # (the `catchup` / `coach` precedent: a key outside both tuples).
+        # The block is the plate's own words for what the window did —
+        # opened / closed / slipped over the SAME anchor the ledger reads
+        # (`since_ts`, day-floored the same way) — so the manual family and
+        # the morning can read one shape. Timed inside this phase rather
+        # than growing EODPHASE1's pinned vocabulary. Best-effort: a plate
+        # that cannot build comes back as the refusal shape, never a crash.
+        plate = _eod_plate_block(ws, now_iso=now_iso,
+                                 since_iso=closures.since)
     with phases.phase(eod.PHASE_TOMORROW) as _p:
         tomorrow = eod.compute_tomorrow(ws, for_date=tomorrow_date,
                                         calendar_events=calendar_events,
@@ -2494,7 +2807,11 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             # SPEC TOMFILT1 §2 — re-anchors the slipped line's due clause to
             # THIS fire's own clock, the same `now_iso` every other phase
             # here reads from.
-            now_iso=now_iso)
+            now_iso=now_iso,
+            # CUT-PLATE — the arc read's "did not move" sentences stay on
+            # the block as data (`what_it_meant["unmoved"]`) and off the
+            # screen: the evening reads the day in the plate's shape.
+            render_unmoved=False)
         _p.count(n_in=len(arcs), out=len(syn.synthesis_refs(synthesis)))
 
         # SPEC EODCOACH2 — the two coaching layers on top of the arc read:
@@ -2559,6 +2876,11 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "wins": wins,
         "slipped": slipped,
         "confirm": confirm,
+        # PLATE1 night 2 — the day's delta in the plate shape (see the
+        # confirm phase). NOT in `render_order` / `BLOCK_ORDER` / `COMPUTED_ONLY`
+        # (all byte-pinned). CUT-PLATE (2026-09-06): it RENDERS — first on
+        # the screen `end_of_day.compose_screen` composes below.
+        "plate": plate,
         "tomorrow": tomorrow,
         "sign_off": sign_off,
         # SPEC EODSYNTH1 — the five prose blocks, plus each one flattened to a
@@ -2611,6 +2933,13 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
     with phases.phase(eod.PHASE_RENDER) as _p:
         pack["confirm_ids"] = eod.confirm_ids_from_pack(pack)
+        # CUT-PLATE — THE SCREEN, composed in code (`end_of_day.SCREEN_ORDER`):
+        # the plate's eod cut leads, the synthesis follows, the coach's delta,
+        # a STATED tomorrow as fact (never the proposal), the sign-off, and
+        # the health lines last. `compose_screen` raises on a retired
+        # sentence or an asking line, so the old shape cannot re-enter the
+        # pack quietly. The orchestrator prints `pack["screen"]["text"]`.
+        pack["screen"] = eod.compose_screen(pack)
 
         # SPEC EODSYNTH1 R-1 — THE SCORE DOES NOT REACH THE SCREEN. The
         # composers each check their own output; this checks the ASSEMBLY,
@@ -2623,6 +2952,9 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             list(coverage.get("lines") or [])
             + list(catchup.get("lines") or [])
             + list(pack.get("dark_surface_lines") or [])
+            # CUT-PLATE — the composed screen is the ASSEMBLY the reader
+            # sees; it joins the score fence like every other prose surface.
+            + [pack["screen"]["text"]]
             + [syn.synthesis_text(synthesis)]
             # SPEC EODCOACH2 — the coach's own composed text joins the same
             # ASSEMBLY check the synthesis text does: two ungraded halves can
@@ -2667,6 +2999,9 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             # push) is new prose naming rows and people, scanned exactly like
             # the synthesis it sits beside.
             + [coach.get("text") or ""]
+            # CUT-PLATE — the composed screen, scanned as one string: every
+            # line the fire may post, including the plate's rows.
+            + [pack["screen"]["text"]]
         )
         if scannable.strip():
             validate_chat_output(scannable)
@@ -2701,6 +3036,7 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
 # surface -> the canonical receipts.py task its fire receipts belong to.
 _SURFACE_TASKS = {"commitments": "commitment-triage",
+                  "plate": "commitment-triage",       # PLATE1 — My Plate IS the triage widget
                   "staff-meeting": "staff-meeting",
                   "waiting-on": "waiting-on",   # FB-15 (CTS1 taskId)
                   "my-plate": "my-plate"}       # FB-plumbing item 6 (CTS1 Surface 2)
@@ -2751,6 +3087,7 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
 
 
 _SURFACE_NAME_HINTS = {"commitments": "commitment-triage",
+                       "plate": "commitment-triage",
                        "staff-meeting": "staff-meeting",
                        "waiting-on": "waiting-on",
                        "my-plate": "my-plate"}
@@ -2826,6 +3163,13 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
     reads; `run_surface` decides WHEN it is allowed to be called."""
     if surface == "commitments":
         return build_commitment_triage_view(ws, now_iso=now_iso)
+    if surface == "plate":
+        # PLATE1 — the triage widget renders THE plate (action block ->
+        # project -> horizon, four verbs) through the one grouping +
+        # renderer. `build_commitment_triage_view` stays only as the
+        # BOARD1 artifact's data source until night 2 adopts the board.
+        from plate_view import plate_data_view
+        return plate_data_view(ws, now_iso=now_iso)
     if surface == "staff-meeting":
         return build_staff_meeting_view(ws, now_iso=now_iso,
                                         moves_rows=moves_rows,
@@ -2840,7 +3184,7 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
                                    promised_cap=promised_cap)
     raise SystemExit(
         f"unknown surface {surface!r} "
-        "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+        "(supported: commitments, plate, staff-meeting, waiting-on, my-plate)")
 
 
 def run_board(workspace_root, *, now_iso: str | None = None,
@@ -3016,7 +3360,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     if surface not in _SURFACE_NAME_HINTS:
         raise SystemExit(
             f"unknown surface {surface!r} "
-            "(supported: commitments, staff-meeting, waiting-on, my-plate)")
+            "(supported: commitments, plate, staff-meeting, waiting-on, my-plate)")
     # MOUNT-FRESHNESS PREFLIGHT — the widget path's half of the same gate
     # `run_board` runs. This entry point is write-chained (a page-1 fire with
     # `fired_via` appends the surface's receipt), so a stale view here is the
@@ -3145,8 +3489,9 @@ def main() -> int:
         pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("surface",
-                    choices=["commitments", "staff-meeting", "waiting-on",
-                             "my-plate", "morning-brief", "end-of-day"])
+                    choices=["commitments", "plate", "staff-meeting",
+                             "waiting-on", "my-plate", "morning-brief",
+                             "end-of-day"])
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--mode", default="scheduled",
                     choices=["scheduled", "manual"],
@@ -3171,6 +3516,10 @@ def main() -> int:
                          "before `show more` rebuilds and SAYS it refreshed "
                          "(default page_snapshot.DEFAULT_TTL_MINUTES)")
     ap.add_argument("--now", default=None, help="ISO now override (tests)")
+    ap.add_argument("--page-byte-budget", type=int, default=None,
+                    help="tests only: override widget_transport."
+                         "WIDGET_PAGE_BYTE_BUDGET so the over-budget text "
+                         "form (CR-WIDGET-TEXT-*) can be exercised")
     ap.add_argument("--close-json", default=None,
                     help="end-of-day only: JSON file with the close phase's "
                          "own record ({\"mail\": <receipt>, \"chat\": "
@@ -3307,6 +3656,10 @@ def _dispatch(args) -> int:
     if args.status_json:
         status_rows = json.loads(Path(args.status_json).read_text(encoding="utf-8"))
 
+    if args.page_byte_budget is not None:
+        import widget_transport as _wt
+        _wt.WIDGET_PAGE_BYTE_BUDGET = int(args.page_byte_budget)
+
     transport = run_surface(
         args.surface, args.workspace, page=args.page,
         page_size=args.page_size, now_iso=args.now, moves_rows=moves_rows,
@@ -3321,6 +3674,15 @@ def _dispatch(args) -> int:
     print("CR-WIDGET-HTML-BEGIN")
     print(transport["html"])
     print("CR-WIDGET-HTML-END")
+    # CUT-C item 7 / REVIEW_CUTC F-2: on an over-budget page the transport
+    # composes the page's sanctioned TEXT form (`transport["text"]`); this CLI
+    # is the skill's only sanctioned build path, so it is printed here between
+    # its own markers — the runner relays exactly that block, byte-exact.
+    text = transport.get("text")
+    if text:
+        print("CR-WIDGET-TEXT-BEGIN")
+        print(text, end="" if text.endswith(chr(10)) else chr(10))
+        print("CR-WIDGET-TEXT-END")
     receipt = transport.get("receipt")
     if receipt is not None:
         print("CR-RECEIPT: " + json.dumps(receipt))
@@ -3328,7 +3690,12 @@ def _dispatch(args) -> int:
 
 
 __all__ = [
+    "BriefOrderError",
+    "COUNT_SHAPES",
+    "NUMBER_LINE_RE",
     "MountStaleError",
+    "assert_number_leads",
+    "count_shaped_before_number",
     "build_commitment_triage_view",
     "build_end_of_day_pack",
     "build_morning_brief_pack",

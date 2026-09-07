@@ -30,7 +30,7 @@ Check that an `artifact_installed` event for `orgs-map` exists in `events.jsonl`
 
 # Phase 3 — Run the renderer pipeline
 
-Same pipeline `enable-workspace-map` uses for fresh installs:
+Same pipeline `level-up-command-room` (Mode: Workspace Map) uses for fresh installs:
 
 ```bash
 cd "$PLUGIN_ROOT"
@@ -42,7 +42,7 @@ python3 shared/scripts/build_workspace_map_input.py \
 
 # 2. Render template with current data
 python3 shared/scripts/render_artifact.py \
-  --template skills/enable-workspace-map/references/orgs-map-artifact.html \
+  --template skills/level-up-command-room/references/orgs-map-artifact.html \
   --input /tmp/cr-wm-input.json \
   --output /tmp/cr-wm.html
 ```
@@ -86,7 +86,7 @@ No chat output. No widget. No Links section. Pure silent refresh.
 
 # What this orchestrator does NOT do
 
-- Does NOT install the artifact (`enable-workspace-map` does that on first install)
+- Does NOT install the artifact (`level-up-command-room`, Mode: Workspace Map — formerly `enable-workspace-map` — does that on first install)
 - Does NOT modify entities.json or any data file (read-only)
 - Does NOT post to chat (silent fire)
 - Does NOT call any external connector (Gmail / Calendar / Granola / etc.)

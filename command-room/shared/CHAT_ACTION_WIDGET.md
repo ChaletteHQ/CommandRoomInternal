@@ -110,7 +110,9 @@ display + dispatch only:
 
 - The option's value stays `push to [date]`; its when-input accepts a
   natural-language date OR a bare number of days ("5" = five days from
-  today; `commitment_state.parse_later_when` owns the deterministic slice).
+  today, the WORKSPACE-LOCAL calendar day of the dispatcher's now;
+  `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=…)`
+  owns the deterministic slice — REVIEW_CUTC F-4).
 - Dispatch is ONE writer call — `commitment_state.apply_later` — which
   AUTO-ROUTES by ownership (`later_route`) and performs the landing: the
   user's OWN item → `commitment_updated` due-date shift (`deferred`);
@@ -150,8 +152,13 @@ HTML that carries action buttons without them.
 ### Bottom row buttons
 
 - **Apply all** — fires one `sendPrompt` with all current selections (see "Submission format" below). Disabled when 0 selections. **Disable-with-reason (v4.5.2 S2 — F-17):** when a selected action is missing its REQUIRED input (Later… without a date), Apply stays disabled and the reason renders on the footer's `#cr-apply-reason` line ("Apply is waiting on item 3 — Later… needs a date."), the offending row highlights, and the field shows an inline "needs a date" note. The hold clears live as the field fills. A widget must NEVER swallow an Apply click silently — that is exactly F-17 (M concluded the button was dead).
+  **The dispatcher's twin (CUT-C item 5):** the hold lives in the page the transport rendered; a page hand-assembled from pieces has none, and a `push to [date]` with no date can then reach apply-choices. The dispatcher refuses it in one line (`commitment_state.later_missing_ack` — names the missing input and how to give it, asks nothing) and re-offers the row; the widget is relayed byte-exact and never re-assembled.
 - **Reset** — resets all per-item selections to "no choice yet." No `sendPrompt`. Local state only. (Button label "Reset"; was "Clear".)
 - **Snooze rest (1 day)** — selects `skip` (the 1-day mute) for every unselected item, then fires Apply automatically. Convenience for "I've reviewed; snooze the rest until tomorrow." (Label was "Skip all"/"Dismiss rest" — renamed so the mute states its duration, F-59.)
+
+### Read-only pages (SPEC_WIDGETRO1 §2-1 — CUT-C item 9)
+
+A surface whose prose promises that looking changes nothing — the would-hold review (`show me what you'd hide`), the revisit-decisions page — renders through the same call with `read_only=True` (`widget_transport.render_and_persist(..., read_only=True)`). The rows keep exactly the verbs the surface declares and a pick dispatches on its own (the single-item path, per row); the page carries NO batch footer — no counter, no **Apply all**, no **Reset**, and no **Snooze rest (1 day)** (its handler staged a bare `skip` on every row and dispatched without Apply: a bulk mute on a page that promised none, ATTENDED_TEST_v5.28.0 B5.1 / B5.3). `validate_rendered_widget(html, read_only=True)` reds a read-only page that carries any of those controls, by name (`ReadOnlyContractError`); the slack target drops its footer the same way. A normal plate page is unchanged.
 
 ### What the widget does NOT do
 

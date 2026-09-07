@@ -148,6 +148,45 @@ missing-hyphen skill-ish form ("customize email writer") is a Layer 3 name-menti
 to the skill and confirm ("Did you mean email-writer?"). Never write a directive from here;
 workspace-manager routes, the adopting skill writes.
 
+### "ask me more" / "ask me less" — how often Command Room asks you (SPEC QUIET1)
+
+The one knob for interaction posture (`commitment-policy.preset`: `engaged` / `light` / `quiet`). Every client workspace starts `light` (at most 5 questions a week across every asker; the plate shows 40 at a time); fourteen silent days step it down one level on their own and the next answer brings it back. These two phrases move the STORED posture one level and no further — they are the only way UP.
+
+**Trigger phrases:** `ask me more`, `ask me less`, `ask me fewer questions`, `ask more questions`, `ask fewer questions`.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import quiet
+print(json.dumps(quiet.raise_preset('<workspace_root>')))   # `ask me less` -> quiet.lower_preset(...)
+"
+```
+
+- `ran: True, restored: True` (REVIEW_QUIET1 F-1 — the seat had gone quiet on its own and the person is answering the brief's own line) → the questions are back at the stored level THIS instant, nothing stored changed: *"The questions are back — up to 5 a week again. Say `ask me more` once more if you want more than that."* No `undo` offer (nothing to reverse; the silence clock simply restarted).
+- `ran: True` (not restored) → one plain line naming the new posture in words, never the key: *"Done — I'll ask up to 15 a week now (was 5). Say `undo` to put it back."* / *"Done — down to 2 a week; the rest take their defaults and show up in your Friday wrap."* The write is a batch (`qpr_…`) with a registered reverser, so the `undo` is real (bare `undo` lists it as "set how often it asks you").
+- `ran: False` → already at the top / bottom AND not stepped: say so in one line ("Already asking as much as I can — 15 a week."). Never say this on a stepped seat — the helper restores first, so `ran: False` only ever means the stored key is already at the end of the ladder. No question back.
+- Never write the key by hand, never say "preset", "engaged", "light" or "quiet" to the customer — say how many a week.
+
+### "turn on closing on evidence" / "turn off closing on evidence" — whether promises close on meeting evidence (CUT-A, M ruling R-A 2026-09-06)
+
+The one switch for the transcript closing-on-evidence pass (`commitment-policy.auto_close_from_transcript`, default OFF everywhere). While off, a meeting that shows a promise was kept can at most put a suggestion on the row (it shows under `needs your call` and the brief says how many look kept); nothing closes on a transcript, a stale chip retracts instead of closing, and the calendar closer keeps offering without promoting. While on, the tightened pass closes — only with the meeting's own start time, only a row older than the meeting, only on one turn that says done and names the item — each close carrying the words, stamped with the rail, on a batch one `undo` away. Read by ONE reader, failing to off; written by ONE writer.
+
+**Trigger phrases:** `turn on closing on evidence`, `turn off closing on evidence`, `start closing on evidence`, `stop closing on evidence`.
+
+```bash
+SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_policy_pass import set_transcript_closes
+print(json.dumps(set_transcript_closes('<workspace_root>', True, origin='m_action', triggered_by='turn on closing on evidence')))   # the OFF verb passes False
+"
+```
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back. `ran: True` on the ON verb: *"Done — promises a meeting shows were kept will now close on their own, each carrying the words that closed it; say `undo` to reverse a fire, or `turn off closing on evidence` to stop."* On the OFF verb: *"Done — nothing closes on meeting evidence now; a promise a meeting shows was kept shows up under `needs your call` instead. Say `undo` to put this back."* The write is a batch (`qtc_…`, class `commitment_transcript_closes`) with a registered reverser, so the `undo` is real (bare `undo` lists it as "set whether promises close on meeting evidence" and puts the previous setting back exactly).
+- `ran: False` → already in that state; the line says so ("Closing on evidence is already on." / "…already off."). No `undo` offer, nothing written.
+- Never write the key by hand, never say the key name to the customer.
+
 ### "tune output" — the cross-skill output profile (SPEC OUT2 §5)
 
 "Output" is not a skill, so the bare-`tune-X` router rule can't resolve it — this skill owns the
@@ -261,9 +300,36 @@ of the trust machinery, not the style layer" — and nothing is written.
 
 **Example invocation:** use the canonical bash + python resolver-invocation block in `shared/ENTITY_RESOLVE_PROTOCOL.md` → "Canonical invocation example" (`resolve` for name-mention flows, `resolve_to_linked_project` for `go [name]`). Never restate it here.
 
-### Router-miss logging
+### Routing corrections (SPEC ROUTEMISS1 — the verb that replaced the never-written miss log)
 
-When the user corrects a routing decision ("no, I meant X"), append to `_hq/ROUTER_MISSES.md` with: what user said, what was routed to, what they meant, correction source. Reviewed weekly to sharpen skill intent clauses.
+The old contract here ("append to `_hq/ROUTER_MISSES.md`… reviewed weekly") had no trigger, no writer and no reviewer, and the file never existed on any workspace. This is the code chokepoint that replaced it. **Re-dispatch is the point:** the correction is not a complaint box, it is "do the right thing now". The miss is logged as a side effect; the user's real request is the answer.
+
+**Shapes this handler owns** (bare stems in the Routing corpus below: 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]'; plus the redirect shape 'no, I meant [X]', which is recognised by `router_miss.split_correction` and is deliberately NOT a trigger stem anywhere — as a positive stem it would steal every "no I meant prep me for my 2pm" from the skill the remainder belongs to).
+
+1. Run `router_miss.split_correction(message)` — it returns `{opener, remainder}` or None. The remainder is what the user actually wants ("prep me for my 2pm"). Re-dispatch it through normal trigger matching **as the request**, exactly the way the vocative gate above re-dispatches a wake-word remainder — the user gets what they asked for in this same turn. An EMPTY remainder ("wrong skill.") means you do not know what they meant: ask one question ("Which did you want — the prep brief or the morning summary?"), and log nothing.
+2. **Fences — log ONLY when all three hold:**
+   - the remainder routed to a skill **different from the one that just ran**. If it re-routes to the same skill, the previous turn was a content miss, not a routing miss: fix the content, log nothing.
+   - the previous turn was **not a draft**. "No, I meant 'regards'" after an email or memo draft is a voice/wording correction — it belongs to that skill's correction lane (email-writer's corrections file, the style layer), never here.
+   - the previous turn was **not a disambiguation question** you asked. "No, I meant the other Acme" after "Which Acme — the customer deal or the advisory gig?" is the answer to your question; resolve it and continue, log nothing.
+3. When the fences hold, append ONE event through the writer — never a hand-rolled row, never a markdown file:
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, 'shared/scripts')
+import router_miss as rm
+ws = '<workspace_root>'
+ev = rm.log_router_miss(ws, said='<the full correction turn>', meant='<the remainder you re-dispatched>',
+                        resolved_to='<skill folder the remainder routed to>',
+                        routed_to=rm.previous_turn_skill(ws), session_ref=None)
+print(ev.get('seq'))
+"
+```
+   - `routed_to` comes from `router_miss.previous_turn_skill(ws)` and **nowhere else**: it is the newest event's task id **only when that event is a scheduled fire's receipt** (the user is correcting a scheduled chat's output); otherwise it is null and the view says "unknown". There is no session-local state in a chat and the phrase does not encode which skill ran, so this field is **never inferred** — a null is the honest answer (DD-2).
+   - `session_ref`: the chat's session/receipt pointer when you have one, else None.
+   - Then refresh the view: `render_router_misses.regenerate(ws)` (`_hq/views/ROUTER_MISSES.md` — a VIEW, regenerated from the log, never hand-edited; cleanup re-renders it weekly as the backstop).
+4. **Acknowledge in one clause inside the real answer** — "Got it — that's a prep brief:" — and then the answer. Never a separate "logged your feedback" line, never the event's name, never "I've recorded a routing miss".
+
+**What the log is for, and is not for.** The view and cleanup's Monday-note line (three or more redirects to the same skill in 28 days → one sentence) are pointers for whoever tunes this Command Room. No description is ever auto-edited from them. The user's phrases in `said` / `meant` are their own words — they are OWNER-facing only, and they **never become a test row without a human rewriting them into placeholder vocabulary**; the negative-row generator (`tests/gen_negative_rows.py`) reads fences from skill descriptions, never events.
 
 ---
 
@@ -759,25 +825,28 @@ print(json.dumps(load_day_intent('<workspace_root>', 'tomorrow')))
 
 The catch-all owns this by charter. **In the moment, and later in the same chat, do NOT use this handler** — the narrating surface (the brief's CHANGED line, the staff meeting's "what I did on my own", the past-meetings digest) advertises its own batch ref, and bare `undo` routes to `brain_undo.undo_batch` with THAT ref (D5, unchanged). This handler is for the other case: a fresh chat next Monday, where the narration is gone and `undo` had no route at all — the affordance the whole auto tier's safety rests on, vanishing with the conversation.
 
-On a bare `undo` / "undo that" / "reverse that" with no batch in context:
+On a bare `undo` / "undo that" / "reverse that" with no batch in context — and on `undo all` / `undo <group>` / `undo <run>` (POLICY1-B DD-5), which are the same handler with the choice already made:
 
 ```bash
 SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
-from brain_undo import recent_auto_batches
-print(json.dumps(recent_auto_batches('<workspace_root>')))
+from brain_undo import recent_auto_batches, undo_listing_lines
+batches = recent_auto_batches('<workspace_root>')
+print(json.dumps(batches)); print('\n'.join(undo_listing_lines(batches)))
 "
 ```
 
 - **Empty list** → say so plainly: "Nothing automatic in the last 7 days to reverse." Never invent a candidate, and never reach for a user-made change: this handler reverses what Command Room did on its own, not what M did.
-- **One or more** → render the `label` + a short date, numbered, newest first — *"1. merged a duplicate capture — Jul 27 · 2. linked a name to an existing contact — Jul 27"*. Use the LABEL, never the change-class name: M is deciding whether to reverse something, and `commitment_merge ×1` is not a thing he saw happen. One ordinal (or one click) reverses it:
+- **One or more** → render `undo_listing_lines` verbatim: one numbered line per RUN (a sweep, a transcript fire, a review drain — newest first) and one indented lettered line per GROUP under it (one project, one meeting, one message) — *"1. closed a commitment (×4) — Sep 4 · 1a. closed a commitment (×2) — one project (undo just this group) · 1b. …"*. Use the LABEL, never the change-class name: M is deciding whether to reverse something, and `commitment_merge ×1` is not a thing he saw happen. The three verbs, all through `brain_undo.batch_ref_for_ordinal(batches, <token>)`: **`undo all`** (or a bare `undo` answered with `1`) reverses the newest RUN — every group under it; **`undo 1a`** (`undo <group>`) reverses ONE group and leaves the rest of the run; **`undo 2`** (`undo <run>`) reverses an older run whole. A token that names nothing listed → say so and re-show the list; never guess a batch.
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
-from brain_undo import undo_batch
-print(json.dumps(undo_batch('<workspace_root>', <the chosen batch_ref dict>, undone_by='<user person_id>', source_skill='workspace-manager')))
+from brain_undo import recent_auto_batches, batch_ref_for_ordinal, undo_batch
+batches = recent_auto_batches('<workspace_root>')
+ref = batch_ref_for_ordinal(batches, '<all | 1 | 1a | 2 ...>')
+print(json.dumps(undo_batch('<workspace_root>', ref, undone_by='<user person_id>', source_skill='workspace-manager')) if ref else 'nothing listed under that number')
 "
 ```
 
@@ -889,7 +958,7 @@ Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to
 1. **Resolve the existing org** via `entity_resolve.resolve(workspace_root, "[Name]")`.
    - Not found → *"I don't have [Name] tracked yet. Want `new client [Name]` to set them up from scratch?"* Stop.
    - Found, already `relationship_type: client` → *"[Name] is already a client — nothing to convert. Want to `go [Name]`?"* Stop.
-   - **Open-deal check (SPEC PIPE1, D6 — single closure owner).** If the org has an OPEN deal thread (`deal_state.list_open_deals(ws)` filtered to this org_id), the conversion routes through pipeline-tracker's closure path INSTEAD of step 2: run `deal_state.close_deal(ws, thread_id, 'won', convert_prospect=True, source_skill='workspace-manager')` — it closes the deal AND runs the exact conversion below atomically (no orphaned open deal left behind a converted client). Two or more open deals → ask which one won (never first-pick); "all of them" is a valid answer (close each). Skip steps 2 when this path ran; continue at step 3.
+   - **Open-deal check (SPEC PIPE1, D6 — single closure owner).** If the org has an OPEN deal thread (`deal_state.list_open_deals(ws)` filtered to this org_id), the conversion routes through pipeline-tracker's closure path INSTEAD of step 2: run `deal_state.close_deal(ws, thread_id, 'won', convert_prospect=True, source_skill='workspace-manager')` — it closes the deal AND converts the org (no orphaned open deal left behind a converted client). **CUTB item 3 (2026-09-06): that conversion is RECEIPTED and UNDOABLE** — `close_deal` runs `org_promotion.promote_org(explicit=True)`, which writes the `org_promoted` receipt and a batch id; the return carries `promoted: True` + `promotion_batch_id`, the brief's CHANGED feed says "Promoted 1 prospect to client … say `undo`", and the ack offers it: *"[Name] is a client now — [deal] closed won. Say `undo` if that's wrong."* Two or more open deals → ask which one won (never first-pick); "all of them" is a valid answer (close each). Skip steps 2 when this path ran; continue at step 3.
 2. **Convert through the typed writers — HARD gate (v3.18.6+, same class as Bug #83).** Do NOT hand-edit `entities.json`, do NOT write a `stage` field. `new client [Name]` is the WRONG tool here — it creates from scratch and would duplicate the org; conversion must mutate the EXISTING `org_id`. Run the EXACT block:
 
 ```bash
@@ -1498,6 +1567,10 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Also owns the cross-skill output profile (SPEC OUT2 §5 — output is not a skill name, so the bare-tune router rule can't resolve it) — use when the CEO says 'tune output', 'tune my output', 'show output settings', 'reset output to defaults'. DOES NOT fire on 'tune [skill-name]' when the name resolves to an actual skill (that skill's own FRP1 family owns it).
 
+> Also owns the interaction posture (SPEC QUIET1 — one knob, not a skill name) — use when the CEO says 'ask me more', 'ask me less', 'ask me fewer questions', 'ask more questions', 'ask fewer questions'. DOES NOT fire on 'needs your call' / 'what needs my call' (needs-your-call — the queue itself) or 'show me what you'd hide' (needs-your-call).
+
+> Also owns the closing-on-evidence switch (CUT-A, M ruling R-A 2026-09-06 — one switch, not a skill name) — use when the CEO says 'turn on closing on evidence', 'turn off closing on evidence', 'start closing on evidence', 'stop closing on evidence'. DOES NOT fire on 'turn on held' / 'turn off held' (needs-your-call — the would-hold switch) or 'commitment triage' (commitment-triage).
+
 > Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'talk to me differently', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks' — AND on an in-passing style correction with no verb at all: 'never open with pleasantries', 'never open with...', 'stop saying...', 'stop saying [phrase]', 'change your tone', 'change your style', 'that's too formal' / 'that's too long' / 'shorter next time' said about how THIS assistant talks (SPEC STYLEROUTE1 — routing is frontmatter-driven; these are front-loaded in the description, not body-only). Machine-matchable stems for the mechanical matcher: 'how do you talk to me', 'talk to me differently', 'never open with', 'stop saying', 'change your tone', 'change your style'. Every shape below writes ONLY to the chat_persona/output_profile store via skill_config_writer + event_gate.append_event('style_changed') — NEVER a CLAUDE.md edit, not even a throwaway one-line addition to Working style or Session Rules; see the Style section in the body for the full contract and the D5 bounds it must never cross. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
 
 > Deal fences (SPEC PIPE1 — one per line):
@@ -1510,5 +1583,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Also owns the connector & account management verbs (connector-agnostic-v1 C1 — workspace-manager owns the `workspace.connectors` / `workspace.accounts` blocks): 'set my email backend to [connector]', 'set my calendar backend to [connector]', 'use [connector] for email', '[address] is my personal account', '[address] is my business account', '[address] is a second business email', '[address] is mixed', 'mark [address] out of scope', 'stop filing [address]', 'add account [address]', 'what accounts do I have'. Machine-matchable stems for the mechanical matcher: 'set my email backend', 'set my calendar backend', 'is my personal account', 'is my business account', 'is a second business email', 'out of scope', 'stop filing', 'add account'. Behavior in the body's "Connector & account management" section.
 
 > Also owns the DAY-INTENT trigger family via the loose-input catch-all (SPEC BK1, Daily Bookends — same posture as the HIST1 org-money verbs: the description is frozen at its budget cap, so these live HERE and the runtime router reaches them through "loose input naming a tracked entity" / the catch-all): 'tomorrow is about [X]', 'tomorrow: [X]', 'tomorrow I'm focused on [X]', 'make tomorrow about [X]', 'today is about [X]', 'today: [X]', the corrections 'actually tomorrow is about [Y]' / 'change tomorrow to [Y]', and the reads 'what's tomorrow about' / 'what is today about'. Machine-matchable stems for the mechanical matcher: 'tomorrow is about', 'make tomorrow about', 'today is about', "what's tomorrow about". **An intent phrasing WINS over navigation** — 'tomorrow is about closing Acme Co' writes a day_intent, it does not open the Acme Co thread (the MUST-language gate in the body); bare 'go [name]' / 'pull up [name]' navigation is untouched. Writes ONE typed `day_intent` event through `day_intent.write_day_intent` (origin='manual' always — never `wrap`/`proposed`, which belong to the end-of-day chat); reads through `day_intent.load_day_intent`, never a grep. ENTITY_RESOLVE applies to any name-bearing intent. DOES NOT fire on 'remind me to [X] tomorrow' (show-my-reminders — only the user mints a reminder, and an intent is not one). DOES NOT fire on '[X] is due tomorrow' (a commitment due date). DOES NOT fire on "what's on tomorrow" / "what does my day look like" (morning-briefing — a calendar read). Behavior in the body's "tomorrow is about [X]" section.
+
+> Also owns the routing-correction verb (SPEC ROUTEMISS1 — body-only; the description is frozen at its budget cap and the runtime router reaches these through the catch-all): 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]' — the remainder is re-dispatched as the request and a `router_miss` is logged only when the fences in the body's "Routing corrections" section hold. Machine-matchable stems for the mechanical matcher: 'wrong skill', 'you routed that wrong', 'that should have been'. The redirect shape `no, I meant [X]` is recognised by the handler (`router_miss.split_correction`) but is NOT a stem here or anywhere — `no I meant prep me for my 2pm` belongs to call-prep, and a positive stem would collide with every such remainder. DOES NOT fire on a voice or wording correction after a draft (`no, I meant 'regards'` — the drafting skill's correction lane) or on the answer to a disambiguation question (`no, I meant the other [org]`).
 
 > Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A — D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements — a note-that phrasing whose name resolves to an ORG (e.g. a Series A announcement about Acme Co) routes here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a $120k account', 'is a $120k/yr account'. Money is confirm-only through org_writer.set_org_money — never estimated, never auto. Behavior in the body's "Org money & facts" section.

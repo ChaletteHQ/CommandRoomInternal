@@ -1,6 +1,7 @@
 <!--
-  Step 1 setup widget — v5 (removes Q2 email exclusions; v4 was SPEC FRP1 email
-  draft-posture; v3 was 2026-05-23 M1 redesign)
+  Step 1 setup widget — v6 (SPEC QUIET1 D1 adds Q5 check-in cadence; v5
+  removed Q2 email exclusions; v4 was SPEC FRP1 email draft-posture; v3 was
+  2026-05-23 M1 redesign)
 
   Self-contained HTML/JS. Loaded by skills/command-room-onboarding/SKILL.md
   Phase 0, passed verbatim to mcp__visualize__show_widget. Bypasses
@@ -8,27 +9,33 @@
   from the standard CR renderer so onboarding doesn't share a single point
   of failure with the scheduled-task orchestrator surfaces.
 
-  Four questions, progressive reveal:
+  Five questions, progressive reveal:
     Q1 — Role (six top chips, sub-chip drill-down, optional refinement textbox)
     Q2 — Timezone (four US zones / Other-with-textbox)
     Q3 — AI name (default "Penelope" / pick-your-own-with-textbox)
-    Q4 — Email draft posture (show_first / auto_queue) — the only ask-first
+    Q4 — Email draft posture (show_first / auto_queue) — an ask-first
          first-run decision batched into onboarding; written origin=m1_batch
+    Q5 — Check-in cadence (daily / few_times_a_week / rarely) — SPEC QUIET1 D1,
+         CUT-D (M ruling 2026-09-06): EVERY answer stamps the commitment-policy
+         preset `light` (quiet.stamp_onboarding_preset, origin=m1_batch) on a
+         FRESH seat; a seat with a posture already stored is left alone (R2,
+         the skip receipted once). The answer rides the receipt's triggered_by
+         line and sets nothing else. The only way up is `ask me more`.
 
-  Submission shape (fires on the final Q4 chip click):
+  Submission shape (fires on the final Q5 chip click):
     apply choices: [{"n":1,"action":"<top>","sub":"<sub>","input":"<text>"}, ...]
-    `sub` and `input` are optional per tuple. Four tuples total (n=4 is the posture).
+    `sub` and `input` are optional per tuple. Five tuples total (n=5 is the cadence).
 
   Routes via apply-choices to command-room-onboarding "Reply handling — Phase 0
-  setup". Fire-marker event widget_kind = step_1_setup_v5.
+  setup". Fire-marker event widget_kind = step_1_setup_v6.
 -->
 <div style="padding: 1rem 0;">
-<h2 class="sr-only">Phase 0 onboarding widget — four questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; the AI-name question precedes the final email draft-posture question</h2>
+<h2 class="sr-only">Phase 0 onboarding widget — five questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; the AI-name question precedes the email draft-posture question, and the check-in cadence question closes the widget</h2>
 
 <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.25rem;">
 
   <div style="margin-bottom: 1rem;">
-    <p style="margin: 0 0 4px; font-size: 16px; font-weight: 500;">Quick setup — four questions, then I'll scan your tools</p>
+    <p style="margin: 0 0 4px; font-size: 16px; font-weight: 500;">Quick setup — five questions, then I'll scan your tools</p>
     <p style="margin: 0; font-size: 13px; color: var(--color-text-secondary);">Pick a chip, refine a step deeper, add detail if helpful.</p>
   </div>
 
@@ -37,7 +44,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <i class="ti ti-user" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">Which best describes you?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">1 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">1 / 5</span>
       </div>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top" data-v="run-company" data-label="Run a company">Run a company</button>
@@ -67,7 +74,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <i class="ti ti-clock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What timezone are you in?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 5</span>
       </div>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top simple" data-v="pacific" data-label="Pacific" disabled>Pacific</button>
@@ -92,7 +99,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <i class="ti ti-sparkles" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What do you want to call your AI?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 5</span>
       </div>
       <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Default is Penelope. Pick anything that feels right — Jarvis, Alfred, your own first name. She runs your Command Room and shows up by name in every chat (&ldquo;ask Penelope,&rdquo; &ldquo;Penelope said&rdquo;). Her workspace folder becomes <code>[Name]&rsquo;s Brain</code>.</p>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
@@ -110,17 +117,37 @@
     </div>
   </div>
 
-  <div data-q="4" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
+  <div data-q="4" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px; margin-bottom: 10px;">
     <div class="qhead">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <i class="ti ti-mail" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">How should I handle email drafts?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 4</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 5</span>
       </div>
       <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">When you ask me to write an email, I can show you the draft first and only touch Gmail when you click &mdash; or drop every draft straight into your Gmail Drafts. You can change this anytime by saying &ldquo;tune email-writer.&rdquo;</p>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top simple" data-v="show_first" data-label="Show me first" disabled>Show me first</button>
         <button class="chip top simple" data-v="auto_queue" data-label="Auto-queue to Gmail Drafts" disabled>Auto-queue to Gmail Drafts</button>
+      </div>
+    </div>
+    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
+      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
+      <span class="summary-label"></span>
+    </div>
+  </div>
+
+  <div data-q="5" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
+    <div class="qhead">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+        <i class="ti ti-bell" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+        <span style="font-size: 14px; font-weight: 500;">How often will you check in?</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">5 / 5</span>
+      </div>
+      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Whichever you pick, I start light: a handful of questions a week at most, and your plate shows 40 items at a time. Everything else resolves on its own with the sensible default, and anything I decide for you shows up in your Friday wrap with an undo. Say &ldquo;ask me more&rdquo; whenever you want more.</p>
+      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <button class="chip top simple" data-v="daily" data-label="Daily" disabled>Daily</button>
+        <button class="chip top simple" data-v="few_times_a_week" data-label="A few times a week" disabled>A few times a week</button>
+        <button class="chip top simple" data-v="rarely" data-label="Rarely" disabled>Rarely</button>
       </div>
     </div>
     <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
@@ -144,7 +171,7 @@
 <script>
   (function () {
     const root = document.currentScript.parentElement;
-    const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts' };
+    const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts', 5: 'Check-ins' };
     const selections = {};
 
     const subOptions = {
@@ -194,7 +221,7 @@
         next.style.opacity = '1';
         next.querySelectorAll('.chip').forEach(function (c) { c.disabled = false; });
       } else {
-        const payload = [1, 2, 3, 4].map(function (n) { return Object.assign({ n: n }, selections[n]); });
+        const payload = [1, 2, 3, 4, 5].map(function (n) { return Object.assign({ n: n }, selections[n]); });
         sendPrompt('apply choices: ' + JSON.stringify(payload));
       }
     }

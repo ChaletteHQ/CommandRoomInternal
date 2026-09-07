@@ -307,6 +307,10 @@ Rendered view groups people by primary-focus org first (per `morning-briefing` S
 - Bad: "Threads: project_012, project_020 (person record updated)"
 - Good: "Projects: Acme Tech Partnership, Product Strategy Review"
 
+**The record header is COMPOSED, never typed (CUT-C item 8 — ATTENDED_TEST_v5.28.0 B4.4 printed `person_201` in the header):** the `### [Full Name]` line is `narration_names.person_header(WORKSPACE_ROOT, <resolved person_id>)` (`shared/scripts/narration_names.py`) rendered verbatim — the person's name, then role and org when on record, and never the id; a person the index cannot name renders "(name on file)". Every other line that names a project, org or person resolves the id to its name the same way (`narration_names.humanize`).
+
+**MANDATORY narration scan (CUT-C item 8, mirrors apply-choices Step 4):** before posting the profile, the relationship brief or any "Fresh from your tools" section, run `validate_chat_output(<the whole text>)` from `chat_output_renderer.py`. It raises `LeakDetectedError` on a raw id, an event or field name, a path or a score. ABORT the post and rewrite the offending line. NEVER catch the error and post anyway.
+
 ## Key Queries
 
 **Instant Context**

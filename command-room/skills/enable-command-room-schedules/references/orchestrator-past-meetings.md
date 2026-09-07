@@ -183,7 +183,7 @@ close_result = {"mail": mail, "chat": chat}
 
 **⛔ MANDATORY (SPEC EODLEG1) — record `close_leg_end` (UTC ISO) now, immediately after `close_result` is built.** This closes the window `close_leg_start` opened above; carry both onto Phase 5.
 
-**Every close this fire writes carries its pointer.** `reconcile_and_receipt` and `reconcile_chat_and_receipt` already close through `commitment_state.close_commitment` with the sent message's artifact key / the chat pointer; any close YOU write in this fire (a CRU auto-resolve, a tap the user applies later in the turn) passes `source_ref=` the same way — `granola:<meeting_id>` for a transcript close, and for a human one **the ref the resolver RETURNED**: `resolve_choice(...)["source_ref"]` for a numbered tap, `resolve_intent_confirm(...)["source_ref"]` for the tomorrow confirm. Never compose that string yourself and never reuse one across two gestures: a pointer that is the same for every act of an evening resolves to nothing while still counting as "has a pointer" in the coverage metric. A close with nothing to point at still lands — since SPEC PROVMINT1 the writer mints `session:past-meetings:<now>` for it and marks the ref as surface-minted, so it points at the act rather than at nothing. That floor is not a licence: a close that silently drops a pointer it HAD is still the defect (SPEC PROV1), and it now shows up as a surface-minted row in the coverage split instead of hiding inside one flattering percentage.
+**Every close this fire writes carries its pointer.** `reconcile_and_receipt` and `reconcile_chat_and_receipt` already close through `commitment_state.close_commitment` with the sent message's artifact key / the chat pointer; any close YOU write in this fire (a tap the user applies later in the turn — **never a transcript close: since CUT-A (2026-09-06) closing on evidence is off by default and this fire writes none**) passes `source_ref=` the same way — `granola:<meeting_id>` for a transcript close, and for a human one **the ref the resolver RETURNED**: `resolve_choice(...)["source_ref"]` for a numbered tap, `resolve_intent_confirm(...)["source_ref"]` for the tomorrow confirm. Never compose that string yourself and never reuse one across two gestures: a pointer that is the same for every act of an evening resolves to nothing while still counting as "has a pointer" in the coverage metric. A close with nothing to point at still lands — since SPEC PROVMINT1 the writer mints `session:past-meetings:<now>` for it and marks the ref as surface-minted, so it points at the act rather than at nothing. That floor is not a licence: a close that silently drops a pointer it HAD is still the defect (SPEC PROV1), and it now shows up as a surface-minted row in the coverage split instead of hiding inside one flattering percentage.
 
 **THE SOFTEN FLOOR.** If NEITHER leg advanced its cursor, the score and slipped blocks soften and the surface says so in exactly one line. `end_of_day.soften_floor(close_result)` returns that line; do not compose one, and do not suppress it because the numbers "look right". A score computed over a stale mail cursor understates the closes and overstates the slips, and the CEO is the person who would be blamed for the difference. A leg SKIPPED for want of a connector does not soften on its own — a workspace with no chat backend is not a workspace whose chat is behind.
 
@@ -212,15 +212,15 @@ Omit `--calendar-json` when no calendar capability is present. The `tomorrow` bl
 
 **`--lateness-json` is Phase 2.9's return, VERBATIM.** Do not edit it, do not re-key it, do not recompute lateness. On the degrade tier the pack composes the catch-up label from it; on every other tier `pack["catchup"]["renders"]` is False and there is nothing to place.
 
-**Every non-empty RENDERED pack block is a MANDATORY placement, in this order:** `alarm_lines` · `coverage` · `day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes` · `tomorrow` · `sign_off`. That list is `end_of_day.RENDER_ORDER` and the pack carries it as `render_order`; read it off the pack rather than retyping it. A turn that stops with an unplaced non-empty rendered block is INVALID, not "done early". On a degrade-tier fire, `catchup.lines` goes ABOVE all of them (see Phase 2.9). `coach` (SPEC EODCOACH2) is placed the same way `catchup` is — by instruction, not by list membership — right after `echoes` and above `tomorrow`. **`coverage` is the one exception to "non-empty means placed" (SPEC COVERQUIET1):** `coverage["lines"]` is non-empty on every fire (`compute_coverage` always composes it), but the block is placed ONLY when `end_of_day.coverage_has_disclosure(pack)` is True — see the `coverage` bullet below for the gate and Phase 5 for where it is evaluated.
+**THE SCREEN IS `pack["screen"]["text"]`, VERBATIM (CUT-PLATE, 2026-09-06 — M's hold: no decisions block and no question in the day-close; the evening reads the day in the PLATE's shape).** `end_of_day.compose_screen` composed every line this fire may post, in `end_of_day.SCREEN_ORDER`: `catchup` (degrade tier only) · **`plate` FIRST** — *"Your plate today — N opened · N closed · N slipped"*, the rows in their blocks, one pointer · `day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes` · `coach` (the delta only) · `tomorrow` (a STATED intent as fact, never the proposal) · `sign_off` · then the health lines LAST — `coverage` (only when `end_of_day.coverage_has_disclosure(pack)` is True, SPEC COVERQUIET1) · `alarm_lines` · `dark_surface_lines`. Print that text as given; add nothing, re-order nothing, drop nothing. `render_order` (`end_of_day.RENDER_ORDER`) still rides the pack as the receipt's vocabulary and is unchanged; the placement that used to be a list in this paragraph is code now, and the composer RAISES on a retired sentence ("survived N closes", "consecutive close", "did not move", "what is tomorrow about") or an asking line, so the v5.28.0 shape cannot come back through prose. A turn that stops without posting the screen is INVALID, not "done early". Monday's `week_rollup` renders AFTER the screen, as before (see the Monday bullet).
 
-# ⛔ SPEC EODSYNTH1 — THE EVENING SYNTHESIZES THE DAY AND ASKS ONE THING (M's ruling, 2026-08-23)
+# ⛔ SPEC EODSYNTH1 — THE EVENING SYNTHESIZES THE DAY (M's ruling, 2026-08-23) — AND, SINCE CUT-PLATE (M's hold, 2026-09-06), ASKS NOTHING
 
 **"I don't think we should score it. I think we should synthesize how the day went."** Four things follow and none is optional. `end_of_day.COMPUTED_ONLY` is the pack's own list of what still runs and renders nowhere; `render_order` is what does render.
 
 **R-1 — THE SCORE IS NOT RENDERED.** `n_closed` / `n_planned`, *"0 of 5 closed"*, *"no net change"*, the ledger's book-at-open arithmetic — none of it reaches the chat and none of it reaches the widget. The FIELDS are still computed and still land on the `pack_run` receipt, because weekly-recap and the trend surfaces read them: **un-render, don't unbuild.** The pack still carries `score` and `score["ledger"]`; you place NEITHER. `eod_synthesis.assert_no_score` is a code fence over the composed text and it RAISES — if you find yourself wanting to say a number about how much of the plan got done, the answer is that this surface no longer says one.
 
-**R-2 — ONE INTERACTION, AND IT IS TOMORROW.** Confirm or edit tomorrow's intent — up to three ranked CANDIDATES for what tomorrow is about (SPEC TOMPICK1, never padded to three), each with its one-line why. A bare "confirm" takes rank 1, the default door; "1"/"2"/"3" takes that candidate positionally. Everything else on this surface is READ-ONLY. `pack["confirm_ids"]` is now EMPTY by construction (`end_of_day.NUMBERED_BLOCKS` is `()`), so there is nothing numbered to tap and a `[n]` tap is refused in plain English — the tomorrow pick is a SEPARATE positional resolver (`resolve_intent_confirm`'s own `pick=`), never a `confirm_ids` entry. That is not a degraded surface; it is the ruling measured.
+**R-2 — SUPERSEDED (CUT-PLATE, M's hold 2026-09-06): THE DAY-CLOSE ASKS NOTHING.** The tomorrow draft — up to three ranked CANDIDATES (SPEC TOMPICK1) — is still computed and still lands on the receipt as `day_intent_proposal`, but it is NEVER rendered and never asked: no card, no Confirm / Edit, no widget. A STATED intent (the CEO said `tomorrow is about [X]`, workspace-manager / BK1) renders as fact through `end_of_day.TOMORROW_STATED_LINE`; with nothing stated, `tomorrow["line"]` (*"Nothing on file yet for tomorrow."*) is the whole of it. Everything on this surface is READ-ONLY. `pack["confirm_ids"]` is EMPTY by construction (`end_of_day.NUMBERED_BLOCKS` is `()`), so there is nothing numbered to tap and a `[n]` tap is refused in plain English. `resolve_intent_confirm` stays as the resolver for the receipt's data and the on-demand path; this fire offers it nothing to confirm.
 
 **R-3 — THE CONFIRM/DROP QUEUES LEFT THE EVENING.** The slipped rows' *"Done, new date, or drop?"* fork, the needs-your-call rows and the person candidates render on the MORNING surfaces (the morning brief's needs-attention lane, the `needs-your-call` and `my-plate` chats). They are still COMPUTED here — `pack["slipped"]`, `pack["confirm"]` — because the receipt and the synthesis read them; you place none of them and you offer no verb on any of them. **The OVERDUE1 ask-once marker is unchanged; the morning performs it** (`end_of_day.mark_lane_asked`, orchestrator-morning-brief Phase 6.1), so this file's Phase 6.3 no longer asks. Net asks per day must not go UP — that is the thing M counts on the walk.
 
@@ -240,18 +240,19 @@ Binding notes the pack does not enforce for you:
 - **score / score.ledger / score.first_move — COMPUTED, RENDERED NOWHERE (SPEC EODSYNTH1 R-1).** All three still arrive on the pack and all three still land on the receipt; you place none of them. There is no *"No plan on record this morning"* line on this surface any more, no *"Open book: 41 this morning…"*, and no *"This morning's first move was X"*. The reason the fields survive is that the surfaces that legitimately grade — weekly-recap, the trend reads, the Monday roll-up — read them off the receipt. The reason the SENTENCES do not is M's ruling: the score anchors on the morning plan, so a day that drifted from its 7 AM plan scored as a failure regardless of what actually got done, and the grade sat next to three closed wins reading as a contradiction. What replaces it is the paragraph below, which is about the day rather than about the plan.
 - **wins — COMPUTED, RENDERED NOWHERE.** The named closes feed `day_went`; they are no longer a block of their own. Do not print `wins["rows"]`, `wins["line"]` or `wins["more_line"]`.
 - **slipped / confirm — COMPUTED, RENDERED NOWHERE (R-3).** They feed `slipped_prose` and the MORNING surfaces respectively. No Slipped section, no Needs-your-call section, no person-candidate section, no `more_line`, no `resting_line`, and no verbs on any of it — in the prose or in the widget. **A verb offered here is a dead button:** `confirm_ids` is empty, so nothing resolves.
+- **plate — RENDERS FIRST (SPEC PLATE1 night 2, D7 `eod`; CUT-PLATE 2026-09-06).** `pack["plate"]` is the day's delta in the plate's shape (opened / closed / slipped over the ledger's own window, one pointer) — the same model and words as `what's on my plate` and the morning brief. It is the first block of `pack["screen"]` — the rows are read-only (no verbs, nothing numbered, R-3 stands for the morning's queues) and a close a later `undo` reversed is not counted closed. It is still NOT a member of `render_order` (byte-pinned); the screen composer places it. `pack["confirm"]` ranks on the plate's evidence (`data.proposal`, P7) — computed only.
 
   **THE PERSON-CANDIDATE ROWS, NAMED EXPLICITLY, because this file is what the 5 PM fire executes (SPEC PERSONLOOP1 review N-1).** `pack["confirm"]["person_rows"]` is still built for you — by `end_of_day.compute_person_candidates`, which reads `person_candidates.derive_candidates` — and you render **no section at all** for it. That is not the drop-empty rule doing its usual work on an empty day; it is unconditional on this surface since EODSYNTH1. The reason the rows are still computed is that the person-loop's measurement rides the receipt (`person_candidate_counts`), and the receipt now reports `n_shown: 0` honestly rather than claiming a render that did not happen — which was exactly the N-1 defect, arriving through the other door. **Where they DO reach the reader:** the `needs-your-call` chat and `my plate`, both of which derive them from the same builder. You derive nothing here and you render nothing here.
 - **day_went — ONE GROUNDED PARAGRAPH, PRINTED VERBATIM.** `pack["day_went"]["text"]` is composed in code from the ledger's own fields and today's named closes, and it is the surface's lead. Print it as given. **Do not extend it, do not add a clause, and do not "improve" a sentence** — every sentence in it carries a ref list in `pack["day_went"]["sentences"]`, and a clause you add carries none, which makes the whole paragraph unfalsifiable. Empty text (a day with nothing to say) → print nothing; never pad an all-clear.
 
   **THE PARAGRAPH READS THE SAME FLOORED WINDOW THE WINS BLOCK ALWAYS DID (SPEC WINSFLOOR1, still in force).** `pack["window"]["wins"]` and `pack["window"]["closures"]` carry the `window_source` value that says which one: **`morning_anchor`** when the day's morning brief fired — the window opens at that brief — and **`day_floor`** when it did not, in which case it opens at workspace-LOCAL **midnight** of this fire's own day and never earlier. This is not bookkeeping: unfloored, that read returned 2,334 rows on the live workspace on 2026-08-19 and reported them as what moved today. **The paragraph inherits the floor because it inherits the rows** — so a day with no morning brief still gets a paragraph, and the paragraph is about the day from midnight. The spellings the wins block used to print — *"…more moved today"* on the anchor path, *"…more moved since midnight"* on the floored one — are not rendered any more (that block is computed-only), and the paragraph never claims a window in words: it says what moved, and the window it read is on the receipt where a reader can check it. **Never describe the floored day as having no wins, and never describe it as a full day's history.**
-- **what_it_meant — THE ARC READ (SPEC EODARC1), PRINTED VERBATIM.** `pack["what_it_meant"]["text"]` answers, in order: which arcs moved today (grounded in what happened), which consequence-carrying arcs **did not move** (what is waiting, and on whom), and where the day's weight went. The arcs are DECLARED only — an objective, the day's stated intent, an org relationship with a live thread, an active workstream, a deal with a stage, a consequence-carrying open commitment no other arc tracks. **A recap lists what changed; a synthesis says what it means for what you are running** — and the fence between the two is code: `eod_synthesis.drop_rows_only` drops any sentence with no arc attached before it can compose, so this block can never be a row-list wearing a heading, and you must never add one back by enumerating rows yourself. A genuinely empty day renders its one honest line ("Nothing on today's record moved a standing arc.") — print it as given, never pad it and never replace it with a theme of your own. **An arc the model infers is not an arc**, and this is the block where inventing one would read as insight. **Ruling 3: deals are read as context, never as state** — the arc read does not depend on deal rows existing or being current, and you write nothing to deal state from this surface, ever. Prose only: zero new actions, buttons, or proposals in this section; the tomorrow block stays the ONE interaction.
+- **what_it_meant — THE ARC READ (SPEC EODARC1), PRINTED VERBATIM.** `pack["what_it_meant"]["text"]` answers, in order: which arcs moved today (grounded in what happened), which consequence-carrying arcs **did not move** (what is waiting, and on whom), and where the day's weight went. The arcs are DECLARED only — an objective, the day's stated intent, an org relationship with a live thread, an active workstream, a deal with a stage, a consequence-carrying open commitment no other arc tracks. **A recap lists what changed; a synthesis says what it means for what you are running** — and the fence between the two is code: `eod_synthesis.drop_rows_only` drops any sentence with no arc attached before it can compose, so this block can never be a row-list wearing a heading, and you must never add one back by enumerating rows yourself. A genuinely empty day renders its one honest line ("Nothing on today's record moved a standing arc.") — print it as given, never pad it and never replace it with a theme of your own. **An arc the model infers is not an arc**, and this is the block where inventing one would read as insight. **Ruling 3: deals are read as context, never as state** — the arc read does not depend on deal rows existing or being current, and you write nothing to deal state from this surface, ever. Prose only: zero new actions, buttons, or proposals in this section; the day-close asks nothing (CUT-PLATE) — a stated tomorrow prints as fact inside `pack["screen"]["text"]`.
 - **worth_remembering — 1 TO 4 LINES, EACH ONE A ROW.** `pack["worth_remembering"]["lines"]`, printed verbatim, in order. Each line IS a decision or note logged today, not a summary of one, so there is nothing here to rewrite. Empty → no section.
 - **slipped_prose — PROSE, AND ONLY THE SLIPS WITH A STATED CONSEQUENCE.** `pack["slipped_prose"]["text"]`, verbatim. It names only items whose slip has a downstream effect stated on the row — a meeting it gates, a person waiting, a date it was owed by. **Everything else that slipped is SILENT here and appears in the morning.** There is no *"137 slipped"* header on this surface and no denominator: `n_silent` is a number on the receipt, not a line on the screen. This section obeys the workspace's own on/off decision — `end_of_day.slipped_prose_enabled(config)`, which reads the migrated `slipped_prose_section` key and falls back to the pre-rename `slipped_section` so an owner who turned it off still has it off.
 - **echoes — AT MOST TWO, LABELLED, EACH CITING A PRECEDENT BY ID.** `pack["echoes"]["text"]`, verbatim, and normally EMPTY — absent is the default and a day with no genuine precedent match renders nothing here. Never write one yourself: `eod_synthesis.make_echo` refuses an echo with no precedent id and refuses the banned phrasings outright (*"momentum is building"* and its siblings), and a sentence you compose bypasses both refusals. The form is *"this resembles X, which went Y"*, always labelled as a reading across the record and never as a fact.
-- **coach (SPEC EODCOACH2) — PATTERNS ACROSS EVENINGS, PLUS THE DELTA. PRINT VERBATIM, RIGHT HERE, above `tomorrow`.** `pack["coach"]["text"]` — NOT a member of `render_order` (same posture as `catchup`: a key rendered by instruction, not by tuple membership). At most 2 counted-pattern sentences ("That's the Nth consecutive close where X sat still.", a recurring meeting mention with no send, or a survival count), 1 intent-vs-outcome delta ("You said tomorrow was about X. It didn't move." or the honest "…it shipped."), and 1 push line — the push renders ONLY when a pattern is present, and a THIRD consecutive identical push names the repetition and then goes quiet for 3 closes. Empty text → print nothing. **Never compose one yourself**: `eod_coach.build_coach` reads the last 7 packs off THIS workspace's own disk and the day's own STATED `day_intent`; fewer than 3 prior packs or no stated intent means the corresponding half renders nothing, honestly, and you never fill either gap with a guess.
+- **coach (SPEC EODCOACH2; CUT-PLATE) — THE DELTA ONLY, inside the screen above `tomorrow`.** `pack["coach"]["text"]` is now the intent-vs-outcome delta alone ("You said tomorrow was about X. It didn't move." or the honest "…it shipped."), placed by `compose_screen`. Layer 1's counted patterns ("That's the Nth consecutive close where X sat still.", the recurring-mention line, "X has now survived N closes.") and the push line are still computed, deduped and persisted (`coach["patterns"]`, `coach["push"]`, `coach["layer1"]`, `push_state`) and are NOT printed — the v5.28.0 attended test saw them on the day-close and M ruled for the plate shape with less on the card. **Never compose one yourself** and never print the persisted Layer 1 text: `eod_coach.build_coach` reads the last 7 packs off THIS workspace's own disk and the day's own STATED `day_intent`; no stated intent means the delta renders nothing, honestly.
 
-- **tomorrow.** `intent` is the CEO's own stated record (BK1) — render it as fact. `proposal` is a DRAFT the system guessed: render it as a question with the confirm/change taps and NEVER as a statement of what tomorrow is about. It is written only on tap (Phase 6.2).
+- **tomorrow.** `intent` is the CEO's own stated record (BK1) — the screen renders it as fact (`end_of_day.TOMORROW_STATED_LINE`). `proposal` is a DRAFT the system guessed: since CUT-PLATE it is NEVER rendered — not as a question, not as a card, not as a statement — and this fire offers no tap on it. It stays on the receipt as data (Phase 6.2).
 - **sign_off.** Print `line` verbatim. It is computed; there is nothing to write here.
 - **Monday** additionally carries `week_rollup` — render it AFTER the day-close blocks. It also carries `development_read`, whose `renders` is False: render NOTHING for it. No heading, no placeholder, no "coming soon". The slot fills when DEVREAD1 ships.
 
@@ -384,9 +385,10 @@ For each meeting:
 1. **Fetch transcript** via Granola MCP.
 2. **Run `meeting-notes` skill** silently. Extracts decisions, commitments (with owner/due/requester per shared/COMMITMENT_SCHEMA.md), action items, discussion topics.
 3. **Run `follow-up-ritual` skill** silently. Drafts per-attendee follow-up emails (voice-calibrated). Lazy creation per EMAIL_DRAFT_PROTOCOL — TEXT only.
-4. **Score each extracted item by confidence** (existing scan-for-commitments / meeting-notes scoring):
-   - HIGH confidence (auto-commit): clear owner + clear date + entity in entities.json + confidence ≥ 0.8
-   - LOW confidence (surface as pending): ambiguous owner, vague timeline, conflicting info, new entity not in entities.json, sensitive decisions (firing / pricing / contract terms — flag regardless of confidence)
+4. **Score each extracted item's `classification_confidence`** (existing scan-for-commitments / meeting-notes scoring) and pass it on the item — it is the ONE confidence field (ATTRIB1-A A2; there is no `data.confidence`):
+   - HIGH: clear owner + clear date + entity in entities.json → ≥ 0.8
+   - LOW: ambiguous owner, vague timeline, conflicting info, new entity not in entities.json, sensitive decisions (firing / pricing / contract terms) → below the surface floor (0.7 baked — `confidence.surface_min` per workspace)
+   You do NOT set `pending_review`. The helper in step 5 derives it from `data.attribution` (owner / counterparty basis), the floor and fusion verdicts, and this number — a caller that passes the flag gets the derived value plus a `capture_contract_violation` note on the row. Pass `span` (the verbatim quote) beside `evidence` when you have it; the helper locates it in the step-1 transcript and records the turn it sits under.
 5. **⛔ COMMITMENT ADMISSION GATE (CAPTUREFLOW 2026-08-01) — MANDATORY, and it is CODE now.** Every extracted COMMITMENT goes through `meeting_capture.route_meeting_captures` before anything is appended. Do NOT hand-build commitment dicts here, and do NOT write a commitment on your own confidence score — the helper decides which of four places each item goes, and it is the SAME helper `meeting-notes` calls (one admission path, two legs; see `skills/meeting-notes/SKILL.md` Step 5e for the shape of an `items` entry).
 
    ```bash
@@ -407,14 +409,20 @@ For each meeting:
        source_skill='past-meetings',
        attendee_records=<THIS meeting's attendee list from Phase 4 step 1, or None>,
        now_iso='<this fire UTC now, ISO>',
+       meeting_person_ids=<the resolved attendee person ids you will stamp on the meeting event in step 8, or None>,  # ATTRIB1-B A5
    )
    append_event('<workspace_root>/_hq/data/events.jsonl',
                 routed['book'] + routed['review'] + routed['observed'],
                 holder='past-meetings.commitments')
    print(json.dumps(routed['summary']))
    print('\n'.join(routed['receipt_lines']))
+   print(routed['transcript_class'])   # ATTRIB1-A — stamp it on the meeting event in step 8
    "
    ```
+
+   **ATTRIB1-A (2026-09-02) — the transcript is classified first; the flag is derived.** The helper declares the transcript's class before any row is built (`named` / `me_them` / `unlabelled` / `dictation`), writes `data.attribution` `{transcript_class, owner_basis, counterparty_basis, span, turn}` on every row, `data.fusion_status` on every row and `data.floor_code` on every gated row, and derives `pending_review` from those — never from a literal you pass. A `dictation` transcript (`Me:` is the only voice — a working session) sends every capture to `observed` with `routed['summary']['working_session'] = True`: kept for prep, no open item, no question; only the caution rail (a due date or money) still opens a row. Carry `routed['transcript_class']` and `routed['summary']['working_session']` onto the `meeting` event in step 8, and render a working session as one line ("Working session — N notes kept, nothing opened"), never as "0 commitments".
+
+   **ATTRIB1-B (2026-09-04) — the owner comes from the turn marker when the grammar agrees, the counterparty from the calendar, and when neither answers the row carries ONE question.** The helper reads your facts against the transcript and the roster: a first-person line under `Me:` is the user's (`owner_basis: speaker`), a second-person line under `Me:` ("you'll send…") belongs to the addressee (`inferred`), the other voice's own promise on a two-party call is that attendee's (`calendar`); the counterparty resolves calendar-2p → vocative → named speaker → meeting `person_ids` → ask, and the ask is `attribution.question = {kind: who_is_you, options, default}` — pass `meeting_person_ids` so the last rung can read. M RULING 2 (2026-09-03): `scheduling` and `agenda` rows ask NOTHING — they book silently with their basis on the record, and the calendar closer finishes them; the only question is the `who_is_you` one, on a `promise`, and only on the meeting card (at most three per meeting). Fences on the same pass: the user is never their own counterparty (stripped, `self_counterparty_stripped: true`); the user's own no-consequence item is an ASIDE → `observed`; advice / an unaccepted request / a declined conditional offer / reported third-party speech / dictation to a tool are each NAMED on the row as `data.speech_act` (EXTRACT1) — a label beside the shipped floor verdict, never instead of it, and never on a row that clears the floor. Quote verbatim, or pass `evidence_kind: "paraphrase"` when you cannot — the guardrail is then honestly inert on that row. DOOR 1: after this meeting's card, render its questions through `attribution_doors.render_card_questions('<workspace_root>', 'granola:<meeting_id>', persist_dir='<workspace_root>/_hq/.system/widgets')` as a second widget when it returns one (≤3 questions, likely answer first); no answer inside the review window and the likely answer is applied on its own, `undo` reverses it.
 
    **⛔ ATTENDEE1 (2026-08-20) — PASS `attendee_records`, RENDER `receipt_lines`, CARRY `n_auto_created`.** The attendee list you already hold for this meeting is the strongest identity evidence this rail ever sees, and it was being discarded. Pass it in whatever shape the backend gave it (dicts with name+email, the connector's own `"A Name from Org <a@x>, …"` block, or plain strings) — `attendee_evidence.normalize_attendee_records` handles all three and PRESERVES the name↔email pair, which the persisted `meeting` event cannot (it splits emails into `data.attendees` and names into `data.attendees_external`, two lists with no correspondence between them, so re-reading the substrate later recovers nothing).
 
@@ -426,7 +434,7 @@ For each meeting:
 
    **FLOOR2 (2026-08-06) — two of the floor's conditions read the TRANSCRIPT, not the sentence,** and they are the reason `transcript_text` is not optional here. The V1 interim re-measure found both shapes clearing every sentence-level condition on real calls: `FLOOR_DONE_IN_MEETING` (the action was performed on the call — "just click that right now" — and nothing survives it; never fires when the item carries a due date, a money amount, or a send/share/schedule/follow-up verb, because then the deliverable outlives the call) and `FLOOR_SUPERSEDED_IN_MEETING` (the same conversation took the offer back — the row then carries `data.superseding_quote`, the retracting words verbatim from that same transcript, beside the original evidence). Both are `meeting_capture.transcript_floor_reason`, both route to `review` exactly like any other floor verdict, and both are deliberately conservative: an uncertain case books rather than gates. Extract normally; the one code path decides.
 
-6. **Surface LOW confidence items as pending:** your confidence scoring still applies to everything the helper returns in `book` — an ambiguous owner, a vague timeline, conflicting info, a new entity, or a sensitive category (firing / pricing / contract terms) means you pass that item with `pending_review=True` and a `review_reason` in its kwargs, exactly as the safety inversion requires. DECISIONS (not commitments) keep the write path they already had: `meeting_capture.build_decision_event` + `event_gate.append_event`, `committed: true` on high confidence. Add pending commitments to the chat-turn output as a `⚠ Needs your call` sub-block for that meeting.
+6. **LOW confidence lands in `classification_confidence`, never in a flag (ATTRIB1-A DD-4):** your step-4 scoring is the ONE thing you pass — an ambiguous owner, a vague timeline, conflicting info, a new entity, or a sensitive category (firing / pricing / contract terms) is a LOW `classification_confidence` on that item (below the surface floor, 0.7 baked), and the helper derives `pending_review` from it together with the basis, the floor and the fusion verdicts. Never pass `pending_review` or `review_reason` in an item's kwargs: the route drops a literal flag before the build, and the builder keeps the derived value regardless. DECISIONS (not commitments) keep the write path they already had: `meeting_capture.build_decision_event` + `event_gate.append_event`, `committed: true` on high confidence. Add pending commitments to the chat-turn output as a `⚠ Needs your call` sub-block for that meeting.
 7. **Generate the .docx meeting summary — v2.14.32+ MANDATORY brief_writer flow:**
 
    Replaces the v2.14.0–v2.14.31 "invoke docx skill" step. `shared/scripts/brief_writer.py` produces deterministic, polished output every fire (consistent typography, brand-quiet header, hard-coded clean footer). No agent layout variance.
@@ -508,7 +516,7 @@ For each meeting:
    If output is `MISSING`: the writer failed to save. EXCLUDE this meeting from the Meeting briefs section (no broken links). Surface plain-English: `(Brief for <meeting> couldn't be saved to _hq/meetings/. Re-fire `process the call <name>` to retry.)` Append a `brief_save_failed` event silently. **And carry the exclusion into the render set (SPEC MEETCOUNT1):** this meeting's `meeting_render_set` row gets status `brief_failed`, so the coverage line names the reduction instead of the count silently dropping by one.
 
    On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). Single source of truth — no path drift.
-8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. **Construct via `meeting_capture.build_meeting_event()` (BUG-8244 — the one sanctioned constructor; hand-rolled dicts are how 4 incompatible attendee shapes shipped),** passing `brief_path` through the returned event's `data` before appending. Shape the builder produces: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees: [<every invitee EMAIL from the calendar invite / backend metadata, verbatim, resolved or not — identity-reconcile corroborates merges from these and the backfill repairs history with them>], attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. Pass `source_had_attendees=True` whenever the backend listed ANY participants — an empty binding then stamps `data.binding_missing` for the audit instead of vanishing silently. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
+8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. **Construct via `meeting_capture.build_meeting_event()` (BUG-8244 — the one sanctioned constructor; hand-rolled dicts are how 4 incompatible attendee shapes shipped),** passing `brief_path` through the returned event's `data` before appending. Shape the builder produces: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees: [<every invitee EMAIL from the calendar invite / backend metadata, verbatim, resolved or not — identity-reconcile corroborates merges from these and the backfill repairs history with them>], attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. Pass `source_had_attendees=True` whenever the backend listed ANY participants — an empty binding then stamps `data.binding_missing` for the audit instead of vanishing silently. Pass `transcript_class=routed['transcript_class']` and `working_session=routed['summary']['working_session']` from step 5 (ATTRIB1-A): the class is what the per-class re-measure reads, and `working_session: true` is how a dictated session is told apart from a call that produced nothing. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
 9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. Build it with `meeting_capture.build_meeting_processed_event(..., capture_summary=routed)` — passing Phase 4 step 5's `route_meeting_captures` return stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, n_deduped, n_fusion_inert, floor_reasons, skipped_reasons}`, which is the ONLY record anywhere of what the admission gates did. `n_floor_gated` is the share of `n_review` the capture floor routed — a SUBSET of it, never added to it — `n_deduped` counts twin captures of one act that FLOOR3's collapse pass folded into a surviving row (never written, so no other count moves), `n_fusion_inert` counts written rows the fusion guardrail could NOT check at all (a transcript-less fire stamps every row it writes — see the guardrail section below; it cuts across all three lanes, so it is a subset of nothing and is never added to another count), and `floor_reasons` tallies which `FLOOR_*` condition gated each one; together they are what make the floor's tuning measurable, and without them a mis-tuned floor is undetectable and the acceptance re-measure has nothing to read. None of it goes in the chat card. Counts and reason tallies only — never a title. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist.
 
@@ -642,13 +650,18 @@ Per `shared/scripts/cru_match.py` Path 3. After per-meeting auto-processing (Pha
 **⛔ THE CIRCULARITY FENCE (AUTOAPPLY §6) — MANDATORY, and the reason this phase used to manufacture its own noise.** This phase runs AFTER Phase 4 has appended today's extractions, so an unfenced `load_open_commitments()` hands the matcher the asks this very fire just captured. A commitment extracted from transcript T scores ~1.0 against T and carries no completion language, so it lands `pending_review` — Command Room asking "did you already handle this?" about something it wrote down five minutes earlier, from the same meeting. Three things below are load-bearing; none is optional:
 
 - **Record `fire_start`** (UTC ISO) BEFORE Phase 4 appends anything, and pass it as `exclude_captured_since` — that is what excludes same-fire SIBLING matches (meeting A's ask scored against meeting B's transcript in one batch).
-- **Pass `transcript_ts` — THIS meeting's own START time** (EVORDER layer 3, F-27). `fire_start` fences against the start of THIS FIRE, which is a different question: a commitment captured before the fire but AFTER the meeting ended sails straight through it, and then the meeting's transcript closes a promise that did not exist while anyone was talking. Demonstrated by execution: a commitment captured 20:00, a transcript from an 18:00 meeting saying "I sent the revised pricing sheet already, it is done", `fire_start` at 23:00 → `auto_resolve` at 0.75. This is the same value Phase 4 step 8 stamps as the `meeting` event's `ts`. **Pass it with its offset (or in UTC) — never a naive local wall-clock string:** a bare `2026-07-28T18:00:00` is read as UTC, which silently moves the fence by your offset (the CATCHUP1 F-1 connector-boundary class). Omitting `transcript_ts` leaves layer 3 inert, which is safe; a present-but-unparseable value fails SAFE and LOUD — the pass closes nothing at all for that transcript and prints `RECONFENCE: transcript_ts=…` on stderr. Never invent one from the processing clock: "now" is always after every commitment, so a guessed value fences nothing and reads as if it did.
+- **Pass `transcript_ts` — THIS meeting's own START time** (EVORDER layer 3, F-27). `fire_start` fences against the start of THIS FIRE, which is a different question: a commitment captured before the fire but AFTER the meeting ended sails straight through it, and then the meeting's transcript closes a promise that did not exist while anyone was talking. Demonstrated by execution: a commitment captured 20:00, a transcript from an 18:00 meeting saying "I sent the revised pricing sheet already, it is done", `fire_start` at 23:00 → `auto_resolve` at 0.75. This is the same value Phase 4 step 8 stamps as the `meeting` event's `ts`. **Pass it with its offset (or in UTC) — never a naive local wall-clock string:** a bare `2026-07-28T18:00:00` is read as UTC, which silently moves the fence by your offset (the CATCHUP1 F-1 connector-boundary class). Omitting `transcript_ts` leaves the matcher's layer 3 inert — and since POLICY1-B the PASS refuses every close for that transcript by name (`NoTranscriptTs` on `close_refusals`; chips still write): a close needs the meeting's own time, so pass it to BOTH calls. The pass re-checks the order itself at the writer's door (`StaleEvidence`: a row captured after the meeting started never closes on it) and refuses a close whose quote is not THE completion turn for the item — one turn that both carries completion language and scores at the bar against the title on its own (`NoCompletionTurn`; the v5.27.0 supervised test watched a 75-minute call close two promises it never mentioned on a transcript-wide title score plus a completion phrase about something else). A present-but-unparseable value fails SAFE and LOUD — the pass closes nothing at all for that transcript and prints `RECONFENCE: transcript_ts=…` on stderr. Never invent one from the processing clock: "now" is always after every commitment, so a guessed value fences nothing and reads as if it did. A machine close is stamped `resolved_by: past-meetings`, never the owner's person id.
 - **Accumulate `diagnostics` across every transcript in the fire** and carry the total onto Phase 5's receipt as `n_stale_evidence_skipped` — the same key both mail rails already report. Pass ONE dict to every `match_transcript_to_commitments` call (the matcher adds to it, never resets it) and read `diag.get('stale_evidence_dropped', 0)` at the end. A non-zero value is the fence **working**, not an error, and needs no report to the user. A fence that drops silently is how F-11 hid for a week.
 - **Pass `transcript_source_ref`** — THIS meeting's own ref (`granola:<id>`), the ref Phase 4 stamped on its extractions. `cru_match.commitment_source_refs` is what the fence compares against, so a merged survivor's absorbed refs are covered too.
 - **Thread ONE `already_proposed` set across every transcript in the fire**, seeded from `cru_match.open_review_proposal_ids(events_path)` and applied via `cru_match.filter_duplicate_review_targets` — one open review proposal per commitment, on disk and within the fire. Two transcripts in one batch proposing the same commitment (observed live at scores 1.0 and 0.571) is one question rendered twice.
 
 - **Thread ONE `review_budget` dict across every transcript in the fire** and pass it to `cru_match.cap_review_proposals`, which writes at most **25** proposals per fire, highest `match_score` first. This is a VOLUME bound and it is **not** a threshold — the match floors below are untouched and stay untouched, and a suppressed candidate scored exactly what it always scored. It exists because the 2026-08-19 fire wrote **70** proposals in about 35 seconds and nothing anywhere asked how many was too many: dedup bounds proposals per commitment, the floors bound them per candidate, and neither is a statement about the size of the pile the CEO opens in the morning. A fresh dict per transcript makes the cap per-transcript and bounds nothing. **Carry `review_budget['proposals_suppressed']` onto Phase 5's receipt** — a cap without its count is a silence, and zero is written rather than omitted.
-- **Every proposal carries the matched commitment's own `title`.** The result row the matcher hands you already has it; pass `title=r['title']` on BOTH branches. The builder refuses an empty one now (`ReviewProposalTitleError`), so a forgotten argument fails loudly at the writer instead of writing a subject-less row onto every review surface — which is what these two call sites did, 70 times, on 2026-08-19.
+- **Every proposal carries the matched commitment's own `title` — and, since POLICY1-A, the words that triggered it.** `apply_transcript_results` passes `title=r['title']` and `evidence=r['evidence_quote']` (the completion turn the matcher scored, verbatim, speaker marker stripped, at most 240 characters) on every proposal and every close. The builder refuses an empty title (`ReviewProposalTitleError`) and refuses the retired fixed string `Past meeting transcript (…)` (`FixedEvidenceError`) — 635 of one month's 726 proposals carried that string and not one could be graded from the record. The four words it used to carry (completion / schedule-shift / new-ask / title match) ride on `data.signal` instead.
+- **Policy decides before anything is built (SPEC POLICY1 v2, lane A; M ruling 2026-09-03).** `commitment_policy.decide` is the one table for every closer — this pass, the sent-mail rail, the reply rail. The bar it encodes is the standing one (score at the match bar WITH completion language; presets never move it). What changed is the GUESS lane: a row the extractor was unsure about (`pending_review`) whose later transcript says the work was done **closes as done, automatically** — `confirmed_by: "transcript"`, the completion turn verbatim as the evidence, `resolution_reason: auto_closed_transcript_evidence`, on the fire's batch so one `undo` puts it back. Nobody is asked. Below the bar on such a row nothing is written at all, because the row is already a question and the daily drain owns its lapse.
+- **The only question-shaped write left is the chip, and it is narrow.** A CORROBORATING match (the topic came up, the words do not say it is done) writes ONE in-row chip carrying the quote — PLATE1's `data.proposal` — and only when the score is inside **0.65–0.80**. Outside that band nothing is written. On the operator's month that turns 763 proposals into **5** chips (the measured replay, recorded in the POLICY1-A replay record under `_hq/audit-reports/`), and every automatic act carries the words that caused it.
+- **Once per (item, meeting), and then the chip resolves ITSELF.** The same transcript never chips twice about the same item; a re-score of the same pair APPENDS a chip carrying `supersedes_seq` (readers take the newest; `match_score` is never edited). At `commitment_policy.PROPOSAL_TTL_DAYS` (**four days** — M's standing window) the review-expiry job resolves every standing chip: it APPLIES the chip's own evidence when that evidence meets the close bar (the row closes as done, with the quote, undoable) and RETRACTS it otherwise (a dismissal, never a close). It never waits and never repeats, and a retracted (item, meeting) is never chipped again. A new meeting may chip once.
+- **Every close this fire writes is one `undo` away.** `apply_transcript_results` stamps the fire's batch id (`mint_fire_batch_id(fire_start)`, minted ONCE per fire) and `brain_change_class: commitment_close` on each closure, so a bare `undo` in a fresh chat lists the fire and the registered reverser reopens every row it closed. The brief's CHANGED line narrates the count once, from the written closes.
+- **THE SWITCH (CUT-A, M ruling R-A 2026-09-06) — closing on evidence ships OFF.** `apply_transcript_results` reads `commitment-policy.auto_close_from_transcript` itself (one reader, failing to off); nothing in this snippet branches on it. While off, the bar is still judged and every refusal still counted, a row that would have closed is counted as `n_close_withheld` and written as a review proposal instead (the chip shape) when it scores at or above the chip band's floor — never a close, on either target state — and `counts["closes_enabled"]` says which world the fire ran in. M turns it on by word (`turn on closing on evidence`, workspace-manager); until then this pass closes nothing, the chip TTL leg retracts instead of closing, and the calendar closer offers without promoting.
 
 Skip entirely if:
 - No newly-processed meetings this fire (nothing to cross-reference against).
@@ -671,14 +684,16 @@ sys.path.insert(0, 'shared/scripts')
 from cru_match import (
     load_open_commitments,
     match_transcript_to_commitments,
-    build_commitment_updated_event,
-    build_pending_review_event,
     open_review_proposal_ids,
-    filter_duplicate_review_targets,
-    cap_review_proposals,
 )
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-from atomic_write import atomic_append_jsonl
+# POLICY1-A — the resolution policy's I/O half: every close, proposal and
+# silence below is decided by commitment_policy.decide and written by the
+# shipped writers inside this ONE function. The ladder that used to live
+# inline here (auto_resolve -> close_commitment, pending_review/supersede ->
+# build_pending_review_event, a fixed f-string as evidence) is code now, with
+# its own suite; nothing in this snippet builds an event.
+from commitment_policy_pass import apply_transcript_results
+from commitment_policy import mint_fire_batch_id
 # SPEC EODSPEED1 — the CRU walk ledger (see the block above this snippet).
 from eod_incremental import already_walked, record_walk
 
@@ -702,6 +717,15 @@ cru_diag = {}
 stale_before = cru_diag.get('stale_evidence_dropped', 0)
 # ONE budget dict for the whole fire — TITLEMINT1's volume cap counts into it.
 review_budget = {}
+# ONE batch id for the whole fire — the RUN (POLICY1-B DD-5). Every close
+# this fire writes carries a GROUP batch under it, one group per meeting
+# (`apply_transcript_results` mints the group from this run id + the
+# meeting ref), so a bare `undo` lists the fire with one line per meeting:
+# `undo 1` reverses the fire, `undo 1a` one meeting's closes. Mint the run
+# id ONCE before the first transcript and pass the same value to every
+# call — a fresh run id per transcript would list each meeting as its own
+# run and lose the "whole fire" gesture.
+fire_batch_id = mint_fire_batch_id(fire_start)
 opens = load_open_commitments(events_path)
 results = match_transcript_to_commitments(
     open_commitments=opens,
@@ -721,102 +745,41 @@ results = match_transcript_to_commitments(
     workspace_root=workspace_root,
 )
 
-# Stage B (F2): auto-resolves close through commitment_state.close_commitment
-# — THE closure path. Matching (Path 3) is unchanged; only the write moved.
-#
-# §6 dedup guard: ONE open review proposal per commitment. The filter MUTATES
-# already_proposed, so the same set carried to the next transcript in this
-# fire suppresses the second ask for a commitment this transcript claimed.
-review_ok = filter_duplicate_review_targets(
-    [r for r in results if r['recommendation'] in ('pending_review', 'supersede')],
-    already_proposed=already_proposed)
-# TITLEMINT1 — the per-FIRE volume cap. Dedup bounds proposals per commitment
-# and the match floors bound them per candidate; neither says how big the pile
-# may get, and on 2026-08-19 one fire wrote 70 of these in about 35 seconds.
-# `review_budget` is threaded across every transcript exactly like
-# already_proposed — a fresh dict per transcript makes the cap per-transcript
-# and bounds nothing. Highest score first. No threshold moves.
-review_ok = {r['commitment_id'] for r in cap_review_proposals(
-    review_ok, budget=review_budget)}
-n_resolved = 0
-# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
-# allocates seq inside the writer lock; a peeked value is racy.
-to_append = []
-for r in results:
-    rec = r['recommendation']
-    evidence = f\"Past meeting transcript ({r.get('has_completion_signal') and 'completion language' or r.get('has_schedule_shift_signal') and 'schedule-shift language' or r.get('has_new_ask_signal') and 'new-ask language' or 'title match'})\"
-    # v2.14.7+: full coverage. HIGH-confidence → auto-resolve (or
-    # commitment_updated when schedule-shift signal). MEDIUM and supersede
-    # → pending_review for the confirm queue to surface as one-click
-    # confirm/skip.
-    if rec == 'auto_resolve':
-        try:
-            res = close_commitment(
-                workspace_root, r['commitment_id'],
-                resolved_by=r['owner_id'],
-                evidence=evidence,
-                source_skill='past-meetings',
-                # PROVMINT1 — THIS transcript is what closed the commitment, and
-                # its ref is already in scope (the §6 fence above passes the same
-                # value as `transcript_source_ref`). A meeting id is a far better
-                # pointer than the surface receipt the writer would otherwise
-                # mint; this was one of the walk's four verified drop sites.
-                source_ref='granola:<THIS meeting id>',
-            )
-            if res['status'] == 'closed':
-                n_resolved += 1
-        except (CommitmentIdError, PendingReviewError) as e:
-            print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-    elif rec == 'commitment_updated':
-        to_append.append(build_commitment_updated_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='past-meetings',
-            change_summary='Schedule shifted in transcript',
-            evidence=evidence,
-            next_seq=None,  # appender stamps in-lock
-        ))
-    elif rec == 'pending_review' and r['commitment_id'] in review_ok:
-        to_append.append(build_pending_review_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='past-meetings',
-            proposed_resolution='auto_resolve',
-            score=r['score'],
-            evidence=evidence,
-            next_seq=None,  # appender stamps in-lock
-            # TITLEMINT1 — the matched commitment's OWN name, which the
-            # matcher already put on this result row. Omitting it used to be
-            # legal and wrote a subject-less row onto every review surface;
-            # the builder now REFUSES an empty title rather than accepting it.
-            title=r['title'],
-            # WATCHGATE — the matcher's OWN fulfillment finding, carried
-            # rather than discarded. The accept surface screens on it; without
-            # it the only thing separating a bare guess from a bulk confirm is
-            # whether the evidence prose happens to say 'title match'.
-            has_completion_signal=r.get('has_completion_signal'),
-            # WATCHGATE 2.5 — the meeting's own start, the SAME value passed
-            # as transcript_ts above. Lets the accept surface refuse, at apply
-            # time, evidence that predates the promise.
-            evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
-        ))
-    elif rec == 'supersede' and r['commitment_id'] in review_ok:
-        to_append.append(build_pending_review_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='past-meetings',
-            proposed_resolution='supersede',
-            score=r['score'],
-            evidence=evidence,
-            next_seq=None,  # appender stamps in-lock
-            # TITLEMINT1 — same rule on the supersede branch: the row's own
-            # name, from the same result dict, never an empty string.
-            title=r['title'],
-            has_completion_signal=r.get('has_completion_signal'),
-            evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
-        ))
-if to_append:
-    atomic_append_jsonl(events_path, to_append)
+# POLICY1-A — the pass. Per result row, commitment_policy.decide says
+# close / confirm_close / propose / none over (target state x evidence class):
+#   * a CONFIRMED row at >= the bar WITH completion language CLOSES through
+#     commitment_state.close_commitment — evidence = the completion turn the
+#     matcher scored (verbatim, marker stripped), source_ref = THIS meeting,
+#     resolved_by_match='match' + match_score, the fire batch id;
+#   * an UNCONFIRMED row (pending_review) with the same evidence CLOSES AS
+#     DONE too (M ruling 2026-09-03), through the writer's confirmed_by
+#     door: data.confirmed_by='transcript', resolution_reason=
+#     'auto_closed_transcript_evidence', the same quote and batch. No
+#     question is written for it, ever;
+#   * below the bar on an unconfirmed row NOTHING is written (the row is
+#     already a question; the daily review drain owns its lapse);
+#   * a CORROBORATING match on a confirmed row inside 0.65-0.80 gets ONE
+#     chip per (item, THIS meeting): the same transcript again is silent; a
+#     different score APPENDS a chip carrying supersedes_seq (history is
+#     never edited); a chip the TTL leg resolved is never written again from
+#     this meeting. Outside that band nothing is written;
+#   * the matcher's STRUCTURAL fences still outrank all of it: a parent with
+#     open sub-items is never closed here (SUB1 D3), and a multi-counterparty
+#     row keeps its per-person receipt lane.
+# The two per-fire fences are unchanged and run INSIDE the function AFTER
+# policy: `already_proposed` (one open proposal per commitment, on disk and
+# within the fire) and `review_budget` (TITLEMINT1's 25-per-fire cap — a
+# volume bound, not a threshold). The `partial_received` and `no_action`
+# rows are left alone exactly as before; `commitment_updated` (a schedule
+# shift) is written as before with the quote as evidence.
+counts = apply_transcript_results(
+    workspace_root, results,
+    meeting_ref='granola:<THIS meeting id>',
+    transcript_ts='<THIS meeting start ts — the same value as transcript_ts>',
+    already_proposed=already_proposed,
+    review_budget=review_budget,
+    batch_id=fire_batch_id,
+)
 # EODSPEED1 — a COMPLETED walk goes on the ledger: matcher returned, appends
 # landed. A pass that raised before this line records nothing and re-walks.
 record_walk(workspace_root,
@@ -824,17 +787,17 @@ record_walk(workspace_root,
             evidence_ts='<THIS meeting start ts — the same value as transcript_ts>',
             n_stale=cru_diag.get('stale_evidence_dropped', 0) - stale_before,
             n_results=len(results))
-print(f'CRU past-meetings: resolved={n_resolved} updated={sum(1 for e in to_append if e[\"type\"]==\"commitment_updated\")} pending={sum(1 for e in to_append if e[\"type\"]==\"commitment_review_proposed\")} stale_evidence_skipped={cru_diag.get(\"stale_evidence_dropped\", 0)} proposals_suppressed={review_budget.get(\"proposals_suppressed\", 0)}')
+print(f'CRU past-meetings: resolved={counts[\"n_closed\"]} confirmed_closed={counts[\"n_confirm_closed\"]} withheld={counts[\"n_close_withheld\"]} closes_enabled={counts[\"closes_enabled\"]} updated={counts[\"n_updated\"]} chips={counts[\"n_proposed\"]} rescored={counts[\"n_rescored\"]} silent_pending={counts[\"n_silent_pending\"]} silent_out_of_band={counts[\"n_silent_out_of_band\"]} silent_dup={counts[\"n_silent_dup\"]} close_refused={counts[\"n_close_refused\"]} stale_evidence_skipped={cru_diag.get(\"stale_evidence_dropped\", 0)} proposals_suppressed={review_budget.get(\"proposals_suppressed\", 0)}')
 "
 ```
 
-**Carry `proposals_suppressed` to Phase 5 as well (SPEC TITLEMINT1).** It is the last number on that stdout line and it goes on the fire receipt as `n_review_proposals_suppressed`, next to `n_stale_evidence_skipped` in the same `capture_leg` block. Zero is written, not omitted — an absent key reads as "this rail has no cap", which is the state this build ended. Never report it as a threshold effect: nothing was judged too weak to ask about, the fire simply ran out of the room a person has.
+**Carry `proposals_suppressed` to Phase 5 as well (SPEC TITLEMINT1).** It is the last number on that stdout line and it goes on the fire receipt as `n_review_proposals_suppressed`, next to `n_stale_evidence_skipped` in the same `capture_leg` block. Carry `confirmed_closed` as `n_cru_confirmed_closed` (unconfirmed captures the transcript closed as done — the number M asked to keep measurable), `close_refused` as `n_cru_close_refused` (the writer's own refusals — a parent with open sub-items, a missing quote — counted, never reported as closes), `silent_pending` as `n_cru_silent_pending` (rows policy left alone because they were already a question), and — CUT-A — `withheld` as `n_cru_close_withheld` with `closes_enabled` as `cru_closes_enabled` (rows that met every fence and were PROPOSED, not closed, because closing on evidence is off; while the switch is off the receipt and any line built from it say "proposed" / "held" for those rows, never "closed" — `n_closed` and `n_confirm_closed` are 0 by construction and the brief's `closed_from_meetings` line stays silent on its own). Zero is written, not omitted — an absent key reads as "this rail has no cap", which is the state this build ended. Never report it as a threshold effect: nothing was judged too weak to ask about, the fire simply ran out of the room a person has.
 
 **Carry `stale_evidence_skipped` to Phase 5.** The second-to-last number on that stdout line is EVORDER layer 3's refusal count for the whole fire; put it on the fire receipt as `extra_data={"n_stale_evidence_skipped": <that number>, ...}` (the spelling both mail rails use — `reconcile_sent` / `reconcile_inbound` put it in `signal_fields`, and an improvised synonym here is invisible to anyone reading across the three rails). Zero is a legitimate value and is written, not omitted: an absent key reads as "this rail has no fence", which is the state this build ended.
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: `commitment_resolved`, `commitment_updated`, and `commitment_review_proposed` event-type names never appear in chat. The user sees the resolution effect on the next Commitments fire — items disappear from the OWED TO YOU / YOU OWE columns when they're auto-resolved here.
 
-**Threshold tuning:** the helper uses `HIGH_CONFIDENCE_THRESHOLD = 0.55` and `PENDING_REVIEW_THRESHOLD = 0.30`. These are deliberately conservative for v2.14.6 launch. Once telemetry shows real auto-resolve rates and false-positive rates from the confirm queue's pending-review confirmations, tighten or loosen.
+**Thresholds:** there are no numbers in this file. The match bar and the pending band live in ONE place — `shared/scripts/commitment_policy.py` (`MATCH_SCORE_AUTO_RESOLVE`, `MATCH_SCORE_PENDING_REVIEW`; `confidence.py` re-exports them) — and a workspace's Loop-4 calibration override (`_hq/data/confidence-overrides.json`) is read there too. A guard test fails the battery when a closer module or this prose spells a literal threshold.
 
 **Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, transcript empty), swallow silently and continue. Phase 4.6 is best-effort enrichment; the Phase 4 commitment writes already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "4.6_commitment_cru", "reason": "<short>", "detail": "<truncated stderr or exception message>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
@@ -888,7 +851,10 @@ for transcript in <list of newly-processed transcripts>:
     )
     for r in results:
         rec = r['recommendation']
-        evidence = f\"Past meeting transcript ({r.get('has_reversal_signal') and 'reversal language' or r.get('has_completion_signal') and 'completion language' or 'title match'})\"
+        # Three states, read by identity (POLICY1-B): True / False / None (never assessed) are three different words.
+        _sig = r.get('has_completion_signal')
+        _sig_word = ('reversal language' if r.get('has_reversal_signal') is True else 'completion language' if _sig is True else 'title match' if _sig is False else 'completion not assessed')
+        evidence = f\"Past meeting transcript ({_sig_word})\"
         if rec == 'decision_resolved':
             to_append.append(build_decision_resolved_event(
                 decision_id=r['decision_id'],
@@ -1184,25 +1150,11 @@ Drop any surfaced item the CEO has taught the system to stop showing (insight-ge
 
 Pre-EOD1 this phase posted one widget per fire listing every processed meeting with its pending sub-items. That is the pile M's ruling removes ("the client is never handed a pile"). Everything else in this phase — the renderer pre-flight, the ZERO-MANIPULATION CONTRACT, the transport, the links sections, the H2 opener rules — applies UNCHANGED to the new surface. Only what goes into `data_view` changed:
 
-- **The prose blocks** — the personified intro, `catchup["lines"]` (degrade-tier fires only) above everything, `alarm_lines` verbatim, then `coverage_lines` (SPEC COVERQUIET1 — the `coverage_render_lines(pack)` result Phase 5 already computed; **omit the whole block when it is `[]`**, never `coverage["lines"]` directly), then the synthesis in `render_order` (`day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes`), then `coach["text"]` (SPEC EODCOACH2, not in `render_order` — see Phase C), then `sign_off`, and on Monday the week roll-up — are the markdown half of the turn, composed in Phase C (and, for `coverage_lines`, finalized in Phase 5) and posted here.
+- **The prose blocks are `pack["screen"]["text"]`, VERBATIM (CUT-PLATE, 2026-09-06)** — the personified intro above it, then the screen exactly as `end_of_day.compose_screen` ordered it in `SCREEN_ORDER` (`pack["catchup"]["lines"]` on the degrade tier · the plate FIRST · `day_went` · `what_it_meant` · `worth_remembering` · `slipped_prose` · `echoes` · `coach` (the delta only) · `tomorrow` (a stated intent as fact) · `sign_off` · then the health lines LAST — `coverage` only when `coverage_has_disclosure(pack)` is True (SPEC COVERQUIET1; the `coverage_render_lines(pack)` result Phase 5 already computed — never `coverage["lines"]` directly), `alarm_lines`, `dark_surface_lines`), and on Monday the week roll-up after it. The placement is code now (Phase C, THE SCREEN paragraph); this bullet carries no second order of its own — two orders in one file is how the v5.28.0 fire went wrong.
 
-**⛔ THE WIDGET IS THE TOMORROW BLOCK, AND NOTHING ELSE (SPEC EODSYNTH1 R-2, absorbing EODCOACH1 ask 2; candidate shape per SPEC TOMPICK1).** One widget, carrying UP TO THREE RANKED CANDIDATES for what tomorrow is about — never padded when fewer survive TOMFILT1's full-lane anchor fence — each with its one-line why, with confirm / edit, and it **renders ABOVE the prose** — the ask is what the reader acts on, so it is what they see first. No Slipped section, no Needs-your-call section, no person-candidate section, no score, no ledger line. Those rows are computed and they render on the MORNING surfaces (R-3); a section for them here would be the pile M's ruling removes, wearing a new heading.
+**⛔ NO WIDGET. NO QUESTION. THE SCREEN IS THE TURN (CUT-PLATE, 2026-09-06 — M's hold; supersedes SPEC EODSYNTH1 R-2's tomorrow card).** The prose turn is `pack["screen"]["text"]`, verbatim, with the personified intro line above it (persona permitting) and the Meeting briefs / Sources sections below it. This surface never calls `mcp__visualize__show_widget`: no tomorrow card, no Confirm / Edit, no Slipped section, no Needs-your-call section, no person-candidate section, no score, no ledger line. The tomorrow PROPOSAL is computed and receipted and never shown; a STATED intent is already inside the screen as fact; the morning surfaces carry the queues (R-3). A widget posted from this fire is a contract violation regardless of its contents — the v5.28.0 attended test (B2.2) saw the tomorrow card asked on the day-close, and M's hold removed it.
 
-```python
-data_view = {
-    "widget_mode": "all_batch_widget",
-    "source_skill": "end-of-day",   # W4 — stamped into every Apply-all tuple as src
-    "header": <the day-close header line>,
-    "sections": [
-        {"title": "Tomorrow", "count": len(<the proposal's items>), "items": [<one item per candidate, in the proposal's own `rank` order, each carrying its `why`>]},
-    ],
-    "quick_read": <the top-ranked candidate's text, already computed>,
-}
-```
-
-**Drop-empty, same as every other section on every other surface.** No `proposal` and no `intent` → **no widget at all**, and `tomorrow["line"]` (*"Nothing on file yet for tomorrow."*) is the whole of it. Never improvise an all-clear widget.
-
-**Up to three ranked candidates render in rank order, each its own line with its own why — never a bundle the CEO accepts or rejects as a whole.** `pack["tomorrow"]["proposal"]` is a DRAFT the system guessed: render it as a question with the confirm / edit taps, and NEVER as a statement of what tomorrow is about. A bare "confirm" picks rank 1 (today's default door); "1"/"2"/"3" picks that candidate instead — Phase 6.2 below. `pack["tomorrow"]["intent"]` — present when the CEO already stated one — is their own word and renders as fact. It is written only on tap (Phase 6.2), and it is always ONE item: the candidate the CEO picked, never the whole set.
+**Nothing is improvised for an empty day either.** No `proposal` and no `intent` → the screen carries `tomorrow["line"]` (*"Nothing on file yet for tomorrow."*) and that is the whole of it. Never an all-clear card, never a hand-built widget.
 
 **The meetings this fire processed** contribute their `.docx` links to the `Meeting briefs:` section below and NOTHING ELSE. No meeting rows, no per-meeting sub-items, no counters widget. Their ambiguous items are already in the queue and reach the CEO through the MORNING surfaces.
 
@@ -1212,11 +1164,13 @@ data_view = {
 
 **`confirm_ids` IS EMPTY AND THAT IS THE CONTRACT.** `end_of_day.confirm_ids_from_pack` walks `NUMBERED_BLOCKS`, which is `()`: the evening numbers nothing because it renders no numbered rows. Do not number the tomorrow moves into it — the confirm resolves through `end_of_day.resolve_intent_confirm` off `day_intent_proposal` on the same receipt and never used the map. **Never number a row you are not rendering**, and never render a row the pack did not hand you: a map entry for an invisible row makes every tap past it resolve against something nobody saw, which is the PERSONLOOP1 N-1 finding.
 
-**The empty day still posts.** No proposal and no intent means no widget at all, and the prose blocks are the whole turn: `coverage_lines` when non-empty, whatever the day-went paragraph could honestly say, and the sign-off. **The coverage strip renders on an empty day IFF it has a disclosure (SPEC COVERQUIET1)** — "nothing happened" and "I could not look" are two different claims and, when the fire genuinely could not look (a reduction, a deferral, a dark surface, a connector gap, a catch-up note), the strip is what tells them apart. A day that is empty AND fully covered — nothing happened and every capability read clean — says so through the day-went paragraph and the sign-off alone; a boilerplate "nothing to report" coverage strip under an already-honest empty day is the noise this spec removes.
+**The empty day still posts.** No proposal and no intent means no widget at all, and the screen is the whole turn: `pack["screen"]["text"]` — the plate's zero line, whatever the day-went paragraph could honestly say, the sign-off, and the coverage strip after it when it has a disclosure. **The coverage strip renders on an empty day IFF it has a disclosure (SPEC COVERQUIET1)** — "nothing happened" and "I could not look" are two different claims and, when the fire genuinely could not look (a reduction, a deferral, a dark surface, a connector gap, a catch-up note), the strip is what tells them apart. A day that is empty AND fully covered — nothing happened and every capability read clean — says so through the day-went paragraph and the sign-off alone; a boilerplate "nothing to report" coverage strip under an already-honest empty day is the noise this spec removes.
 
-## Phase 6.2 — the tomorrow tap (SPEC BK1 writer, EOD1 caller; positional pick per SPEC TOMPICK1)
+## Phase 6.2 — the tomorrow tap (SPEC BK1 writer, EOD1 caller; positional pick per SPEC TOMPICK1) — DORMANT on this fire since CUT-PLATE
 
-The `tomorrow` block's confirm/change taps arrive through `apply-choices` like every other verb. **The CEO is picking ONE of up to three ranked candidates, positionally** — a bare "confirm" means rank 1 (today's default door, unchanged), and a bare digit ("1", "2", "3") means that rank instead. Parse the reply for a leading digit before falling through to "confirm"; anything else that isn't "edit"/"change" is not this route. On confirm:
+**This fire offers no tomorrow tap (CUT-PLATE, M's hold 2026-09-06).** The proposal is never rendered, so there is nothing on screen to confirm or edit, and a reply of "confirm" / "1" is not a route this fire invites. The CEO states tomorrow with `tomorrow is about [X]` (workspace-manager, BK1), which writes the intent directly and is what the next morning and the coach's delta read. The resolver below is kept, unchanged, for the receipt's data (`day_intent_proposal`) and the on-demand path; do not remove it and do not re-render the draft to give it something to resolve.
+
+When a confirm DOES arrive on the on-demand path: **the CEO is picking ONE of up to three ranked candidates, positionally** — a bare "confirm" means rank 1, and a bare digit ("1", "2", "3") means that rank instead. Parse the reply for a leading digit before falling through to "confirm"; anything else that isn't "edit"/"change" is not this route. On confirm:
 
 ```python
 from end_of_day import resolve_intent_confirm
@@ -1275,7 +1229,7 @@ See `orchestrator-commitments.md` "ZERO-MANIPULATION CONTRACT" section for the f
 
 **v2.13.0 enforcement:** renderer raises `CanonicalActionError` on non-canonical verbs (e.g., `[your call]` is not canonical — use `decide [text]`; `manually` is not canonical — use `add context [text]`; `search emails` was dropped). Raises `LeakDetectedError` on forbidden patterns. Both blocking; fix the data view.
 
-**Empty-state rule (v2.14.19+):** if zero meetings happened in the Phase 3 window (or all of them resolved cleanly with no pending sub-items), DO NOT improvise a "no meetings to process" widget by hand-typing HTML. Build `data_view = {"widget_mode": "all_clear_summary", "header": "Past Meetings — nothing to process", "sub_header": "<weekday>, <date> · <time> check", "counters": [{"label": <the window label: "Last 24h" on a normal fire, "Since <weekday>" when Phase 3 returned `extended: true`>, "value": n_meetings}, {"label": "Auto-processed", "value": n_auto}, {"label": "Pending review", "value": 0}, {"label": "Skipped", "value": n_skipped}], "summary_line": "All transcripts were either auto-processed cleanly or skipped (internal/personal). Nothing pending your call.", "tracked_items": [], "footer": None}` and pass to `render_chat_output_widget()`. NEVER hand-build the empty-state widget. The counter label states the window that was actually searched — a widened catch-up window labelled "Last 24h" is a false claim about what was looked at. See `orchestrator-commitments.md` for the full diagnosis (v2.14.18 fresh-install bug).
+**Empty-state rule (v2.14.19+) — RETIRED, NOT RUN since CUT-PLATE (2026-09-06).** The empty day renders the screen only (see "Nothing is improvised for an empty day either" above): no all-clear widget, no counters, and the fire never names itself "Past Meetings". The paragraph below is kept for history and is not an instruction. ~~ if zero meetings happened in the Phase 3 window (or all of them resolved cleanly with no pending sub-items), DO NOT improvise a "no meetings to process" widget by hand-typing HTML. Build `data_view = {"widget_mode": "all_clear_summary", "header": "Past Meetings — nothing to process", "sub_header": "<weekday>, <date> · <time> check", "counters": [{"label": <the window label: "Last 24h" on a normal fire, "Since <weekday>" when Phase 3 returned `extended: true`>, "value": n_meetings}, {"label": "Auto-processed", "value": n_auto}, {"label": "Pending review", "value": 0}, {"label": "Skipped", "value": n_skipped}], "summary_line": "All transcripts were either auto-processed cleanly or skipped (internal/personal). Nothing pending your call.", "tracked_items": [], "footer": None}` and pass to `render_chat_output_widget()`. NEVER hand-build the empty-state widget. The counter label states the window that was actually searched — a widened catch-up window labelled "Last 24h" is a false claim about what was looked at. See `orchestrator-commitments.md` for the full diagnosis (v2.14.18 fresh-install bug).
 
 **Step 1b — Claim audit (v4.6.1 S3, MANDATORY — count from disk before ANY surface speaks; F-50 P2a: this widget + its summary claimed 7 decisions while disk had 6).** Same contract meeting-notes ships (its Step 9a3), same shared primitive:
 
@@ -1293,7 +1247,7 @@ Every number ANY Phase 6 surface renders — the widget header counts, each meet
 
 **Step 2 — build data_view, render widget HTML, post via show_widget (v2.10.9+):**
 
-**The `data_view` is Phase 6.0's, not this snippet's history.** The shape below is the mechanics — the transport call, the persist dir, the name hint. The CONTENT is the End of Day row-lists (slipped + needs-your-call), in the pack's order, matching the receipt's numbering. The pre-EOD1 per-meeting `sections` is retired with the pile; `item_for_meeting` is no longer called from this phase.
+**Since CUT-PLATE this snippet is NOT RUN on the day-close — there is no widget (Phase 6.0).** It is kept as the mechanics any future row-list on this surface would use — the transport call, the persist dir, the name hint — and nothing else. The pre-EOD1 per-meeting `sections` is retired with the pile; `item_for_meeting` is no longer called from this phase.
 
 ```python
 # (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
@@ -1312,11 +1266,11 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 # a hand-composed variant, never a post-processed one.
 ```
 
-The widget renders inline with per-item buttons; user clicks accumulate locally; "Apply all" fires `apply choices: [...]` payload that `apply-choices` skill catches and dispatches through the reply handlers below. Do not compose chat strings or paraphrase — the widget HTML IS the post.
+**(Still inside the NOT-RUN Step 2 block.)** The widget rendered inline with per-item buttons; user clicks accumulated locally; "Apply all" fired an `apply choices: [...]` payload that `apply-choices` caught. **The day-close posts no widget since CUT-PLATE (2026-09-06)** — kept as the mechanics of a row-list surface, not as an instruction for this fire.
 
 **Step 3 — Post the chat-links section (v2.14.0+ — split Briefs vs Sources):**
 
-After posting the widget, emit a second chat turn with TWO separate markdown sections. Per M's v2.13.2 ask: *"the brief hyperlink should just have the name of the meeting. And what's underlined ('Sam UX review continuation') is sending you to granola, which should be sources, not links."*
+The chat-links section is posted on its own (**there is no widget to post it after — CUT-PLATE, 2026-09-06**), as TWO separate markdown sections. Per M's v2.13.2 ask: *"the brief hyperlink should just have the name of the meeting. And what's underlined ('Sam UX review continuation') is sending you to granola, which should be sources, not links."*
 
 Format:
 
@@ -1339,7 +1293,7 @@ Format:
 **Meeting briefs section rules:**
 - **The row set is `render_set["briefed_refs"]`, in order, and nothing else (SPEC MEETCOUNT1).** The same `meeting_render_set` return that reconciled the coverage strip's meetings line in Phase 5 is the ONE producer this section draws from — one brief per ref, no ref skipped, no brief added. A briefs list composed independently of the render set is the two-producer split that let the strip say "1 on record" above two rendered briefs.
 - **A `briefed_prior` ref's path and title come from the SAME `prior_briefed_refs` return Phase 5 mapped it from (SPEC EODSPEED1)** — `prior[ref]["brief_path"]` / `prior[ref]["title"]` — never re-derived, never re-looked-up: the helper is the one producer for that lane, exactly as this fire's own Phase 4 step-7 cache is for the `briefed` lane. These briefs render identically to this fire's own (same H3 link form, same opener URL rules); the coverage sentence has already named where they came from.
-- Each item numbered to match the widget.
+- Each item numbered in its own order (the pre-CUT-PLATE rule was "numbered to match the widget"; there is no widget on this fire).
 - Anchor text = meeting name (resolved attendee + topic). NOT the generic word "brief." The attendee half is the binder's verdict (SPEC BRIEFBIND1): `meeting_capture.brief_counterparty` over the cited meeting's own record — an unbound brief anchors on topic alone, never on an association-borrowed name.
 - Click target = the .docx brief at `_hq/meetings/Past_Meeting_<slug>_<date>.docx` via `computer:///`.
 - If a meeting has no brief (rare — only for skipped meetings that didn't generate one), omit that line.

@@ -1,7 +1,7 @@
 ---
 name: follow-up-ritual
 surfaces: both
-description: "Meeting transcript or recording → 60-second close-the-loop pack: summary, per-attendee action items, personalized follow-up email drafts ready to send. Triggers: 'follow up on that call', 'follow up on the meeting', 'follow up the meeting', 'follow up on the call', 'process the call and draft follow-ups', 'close the loop', 'close the loop on', 'follow-up ritual', 'draft follow-ups', 'draft follow ups', 'send follow-ups from my last call'. Plus 'tune follow-up-ritual'. Owns meeting-context `follow up` phrasing — meeting-notes does not fire on these. DOES NOT fire on 'follow up with [name] about [topic]' with no meeting in context (email-writer — a plain outbound draft; same for dormant-customer-scan and thread-resurrection hand-offs)."
+description: "Meeting transcript or recording → 60-second close-the-loop pack: summary, per-attendee action items, personalized follow-up email drafts ready to send. Triggers: 'follow up on that call', 'follow up on the meeting', 'follow up the meeting', 'follow up on the call', 'process the call and draft follow-ups', 'close the loop', 'close the loop on', 'follow-up ritual', 'draft follow-ups', 'draft follow ups', 'send follow-ups from my last call'. Plus 'tune follow-up-ritual'. Owns meeting-context `follow up` phrasing — meeting-notes does not fire on these. DOES NOT fire on 'follow up with [name] about [topic]' with no meeting in context (email-writer — a plain outbound draft; same for dormant-customer-scan hand-offs from either lens, people or threads)."
 voice_block_last_refreshed: 2026-04-21
 calibration_level: default
 template_version: 2.7.1
@@ -246,36 +246,32 @@ Group by attendee. For each attendee with ≥1 open commitment, include a "Still
 - You owe: [title] (due [date])
 ```
 
-If the meeting just closed one of these (e.g., the attendee delivered the thing or the user did), close it through THE closure path (Stage B 2026-07, F2 — supersedes the append-the-JSON-yourself shape):
+If the meeting just closed one of these (e.g., the attendee delivered the thing or the user did), hand the transcript to the policy pass — **never call `commitment_state.close_commitment` from this step** (CUT-A 2026-09-06, M ruling R-A; the writer's door refuses a direct follow-up-ritual close on transcript evidence by name, `TranscriptCloseWithheldError`). The pass is the same one meeting-notes Step 5e-bis and Phase 4.6 of the past-meetings orchestrator run:
 
 ```python
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-close_commitment(
-    workspace_root, "<id of the original commitment event — verbatim>",
-    resolved_by="<person_id>",
-    evidence="<one-line reason — 'delivered in this meeting' or 'mentioned as done in transcript'>",
+from commitment_policy_pass import apply_meeting_closes
+counts = apply_meeting_closes(
+    workspace_root,
+    meeting_ref="granola:<meeting_id>",          # PROV1 — the TRANSCRIPT this was read out of; also the self-evidence fence
+    # Pass nothing only when there genuinely is no source — since SPEC PROVMINT1 the writer
+    # mints `session:follow-up-ritual:<now>` for it, marked `surface_minted`; PROV1's bare
+    # marker is no longer reachable from this writer. That floor points at the ACT, never at
+    # a transcript, so dropping a meeting id you HAVE trades a real pointer for a receipt —
+    # and the coverage split reports it as exactly that.
+    transcript_ts="<THIS meeting's own start ts, offset-carrying or UTC>",  # never the processing clock
+    transcript_text="<full transcript text>",
+    attendee_person_ids=["<resolved attendee person_id>", ...],
     source_skill="follow-up-ritual",
-    # PROV1 — the TRANSCRIPT this close was read out of, so a reader can open
-    # the meeting that justified it. Prose evidence names no artifact; a
-    # pointer does. Pass the meeting's native id prefixed by its provider
-    # (`granola:<meeting_id>`). Pass nothing only when there genuinely is no
-    # source — the close still lands, and since SPEC PROVMINT1 the writer
-    # mints `session:follow-up-ritual:<now>` for it, marked `surface_minted`;
-    # PROV1's bare marker is no longer reachable from this writer. That floor
-    # points at the ACT, never at a transcript, so dropping a meeting id you
-    # HAVE trades a real pointer for a receipt — and the coverage split
-    # reports it as exactly that.
-    source_ref="granola:<meeting_id>",
 )
 ```
 
-It writes the canonical `commitment_resolved` shape from `shared/COMMITMENT_SCHEMA.md`, normalizes legacy id spellings, refuses no-match ids loudly (`CommitmentIdError` → skip; never write an orphan tombstone), is idempotent over the full resolved-id set, and never auto-resolves a `pending_review` item (`PendingReviewError` → leave it for the review surface).
+With closing on evidence OFF (the shipped default) the pass writes at most a review proposal on the row — the `needs your call` confirm shape — and `counts["n_close_withheld"]` says how many rows it would have closed. With it ON (`turn on closing on evidence`) the tightened pass closes only with the meeting's own start time, only a row captured before that start, and only on one verbatim turn that says done and names the item — stamped with this rail, on a batch, one `undo` away. It normalizes legacy id spellings, refuses no-match ids loudly, is idempotent over the full resolved-id set, and never closes a `pending_review` item except through the transcript door with the switch on. Nothing here is narrated in chat.
 
 This is how commitments stop accumulating in views over time — without resolution events, every commitment stays "open" forever.
 
 ### Surface count in the pack header
 
-Add to the pack header line: `"Open before this call: 3 (they owe 2, you owe 1). Closed on this call: 1."`
+Add to the pack header line, **read off `counts`, never asserted**: `"Open before this call: 3 (they owe 2, you owe 1)."` — plus, only when the count is non-zero, `"Closed on this call: N."` from `counts["n_closed"]`, or, while closing on evidence is OFF (the shipped default), `"N look kept — say `needs your call`."` from `counts["n_close_withheld"]`. With the switch off `n_closed` is 0 and the closed half of the line does not render.
 
 If zero on either side, omit that half of the line.
 
@@ -299,7 +295,7 @@ If zero on either side, omit that half of the line.
 ```
 # Follow-Up: [Meeting Name]
 Date: YYYY-MM-DD | Attendees: Aria, Bowie, Skyler | Project: [Project]
-Open before this call: 3 (they owe 2, you owe 1). Closed on this call: 1.
+Open before this call: 3 (they owe 2, you owe 1). 1 looks kept — say `needs your call`.
 
 [EXEC HEADER — verdict names what YOU walked out owing; CHANGED = decided/closed]
 
@@ -449,6 +445,10 @@ Total stage time: ~90 seconds. Installable mental model.
 - **events.jsonl substrate** — commitment + decision logging (MASTER_TRACKER / DECISION_LOG views regenerate from it)
 - **meeting-notes skill** — reuse structured notes if already generated
 - **decision-log skill** — decision writer
+
+## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

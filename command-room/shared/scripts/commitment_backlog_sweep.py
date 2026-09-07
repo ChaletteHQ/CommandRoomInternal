@@ -972,11 +972,16 @@ def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
     what stops a smuggled review row closing inside an amnesty batch.
     """
     from commitment_state import close_commitments
+    # POLICY1-B DD-5 — one GROUP batch per project (the row's own thread)
+    # under this run, so `undo <group>` puts back one project's rows and
+    # `undo <run>` puts back the run. A row with no thread is its own group
+    # on the run id itself (`parent_batch_id` still names the run).
+    from commitment_policy import group_stamps as _group_stamps
     closures = []
     for row in rows:
-        data = {"brain_batch_id": batch_id,
-                "brain_change_class": CLOSE_CHANGE_CLASS,
+        data = {"brain_change_class": CLOSE_CHANGE_CLASS,
                 "backlog_sweep": True}
+        data.update(_group_stamps(batch_id, row.get("primary_thread_id") or ""))
         if row.get("close_basis"):
             data["close_basis"] = row["close_basis"]
         if extra:
@@ -1969,6 +1974,13 @@ def amnesty_plan(workspace_root, *, older_than_days=None, now_iso=None) -> dict:
     opens_raw = load_open_commitments(str(events_path),
                                       workspace_root=workspace_root)
     opens, needs_review = split_pending_review(opens_raw)
+    # POLICY1-B DD-9 / D11 — ONE RULE PER LANE. Age-out keeps the OWED-BY-YOU
+    # lane only: a row someone else owes the user is never dropped for
+    # silence (a silent counterparty is their silence, not the user's
+    # decision). Those rows leave this plan here and are counted on the
+    # receipt; the owed-to-you-quiet leg parks them instead (visible, open,
+    # undoable) — never a closure, never a question (M ruling 2).
+    opens, owed_to_you = _split_owed_to_you(opens, workspace_root)
     rows = age_out_candidates(opens, events_path=events_path, now_iso=now_iso,
                               age_out_days=threshold)
     return {
@@ -1979,6 +1991,7 @@ def amnesty_plan(workspace_root, *, older_than_days=None, now_iso=None) -> dict:
         "rows": rows,
         "n": len(rows),
         "n_needs_review": len(needs_review),
+        "n_owed_to_you_excluded": len(owed_to_you),  # DD-9: the lane rule, on the plan
         "preview": _amnesty_preview(rows, threshold),
         "confirm": _amnesty_confirm(len(rows), threshold),
     }
@@ -2420,6 +2433,12 @@ def review_expiry_candidates(rows, *, events_path, user_person_id,
         cid = _cid(ev)
         if not cid:
             continue
+        # PLATE1 P3 — a question the USER wrote (`not mine`) is a decline,
+        # and a decline must never become a closure. The drain argues from
+        # silence; a row the user explicitly disowned is not silent about
+        # anything. It parks on the plate until someone claims it.
+        if question_written_by_user(ev):
+            continue
         seen = activity.get(cid)
         if seen is None or seen > cutoff:
             continue
@@ -2427,6 +2446,16 @@ def review_expiry_candidates(rows, *, events_path, user_person_id,
                                seen=seen, now=now))
     out.sort(key=lambda r: (-(r["days_quiet"] or 0), r["commitment_id"]))
     return out
+
+
+def question_written_by_user(ev: dict) -> bool:
+    """PLATE1 P3 — True when the projected item carries an open question the
+    USER wrote with a verb (`commitment_state.disown_commitment`). ONE
+    predicate for the drain and the plate: the drain skips these rows, the
+    plate parks them. Reads the projector's fold, never re-derives it."""
+    from commitment_state import QUESTION_BY_USER_VERB
+    d = (ev.get("data") or {}) if isinstance(ev, dict) else {}
+    return bool(d.get("question")) and d.get("question_by") == QUESTION_BY_USER_VERB
 
 
 def ingest_kill_candidates(rows, *, source_ref, events_path, user_person_id,
@@ -2971,13 +3000,75 @@ def apply_review_expiry(workspace_root, *, user_person_id,
                               older_than_days=older_than_days, now_iso=now_iso,
                               include_reopened=include_reopened)
     threshold = plan.get("threshold_days")
-    return _apply_review(
+    # ATTRIB1-B A6 (ruled 2026-09-02) — a lapsed row that carried the
+    # ladder's pre-selected default is NOT dropped: the default is APPLIED
+    # (counterparty confirmed, flag cleared, `confirmed_by: default_applied`)
+    # inside the SAME batch, so one `undo` reverses the lapse and the
+    # applied defaults together. Rows with no best guess follow the
+    # ordinary expiry below. Derived here, a moment before the write, from
+    # the live tier (never from the plan alone).
+    batch_id = batch_id or _mint_batch_id(now_iso)
+    defaults_applied: list = []
+    if plan.get("ok") and plan.get("rows"):
+        defaults_applied = _apply_lapse_defaults(
+            workspace_root, plan, user_person_id=user_person_id,
+            batch_id=batch_id, now_iso=now_iso)
+    out = _apply_review(
         workspace_root, plan, bucket=REVIEW_EXPIRY_BUCKET,
         user_person_id=user_person_id, batch_id=batch_id, now_iso=now_iso,
         empty_reason=(f"Nothing in the unconfirmed pile has sat unanswered "
                       f"for {threshold}+ days, so there is nothing to clear. "
                       f"Nothing was changed."),
         verb=f"nobody had answered in {threshold}+ days")
+    out = dict(out)
+    out["n_default_applied"] = len(defaults_applied)
+    out["default_applied"] = defaults_applied
+    if defaults_applied and not out.get("applied"):
+        # The defaults DID land even when nothing else lapsed: say so
+        # rather than reporting an untouched pile.
+        out["applied"] = True
+        out["refused"] = None
+        out["reason"] = ""
+        out["batch_id"] = batch_id
+    return out
+
+
+def _apply_lapse_defaults(workspace_root, plan, *, user_person_id, batch_id,
+                          now_iso=None) -> list:
+    """A6 — apply the pre-selected default on every lapsed row that has one,
+    and REMOVE those rows from the plan so the expiry never drops them.
+    Returns the slim rows written (`{commitment_id, title, counterparty_id,
+    counterparty_name}`). Membership is re-derived from the live review
+    tier, exactly as `_review_decisions` does for the drop."""
+    try:
+        from attribution_doors import (apply_counterparty_default,
+                                       question_default)
+    except Exception:  # pragma: no cover — the doors module is shipped beside
+        return []
+    tier = {_cid(ev): ev for ev in review_tier(workspace_root)}
+    kept: list = []
+    applied: list = []
+    for r in plan.get("rows") or []:
+        cid = str((r or {}).get("commitment_id") or "")
+        ev = tier.get(cid)
+        if ev is None or not question_default(ev):
+            kept.append(r)
+            continue
+        res = apply_counterparty_default(
+            workspace_root, cid, applied_by=user_person_id,
+            batch_id=batch_id, source_skill=REVIEW_SOURCE_SKILL, row=ev,
+            mint_now_iso=now_iso)
+        if res.get("status") == "confirmed":
+            applied.append({"commitment_id": cid,
+                            "title": (r or {}).get("title") or "",
+                            "counterparty_id": res.get("counterparty_id"),
+                            "counterparty_name": res.get("counterparty_name")})
+        else:
+            # Refused → it stays in the plan and lapses the ordinary way.
+            kept.append(r)
+    plan["rows"] = kept
+    plan["n"] = len(kept)
+    return applied
 
 
 def apply_ingest_kill(workspace_root, *, user_person_id, source_ref,
@@ -3173,6 +3264,7 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     if not apply:
         plan = review_expiry_plan(workspace_root, user_person_id=uid,
                                   now_iso=now_iso)
+        chip_plan = _chip_leg(workspace_root, now_iso=now_iso, apply=False)
         return {
             "ran": False, "applied": False,
             "refused": plan.get("refused"), "reason": plan.get("reason"),
@@ -3182,13 +3274,83 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
             "threshold_days": plan.get("threshold_days"), "batch_id": None,
             "summary": plan.get("confirm") or plan.get("reason") or "",
             "receipt_line": "",
+            "n_lapsed_with_completion_evidence": _lapsed_with_completion(
+                workspace_root, plan),
+            "n_ttl_planned": int(chip_plan.get("n_ttl_planned") or 0),
+            "n_apply_planned": int(chip_plan.get("n_apply_planned") or 0),
+            "n_retract_planned": int(chip_plan.get("n_retract_planned") or 0),
+            "n_chip_applied": 0, "n_retracted": 0, "n_chip_withheld": 0,
         }
 
+    # POLICY1-A DD-4 (M rulings 1 and 5) — THE CHIP LEG RUNS FIRST, and the
+    # order is the precedence: a standing chip whose evidence meets the close
+    # bar CLOSES its row as done (confirmed by the transcript, quote on the
+    # row, undoable) rather than letting the lapse write `dropped` on the
+    # same row an hour later. Everything else the chip could have been —
+    # a bare title match, a schedule shift, a new ask — RETRACTS itself.
+    # Neither outcome ever waits for an answer.
+    chips = _chip_leg(workspace_root, now_iso=now_iso, apply=True)
+    # The lapse leg then runs over what is LEFT (it re-derives the pile from
+    # the substrate, so a row the chip just closed is already gone from it).
+    plan = review_expiry_plan(workspace_root, user_person_id=uid,
+                              now_iso=now_iso)
+    # R2 — how many of the rows still about to lapse carry a standing quoted
+    # >= bar + completion proposal. Under the ruling that number should now
+    # trend to zero (the chip closed them); it is kept because it is the
+    # honest measure of what the lapse is still swallowing.
+    n_with_evidence = _lapsed_with_completion(workspace_root, plan)
     out = dict(apply_review_expiry(workspace_root, user_person_id=uid,
                                    batch_id=batch_id, now_iso=now_iso))
+    out["n_lapsed_with_completion_evidence"] = (
+        n_with_evidence if out.get("applied") else 0)
+    out["n_ttl_planned"] = int(chips.get("n_ttl_planned") or 0)
+    out["n_apply_planned"] = int(chips.get("n_apply_planned") or 0)
+    out["n_retract_planned"] = int(chips.get("n_retract_planned") or 0)
+    out["n_chip_applied"] = int(chips.get("n_applied") or 0)
+    out["n_retracted"] = int(chips.get("n_retracted") or 0)
+    out["n_chip_apply_refused"] = int(chips.get("n_apply_refused") or 0)
+    # CUT-A — chips that met the close bar but retracted because closing on
+    # evidence is OFF (the receipt says "held", never "closed").
+    out["n_chip_withheld"] = int(chips.get("n_apply_withheld") or 0)
+    out["closes_enabled"] = chips.get("closes_enabled")
+    out["retract_batch_id"] = chips.get("batch_id")
     out["receipt_line"] = _review_expiry_receipt_line(out)
     _log_review_expiry_receipt(workspace_root, out, fired_via=fired_via)
     return out
+
+
+def _lapsed_with_completion(workspace_root, plan) -> int:
+    """R2's honesty count over a review-expiry PLAN: rows whose newest open
+    proposal carries `has_completion_signal: true` at score >= the bar."""
+    try:
+        from commitment_policy import (standing_completion_evidence,
+                                       thresholds as _policy_thresholds)
+        from events_io import load_events_owner_scoped
+        ids = [r.get("commitment_id") for r in (plan or {}).get("rows") or []]
+        if not ids:
+            return 0
+        hi, _pend = _policy_thresholds(workspace_root)
+        _events, _skipped = load_events_owner_scoped(workspace_root)
+        return len(standing_completion_evidence(_events, ids, hi=hi))
+    except Exception as exc:  # loud, never fatal — a count must not block a drain
+        print(f"[backlog-sweep] completion-evidence count FAILED: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 0
+
+
+def _chip_leg(workspace_root, *, now_iso, apply: bool) -> dict:
+    """DD-4 leg 2 through `commitment_policy_pass.resolve_stale_chips` —
+    every chip past its window applies its own evidence or retracts itself.
+    A failure here is loud and non-fatal: the lapse leg still runs."""
+    try:
+        from commitment_policy_pass import resolve_stale_chips
+        return resolve_stale_chips(workspace_root, now_iso=now_iso, apply=apply)
+    except Exception as exc:
+        print(f"[backlog-sweep] review-expiry chip leg FAILED: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return {"n_ttl_planned": 0, "n_apply_planned": 0,
+                "n_retract_planned": 0, "n_applied": 0, "n_retracted": 0,
+                "n_apply_refused": 0, "batch_id": None}
 
 
 def _normalize_fired_via_or_none(value) -> Optional[str]:
@@ -3223,16 +3385,66 @@ def _review_expiry_receipt_line(out) -> str:
     empty batch (the same second-small-lie `_review_summary` avoids).
     """
     n = int((out or {}).get("n_applied") or 0)
-    if not n:
+    nd = int((out or {}).get("n_default_applied") or 0)
+    n_retracted = int((out or {}).get("n_retracted") or 0)
+    n_chip_closed = int((out or {}).get("n_chip_applied") or 0)
+    n_chip_withheld = int((out or {}).get("n_chip_withheld") or 0)
+    if not n and not nd and not n_retracted and not n_chip_closed and not n_chip_withheld:
         return ""
     days = (out or {}).get("threshold_days")
-    line = (f"{n} unconfirmed capture{'' if n == 1 else 's'} lapsed after "
-            f"{days} quiet days — say `undo` to put them back, `needs your "
-            f"call` to see what remains.")
-    held = int((out or {}).get("n_held_back") or 0)
-    if held:
-        line += (f" {held} stayed put: {'it owns' if held == 1 else 'they own'}"
-                 f" smaller pieces that are still open.")
+    line = ""
+    if n:
+        line = (f"{n} unconfirmed capture{'' if n == 1 else 's'} lapsed after "
+                f"{days} quiet days — say `undo` to put them back, `needs your "
+                f"call` to see what remains.")
+        held = int((out or {}).get("n_held_back") or 0)
+        if held:
+            line += (f" {held} stayed put: {'it owns' if held == 1 else 'they own'}"
+                     f" smaller pieces that are still open.")
+    if nd:
+        # ATTRIB1-B A6 — the meeting card's question lapsed and its likely
+        # answer was applied. Reversible by the same `undo`.
+        if line:
+            line += (f" {nd} other{'' if nd == 1 else 's'} took "
+                     f"{'its' if nd == 1 else 'their'} likely answer instead "
+                     f"(same `undo`).")
+        else:
+            line = (f"{nd} unanswered capture{'' if nd == 1 else 's'} took "
+                    f"{'its' if nd == 1 else 'their'} likely answer after {days} "
+                    f"quiet days — say `undo` to put "
+                    f"{'it' if nd == 1 else 'them'} back in the queue.")
+    if n_chip_closed:
+        # M ruling 1 — the chip acted on its own evidence. Say what it did
+        # in plain words. REVIEW_MERGED_v5280 F-6: ONE `undo` per sentence —
+        # the chip closes ride their own batch, and a second `undo` in the
+        # same line implied one gesture reverses two batches. `undo` lists
+        # both; the lapse sentence already carries the word once.
+        line += ((" " if line else "")
+                 + f"{n_chip_closed} "
+                 + ("item" if n_chip_closed == 1 else "items")
+                 + " closed on the meeting's own words"
+                 + (" — say `undo` to put "
+                    + ("it back." if n_chip_closed == 1 else "them back.")
+                    if not line else
+                    (" (a separate `undo` lists it)." if n_chip_closed == 1
+                     else " (a separate `undo` lists them).")))
+    if n_chip_withheld:
+        # CUT-A (R-A) — closing on evidence is off: the chip's words met the
+        # bar and it was HELD (retracted, the row untouched), not closed.
+        line += ((" " if line else "")
+                 + f"{n_chip_withheld} "
+                 + ("item" if n_chip_withheld == 1 else "items")
+                 + " looked done in a meeting and "
+                 + ("was" if n_chip_withheld == 1 else "were")
+                 + " held, not closed — say `turn on closing on evidence` to "
+                 "let that happen on its own.")
+    if n_retracted:
+        # POLICY1-A D15 — quiet, and honest that nothing was changed: a
+        # retract withdraws a question, it does not close anything.
+        line += ((" " if line else "")
+                 + f"{n_retracted} unanswered "
+                 + ("question" if n_retracted == 1 else "questions")
+                 + " retracted quietly (nothing was changed).")
     return line
 
 
@@ -3261,12 +3473,32 @@ def _log_review_expiry_receipt(workspace_root, out, *, fired_via) -> None:
                 "n_shielded_by_reopen":
                     int((out or {}).get("n_shielded_by_reopen") or 0),
                 "n_held_back": int((out or {}).get("n_held_back") or 0),
+                # ATTRIB1-B A6 — rows the lapse ANSWERED with the ladder's
+                # default instead of dropping.
+                "n_default_applied":
+                    int((out or {}).get("n_default_applied") or 0),
                 "n_answered": int(causes.get("answered") or 0),
                 "n_refused": int(causes.get("refused") or 0),
                 "threshold_days": (out or {}).get("threshold_days"),
                 "batch_id": (out or {}).get("batch_id"),
                 "refused": (out or {}).get("refused"),
                 "receipt_line": (out or {}).get("receipt_line") or "",
+                # POLICY1-A — the chip leg's counts and R2's, written zero or
+                # not: what the chips did to themselves, and what the lapse
+                # still swallowed with completion evidence on file.
+                "n_lapsed_with_completion_evidence":
+                    int((out or {}).get("n_lapsed_with_completion_evidence") or 0),
+                "n_ttl_planned": int((out or {}).get("n_ttl_planned") or 0),
+                "n_apply_planned": int((out or {}).get("n_apply_planned") or 0),
+                "n_retract_planned": int((out or {}).get("n_retract_planned") or 0),
+                "n_chip_applied": int((out or {}).get("n_chip_applied") or 0),
+                "n_chip_apply_refused":
+                    int((out or {}).get("n_chip_apply_refused") or 0),
+                "n_retracted": int((out or {}).get("n_retracted") or 0),
+                # CUT-A — the switch's state and what it held back.
+                "n_chip_withheld": int((out or {}).get("n_chip_withheld") or 0),
+                "closes_enabled": (out or {}).get("closes_enabled"),
+                "retract_batch_id": (out or {}).get("retract_batch_id"),
             },
         )
     except Exception as exc:  # loud, never fatal — the closes already landed
@@ -3411,6 +3643,146 @@ def _age_out_receipt_line(out) -> str:
             f"for what remains.")
 
 
+def _split_owed_to_you(opens, workspace_root) -> tuple:
+    """(owed_by_you_rows, owed_to_you_rows) — a row whose owner is not the
+    user is owed TO the user. Unresolved user → nothing is split out (the
+    plan keeps its old shape rather than guess a lane)."""
+    try:
+        from primary_user import resolve_primary_user as _rpu
+        uid = _rpu(workspace_root)
+    except Exception:
+        uid = None
+    if not uid:
+        return list(opens or []), []
+    mine, theirs = [], []
+    for ev in opens or []:
+        owner = str(((ev.get("data") or {}).get("owner_id") or "")).strip()
+        (theirs if owner and owner != str(uid) else mine).append(ev)
+    return mine, theirs
+
+
+# DD-9 / D11 — an owed-to-you row parks after this many quiet days, or
+# 3x the counterparty's taught cadence when that is longer.
+OWED_TO_YOU_QUIET_MIN_DAYS = 21
+OWED_TO_YOU_CADENCE_MULTIPLIER = 3
+OWED_TO_YOU_PARK_REASON = "no movement {days} days"
+
+
+def _cadence_baseline_days(workspace_root, person_id) -> Optional[float]:
+    """The user-taught cadence on the counterparty's record (dormancy.
+    cadence_override_days), or None."""
+    if not person_id:
+        return None
+    try:
+        from dormancy import cadence_override_days
+        from meeting_capture import _load_people
+        for rec in _load_people(workspace_root):
+            if str(rec.get("id") or "") == str(person_id):
+                return cadence_override_days(rec)
+    except Exception:
+        return None
+    return None
+
+
+def owed_to_you_quiet_plan(workspace_root, *, now_iso=None) -> dict:
+    """DD-9 — the owed-to-you lane's own rule, planned (no writes):
+      park    open, CONFIRMED, owed-to-you rows (owner != user) that are not
+              parked and have had no movement for max(21, 3 x cadence) days;
+      unpark  rows this leg parked whose newest movement is AFTER the park
+              (a reply, a chase draft, a user verb un-parks them).
+    Returns {rows_to_park: [...], rows_to_unpark: [...], n_owed_to_you}."""
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    now = _now_dt(now_iso)
+    opens_raw = load_open_commitments(str(events_path), workspace_root=workspace_root)
+    opens, _pending = split_pending_review(opens_raw)
+    _mine, theirs = _split_owed_to_you(opens, workspace_root)
+    activity = last_activity_map(events_path)
+    to_park, to_unpark = [], []
+    for ev in theirs:
+        d = ev.get("data") or {}
+        cid = _cid(ev)
+        seen = activity.get(cid)
+        if seen is None:
+            continue
+        quiet_days = (now - seen).days
+        if d.get("status_hint") == "parked":
+            park_ts = _parse_iso_dt(d.get("status_hint_ts"))
+            if park_ts is not None and seen > park_ts and d.get("park_reason", "").startswith("no movement"):
+                to_unpark.append({"commitment_id": cid, "title": _title(ev),
+                                  "primary_thread_id": ev.get("primary_thread_id") or ""})
+            continue
+        baseline = _cadence_baseline_days(workspace_root, d.get("owner_id"))
+        threshold = OWED_TO_YOU_QUIET_MIN_DAYS
+        if baseline:
+            threshold = max(threshold, int(OWED_TO_YOU_CADENCE_MULTIPLIER * baseline))
+        if quiet_days >= threshold:
+            to_park.append({"commitment_id": cid, "title": _title(ev),
+                            "primary_thread_id": ev.get("primary_thread_id") or "",
+                            "quiet_days": quiet_days, "threshold_days": threshold})
+    return {"rows_to_park": to_park, "rows_to_unpark": to_unpark,
+            "n_owed_to_you": len(theirs)}
+
+
+def _parse_iso_dt(value):
+    try:
+        from event_time import parse_ts
+        return parse_ts(value) if value else None
+    except Exception:
+        return None
+
+
+def apply_owed_to_you_quiet(workspace_root, *, user_person_id, batch_id,
+                            now_iso=None, source_skill=None) -> dict:
+    """DD-9 — park the quiet owed-to-you rows (one GROUP per project under
+    the run batch, `brain_change_class: commitment_park`, so `undo <group>`
+    / `undo <run>` un-parks them) and un-park the ones that moved. Never a
+    closure, never a question."""
+    from commitment_policy import group_stamps
+    from commitment_state import park_commitments, unpark_commitments
+    source_skill = source_skill or AGE_OUT_JOB_ID
+    plan = owed_to_you_quiet_plan(workspace_root, now_iso=now_iso)
+    parked, unparked = [], []
+    # F-6 — ONE lock, ONE scan, N appends (44 per-row parks took 107 s on
+    # the operator's book; the batch takes one read of the stream).
+    park_rows = []
+    for r in plan["rows_to_park"]:
+        stamps = group_stamps(batch_id, r.get("primary_thread_id") or "")
+        park_rows.append({"commitment_id": r["commitment_id"],
+                          "reason": OWED_TO_YOU_PARK_REASON.format(days=r["quiet_days"]),
+                          "brain_batch_id": stamps["brain_batch_id"],
+                          "extra_data": {"parent_batch_id": stamps["parent_batch_id"],
+                                         "undo_group": stamps["undo_group"], "lane": "owed_to_you"}})
+    by_id = {r["commitment_id"]: r for r in plan["rows_to_park"]}
+    for res in park_commitments(workspace_root, park_rows, parked_by=source_skill,
+                                source_skill=source_skill) if park_rows else []:
+        if res.get("status") == "parked":
+            r = by_id.get(res["commitment_id"], {})
+            parked.append({"commitment_id": res["commitment_id"], "title": r.get("title", ""),
+                           "quiet_days": r.get("quiet_days")})
+    by_id_u = {r["commitment_id"]: r for r in plan["rows_to_unpark"]}
+    for res in unpark_commitments(workspace_root, list(by_id_u), unparked_by=source_skill,
+                                  source_skill=source_skill,
+                                  reason="movement after the park") if by_id_u else []:
+        if res.get("status") == "unparked":
+            unparked.append({"commitment_id": res["commitment_id"],
+                             "title": by_id_u.get(res["commitment_id"], {}).get("title", "")})
+    return {"n_owed_to_you": plan["n_owed_to_you"], "n_parked": len(parked),
+            "n_unparked": len(unparked), "parked": parked, "unparked": unparked}
+
+
+def _owed_to_you_receipt_line(q) -> str:
+    n = int((q or {}).get("n_parked") or 0)
+    u = int((q or {}).get("n_unparked") or 0)
+    parts = []
+    if n:
+        parts.append(f"{n} item{'' if n == 1 else 's'} owed to you went quiet and "
+                     f"{'is' if n == 1 else 'are'} parked, still open — say `undo` to un-park "
+                     f"{'it' if n == 1 else 'them'}.")
+    if u:
+        parts.append(f"{u} parked item{'' if u == 1 else 's'} moved and {'is' if u == 1 else 'are'} back on the plate.")
+    return " ".join(parts)
+
+
 def run_age_out_job(workspace_root, *, apply: bool = False, now_iso=None,
                     fired_via: str = "scheduled", batch_id=None) -> dict:
     """SWEEPSCHED1 DD-1/DD-2 — the confirmed-tier drain, as a maintenance JOB.
@@ -3493,6 +3865,25 @@ def run_age_out_job(workspace_root, *, apply: bool = False, now_iso=None,
         plan = amnesty_plan(workspace_root, now_iso=now_iso)
         n = int(plan.get("n") or 0)
         line = _age_out_offer_line(n, plan.get("threshold_days"), n_prior)
+        # QUIET1 D4 — the offer is ONE question ("N have gone quiet — say
+        # `review amnesty`?"), so it goes through the weekly budget as the
+        # `age_out_offer` asker like every other question. Cut by the
+        # budget, the line is withheld (the receipt still counts the look:
+        # below the cut takes the default, and the default here is the
+        # apply after three looks — M's posture, reversible in one batch).
+        if line and apply:
+            try:
+                import quiet as _quiet
+                sub = _quiet.submit_questions(
+                    workspace_root, _quiet.ASKER_AGE_OUT,
+                    [{"commitment_id": f"age-out-offer:{plan.get('threshold_days')}",
+                      "has_counterparty": False, "has_date": False}],
+                    now_iso=now_iso)
+                if not sub["render"]:
+                    line = ""
+            except Exception as exc:  # noqa: BLE001 — loud, never fatal
+                print(f"[age-out] question budget FAILED: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
         out = _blank(
             ran=bool(n),
             # A REFUSED plan put NOTHING in front of anybody, so it records no
@@ -3518,12 +3909,26 @@ def run_age_out_job(workspace_root, *, apply: bool = False, now_iso=None,
         _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
         return out
 
+    batch_id = batch_id or _mint_batch_id(now_iso)
     out = dict(apply_amnesty(workspace_root, user_person_id=uid,
                              batch_id=batch_id, now_iso=now_iso))
     out["mode"] = AGE_OUT_MODE_APPLIED
     out["n_prior_runs"] = n_prior
     out["preview"] = out.get("preview") or ""
-    out["receipt_line"] = _age_out_receipt_line(out)
+    # DD-9 — the owed-to-you lane, on the SAME run batch: parks, never drops.
+    try:
+        q = apply_owed_to_you_quiet(workspace_root, user_person_id=uid,
+                                    batch_id=batch_id, now_iso=now_iso)
+    except Exception as exc:  # the drain must not die on the second lane
+        q = {"n_owed_to_you": 0, "n_parked": 0, "n_unparked": 0,
+             "parked": [], "unparked": [], "error": f"{type(exc).__name__}: {exc}"}
+    out["n_owed_to_you_excluded"] = int(q.get("n_owed_to_you") or 0)
+    out["n_owed_to_you_parked"] = int(q.get("n_parked") or 0)
+    out["n_owed_to_you_unparked"] = int(q.get("n_unparked") or 0)
+    out["owed_to_you_parked"] = q.get("parked") or []
+    out["batch_id"] = out.get("batch_id") or batch_id
+    out["receipt_line"] = " ".join(x for x in (_age_out_receipt_line(out),
+                                               _owed_to_you_receipt_line(q)) if x)
     _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
     return out
 

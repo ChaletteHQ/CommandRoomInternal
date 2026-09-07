@@ -70,6 +70,9 @@
         "choices_applied",
         "dont_forget_feedback",
         "pack_run",
+        "router_miss",
+        "interaction_posture",
+        "question_budget_spent",
         "connector_read",
         "connector_detected",
         "connector_backend_changed",
@@ -125,6 +128,7 @@
         "org_created",
         "org_updated",
         "org_repaired",
+        "org_promoted",
         "engagement_created",
         "engagement_updated",
         "thread_created",
@@ -244,6 +248,7 @@
         "deal_stage_changed",
         "deal_won",
         "deal_lost",
+        "deal_won_reversed",
         "deal_update_proposed",
         "deal_update_dismissed",
         "objective_created",
@@ -314,7 +319,7 @@
       "type": ["number", "null"],
       "minimum": 0.0,
       "maximum": 1.0,
-      "description": "Classifier's self-reported confidence in the primary_thread_id assignment. >=0.75 auto, 0.40-0.75 provisional (surfaced in weekly review), <0.40 low-confidence (flagged in weekly review). Null for events with no meaningful classification (e.g., audit_run, briefing)."
+      "description": "The writer's self-reported confidence in the capture this event records — THE one confidence vocabulary (ATTRIB1-A A2, 2026-09-02). On a `commitment` / `commitment_observed` row it is the capture's attribution and extraction confidence (cru_match._COMMITMENT_FIELD_ALIASES reads it as `confidence`; capture_gate.stamp_confidence is the only write seam and clamps it into [0, 1] at every builder — meeting, Slack, inbound, sent, session sweep). On a classified event it is the primary_thread_id assignment confidence. Bands: >=0.75 auto, 0.40-0.75 provisional (surfaced in weekly review), <0.40 low-confidence (flagged in weekly review); below the surface floor a commitment capture is written `data.pending_review: true` (meeting_capture.derive_pending_review). There is NO `data.confidence` on commitment rows — a second spelling would drift from the alias. Null for events with no meaningful score (e.g., audit_run, briefing)."
     },
     "project_id": {
       "type": ["string", "null"],
@@ -340,7 +345,7 @@
     },
     "data": {
       "type": "object",
-      "description": "Type-specific payload. Examples documented in references/DATA_CONTRACT.md. For 'reclassification' events: {old_primary_thread_id, new_primary_thread_id, old_related_thread_ids, new_related_thread_ids, reason}. For 'classification_review' events: {reviewed_event_seqs[], confirmed_count, changed_count, skipped_count}. For 'outreach_sent' events (v2.10.7+): {thread_id, recipient_id, subject, via} where `via` is one of `\"zapier\" | \"gmail_mcp_threaded\" | \"gmail_mcp_standalone\"` indicating which send path was used (Zapier-threaded preferred per EMAIL_DRAFT_PROTOCOL.md §3c, native Gmail threaded fallback per §3a, standalone last resort). Useful for weekly-audit visibility into send-path mix."
+      "description": "Type-specific payload. Examples documented in references/DATA_CONTRACT.md. ATTRIB1-A (2026-09-02, additive, all optional on legacy rows): a `commitment` / `commitment_observed` row written by meeting_capture.route_meeting_captures carries `attribution` {transcript_class, owner_basis, counterparty_basis, span: [start, end] token offsets | null, turn} (the typed basis `pending_review` is DERIVED from — shared/COMMITMENT_SCHEMA.md), `fusion_status` (verified | refused | inert, on EVERY row) and `floor_code` (a FLOOR_* code, on every floor-gated row); a `meeting` event carries `transcript_class` (named | me_them | unlabelled | dictation | unknown) and `working_session: true` when the transcript was a dictated working session whose captures went to the observed tier. For 'reclassification' events: {old_primary_thread_id, new_primary_thread_id, old_related_thread_ids, new_related_thread_ids, reason}. For 'classification_review' events: {reviewed_event_seqs[], confirmed_count, changed_count, skipped_count}. For 'outreach_sent' events (v2.10.7+): {thread_id, recipient_id, subject, via} where `via` is one of `\"zapier\" | \"gmail_mcp_threaded\" | \"gmail_mcp_standalone\"` indicating which send path was used (Zapier-threaded preferred per EMAIL_DRAFT_PROTOCOL.md §3c, native Gmail threaded fallback per §3a, standalone last resort). Useful for weekly-audit visibility into send-path mix."
     }
   }
 }

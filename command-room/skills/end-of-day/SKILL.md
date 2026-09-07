@@ -1,7 +1,7 @@
 ---
 name: end-of-day
 surfaces: both
-description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, names what slipped that has consequences, and asks one thing — what tomorrow is about. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
+description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, reads the day in the plate's shape (opened, closed, slipped), and asks nothing — a stated tomorrow renders as fact. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
 ---
 
 # End of Day — the evening bookend
@@ -46,9 +46,25 @@ difference between them is M's 2026-08-23 ruling written down:**
 `end_of_day.COMPUTED_ONLY` is what still runs, still lands on the `pack_run`
 receipt, and renders nowhere. **Un-render, don't unbuild.**
 
+**THE SCREEN IS COMPOSED IN CODE (CUT-PLATE, 2026-09-06 — M's hold: no
+decisions block and no question in the day-close; the evening reads the day
+in the PLATE's shape).** `pack["screen"]` is `end_of_day.compose_screen(pack)`
+— every line the fire may post, in `end_of_day.SCREEN_ORDER`: the plate's
+eod cut FIRST (*"Your plate today — N opened · N closed · N slipped"*, the
+rows in their blocks, one pointer), then `day_went`, `what_it_meant`,
+`worth_remembering`, `slipped_prose`, `echoes`, the coach's delta, a STATED
+tomorrow as fact, the sign-off, and the health lines LAST (the coverage strip
+when it has a disclosure, the substrate alarms, the dark-surface lines).
+Print `pack["screen"]["text"]` VERBATIM; it is the whole prose turn. The
+composer RAISES (`ScreenShapeError`) if a retired sentence — "survived N
+closes", "consecutive close", "did not move", "what is tomorrow about" — or an
+asking line reaches the composed text, so the v5.28.0 shape cannot come back
+quietly. `RENDER_ORDER` / `COMPUTED_ONLY` are untouched (they are the
+receipt's vocabulary); the screen is where the placement lives now.
+
 | Block | What it is | The rule that governs it |
 |---|---|---|
-| `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, pinned top, never suppressed |
+| `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, inside the health lines LAST on `pack["screen"]` (after the sign-off — CUT-PLATE), never suppressed |
 | `dark_surface_lines` | TASKALARM1 — the dead-surface alarm, task_alarm.dark_surface_lines | Verbatim, directly under `alarm_lines`, render-once per (task, dark-window). See below |
 | `coverage` | What this fire actually READ, per capability | Renders IFF `end_of_day.coverage_has_disclosure(pack)` (SPEC COVERQUIET1) — computed on every fire, but placed only when it has something to disclose. When it renders: first under the alarms, disclosure-first, **never suppressed and never softened underneath that gate**. See below |
 | `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended |
@@ -56,11 +72,45 @@ receipt, and renders nowhere. **Un-render, don't unbuild.**
 | `worth_remembering` | Decisions and notes logged today, 1–4 lines | Each line IS a row, not a summary of one |
 | `slipped_prose` | The slips whose consequence is STATED | Prose, not a list. No denominator, no "137 slipped". Everything else that slipped is silent here and appears in the morning |
 | `echoes` | At most two labelled precedent echoes | Absent by default; each cites a precedent BY ID or is refused |
-| `tomorrow` | The wide calendar look, the rollover, the day-intent draft | **The ONE interaction.** The draft is a PROPOSAL until tapped. It is written only on confirm |
+| `tomorrow` | The wide calendar look, the rollover, the day-intent draft | **A STATED intent renders as fact** (`end_of_day.TOMORROW_STATED_LINE`); the draft PROPOSAL is computed and receipted and **never rendered, never asked** (CUT-PLATE — M's hold 2026-09-06: no question in the day-close). `tomorrow is about [X]` is how the CEO states it |
 | `sign_off` | Computed, never composed | Zero urgent → "Nothing else needs you before tomorrow's brief." verbatim |
+| `plate` | The day's delta in the plate's shape (PLATE1 night 2, D7 `eod`) | **Renders FIRST on the screen (CUT-PLATE)** — see below |
 
 **Computed, receipted, rendered NOWHERE:** `score` (with its `ledger` and
-`first_move`), `wins`, `slipped`, `confirm`.
+`first_move`), `wins`, `slipped`, `confirm`, the tomorrow PROPOSAL, the
+coach's Layer 1 and push, and the arc read's "did not move" sentences.
+
+- **`plate` (SPEC PLATE1 night 2 — D7 `eod`; CUT-PLATE 2026-09-06).** The
+  day's delta in the plate's own shape: `pack["plate"]["text"]` is
+  `plate_view.render_plate(build_plate(ws, since_iso=<the ledger's anchor>),
+  "eod")` — *"Your plate today — N opened · N closed · N slipped"*, then the
+  opened rows in their blocks, the closed titles (done / dropped), the rows
+  whose date passed in the window and are still open, and ONE pointer to
+  `what's on my plate`. Same model, same words, same rows as the plate and
+  the morning brief; the window is the ledger's (`since_ts`, day-floored the
+  same way), so the delta and the ledger measure one span. **It is the FIRST
+  block of the screen** — PLATE1-N2 shipped it computed-only under
+  EODSYNTH1's no-lists rule, the v5.28.0 attended test (B2.2) showed the
+  fire still rendering the old prose instead, and M ruled for the plate
+  shape: the day-close now reads the day as the plate does, and the rows
+  are read-only (no verbs, no numbers to tap). A close a later `undo`
+  reversed is not counted closed (POLICY1-B (c)). `pack["plate"]["refused"]`
+  with the one plain line is the no-owner case (D8) — never lanes.
+- **`confirm` ranks on the plate's evidence (PLATE1 P7; EODRANK1 DD-1
+  superseded).** Inside the pending-first stake, the newest proposal riding
+  the row (`data.proposal` — score, evidence, evidence_ts — read off the
+  projected row when the resolution policy wrote it, else folded from the
+  stream) ranks a row with a completion signal first, then by score, then
+  by capture recency; each shown row carries its `proposal` so the reader
+  can see what ranked it. Still computed only.
+
+  **A proposal is evidence on the row, never a question (M's ruling
+  2026-09-03).** A guess a later transcript shows was done closes as done
+  automatically — with the quote, receipted, undoable — and never arrives
+  as an ask; only the narrow middle band writes a chip at all, and that
+  chip acts or retracts itself at the policy's four-day window. No sentence
+  on this surface, or on the morning brief, may say a proposal is pending,
+  awaiting your answer, or waiting on you.
 
 - **`score`** — `n_planned` / `n_closed` / the book-at-open arithmetic are all
   still computed and still on the receipt, because weekly-recap and the trend
@@ -76,9 +126,13 @@ receipt, and renders nowhere. **Un-render, don't unbuild.**
   morning brief's needs-attention lane and on the `needs-your-call` / `my-plate`
   chats, where the operator is in triage mode; 5 PM is wind-down.
 
-**The widget is the tomorrow block and nothing else**, rendered ABOVE the
-prose, through `widget_transport.render_and_persist` byte-exact. No Slipped
-section, no Needs-your-call section, no person candidates, no score.
+**No widget, no question (CUT-PLATE — M's hold 2026-09-06).** The
+day-close posts `pack["screen"]["text"]` and nothing else: no tomorrow card,
+no Confirm / Edit, no Slipped section, no Needs-your-call section, no person
+candidates, no score. `pack["screen"]["asks"]` is 0 and `["widget"]` is None
+by construction. The tomorrow draft the pack still computes is data for the
+receipt and the morning; the CEO states tomorrow with `tomorrow is about
+[X]` (workspace-manager, BK1), and that stated intent renders here as fact.
 
 **`confirm_ids` is EMPTY** (`end_of_day.NUMBERED_BLOCKS` is `()`): the evening
 renders no numbered rows, so it numbers none, and a `[n]` tap is refused in
@@ -148,8 +202,8 @@ recent activity and a live thread IS an arc whether or not a deal row tracks
 it, a deal row with a stage can only ADD an arc, and nothing in the read
 raises when deal state is absent, stale, or malformed. No writes to deal
 state, ever. The section stays prose-only — zero new actions, buttons,
-proposals, or writes; the tomorrow block remains the one interaction,
-unchanged.
+proposals, or writes; the day-close asks nothing (CUT-PLATE) — a stated
+tomorrow renders as fact, never as a question.
 
 ### The coach (SPEC EODCOACH2) — patterns across evenings, and the intent-vs-outcome delta
 
@@ -165,19 +219,22 @@ of a tuple pinned elsewhere by exact equality.
 
 **Prose only, ZERO new interactions** — the same fence EODARC1 keeps: a coach
 sentence carries `{text, refs, tier, kind}` and nothing else, no verb, no
-checkbox, no proposal. The tomorrow block stays the one interaction.
+checkbox, no proposal. The day-close asks nothing (CUT-PLATE); a stated tomorrow renders as fact.
 
-**Layer 1 — pattern memory.** Reads the last 7 EOD packs off disk (the same
+**Layer 1 — pattern memory — COMPUTED, NOT ON THE SCREEN (CUT-PLATE).**
+Reads the last 7 EOD packs off disk (the same
 `_hq/.system/briefs/end-of-day-pack-*.json` audit copies this driver already
 writes) and counts, never infers: an arc unmoved 3+ CONSECUTIVE closes while
-carrying a consequence ("That's the Nth consecutive close where X sat
-still."); a commitment recurring in the meeting-gated slip on 3+ of the days
-examined with no send between ("X has come up in meetings on N of the last M
-days without a send."); and the survival count on the single oldest
-consequence-carrying overdue item ("X has now survived N closes."). At most
-2 render, dropped by strength (most repetitions, then the older item) —
-`eod_coach.compute_patterns`. **Honest absence:** fewer than 3 prior packs on
-disk and this renders NOTHING.
+carrying a consequence; a commitment recurring in the meeting-gated slip on
+3+ of the days examined with no send between; and the survival count on the
+single oldest consequence-carrying overdue item. At most 2 are kept, dropped
+by strength — `eod_coach.compute_patterns` — and they ride the pack as
+`coach["patterns"]` and the deduped `coach["layer1"]`. **They no longer
+print**: the v5.28.0 attended test saw "has now survived 7 closes" and "7
+consecutive closes — 7 evenings the plan did not move" on the day-close, and
+M ruled for the plate shape with less on the card. `eod_coach.SCREEN_LAYERS`
+names what does print (the delta). **Honest absence:** fewer than 3 prior
+packs on disk and the layer computes NOTHING.
 
 **Layer 2 — the delta and the push.** `eod_coach.compute_intent_delta` reads
 the day's own STATED `day_intent` (EODFIX1's id linkage) against today's
@@ -187,9 +244,10 @@ sentence: "You said tomorrow was about X. It didn't move." or the honest
 positive, "...it shipped." **Honest absence:** no STATED record for the day
 being closed and this renders nothing.
 
-`eod_coach.compute_push` is the one push line, rendered ONLY when Layer 1
+`eod_coach.compute_push` is the one push line, computed ONLY when Layer 1
 kept a pattern — the strongest one, restated as its own count plus a
-concrete, countable cost. Never an imperative, never a to-do.
+concrete, countable cost. Never an imperative, never a to-do. **Computed,
+persisted (`coach["push"]`, `coach["layer1"]`), not on the screen (CUT-PLATE).**
 
 **The repetition fence (anti-nag).** The same push forced a THIRD
 consecutive close renders once more, NAMING the repetition, then goes quiet
@@ -291,7 +349,10 @@ renders, never a padded all-clear.
 ### `score.ledger` — what the day did to the open book
 
 Present on BOTH score branches, `no_plan` included: a day with no morning plan
-still moved the book. Render `ledger["line"]` verbatim.
+still moved the book. **COMPUTED, RENDERED NOWHERE since CUT-PLATE (2026-09-06)** — the
+day-close renders `pack["screen"]["text"]` in `SCREEN_ORDER`, which has no ledger, and
+`assert_no_score` RAISES on a rendered score line. Read the shape below to understand the
+field; never print it, and never quote its numbers in the screen.
 
 `status: "movement"` — book at open → `+opened` → `−closed` → `−dropped` → book
 now, with the delta named. When `residual_line` is set, print it: the four
@@ -325,7 +386,9 @@ duplicate.
 `first_move` is `{text, status, checked_against, matched}`, and the status is
 the whole point of the field. `open` — this morning's suggested first move is
 still live; render it as this morning's plan. `stale` — something that closed
-today NAMES that line (`matched` says which), so render it as CONTEXT about
+today NAMES that line (`matched` says which). **NOTHING IN `first_move` IS RENDERED on the
+day-close since CUT-PLATE (2026-09-06)** — the paragraph below describes the field for the
+surfaces that may carry it, not this fire. Where a surface does carry it, `stale` renders as CONTEXT about
 this morning's plan and **never as an instruction**: *"This morning's first
 move was X; it closed at 12:30"* is right, *"Your first move is X"* is the
 defect this replaces. `unverifiable` — nothing was on file to check it
@@ -543,6 +606,17 @@ byte-identical to no flip at all, and that is asserted, not assumed.
 
 ## Mechanics
 
+- **The narration scan (CUT-C item 8, MANDATORY).** The pack builder
+  scans every line it composes (`surface_drivers.build_end_of_day_pack`
+  runs `validate_chat_output` over the ledger, the sign-off, the tomorrow
+  line, the synthesis and the coach text). Whatever YOU compose on top of
+  the pack — the slipped narration, a row's plain-English restatement, the
+  intro — is scanned the same way before it posts: run
+  `validate_chat_output(<the composed close text>)` from
+  `chat_output_renderer.py`; it raises `LeakDetectedError` on a raw id
+  (`person_NNN`, `project_NNN`, a wire id), an event or field name, a path
+  or a score. ABORT the post and rewrite the sentence with the entity's name
+  (`narration_names.humanize`). NEVER catch the error and post anyway.
 - **Personification.** Read `shared/PERSONIFICATION.md` and call
   `personification.get_brain_name(workspace_root)`. The evening intro is
   `"Evening, {first_name} — {brain_name} closing out your day."` — the ONLY
@@ -572,9 +646,17 @@ byte-identical to no flip at all, and that is asserted, not assumed.
   pointer this fire HAD: a minted ref counts as its own share of the coverage
   split rather than inside the artifact-backed number, and
   `end_of_day.unsourced_closes` still reports it as a close citing no artifact.
-- **Widgets.** Any row-list — slipped, confirm, tomorrow — is produced by
-  `widget_transport.render_and_persist` and its `html` passed to
-  `show_widget` byte-exact. Never hand-composed, never restyled.
+- **Widgets.** None (CUT-PLATE — M's hold 2026-09-06). The day-close
+  renders no card and asks nothing; `pack["screen"]["text"]` is the turn.
+  A row-list that ever returns to this surface goes through
+  `widget_transport.render_and_persist` byte-exact — but none does today.
+- **The fire introduces itself as End of Day.** The lateness banner, the
+  re-run ack and the degrade notice name the SURFACE this fire serves
+  (`schedule_config.serving_display_name`, read by `late_fire`), so a
+  machine still registered under the predecessor id `past-meetings` never
+  hears "your Past Meetings" from its own day-close (the v5.28.0 attended
+  test did). The sidebar name the health check and the watchdog use is
+  unchanged (SPEC EOD2).
 - **Timezone.** Every rendered timestamp goes through
   `shared/scripts/tz.py::to_local(value, workspace_path=<WORKSPACE>)`. The
   fire's own date comes from `end_of_day.workspace_today`, which resolves
@@ -602,6 +684,11 @@ Every verb below resolves through `end_of_day.resolve_choice(workspace_root,
 n, action=...)` against the fire's own receipt. A stale or missing map is
 refused in plain English — never clamped, never guessed.
 
+**NOT OFFERED BY THE DAY-CLOSE SINCE CUT-PLATE (2026-09-06).** The day-close renders no
+numbered rows (`NUMBERED_BLOCKS` is `()`), so no `[n]` tap reaches any row of this table
+from that fire and one typed there is refused. The table is the verb contract for the
+surfaces that DO number rows (the plate, the held queue); read it there.
+
 | Verb | Block | What it does |
 |---|---|---|
 | `mark done [n]` | slipped, confirm | Closes through `commitment_state.close_commitment` WITH `source_ref` |
@@ -609,7 +696,7 @@ refused in plain English — never clamped, never guessed.
 | `draft [n]` | slipped | Hands off to `email-writer` per the EW1 delegation rules |
 | `drop [n]` | slipped, confirm | The existing drop path, unchanged |
 | `confirm [n]` | confirm | The existing confirm path, unchanged |
-| tomorrow confirm (bare = rank 1) / `1`\|`2`\|`3` | tomorrow | SPEC TOMPICK1 — `end_of_day.resolve_intent_confirm(..., pick=<rank or None>)` narrows the up-to-three ranked candidates to the ONE picked, then `day_intent.write_from_proposal(..., origin="wrap")` writes that one intent |
+| tomorrow confirm (bare = rank 1) / `1`\|`2`\|`3` | tomorrow | SPEC TOMPICK1 — `end_of_day.resolve_intent_confirm(..., pick=<rank or None>)` narrows the up-to-three ranked candidates to the ONE picked, then `day_intent.write_from_proposal(..., origin="wrap")` writes that one intent. **Not offered by the day-close since CUT-PLATE** (the proposal is never rendered, so there is nothing on screen to confirm); the resolver stays for the receipt's data and the on-demand path, and `tomorrow is about [X]` is the way to state tomorrow |
 | `add person [n]` | person_candidate | `person_candidates.resolve_candidate(action="add person")` — creates the contact with every observed spelling as an alias, then drains every capture that was blocked on the name |
 | `same as [existing] [n]` | person_candidate | Same call, `action="same as [existing]"` — the alias write, then the same drain |
 | `not a person [n]` | person_candidate | Same call, `action="not a person"` — suppresses the PROPOSAL for that name, permanently and per org. Never a capture |
@@ -666,9 +753,9 @@ Also DOES NOT fire on:
   day's meetings as its final leg; a single named call is still that skill.
 - `triage my inbox` — that is `inbox-triage`.
 - `tomorrow is about [X]` / `what's tomorrow about` — that is
-  `workspace-manager`'s day-intent handler (BK1). The End of Day fire OFFERS a
-  draft for tomorrow; a sentence stating the day's intent outright is the
-  manual path and stays there.
+  `workspace-manager`'s day-intent handler (BK1). Since CUT-PLATE (2026-09-06) the End of
+  Day fire OFFERS NOTHING for tomorrow — it states what is on file as a fact and asks
+  nothing; the day-intent read and write are the manual path and stay there.
 
 ## See also
 

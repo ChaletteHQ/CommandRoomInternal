@@ -300,7 +300,7 @@ print('CRU inbox: closed=%s pending=%s updated=%s batch=%s'
 
 **Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, JSON malformed), swallow silently and continue — this is best-effort enrichment and must NEVER block the inbox render. **Append a `pack_run.data.errors[]` entry** (per Phase 7): `{"phase": "5.5_inbound_cru", "reason": "<short>", "detail": "<truncated stderr>", "thread_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`. An unresolvable SENDER is not an error — it is a counted outcome in the receipt; do not drop those messages before the call.
 
-**Threshold tuning:** same `HIGH_CONFIDENCE_THRESHOLD = 0.55` / `PENDING_REVIEW_THRESHOLD = 0.30` as the other paths. Conservative for launch; tighten/loosen once Pulse pending-review confirmation telemetry exists.
+**Thresholds:** the same bar and band as every other path, read from `commitment_policy.py` (the one home; `confidence.py` re-exports them) — no number lives in this file. Calibration moves them per workspace through the Loop-4 override file, never through prose.
 
 # Phase 5.6 — Surface-preference filter (Phase 6 Loop 2 — runs before rendering)
 

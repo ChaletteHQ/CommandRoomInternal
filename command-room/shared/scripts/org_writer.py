@@ -745,6 +745,25 @@ def update_org(
     orgs[idx] = record
     _save_entities(workspace_root, data, source_skill=source_skill)
     _log_event(workspace_root, "org_updated", record, source_skill, before=before)
+    # DEALNAG1 — the prospect -> client conversion ("[Name] is now a
+    # client", and close_deal(convert_prospect=True) which runs this same
+    # flip) retires every open deal-signal proposal for the org in the same
+    # turn: a converted org is a client with a record, not "a live deal with
+    # no pipeline record". Best-effort — the flip is already on the record.
+    if (record.get("relationship_type") == "client"
+            and before.get("relationship_type") != "client"):
+        try:
+            from deal_signal_retire import retire_deal_proposals
+
+            retire_deal_proposals(
+                workspace_root, reason="converted",
+                source_skill=source_skill, org_id=org_id)
+        except Exception as exc:  # noqa: BLE001
+            # REVIEW DEALNAG1 F4 — best-effort, never silent.
+            import sys as _sys
+
+            print(f"update_org: deal-signal retirement failed for {org_id}: "
+                  f"{type(exc).__name__}: {exc}", file=_sys.stderr)
     return record
 
 

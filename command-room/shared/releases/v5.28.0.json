@@ -1,0 +1,30 @@
+{
+  "version": "5.28.0",
+  "headline": "Promises your meetings show were kept now close themselves, with the words that closed them. The plate reaches your morning brief, your day-close and your Friday wrap. A won deal quiets its own nag and promotes its own company. Meetings now say who owes what to whom, and stop turning requests and dictation into to-dos.",
+  "items": [
+    {
+      "id": "v5280_migrate_legacy_commitment_kinds",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.migrate_legacy_commitment_kinds",
+      "action_function": "migrate_legacy_commitment_kinds",
+      "notice_template": "I labelled {n_marked} older commitments by kind ({n_scheduling} scheduling, {n_task} tasks, {n_promise} promises) so your counts and history read the same way newer ones do. Nothing on your plate moved.",
+      "fallback_prompt_template": "A small history fix (labelling older commitments by kind) is pending; it will retry on the next update."
+    },
+    {
+      "id": "v5280_announce_closing_on_evidence",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The biggest change: when a later meeting shows a promise was kept, that item now closes itself as done, and the row carries the exact words that closed it. You are not asked first. Say 'undo' in any chat to reopen the whole batch. Where the evidence is only middling, one small note rides the row for four days and then either closes it or quietly goes away on its own; nothing waits on you to answer it. Anything left unanswered now takes its default after four days rather than seven.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5280_announce_plate_everywhere_and_meetings",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Three things you will notice. (1) Your morning brief now leads with one number, how many items are on your plate today, with the top few and one pointer, instead of six competing counts. Your day-close shows what opened, closed and slipped today in the same shape, and the Friday wrap carries the week's version plus everything parked. (2) After a call, the meeting card asks at most three quick questions, each with the likely answer already picked; leave one and that answer applies after two days, or if there is no likely answer the item is let go instead, and 'undo' brings it back either way. Meetings no longer turn a request nobody accepted, or something you dictated to a tool, into a to-do. (3) The moment a deal is marked won, or a payment or signed agreement lands, the 'looks like a live deal' reminder stops on its own and the company is promoted to client automatically, with one line in your brief's changed feed and 'undo' to put it back.",
+      "action": "announce_only"
+    }
+  ]
+}
