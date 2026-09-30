@@ -15,7 +15,7 @@
 Validate the plugin source arrived intact.
 
 - [ ] `.claude-plugin/plugin.json` exists and parses as valid JSON.
-- [ ] `.claude-plugin/plugin.json` declares the plugin version, name `command-room`, and a `python_dependencies` list including `python-docx`.
+- [ ] `.claude-plugin/plugin.json` declares the plugin version and name `command-room`; `requirements.txt` lists the pinned Python dependencies, including `python-docx`.
 - [ ] Every skill folder at `skills/[name]/` contains a `SKILL.md` with valid frontmatter (`name:` matches the folder; `description:` ≥ 80 chars).
 - [ ] `shared/` directory contains: `WORKSPACE_API.md`, `PASSIVE_CAPTURE.md`, `VOICE_CALIBRATION.md`, `PLUGIN_BOUNDARY.md`, `RELIABILITY.md`, `CONTRACT.md`, `COMMITMENT_SCHEMA.md`, and `data-schemas/`.
 - [ ] `shared/data-schemas/` contains `entities.schema.json`, `events.schema.json`, `aliases.schema.json`, and a `seed/` subdirectory.

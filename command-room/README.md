@@ -127,7 +127,7 @@ If python-docx isn't already installed, the plugin will auto-install it the firs
 pip install python-docx==1.2.0
 ```
 
-**Declared dependencies.** The plugin manifest (`.claude-plugin/plugin.json`) declares its Python dependencies under the `python_dependencies` field. This is a Command Room–specific field (the Claude Code plugin schema doesn't currently parse it) — it exists for SBOM tooling and for ops teams that need a machine-readable dependency list. To update the pinned version, change both `python_dependencies` in `plugin.json` and `PYTHON_DOCX_PIN` in `shared/scripts/brief_writer.py`.
+**Declared dependencies.** The plugin's Python dependencies are listed, pinned, in `requirements.txt` at the plugin root (for SBOM tooling and ops teams that need a machine-readable dependency list). They used to sit in `plugin.json` under `python_dependencies`, but the plugin sync strips unknown manifest keys and warned on every sync. To update the pinned version, change both `requirements.txt` and `PYTHON_DOCX_PIN` in `shared/scripts/brief_writer.py`.
 
 ## Connectors
 
