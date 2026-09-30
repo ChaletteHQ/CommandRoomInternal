@@ -1,0 +1,13 @@
+{
+  "version": "5.29.1",
+  "headline": "When you tap Apply all on a card and the click cannot reach the chat, the card now tells you and shows you the exact line to paste, instead of looking like it worked. Everything else is unchanged.",
+  "items": [
+    {
+      "id": "v5291_announce_widget_send",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One fix. On some machines a card's Apply all built its message and dropped it, so nothing happened and nothing said so. Now every card tries every way to reach the chat, and if none works it says 'This card could not reach the chat. Copy the line below and paste it.' with the exact line ready to paste, and Apply stays available for a retry. Typing your instruction into the chat works as before.",
+      "action": "announce_only"
+    }
+  ]
+}

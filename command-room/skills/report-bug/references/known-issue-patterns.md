@@ -158,6 +158,21 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
 
 ---
 
+### A card's Apply did not reach the chat
+
+**Signature:**
+  - Keywords: apply all does nothing, nothing happens, button does nothing, apply did nothing, nothing reached, no error, looks like it worked, clicked apply and nothing
+  - Skill name: any
+  - Symptom: the card shows a line reading "This card could not reach the chat"
+
+**Likely cause:** The widget frame could not reach the chat's `sendPrompt` — typically a webview or sandbox change on the machine (a Windows cumulative update has done this) that leaves the card's frame cross-origin with the chat around it. The mail/calendar side is unaffected; only the card's click is.
+
+**User-side fix:** The card's click did not reach the chat — copy the line it shows you and paste it into the chat, and it will run exactly as the button would have. (The card also tries to copy that line to your clipboard by itself, and says "Copied." on the line when that worked.) Apply is re-enabled after the failure, so a second click is worth one try. If every card does it — plate, queue, drafts — no card on that machine can reach the chat: fully quit and reopen Cowork, and report it.
+
+**Escalate?** try-first
+
+---
+
 ## How to add a new pattern
 
 When the maintainer fixes a real bug from customer feedback:

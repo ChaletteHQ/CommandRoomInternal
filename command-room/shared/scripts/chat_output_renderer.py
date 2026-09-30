@@ -4421,6 +4421,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .cr-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; clear: both; }
 .cr-wrapper-missing { display: inline-block; margin-left: 8px; padding: 2px 8px; font-size: 11px; color: #C44A3D; background: rgba(196, 74, 61, 0.12); border: 1px solid rgba(196, 74, 61, 0.4); border-radius: 4px; font-style: italic; }
 .cr-verbset-note { margin-top: 4px; font-size: 12px; color: #8C7A65; font-style: italic; }
+/* WIDGETSEND1 — the dispatch-failed line + the wire field the user pastes.
+ * CORE, not the footer block: the nodes are minted at runtime by
+ * crSendFailed, so no content trigger can pull a feature block in, and a
+ * read-only page (which emits no footer at all) still has to be able to
+ * show them. One rule, no hex and no new colour constant: the card's own
+ * colour is inherited (which also keeps the stray-palette allowlist pin
+ * honest), and every byte here comes out of the widget-diet budget. */
+#cr-sf, #cr-sw { width: 100%; margin-top: 8px; font: inherit; }
 """.strip()
 
 # Collapsible source-thread accordion (v2.12.1+).
@@ -4910,11 +4918,104 @@ function crUpdateCounter() {
   applyBtn.disabled = (picks.length === 0) && !orphan;
 }
 
-function crSendPrompt(text) {
-  if (window.sendPrompt) window.sendPrompt(text);
-  else if (window.parent && window.parent.sendPrompt) window.parent.sendPrompt(text);
-  else console.warn('sendPrompt unavailable');
-}
+// WIDGETSEND1 — THE SHARED DISPATCHER. LOOK THE STAGE UP, THEN CALL IT ONCE.
+// Three stages (window.cowork, window, window.parent). Reading the holder can
+// throw — a cross-origin `window.parent` read raises SecurityError — so the
+// READ is in its own try and a throw there skips to the next stage. The CALL
+// is separate: a stage is used only when its `sendPrompt` is actually a
+// function, it is called exactly once, and ANY outcome of a call that was
+// made ends the ladder. A stage that delivers and then throws is reported as
+// delivered-with-error (the failure line, so the customer is never left
+// guessing) and is NEVER retried on the next stage — retrying it is how the
+// same instruction gets sent twice, which on a three-draft card is six
+// drafts (REVIEW_WIDGETSEND1 F1). `window.parent === window` on an unframed
+// page therefore cannot re-invoke the function stage 2 already called.
+//
+// When no stage delivers, the card SAYS SO and hands over `p` — the TYPED
+// numbered line the customer can paste, never the `apply choices:` wire
+// (REVIEW_WIDGETSEND1 F2). No console-only path (that silence is
+// BUG-2026-09-18 / F-17).
+//
+// TWO SENTENCES, NOT ONE (REVIEW_WIDGETSEND1 RE-VERIFY N2). `CRSF` is the
+// honest line for a click that reached NOTHING. A click that DID reach a
+// stage and then tripped on a later line inside that host gets `CRSF2`
+// instead: it says the choices went and asks the customer to check the chat
+// before pasting. Telling that customer "could not reach the chat" is how a
+// card that already delivered gets hand-applied a second time — the same
+// double-send F1 closed, arriving through the reader instead of the ladder.
+// And the chrome is CLEARED the moment a later click does deliver
+// (`crSendOk`), so a card that failed once and then worked stops telling a
+// customer to paste something that already ran.
+//
+// The block from the failure-message constant through the closing brace of
+// crSendPrompt is carried BYTE-FOR-BYTE by skills/command-room-onboarding/
+// references/
+// step1_widget_v2.html and pinned identical by run_widgetsend1_test.py — it
+// is written already-tightened (a fixed point of _minify_js) and at column 0
+// so the two texts cannot drift apart on whitespace. Every byte here is paid
+// for out of the widget-diet budget, which is why the two node ids are short.
+const CRSF='This card could not reach the chat. Copy the line below and paste it.';
+const CRSF2='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
+function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
+const l=crSEl(h,'cr-sf','div');l.textContent=c;
+const w=crSEl(h,'cr-sw','textarea');w.readOnly=true;w.value=t;
+const b=d.getElementById('cr-apply');if(b)b.disabled=false;
+const m=()=>{l.textContent=c+' Copied.';};
+try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
+try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
+function crSendPrompt(t,p){let c=CRSF;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+for(const g of[()=>window.cowork,()=>window,()=>window.parent]){
+let o;try{o=g();}catch(e){continue;}
+if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=CRSF2;break;}}}
+crSendFailed(p,c);}
+
+// WIDGETSEND1 F2 — THE LINE THE CARD HANDS YOU TO PASTE (REVIEW_WIDGETSEND1
+// F2). The wire string is `apply choices: [{"n":"commitment_seq_...",...}]`:
+// two named leak classes under `validate_chat_output` (apply-payload string
+// + internal commitment id) and unreadable besides. So the failure field and
+// the clipboard carry the product's own TYPED NUMBERED form instead, composed
+// from the selections at click time:
+//   * THE CLICKED ROW'S OWN VISIBLE number, read off that row's
+//     `.cr-item-num` (a parent) or `.cr-sub-id` (a sub-item) — the one
+//     string the render-time leak gate already refuses to emit when it is a
+//     wire id (see the `visible_spans` check in `scan_rendered_html`), so the
+//     number on the paste line can never be plumbing. THE ROW IS THE NEAREST
+//     `.cr-sub-item` BEFORE the nearest `.cr-item` (RE-VERIFY N1, and the
+//     same form crValidate / crSkipAll / crInlineBody already use): a
+//     sub-item lives INSIDE its parent, so reaching straight for `.cr-item`
+//     walked past the child and handed back the PARENT's number. Pasted,
+//     that closes the parent — and a parent close takes its open children
+//     with it, so one child's Done became the whole family's. A child whose
+//     own handle is suppressed (the plate gives children wire ids, which the
+//     renderer never shows) contributes NO number and degrades to a bare
+//     verb: unresolvable is the safe direction, wrong-row is not.
+//   * the verb IN THE CUSTOMER'S OWN WORDS — the label the card printed on
+//     the button or option they clicked, lower-cased, with a trailing
+//     ellipsis dropped (`Later…` -> `later`) and the row's own input
+//     appended (`later 2026-09-26`). NEVER the wire id behind it (RE-VERIFY
+//     N4): `resolved` and `push to [date]` are plumbing the customer never
+//     read, and `add to my list` is a verb this product RETIRED in 2026-07
+//     and still carries as the orphan-note carrier — handing it back would
+//     offer a move that no longer exists. A carrier with no button behind it
+//     passes no label and emits the note alone.
+//   * the row's note, when it typed one.
+// Joined with "; " (RE-VERIFY N5 — a note may itself contain ", ", and a
+// comma-joined line then hides where one row ends) it is the form a reader
+// can type back: `1 draft; 2 draft`.
+const crTypedOne = (c, el, lb) => {
+  const r = (el && el.closest) ? (el.closest('.cr-sub-item') || el.closest('.cr-item')) : null;
+  const s = r && r.querySelector('.cr-item-num,.cr-sub-id');
+  const n = s ? s.textContent.trim().split('.')[0] : '';
+  // Only a STRING input reaches the paste line: `draft` / `edit then send`
+  // carry an object (to/cc/subject/body), and a whole email body on a paste
+  // line is noise — the verb alone is what the typed path dispatches.
+  let v = String(lb || '').toLowerCase().split('…')[0];
+  const inp = (typeof c.input === 'string') ? c.input.trim() : '';
+  if (inp) v += ' ' + inp;
+  return ((n && v ? n + ' ' : n) + v
+          + (c.context ? ' \u2014 ' + c.context : '')).trim();
+};
 
 function crNoteFor(n) {
   const fields = crQ('.cr-note-field');
@@ -5008,6 +5109,7 @@ function crApplyAll(onlyCtl) {
     return;
   }
   const choices = [];
+  const typed = [];
   const seen = new Set();
   const picked = onlyCtl ? crSelected().filter(p => p.el === onlyCtl) : crSelected();
   picked.forEach(sel => {
@@ -5040,6 +5142,7 @@ function crApplyAll(onlyCtl) {
     const note = crNoteFor(sel.n);
     if (note && note.value && note.value.trim()) choice.context = note.value.trim();
     choices.push(choice);
+    typed.push(crTypedOne(choice, sel.el, sel.label));
     seen.add(String(sel.n));
   });
   // t3 FB-3 — Snooze-rest entries for rows whose dropdown no longer offers
@@ -5050,6 +5153,10 @@ function crApplyAll(onlyCtl) {
       const c = { n: n, action: 'skip' };
       if (crSrc) c.src = crSrc;
       choices.push(c);
+      // No control rendered on this row (that is why it is here), so there
+      // is no printed label to quote - `skip` is passed explicitly as the
+      // plain word, never inherited from the wire by a silent fallback.
+      typed.push(crTypedOne(c, crNoteFor(n), c.action));
       seen.add(String(n));
     });
     window.crExtraSkips = [];
@@ -5067,10 +5174,18 @@ function crApplyAll(onlyCtl) {
     const c = { n: n, action: 'add to my list', context: f.value.trim() };
     if (crSrc) c.src = crSrc;
     choices.push(c);
+    // RE-VERIFY N4 - no button was clicked on this row, so there is no
+    // customer verb to print and NONE IS PASSED: the line carries the note
+    // alone. `add to my list` stays on the WIRE (one shape for old and new
+    // widgets, re-routed at dispatch) and can never reach the paste line,
+    // because crTypedOne is not given it - the verb it prints is the third
+    // argument or nothing at all.
+    typed.push(crTypedOne(c, f));
     seen.add(String(n));
   });
   if (choices.length === 0) return;
-  crSendPrompt('apply choices: ' + JSON.stringify(choices));
+  crSendPrompt('apply choices: ' + JSON.stringify(choices),
+               typed.join('; '));
 }
 
 function crClear() {
@@ -5219,10 +5334,19 @@ def _minify_css(css: str) -> str:
     #    (`.a .b`) survive because neither neighbour is punctuation. A `;`
     #    whose next token is `}` drops entirely (the final-declaration
     #    semicolon is redundant).
+    #
+    #    `!` joined the punctuation set for the WIDGETSEND1 fix round (the
+    #    card's failure line and its clear had to be paid for out of the same
+    #    scaffold budget). The sheet's only `!` is `!important`, a single
+    #    token whose leading space is cosmetic (a declaration means the same
+    #    thing with or without it) — and a space is never a combinator next
+    #    to it, because no selector can contain one. 141 in this sheet.
     result: list[str] = []
     i, n = 0, len(stripped)
     in_str = ""
-    _PUNCT = "{};:,"
+    _PUNCT = "{};:,!"
+    _NUM_LEAD = set("0123456789.#_%") | set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
     while i < n:
         c = stripped[i]
         if in_str:
@@ -5238,6 +5362,15 @@ def _minify_css(css: str) -> str:
         if c in "\"'":
             in_str = c
             result.append(c)
+            i += 1
+            continue
+        if (c == "0" and i + 1 < n and stripped[i + 1] == "."
+                and (not result or result[-1] not in _NUM_LEAD)):
+            # A leading zero on a fractional value is decoration: `0.5px` and
+            # `.5px` are the same length in CSS and one is a byte shorter.
+            # Only dropped where the `0` STARTS the number — the guard set
+            # keeps `10.5px`, `#0.`-shaped hex and identifiers intact — and
+            # never inside a string (this loop is quote-aware). 25 of them.
             i += 1
             continue
         if c == ";":

@@ -1,5 +1,20 @@
 # Command Room — Changelog
 
+## v5.29.1 — 2026-09-30 — A card's click reaches the chat, or the card says it could not
+
+**A hotfix over v5.29.0 (`b1474b65`) carrying one fix from v5.32.1: WIDGETSEND1.** Nothing else from v5.30 to v5.33 is in this release.
+
+### What shipped
+
+- **Apply all never goes nowhere silently.** On a machine where the card could not reach the chat, "Apply all" built its message and dropped it with nothing shown; the click looked like it worked and nothing happened. Every card and the setup card's Finish now use one dispatcher that tries every way the chat can be reached, each one guarded so a blocked path never aborts the click, and a click that reached the chat is never sent a second time. When none gets through, the card says so under its buttons ("This card could not reach the chat. Copy the line below and paste it."), shows the line to paste in your own words, copies it to the clipboard where the machine allows, and re-enables Apply for a retry.
+- The extra card code costs about 1.3KB, so a very heavy plate page can fit one row fewer (more pages, same content).
+
+### Release manifest
+One announcement, no automatic action.
+
+### What is NOT in this ship
+Everything from v5.30.0 to v5.33.0. No other change to the v5.29.0 tree.
+
 ## v5.29.0 — 2026-09-06 — Closing on evidence is off until you turn it on; every client starts light; the plate shape reaches the brief, the day-close and the wrap; won clients are never nagged
 
 **Night-9 commitments train (HYGIENE9 → POLICY1-B → QUIET1) plus the merge-morning cut lanes built to M's rulings of 2026-09-06 after the v5.28.0 attended test returned HOLD (`handoffs/ATTENDED_TEST_v5.28.0_2026-09-04.md`, `NIGHT9_MERGE_MORNING_ADDENDUM_2026-09-06.md`, `RULINGS_CUT_v5290_2026-09-06.md`). Eight lanes, each with an independent second-eyes review and fix rounds, merged in order on `6434bc90`; hand-merges and hygiene by the coordinator; a final adversarial review of the merged tree (`REVIEW_MERGED_v5290_2026-09-06.md`).** Fleet stays v5.25.0 until M says promote.

@@ -166,13 +166,51 @@
   .chip:hover:not(:disabled) { background: var(--color-background-secondary); }
   .chip:disabled { cursor: not-allowed; }
   .chip.selected { background: var(--color-text-primary); color: var(--color-background-primary); border-color: var(--color-text-primary); }
+  #cr-sf { width: 100%; margin-top: 10px; font-size: 12px; color: var(--color-text-secondary); }
+  #cr-sw { width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 12px; font-family: inherit; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); resize: vertical; box-sizing: border-box; }
 </style>
 
 <script>
   (function () {
     const root = document.currentScript.parentElement;
+
+// WIDGETSEND1 — THE SHARED DISPATCHER, carried BYTE-FOR-BYTE from
+// shared/scripts/chat_output_renderer.py's _JS_CORE (the block from the
+// failure-message constant through the closing brace of crSendPrompt).
+// run_widgetsend1_test.py
+// extracts it from a rendered card and from this file and fails the build if
+// the two texts differ by one byte, so it stays at column 0 and already
+// tightened — do not re-indent it, do not reformat it, change it in the
+// renderer and copy it back here.
+//
+// Two sentences: CRSF for a click that reached nothing, CRSF2 for one that
+// reached a stage and then tripped inside it — telling that customer the
+// card "could not reach the chat" is how an answer that already went gets
+// hand-sent twice. The chrome from a previous failure is cleared at the top
+// of every dispatch, so a card that failed once and then worked stops asking
+// for a paste (REVIEW_WIDGETSEND1 RE-VERIFY N2).
+const CRSF='This card could not reach the chat. Copy the line below and paste it.';
+const CRSF2='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
+function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
+const l=crSEl(h,'cr-sf','div');l.textContent=c;
+const w=crSEl(h,'cr-sw','textarea');w.readOnly=true;w.value=t;
+const b=d.getElementById('cr-apply');if(b)b.disabled=false;
+const m=()=>{l.textContent=c+' Copied.';};
+try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
+try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
+function crSendPrompt(t,p){let c=CRSF;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+for(const g of[()=>window.cowork,()=>window,()=>window.parent]){
+let o;try{o=g();}catch(e){continue;}
+if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=CRSF2;break;}}}
+crSendFailed(p,c);}
+
     const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts', 5: 'Check-ins' };
     const selections = {};
+    // The visible summary each question collapses to — the customer's own
+    // answer in the card's words, kept so the paste line can be written in
+    // them (RE-VERIFY N4).
+    const summaries = {};
 
     const subOptions = {
       'run-company': [
@@ -213,6 +251,7 @@
       card.querySelector('.qhead').style.display = 'none';
       card.querySelector('.qsummary').style.display = 'block';
       card.querySelector('.qsummary .summary-label').textContent = labels[qNum] + ': ' + summaryText;
+      summaries[qNum] = summaryText;
       card.classList.remove('qactive');
       const next = root.querySelector('.qcard[data-q="' + (qNum + 1) + '"]');
       if (next) {
@@ -222,7 +261,21 @@
         next.querySelectorAll('.chip').forEach(function (c) { c.disabled = false; });
       } else {
         const payload = [1, 2, 3, 4, 5].map(function (n) { return Object.assign({ n: n }, selections[n]); });
-        sendPrompt('apply choices: ' + JSON.stringify(payload));
+        // WIDGETSEND1 F2 — the SECOND argument is what the card shows and
+        // copies when no stage delivers, never the 'apply choices:' wire
+        // string. Every crSendPrompt call passes it.
+        //
+        // RE-VERIFY N4 — and it is the customer's OWN ANSWERS, in the words
+        // this card printed back to them as each question closed ('Your
+        // role: Run a company → Single operating company'), not the wire
+        // enums behind those chips. Nobody types 'run-company single-op-co'
+        // — it is an internal value the reader never saw — and the setup
+        // skill reads the labelled sentence, which is what a person would
+        // have written if the card had never rendered.
+        const typed = [1, 2, 3, 4, 5].map(function (n) {
+          return labels[n] + ': ' + (summaries[n] || '');
+        }).join('; ');
+        crSendPrompt('apply choices: ' + JSON.stringify(payload), typed);
       }
     }
 
