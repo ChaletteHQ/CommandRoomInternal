@@ -1,5 +1,20 @@
 # Command Room — Changelog
 
+## v5.29.2 — 2026-09-30 — Apply all sends your choices again
+
+**A hotfix over v5.29.1 (`9abebb1f`): APPLYCLICK1, the fix for the failed v5.29.1 test (cr1#94).** Nothing else changes.
+
+### What shipped
+
+- **Apply all was dead on every card since v5.29.0, and now works.** The button handed the click itself to the card's apply routine as its "only this row" filter (a parameter added for read-only cards in v5.29.0). The filter matched no row, so the choices list was empty and the routine returned before anything was sent, with nothing shown. The button now calls the routine with no filter, and the routine ignores anything that is not a real control. Reproduced with a recording chat stub and verified with real clicks: two rows picked, one message sent carrying both; with the chat unreachable, the v5.29.1 fallback line and paste field appear as designed.
+- New test `run_applyclick1_test` executes the shipped apply routine under node three ways (no argument, a click event, a real control) and refuses the bare-listener binding in the card's source.
+
+### Release manifest
+One announcement, no automatic action.
+
+### What is NOT in this ship
+Everything from v5.30.0 to v5.33.0. The same fix is still owed to cr1 main.
+
 ## v5.29.1 — 2026-09-30 — A card's click reaches the chat, or the card says it could not
 
 **A hotfix over v5.29.0 (`b1474b65`) carrying one fix from v5.32.1: WIDGETSEND1.** Nothing else from v5.30 to v5.33 is in this release.

@@ -1,0 +1,13 @@
+{
+  "version": "5.29.2",
+  "headline": "Apply all on a card sends your choices again. The button had been building your choices and dropping them without a word; that is fixed, and if a card ever cannot reach the chat it now says so and shows you the line to paste.",
+  "items": [
+    {
+      "id": "v5292_announce_apply_click",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One fix. Apply all on a card was doing nothing: it collected your choices and dropped them without saying so. It sends them now, once. If a card ever cannot reach the chat, it tells you and shows the exact line to paste. Typing your instruction into the chat works as before.",
+      "action": "announce_only"
+    }
+  ]
+}

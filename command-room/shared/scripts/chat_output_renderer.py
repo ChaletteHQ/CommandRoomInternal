@@ -5104,6 +5104,9 @@ function crSingleDispatch(ctl) {
 }
 
 function crApplyAll(onlyCtl) {
+  // APPLYCLICK1 — the filter is a CONTROL or nothing. Anything else (an
+  // event object from a listener that passed it through) is the batch.
+  if (onlyCtl && onlyCtl.nodeType !== 1) onlyCtl = null;
   if (crValidate().length > 0) {
     crUpdateCounter();
     return;
@@ -5206,7 +5209,11 @@ function crClear() {
 (function bindCrWidget() {
   try {
     const a = crG('cr-apply');
-    if (a) a.addEventListener('click', crApplyAll);
+    // APPLYCLICK1 — never hand the click EVENT to crApplyAll: its first
+    // argument is the single-item control filter (WG1-A D-A5), and an event
+    // there matches no row, so every batch Apply returned with nothing sent
+    // and nothing said (v5.29.0 CUT-C item 9 added the parameter; cr1#94).
+    if (a) a.addEventListener('click', function () { crApplyAll(); });
     const c = crG('cr-clear');
     if (c) c.addEventListener('click', crClear);
     const sk = crG('cr-skip-all');
