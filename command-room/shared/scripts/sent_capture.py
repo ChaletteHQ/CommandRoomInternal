@@ -86,6 +86,7 @@ from capture_gate import (  # noqa: E402
     build_observed_event,
     classify_capture,
     gate_commitment_data,
+    intake_kwargs,
     stamp_confidence as _stamp_confidence,
     matches_open_commitment,
     observed_from_commitment_event,
@@ -320,6 +321,18 @@ def already_captured(workspace_root, message_id: str, title: str,
     provider = resolve_mail_provider(workspace_root, provider)
     want_id = sent_source_ref(message_id, provider).split(":", 1)[1]
     want_title = _title_key(title)
+    # CAPTUREONCE1 §2.2 — ask the index first; same contract as the inbound
+    # leg. A hit is final (exact `(source_ref, title)` already on disk); a miss
+    # falls through to the scan, which additionally answers closures and
+    # substring titles. Accelerator only, never a new refusal.
+    try:
+        from source_ref_index import check as _idx_check
+        if _idx_check(workspace_root,
+                      source_ref=sent_source_ref(message_id, provider),
+                      title=title):
+            return True
+    except Exception:
+        pass
     for ev in iter_events(workspace_root):
         ev_key = canonical_dedup_key(event=ev)
         if not is_same_artifact(ev_key, provider, want_id):
@@ -327,7 +340,13 @@ def already_captured(workspace_root, message_id: str, title: str,
         etype = ev.get("type")
         if etype in ("commitment_resolved", "thread_resolved"):
             return True
-        if etype == "commitment":
+        # INTAKE1 — A HELD ROW IS A CAPTURE. Since SPEC_FLOW1 the door sets
+        # rows aside instead of opening them, and an idempotency check that
+        # reads only `commitment` would call every held row uncaptured and
+        # re-hold it on the next fire over the same mailbox — the same
+        # unbounded re-capture this function exists to prevent, moved one
+        # tier down. Same identity, same title rule, same answer.
+        if etype in ("commitment", "commitment_observed"):
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             ev_title = _title_key(data.get("title") or data.get("summary"))
             if ev_title and want_title and (
@@ -463,6 +482,12 @@ def capture_sent_items(
             user_names=user_names,
             team_ids=ctx.get("team_ids") or (),
             known_ids=ctx.get("known_ids") or (),
+            # INTAKE1 — a sent-mail row's home is the thread's project when
+            # the thread resolved to one. A raw message id in the same field
+            # is not a project and is not a home (LEAK2's header regression,
+            # said as a gate).
+            **intake_kwargs(ctx,
+                            primary_thread_id=ev.get("primary_thread_id")),
         )
         if tier.get("tier") == "observed":
             obs = observed_from_commitment_event(ev, reason=tier.get("reason") or "")

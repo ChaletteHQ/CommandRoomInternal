@@ -31,9 +31,8 @@ The two interactive passes remain the main write paths:
 - One row per decision to `_hq/data/classifier_feedback.jsonl` with `type: org_proposal`.
 - For `created` and `merged` actions: the underlying `entities.json` mutation is delegated to `org_writer.py create_org / merge_org_into` per `shared/WORKSPACE_API.md`. This skill never writes to `entities.json` directly.
 
-**Pass 11 (voice calibration review, B1) — appends:**
-- One `voice_block_updated` event per approved proposal (`{skill, change_summary, correction_count, fingerprint}`); the refreshed block is written to `_hq/voice/voice-block-<skill>.md` via `voice_corrections.write_voice_block_override` (workspace-side — NEVER the plugin SKILL.md).
-- One `voice_calibration_review` event at end of pass (`{reviewed_through: {<skill>: <max-ts>}, proposed, approved, skipped}`).
+**Pass 11 (voice calibration) — WRITES NOTHING. Retired here; the `learning` job owns it.**
+- This skill no longer writes `_hq/voice/voice-block-<skill>.md` and no longer appends `voice_block_updated` or `voice_calibration_review`. `learning_pass.run_voice_leg` does both. One store, one writer.
 
 **Pass 13 (sender-priority proposals, Phase 6 Loop 1) — appends:**
 - One `sender_priority_proposal` event per user action (`{user_action: "applied" | "edited" | "declined", fingerprint, sender_or_domain}`).
@@ -52,14 +51,14 @@ The two interactive passes remain the main write paths:
 **S3 rider (commitment noise, Phase 6 Round 2) — appends:**
 - One `commitment_noise_proposal` event per user action; the approved rule appends to `_hq/config/commitment-rules.md` via `commitment_noise.append_never_track_rule` (additive; the capture floor reads it). Decision + cooldown to `proposal_feedback.jsonl`.
 
-**Pass 15 (prep section weights, Phase 6 Loop 3) — appends:**
-- One `prep_weight_proposal` event per user action; the approved weight is saved to the call-prep skill config (`skill_config_writer.save_skill_config`). Decision + cooldown to `proposal_feedback.jsonl`.
+**Pass 15 (prep section weights) — WRITES NOTHING. Retired here; the `learning` job owns it.**
+- This skill no longer saves call-prep's config and no longer appends `prep_weight_proposal`. `learning_pass.run_prep_leg` writes the weights and appends `prep_weights_updated`. One store, one writer.
 
 **Loop 5 (extraction hints, Phase 6 Round 3) — appends:**
 - One `extraction_hint_proposal` event per user action; the approved hint appends to `_hq/data/extraction-hints.md` via `extraction_hints.append_extraction_hint`. Decision + cooldown to `proposal_feedback.jsonl`.
 
-**Pass 16 (exemplar structure review, SPEC OUT8) — appends:**
-- One `exemplar_update_proposal` event per user action; the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (workspace-side — NEVER the plugin's shipped seeds; the previous version rotates to `exemplar_2.md`; the scrub gate replaces entity names with placeholders and re-runs the leak scan before the write — residual findings REFUSE the write). Decision + cooldown to `proposal_feedback.jsonl`.
+**Pass 16 (exemplar structure) — WRITES NOTHING. Retired here; the `learning` job owns it.**
+- This skill no longer promotes a workspace exemplar and no longer appends `exemplar_update_proposal`. `learning_pass.run_exemplar_leg` does, through the same scrub gate — which REFUSES the write on any residual name rather than bypassing it. One store, one writer.
 
 All appends follow `shared/WORKSPACE_API.md` — append atomically via `atomic_append_jsonl` (omit `seq`; the appender allocates it inside the writer lock — never pre-compute, BUG-8330 item 7), regenerate affected views (MASTER_TRACKER, TIMELINE), log any failure to `_hq/CONFLICTS.md`.
 
@@ -247,6 +246,8 @@ This is the **only user-interactive pass** in the skill. It exists because silen
 - Any event where the user previously corrected a similar source/pattern (pulled from `classifier_feedback.jsonl`) → re-surface even if confidence was ≥0.75, because the classifier is newly uncertain.
 
 Cap the review batch at **25 events** per session. If more exist, queue the excess for the next pass.
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 
 **Review UX — a widget, not a typed-reply table (P1.1/P1.5 2026-07-02; the pre-v3.13.0 "reply with row-# + action" grammar is retired — it could never render through the validator).** Render via `render_chat_output_widget()` as REVIEW items, one per candidate, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport). The layout below defines CONTENT only — what each item carries — never the transport:
 
@@ -576,21 +577,13 @@ For `ignore`:
 
 ---
 
-### Pass 11 — Voice calibration review (monthly, interactive, B1)
+### Pass 11 — Voice calibration (RETIRED here; the `learning` job owns it)
 
-Batches accumulated voice corrections into proposed voice-block updates. Modeled on Pass 10 (gating, 3-cap, fingerprint cooldown, atomic-reject, rollback). The customer-side write target is `_hq/voice/voice-block-<skill>.md` — NEVER the plugin SKILL.md (it is overwritten on update).
+This pass no longer runs. It read the voice-corrections logs, proposed voice-block updates, and rendered them as review items — inside a silent background fire with no chat surface, so for months the review item was rendered to nobody and sixty-six banked corrections changed nothing.
 
-**Gating (all must hold):** run only when NO `voice_calibration_review` event exists in the last 28 days. If Pass 8's backlog overflow already triggered this Sunday fire, defer Pass 11 to next week. Zero candidate patterns → skip silently.
+The whole loop now lives in code: `shared/scripts/learning_pass.py`, the `learning` job in the maintenance fire (`maintenance_dispatcher.MAINTENANCE_JOBS`). It applies at the same floors, narrates each change in the morning brief's CHANGED line in the customer's own words, and reverses on one `undo`. **Do not write `_hq/voice/voice-block-<skill>.md` from this skill.** One store, one writer.
 
-**Candidates:** read corrections via `voice_corrections.load_corrections` + `group_correction_patterns`. A pattern is a candidate when **3+ corrections share the same normalized pattern** (per skill, per `correction_type`). Cap **3 proposals per session** (Pass 9 precedent); overflow to `_hq/voice/.calibration_queue.jsonl`. Skipped-proposal fingerprints get a 60-day cooldown.
-
-**Render (widget):** one proposal per row, actions `confirm` / `edit [text]` / `skip` (CANONICAL_ACTIONS). Each proposal names the pattern in plain English ("you've rewritten 'circle back' to 'following up on' 4 times — want me to stop using 'circle back'?").
-
-**On confirm:** call `voice_corrections.write_voice_block_override(workspace_root, skill, <updated block>, calibration_level=…, sample_count=…)` (atomic; bumps `Last refreshed:`), then append a `voice_block_updated` event. **Malformed reply → atomic reject** (no partial write). **Mid-write failure → rollback, append NO `voice_calibration_review`.**
-
-**Universal-pattern promotion:** when the same pattern appears across **3+ skills**, write the override into every affected skill's `voice-block-<skill>.md` AND add one ack line suggesting plugin-side promotion via `report bug` (so Chalette can fold it into `shared/VOICE_CALIBRATION.md`'s banned list for all installs).
-
-**At end of pass:** append one `voice_calibration_review` event `{reviewed_through: {<skill>: <max correction ts reviewed>}, proposed, approved, skipped}`. "Unreviewed" for staleness = corrections with `timestamp` after `reviewed_through[skill]` — the corrections log is NEVER rewritten.
+The one thing that stays here is the staleness read: `voice_calibration_review` events are still what "how far has the corpus been read" is measured from, and the learning job is what appends them now.
 
 ---
 
@@ -656,11 +649,11 @@ The Stage-D capture floor (clear owner + deliverable + consequence) that cut one
 
 ---
 
-### Pass 15 — Prep-brief section weights (monthly, interactive, Phase 6 Loop 3)
+### Pass 15 — Prep-brief section weights (RETIRED here; the `learning` job owns it)
 
-call-prep writes a brief before a meeting; past-meetings grades it against the transcript afterward (`prep_feedback` events — see orchestrator-past-meetings). This pass turns that grading into sharper briefs: aggregate `prep_feedback` per meeting-type and propose dropping a section that's consistently rendered-but-empty. Deterministic work is in `shared/scripts/prep_grading.py`.
+call-prep writes a brief before a meeting; past-meetings grades it against the transcript afterwards (`prep_feedback` events — see orchestrator-past-meetings). That capture is unchanged and still belongs to those two skills.
 
-**Monthly.** `load_prep_feedback(workspace_root, since_iso=<window>)` → `aggregate_section_stats(rows)` → `propose_section_weights(stats, existing_weights=<call-prep config>.section_weights, cooldown_fingerprints=…, cap=3)`. Floor: **≥6 meetings of that type** and the section empty **≥80%** of them. Render one REVIEW item per proposal (*"The Risks section came up empty in 8 of your last 9 internal 1:1s — drop it for those?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, `set_section_weight(config, meeting_type, section, 0)` then `skill_config_writer.save_skill_config(workspace_root, "call-prep", config, is_reconfigure=True)`; append a `prep_weight_proposal` event; log to `proposal_ledger` (`pass15_prep_grading`). Decline → 60-day cooldown. call-prep reads `prep_grading.section_weight(config, meeting_type, section)` before rendering — a weight of 0 drops that section for that meeting-type.
+Turning the grading into sharper briefs does not happen here any more. `learning_pass.run_prep_leg` reads the graded briefs, folds the section names to one join key (the same section had been arriving under three dash characters and two cases, splitting its own evidence), and writes call-prep's `section_weights` at the shipped floors — **≥6 graded meetings of that type and the section empty in ≥80% of them**. **Do not write call-prep's config from this skill.** One store, one writer.
 
 **Output-profile proposals (SPEC OUT2 §5 — a sanctioned write target, same confirm-first shape).** When the review passes surface a consistent cross-skill document pattern (e.g. the CEO repeatedly asks for shorter documents, or repeatedly deletes tile bands in corrections), this pass MAY additionally propose ONE output-profile change — density / visual bias / a page cap for one kind — rendered as a REVIEW item with `confirm`/`edit [change]`/`skip`, never applied silently. On `confirm`: validate via `output_profile.validate_output_profile`, then `skill_config_writer.save_skill_config(workspace_root, "output_profile", profile, is_reconfigure=True)`; decline → 60-day cooldown via `proposal_ledger`. This and the explicit "tune output" verb (workspace-manager) are the ONLY writers of `_hq/data/skill_config/output_profile.json` — no first-run block, no onboarding mention, ever (the OUT2 §5 fence).
 
@@ -676,13 +669,15 @@ The substrate's front door improves from its own documented failures. Two miss c
 
 ---
 
-### Pass 16 — Exemplar structure review (weekly, interactive, SPEC OUT8)
+### Pass 16 — Exemplar structure (RETIRED here; the `learning` job owns it)
 
-Voice calibration (Pass 11) learns WORDS from corrections; this pass learns STRUCTURE the same way. Composers capture structural corrections — the user reorders, drops, or reshapes a delivered document — to `_hq/exemplars/corrections-<kind>.jsonl` (via `exemplars.append_structural_correction`; reconcile-sent's sent-doc diff and the composers' "make it like this" feedback are the two capture sites). When a pattern repeats, this pass proposes updating that kind's workspace exemplar — the structural gold standard every composer anchors on (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor"). Deterministic work is in `shared/scripts/exemplars.py`.
+Voice calibration learns WORDS from corrections; this learned STRUCTURE the same way, and it ran in the same place nobody could see.
 
-**Weekly.** `load_structural_corrections(workspace_root)` → `propose_exemplar_updates(rows, cooldown_fingerprints=proposal_ledger.active_cooldowns(workspace_root, "pass16_exemplar_structure", now_iso=…), cap=3)`. Floor: **≥3 same-direction corrections on one kind** (same kind + direction + section). Render one REVIEW item per proposal — the helper's `plain` line only (*"You've moved the KPI table above the narrative in 3 recent board pack documents — make that the standard layout?"*), `confirm`/`edit [change]`/`skip`. On `confirm`, build the amended skeleton — PREFER the current exemplar with the confirmed change applied (it is already synthetic); when borrowing from the delivered doc, take STRUCTURE only and replace every name, figure, and claim with placeholders YOURSELF before promoting (the scrub gate only knows the workspace entity list — an untracked counterparty name or deal figure is yours to strip). Then run `exemplars.residual_name_candidates(new_text)` and put BOTH lists on the confirm card: the scrub replacements and the residual name-shaped tokens the entity list cannot vouch for; anything the user identifies as real gets replaced with a placeholder, never confirmed through. Write via `exemplars.promote_workspace_exemplar(workspace_root, kind, new_text, confirmed_residuals=<the user-confirmed list>)` — the scrub gate replaces entity names with placeholders, re-runs the leak scan, and refuses on any unconfirmed residual candidate; a refusal is surfaced honestly, never bypassed. The previous exemplar rotates to `exemplar_2.md`. Append an `exemplar_update_proposal` event (`{user_action, fingerprint, kind}`), log to `proposal_ledger` (`pass16_exemplar_structure`). Decline → 60-day cooldown; skip → soft defer, no cooldown. Atomic-reject + rollback as Pass 9.
+`learning_pass.run_exemplar_leg` now reads `_hq/exemplars/corrections-<kind>.jsonl`, and on **≥3 same-direction corrections on one kind** promotes that kind's workspace exemplar through `exemplars.promote_workspace_exemplar`. The automatic leg passes **no** confirmed residuals, so any name-shaped token the workspace entity list cannot vouch for REFUSES the promotion and the refusal is counted rather than raised — a real name inside a gold standard is worse than a missed promotion, every time. **Do not write an exemplar from this skill.** One store, one writer.
 
-⛔ **Never a silent write:** shipped seeds under the plugin's `shared/exemplars/` are NEVER touched from a workspace; the ONLY exemplar writer is `promote_workspace_exemplar` after an explicit user confirm on this pass's widget (or the user asking for the change in so many words). Deleting `_hq/exemplars/<kind>/` is the reset — clean fallback to the shipped seed.
+⛔ **Never a silent write to the shipped seeds:** the seeds under the plugin's `shared/exemplars/` are NEVER touched from a workspace. Deleting `_hq/exemplars/<kind>/` is the reset — clean fallback to the shipped seed.
+
+⚠ **The capture half has exactly ONE code caller.** It is `correction_turn._capture_structure`, reached through `correction_turn.handle_correction_turn` on the `template` target (`shared/scripts/correction_turn.py`): a person says "make it like this" and hands the document over, and that row is banked. Every other capture is still prose — twelve SKILL.md paragraphs plus reconcile-sent's sent-doc structural diff, which has no code path at all. Until those route through code, this leg reads what that one path banks and nothing else.
 
 ---
 
@@ -707,7 +702,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 **That call is the only generator (DOCFENCE1):**
 
 - **NEVER hand-roll the insights doc** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking document (the v3.20.0 failure mode) — and this doc is dense with people, customers, and relationship read-outs, which is precisely what the leak scan is for.
-- **NEVER create, render, copy, upload, or update the insights doc — or any part, derivative, or restatement of it ("the top three", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/insights/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the insights in a Google Doc" is a request this gate refuses, not an override. The inline top-3-to-5 in chat is the read-without-opening surface; the file is the deliverable.
+- **NEVER create, render, copy, upload, or update the insights doc — or any part, derivative, or restatement of it ("the top three", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/insights/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the insights in a Google Doc" is a request this gate refuses, not an override. The inline top-3-to-5 in chat is the read-without-opening surface; the file is the deliverable.
 
 **Chat surface:** the chat post for insight-generator follows the friendly-voice contract. Lead with a one-line summary of what the week showed. Then surface the top 3-5 insights INLINE in chat (so M reads them without opening the doc). Then the canonical H2 deliverable link at the BOTTOM of the chat turn pointing to the full .docx for the deeper version. No file path interspliced through the prose body; no `entities.json` / `events.jsonl` / `project_NNN` leaks; no internal mechanism names ("Pass 7 probe found", "classification review"); no scores or grades on the user's business.
 
@@ -805,7 +800,7 @@ This skill runs as a scheduled task (Sunday 19:00, intentional — ready for Mon
 ## What It Doesn't Do
 
 - Does not write to entities.json directly — with the ONE declared Writer Contract exception: the `dormancy_reviewed_at` field Pass 7 stamps on dormant project records (atomic, cooldown-gating only). All other entities.json mutation is delegated (workspace-manager for Pass 9, `org_writer` for Pass 10).
-- Interactive writes (Pass 8 reclassifications, Pass 9/10 proposals, Pass 11 voice blocks) require explicit user action on the review widget — never silent. The declared silent writers are exactly two: Pass 7's passive-capture events and the projection/view refresh. The full write inventory lives in the Writer Contract above — this section defers to it.
+- Interactive writes (Pass 8 reclassifications, Pass 9/10 proposals) require explicit user action on the review widget — never silent. **Voice blocks, call-prep section weights and workspace exemplars are NOT in that list any more**: the `learning` job writes all three automatically, at the shipped floors, each narrated in the morning brief with a one-word undo. This skill writes none of them. The declared silent writers are exactly two: Pass 7's passive-capture events and the projection/view refresh. The full write inventory lives in the Writer Contract above — this section defers to it.
 - Does not mutate prior events. Reclassification = new append with `supersedes_seq`, per schema.
 - Does not propose projects on a fresh workspace. Pass 9 inherits the ≥14-day minimum from the skill's overall gate; Pass 9 itself requires ≥30 days of data before proposing, since cadence signals need time to materialize.
 - Does not answer one-off questions ("why is NorthStar stuck?") — that's `workspace-manager` with connector context.
@@ -817,6 +812,26 @@ This skill runs as a scheduled task (Sunday 19:00, intentional — ready for Mon
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 

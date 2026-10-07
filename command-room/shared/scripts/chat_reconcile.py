@@ -72,6 +72,18 @@ if str(_HERE) not in sys.path:
 
 from connector_adapters import chat as _chat  # noqa: E402
 
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
+
 JOB_ID = "reconcile-chat"
 RECEIPT_EVENT_TYPE = "chat_reconcile"
 CURSOR_KEY = "chat_reconcile_cursor"
@@ -395,6 +407,15 @@ def score_candidates(open_commitments, candidates: List[dict], *,
             user_person_id=user_person_id, provider=provider,
             exclude_captured_since=exclude_captured_since,
             workspace_root=workspace_root,
+            # CLOSETRUTH1 fix round 2 (review F-13) — say what this rail is
+            # instead of letting the matcher guess it from a field. The proof
+            # floor on the bare-title path is M's SENT-MAIL ruling; a chat
+            # message is the person's own typed word, which the 2026-09-07
+            # ruling already counts as evidence, and no ruling puts a second
+            # bar on that door. Round 1 let the `subject: None` built in
+            # `_to_matcher_shape` stand in for this fact — which also let a
+            # subject-less MAIL through the very same hole.
+            from_mail=False,
         )
         auto.extend(res.get("auto_close") or [])
         pending.extend(res.get("pending") or [])
@@ -527,6 +548,69 @@ def backfill_floor(workspace_root, *, now=None, days: int = DEFAULT_BACKFILL_DAY
 # The orchestrator + the receipt
 # ---------------------------------------------------------------------------
 
+#: MAINTJOBS1 MUST 2 - what a raw chat message carries into the writer
+#: (Step 6b of `skills/reconcile-sent/SKILL.md`); the leg normalizes both id
+#: shapes itself, so these are the names the plan hands the connector step.
+CHAT_MESSAGE_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
+                       "user_name", "text", "thread_ts", "permalink")
+
+
+def plan_chat_scan(workspace_root, now=None) -> dict:
+    """The reconcile-chat job PLANNED beside the data - READ ONLY (MAINTJOBS1
+    MUST 2; on `workspace_access.RUN_HELPER_ALLOWLIST`).
+
+    Step 6a/6b of the reconcile-sent skill, answered where the ledger is: the
+    declared chat backend (`resolve_chat_provider` - None is "no backend",
+    never a default), the scan plan (`plan_scan`: mode, degraded, coverage
+    note), the read floor (`backfill_floor`: the cursor, or a short fixed
+    window on a first run), the connector's label for the host tool search,
+    the primary user, and the fire start. `provider: null` is not a stop: the
+    writer still runs with no messages and lands the SKIP receipt, because a
+    silent skip with no record reads like a sweep that found nothing.
+    `ready` is false only when a backend is declared and no primary user
+    resolves. Writes nothing."""
+    import datetime as _dtm
+
+    now = now or _dtm.datetime.now(_dtm.timezone.utc)
+    if isinstance(now, str):
+        now = _dtm.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now.tzinfo is None:
+        now = now.astimezone()
+    try:
+        provider = _chat.resolve_chat_provider(workspace_root)
+    except Exception:  # noqa: BLE001
+        provider = None
+    try:
+        declared = _chat.declared_chat_backend(workspace_root) or {}
+    except Exception:  # noqa: BLE001
+        declared = {}
+    scan = _chat.plan_scan(provider, date_filtered=True)
+    try:
+        floor, first_run = backfill_floor(workspace_root, now=now)
+    except Exception:  # noqa: BLE001
+        floor, first_run = None, True
+    try:
+        from primary_user import resolve_primary_user
+        user = resolve_primary_user(workspace_root)
+    except Exception:  # noqa: BLE001
+        user = None
+    label = str(declared.get("label") or "").strip()
+    return {
+        "job_id": JOB_ID,
+        "provider": provider,
+        "scan_plan": scan,
+        "after": floor,
+        "first_run": bool(first_run),
+        "connector_queries": [label] if (provider and label) else [],
+        "user_person_id": user,
+        "message_fields": list(CHAT_MESSAGE_FIELDS),
+        "fire_start": now.astimezone(_dtm.timezone.utc).isoformat(),
+        "ready": bool(user) or not provider,
+        "blocked_reason": (None if (user or not provider) else
+                           "the workspace's own person is not recorded"),
+    }
+
+
 def reconcile_chat_and_receipt(
     workspace_root,
     chat_messages,
@@ -537,7 +621,7 @@ def reconcile_chat_and_receipt(
     user_names=(),
     scan_plan=None,
     source_skill: str = SOURCE_SKILL,
-    fired_via: str = "scheduled",
+    fired_via=None,
     fetch_blocked=None,
     exclude_captured_since=None,
 ) -> dict:
@@ -562,6 +646,20 @@ def reconcile_chat_and_receipt(
     the traffic than it does on mail. That is the thresholds working, and
     nothing here moves them.
     """
+    # MAINTJOBS1 MUST 2 - THE WRITER IS NAMED FIRST. `_log_receipt` swallows
+    # a receipt failure (on purpose: no receipt keeps the job due), which
+    # means a refused identity there came AFTER this leg's closes and cursor
+    # write had landed unattributed. Asked here, the refusal comes before any
+    # of them, in the one sentence.
+    from receipts import require_writer_identity
+
+    require_writer_identity(workspace_root=workspace_root)
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
     provider = _chat.resolve_chat_provider(workspace_root, provider)
     if not provider:
         receipt = _chat.skip_receipt(

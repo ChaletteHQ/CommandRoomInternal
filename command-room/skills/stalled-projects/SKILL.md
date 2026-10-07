@@ -62,7 +62,9 @@ Canonical helper contract for any skill generalizing this pattern (`shared/scrip
 read config via `get_config(workspace_root, "stalled-projects", DEFAULTS)` (deep-merges saved over
 defaults — a v+1 decision never breaks an old config); gate the first-run block with
 `is_configured(workspace_root, "stalled-projects")` so it renders exactly once; persist with
-`save_skill_config(...)`; reset with `wipe_skill_config(...)`. Here the per-skill defaults dict is
+`save_skill_config(...)`; reset with `wipe_skill_config_result(...)`, whose `cleared` /
+`existed` / `left_in_place` tell a clean reset from a config that would not move (the bare
+`wipe_skill_config(...)` answers only "was anything stored?"). Here the per-skill defaults dict is
 named `DEFAULT_CONFIG` (the protocol's `DEFAULTS`) — see the Detect-mode flow below; new adopters
 should name theirs `DEFAULTS` per the protocol. The Detect flow below uses the equivalent
 `load_skill_config(...) is None` first-fire check; `is_configured(...)` is the protocol's preferred
@@ -79,7 +81,7 @@ Before running any logic, parse which mode the user invoked:
 | **Detect** (default) | "show me stalled projects", "what's stalled", "project hygiene check" | **No questions, ever.** Load config (or use defaults if none saved). Run detection. Render widget. On FIRST fire only: auto-save defaults + append a one-time "tune this if you want" footer. |
 | **Show settings** | "show my stall settings", "what are my stall settings", "show stalled-projects config" | Load config → display current answers in a read-only widget. Do NOT run detection. Do NOT ask any questions. |
 | **Tune** | "tune stalled-projects", "change my stall settings", "change stall thresholds", "reconfigure stalled-projects", "redo stalled-projects setup" | Load current config → walk the 3 questions with current answers pre-filled as defaults → save → re-run detection + render with new settings. |
-| **Reset to defaults** | "reset stalled-projects to defaults", "reset stall settings" | Call `wipe_skill_config(workspace_root, "stalled-projects")` → confirm "Settings reset. Next fire uses defaults again." Do NOT run detection. |
+| **Reset to defaults** | "reset stalled-projects to defaults", "reset stall settings" | Run the three-branch reset block under "Reset to defaults" below (`wipe_skill_config_result`) and say the branch's sentence. Do NOT run detection. |
 
 ### Detect mode — the "show, then tune" flow
 
@@ -230,18 +232,22 @@ No questions, no detection. Just shows the current answers + offers a one-click 
 ### Reset to defaults
 
 ```python
-existed = wipe_skill_config(workspace_root, "stalled-projects")
-if existed:
+wipe = wipe_skill_config_result(workspace_root, "stalled-projects")
+if wipe["cleared"]:
     respond("Settings reset. Next time you ask for stalled projects I'll use the recommended settings — and I'll offer the setup options once.")
+elif wipe["existed"]:
+    respond("I couldn't clear your saved answers just now, so they're still in place and nothing has changed. Ask me again in a moment and I'll reset them.")
 else:
     respond("No settings to reset — you're already on defaults.")
 ```
+
+Three branches, not two, because there are three outcomes (DEL1 fix round 2, finding M-4). On a mount that refuses both the delete and the rename the answers are STILL LIVE, and the one thing this path may never do is tell the customer they are on defaults — or that their settings were reset — while their old answers are sitting there waiting for the next fire. `wipe_skill_config` on its own answers "was there anything stored?", which is the wrong question to turn into that sentence.
 
 ### Subsequent fires — detection + render
 
 ```python
 import sys
-# Rule 22: run from $PLUGIN_ROOT (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from stall_detector import detect_stalled_projects, apply_live_check
 
@@ -291,6 +297,8 @@ dormancy_rows = [i for i in load_open_proposals(WORKSPACE_ROOT, "on-demand")
 
 ### Rendering the surface
 
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
 Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 1, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport).
 
 **Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead — **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue — $292K · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — ONLY the figures that derive from substrate, never an estimate) · the oldest age. When building the item dict for `money_time_tag`, set its `last_activity` key from the flag's DERIVED baseline (today − `days_since_activity`) — never from the thread record's deprecated `last_activity` field, or the tile contradicts the row it sits on. Each item then carries its own quantify tag (`"47d quiet · $180K"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence — the reader's next act is triage.
@@ -336,6 +344,26 @@ RECL1 (2026-07): the derivation honors user-approved reclassifications (`honor_r
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
@@ -343,3 +371,59 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Surface every project that has gone quiet — no meetings, commitments, decisions, or real conversations in the configured threshold — so the CEO can decide whether to resurrect, snooze, or archive each one before it falls through the cracks. Reads from the workspace activity timeline + project graph. Use when the CEO says 'show me stalled projects', 'show me stalled', 'what's stalled', 'stalled projects', 'stalled project check', 'what projects are stalled', 'which projects have stalled', 'projects that have gone quiet', 'show me projects that haven't moved', 'project hygiene check', 'show me dead projects', 'what should I prune'. Also handles first-run personalization settings — use when the CEO says 'tune my stall settings', 'tune stalled-projects', 'show stalled-projects settings', 'reset stalled-projects to defaults', 'reconfigure stalled-projects', 'change stalled-projects settings', 'change my stall settings', 'redo stalled-projects setup', 'change stall thresholds', 'show my stall settings', 'what are my stall settings', 'show stalled-projects config', 'reset stall settings'. Runs on demand and is wired into the weekly lifecycle pass + Friday Wrap. DOES NOT fire on 'who went dark' or 'dormant customers' — that's `dormant-customer-scan`, which is people-focused, not project-focused. DOES NOT fire on 'show me my projects' or 'list active projects' — that's `list-active`, which renders the whole roster without filtering by activity. DOES NOT fire on bare 'cleanup' — that's `cleanup`, which surfaces multiple workspace hygiene checks of which stall is one.
 
 > DOES NOT fire on 'which deals are stalling' / 'deal is stalled' (pipeline-tracker, SPEC PIPE1 — this scan excludes deal threads in code, so a quiet deal is never double-flagged).
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

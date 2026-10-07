@@ -14,7 +14,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: morn
 
 **Receipt BEFORE post (SPEC BRIEFFIX1 Item C, M's ruling 2026-08-09).** The receipt is written in Phase 5 and the digest posts in Phase 6, in that order, and the order is the point. Both orders lose something when a fire dies in the middle; they do not lose the same thing. Receipt-then-post leaves a receipt and no post — which the degrade tier already blesses (a write without a surface is a state this product has always accepted) and which the next fire can see. Post-then-receipt leaves a digest on screen that the substrate has no record of: the watchdog reads it as a fire that never happened, and `mark done [n]` resolves against an OLDER brief's numbering, so a one-tap close lands on the wrong item silently. That is the Bug #98 class with a wrong-close on top, and it happened on 2026-08-09. If the post then fails, the fire is still auditable. Do NOT add a "posted!" confirmation event to compensate — the receipt shape is unchanged and every existing reader must keep working.
 
-**Two legs, one fire (SPEC BRIEFMERGE, M's ruling 2026-08-08).** The separate Upcoming Meetings chat is RETIRED; its prep generation is this fire's first leg. Two things follow and neither is optional: prep runs BEFORE the digest composes, so the meeting section links files that already exist; and the prep leg can NEVER kill the brief — every failure degrades to a line and the brief always renders (Phase 2.95). The `.docx` prep briefs this leg writes to `_hq/meetings/` are documented deliverables, separate from the chat-output surface the STOP CONTRACT governs.
+**Two legs, one fire (SPEC BRIEFMERGE, M's ruling 2026-08-08).** The separate Upcoming Meetings chat is RETIRED; its prep generation is this fire's first leg. Two things follow and neither is optional: prep runs BEFORE the digest composes, so the meeting section links files that already exist; and the prep leg can NEVER kill the brief — every failure degrades to a line and the brief always renders (Phase 2.95). The `.docx` prep briefs this leg writes to `_hq/meetings/` are documented deliverables, separate from the chat-output surface the STOP CONTRACT governs. **The unattended rule, documents included (IDENT1 I-16; DOCS1 D-3):** those briefs are the ONLY documents this fire produces, and they land in the folder through the write door — the digest's prep pointers name the landed files by their own sentence and never a Claude Doc, a page or a deck (`SHARED_CHAT_OUTPUT_PROTOCOL.md` § The unattended rule → Documents).
 
 ---
 
@@ -40,7 +40,7 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: morn
    - a **degrade-tier fire** (Phase 2.9) — the degrade notice is the entire output by design; the receipt still MUST be logged. Withholding it is the Bug #98 class (an invisible write losing to a suppressed deliverable).
    - a fire whose pack came back **entirely empty** — nothing to place is not an error, and the receipt still logs.
 
-**Self-check before posting anything:** if you're about to write text AFTER the digest + Links section, ask: "is this required by spec?" If no → don't post it. **And the inverse check (t3 FB-9 / FB-20): before STOPPING, confirm the Phase 5 receipt landed and every non-empty block of Phase 3.9's CR-BRIEF-PACK was placed — the lead FIRST (the plate's number, rows and pointer — CUT-PLATE), CHANGED lines cited, money sentences in the body, the fold lines below the fold, the health lines (alarms, watchdog, dark-surface, schedule-refresh) LAST. A turn that stops with an unplaced pack block is INVALID, not "done early." And confirm the inverse of the inverse (FB-20): `show_widget` was NOT called this turn. (Degrade-tier fires excepted per Phase 2.9 — the degrade notice is the whole output.)**
+**Self-check before posting anything:** if you're about to write text AFTER the digest + Links section, ask: "is this required by spec?" If no → don't post it. **And the inverse check (t3 FB-9 / FB-20): before STOPPING, confirm the Phase 5 receipt landed and every non-empty block of Phase 3.9's CR-BRIEF-PACK was placed — the lead FIRST (the plate's number, rows and pointer — CUT-PLATE), CHANGED lines cited, money sentences in the body, the fold lines below the fold. A turn that stops with an unplaced pack block is INVALID, not "done early." Confirm the INVERSE of that check too (HEALTH1, 2026-09-07): the health lines (alarms, watchdog, dark-surface, schedule-refresh) were NOT placed anywhere — `pack["health_lines"]` is always `[]`, and a turn that prints one of these four is the regression, not a turn that omits them. And confirm the inverse of the inverse (FB-20): `show_widget` was NOT called this turn. (Degrade-tier fires excepted per Phase 2.9 — the degrade notice is the whole output.)**
 
 ---
 
@@ -52,7 +52,7 @@ This orchestrator ALWAYS runs when fired — whether by cron or manual `re-run` 
 
 # Phase 2 — Setup
 
-The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator file path. Continue with:
+The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator file path. Every access-layer line in this file (`workspace_access.py` with a verb) runs through the Access preamble at the end of this file, which resolves `<WS>` and `$RT` on every seat, the merged one included (MIGRATE3-MB). Continue with:
 
 - Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)`. **v3.11.1+ contract:** `workspace_path` is REQUIRED — pass the resolved `<WORKSPACE>` path on every call (or set `CR_WORKSPACE` in the subprocess env). The prior walk-up resolver was removed because it never resolved inside the plugin clone and silently rendered UTC. If `to_local` raises `TZResolutionError`, surface "⚠️ Couldn't resolve workspace TZ — times shown as UTC" in the digest header and continue rendering with raw UTC; do not let the exception abort the fire.
 - Every site in this orchestrator that renders a connector timestamp (Gmail `internalDate`, Calendar event start/end, Slack `ts`) MUST pass `workspace_path=<WORKSPACE>` to `to_local()` / `format_local()`. No exceptions.
@@ -69,14 +69,35 @@ The bootloader already resolved `PLUGIN_ROOT`, `WORKSPACE`, and the orchestrator
 Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'morning-brief', fired_via='<scheduled|manual>', env_date='<session date>')))
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"env_date": "<session date>", "fired_via": "<scheduled|manual>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:lateness"}'
 ```
 
-**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+The helper calls `check_lateness('<workspace_root>', 'morning-brief', fired_via='<scheduled|manual>', env_date='<session date>', emit=True)`
+exactly as the old block did, beside the data. The answer is the verdict this file already reads — its
+own `tier`, `banner`, `degrade_notice`, `directive`, `ack`, `clock`,
+`receipt_fired_via`, `rerun_of` — plus `pending_rows`. The check runs exactly
+as it always has, and every row it writes on the way comes back instead of
+being written: the clock record, the `late_fire` telemetry on the note and
+degrade tiers, and — behind a `skip_render` directive — the honest `skipped`
+receipt for this fire. **Append `pending_rows` FIRST, before anything is
+posted — every element, in order, nothing dropped:**
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "morning-brief", "rel": "_hq/data/events.jsonl", "rows": [<every row in pending_rows from the lateness answer above, in order>]}'
+```
+
+When `pending_rows` is empty there is nothing to append. Never compose a row of
+your own, and never append the same row twice.
+
+**A REFUSED STEP STOPS THE FIRE, AND THE STOP IS RECORDED (MIGRATE3-MB fix round 1).** From here to the post, when any door answer is `ok: false` (a refusal, or `reason: timeout`: the door kills a step that runs past its budget, and the step's own failure branch never runs), or a helper's `result` carries `error`, the fire is over: do not run another step, do not retry, do not build anything by hand. The ONE exception is the one this file names for a single prep (Phase 2.95: a prep that fails is a line, never a stop). Run this ONE line, with `step` the name of the form that was refused:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"mode": "<scheduled|manual per Phase 2.9 run mode>", "step": "<the refused form name>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:record_fire_stopped"}'
+```
+
+It writes the Morning Brief's `surface_failed` receipt, so a stopped morning is never partial and silent, and answers `line`: post that one sentence, verbatim, as the whole output, and STOP (no Phase 5 receipt of your own, no digest). When the refusal itself carried a `line` (a writer that could not name who it writes for), post THAT line instead; the receipt writer is refused the same way and there is nothing else to run.
+
+**The layer carries the workspace, the clock and the environment for you (CLOCK1).** Every helper process the verbs start gets `CR_WORKSPACE`, `TZ` (the workspace's own timezone), `CR_ENV`, `CR_HOST_MODE` and the forwarded writer identity, so a helper can never be left guessing which workspace it is in, cannot fail to cross-check the clock, and never stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
 
 **Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
 
@@ -97,7 +118,7 @@ Branch on `tier` (this does not weaken the anti-improvisation contract — every
 - **`note` (3–24h late)** — run ALL phases normally, but the chat output OPENS with the returned `banner` line verbatim (one line, before anything else). Nothing else changes.
 - **`degrade` (>24h late)** — the surface is stale; do NOT render it. Execute every phase below EXCEPT the surface-rendering one (Phase 6 — the digest post): all substrate writes the task owes — events, view updates, the Phase-final `pack_run` receipt — still happen, silently and explicitly (skipping them is the Bug #98 class: an invisible write must not lose to a suppressed deliverable). Then post ONLY the returned `degrade_notice` line as the entire chat output and STOP. No widget, no digest, no Links section. The next Morning Brief reads events.jsonl, so nothing captured is lost.
 
-The helper already appended the `late_fire` telemetry on note/degrade tiers (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
+The `late_fire` telemetry on note/degrade tiers came back in `pending_rows` and the append above landed it (cleanup and the insight pass consume it to propose better default times) — do not append a second one, and never narrate the event or the tier name to the user. Carry the returned `receipt_fired_via` (`manual` / `scheduled` / `catchup`) into the fire receipt — it is the ONLY `fired_via` value `log_receipt` gets; never guess it independently.
 
 # Phase 2.95 — THE PREP LEG (SPEC BRIEFMERGE §A/§B/§C — runs FIRST, before the Phase 3 gather)
 
@@ -126,12 +147,11 @@ Filters, carried verbatim from the retired Upcoming Meetings chat so nothing cha
 **Step B — honor the call-prep `auto_fire` knob before prepping anything.**
 
 ```bash
-CR_WORKSPACE=<WORKSPACE> python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from skill_config_writer import get_config
-print(json.dumps(get_config('<workspace_root>', 'call-prep', {'auto_fire': '24h'})))
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "morning_brief_helpers:prep_config"}'
 ```
+
+The answer's `config` is `skill_config_writer.get_config(workspace_root,
+"call-prep", {"auto_fire": "24h"})`; read `config["auto_fire"]`.
 
 - **`24h`** (default) — prep every kept meeting.
 - **`morning_of`** — prep only meetings starting TODAY in the workspace timezone.
@@ -141,12 +161,30 @@ This gate governs the SCHEDULED leg only. A manual "prep me for my 2pm" always r
 
 **Step C — run the leg.**
 
-```python
-# (Inside python3, after the Rule 22 preamble + sys.path.insert)
-from prep_leg import run_prep_leg
+The leg is `prep_leg.run_prep_leg(discover, generate, workspace_root=...)`,
+and it runs beside the data in two verbs around the generator, because the
+generator is you running call-prep:
 
-leg = run_prep_leg(discover, generate, workspace_root=WORKSPACE_ROOT)
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"meetings": [<the Step A meetings, each {"meeting_id","title","time_label","start"}>], "workspace_root": "<WS>"}, "name": "morning_brief_helpers:prep_leg_plan"}'
 ```
+
+The answer is `{started_at, reuse, generate}` — the leg's own reuse rule
+(below) decided which meetings are already prepped. For every meeting in
+`generate`, run `skills/call-prep/SKILL.md` end to end (Step B's knob still
+applies: a meeting the knob skips is reported `null`), then hand what each run
+returned back to the leg:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"generated": {"<meeting_id>": <the dict call-prep returned, null for a deliberate skip, or {"error": "<why it raised>"}>}, "meetings": [<the same Step A meetings>], "started_at": "<started_at from the plan answer, unchanged>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:prep_leg_result"}'
+```
+
+The answer IS the leg result — call it `leg`. `run_prep_leg` ran for real on
+the far side, over the meetings Step A found, with a generator that replays
+what each call-prep run reported; its reuse rule, per-meeting isolation,
+workspace-relative fence and same-fire receipt proof all applied. A Step A
+failure is passed as `"discover_error": "<why>"` instead of `meetings`, and the
+whole leg degrades to its one banner.
 
 `discover()` returns the Step A meetings as `{"meeting_id": <calendar event id>, "title": ..., "time_label": "2:15", "start": <the instance's own start, ISO from the calendar>}` — `time_label` is what the degrade line says back to the CEO, so it is the same short form the calendar section prints ("2:15", not "14:15" and not a full timestamp). **`start` is REQUIRED for reuse to be possible (BRIEFFIX1 Item B).** A calendar id is stable across a recurring series, so the id alone cannot say which standup a prep was written for; the start is the field that differs. Pass the calendar's own start value — a meeting handed over without one is never reused, it is regenerated, which is safe and merely wasteful.
 
@@ -166,18 +204,23 @@ Legacy rows keep their absolute values forever — events.jsonl is append-only h
 
 - Phase 3 Step 2 builds `todays_meetings` from the leg's meetings — no second calendar query.
 - Phase 4 renders the meeting-section lines from `prep_leg.meeting_lines(leg, workspace_root=WORKSPACE_ROOT)`. That helper REFUSES to run without the leg's result (`LegNotRunError`) — the ordering fence in code, not in convention.
+  - On every seat that line is the Phase 4 item 7 door form naming `morning_brief_helpers:prep_meeting_lines` (MIGRATE3-MB fix round 1), which runs `prep_leg.meeting_lines` beside the data.
 
 # Phase 3 — Execute the morning-briefing skill (the connector/context gather — runs BEFORE the Phase 3.9 driver)
+
+**Every substrate read and write those steps make goes through the door lines the SKILL carries (MIGRATE3-MB).** Where this file names a module by function below (`chat_context`, `load_thread_knowledge`, `surface_preferences`, a passive-capture append), that is what the SKILL's door line runs beside the data, never an import in this session's shell; on a seat whose workspace is not in this session, a step with no door line is left out and said in the preamble's one sentence (rule 6), never improvised.
 
 Read `skills/morning-briefing/SKILL.md`. Execute its Steps 1-4 verbatim against the current workspace + connectors — the skill steps below own the CONNECTOR half (calendar, mail, Slack) and the digest composition prep. The substrate blocks (counts, CHANGED lines, alarms, watchdog, the money sentences, the queue pointer) arrive from Phase 3.9's pack, which runs AFTER these steps as the LAST action before posting (T3.2 FB-18 — gather first, driver last, place immediately):
 
 - **Step 1 — Load core context** (already done in Phase 2 above; do not re-read).
 - **Step 2 — Scan connected sources.** **Today's calendar is ALREADY IN HAND from Phase 2.95's prep leg — reuse it; do not query the calendar again for today (SPEC BRIEFMERGE §A: no second discovery pass).** Add only tomorrow's first event, which the leg does not need. Build `todays_meetings` for Step 3d from the leg's meetings, and take each meeting's prep status from the leg's outcomes rather than re-deriving it. Calendar today + tomorrow's first event; Mail unread/important from last 18h, filtered by people in PEOPLE.md + project-related subjects + flagged; the declared chat backend's unread DMs and mentions from last 18h, plus project channels (resolve the tool with `tool_discovery.discover_chat_tool` — never name a chat product). Per the skill's caps: top 10 emails, top 5 chat items. **Chat context leg (SPEC CHATSCAN1 §C) — a leg INSIDE this same Step 2, never a second sweep:** run `chat_context.run_chat_context(workspace_root, chat_messages, tracked_entities, provider=chat_seam.resolve_chat_provider(workspace_root), scan_plan=chat_seam.plan_scan(provider), budget=ReadBudget())` over the fetch you already have. Its `context_line` is ONE sentence placed inside an existing section and is NEVER a row — the needs-attention lane still shows at most 5, and the brief's row count must be identical with this leg on and off. An undeclared chat backend returns a skipped block: render nothing, say nothing. Append `coverage_note` verbatim to any line that would otherwise read as full chat coverage. **Self-reply filter (v3.11.1 — REQUIRED):** apply the skill's Step 2 "Self-reply filter" verbatim. For every email-thread candidate, fetch the thread's latest message and compare `From:` to the primary user's email (resolve the user with `primary_user.resolve_primary_user` and read the email off THAT record — never scan for an `is_primary_user: true` record, which per SPEC USERKEY1/USERKEY2 is only the seam's flag fallback, behind every pointer spelling it reads including the canonical `workspace.user_id`; an unresolved user turns this filter off silently and the brief hands back threads the user already answered). If the latest message is FROM the primary user, DROP the thread from Needs Attention and Overnight Inbox — the user already responded. This filter applies to scheduled fires; the default **in-inbox** query alone is insufficient because the mail search surfaces earlier inbound messages in threads the user has since replied to.
+  - **The chat context leg runs through the door (MIGRATE3-MB fix round 1).** Where the bullet above names `chat_context.run_chat_context`, run the SKILL's ONE door line naming `morning_brief_helpers:chat_context` over the fetch you already have; it runs that function beside the data. The fire passes NO `tracked_entities` (the helper builds them from the book beside the data, because the book does not fit through the door) and at most 80 messages, the newest, each carrying only `ts`, `text` and its pointer fields.
 - **Step 3 — Check tracker for urgency.** Scan MASTER_TRACKER for overdue commitments, stale waiting-on items (7+ days), today's deadlines, urgent flags. Apply Step 3b commitments aggregation from `events.jsonl` (`type: commitment` not closed by a later `commitment_resolved` / `thread_resolved` event). The header counts come from **Phase 3.9's pack (`brief_state.headline` — the driver, which runs AFTER these gather steps, runs `compute_and_log_brief_state` internally; never call it yourself, never hand-compute the counts — leave the header slot to be filled from the pack in Phase 4)**, matching the skill's Step 3d — its `counts["headline"]` buckets are LOGGED, not rendered (SPEC PLATE1 night 2 / NUMBERS1 R-1 — the brief's one commitment number is `plate.line`, Phase 3.9); never hand-compute them, never fold unowned/unconfirmed into a direction, and never render an inventory line of them. **Step 3a per-project lines (v3.11.1 overlay; payload-fed since READER1 ADOPT4 — REQUIRED):** apply the skill's Step 3a and its "MANDATORY context load — the per-project lines" section verbatim — parse the tracker's `<!-- generated-at -->` stamp; for every thread that renders its own detail line under an org section or Other relationships, load the canonical thread payload (`load_thread_knowledge(workspace_root, thread_id, "brief-line")`, ONE call per rendered line, none for a collapsed or hidden thread) and take the line's substance — Next, open items, Waiting On — from that payload and only from it; take `Last touched` / quiet-N from the `thread_activity` map Step 3d already derives once for the whole fire. Override `Last touched` / `Next Action` / `Waiting On` from those. Names, never ids; a null name renders as "an unnamed contact", never the id. The tracker is a snapshot, not a live view; without this overlay a scheduled fire on a workspace whose tracker hasn't been regenerated in 10 days will surface stale "quiet since April 25" copy for threads that had activity today. **This is the ONLY leg of this fire that touches the reader:** the calendar / mail / chat legs, every Phase 3.9 pack block (Needs Attention, alarms, CHANGED, watchdog, dark-surface, schedule-refresh, "Captured since your last close", money, queue pointer), the opener, and this bootloader-read orchestrator's own plumbing are unchanged by it. On a `not_ready` / `unmeasured` gauge the line renders with zero coverage apparatus; on `empty_payload` the line renders the tracker's copy alone — never fabricated thread context.
+  - **A scheduled fire skips the SKILL's Step 3d door form and its append (MIGRATE3-MB fix round 1).** Phase 3.9's pack writer computes and logs the brief state beside the data, once; running the Step 3d form too would compute it twice and log a second `brief_state` row.
 - **Step 4 — Build the digest (compose here, post in Phase 6 — after the Phase 3.9 driver and after the Phase 5 receipt).** Apply the relationship-grouped thread layout from the skill's Step 4: every thread's `affiliation_id` resolves to its org; primary-focus orgs render prominently; non-primary roll up under "OTHER ORGS" with `relationship_type` badges. Section headers use `canonical_name`, not hardcoded labels. Omit any section with no content — never pad. Number the Needs Attention items and keep the rendered order: the item→commitment-id mapping writes into the `pack_run` receipt as `needs_attention_ids` (Phase 5) so a later `mark done [n]` resolves. SUGGESTED FIRST MOVE at the end — one sentence. **Surface-preference filter (Phase 6 Loop 2):** before finalizing Needs Attention, drop any item the CEO has taught the system to stop surfacing — `from surface_preferences import load_surface_preferences, is_suppressed`; keep an item only if `not is_suppressed(prefs, "morning-brief", item_class=<class>, entity_id=<person/project id>)`. Missing store → no-op; the substrate is untouched.
-- **Step 4b — Background-task watchdog line (v4.6.1 S3 — the light daily pass; receipts-only).** The line is Phase 3.9's pack field `watchdog_line` (the driver makes the ONE `task_watchdog.brief_watchdog_line` call — do NOT call it yourself, before or after). It is already inside `pack["health_lines"]`, which prints verbatim LAST (CUT-PLATE — after Suggested next steps, before the closing preps chip and the Links section), ONCE — this placement and Phase 4's placement-map item 5 are the SAME action, not two lines — e.g. "2 of your background tasks need attention — say health check for the detail." That sentence is the ENTIRE pass: no per-task detail, no cause narration, no second scan — `health check` (system-health) owns the deep answer. `None` means nothing renders (all healthy, or this chat can't see the scheduler) — never pad an all-clear line into the brief.
+- **Step 4b — Background-task watchdog line: RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07 — supersedes the v4.6.1 S3 light daily pass).** `pack["watchdog_line"]` is always `None` — the driver no longer makes the `task_watchdog.brief_watchdog_line` call at all, and you must not call it yourself either, before or after. This used to print inside `pack["health_lines"]`, LAST; never pad an all-clear line into the brief — the honest answer now is that this pass simply does not run on this surface. The same finding (e.g. "2 of your background tasks need attention") surfaces in more detail once a week in `cleanup`'s Monday note (its own deep pass, unchanged); `health check` (system-health) still owns the on-demand deep answer.
 - **Step 5 — Deliver: executes in PHASES 4-6, never here (T3.2 FB-18).** The digest cannot post before Phase 3.9's driver has run — its pack fills the header counts, the alarm lines, the money sentences, and the pointer line. The delivery is then split across three phases and the split is load-bearing (BRIEFFIX1 Item C): Phase 4 composes it and, in scheduled mode (this is one), writes the rendered digest to `<WORKSPACE>/_hq/briefings/morning-<YYYY-MM-DD>.md` per the skill's "save to file" branch; Phase 5 logs the receipt; Phase 6 posts it inline in this chat turn.
-- **First-Run Personalization (SPEC FRP1).** Apply the morning-briefing skill's "First-Run Personalization" section. Read the brief's knobs via `get_config(WORKSPACE, "morning-briefing", DEFAULTS)`. On the FIRST fire only (`not is_configured(WORKSPACE, "morning-briefing")`): `save_skill_config(WORKSPACE, "morning-briefing", DEFAULTS)` before rendering, then append the one-time **footer** form of the first-run block after the digest (this orchestrator is a markdown post, NOT a widget, so the footer — not fr-items — is the correct transport, and MUST-NOT rule 5 does not apply). The footer renders exactly once ever, gated by `is_configured`.
+- **First-Run Personalization (SPEC FRP1).** Apply the morning-briefing skill's "First-Run Personalization" section, through the access layer (BRIEFDOOR1 SHOULD 6): read the brief's knobs with ONE `run_helper` line naming `morning_brief_helpers:brief_config` (the answer is `{config, configured, defaults}` — `get_config` over the defaults, and `is_configured`). On the FIRST fire only (`configured` is false): the skill's `run_writer` line naming `skill_config_writer:save_skill_config` with the answer's `defaults`, before rendering — a write, so it goes through the write door and never runs in-process, then append the one-time **footer** form of the first-run block after the digest (this orchestrator is a markdown post, NOT a widget, so the footer — not fr-items — is the correct transport, and MUST-NOT rule 5 does not apply). The footer renders exactly once ever, gated by `is_configured`.
 
 Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/events.jsonl` per `shared/PASSIVE_CAPTURE.md`. Use `atomic_append_jsonl` from `shared/scripts/atomic_write.py` for batched appends. Dedup via `source_ref_hash` so re-fires don't double-count overnight email reads.
 
@@ -186,26 +229,28 @@ Every connector read MUST emit corresponding events to `<WORKSPACE>/_hq/data/eve
 **Why this phase runs LAST (T3.2 FB-18, kept):** a live 2026-07-16 scheduled fire ran this driver FIRST, then ~10 connector/context steps, and the pack's blocks went unplaced — a driver whose output sits 10 steps behind the post step gets forgotten. Gather first, driver last, place immediately. That ordering stands even though the widget it originally protected is gone (FB-20): the pack's prose blocks are just as skippable as a widget was.
 
 ```bash
-python3 shared/scripts/surface_drivers.py morning-brief \
-    --workspace "<WORKSPACE>" --mode <scheduled|manual per Phase 2.9's run mode>
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"mode": "<scheduled|manual per Phase 2.9 run mode>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:run_morning_brief_pack", "timeout_s": 540}'
 ```
 
-The driver prints exactly ONE line: `CR-BRIEF-PACK: {json}`. That is the whole contract.
+**The pack is built beside the data, through the write door (MIGRATE3-MB, F-T2-15).** The writer runs the SAME builder the `surface_drivers.py morning-brief` CLI wraps (`build_morning_brief_pack`), on the host that holds the folder: it logs the `brief_state` row, keeps the pack's audit copy and mints the plate's display numbers exactly as the CLI did. Never run that CLI in this session's own shell: on a merged seat the session holds no workspace, which is why this fire used to stop before it started. The answer's `pack` is the CR-BRIEF-PACK the CLI used to print after `CR-BRIEF-PACK: `, and it is the whole contract: place its blocks unchanged, exactly as the map below says. When the answer carries `surface_failed: true`, the brief could not render: its `line` is the one sentence for this fire, the failure receipt is already written, and nothing else is posted. `ok: false` from the door (a refusal or `reason: timeout`) is the stop rule under Phase 2.9: one `record_fire_stopped` line, its one sentence, STOP. The line carries `"timeout_s": 540` on purpose: on a large book the pack build can run longer than the door's default 150 seconds (the 2026-09-27 review measured 71 seconds on a copy of a real 330 row book through the door on a busy machine, and a worst-case plant timed out), and a build cut off by the budget is a brief that never posts. That value overrides, for this one verb, the Access preamble's "150 s budget": where the tool you run the line with takes a timeout of its own, give it the same 540 seconds, or the shell cuts the call before the door does.
 
 **⛔ THE BRIEF RENDERS NO WIDGET (FB-20 — M's ruling 2026-07-16, "the morning brief should just be a morning brief").** This surface is READ-ONLY. It has no card, no rows, no buttons, no `show_widget` call, and no relay obligation — the driver emits no `CR-WIDGET-HTML` block and no `CR-REQUIRED-NEXT-STEP` banner, because there are no bytes to relay. **Do NOT call `mcp__visualize__show_widget` from this orchestrator, ever, for any reason** — not for the pack, not to "helpfully" render the queue, not as a fallback when the prose feels thin. A widget posted from a morning-brief fire is a CONTRACT VIOLATION even if it renders beautifully. Adjudication happens at the **staff meeting** (Mon/Wed/Fri, or any time the user says `staff meeting`) — that is the sole surface where items get confirmed, and the pointer line below is how the brief hands off to it.
 
 **Every non-empty pack field is a MANDATORY placement in this turn** (the placement map lives in Phase 4):
 
-- `lead` → THE FIRST CONTENT BLOCK (CUT-PLATE, 2026-09-06 — M: "we want to show less options to clients — they are overwhelmed"). `lead.lines` verbatim, in order, directly under the digest header: the plate's ONE number (`plate.line`), the numbered rows (`plate.rows`), ONE pointer (`plate.pointer`). Nothing sits above it but the header and the persona-permitted intro line — no alarm, no paragraph, no CHANGED, no reminder. The driver refuses a pack whose composed order puts any count above the number (`surface_drivers.assert_number_leads`); this file is scanned for the same order by `tests/run_cutplate_test.py`.
+- `lead` → THE FIRST CONTENT BLOCK (CUT-PLATE, 2026-09-06 — M: "we want to show less options to clients — they are overwhelmed"). `lead.lines` verbatim, in order, directly under the digest header: the plate's ONE number (`plate.line`), then LINE TWO and the one coaching line when the pack carries them (`day_intent.line`, `coaching_line` — BRIEF2, see the two map items below), then the numbered rows (`plate.rows`), ONE pointer (`plate.pointer`). Print the LIST, never rebuild it from the parts. Nothing sits above it but the header and the persona-permitted intro line — no alarm, no paragraph, no CHANGED, no reminder. The driver refuses a pack whose composed order puts any count above the number (`surface_drivers.assert_number_leads`); this file is scanned for the same order by `tests/run_cutplate_test.py`.
 - `fold_lines` → BELOW THE FOLD, verbatim, in order (the resting line, then the queue pointer), printed together with the skill's Step 3g confirm pointer and the dated-personal echo near the end of the digest (map item 4). These are the counts that used to compete with the number.
-- `health_lines` → LAST (map item 5): `alarm_lines` (the duplicate-entry warning, a stale view — FS-04/05/06/15), the watchdog line, the dark-surface lines and the schedule-refresh lines, verbatim, in that order, after Suggested next steps and before the closing preps chip. They used to open the digest; M's rule puts them at the end — never above the number, never softened, never dropped.
-- `alarm_lines` → verbatim, inside `health_lines`, at the END of the digest (CUT-PLATE; they were the top until v5.28.0).
-- `changed.lines` → the CHANGED contract line MUST cite them (FS-09 — never "Nothing material" over a non-empty feed).
+- `health_lines` → NEVER PLACED (map item 5 — HEALTH1, 2026-09-07, superseding CUT-PLATE's "LAST"). `pack["health_lines"]` is always `[]`: `alarm_lines` (the duplicate-entry warning, a stale view — FS-04/05/06/15), `watchdog_line`, `dark_surface_lines` and `schedule_refresh_announce_lines` do not render on this surface at all — not first, where the v5.28.0 attended test found them, not last, where CUT-PLATE moved them. M's ruling, reading his own brief: "this should not be shown", ruled in full for all four kinds. The weekly `cleanup` maintenance run is the one place they are reported now.
+- `alarm_lines` → NEVER PLACED (HEALTH1; CUT-PLATE's "at the END of the digest" is superseded). Still computed on the pack for the maintenance reader; this orchestrator never prints it.
+- `day_intent.line` → LINE TWO, already second inside `lead.lines` (BRIEF2 2.2 item 2, 2026-09-14). "Today is about …" — the READER'S OWN sentence from last night's close, read back through `day_intent.load_day_intent`, stated origins only. Empty when nothing was stated, and then nothing prints: never "nothing on file", never a prompt to state one. `day_intent.contains_digit` is a MARK, not a line — it says the reader's sentence carries a figure the brief's count fence deliberately did not reconcile (user text answers a different question than the plate's number). Never print the mark, never reword the items.
+- `coaching_line` → THE ONE COACHING LINE, already third inside `lead.lines` when non-empty (BRIEF2 2.2 item 3). A statement, never a question. The driver gates it on all three doors (the coaching shape is not `observed`, the `coaching_line` render switch is on, the coaching object names a behaviour) and hands back `""` otherwise — print what is there or print nothing, and never compose a coaching sentence of your own on this surface.
+- `explain_once_line` → THE CLOSING LINE, verbatim, alone, as the LAST thing rendered (BRIEF2 2.2 item 4). **The pack already consumed it — never call `explain_once.consume` from this fire.** `""` on every fire after the first and on a workspace onboarding never armed; print nothing then.
+- `changed.lines` → the CHANGED contract line MUST cite them, ALL of them, verbatim and in order (FS-09 — never "Nothing material" over a non-empty feed). BRIEF2 2.2 item 1: this list is no longer capped at three. Every line for a door the product walked through on the reader's own rows — a lapse batch, a rest batch, a silent close, each with count, door and `undo` — prints; only the ordinary lines are capped, at three, by the driver. Never re-cut or summarise the list.
 - `brief_state.headline` → COMPUTED AND LOGGED, NOT A LINE (SPEC PLATE1 night 2 / NUMBERS1 R-1). The driver already ran `compute_and_log_brief_state` (the Step-3d derivation — `commitment_state.compute_brief_state` under the hood) and logged the `brief_state` audit event — do NOT call it again, and do NOT render its buckets as an inventory line ("you owe / owed to you / no clear owner / overdue" — retired from the rendered brief; the numbers stay on the event for trends and the book page). The brief's ONE commitment number is `plate.line` below.
-- `plate` → THE PLATE'S BRIEF CUT (SPEC PLATE1 night 2 — D7 `brief`). `plate.line` is the ONE number ("N on your plate today" — DO IT + CHASE on the same plate `what's on my plate` renders); `plate.rows[*].line` are the NEEDS ATTENTION rows — at most 5, the top DO IT then the top CHASE rows, each leading with its block's verb (`Do:` / `Chase:`), already gated (a row this fire's drops removed is absent — `plate.excluded_ids`) and already carrying the fatigue rule's `ask_line` as its label where one applies; `plate.pointer` is the one pointer ("…and N more — say `what's on my plate` for the rest."), empty when the cut is the whole plate. Render them in the order given and do NOT add rows back from anywhere. `plate.refused: true` → print `plate.line` (the one plain refusal sentence) and render NO rows (D8). `brief_state.needs_attention` / `needs_attention_more_line` stay on the pack as the gated lane the verdicts were computed over — they are NOT a second row list to print. The lane is bound at the RENDER, never at the derivation: `brief_state.headline` still counts everything, because a cap is a render bound and never a silence.
-- `watchdog_line` → inside `health_lines`, LAST, verbatim (CUT-PLATE; map item 5).
-- `dark_surface_lines` → inside `health_lines`, LAST, verbatim, directly beside `watchdog_line` (TASKALARM1 — see Phase 4's map item 5). Each line already names the task and the fix; never re-narrate, never add a cause.
-- `schedule_refresh_announce_lines` → inside `health_lines`, LAST, verbatim, directly beside `dark_surface_lines` (BRIDGESIL1 — see Phase 4's map item 5). One line per silently-applied core cadence change since the last brief — "announce, don't ask" (Ruling §0.3); never a confirm ask, never re-narrated.
+- `plate` → THE PLATE'S BRIEF CUT (SPEC PLATE1 night 2 — D7 `brief`). `plate.line` is the ONE number ("N on your plate today" — the PLATE'S OPEN COUNT, the same integer the board's header states; NUMBER1 3.1 / R-26, and it is no longer DO IT + CHASE), and `plate.breakdown` is the line printed directly under it ("N open · M want you today") which states what the attention count now means; `plate.rows[*].line` are the NEEDS ATTENTION rows — at most 5, the top DO IT then the top CHASE rows, each leading with its block's verb (`Do:` / `Chase:`), already gated (a row this fire's drops removed is absent — `plate.excluded_ids`) (the fatigue rule's question is the Staff Meeting's now — no brief row carries an `ask_line`, REVIEW_NIGHT11C H-5); `plate.pointer` is the one pointer ("…and N more — say `what's on my plate` for the rest."), empty when the cut is the whole plate. Render them in the order given and do NOT add rows back from anywhere. `plate.refused: true` → print `plate.line` (the one plain refusal sentence) and render NO rows (D8). `brief_state.needs_attention` / `needs_attention_more_line` stay on the pack as the gated lane the verdicts were computed over — they are NOT a second row list to print. The lane is bound at the RENDER, never at the derivation: `brief_state.headline` still counts everything, because a cap is a render bound and never a silence.
+- `watchdog_line` → NEVER PLACED (HEALTH1; see Phase 4's map item 5). The driver no longer even calls `task_watchdog.brief_watchdog_line` for this pack — `pack["watchdog_line"]` is always `None`. `cleanup`'s weekly deep pass reports the same finding in more detail.
+- `dark_surface_lines` → NEVER PLACED (TASKALARM1 — see Phase 4's map item 5b). The driver hard-codes `[]` and does not call `task_alarm.dark_surface_lines` from this fire at all — the call itself, not only the print, moved to `cleanup`'s weekly pass, because the helper marks its own render-once ledger the instant it is READ.
+- `schedule_refresh_announce_lines` → NEVER PLACED (BRIDGESIL1 — see Phase 4's map item 5c). Same reason as `dark_surface_lines`: `schedule_refresh.announce_lines` is a render-once ledger, so the call moved to `cleanup`'s weekly pass rather than being called here and discarded.
 - `prior_captures_lines` → its own small section, body of the digest, near the calendar/meeting material (MORNCAP1 — see Phase 4's map item 4d). "Captured since your last close": meetings the background/catch-up passes briefed after the last day-close receipt. Render verbatim, in the order given — never re-sort, never re-cap (already capped at 3 with an "...and N more, filed." tail). Section header prints ONLY when the list is non-empty; an empty list means the section does not exist in the digest at all (Ruling §0.3 — no "nothing was captured" filler).
 - `money_lines` → verbatim, one sentence each (FB-20's ONE carve-out — see Phase 4's map item 5).
 - `queue_pointer.line` → verbatim, ONE line, BELOW THE FOLD as the last of `fold_lines` (map item 4) — never above the number.
@@ -214,30 +259,40 @@ Run the driver ONCE per fire (idempotent-single-call — a re-run to "refresh" d
 
 # Phase 4 — Compose the digest (+ the pack placements) and save the snapshot
 
-**Order (FB-20 + BRIEFFIX1 Item C):** there is no relay step, and there is no post step HERE either — this phase produces the digest text and writes it to disk; Phase 5 receipts it; Phase 6 posts it. Build the rendered markdown digest in the exact format from `skills/morning-briefing/SKILL.md` Step 4 — header line, THE LEAD (`pack["lead"]`: the plate's number, rows, pointer — first, CUT-PLATE), the synthesis lead and CHANGED / DECIDE / NEEDED, calendar section, the money lines, OVERNIGHT INBOX, per-org thread sections, the fold lines, SUGGESTED FIRST MOVE, the health lines last.
+**Order (FB-20 + BRIEFFIX1 Item C):** there is no relay step, and there is no post step HERE either — this phase produces the digest text and writes it to disk; Phase 5 receipts it; Phase 6 posts it. Build the rendered markdown digest in the exact format from `skills/morning-briefing/SKILL.md` Step 4 — header line, THE LEAD (`pack["lead"]`: the plate's number, rows, pointer — first, CUT-PLATE), the synthesis lead and CHANGED / DECIDE / NEEDED, calendar section, the money lines, OVERNIGHT INBOX, per-org thread sections, the fold lines, SUGGESTED FIRST MOVE, then the closing preps chip. **No health lines anywhere (HEALTH1, 2026-09-07) — CUT-PLATE's trailing health block is retired, not relocated within this digest.**
 
 **Pack placement map (t3 FB-9 / FB-20 — every non-empty CR-BRIEF-PACK block lands, no exceptions):**
 
 1. `lead` — THE FIRST CONTENT BLOCK, verbatim, directly under the header (CUT-PLATE, 2026-09-06): `plate.line` — the ONE commitment number, where the six-number commitments line used to be (SPEC PLATE1 night 2 / NUMBERS1 R-1: "these numbers are so big") — then `plate.rows`, then `plate.pointer`. `brief_state.headline` is logged, never rendered as a line; CLUSTCOUNT1's `information_line` rides the `brief_state` event and the book page, not this surface. Never add a second number beside `plate.line`, never render block totals here (P4 — those are `plate` / `board` only). Nothing sits above the lead but the header and the persona-permitted intro line: the alarms that used to be item 1 are now item 5, at the end.
-1b. `plate.rows` + `plate.pointer` — the rows of the lead (SPEC PLATE1 night 2). Number `plate.rows[*].line` from 1 in the order given (at most 5: the top DO IT rows, then the top CHASE rows — `plate_view.render_plate(view, "brief")` owns the cut and every word, including the leading `Do:` / `Chase:` block verb, which is what the row wants and never a button: this surface is read-only prose, FB-20). A row whose `ask_line` is set already carries that question as its label — print the line as given (1b-bis below is the same rule, stated for the ask). Then `plate.pointer` verbatim when non-empty — never invent one, never round it. `brief_state.resting_line` does NOT print here: it is a count and it sits in `fold_lines` (item 4). Never re-rank, never top the section up from your own Step-3 scan, never print `brief_state.needs_attention` as a second list, never repeat the rows under a later "Needs attention" heading (that body section now carries only the money and detector lines). `needs_attention_ids` on the Phase 5 receipt is `[row.id for row in plate.rows]` in this exact order — that is what `mark done [n]` resolves against (BRIEFFIX1 Item C). The one number above still counts the rows the gates left out of the cut (`plate.excluded_ids`); it is the plate's number and reads the same on every surface.
-2. `changed.lines` — folded into the CHANGED contract line (one narration slot; substance first), BELOW the lead.
+1b. `plate.rows` + `plate.pointer` — the rows of the lead (SPEC PLATE1 night 2). Number `plate.rows[*].line` from 1 in the order given (at most 5: the top DO IT rows, then the top CHASE rows — `plate_view.render_plate(view, "brief")` owns the cut and every word, including the leading `Do:` / `Chase:` block verb, which is what the row wants and never a button: this surface is read-only prose, FB-20). Print each row's `line` exactly as given — the brief asks nothing and no row carries a question (1b-bis below). Then `plate.pointer` verbatim when non-empty — never invent one, never round it. `brief_state.resting_line` does NOT print here: it is a count and it sits in `fold_lines` (item 4). Never re-rank, never top the section up from your own Step-3 scan, never print `brief_state.needs_attention` as a second list, never repeat the rows under a later "Needs attention" heading (that body section now carries only the money and detector lines). `needs_attention_ids` on the Phase 5 receipt is `[row.id for row in plate.rows]` in this exact order — that is what `mark done [n]` resolves against (BRIEFFIX1 Item C). The one number above still counts the rows the gates left out of the cut (`plate.excluded_ids`); it is the plate's number and reads the same on every surface.
+2. `changed.lines` — folded into the CHANGED contract line (one narration slot; substance first), BELOW the lead. Print every line the pack hands you: the batch lines are uncapped by design (BRIEF2 2.2 item 1) and the ordinary ones are already cut to three.
 
-  **1b-bis. THE OVERDUE ASK LIVES HERE NOW (SPEC EODSYNTH1 R-3, M's ruling 2026-08-23).** The "Done, new date, or drop?" fork used to sit in the End of Day's slipped block. It asks in the MORNING now, because 5 PM is wind-down and this is the surface where the operator is in triage mode. Nothing about the RULE changed — same three-day threshold, same ask-once, same rest-until-answered, same `commitment_state.mark_asked` write; only the surface did.
+  **1b-bis. CORRECTION, 2026-09-15 (REVIEW_NIGHT11C H-5) — THE OVERDUE ASK LEFT THIS SURFACE. THE BRIEF NEVER ASKS.**
 
-  A row that is `overdue_ask_after_days` or more past its due and carries no live mark arrives with **`ask_line`** — *"Send the pricing sheet — 8 days overdue. Done, new date, or drop?"*. **Render that string as the row's label, verbatim**, instead of the plain title. The driver already pinned it to the top of the lane, and its verbs are the ones the row carries. A row with no `ask_line` renders exactly as it always has. You compute no day counts here and you compose no question here — a fire that re-words this asks a different question every morning, which is the repetition the rule exists to end.
+  This block used to say *"THE OVERDUE ASK LIVES HERE NOW"* and instructed the fire to render a row's `ask_line` — *"Send the pricing sheet — 8 days overdue. Done, new date, or drop?"* — verbatim as its label. **That instruction is retired and the paragraphs carrying it are gone.** M's design rule of 2026-09-06 is that the brief and the wrap never ask; the Staff Meeting is where questions live. FOLD1-B moved the fork there in night 11c.
 
-  **How the three answers resolve on THIS surface, stated plainly because two of them cost a hop.** *Done* is `mark done [n]`, which this brief already resolves through `brief_receipt.resolve_mark_done` against the `needs_attention_ids` on its own receipt — one tap, unchanged. *A new date* and *drop* are the `push to [date]` / `drop` verbs the row carries, and they are adjudicated on `my plate`, which the brief's queue pointer already routes to. Do not invent a one-tap affordance for them here and do not drop them from the row: the row states what it offers, and the honest sentence is that two of the three answers happen one surface over. (Closing that hop is an apply-choices route on this surface — a build, not a wording change.)
+  **The brief cannot carry the ask any more, and that is in code, not in your judgement.** `surface_drivers` builds this pack with `ask=False`, and `end_of_day` stamps an `ask_line` onto a row only when that flag is true — so **no brief row can carry one**. The Staff Meeting's `OVERDUE — new date` section asks instead, once, and the marker is written there. Phase 6.1 below still runs and is now a no-op on this surface; it is kept because the call is harmless and its absence would read as a decision.
+
+  **So: render every row's plain `line` and nothing else.** If you find yourself composing "Done, new date, or drop?" — or any question — on this surface, that is the defect this correction exists to stop. The pack's own ask fence sees the lines the pack composed; a question you add after the pack is a question nothing can see.
 
   **`brief_state.resting_line`**, when non-empty, prints verbatim BELOW THE FOLD as the first of `fold_lines` (item 4) — never beside the lead. It says how many overdue items are waiting on an answer and where to find them. An empty string means nothing is resting: do not narrate that, and never write a "0 resting" line of your own. Resting rows are not in `needs_attention` at all and you do not go looking for them — they are still inside `needs_attention_total`, which is why the denominator does not move when the lane goes quiet.
 
   **And the write half is Phase 6.1, AFTER the post.** It is a prose-called step and it is not optional: see that phase.
 3. `money_lines` — verbatim, one sentence each, in the digest body, under the Needs attention heading (the plate rows are in the lead and are not repeated there). **The ONE money carve-out (FB-20):** a deal signal is the single class the brief still names outright, because a deal that goes quiet for a day is the one silence with a price tag. These sentences are PROPOSE-ONLY and carry no verbs — each one already routes the user to `staff meeting`, which is where the confirm happens by chat phrase. Never add buttons to them, never invent a "confirm?" affordance, never act on one from this turn. Empty list → nothing renders; **never** pad an all-clear ("no new deals today" — never).
 4. `fold_lines` — BELOW THE FOLD (CUT-PLATE), near the end of the digest, before Suggested next steps: verbatim, in order — `brief_state.resting_line` then `queue_pointer.line` — followed by the skill's Step 3g confirm pointer and the dated-personal echo, one line each, each only when non-empty. The queue pointer is the brief's entire handoff to the adjudication surface; its count is the driver's, computed from the same projector the staff meeting renders — **never recount it, never adjust it, never round it, never soften it** ("a few things need your eyes" is a lie about a number you were handed). None of these lines may move above the lead.
-5. `health_lines` — LAST (CUT-PLATE), after Suggested next steps and before the closing preps chip: `alarm_lines` (FS-04/05/06/15 — the duplicate-entry warning, a stale view, unreadable entries), then `watchdog_line`, then `dark_surface_lines`, then `schedule_refresh_announce_lines`, verbatim, in that order. They used to be pinned at the top; M's rule puts them at the end — never above the number, never softened, never dropped.
-5b. `dark_surface_lines` (TASKALARM1) — inside `health_lines`, directly beside `watchdog_line`. This is the proactive "X has not fired in N days" / "was never set up on this machine" line the reader sees without asking — `task_alarm.dark_surface_lines` already capped it at 3 worst-first with an "and N more" tail and already deduped it against the same dark spell's earlier alarm (its own render-once ledger). Empty list → nothing renders; never pad an all-clear.
-5c. `schedule_refresh_announce_lines` (BRIDGESIL1) — inside `health_lines`, directly beside `dark_surface_lines`. This is the ONE narration a customer sees for a core plugin upgrade that silently moved an uncustomized cron/label (Ruling §0.3 — a new slot or changed cadence applies without asking, then says so exactly once here): `schedule_refresh.announce_lines` already capped it at 3, already worded it plain-English ("Your Inbox task now runs 7:30 AM weekdays — a Command Room update moved it; say 'change my schedule' if you'd rather move it back"), and already deduped it against the same `schedule_refreshed` event surfacing twice (its own render-once ledger, keyed by event `seq`). Empty list → nothing renders; never pad an all-clear, and never turn this into a question — it is a narration of something already applied, not a confirm ask.
+5. `health_lines` — RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07), superseding CUT-PLATE's "LAST". Never print this block. `pack["health_lines"]` is always `[]`: `alarm_lines` (FS-04/05/06/15 — the duplicate-entry warning, a stale view, unreadable entries), `watchdog_line`, `dark_surface_lines` and `schedule_refresh_announce_lines` render on the brief NOWHERE any more — CUT-PLATE moved them from item 1 (the top, where the v5.28.0 attended test found them) to item 5 (the end); M, reading his own brief, ruled "this should not be shown" and it was ruled in full for all four kinds. Nothing is silenced: the weekly `cleanup` maintenance run is the one place all four are now composed and reported, and the only surface where a cleanup pass can actually be offered and run. If you find yourself about to place any of these four fields on this turn, stop — after Suggested next steps the digest goes straight to the closing preps chip, nothing between them.
+5b. `dark_surface_lines` (TASKALARM1) — same retirement. Do not call `task_alarm.dark_surface_lines` from this fire at all (not merely "don't print it") — the driver already doesn't; a per-task "X has not fired in N days" / "was never set up on this machine" line marks its own render-once ledger the instant it is READ, so calling it here and discarding the result would consume the finding before `cleanup`'s weekly pass — the surface that now owns it — ever saw it.
+5c. `schedule_refresh_announce_lines` (BRIDGESIL1) — same retirement. The ONE narration a customer used to see here for a silently-moved cron/label now surfaces once a week in the Monday note instead ("Your Inbox task now runs 7:30 AM weekdays — a Command Room update moved it; say 'change my schedule' if you'd rather move it back"); `schedule_refresh.announce_lines` is a render-once ledger too, so this driver hard-codes an empty list rather than calling it and throwing the result away.
 6. **`prior_captures_lines` (SPEC MORNCAP1) — "captured since your last close".** A small labeled section in the digest BODY (near the calendar/meeting material, NOT the tail — this is narration of NEW artifacts the reader hasn't seen yet, not a dark-surface alarm). Render a short header ("**Captured since your last close:**") only when the list is non-empty, then the lines verbatim, in the order given — `morning_capture.narrated_since_close` already capped it at 3 with an "...and N more, filed." tail and already deduped it against the same meeting narrating twice (its own render-once ledger, keyed by meeting, not by date — SO A MEETING NEVER RE-NARRATES ON A LATER BRIEF EITHER). Each line already links the brief file that was written for it and states what came of it (n commitments, n decisions) — never re-derive either. A meeting the close itself receipted as deferred (`window_incomplete_before`) that this pass recovered renders as **"caught up overnight: X"**, never as a fresh capture — do not reword this sentence or fold it into the plain capture phrasing. Empty list → the section does not exist in the digest at all; never a "nothing was captured overnight" line (Ruling §0.3, COVERQUIET1's complaint pre-honored).
 7. **Prep-leg lines (SPEC BRIEFMERGE §A/§B)** — `prep_leg.meeting_lines(leg, workspace_root=<WORKSPACE>)`, rendered inside the existing Today's-calendar section. They are LINES, not a section: a whole-leg degrade contributes ONE banner line, a per-meeting failure contributes ONE line naming the meeting and the phrase that regenerates it, a successful prep contributes the workspace-relative link (or the honest `syncing — open from your cloud drive` line when the workspace's cloud platform — Google Drive, OneDrive, or SharePoint — has not landed the file on this machine yet; never a dead card), and a deliberate skip contributes NOTHING. The merged fire must not grow the brief past its existing caps, and an all-clear pad ("all meetings prepped") is forbidden the same way every other all-clear in this surface is.
+
+   **The lines come through the read door (MIGRATE3-MB fix round 1).** Never call `prep_leg.meeting_lines` in this session: it asks the filesystem whether each brief has landed, and a session that holds no workspace answers "syncing" for every prep. Run ONE read-door line, beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": <leg, from Phase 2.95, as it came back>, "workspace_root": "<WS>"}, "name": "morning_brief_helpers:prep_meeting_lines"}'
+```
+
+   The answer's `lines` ARE the lines, in order: place them in the calendar section and build item 7b's chips from them. The leg is one row per meeting of the day (about 30 walked items a meeting), far under the door's limit.
 
 7b. **The closing repeat (SPEC WALKSMALL1 Part B)** — the digest's LAST line repeats the LINKED prep outcomes as compact chips: `Today's preps: [9:00](_hq/meetings/…docx) · [11:00](_hq/meetings/…docx)`. Time label as link text, the same workspace-relative pointer as the target, ` · ` between them. This renders the `meeting_lines` result you already hold a SECOND time — it is not a second call and not a second derivation, so there is no second leg read and no second calendar pass to disagree with the first. Chips are LINKED outcomes only: a `syncing` line, a per-meeting regenerate line and the whole-leg banner stay in the calendar section, because a chip that opens nothing is the dead card §A refuses. No linked outcome → **no line at all**: no header, no "no preps today". One line does not grow the brief past its caps; a section would, which is why this is still LINES. Pointers stay workspace-relative here — the snapshot is written in that form and Phase 6's ONE chokepoint converts the posted copy. It is NOT the chat `Links:` section (Phase 6), which is a post-time affordance and may name documents from earlier fires.
 
@@ -255,14 +310,29 @@ Before moving on: re-check the pack against what you composed. An unplaced non-e
 
 **This does NOT license stopping here.** The receipt is not the deliverable. A turn that logs and does not reach Phase 6 is an incomplete turn — it is simply now an incomplete turn that leaves a trace.
 
-Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` — same pattern as the other 5 orchestrators. Track connector calls + prompt/response sizes + duration. Merge into `pack_run.data` as `telemetry: {...}`. Silent — never narrated to chat. (v3.5.0+ — morning-brief was the only orchestrator missing this; `usage report` aggregation was incomplete for morning-brief fires until then.)
+Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` — same pattern as the other 5 orchestrators. Track connector calls + prompt/response sizes + duration. Merge into `pack_run.data` as `telemetry: {...}`. The value is the INNER block — `build_pack_run_telemetry(...)["telemetry"]` — never the wrapper the builder returns for merging: a receipt carrying `data.telemetry.telemetry` reads as a fire with no measurement at all. Silent — never narrated to chat. (v3.5.0+ — morning-brief was the only orchestrator missing this; `usage report` aggregation was incomplete for morning-brief fires until then.)
 
 Append **ONE combined receipt covering both legs** via `shared/scripts/prep_leg.py` (SPEC BRIEFMERGE §D). It writes the SAME `pack_run` shape `receipts.log_receipt` has always written for `morning-brief` — no new receipt type, so every existing reader keeps working — with two fields added: `legs` (the leg-status map the watchdog reads) and `prep_leg` (per-meeting outcomes with their reasons). **NEVER hand-roll the receipt JSON**; hand-rolled shapes are the F-10b/F-49 drift class. ONE call per fire — a second double-logs the fire.
 
 The receipt is owed on every completed fire, including the two no-delivery paths the STOP contract names, and now including a fire whose prep leg failed entirely: "brief ran, prep didn't" is precisely the state this receipt exists to make visible, and withholding it is the Bug #98 class with an extra leg.
 
-```python
-from prep_leg import log_combined_receipt
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"brief_status": "<ran, or degraded on a Phase 2.9 degrade-tier fire>", "duration_ms": <elapsed_ms>, "extra_data": {<the extra_data block below>}, "fired_via": "<the Phase 2.9 receipt_fired_via>", "late_tier": "<note|degrade, else null>", "leg_result": <leg, from Phase 2.95 -- never null, even on a whole-leg failure>, "workspace_root": "<WS>"}, "name": "morning_brief_helpers:plan_combined_receipt"}'
+```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "morning-brief", "rel": "_hq/data/events.jsonl", "rows": [<every row in rows from the receipt answer above, in order>]}'
+```
+
+`prep_leg.log_combined_receipt` runs beside the data with its append held —
+the call below, its arguments exactly the plan line's — and the row it would
+write comes back in `rows`: its own shape, its own pointer assert, the writer's
+identity stamp. ONE append lands it. `fired_via` is the Phase 2.9
+`receipt_fired_via` (manual | scheduled | catchup) — never guess it — and
+`late_tier` is the tier only on `note`/`degrade`. The call, and its
+`extra_data` block:
+
+```text
 log_combined_receipt(
     WORKSPACE_ROOT,
     leg_result=leg,                           # from Phase 2.95 — never None, even on a whole-leg failure
@@ -309,25 +379,30 @@ If the workspace has **zero commitment events** but ≥3 meeting events on file,
 
 **Convert the document links FIRST — this is the last thing that happens to the text (SPEC BRIEFFIX1 Item A).** The composed digest carries WORKSPACE-RELATIVE pointers, which is correct on disk and dead in chat: Cowork resolves a link against THIS computer's filesystem, so a relative href renders "this file can't be found on your computer" while the document sits in the synced folder. Run the posted copy — and only the posted copy — through the one chokepoint:
 
-```python
-from chat_output_renderer import absolutize_doc_links
-post_text = absolutize_doc_links(digest_markdown, WORKSPACE_ROOT)
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"text": "<digest_markdown, verbatim>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:post_text"}'
 ```
 
-**On a cloud-mounted workspace, pass the web links too (v5.11.1, BUG-8538).** When `brief_path.is_session_scoped_path(WORKSPACE_ROOT + "/_hq")` is true, the `computer://` form the conversion falls back to is dead on the customer's machine — resolve each doc's web link on the workspace's OWN cloud platform and hand the resolver in:
+The answer's `text` is `post_text` — `chat_output_renderer.absolutize_doc_links(digest_markdown, WORKSPACE_ROOT)`, run beside the data (BRIEFDOOR1 SHOULD 6), where the root is.
 
-```python
-# Discover once, host preferred (never first-match — with Google Drive AND
-# Microsoft 365 both connected, first-match can search the wrong drive):
-#   tool_discovery.discover_drive_tool(tools, "search",
-#       prefer_platform=tool_discovery.infer_workspace_drive_platform(WORKSPACE_ROOT))
-# google_drive → Drive web link; onedrive / m365_sharepoint (the M365
-# connector's file surface spells `sharepoint`, e.g. sharepoint_search) →
-# OneDrive/SharePoint web URL. Lookup empty-handed + another drive connected
-# (with or without an inferred preference) → try the other. Lookup failure is
-# non-fatal.
-post_text = absolutize_doc_links(digest_markdown, WORKSPACE_ROOT,
-                                 drive_web_url=web_url_for_path)  # callable: relative path → web URL or ""
+**On a cloud-mounted workspace, pass the web links too (v5.11.1, BUG-8538).** When `brief_path.is_session_scoped_path(WORKSPACE_ROOT + "/_hq")` is true, the `computer://` form the conversion used to fall back to is dead on the customer's machine — resolve each doc's web link on the workspace's OWN cloud platform and hand the resolver in:
+
+```text
+Discover once, host preferred (never first-match — with Google Drive AND
+Microsoft 365 both connected, first-match can search the wrong drive):
+  tool_discovery.discover_drive_tool(tools, "search",
+      prefer_platform=tool_discovery.infer_workspace_drive_platform(WORKSPACE_ROOT))
+google_drive → Drive web link; onedrive / m365_sharepoint (the M365
+connector's file surface spells `sharepoint`, e.g. sharepoint_search) →
+OneDrive/SharePoint web URL. Lookup empty-handed + another drive connected
+(with or without an inferred preference) → try the other. Lookup failure is
+non-fatal. Hand what you found to the same verb as a MAP, relative path →
+web link (a callable cannot cross a command line; a path the map does not
+carry gets the empty string, the conversion's own honest no-href form):
+```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"drive_web_urls": {"<relative path>": "<web link>"}, "text": "<digest_markdown, verbatim>", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:post_text"}'
 ```
 
 It rewrites every workspace-relative `.docx` / `.pdf` / `.xlsx` / `.pptx` link target to the machine-absolute `computer://` form (through `workspace_paths`' anchor machinery and `brief_path.get_brief_opener_url`, so a cloud-mounted workspace — Google Drive, OneDrive, or SharePoint — gets its web link instead) and leaves everything else byte-for-byte alone. **Never hand-write the absolute form into the composed text** — that would re-rot the snapshot you already saved, which is the bug in the other direction. **Never skip the call because "the links look fine"**: they look fine because they are the persisted form, which is exactly the failure. The rendered-payload scan refuses a payload still carrying a relative doc href, so a skipped conversion fails loudly rather than shipping a dead card.
@@ -351,10 +426,15 @@ If any briefs or files were referenced (Past Meetings docs, prep docs from earli
 
 Once the turn is posted, one call, silent, no chat output:
 
-```python
-from end_of_day import mark_lane_asked
-mark_lane_asked(WORKSPACE_ROOT, pack["brief_state"], source_skill="morning-brief")
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"brief_state": <pack["brief_state"], verbatim>, "workspace_root": "<WS>"}, "name": "morning_brief_helpers:plan_lane_asked"}'
 ```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "morning-brief", "rel": "_hq/data/events.jsonl", "rows": [<every row in rows from the mark answer above, in order>]}'
+```
+
+The write door runs `end_of_day.mark_lane_asked(WORKSPACE_ROOT, pack["brief_state"], source_skill="morning-brief")` beside the data with its appends held (a writer: its idempotency read takes the ledger lock) (BRIEFDOOR1 SHOULD 6); the rows it would have written come back, and the append lands them. When `rows` is empty there is nothing to append.
 
 **One call that takes the lane whole** — it reads `brief_state["asked_ids"]` and writes one additive `commitment_updated` per row through `commitment_state.mark_asked`, stamped with THIS surface's id so "which surface asked" stays readable. Do not loop, do not pick rows, do not hand it a list you built: which rows were asked about was decided in the driver and is not a judgement to re-make here.
 
@@ -368,7 +448,7 @@ The write is deliberately not movement, so asking about a quiet item does not ma
 
 Degradation and hard failure are different things, and the merged fire has to keep telling them apart now that it writes deliverables as well as a digest.
 
-- **Connector flake / one source unreachable** — degrade gracefully. Note it in plain English inside the digest ("⚠️ Couldn't reach the calendar — check connection"), carry the reason into the receipt's `errors[]`, and finish the fire. A prep leg that could not read the calendar is a whole-leg degrade (Phase 2.95), not a failure of the fire.
+- **Connector flake / one source unreachable** — degrade gracefully, and **say nothing about it in the digest** (M's ruling R3, 2026-09-13 — SPEC SURFACEFIX1 5.1). Leave the section that leg would have filled out of the brief, carry the reason into the receipt's `errors[]` and the pack's `connector_gaps`, and finish the fire. The health check and the weekly maintenance report are where a reader learns a leg was not read; the brief never carries a reachability line of any shape. A prep leg that could not read the calendar is a whole-leg degrade (Phase 2.95), not a failure of the fire.
 - **Hard failure** (entities.json malformed, the workspace unwritable — the fire genuinely cannot proceed): stop, append a `scheduled_task_failure` event carrying the diagnostic verbatim, and surface ONE plain-English line ("Couldn't write this morning's brief — the workspace data looks corrupt. Run `weekly cleanup` to diagnose."). That event is the dead-letter the watchdog reads (`task_watchdog.check_task_failures`) — without it a fire that died mid-run leaves no trace anywhere, which is the silent-death class this whole merge exists to shrink.
 
 NEVER silent-retry. NEVER expose tool names or error-class strings in chat.
@@ -388,5 +468,61 @@ The single source of truth lives at `skills/morning-briefing/SKILL.md`. This orc
 - DOES now generate per-meeting prep briefs — Phase 2.95, the leg that replaced the retired `upcoming-meetings` chat (SPEC BRIEFMERGE). It does NOT reimplement the generator: it invokes `skills/call-prep/SKILL.md` per meeting, the same one the on-demand "prep me for my 2pm" runs.
 - Does NOT refresh prep later in the day. There is deliberately NO midday leg (M's ruling): a meeting booked after this fire is covered on demand by `call-prep`.
 - Does NOT modify entities.json, MASTER_TRACKER, or any workspace VIEW state beyond the prep leg's own deliverables and receipts — the digest half stays read-only **toward views and entities. This line does NOT cancel Phase 2's passive-capture mandate** (BUG-8244 clarification): "Every connector read MUST emit corresponding events to events.jsonl per `shared/PASSIVE_CAPTURE.md`" stands in full — `interaction` events from the mail/calendar/chat reads are substrate CAPTURE, not digest mutation, and a brief that reads connectors without capturing them starves relationship cadence, dormancy, and every last-touch computation downstream. Read-only means: no entity writes, no tracker writes, no view regeneration, no commitment/decision mutations — capture events + the receipt are always in scope.
-- Does NOT fabricate data when a connector times out — per the skill's Reliability section, output "⚠️ Couldn't reach [Gmail/Calendar/Slack] — check connection" and continue without that source's data.
+- Does NOT fabricate data when a connector times out — per the skill's Reliability section, leave that source's section out of the digest entirely, carry the gap into `connector_gaps` for the health check and the maintenance report, and continue. The digest itself says nothing about the gap (R3, SPEC SURFACEFIX1 5.1).
 - Does NOT fire on weekends if the cron is configured weekday-only (default). Manual trigger of `morning briefing` on a weekend still works via the skill's on-demand path.
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

@@ -43,8 +43,8 @@ from typing import Iterable, List, Optional
 
 @dataclass
 class ToolDescriptor:
-    """Describes one available MCP tool. Orchestrator pulls these from Cowork's
-    tool registry at fire time.
+    """Describes one available MCP tool. Orchestrator pulls these from the
+    session's own tool registry at fire time.
     """
     tool_id: str  # e.g. "mcp__abc123__google_calendar_find_events"
     name: str = ""  # human-friendly name from the MCP manifest
@@ -95,6 +95,28 @@ def _server_id_of(tool_id: str):
     return m.group("server") if m else None
 
 
+def _op_segment_of(tool_id: str) -> str:
+    """The OPERATION segment of a tool id — everything after the server segment.
+
+    DISC1 (gap analysis §6.3, ruling §0.30). In the UUID era the server segment
+    could not spell an operation, so matching an operation keyword against the
+    WHOLE id was safe. In the merged app the server segment is the connector's
+    DISPLAY NAME — human words the customer types in Settings → Connectors —
+    and a display name that spells a verb mis-binds: `Superhuman Send Mail`
+    would resolve `list_threads` as the mail SEND tool, `Google Drive Search`
+    would resolve `trash_file` as the drive SEARCH tool. An operation keyword
+    is a claim about what a TOOL does, so it is compared against the operation
+    segment alone. PLATFORM and product-name hints keep matching the whole id —
+    that is where the product name legitimately lives.
+
+    Monotone for old ids: a prefixed operation segment (`gmail_search_threads`)
+    still contains its keyword. An id that does not parse falls back to the
+    whole string rather than resolving nothing.
+    """
+    m = _TOOL_ID_RE.match((tool_id or "").strip())
+    return m.group("op") if m else (tool_id or "")
+
+
 def zapier_servers(tools, pinned_ids=None) -> set:
     """Server-ids that are the Zapier dispatch leg. Union of (a) ids pinned in
     the manifest (`workspace.connectors._zapier_server_ids`, authoritative —
@@ -121,8 +143,14 @@ def zapier_servers(tools, pinned_ids=None) -> set:
 def _is_zapier(tool_id: str, zapier_ids=None) -> bool:
     """True if this tool belongs to a Zapier server. Legacy `mcp__zapier_`
     prefix OR membership of the tool's server-id in `zapier_ids` (the R12 fix —
-    UUID-namespaced Zapier legs have no prefix)."""
-    if "mcp__zapier_" in (tool_id or ""):
+    UUID-namespaced Zapier legs have no prefix).
+
+    DISC1: the prefix test is CASE-INSENSITIVE. In the merged app the server
+    segment is the connector's display name with its capitals kept, so the leg
+    ships as `mcp__Zapier__gmail_send_email` — which the old case-sensitive
+    test missed, leaving a Zapier tool to be matched as a native Gmail one
+    (exactly the R12/H-H trap the pinned-id path exists to close)."""
+    if "mcp__zapier_" in (tool_id or "").lower():
         return True
     if zapier_ids:
         return _server_id_of(tool_id) in zapier_ids
@@ -289,7 +317,14 @@ def _fingerprint_platforms(tools, category: str = "email") -> dict:
             row = rows.get(provider) or {}
             if row.get("is_zapier"):
                 continue
-            if (row.get("category") or "") != category:
+            # DISC1: a provider may front MORE THAN ONE category — Superhuman
+            # is the workspace's mail connector AND its calendar connector. The
+            # single-`category` test dropped the Superhuman row from every
+            # calendar fingerprint, which is why the calendar seam could never
+            # see it. `categories` is the multi-category truth; `category`
+            # stays as the back-compatible floor for rows that declare one.
+            if category not in (row.get("categories")
+                                or [row.get("category") or ""]):
                 continue
             out[sid] = provider
             break
@@ -321,58 +356,129 @@ def _known_mail_products() -> str:
 def discover_calendar_tool(
     tools: Iterable[ToolDescriptor],
     operation: str = "find_events",
+    *,
+    declared: Optional[dict] = None,
+    zapier_ids=None,
 ) -> DiscoveryResult:
-    """Discover the native Calendar tool for the given operation across BOTH
-    Google Calendar and Outlook Calendar (Graph API).
+    """Discover the native Calendar tool for the given operation — Google
+    Calendar, Outlook Calendar, or the mail connector that fronts calendar too
+    (Superhuman).
 
-    `operation` is a hint like `find_events`, `create_event`, `respond_to_event`,
-    `update_event`. The function looks for a tool whose ID matches a native
-    calendar platform AND the operation hint, EXCLUDING any Zapier-namespaced
-    tools.
+    `operation` is one of the vocabulary's names (`find_events`,
+    `create_event`, `update_event`, `respond_to_event`, `availability`) or a
+    provider tool name spelled outright, which still matches as it always did.
 
-    v2.14.2+ — extended to detect Outlook Calendar via the
-    `_CALENDAR_PLATFORM_HINTS` map. Per CONTRACT.md Rule 21, the orchestrator
-    branches on `result.platform` to use the right adapter.
+    Order, mirroring the mail and chat seams (DISC1; CONTRACT Rule 21):
+      1. DECLARED backend, server-id first (`discover_for_category`), with the
+         declared PROVIDER's own calendar vocabulary ahead of the blind floor.
+         Its result is returned UNCONDITIONALLY — a declared backend that
+         cannot serve this operation is a capability gap, never a licence to
+         reach for another product's calendar (the G36 no-fallthrough rule).
+      2. Undeclared: platform by product-name hint OR by capability
+         FINGERPRINT. The fingerprint half is what mail got at `_platform_of`
+         and chat at `discover_chat_tool`; the calendar seam never had it,
+         which is why even a UUID Google Calendar resolved None here.
+      3. EVERY candidate is gated on `_has_calendar_operation`, and a soft
+         match must be of the same read/write class as the operation asked
+         for. Without the gate, a connector that fronts both mail and calendar
+         donates its first tool — `list_threads` — to every calendar call.
 
     Per CONTRACT.md Rule 8 — calendar NEVER through Zapier. If only Zapier
     calendar tools are exposed, returns no match with a plain-English reason.
     """
     tools_list = list(tools)
-    candidates = 0
-    soft_match: Optional[ToolDescriptor] = None
-    soft_platform: Optional[str] = None
 
-    for t in tools_list:
-        candidates += 1
-        if _is_zapier(t.tool_id):
-            continue
-        platform = _match_platform(t.tool_id, _CALENDAR_PLATFORM_HINTS)
+    if declared and declared.get("server_id"):
+        # The same unconditional `return` the mail and chat seams carry: on a
+        # miss the caller gets the declared backend's own refusal, not another
+        # product's calendar.
+        return discover_for_category(
+            "calendar", operation, tools_list,
+            declared=declared, zapier_ids=zapier_ids,
+            op_candidates=_calendar_op_candidates(
+                declared.get("provider"), operation),
+        )
+
+    zap = zapier_servers(tools_list, zapier_ids)
+    eligible = [t for t in tools_list if not _is_zapier(t.tool_id, zap)]
+    fp_platforms = _fingerprint_platforms(eligible, "calendar")
+    candidates = len(tools_list)
+    want_class = _CALENDAR_OPERATION_CLASS.get(operation)
+
+    def _platform_of(t) -> Optional[str]:
+        return (_match_platform(t.tool_id, _CALENDAR_PLATFORM_HINTS)
+                or fp_platforms.get(_server_id_of(t.tool_id)))
+
+    # Keyword-outer, exactly as the mail loop: the precise spelling beats
+    # registry order, so which tool answers stops depending on how the
+    # connector happened to list them.
+    pairs = []
+    for t in eligible:
+        platform = _platform_of(t)
         if not platform:
             continue
-        tid_lower = t.tool_id.lower()
-        if operation in tid_lower or operation.replace("_", "") in tid_lower.replace("_", ""):
+        if not _has_calendar_operation(t.tool_id):
+            continue          # the op gate (probe hazard 1)
+        pairs.append((t, platform))
+
+    by_platform_ops: dict = {}
+    for _t, platform in pairs:
+        if platform not in by_platform_ops:
+            ops = _calendar_op_candidates(platform, operation) or [operation]
+            by_platform_ops[platform] = [_norm_op(o) for o in ops]
+
+    ordered_ops = []
+    for _t, platform in pairs:
+        for o in by_platform_ops[platform]:
+            if o not in ordered_ops:
+                ordered_ops.append(o)
+
+    for op_norm in ordered_ops:
+        for t, platform in pairs:
+            if op_norm not in by_platform_ops[platform]:
+                continue
+            # DISC1 site 1 of 8 — the operation is compared against the
+            # operation SEGMENT; the platform match above reads the whole id.
+            if op_norm in _norm_op_segment(t.tool_id):
+                return DiscoveryResult(
+                    tool_id=t.tool_id,
+                    candidates_considered=candidates,
+                    platform=platform,
+                )
+
+    for t, platform in pairs:
+        # A soft match is allowed only within the operation's own class: a READ
+        # never lands on a WRITE tool.
+        if want_class is not None and _calendar_operation_class(t.tool_id) == want_class:
             return DiscoveryResult(
                 tool_id=t.tool_id,
+                reason=(f"matched native Calendar tool but operation hint "
+                        f"{operation!r} not in tool ID"),
                 candidates_considered=candidates,
                 platform=platform,
             )
-        # Soft match — calendar platform OK but operation hint not in tool_id
-        if soft_match is None:
-            soft_match = t
-            soft_platform = platform
 
-    if soft_match is not None:
+    if pairs and want_class is None:
+        # R-D1. The operation is one this seam has never been taught, so there
+        # is no way to know whether it reads the calendar or writes it — and a
+        # soft match would then hand back whichever calendar-shaped tool the
+        # connector happened to list first. On one registry order that is the
+        # event reader; on another it is the tool that WRITES events. A refusal
+        # is a sentence on a screen; a wrong write on someone's calendar is a
+        # phone call. So the seam refuses and names the gap, exactly as the
+        # declared path does when a backend cannot serve an operation.
         return DiscoveryResult(
-            tool_id=soft_match.tool_id,
-            reason=f"matched native Calendar tool but operation hint {operation!r} not in tool ID",
+            tool_id=None,
+            reason=(f"a calendar is connected, but Command Room has no "
+                    f"calendar operation named {operation!r} — capability "
+                    "absent; degrade per RELIABILITY.md."),
             candidates_considered=candidates,
-            platform=soft_platform,
         )
 
     # Check if Zapier-namespaced calendar tools exist — if so, the user has
     # Zapier Calendar configured but no native; surface a clear reason.
     for t in tools_list:
-        if _is_zapier(t.tool_id):
+        if _is_zapier(t.tool_id, zap):
             tid_lower = t.tool_id.lower()
             if _match_platform(tid_lower, _CALENDAR_PLATFORM_HINTS):
                 return DiscoveryResult(
@@ -380,15 +486,17 @@ def discover_calendar_tool(
                     reason=(
                         "Native Calendar MCP not connected — only Zapier Calendar "
                         "exposed, which is out-of-scope per the calendar HARD SCOPE "
-                        "rule. Connect Google Calendar or Outlook Calendar in Cowork "
-                        "→ Settings → Connectors to enable calendar actions."
+                        "rule. Connect Google Calendar, Outlook Calendar or "
+                        "Superhuman in the Claude app's Settings → Connectors to "
+                        "enable calendar actions."
                     ),
                     candidates_considered=candidates,
                 )
 
     return DiscoveryResult(
         tool_id=None,
-        reason="No native Calendar MCP tool found (Google Calendar or Outlook Calendar).",
+        reason=("No native Calendar MCP tool found (Google Calendar, Outlook "
+                "Calendar, or a mail connector that fronts calendar)."),
         candidates_considered=candidates,
     )
 
@@ -536,8 +644,8 @@ def discover_zapier_send_tool(tools: Iterable[ToolDescriptor],
     return DiscoveryResult(
         tool_id=None,
         reason=(
-            "Zapier send tool not detected. Confirm your Zap exists in Cowork → "
-            "Settings → Connectors → Zapier, named exactly "
+            "Zapier send tool not detected. Confirm your Zap exists in the "
+            "Claude app's Settings → Connectors → Zapier, named exactly "
             "`Command Room — Send Threaded Email` (em-dash). If it's there with "
             "a different name, rename it. Otherwise see the setup guide."
         ),
@@ -595,6 +703,103 @@ def _norm_op(value) -> str:
     justification for the seam vocabulary, so the comparison the two paths make
     has to be literally the same function."""
     return str(value).lower().replace("_", "").replace("-", "")
+
+
+def _norm_op_segment(tool_id: str) -> str:
+    """`_norm_op` applied to the OPERATION segment only (DISC1, §0.30).
+
+    Every operation-keyword comparison in this module reads this instead of the
+    normalized whole id, so a connector whose DISPLAY NAME spells a verb cannot
+    donate that verb to one of its own tools. See `_op_segment_of`."""
+    return _norm_op(_op_segment_of(tool_id))
+
+
+# ---------------------------------------------------------------------------
+# The read/write class gate, one category wider than calendar (R-D2, DISC1).
+# ---------------------------------------------------------------------------
+# `discover_calendar_tool` already refuses to soft-match a read onto a write.
+# The drive, Slack and chat seams had no such rule: when the connector exposed
+# no tool spelling the operation asked for, they returned the FIRST tool on the
+# platform whatever it did — so a drive that exposes no search returned
+# `trash_file` for a search, and a chat that exposes no read returned
+# `slack_send_message` for a read. That is a delete offered as a read and a
+# send offered as a read; both are acts a customer cannot take back by reading
+# again. A soft match is a GUESS, and a guess may never land on a tool that
+# changes something.
+#
+# TWO sets, deliberately different widths AND matched in different ways,
+# because the cost of a miss differs by side.
+#
+# The TOOL side decides whether a GUESS is allowed to land on this tool, so a
+# missing verb hands a customer a tool that changes something when they asked
+# to read. Seven verbs was not enough: `share_file`, `copy_file`, `move_item`,
+# `rename_item`, `sharepoint_upload_file`, `sharepoint_move_item`,
+# `sharepoint_rename_item`, `upload_assets`, `slack_schedule_message`,
+# `slack_add_reaction`, `slack_add_list_record` and `slack_share_canvas` all
+# slipped through — a deferred SEND and a change to who can see a customer's
+# file among them. So the tool side is a CURATED write vocabulary, below.
+#
+# It is matched on the TOKEN BOUNDARIES of the operation segment, never as a
+# raw substring, and that is not fussiness: `sharepoint_search`,
+# `sharepoint_folder_search` and `slack_share_canvas` all contain the letters
+# "share", `slack_get_reactions` contains "react", `list_drafts` and
+# `get_draft` contain "draft". A substring test over this vocabulary would
+# refuse five perfectly good READ tools and leave those seats with no drive
+# search and no way to read a channel. Tokens are the words of the operation
+# the connector named — `sharepoint` is not `share`.
+#
+# The OPERATION side is asked a different question: does what the caller asked
+# for plainly intend a change? A miss there merely refuses a legitimate write,
+# which is unhelpful rather than unsafe, so it stays wider and stays a
+# substring test over Command Room's own operation spellings.
+_WRITE_CLASS_TOOL_OPS = frozenset((
+    "send", "schedule", "add", "create", "update", "delete", "trash",
+    "remove", "upload", "move", "rename", "copy", "share", "post", "reply",
+    "forward", "set", "mark", "unsubscribe", "respond", "write", "publish",
+    "import", "commit", "discard", "undo",
+))
+
+_WRITE_INTENT_OPS = (
+    "trash", "delete", "remove", "send", "post", "update", "create",
+    "upload", "write", "share", "move", "rename", "add", "set", "put",
+    "modify", "edit", "reply", "forward", "schedule", "invite", "respond",
+    "draft", "archive", "copy", "complete", "react",
+)
+
+# A word boundary inside an operation segment: any run of non-alphanumerics
+# (`slack_add_reaction`, `sharepoint-search`) OR a lowercase-to-uppercase step
+# (`createEnvelope`, `sendReminder` — the camelCase connectors spell their
+# tools that way, and those were caught by the old substring test, so the
+# token split has to keep catching them).
+_OP_TOKEN_SPLIT_RE = _re.compile(r"[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _op_tokens(value: str) -> tuple:
+    """The words of an operation segment, lowercased."""
+    return tuple(p.lower() for p in _OP_TOKEN_SPLIT_RE.split(value or "") if p)
+
+
+def _spells_any(value: str, tokens) -> bool:
+    norm = _norm_op(value)
+    return any(tok in norm for tok in tokens)
+
+
+def _is_write_class_tool(tool_id: str) -> bool:
+    """True when a tool's OPERATION segment names a verb that changes
+    something — sends, schedules, shares, moves, renames, uploads, removes.
+
+    The segment, never the whole id: a connector DISPLAY NAME that happens to
+    contain "update" says nothing about what its tools do. And the segment's
+    TOKENS, never its letters: `sharepoint_search` is a search."""
+    return any(tok in _WRITE_CLASS_TOOL_OPS
+               for tok in _op_tokens(_op_segment_of(tool_id)))
+
+
+def _soft_match_refused(operation: str, tool_id: str) -> bool:
+    """R-D2: a READ operation never soft-matches onto a tool that writes,
+    sends or removes. An operation that plainly intends a change may."""
+    return (_is_write_class_tool(tool_id)
+            and not _spells_any(operation, _WRITE_INTENT_OPS))
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +920,124 @@ def _has_mail_operation(tool_id: str) -> bool:
     it has two mail connectors — naming an inbox it does not have."""
     tid = _norm_op(tool_id)
     return any(tok in tid for tok in _MAIL_OPERATION_TOKENS)
+
+
+# ---------------------------------------------------------------------------
+# The CALENDAR operation vocabulary (DISC1) — the mail block's shape, one
+# category over. Before this, `discover_calendar_tool` was hint-only: it asked
+# whether a tool id spelled a calendar PRODUCT and then took the first tool on
+# that server, whatever the tool did. That is why a Superhuman workspace had no
+# calendar at all (its ids spell no calendar product) and why even a UUID
+# Google Calendar resolved nothing — the seam never got the fingerprint
+# fallback mail and chat have. With the fingerprint fallback added, a vocabulary
+# becomes mandatory: the moment a mail-and-calendar connector counts as a
+# calendar platform, "first tool on the platform" would hand back `list_threads`
+# as the event reader.
+# ---------------------------------------------------------------------------
+
+# PROVIDER-BLIND floor — spellings whose meaning does not depend on the backend.
+_CALENDAR_OPERATION_KEYWORDS = {
+    "find_events": ("find_events", "list_events", "calendar_search",
+                    "search_events"),
+    "create_event": ("create_event",),
+    "update_event": ("update_event",),
+    "respond_to_event": ("respond_to_event", "rsvp"),
+    "availability": ("suggest_time", "find_available_time",
+                     "find_meeting_availability", "get_availability"),
+}
+
+# PER-PROVIDER vocabulary, PREPENDED to the blind floor (never a replacement),
+# exactly as `_MAIL_PROVIDER_OPERATION_KEYWORDS` is. Superhuman's calendar
+# surface shares its mail tools' spelling (`query_email_and_calendar` reads the
+# calendar; `create_or_update_event` writes it), so the blind floor alone would
+# refuse a backend that plainly works.
+#
+# `superhuman.respond_to_event` is deliberately ABSENT: the merged tool set has
+# no respond/RSVP tool, and the manifest row says so (`rsvp: false`). The seam
+# refuses rather than soft-binding some other event tool to an RSVP.
+_CALENDAR_PROVIDER_OPERATION_KEYWORDS = {
+    "superhuman": {
+        "find_events": ("query_email_and_calendar",),
+        "create_event": ("create_or_update_event",),
+        "update_event": ("create_or_update_event",),
+        "availability": ("get_availability",),
+    },
+    "outlook_calendar": {
+        "find_events": ("outlook_calendar_search",),
+        "availability": ("outlook_find_available_time",
+                         "find_meeting_availability"),
+    },
+}
+
+# Whether an operation READS the calendar, WRITES it, or answers an invitation.
+# A soft match may only land on a tool of the SAME class as the operation asked
+# for: `find_events` soft-binding `create_or_update_event` would turn a read of
+# the week into a write on it, which is the one calendar failure nobody can
+# undo by reading again.
+_CALENDAR_OPERATION_CLASS = {
+    "find_events": "read",
+    "create_event": "write",
+    "update_event": "write",
+    "respond_to_event": "respond",
+    "availability": "read",
+}
+
+
+def _build_calendar_token_class() -> dict:
+    """normalized keyword → operation class, derived from the two vocabularies
+    above rather than hand-listed, so a keyword added tomorrow is classified
+    for free."""
+    out: dict = {}
+    for op, group in _CALENDAR_OPERATION_KEYWORDS.items():
+        for k in group:
+            out.setdefault(_norm_op(k), _CALENDAR_OPERATION_CLASS[op])
+    for row in _CALENDAR_PROVIDER_OPERATION_KEYWORDS.values():
+        for op, group in row.items():
+            for k in group:
+                out.setdefault(_norm_op(k), _CALENDAR_OPERATION_CLASS[op])
+    return out
+
+
+_CALENDAR_TOKEN_CLASS = _build_calendar_token_class()
+
+# Every token that means "this tool does something calendar-shaped".
+_CALENDAR_OPERATION_TOKENS = frozenset(_CALENDAR_TOKEN_CLASS)
+
+
+def _has_calendar_operation(tool_id: str) -> bool:
+    """True when a tool id's OPERATION spells something the calendar seam can
+    actually use.
+
+    The gate on counting a tool as a calendar candidate — the mail seam's
+    `_has_mail_operation` one category over, and the fence that stops probe
+    hazard 1: with Superhuman fingerprinting as a calendar provider, an
+    ungated soft match binds `list_threads` (its first tool) as the calendar
+    tool for every operation."""
+    seg = _norm_op_segment(tool_id)
+    return any(tok in seg for tok in _CALENDAR_OPERATION_TOKENS)
+
+
+def _calendar_operation_class(tool_id: str) -> Optional[str]:
+    """`"read"` / `"write"` / `"respond"` for the operation a tool spells, or
+    None. The LONGEST matching token wins, so a compound spelling is classified
+    by the whole verb rather than by a fragment of it."""
+    seg = _norm_op_segment(tool_id)
+    best = None
+    for tok, cls in _CALENDAR_TOKEN_CLASS.items():
+        if tok in seg and (best is None or len(tok) > len(best[0])):
+            best = (tok, cls)
+    return best[1] if best else None
+
+
+def _calendar_op_candidates(provider: Optional[str], operation: str) -> list:
+    """The operation vocabulary for a calendar lookup: the provider's own
+    spellings first, then the blind floor. An operation the vocabulary does not
+    know (a caller naming a provider tool outright) returns [] — the caller
+    then falls back to matching `operation` itself, which is today's
+    behaviour."""
+    row = _CALENDAR_PROVIDER_OPERATION_KEYWORDS.get((provider or "").lower()) or {}
+    return list(row.get(operation, ())) + list(
+        _CALENDAR_OPERATION_KEYWORDS.get(operation, ()))
 
 
 def _ambiguity_note(detected: list, operation_label: str,
@@ -852,7 +1175,8 @@ def _discover_mail_tool(
             platform = _platform_of(t)
             if not platform:
                 continue
-            tid_norm = _norm_op(t.tool_id)
+            # DISC1 site 2 of 8 — operation segment only (`_op_segment_of`).
+            tid_norm = _norm_op_segment(t.tool_id)
             if k in tid_norm:
                 return DiscoveryResult(
                     tool_id=t.tool_id,
@@ -864,7 +1188,7 @@ def _discover_mail_tool(
                 )
     miss = (
         f"No native mail tool found for {operation_label}. Connect one of "
-        f"{_known_mail_products()} in Cowork → Settings → Connectors."
+        f"{_known_mail_products()} in the Claude app's Settings → Connectors."
     )
     if ambiguous:
         miss = miss + " " + _ambiguity_note(detected, operation_label, None)
@@ -1027,7 +1351,8 @@ def discover_transcript_tool(
         platform = _match_platform(t.tool_id, _TRANSCRIPT_PLATFORM_HINTS)
         if not platform:
             continue
-        tid_norm = t.tool_id.lower().replace("_", "")
+        # DISC1 site 3 of 8 — operation segment only.
+        tid_norm = _norm_op_segment(t.tool_id)
         if op_norm in tid_norm:
             return DiscoveryResult(
                 tool_id=t.tool_id,
@@ -1049,8 +1374,8 @@ def discover_transcript_tool(
     return DiscoveryResult(
         tool_id=None,
         reason=(
-            "No transcript MCP tool found. Connect Granola or Fireflies in Cowork → "
-            "Settings → Connectors."
+            "No transcript MCP tool found. Connect Granola or Fireflies in the "
+            "Claude app's Settings → Connectors."
         ),
         candidates_considered=candidates,
     )
@@ -1078,6 +1403,7 @@ def discover_slack_tool(
     tools_list = list(tools)
     candidates = 0
     soft_match: Optional[ToolDescriptor] = None
+    refused_write = False
     op_norm = operation.lower().replace("_", "")
 
     for t in tools_list:
@@ -1087,13 +1413,17 @@ def discover_slack_tool(
         platform = _match_platform(t.tool_id, _CHAT_PLATFORM_HINTS)
         if not platform:
             continue
-        tid_norm = t.tool_id.lower().replace("_", "")
+        # DISC1 site 4 of 8 — operation segment only.
+        tid_norm = _norm_op_segment(t.tool_id)
         if op_norm in tid_norm:
             return DiscoveryResult(
                 tool_id=t.tool_id,
                 candidates_considered=candidates,
                 platform=platform,
             )
+        if _soft_match_refused(operation, t.tool_id):
+            refused_write = True     # R-D2: a read never guesses onto a send
+            continue
         if soft_match is None:
             soft_match = t
 
@@ -1107,7 +1437,10 @@ def discover_slack_tool(
 
     return DiscoveryResult(
         tool_id=None,
-        reason="No native Slack MCP tool found.",
+        reason=("Slack is connected but exposes no tool for "
+                f"{operation!r}; the tools it does expose would post or change "
+                "something, so nothing was matched."
+                if refused_write else "No native Slack MCP tool found."),
         candidates_considered=candidates,
     )
 
@@ -1162,6 +1495,7 @@ def discover_chat_tool(
     op_norm = operation.lower().replace("_", "")
     eligible = [t for t in tools_list if not _is_zapier(t.tool_id, zap)]
 
+    refused_write = False
     by_provider = _fingerprint_platforms(eligible, category="chat")
     if by_provider:
         soft = None
@@ -1170,10 +1504,14 @@ def discover_chat_tool(
             provider = by_provider.get(sid) if sid else None
             if not provider:
                 continue
-            if op_norm in t.tool_id.lower().replace("_", ""):
+            # DISC1 site 5 of 8 — operation segment only.
+            if op_norm in _norm_op_segment(t.tool_id):
                 return DiscoveryResult(tool_id=t.tool_id,
                                        candidates_considered=len(tools_list),
                                        platform=provider)
+            if _soft_match_refused(operation, t.tool_id):
+                refused_write = True   # R-D2
+                continue
             if soft is None:
                 soft = (t, provider)
         if soft is not None:
@@ -1191,10 +1529,14 @@ def discover_chat_tool(
         platform = _match_platform(t.tool_id, _CHAT_PLATFORM_HINTS)
         if not platform:
             continue
-        if op_norm in t.tool_id.lower().replace("_", ""):
+        # DISC1 site 6 of 8 — operation segment only.
+        if op_norm in _norm_op_segment(t.tool_id):
             return DiscoveryResult(tool_id=t.tool_id,
                                    candidates_considered=len(tools_list),
                                    platform=platform)
+        if _soft_match_refused(operation, t.tool_id):
+            refused_write = True       # R-D2
+            continue
         if soft_hint is None:
             soft_hint = (t, platform)
     if soft_hint is not None:
@@ -1208,7 +1550,11 @@ def discover_chat_tool(
 
     return DiscoveryResult(
         tool_id=None,
-        reason="No chat backend is connected in this workspace.",
+        reason=("A chat backend is connected but exposes no tool for "
+                f"{operation!r}; the tools it does expose would post or change "
+                "something, so nothing was matched."
+                if refused_write
+                else "No chat backend is connected in this workspace."),
         candidates_considered=len(tools_list),
     )
 
@@ -1243,7 +1589,7 @@ def infer_workspace_drive_platform(workspace_root) -> Optional[str]:
     decision has to come from the workspace mount, not tool order: pass this
     result as `discover_drive_tool(..., prefer_platform=...)`.
 
-    None means the root carries no marker (a Cowork session-scoped mount
+    None means the root carries no marker (a session-scoped mount
     `/sessions/<id>/mnt/<name>` usually doesn't) — the caller then keeps
     first-match behavior and should try the OTHER connected drive platform
     when the first lookup finds nothing.
@@ -1297,6 +1643,7 @@ def discover_drive_tool(
     first_exact: Optional[tuple] = None
     preferred_exact: Optional[tuple] = None
     preferred_soft: Optional[tuple] = None
+    refused_write = False
     prefer_family = _drive_family(prefer_platform)
     op_norm = operation.lower().replace("_", "")
 
@@ -1305,7 +1652,8 @@ def discover_drive_tool(
         platform = _match_platform(t.tool_id, _DRIVE_PLATFORM_HINTS)
         if not platform:
             continue
-        tid_norm = t.tool_id.lower().replace("_", "")
+        # DISC1 site 7 of 8 — operation segment only.
+        tid_norm = _norm_op_segment(t.tool_id)
         if op_norm in tid_norm:
             if prefer_family is None:
                 return DiscoveryResult(
@@ -1318,6 +1666,11 @@ def discover_drive_tool(
             if preferred_exact is None and _drive_family(platform) == prefer_family:
                 preferred_exact = (t, platform)
         else:
+            if _soft_match_refused(operation, t.tool_id):
+                # R-D2: the drive exposes no search, so it offered its trash
+                # tool. A guess may never land on a tool that removes a file.
+                refused_write = True
+                continue
             if soft_match is None:
                 soft_match = t
                 soft_platform = platform
@@ -1359,9 +1712,13 @@ def discover_drive_tool(
     return DiscoveryResult(
         tool_id=None,
         reason=(
+            (f"The connected drive exposes no tool for {operation!r}; the "
+             "tools it does expose would change or remove files, so nothing "
+             "was matched.")
+            if refused_write else
             "No drive/file-storage MCP tool found. Connect Google Drive, "
-            "OneDrive, or Microsoft 365 / SharePoint in Cowork → Settings → "
-            "Connectors."
+            "OneDrive, or Microsoft 365 / SharePoint in the Claude app's "
+            "Settings → Connectors."
         ),
         candidates_considered=candidates,
     )
@@ -1421,6 +1778,16 @@ def discover_for_category(
     zap = zapier_servers(tools_list, zapier_ids)
     if declared and declared.get("server_id"):
         sid = declared["server_id"]
+        # IDENT1 I-1 (R-RW2-1, the HYBRID). One connector, two registries: the
+        # interactive seat names Superhuman by display name, the legacy
+        # scheduled sandbox by UUID. A declaration carries every id this
+        # workspace has RECORDED for the category (`server_ids`, folded by
+        # `connector_config.declared_backend` from the ledger's recorded
+        # aliases), and a tool on ANY of them is the declared backend. A row
+        # without the key is today's single id.
+        sids = [str(x) for x in (declared.get("server_ids") or [sid]) if x]
+        if sid not in sids:
+            sids.insert(0, sid)
         # MAILSEAM item 1 — an operation is not always a tool NAME. `in_sent`,
         # `unread`, `message_id_lookup` and their siblings are search INTENTS
         # that `connector_adapters/mail.py` compiles into a provider query.
@@ -1445,16 +1812,17 @@ def discover_for_category(
         ops_to_try = [_norm_op(o) for o in ops_to_try]
         server_seen = False
         for t in tools_list:
-            if _server_id_of(t.tool_id) == sid:
+            if _server_id_of(t.tool_id) in sids:
                 server_seen = True
                 break
         for op_norm in ops_to_try:
             for t in tools_list:
-                if _server_id_of(t.tool_id) != sid:
+                if _server_id_of(t.tool_id) not in sids:
                     continue
                 if _is_zapier(t.tool_id, zap):
                     continue
-                if op_norm in _norm_op(t.tool_id):
+                # DISC1 site 8 of 8 — operation segment only.
+                if op_norm in _norm_op_segment(t.tool_id):
                     return DiscoveryResult(
                         tool_id=t.tool_id,
                         candidates_considered=len(tools_list),
@@ -1506,9 +1874,19 @@ def detect_backend_drift(tools: Iterable[ToolDescriptor], declared: Optional[dic
     visible tools by server-id, fingerprints each server, and returns:
 
       {"declared_server_id", "declared_provider",
-       "candidate_server_id": <the server whose fingerprint matches the
+       "candidate_server_id": <the ONE server whose fingerprint matches the
                                declared provider, or None>,
-       "candidate_provider":  <its matched provider, or None>}
+       "candidate_provider":  <its matched provider, or None>,
+       "candidates": [{"server_id", "provider"}, ...]}
+
+    EXACTLY ONE (IDENT1 I-1, ruling R-RW2-1). `candidates` is EVERY visible
+    server whose fingerprint matches the declared provider, and
+    `candidate_server_id` is set ONLY when there is exactly one. Several
+    mailboxes per customer is the normal case, so "the first server that
+    looks like Superhuman" would bind a fire to whichever mailbox the
+    registry happened to list first; two candidates is an ambiguity, never a
+    pick. The declaration's recorded aliases (`server_ids`) count as the
+    declared server: any of them present = no drift.
 
     The PROSE half decides what to do with it (never this function):
     interactive session → confirm the re-pair with the user, then re-pin via
@@ -1522,26 +1900,29 @@ def detect_backend_drift(tools: Iterable[ToolDescriptor], declared: Optional[dic
         return None
     tools_list = list(tools)
     sid = declared["server_id"]
+    sids = [str(x) for x in (declared.get("server_ids") or [sid]) if x]
+    if sid not in sids:
+        sids.insert(0, sid)
     by_server: dict = {}
     for t in tools_list:
         s = _server_id_of(t.tool_id)
         if s:
             by_server.setdefault(s, []).append(t.tool_id)
-    if sid in by_server:
-        return None  # declared server present — no drift
+    if any(x in by_server for x in sids):
+        return None  # declared server (or a recorded alias) present — no drift
     want = (declared.get("provider") or "").lower() or None
-    cand_sid = None
-    cand_provider = None
+    candidates = []
     for s, ids in by_server.items():
         match = repair_backend(ids, min_overlap=min_overlap)
         if match and (want is None or match.lower() == want):
-            cand_sid, cand_provider = s, match
-            break
+            candidates.append({"server_id": s, "provider": match})
+    one = candidates[0] if len(candidates) == 1 else None
     return {
         "declared_server_id": sid,
         "declared_provider": declared.get("provider"),
-        "candidate_server_id": cand_sid,
-        "candidate_provider": cand_provider,
+        "candidate_server_id": one["server_id"] if one else None,
+        "candidate_provider": one["provider"] if one else None,
+        "candidates": candidates,
     }
 
 
@@ -1559,6 +1940,95 @@ def repair_backend(server_tool_ids, min_overlap: int = 2) -> Optional[str]:
         _sys.path.insert(0, str(_P(__file__).resolve().parent))
         from connector_adapters.capabilities import best_fingerprint_match
     return best_fingerprint_match(server_tool_ids, min_overlap=min_overlap)
+
+# ============================================================================
+# Docs — the Claude Docs seam (DOCS1 D-2, 2026-09-24)
+# ============================================================================
+#
+# The app's built-in living-doc page ("Claude Docs") is a connector like any
+# other: its tools are `mcp__<server>__batch / guide / update / create / read /
+# query / delete / export`, and the server segment is a UUID on some accounts
+# and a display name on others (the 2026-09-18 account switch changed it on the
+# dogfood machine). So a docs tool is never a remembered id. It is DISCOVERED,
+# by the capability manifest's `claude_docs` fingerprint, and identity needs
+# the two operations no other connector spells: `batch` AND `guide`. A server
+# that exposes `read` and `update` but neither of those is not the docs server
+# (a drive spells `read_file_content`; a look-alike that spells bare `read` is
+# still refused without the pair).
+#
+# Command Room never CREATES a doc through this seam — the document-routing
+# rule (DOCSFENCE1) says a document is produced by the owning skill and lands
+# in the folder. The seam's one consumer is `deliverables.export_claude_doc`:
+# a doc the composer produced despite the rule is read back through the
+# discovered `export` (or `read`) and landed in the folder, with a receipt.
+
+#: The operations the seam will resolve, and nothing else: reading a doc back
+#: is the whole job. `batch` (birth), `update`, `delete` are never resolved
+#: here — asking for one is refused by name, so a skill cannot reach a
+#: doc-writing tool through the seam by accident.
+DOCS_READ_OPERATIONS = ("export", "read", "guide")
+DOCS_IDENTITY_OPERATIONS = ("batch", "guide")
+DOCS_PROVIDER = "claude_docs"
+
+
+def discover_docs_tool(tools: Iterable[ToolDescriptor], operation: str = "export") -> DiscoveryResult:
+    """The Claude Docs tool for ONE read operation, or None with a reason.
+
+    `operation` in `DOCS_READ_OPERATIONS`. The match is the server's identity
+    (both `DOCS_IDENTITY_OPERATIONS` present among its operation segments —
+    the manifest's `claude_docs` fingerprint, checked here by name so a
+    manifest that cannot load still refuses correctly) AND the tool whose
+    operation segment IS the operation — never a substring: `read` must not
+    bind `read_file_content`. Two docs servers → refused (the seam does not
+    guess which account's page a doc lives on).
+    """
+    op = str(operation or "").strip().lower()
+    if op not in DOCS_READ_OPERATIONS:
+        return DiscoveryResult(
+            tool_id=None,
+            reason=(f"{operation!r} is not a read of a doc; the docs seam resolves "
+                    f"only {', '.join(DOCS_READ_OPERATIONS)}"),
+            candidates_considered=0,
+        )
+    by_server: dict = {}
+    total = 0
+    for t in tools:
+        tid = getattr(t, "tool_id", t if isinstance(t, str) else "")
+        sid = _server_id_of(tid)
+        if not sid:
+            continue
+        total += 1
+        by_server.setdefault(sid, []).append(tid)
+    docs_servers = []
+    for sid, ids in by_server.items():
+        ops = {(_op_segment_of(i) or "").lower() for i in ids}
+        if all(k in ops for k in DOCS_IDENTITY_OPERATIONS):
+            docs_servers.append((sid, ids, ops))
+    if not docs_servers:
+        return DiscoveryResult(
+            tool_id=None,
+            reason=("No Claude Docs tools in this chat (no server exposes both "
+                    "`batch` and `guide`)."),
+            candidates_considered=total,
+        )
+    if len(docs_servers) > 1:
+        return DiscoveryResult(
+            tool_id=None,
+            reason=(f"{len(docs_servers)} servers look like Claude Docs; the seam "
+                    "does not guess which one holds the doc."),
+            candidates_considered=total,
+        )
+    sid, ids, ops = docs_servers[0]
+    for tid in ids:
+        if (_op_segment_of(tid) or "").lower() == op:
+            return DiscoveryResult(tool_id=tid, candidates_considered=total,
+                                   platform=DOCS_PROVIDER)
+    return DiscoveryResult(
+        tool_id=None,
+        reason=f"The Claude Docs server exposes no {op!r} operation.",
+        candidates_considered=total,
+        platform=DOCS_PROVIDER,
+    )
 
 
 __all__ = [
@@ -1584,6 +2054,10 @@ __all__ = [
     "infer_workspace_drive_platform",
     # v4.6.0 MC3 — Slack commitment-capture leg
     "discover_slack_tool",
+    # DOCS1 (2026-09-24) — the Claude Docs read seam
+    "discover_docs_tool",
+    "DOCS_READ_OPERATIONS",
+    "DOCS_IDENTITY_OPERATIONS",
 ]
 
 

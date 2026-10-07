@@ -48,6 +48,15 @@ _NON_PROJECT_FOLDERS = {
     "Command Room",  # the product's own collateral folder
 }
 
+# ACCESS1 — the plugin-owned runtime cache, workspace-relative. It sits UNDER
+# `_hq/`, which `_project_folders` already skips as an infra folder, so this
+# never changes what the scan reports; it is spelled out because "the runtime
+# cache is not an orphan" is a promise the boundary amendment makes and a
+# promise needs a name a reader can find. A structural exemption, pinned by the
+# consequence (a workspace carrying an installed runtime raises no orphan
+# finding) rather than by removal.
+RUNTIME_CACHE_REL = "_hq/.cache/cr-runtime"
+
 ERROR, WARN, INFO = "ERROR", "WARN", "INFO"
 
 

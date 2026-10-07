@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Proposal ledger — shared cooldown + decision log for the Phase 6 learning-loop
-review passes (insight-generator Passes 13/14/15, plus the Loop 4/6 calibration
+review passes (insight-generator Passes 13/14, plus the Loop 4/6 calibration
 steps).
 
 WHY A SEPARATE FILE FROM classifier_feedback.jsonl
@@ -199,6 +199,41 @@ def remaining_global_slots(rendered_so_far: int, cap: int = GLOBAL_PROPOSAL_CAP)
     return max(0, cap - max(0, int(rendered_so_far)))
 
 
+def applied_fingerprints(
+    workspace_root,
+    pass_name: str,
+    *,
+    rows=None,
+) -> Set[str]:
+    """Fingerprints in `pass_name` that were APPLIED (or applied-with-edits).
+
+    LEARN1 A4 — `active_cooldowns` deliberately excludes `applied`/`edited`
+    ("the rule already lives in its store"), which is right for a proposer
+    whose store is the thing it checks. It is WRONG for an automatic leg
+    whose store cannot answer the question: a promoted exemplar overwrites
+    the file it came from, so on the next fire the same evidence proposes
+    the same promotion again, and the second promotion rotates the TRUE
+    prior out of `exemplar_2.md` where the reverser was going to look for
+    it. This is the idempotency set the automatic legs subtract, alongside
+    the cooldowns, before proposing anything.
+
+    Never raises; a missing ledger reads as no applied fingerprints."""
+    if rows is None:
+        rows = load_rows(workspace_root, pass_name)
+    out: Set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("pass") != pass_name:
+            continue
+        if row.get("user_action") not in _APPLIED:
+            continue
+        fp = row.get("fingerprint")
+        if fp:
+            out.add(fp)
+    return out
+
+
 __all__ = [
     "GLOBAL_PROPOSAL_CAP",
     "COOLDOWN_DAYS",
@@ -206,5 +241,6 @@ __all__ = [
     "load_rows",
     "append_decision",
     "active_cooldowns",
+    "applied_fingerprints",
     "remaining_global_slots",
 ]

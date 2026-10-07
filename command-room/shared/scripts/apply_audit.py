@@ -267,6 +267,14 @@ _REFUSED_STATUSES = frozenset({
     #     which is `reassign to [name]`'s contract and not this verb's, so
     #     the pick refuses and says which verb to use.
     "malformed", "no_question", "not_an_option",
+    # FOLD1A fix round 2 (`eod_question_budget.apply_eod_answers`): the
+    # evening's <= 2 pre-picked confirms take exactly `yes` / `no` / `skip`.
+    #   unknown_answer — a row arrived carrying something else. NOTHING is
+    #     written for it and it is reported per row, the same refuse-the-row
+    #     contract the queue keeps: the answer set is small and closed on
+    #     purpose, and defaulting an unrecognised word to either `yes` or `no`
+    #     would put a guess on the record wearing the customer's decision.
+    "unknown_answer",
     # --- APPLYAUDIT1: the refusals the census found unclassified -------------
     # "error" was already the outcome for each of these, but by FALL-THROUGH,
     # and the whole lesson of this defect is that a fall-through hides an

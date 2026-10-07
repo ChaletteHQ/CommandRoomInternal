@@ -69,6 +69,16 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+# FOLD1A fix round 1 — ONE number, one spelling. The evening's question cap
+# lives in `eod_question_budget` (the module that draws the rows); this screen
+# reads it rather than declaring a second copy, the same discipline QUIET1's
+# G50 already pins for the 4-day window ("a second spelling" is its mutant).
+from eod_question_budget import MAX_EOD_QUESTIONS as MAX_SCREEN_QUESTIONS  # noqa: E402
+# FOLD1A fix round 2 — and ONE spelling of the block key too, for the same
+# reason: `SCREEN_ORDER`, the receipt's map, `ROUTES` and the dispatcher's
+# tuple all have to name the same string.
+from eod_question_budget import QUESTION_BLOCK  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Identity
@@ -307,7 +317,7 @@ ALL_PHASES = PACK_PHASES + LEG_PHASES
 # ---------------------------------------------------------------------------
 #
 # EODPHASE1 made PHASE_CAPTURE nameable; it did not make it MANDATORY. The
-# live measurement (`Penelopes Brain/_hq/audit-reports/EODSPEED1_live_test_
+# live measurement (`<Workspace>/_hq/audit-reports/EODSPEED1_live_test_
 # 2026-08-26/REPORT.md`, receipt `eod_20260827T003743Z-48e3f23f`) found
 # `phase_order` covering the pack build alone — 0.45% of a 1,855,666 ms fire
 # that captured four meetings — on the first `close_budget` verdict ever
@@ -579,7 +589,15 @@ class _PhaseTimer:
 # what aperture produced it, and every block below coverage is a number. It
 # sits under the alarms for the same reason the alarms sit above everything —
 # a substrate that is not syncing outranks a statement about what was read.
-BLOCK_ORDER = ("alarm_lines", "coverage", "score", "wins", "slipped",
+# SPEC SURFACEFIX1 5.1 (M's ruling R3, 2026-09-13) — `coverage` LEAVES both
+# orders. The connector / reachability strip is the same class as the health
+# lines HEALTH1 retired on 2026-09-07: off every customer surface, home = the
+# health check and the weekly maintenance report. UN-RENDER, DON'T UNBUILD is
+# still the rule, so the block is still COMPUTED and still RECEIPTED — it
+# moves to `COMPUTED_ONLY` below, which is the receipt's own word for exactly
+# that, and every receipt already on disk keeps its meaning (a reader joining
+# on `blocks_computed_only` meets `coverage` there from this build on).
+BLOCK_ORDER = ("alarm_lines", "score", "wins", "slipped",
                "confirm", "tomorrow", "sign_off")
 
 # ---------------------------------------------------------------------------
@@ -611,13 +629,16 @@ BLOCK_ORDER = ("alarm_lines", "coverage", "score", "wins", "slipped",
 # `confirm` renders on the morning surfaces where the operator is in triage
 # mode. Leaving them in the render order would have been the pile M's ruling
 # removes, wearing a new heading.
-RENDER_ORDER = ("alarm_lines", "coverage", "day_went", "what_it_meant",
+RENDER_ORDER = ("alarm_lines", "day_went", "what_it_meant",
                 "worth_remembering", "slipped_prose", "echoes", "tomorrow",
                 "sign_off")
 
 # Computed, receipted, NEVER rendered. A block in this tuple that acquires a
 # sentence on the surface is the defect EODSYNTH1 exists to remove.
-COMPUTED_ONLY = ("score", "wins", "slipped", "confirm")
+#
+# SPEC SURFACEFIX1 5.1 — `coverage` joins them (R3). `run_health1_test.py`
+# reds by name if it re-enters `RENDER_ORDER`.
+COMPUTED_ONLY = ("coverage", "score", "wins", "slipped", "confirm")
 
 # ---------------------------------------------------------------------------
 # CUT-PLATE (2026-09-06) — THE SCREEN, composed in code.
@@ -640,9 +661,40 @@ COMPUTED_ONLY = ("score", "wins", "slipped", "confirm")
 # renders as fact), Layer 1 of the coach and its push (`eod_coach.
 # SCREEN_LAYERS`), the arc read's "did not move" sentences (kept as data on
 # `what_it_meant["unmoved"]`), and every row-list EODSYNTH1 R-3 moved to the
-# morning. The health lines — alarms, dark surfaces, the coverage strip when
-# it has a disclosure — render LAST, the same rule the morning brief follows.
-SCREEN_ORDER = ("catchup", "plate", "day_went", "what_it_meant",
+# morning. HEALTH1 (2026-09-07) further retires two of the four health lines
+# CUT-PLATE placed LAST here: `alarm_lines` and `dark_surface_lines` no
+# longer render on this surface at all (M's ruling — off every customer
+# surface, reported only by the weekly maintenance run). `coverage` — the
+# strip that says what THIS fire actually read, when it has something to
+# disclose — is a different, already-ruled mechanism (SPEC COVERQUIET1) and
+# is untouched; it still renders when disclosure-worthy, in this same
+# trailing position. `alarm_lines` / `dark_surface_lines` stay NAMED in this
+# tuple only because it is the fixed template of positions `compose_screen`
+# is allowed to fill (the receipt's `blocks_rendered` machinery elsewhere
+# reads `RENDER_ORDER` / `BLOCK_ORDER`, not this tuple) — `compose_screen`
+# no longer calls `add()` for either, so neither position is ever filled.
+#
+# FOLD1A fix round 1 (R-N10-3, M's design rule 2026-09-06 — "I don't mind a
+# couple of those questions appearing on end of day"; the reviewer's reasoning
+# in REVIEW_FOLD1A §8). ONE block joins the order, `eod_questions`, directly
+# after the plate: at most two pre-picked confirms drawn from the Staff
+# Meeting's OWN weekly five (`eod_question_budget`, through `quiet`'s one
+# shared budget — never a new allowance), each answerable in one word, each
+# reversible. It is drop-empty: a seat with nothing to ask renders nothing at
+# all, which is the ordinary night. `COMPUTED_ONLY` still carries `confirm` —
+# the DECISIONS BLOCK, the four-verb menu, stays forbidden, and this is a
+# different object. Nothing else moves.
+# SPEC SURFACEFIX1 5.2 / amendment E-3 — `machine_acts` sits AFTER
+# `eod_questions`, not between it and the plate. FOLD1A's fence (fix round 1,
+# R-N10-3) pins `eod_questions` to the slot DIRECTLY after `plate` and proves
+# it by index arithmetic; the machine's acts are a report of what already
+# happened, not something the reader has to answer, so they belong below the
+# two-question block rather than in front of it. The earlier draft of this
+# lane put them at index 2 and reds FOLD1A — the fence was right and the
+# draft was wrong.
+SCREEN_ORDER = ("catchup", "plate", "eod_questions", "machine_acts",
+                "day_went",
+                "what_it_meant",
                 "worth_remembering", "slipped_prose", "echoes", "coach",
                 "tomorrow", "sign_off", "coverage", "alarm_lines",
                 "dark_surface_lines")
@@ -665,18 +717,40 @@ class ScreenShapeError(RuntimeError):
     """The composed day-close screen carried a retired sentence or an ask."""
 
 
-def screen_shape_violations(text: str) -> list:
+def screen_shape_violations(text: str, *, allowed_questions=()) -> list:
     """Every retired-prose hit and every asking line in `text`, as
     `(kind, match)` pairs. A question is a line ENDING in `?` that is not a
     plate row's own ruled reason tag (the plate's CONFIRM / not-mine rows
-    carry "is this real?" / "whose is it?" as their reason, read-only)."""
+    carry "is this real?" / "whose is it?" as their reason, read-only).
+
+    `allowed_questions` (FOLD1A fix round 1 — R-N10-3, M's design rule of
+    2026-09-06, on the reviewer's reasoning in REVIEW_FOLD1A §8) is the EXACT
+    list of question lines the DECLARED `eod_questions` block contributed. It
+    is not a blanket permission and it is not a pattern: a line that is not
+    byte-identical to one of these still reds, and MORE than
+    `MAX_SCREEN_QUESTIONS` of them reds as `too-many-questions` no matter
+    what they say. The decisions block (`confirm`, still in `COMPUTED_ONLY`)
+    remains forbidden and no NEW question class may claim this door — a
+    caller that wants one is a caller that needs its own ruling.
+    """
+    allowed = [str(q).rstrip() for q in (allowed_questions or [])]
     out = []
     for rx in SCREEN_RETIRED_PATTERNS:
         for m in rx.finditer(text or ""):
             out.append(("retired-prose", m.group(0)))
+    if len(allowed) > MAX_SCREEN_QUESTIONS:
+        out.append(("too-many-questions",
+                    f"{len(allowed)} declared, cap is {MAX_SCREEN_QUESTIONS}"))
+        allowed = []
     for line in (text or "").split("\n"):
         s = line.rstrip()
         if s.endswith("?") and not s.startswith("- ") and not s.startswith("#"):
+            if s in allowed:
+                # CONSUMED, not merely matched: two copies of the same
+                # question line spend two of the allowance, so a second one
+                # composed elsewhere on the screen still reds.
+                allowed.remove(s)
+                continue
             out.append(("question", s))
     return out
 
@@ -686,11 +760,39 @@ def compose_screen(pack: dict) -> dict:
 
     Returns `{"order", "blocks", "lines", "text", "asks", "widget"}`:
     `blocks` names the blocks that reached the screen, in order; `text` is
-    what the orchestrator posts verbatim; `asks` is 0 and `widget` is None
-    BY CONSTRUCTION — the day-close renders no question and no card (M's
-    hold, 2026-09-06). Raises `ScreenShapeError` when the composed text
-    carries a retired sentence or an asking line — loud, in code, before
-    the pack is handed out, the same posture as the score fence.
+    what the orchestrator posts verbatim; `widget` is None BY CONSTRUCTION —
+    this function composes TEXT, and the day-close renders no card of its own
+    (M's hold, 2026-09-06).
+
+    ONE CITED EXCEPTION, AND IT DOES NOT TRAVEL ON THIS RETURN (FOLD1A fix
+    round 2, R-2, under R-N10-3). The declared `eod_questions` block's <= 2
+    rows are also posted as a two-row tap card so the pre-picked answer is
+    one tap — built by the DRIVER (`surface_drivers.build_end_of_day_pack`
+    -> `eod_question_budget.render_question_widget`, through
+    `widget_transport.render_and_persist`, which runs every gate) and carried
+    on `pack["eod_questions"]["transport"]`. `compose_screen` neither builds
+    it nor returns it: a pure composer that reaches for a transport is a
+    composer that can no longer be run over a fixture, and this field staying
+    None is what the CUT-PLATE suite pins.
+
+    `asks` is 0, OR the count of the ≤ `MAX_SCREEN_QUESTIONS` pre-picked
+    confirms the DECLARED `eod_questions` block rendered — DESIGN_RULE
+    §1 + M's design rule of 2026-09-06 ("I don't mind a couple of those
+    questions appearing on end of day"), ruled R-N10-3 on the reviewer's
+    reasoning in REVIEW_FOLD1A §8 and built in FOLD1A fix round 1. It was
+    0 by construction before that date; the widening is cited here, in
+    `screen_shape_violations`, in `GUARDS.md` G50 and in the suites that
+    pin it, never made silently. The decisions block (`confirm`) is
+    unchanged and still forbidden.
+
+    `pack["eod_questions"]` is the block: `{"lines", "questions", "n"}` from
+    `eod_question_budget.render_eod_questions`. Drop-empty — an ordinary
+    evening has none and the screen is byte-identical to before.
+
+    Raises `ScreenShapeError` when the composed text carries a retired
+    sentence, a THIRD question, or an asking line the declared block did not
+    contribute — loud, in code, before the pack is handed out, the same
+    posture as the score fence.
     """
     pack = pack or {}
     blocks: list = []
@@ -713,10 +815,35 @@ def compose_screen(pack: dict) -> dict:
         add("catchup", catch.get("lines") or [])
     plate = pack.get("plate") or {}
     if isinstance(plate, dict):
+        # SPEC SURFACEFIX1 5.1 — the COVERQUIET1 carve-out rides HERE,
+        # INSIDE the plate block, because "adjacent to the number it
+        # qualifies" is the whole of the exception: a caveat one block
+        # away is a coverage strip again. Appended to the plate's own
+        # lines so no re-ordering can separate the two.
+        _caveat = coverage_number_caveat(pack)
         if plate.get("refused"):
             add("plate", [plate.get("line")])
         elif plate.get("text"):
-            add("plate", str(plate["text"]).rstrip("\n").split("\n"))
+            add("plate", str(plate["text"]).rstrip("\n").split("\n")
+                + ([_caveat] if _caveat else []))
+    # FOLD1A fix round 1 — the ≤2 pre-picked confirms, directly after the
+    # plate. Drop-empty; `allowed_questions` is the exact list this block
+    # contributed and nothing else, so every other line on the screen is
+    # still fenced.
+    eodq = pack.get("eod_questions") or {}
+    allowed_questions: list = []
+    if isinstance(eodq, dict) and eodq.get("lines"):
+        allowed_questions = [str(q).rstrip() for q in (eodq.get("questions") or [])]
+        add("eod_questions", eodq.get("lines"))
+    # SPEC SURFACEFIX1 5.2 / amendment E-3 — THE MACHINE'S OWN ACTS,
+    # read off the day's job receipts (`change_feed.changes_since`,
+    # through `compute_machine_acts`) rather than recomputed. One line
+    # per batch: door, count, undo phrase. Drop-empty. Placed BELOW the
+    # question block so FOLD1A's "directly after the plate" fence keeps
+    # meaning what it says.
+    machine = pack.get("machine_acts") or {}
+    if isinstance(machine, dict) and machine.get("lines"):
+        add("machine_acts", machine.get("lines"))
     for b in SYNTHESIS_BLOCKS:
         blk = pack.get(b) or {}
         if not isinstance(blk, dict):
@@ -741,19 +868,41 @@ def compose_screen(pack: dict) -> dict:
     sign_off = pack.get("sign_off") or {}
     if isinstance(sign_off, dict):
         add("sign_off", [sign_off.get("line")])
-    if pack.get("coverage") is not None and coverage_has_disclosure(pack):
-        add("coverage", coverage_render_lines(pack))
-    add("alarm_lines", pack.get("alarm_lines") or [])
-    add("dark_surface_lines", pack.get("dark_surface_lines") or [])
+    # SPEC SURFACEFIX1 5.1 (M's ruling R3, 2026-09-13) — `coverage` no longer
+    # reaches the composed screen either, by the same reasoning and the same
+    # mechanism HEALTH1 used for `alarm_lines` one line below: the strip is a
+    # statement about CONNECTORS, and M ruled every one of those off the
+    # customer surfaces. `SCREEN_ORDER` keeps naming the position (it is the
+    # fixed template of allowed slots); `compose_screen` simply never calls
+    # `add()` for it. `pack["coverage"]` is still computed in full and still
+    # receipted (it is a `COMPUTED_ONLY` member now), and the health check and
+    # the maintenance report are where it is read. The ONE thing that survives
+    # onto this screen is `coverage_number_caveat`, placed inside the plate
+    # block above. Proven by removal: `tests/run_health1_test.py` reds by name
+    # if the `add("coverage", ...)` call comes back.
+    # HEALTH1 (2026-09-07) — `alarm_lines` and `dark_surface_lines` no
+    # longer reach the composed screen. CUT-PLATE's "health lines LAST" is
+    # superseded by M's ruling: the substrate alarms (the duplicate-entry
+    # warning included) and the dark-surface line never render on the
+    # day-close either, the same as the morning brief — the weekly
+    # maintenance run (`cleanup`) is the one place both are reported now.
+    # `SCREEN_ORDER` keeps naming both positions (it is the fixed template
+    # of ALLOWED slots, not a claim about what rendered — see the
+    # module-level comment above it), and `pack["alarm_lines"]` /
+    # `pack["dark_surface_lines"]` still carry whatever the driver computed
+    # for its own other readers; this function simply never calls `add()`
+    # for either any more. Proven by removal: `tests/run_health1_test.py`
+    # reds by name if either `add(...)` call comes back.
 
     text = ("\n".join(lines).rstrip("\n") + "\n") if lines else ""
-    bad = screen_shape_violations(text)
+    bad = screen_shape_violations(text, allowed_questions=allowed_questions)
     if bad:
         raise ScreenShapeError(
             f"end-of-day screen: retired prose or an ask reached the composed "
-            f"screen (CUT-PLATE, M's hold 2026-09-06): {bad!r}")
+            f"screen (CUT-PLATE, M's hold 2026-09-06; the ONE cited exception "
+            f"is the declared eod_questions block, R-N10-3): {bad!r}")
     return {"order": list(SCREEN_ORDER), "blocks": blocks, "lines": lines,
-            "text": text, "asks": 0, "widget": None}
+            "text": text, "asks": len(allowed_questions), "widget": None}
 
 # The synthesis blocks, in their render order. Spelled from the module that
 # composes them so the two can never drift into two orders.
@@ -1471,6 +1620,58 @@ def _window(workspace_root, since_ts, *, now_iso=None) -> tuple:
     return _day_floor(workspace_root, now_iso=now_iso), WINDOW_DAY_FLOOR
 
 
+def evening_window(workspace_root, since_ts, *, now_iso=None) -> tuple:
+    """`(since, window_source)` — THE window the whole evening reads.
+
+    SPEC SURFACES2_11c Lane 3 item 2 (the one-window item; REVIEW_SURFACEFIX1
+    R-1, the blocking finding). `_window` above answers "since you last
+    looked", which is the right question for a reader asking what is NEW. The
+    day-close asks a different question: every block on that screen says
+    "today", so every block has to read the same day.
+
+    The rule, one line: the EARLIER of the morning anchor and the day floor.
+    On an ordinary day the brief fires after midnight, so the floor wins and
+    the evening reads the whole day; a caller that deliberately hands in an
+    anchor OLDER than today still gets its wider window rather than having it
+    silently narrowed.
+
+    This IS the derivation `compute_machine_acts` has carried inline since
+    SURFACEFIX1 fix round 1 — lifted here verbatim rather than copied, so
+    there is ONE floor for the evening and no reader can drift off it. That
+    drift is the whole of R-1: on 2026-09-11 the sent and calendar rails ran
+    at 06:52 and 07:02 Pacific and the brief did not fire until 07:37, so the
+    machine-acts block (floored to the day) named ten closes three lines under
+    a header that counted zero, and the synthesis said "Nothing closed today
+    that I can see" between them.
+    """
+    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
+    floor = _day_floor(workspace_root, now_iso=now_iso)
+    if floor < since:
+        return floor, WINDOW_DAY_FLOOR
+    return since, window_source
+
+
+def _stated_window(workspace_root, since_ts, window_source, *, now_iso=None):
+    """`_window`, unless the CALLER already resolved the window and says so.
+
+    The one-window item hands every evening reader the SAME instant. An
+    instant is truthy, so `_window` would label all five `morning_anchor`
+    whatever they actually read, and a reader that reports the wrong window
+    name is worse than one that reports none — `WINS_MORE_LINES` spells the
+    "N more" sentence off that name. So the caller passes the name it
+    resolved alongside the instant, and it is reported verbatim. Absent
+    (every pre-existing caller), nothing changes at all.
+    """
+    since, derived = _window(workspace_root, since_ts, now_iso=now_iso)
+    name = str(window_source) if window_source else derived
+    if name not in WINS_MORE_LINES:
+        # An unknown window name would KeyError at the "N more" line, which is
+        # a crash in a fire to save a label. The honest fallback is what this
+        # reader derived for itself.
+        name = derived
+    return since, name
+
+
 def day_branch(day: _dt.date) -> str:
     """Which branch of §3 this fire renders: `monday` (the prior-week roll-up
     plus the development-read slot), `friday` (a plain day-close, NO hand-off
@@ -1660,7 +1861,8 @@ class ClosureWindow(list):
         self.since = since
 
 
-def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow":
+def closures_since(workspace_root, since_ts, *, now_iso=None,
+                   window_source=None) -> "ClosureWindow":
     """Every commitment closure written since `since_ts`, newest last.
 
     SPEC WINSFLOOR1 — `since_ts` NO LONGER MEANS "since the beginning of time"
@@ -1686,7 +1888,8 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
     The grain is the discriminator; it is projected, never derived, and its
     absence means caller-passed (which every pre-PROVMINT1 row is).
     """
-    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
+    since, window_source = _stated_window(workspace_root, since_ts,
+                                         window_source, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     events = _load_events(workspace_root)
     # SPEC EODFIX1 — the same id→title join the wins block uses. Without it
@@ -1694,6 +1897,15 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
     # which is every close already on disk: the score's closed rows render
     # nameless and the first_move check has nothing to compare against.
     idx = _win_join_index(events)
+    # MF-11c-5 — which batches a JOB ran, off the job's own receipts. ONE
+    # rule shared with the change feed (`change_feed._job_batches`), so the
+    # morning strip and the day-close cannot disagree about whose act an
+    # aged-out close was. Read once per window, projected per row.
+    try:
+        from change_feed import _job_batches as _jobs
+        job_batches = _jobs(events)
+    except Exception:  # pragma: no cover — never widen on a read failure
+        job_batches = set()
     names = _entity_names(workspace_root)
     # POLICY1-B (c) — a close an undo has since reversed is NOT a close this
     # surface may count: the row is open at fire time. Folded once, through
@@ -1703,6 +1915,16 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
         reversed_at = _reversed(events, until=until)
     except Exception:  # pragma: no cover — never widen the count on a read failure
         reversed_at = set()
+    try:
+        from event_types import is_customer_act as _is_customer_act
+    except Exception:  # pragma: no cover
+        _is_customer_act = lambda ev: True
+    try:
+        from event_types import ACTOR_KIND_KEY as _ACTOR_KIND_KEY
+        from event_types import RESOLUTION_REASON_KEY as _RESOLUTION_REASON_KEY
+    except Exception:  # pragma: no cover — the vocabulary's own spellings
+        _ACTOR_KIND_KEY, _RESOLUTION_REASON_KEY = ("actor_kind",
+                                                   "resolution_reason")
     out = []
     for pos, ev in enumerate(events):
         if ev.get("type") not in _CLOSE_TYPES:
@@ -1743,6 +1965,32 @@ def closures_since(workspace_root, since_ts, *, now_iso=None) -> "ClosureWindow"
             "provenance_missing": bool(data.get("provenance_missing")),
             "source_skill": ev.get("source_skill"),
             "evidence": str(data.get("evidence") or "").strip(),
+            # ATTRIB2 (M's ruling 2026-09-07) — WHOSE act this closure was.
+            # Projected, never derived by the reader: the day-close says "you
+            # let go" about the customer's own gestures and nothing else. On
+            # 2026-09-07 that line counted the undo chat's own drop.
+            "by_customer": _is_customer_act(ev),
+            # FIX ROUND 1 (reviewer F-3) — WHICH BATCH it belonged to, and
+            # the markers that say whether that batch was a JOB'S. The
+            # age-out job wrote all 52 of its closes with `resolved_by:
+            # person_001` and `actor_kind: person`, so `by_customer` came
+            # back True for every one and the evening said "52 things you let
+            # go" over work nobody had touched. These four are projected, not
+            # derived, so `compute_ledger` stays a pure function of its rows
+            # and a fixture can carry the same shape the book does.
+            "brain_batch_id": data.get("brain_batch_id"),
+            # MF-11c-5 — the batch's parent (a run over its groups) and
+            # whether a JOB's receipt names either. Projected, not derived,
+            # so `machine_batch_row` stays a pure function of its row.
+            "parent_batch_id": data.get("parent_batch_id"),
+            "job_batch": bool(
+                (data.get("brain_batch_id") and str(data.get("brain_batch_id")) in job_batches)
+                or (data.get("parent_batch_id") and str(data.get("parent_batch_id")) in job_batches)),
+            "actor_kind": data.get(_ACTOR_KIND_KEY),
+            "fired_via": ev.get("fired_via") or data.get("fired_via"),
+            "resolution_reason": data.get(_RESOLUTION_REASON_KEY),
+            "exit_route": data.get("exit_route"),
+            "confirmed_by": data.get("confirmed_by"),
         })
     return ClosureWindow(out, window_source=window_source,
                          since=since.isoformat())
@@ -1978,9 +2226,11 @@ def declared_arcs(workspace_root, *, for_date: str, now_iso=None) -> list:
         tids = org_threads.get(oid) or []
         if not tids:
             continue
+        # LEAK2 — the day-close names the company or says so honestly;
+        # it never falls back to the record's id (B3.4 fallback class).
+        from narration_names import safe_name
         _add(syn.ARC_ORG, oid,
-             str(org.get("canonical_name") or org.get("name") or "").strip()
-             or oid,
+             safe_name(org.get("canonical_name") or org.get("name")),
              thread_ids=tids)
         if (syn.ARC_ORG, oid) in seen:
             claimed.update(tids)
@@ -2858,6 +3108,85 @@ def coverage_disclosure_lead(pack: dict) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# SPEC SURFACEFIX1 5.1 — THE ONE EXCEPTION: A GAP THAT CHANGES A NUMBER
+# ---------------------------------------------------------------------------
+#
+# R3 takes every reachability sentence off this surface. COVERQUIET1's own
+# intake design (`DESIGN_2026-08-26_coverage-lines-silent-unless-they-change-
+# the-numbers`) carves out exactly one case and no other: when a leg this
+# fire could not read is a leg one of the RENDERED NUMBERS is counted from,
+# the number gets ONE caveat, adjacent to it. Not a strip, not a list of
+# capabilities, not a sentence about the connector — one clause qualifying
+# one figure, because a count that is short and says so is honest and a count
+# that is short and silent is not.
+#
+# Which capabilities can change a number: mail and chat. The day's plate
+# numbers (opened / closed / slipped) are counted off closes the mail and
+# chat rails write; the calendar feeds tomorrow's LIST (which says for itself
+# what it is), and meetings feed the briefs section (which has its own
+# reduction clause). A calendar or meetings gap therefore never earns a
+# caveat here — it would be a reachability sentence wearing a caveat's
+# clothes, which is the thing R3 removes.
+NUMBER_BEARING_CAPABILITIES = (CAP_MAIL, CAP_CHAT)
+
+#: The one clause. Names the leg and what it does to the figure — never why
+#: the connector failed, never the connector's own error, never a path.
+COVERAGE_NUMBER_CAVEAT = (
+    "{label} was not read today, so these counts may be short.")
+COVERAGE_NUMBER_CAVEAT_STALE = (
+    "{label} is {n_days} behind, so these counts may be short.")
+
+
+def coverage_number_caveat(pack: dict) -> Optional[str]:
+    """The ONE caveat a rendered number may carry (SPEC SURFACEFIX1 5.1,
+    COVERQUIET1's carve-out), or `None` when no gap touches a number.
+
+    Exactly one sentence, always — the first number-bearing capability in
+    `COVERAGE_CAPABILITIES` order that was not read, or that was read from a
+    stale cursor. A day with two gapped number legs still renders ONE
+    caveat: two would be the strip coming back one clause at a time.
+
+    PURE and best-effort, the same posture `coverage_has_disclosure` takes: a
+    malformed pack reads as "nothing to qualify" rather than raising.
+
+    "NOT READ" IS NOT A GAP (fix round 1, reviewer F-5). `read is False` is
+    the DEFAULT state of a capability with no cursor on record — the strip's
+    own line for it reads "Mail: not read, and nothing on the record says
+    why", i.e. nothing was attempted. Firing on it put a reachability
+    sentence back on the ordinary day-close, which is precisely what R3
+    removes; base rendered nothing there. The caveat now needs EVIDENCE OF AN
+    ATTEMPT that changed a number: a not-read leg with a stated `reason`, or
+    a cursor that exists and is behind. A workspace that simply never had
+    that connector earns no caveat, because no number is short.
+    """
+    if not isinstance(pack, dict):
+        return None
+    coverage = pack.get("coverage")
+    caps = coverage.get("capabilities") if isinstance(coverage, dict) else None
+    if not isinstance(caps, dict):
+        return None
+    for cap_name in COVERAGE_CAPABILITIES:
+        if cap_name not in NUMBER_BEARING_CAPABILITIES:
+            continue
+        row = caps.get(cap_name)
+        if not isinstance(row, dict):
+            continue
+        label = COVERAGE_LABELS.get(cap_name, cap_name.title())
+        # The `reason` is the attempt: `_leg_coverage` fills it from the
+        # leg's own skip/blocked receipt or from `connector_gaps`, and leaves
+        # it None when nothing was asked for in the first place.
+        if row.get("read") is False \
+                and str(row.get("reason") or "").strip():
+            return COVERAGE_NUMBER_CAVEAT.format(label=label)
+        days = row.get("days_behind")
+        if row.get("stale") and isinstance(days, int) \
+                and not isinstance(days, bool) and days > 0:
+            return COVERAGE_NUMBER_CAVEAT_STALE.format(
+                label=label, n_days=_days_phrase(days))
+    return None
+
+
 def coverage_render_lines(pack: dict) -> list:
     """The coverage strip AS RENDERED (SPEC COVERQUIET1) — `[]` on a quiet
     day, else the disclosure-first lead followed by every line
@@ -3017,6 +3346,14 @@ def opening_book(workspace_root, morning: dict, *, now_iso=None) -> dict:
     headline = counts.get("headline") if isinstance(counts.get("headline"),
                                                     dict) else {}
     total = counts.get("total")
+    # night 11b trial merge (merged-tree review F-6): PLATENUM1 made
+    # `headline.total` the one `open` every plate-bearing surface states; the
+    # ledger line reads the same figure so "Open book: N this morning" and the
+    # board beside it never disagree. `counts.total` stays the fallback for an
+    # older brief_state that carries no headline.
+    _ht = headline.get("total") if isinstance(headline, dict) else None
+    if isinstance(_ht, int) and not isinstance(_ht, bool):
+        total = _ht
     if not isinstance(total, int) or isinstance(total, bool):
         # A half-written event is not an opening figure. Degrade to "no opening
         # figure on record" rather than to a partial number.
@@ -3026,7 +3363,8 @@ def opening_book(workspace_root, morning: dict, *, now_iso=None) -> dict:
     return out
 
 
-def opens_since(workspace_root, since_ts, *, now_iso=None) -> dict:
+def opens_since(workspace_root, since_ts, *, now_iso=None,
+                window_source=None) -> dict:
     """What ENTERED the open book in this fire's window.
 
     `{"n": int, "window_source": str, "since": iso}` — the same `_window`
@@ -3038,7 +3376,8 @@ def opens_since(workspace_root, since_ts, *, now_iso=None) -> dict:
     needs-your-call queue rather than the open book, and a sub-item is a step
     of a promise rather than another one (`commitment_state`'s own partition).
     """
-    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
+    since, window_source = _stated_window(workspace_root, since_ts,
+                                         window_source, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     n = 0
     for ev in _load_events(workspace_root):
@@ -3056,6 +3395,126 @@ def opens_since(workspace_root, since_ts, *, now_iso=None) -> dict:
             continue
         n += 1
     return {"n": n, "window_source": window_source, "since": since.isoformat()}
+
+
+# ---------------------------------------------------------------------------
+# FIX ROUND 1 (reviewer F-3) — WAS THIS ROW'S BATCH A JOB'S?
+# ---------------------------------------------------------------------------
+#
+# `by_customer` asks WHO the act names. That is the right question and it has
+# the wrong answer on every row the age-out job wrote: the job signed 52
+# closes `resolved_by: person_001`, `actor_kind: person`, so the answer came
+# back "the customer" and the evening said *"52 things you let go"* about
+# work nobody had touched (HOLD driver 2). The signature is a ledger-level
+# defect — the rows are already on the book and no reader can unsign them.
+#
+# So the day-close asks a SECOND question the substrate can still answer
+# honestly: was this row part of a JOB'S batch? Four markers, any one of
+# which settles it, and none of which a customer's own gesture carries:
+#
+#   1. `actor_kind: machine`        — the writer-side stamp, when present;
+#   2. a machine `source_skill`     — `event_types.is_machine_source`;
+#   3. `fired_via` scheduled        — nobody typed anything;
+#   4. a JOB batch id               — the sweep / silence / calendar / expiry
+#                                     rails mint their own prefixes, read here
+#                                     from the modules that mint them.
+#
+# A row with any of those is the machine's whatever it is signed, and the
+# day-close credits it to the door rather than to the reader.
+# Merged-tree review (DOORS1×SURFACEFIX1 reader F-2): `swb_` is NOT here.
+# It is the batch family of the hand-typed `commitment amnesty` and every
+# backlog-sweep verb the customer runs (event_types keeps the bare name and
+# the `:amnesty` leg as the customer's). The retired 30-day job wrote its
+# rows `resolution: dropped` with `resolution_reason: aged_out` under the
+# amnesty leg's own name, signed as the reader (measured on the 09-13 batch:
+# 48 rows, every one that shape) — that reason, not the prefix, marks them.
+MACHINE_BATCH_PREFIX_FALLBACK = ("sil_", "cal_", "qex_", "cht_")
+
+#: MF-11c-5 (night 11c trial merge) — RETIRED: `MACHINE_RESOLUTION_REASONS`
+#: = ("aged_out",). It said "nobody types this", which stopped being true
+#: the moment R1 retired the age-out job: the customer's own typed
+#: `commitment amnesty` is now the ONLY live writer of that reason, and the
+#: day-close was crediting the customer's act to a background pass while
+#: the morning strip said "you cleared". The 09-13 batch (48 rows) is still
+#: a job's — its `pack_run` receipt names the run — and `closures_since`
+#: now projects that as `job_batch`, one rule shared with the change feed.
+
+#: `fired_via` spellings that mean "nobody typed anything".
+SCHEDULED_FIRED_VIA = ("scheduled", "cron", "schedule")
+
+
+def machine_batch_prefixes() -> tuple:
+    """The JOB batch-id prefixes, read from the modules that MINT them so a
+    rename there cannot orphan the rule here. Falls back to the spellings
+    already on the book when a module is absent from the tree."""
+    out = []
+    for module, attr in (("exit_doors", "SILENCE_BATCH_PREFIX"),
+                         ("calendar_close", "BATCH_PREFIX"),
+                         ("question_ttl", "EXPIRY_BATCH_PREFIX"),
+                         ("commitment_policy_pass", "TTL_BATCH_PREFIX")):
+        try:
+            mod = __import__(module)
+            value = str(getattr(mod, attr, "") or "").strip()
+            if value:
+                out.append(value)
+        except Exception:  # pragma: no cover — the fallback carries it
+            continue
+    for value in MACHINE_BATCH_PREFIX_FALLBACK:
+        if value not in out:
+            out.append(value)
+    return tuple(out)
+
+
+def machine_batch_row(row: dict) -> bool:
+    """True when this closure row belonged to a JOB'S batch (F-3).
+
+    PURE — it reads only what `closures_since` projects, so a fixture row
+    carrying the same fields gets the same answer as the book's own.
+    """
+    if not isinstance(row, dict):
+        return False
+    try:
+        from event_types import ACTOR_MACHINE as _MACHINE
+    except Exception:  # pragma: no cover
+        _MACHINE = "machine"
+    if str(row.get("actor_kind") or "").strip().lower() == _MACHINE:
+        return True
+    try:
+        from event_types import is_machine_source as _machine_source
+        if _machine_source(row.get("source_skill")):
+            return True
+    except Exception:  # pragma: no cover
+        pass
+    if str(row.get("fired_via") or "").strip().lower() in SCHEDULED_FIRED_VIA:
+        return True
+    if row.get("job_batch") is True:
+        return True  # MF-11c-5: a job's receipt names this row's batch
+    batch = str(row.get("brain_batch_id") or "").strip()
+    return bool(batch) and batch.startswith(machine_batch_prefixes())
+
+
+#: Which DOOR let a machine-dropped row go. The keys are `MACHINE_ACT_LINES`'
+#: own, so the ledger's by-door sentence and the machine-acts block speak one
+#: vocabulary rather than two. A row whose door cannot be read falls to
+#: `MACHINE_DROP_DOOR_OTHER` — named honestly rather than guessed at.
+MACHINE_DROP_DOOR_OTHER = "machine_backlog"
+
+
+def machine_drop_door(row: dict) -> str:
+    """The door a machine drop went out of, by the row's own markers."""
+    if not isinstance(row, dict):
+        return MACHINE_DROP_DOOR_OTHER
+    if str(row.get("exit_route") or "").strip().lower() == "silence":
+        return "let_go_quiet"
+    try:
+        from event_types import REVIEW_EXPIRY_REASON as _REVIEW
+    except Exception:  # pragma: no cover
+        _REVIEW = "review_expired"
+    if str(row.get("resolution_reason") or "").strip().lower() == _REVIEW:
+        return "unconfirmed_expired"
+    if str(row.get("confirmed_by") or "").strip().lower() == "calendar":
+        return "closed_from_calendar"
+    return MACHINE_DROP_DOOR_OTHER
 
 
 def compute_ledger(*, opening: dict, n_opened: int,
@@ -3083,9 +3542,53 @@ def compute_ledger(*, opening: dict, n_opened: int,
     stops there.
     """
     rows = [c for c in (closures or []) if isinstance(c, dict)]
-    n_dropped = sum(1 for c in rows
-                    if str(c.get("resolution") or "").lower() == "dropped")
+    dropped_rows = [c for c in rows
+                    if str(c.get("resolution") or "").lower() == "dropped"]
+    n_dropped = len(dropped_rows)
     n_closed = len(rows) - n_dropped
+    # ATTRIB2 — the arithmetic above is the BOOK'S movement and stays exactly
+    # as it was (every drop moved the book, whoever made it, and the residual
+    # has to keep reconciling). This is the separate question the prose asks:
+    # how many of them were the customer's own.
+    #
+    # SPEC SURFACEFIX1 5.2 / amendment E-2 — THE DEFAULT FLIPS. A row with no
+    # attribution projected used to count as the CUSTOMER'S, which is how "52
+    # things you let go" rendered over a maintenance batch nobody touched
+    # (HOLD driver 2, B1.4). "You" is the strongest claim this surface makes
+    # about a person and it is now the one that has to be PROVEN: only
+    # `by_customer is True` — the answer `closures_since` projects off
+    # `event_types.is_customer_act` — counts as theirs. Everything else is
+    # the machine's, and the machine's acts are named by DOOR
+    # (`compute_machine_acts`), never as something the reader did.
+    #
+    # FIX ROUND 1 (reviewer F-3) — AND THAT DEFAULT NEVER REACHED THE ROWS IT
+    # WAS WRITTEN FOR. The earlier comment here said those 52 rows had "no
+    # attribution projected"; they had attribution, signed as the person —
+    # the age-out job wrote `resolved_by: person_001` and `actor_kind:
+    # person` on every one, so `by_customer` came back True and the flip did
+    # nothing. Proving the claim therefore takes BOTH halves: the act names
+    # the customer AND the batch was not a job's. A signature this surface
+    # cannot trust is a ledger-level gap and is recorded as a seam; what it
+    # can still read is whose BATCH the row belonged to.
+    n_dropped_by_you = sum(1 for c in dropped_rows
+                           if c.get("by_customer") is True
+                           and not machine_batch_row(c))
+    n_dropped_by_machine = n_dropped - n_dropped_by_you
+    # E-2's other half, which was computed and rendered nowhere: the
+    # machine's share BY DOOR, in `MACHINE_ACT_ORDER` so two evenings with
+    # the same day read the same way. Only rows whose batch is provably a
+    # job's are placed at a door; a row that is merely unproven stays in
+    # `n_dropped_by_machine` and earns no sentence of its own.
+    door_counts: dict = {}
+    for row in dropped_rows:
+        if not machine_batch_row(row):
+            continue
+        door = machine_drop_door(row)
+        door_counts[door] = door_counts.get(door, 0) + 1
+    dropped_by_machine_doors = [
+        {"category": door, "n": door_counts[door]}
+        for door in tuple(MACHINE_ACT_ORDER) + (MACHINE_DROP_DOOR_OTHER,)
+        if door_counts.get(door)]
     try:
         n_opened = max(0, int(n_opened))
     except (TypeError, ValueError):
@@ -3104,6 +3607,12 @@ def compute_ledger(*, opening: dict, n_opened: int,
         "n_opened": n_opened,
         "n_closed": n_closed,
         "n_dropped": n_dropped,
+        "n_dropped_by_you": n_dropped_by_you,
+        # E-2 — the complement, stated rather than left to be inferred from a
+        # subtraction a reader would have to do in their head.
+        "n_dropped_by_machine": n_dropped_by_machine,
+        # ...and WHICH DOORS it went out of (fix round 1, F-3).
+        "dropped_by_machine_doors": dropped_by_machine_doors,
         "book_now": book_now,
         "delta": None,
         "movement_line": None,
@@ -3530,8 +4039,235 @@ def _resolve_win_title(ev: dict, data: dict, idx: dict, names: dict) -> tuple:
     return _WIN_GENERIC_LINES.get(etype, ""), TITLE_GENERIC, ref_id
 
 
+# ---------------------------------------------------------------------------
+# Block: machine_acts — WHAT THE MACHINE DID TODAY, BY DOOR
+# ---------------------------------------------------------------------------
+#
+# SPEC SURFACEFIX1 5.2 / amendments E-2 and E-3 (HOLD driver 2, B1.4, Part E
+# 09-11). Two defects, one cause:
+#
+#   * "52 things you let go" rendered over a maintenance batch the reader had
+#     never touched — the machine's acts wearing the customer's pronoun;
+#   * "Nothing closed today that I can see" rendered on a day whose ledger
+#     held ten closes — because the day-close never read the day's JOB
+#     RECEIPTS at all. `change_feed.changes_since` has narrated exactly those
+#     receipts for the brief since LB1; this module has never imported it.
+#
+# The fix is one block: read the receipts through the ONE reader that already
+# classifies them, and render ONE LINE PER BATCH — the DOOR that acted, the
+# COUNT, and the undo phrase that reverses it. Never "you", never a row list,
+# never a recomputation (the event IS the receipt: PID1's honesty rule).
+#
+# The counts are the feed's own; the WORDS are composed here, because the
+# feed's sentences are written for the morning brief's CHANGED strip and lead
+# with the verb ("Let go 48 items you never touched") where this surface has
+# to lead with the actor (E-2's ruling: "the silence door let go 48"). One
+# fact, two surfaces, two sentences, both from the same count — never two
+# counts.
+
+#: door category -> the evening's sentence. `{n}`, `{items}` and `{them}` are
+#: the only substitutions; nothing here names a skill, a job id or a batch.
+MACHINE_ACT_LINES = {
+    "unconfirmed_expired":
+        "The review door closed {n} unconfirmed {items} nobody answered — "
+        "say `undo` to put {them} back.",
+    "rested_quiet":
+        "The silence door rested {n} {items} nobody has touched — say "
+        "`undo` to put {them} back on your working list.",
+    "let_go_quiet":
+        "The silence door let go {n} {items} — say `undo` to put {them} "
+        "back on the resting list.",
+    "parked_quiet":
+        "The quiet lane parked {n} {items} owed to you — still open, with "
+        "the reason; say `undo` to put {them} back.",
+    "closed_from_calendar":
+        "The calendar closed {n} scheduling {items} whose meeting has "
+        "happened — say `undo` to reopen {them}.",
+    "closed_from_sent":
+        "Your sent mail closed {n} {items} — say `undo` to reopen {them}.",
+    "closed_from_meetings":
+        "Your meetings closed {n} {items} — say `undo` to reopen {them}.",
+    "closed_from_deal":
+        "A signed or paid record closed {n} {items} — say `undo` to put "
+        "{them} back.",
+    # FIX ROUND 1 (reviewer F-3) — the honest residual. A drop that came out
+    # of a job's batch but names no door this reader can recognise is still
+    # the machine's, and saying so plainly beats crediting it to the reader.
+    "machine_backlog":
+        "A background pass let go {n} {items} — say `undo` to put {them} "
+        "back.",
+}
+
+#: The order the doors render in. Fixed, so two evenings with the same day
+#: read the same way; it is NOT a ranking of importance.
+MACHINE_ACT_ORDER = ("unconfirmed_expired", "closed_from_calendar",
+                     "closed_from_sent", "closed_from_meetings",
+                     "closed_from_deal", "rested_quiet", "let_go_quiet",
+                     "parked_quiet")
+
+#: Which of those doors CLOSED a row, as opposed to resting, parking or
+#: letting one go (FIX ROUND 2, reviewer R-1). The distinction is the
+#: ledger's own — `n_closed` against `n_dropped` — and it matters here
+#: because the sentence this set gates is a claim about CLOSES: an evening
+#: on which the silence door rested two items and closed nothing may still
+#: say nothing closed today, and be telling the truth.
+MACHINE_CLOSE_DOORS = ("unconfirmed_expired", "closed_from_calendar",
+                       "closed_from_sent", "closed_from_meetings",
+                       "closed_from_deal")
+
+
+def machine_closes(machine_acts: Optional[dict]) -> int:
+    """How many of the block's acts were CLOSES (FIX ROUND 2, reviewer R-1).
+
+    The machine-acts block reads a WIDER window than the ledger does — the
+    day's, not the morning's (F-1b) — so on a day whose rails ran before the
+    brief the block names closes the ledger's own `n_closed` never saw. Two
+    lines of one screen then disagreed: *"The review door closed 5 …"* three
+    lines above *"Nothing closed today that I can see."*
+
+    This is the number the day-close's honest-empty sentence is gated on, so
+    that sentence and the block are answering out of ONE window. Counting
+    only the closing doors, never the whole block: a rest is not a close.
+
+    Read-only, never raises: an unreadable block counts as no closes, which
+    is the answer that leaves the other prose exactly as it was.
+    """
+    rows = (machine_acts or {}).get("rows") if isinstance(machine_acts, dict) \
+        else None
+    if not isinstance(rows, list):
+        return 0
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("category") not in MACHINE_CLOSE_DOORS:
+            continue
+        try:
+            n = int(row.get("n") or 0)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        if n > 0:
+            total += n
+    return total
+
+
+def compute_machine_acts(workspace_root, since_ts, *, now_iso=None,
+                         window_source=None) -> dict:
+    """The day's machine acts, ONE LINE PER BATCH, read off the job receipts.
+
+    Returns `{"rows": [{"category", "door_line", "n", "refs"}...],
+    "lines": [str], "n_batches": int, "n_acts": int, "named": [...]}`.
+
+    Drop-empty: a day on which the machine did nothing returns no lines, and
+    the screen places nothing — the same posture every other block here takes.
+    Never raises into a fire: an unreadable feed is an evening with no machine
+    line, not an evening that fails to close.
+
+    `named` carries `change_feed.decided_for_you`'s per-act form (SPEC
+    SURFACEFIX1 5.6) for the callers that name rows rather than count them —
+    computed here so the two are read from ONE window and can never disagree
+    about which acts stood.
+
+    AND THE WINDOW HAS A FLOOR (fix round 1, reviewer F-1; SPEC WINSFLOOR1's
+    rule, one reader wider). `since_ts` is `None` on a day whose morning brief
+    never fired, and `change_feed.changes_since` applies NO lower bound when
+    its `since_ts` is unreadable. So this block — alone among the readers in
+    this phase — narrated the whole book as today: on the scratch copy of M's
+    own records a 00:30 fire reported 545 acts and named 481 of them back to
+    Aug 19, each with an `undo` offer that cannot work. It floors through
+    `_window`, the same floor `compute_wins` and `closures_since` take, and
+    returns `window_source` so a caller can say which window it read.
+    """
+    out = {"rows": [], "lines": [], "n_batches": 0, "n_acts": 0, "named": [],
+           "window_source": None,
+           # FIX ROUND 2 (reviewer R-1) — the floored instant this block
+           # actually read, handed back so a caller that must agree with it
+           # on screen can read the SAME window rather than re-derive one.
+           # Re-derivation is how the two halves of the 09-11 screen came to
+           # describe different days in the first place.
+           "window_since": None}
+    try:
+        import change_feed
+    except Exception:  # pragma: no cover — the day closes either way
+        return out
+    # The floor is computed HERE, once, and the floored instant is what both
+    # readers below are handed: `changes_since` and `decided_for_you` must see
+    # the same lower bound or the counts and the names describe different days.
+    #
+    # AND THE FLOOR IS THE DAY'S, NOT THE MORNING'S — `evening_window`, which
+    # IS the derivation this block used to carry inline (11c item 2 lifted it
+    # there so the whole evening can share one floor rather than this block
+    # having a private one). Measured on the scratch copy for 2026-09-11 —
+    # the day Part E recorded "Nothing closed today that I can see" over a
+    # ledger holding ten closes: the sent rail and the calendar rail both ran
+    # at 06:52 and 07:02 Pacific and the brief did not fire until 07:37, so an
+    # anchor-bounded window starts AFTER the batches it exists to report and
+    # the evening says nothing. The lower bound is the EARLIER of the two, so
+    # a caller that deliberately asks for a wider window still gets it.
+    #
+    # FIX ROUND 1 (REVIEW_EOD2 M-3). This block used to call `evening_window`
+    # on the instant the caller had ALREADY resolved and keep only the
+    # caller's LABEL — so the receipt reported the right window because the
+    # caller overrode the name, not because this block took what it was
+    # given. It is idempotent today and was still wrong: with the shared
+    # window shifted, the four other readers moved one day and this one moved
+    # twice. A handed window is TAKEN, never re-derived; the derivation below
+    # is what a caller that hands nothing still gets.
+    try:
+        handed = _parse_iso(since_ts) if since_ts else None
+        if window_source in WINS_MORE_LINES and handed is not None:
+            since, window_source = handed, str(window_source)
+        else:
+            since, window_source = evening_window(workspace_root, since_ts,
+                                                  now_iso=now_iso)
+    except Exception:  # pragma: no cover — an unresolvable floor is not a
+        # licence to read everything; the evening simply has no machine line.
+        return out
+    out["window_source"] = window_source
+    floored = since.isoformat()
+    out["window_since"] = floored
+    try:
+        feed = change_feed.changes_since(workspace_root, floored,
+                                         now_iso=now_iso)
+    except Exception:  # pragma: no cover
+        return out
+    counts = feed.get("counts") or {}
+    by_category = {}
+    for row in (feed.get("lines") or []):
+        if isinstance(row, dict) and row.get("category"):
+            by_category[row["category"]] = row
+    for category in MACHINE_ACT_ORDER:
+        if category not in by_category:
+            # The feed suppressed it (a reversal fold emptied it, or it never
+            # happened). An act the feed will not narrate is not an act this
+            # surface may narrate either — one classification, one answer.
+            continue
+        try:
+            n = int(counts.get(category) or 0)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        if n <= 0:
+            continue
+        line = MACHINE_ACT_LINES[category].format(
+            n=n, items=("item" if n == 1 else "items"),
+            them=("it" if n == 1 else "them"))
+        out["rows"].append({"category": category, "n": n, "line": line,
+                            "refs": list(by_category[category].get("refs")
+                                         or [])})
+        out["lines"].append(line)
+        out["n_acts"] += n
+    out["n_batches"] = len(out["rows"])
+    try:
+        named = change_feed.decided_for_you(workspace_root, floored,
+                                            now_iso=now_iso)
+        out["named"] = named.get("acts") or []
+    except Exception:  # pragma: no cover — the named form is additive
+        pass
+    return out
+
+
 def compute_wins(workspace_root, since_ts, *, now_iso=None,
-                 cap: int = MAX_WIN_ROWS) -> dict:
+                 cap: int = MAX_WIN_ROWS, window_source=None) -> dict:
     """Names, not statistics. What actually moved since the morning fire.
 
     Zero wins renders ONE honest line (`NO_WINS_LINE`) and never a padded
@@ -3564,14 +4300,33 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
     workspace-local midnight and returns `window_source` naming the window it
     read, which is also what spells `more_line` (`WINS_MORE_LINES`).
     """
-    since, window_source = _window(workspace_root, since_ts, now_iso=now_iso)
+    since, window_source = _stated_window(workspace_root, since_ts,
+                                         window_source, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     kinds = dict(_WIN_SPECS)
     events = _load_events(workspace_root)
     idx = _win_join_index(events)
+    # SPEC SURFACEFIX1 5.2 / amendment E-1 (HOLD driver 6, 2026-09-13) — A
+    # CLOSE AN UNDO HAS REVERSED IS NOT A WIN. `closures_since` has folded
+    # `reversed_closer_positions` out since POLICY1-B (c); this block never
+    # did, so the same close was absent from the ledger's `n_closed` and
+    # present in the "closed today" list on the same render. The attended
+    # test saw it: closed 13:00, undone 15:00, listed as closed at the 18:00
+    # fire. Same fold, same reader, same bound — `until` is this fire's own
+    # `now`, so a reversal AFTER the render never retro-edits the render.
+    #
+    # The reversed rows are not thrown away: they come back under
+    # `reversed_rows` / `n_reversed` so a caller can say "reversed today"
+    # once (amendment E-1's other half) instead of saying nothing at all.
+    try:
+        from closure_index import reversed_closer_positions as _reversed
+        reversed_at = _reversed(events, until=until)
+    except Exception:  # pragma: no cover — never widen the list on a read failure
+        reversed_at = set()
     names = None
     rows = []
-    for ev in events:
+    reversed_rows = []
+    for pos, ev in enumerate(events):
         kind = kinds.get(ev.get("type"))
         if kind is None:
             continue
@@ -3593,6 +4348,13 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
         if not title:
             # No snapshot, no join, and no typed line for this type. Dropping
             # is right here and ONLY here: there is nothing true to render.
+            continue
+        if pos in reversed_at:
+            # E-1: reopened since the close — open at fire time, so it is not
+            # a win. Kept, named, in its own list.
+            reversed_rows.append({"kind": kind, "title": title,
+                                  "ts": ev.get("ts"), "type": ev.get("type"),
+                                  "title_source": source, "ref_id": ref_id})
             continue
         rows.append({"kind": kind, "title": title, "ts": ev.get("ts"),
                      "source_ref": data.get("source_ref"),
@@ -3634,6 +4396,11 @@ def compute_wins(workspace_root, since_ts, *, now_iso=None,
                                n_shown=len(shown), n_total=n_total),
         "n_generic": sum(1 for r in rows if r["title_source"] == TITLE_GENERIC),
         "line": NO_WINS_LINE if n_total == 0 else None,
+        # E-1 — the closes that did NOT survive to the render. `n_total`
+        # above excludes them by construction, so nothing that counts wins
+        # can double-count these.
+        "reversed_rows": reversed_rows,
+        "n_reversed": len(reversed_rows),
     }
 
 
@@ -4041,6 +4808,7 @@ def mark_slipped_asked(workspace_root, pack: dict, *,
 
 def mark_lane_asked(workspace_root, brief_state: dict, *,
                     source_skill: str = MORNING_TASK_ID,
+                    surface: Optional[str] = None,
                     now_iso: Optional[str] = None) -> dict:
     """The MORNING's half of the same write (SPEC EODSYNTH1 R-3).
 
@@ -4055,12 +4823,20 @@ def mark_lane_asked(workspace_root, brief_state: dict, *,
     Called AFTER the morning post, for the same reason its evening twin is:
     the mark means the CEO has been asked, and writing it before the question
     reaches the screen rests a row nobody saw.
+
+    `surface` NAMES THE ASKER, and it defaults to the morning so every
+    existing caller is byte-identical (FOLD1-B 1.2 item 4). The Staff Meeting
+    now asks this question too — the fork was rehomed there off the brief —
+    and "which surface asked" is a fact the fold and any later audit need:
+    a staff-meeting ask recorded as a morning one is a record that cannot be
+    read back. One writer, one marker, the asker told the truth about itself.
     """
     state = brief_state if isinstance(brief_state, dict) else {}
     return _write_asks(workspace_root,
                        ids=state.get("asked_ids") or [],
                        rows=state.get("needs_attention") or [],
-                       source_skill=source_skill, surface=MORNING_TASK_ID,
+                       source_skill=source_skill,
+                       surface=surface or MORNING_TASK_ID,
                        now_iso=now_iso)
 
 
@@ -4926,7 +5702,16 @@ def gesture_ref(receipt_id: str, gesture: str) -> str:
 
 
 def log_end_of_day_receipt(workspace_root, pack: dict, *,
-                           fired_via: str = "scheduled",
+                           # SPEC_NIGHTM3_LANES §5 P-2 (ruling R-RW-5; the
+                           # F3-6 family remainder). NOT `"scheduled"`: a
+                           # literal default is an EXPLICIT value by the time
+                           # the resolver sees it, so a merged seat told
+                           # nothing would record a slot nobody claimed.
+                           # `receipts.effective_fired_via(None)` answers
+                           # `scheduled` on every non-VM seat — the un-merged
+                           # fleet is byte-identical.
+                           fired_via: Optional[str] = None,
+                           triggered_by: Optional[str] = None,
                            duration_ms: Optional[int] = None,
                            late_tier: Optional[str] = None,
                            capture_leg: Optional[dict] = None,
@@ -4970,7 +5755,7 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     fixture that compares two receipt payloads pins it; see that function's
     own note on why a minute boundary otherwise moves `slot_delta_minutes`.
     """
-    from receipts import log_receipt, normalize_fired_via
+    from receipts import effective_fired_via, log_receipt
 
     pack = pack or {}
     # SPEC COVERQUIET1 — `coverage` is the one `RENDER_ORDER` member whose
@@ -4989,15 +5774,36 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
     # doing the per-fire moving `coverage` needs, not the module-level
     # tuples: "coverage moves between the two lists per the disclosure
     # test" (§0 ruling 2) is implemented here, once.
-    _coverage_disclosed = coverage_has_disclosure(pack)
+    # Fix round 1 (review finding F-2, MED). HEALTH1 (2026-09-07) retired
+    # `compose_screen`'s `add("alarm_lines", ...)` call outright — the
+    # duplicate-entry warning and its siblings never reach the screen from
+    # this driver any more (see `compose_screen` above). `alarm_lines`
+    # stays a `RENDER_ORDER` member (the receipt's own fixed vocabulary —
+    # the EODSYNTH1 pin — is untouched) but its OWN rule now needs the same
+    # per-fire move `coverage` already gets: computed-but-never-rendered is
+    # not "rendered" just because the pack carries a non-None value. Before
+    # this fix a night with a real, non-empty `alarm_lines` still claimed
+    # `"alarm_lines"` in `blocks_rendered` — a receipt naming a block that
+    # never reached the screen, which is exactly what the comment two
+    # blocks up promises this list will never do.
+    # SPEC SURFACEFIX1 5.1 — `coverage` is a `COMPUTED_ONLY` member now (R3),
+    # so the per-fire move this code used to make for it is gone: it is
+    # computed on every fire, rendered on none, and the walk below picks it
+    # up from `COMPUTED_ONLY` in the same leading position it used to be
+    # inserted into by hand. `coverage_has_disclosure` stays exactly as it
+    # was — it is the HEALTH CHECK's and the maintenance report's question
+    # now, not a render decision, and the receipt keeps the full record
+    # either way.
     blocks_rendered = [b for b in RENDER_ORDER if pack.get(b) is not None
-                       and (b != "coverage" or _coverage_disclosed)]
+                       and b != "alarm_lines"]
     blocks_computed_only = [b for b in COMPUTED_ONLY if pack.get(b) is not None]
-    if not _coverage_disclosed and pack.get("coverage") is not None:
-        # Leads the list the same way `coverage` leads `BLOCK_ORDER` — first,
-        # not appended, so a reader scanning either list meets it in the same
-        # relative place.
-        blocks_computed_only = ["coverage"] + blocks_computed_only
+    if pack.get("alarm_lines") is not None:
+        # Same reasoning, same shape: `alarm_lines` is computed on every
+        # pack (harmless, side-effect-free) and rendered on none of them —
+        # it belongs beside `coverage` in the per-fire computed-only list,
+        # leading it, since `alarm_lines` led `RENDER_ORDER` before this
+        # driver stopped placing it.
+        blocks_computed_only = ["alarm_lines"] + blocks_computed_only
     data: dict = {
         "surface": SURFACE,
         # THE FIRE'S ID. Minted here, once, and read back by `choice_map` so
@@ -5006,6 +5812,24 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         "for_date": pack.get("for_date"),
         "branch": pack.get("branch"),
         "confirm_ids": confirm_ids_from_pack(pack),
+        # FOLD1A fix round 2 (REVIEW_FOLD1A R-2) — THE QUESTION MAP, its own
+        # key beside `confirm_ids` rather than inside it.
+        #
+        # WHY NOT `NUMBERED_BLOCKS`. That tuple's own written rule is "every
+        # block named here is also in `RENDER_ORDER`", and `eod_questions` is
+        # a `SCREEN_ORDER` block — `RENDER_ORDER` is the RECEIPT's vocabulary
+        # (EODSYNTH1's un-render-don't-unbuild pin) and putting a screen block
+        # in it would rewrite the meaning of every receipt already on disk.
+        # `confirm_ids` therefore stays `[]` and `NUMBERED_BLOCKS` stays `()`,
+        # both still pinned by seven suites. The shipped precedent for a
+        # numbered pick on this surface that does NOT ride `confirm_ids` is
+        # the tomorrow proposal (`day_intent_proposal` +
+        # `resolve_intent_confirm`, SPEC TOMPICK1): its own key, its own
+        # resolver, the same receipt, the same staleness fence. This is that
+        # shape, for the question block.
+        "eod_question_ids": [
+            r for r in ((pack.get("eod_questions") or {}).get("rows") or [])
+            if isinstance(r, dict) and r.get("id")],
         # SPEC EODSYNTH1 — `blocks_rendered` now means what it says. It walks
         # `RENDER_ORDER`, so it names what reached the screen; the blocks that
         # are computed and un-rendered (R-1) are recorded BESIDE it under their
@@ -5170,8 +5994,12 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
         data.setdefault(k, v)
 
     surfaced = len(data["confirm_ids"])
+    # P-2: the seat decides when the caller did not (the FIX2 M-3 shape); an
+    # explicit value always wins. `triggered_by` is additive — written only
+    # when the caller or `CR_TRIGGERED_BY` says it (log_receipt's own rule).
     return log_receipt(workspace_root, TASK_ID,
-                       fired_via=normalize_fired_via(fired_via) or "scheduled",
+                       fired_via=effective_fired_via(fired_via),
+                       triggered_by=triggered_by,
                        surfaced=surfaced, duration_ms=duration_ms,
                        late_tier=late_tier, extra_data=data, now=now)
 
@@ -5247,11 +6075,26 @@ def choice_map(workspace_root, *, now=None) -> dict:
     base["receipt_id"] = (data.get("receipt_id")
                           or f"{SURFACE}:{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     base["proposal"] = data.get("day_intent_proposal")
+    # FOLD1A fix round 2 (R-2) — the question block's own map, read back off
+    # the SAME receipt and behind the SAME staleness fence as everything else
+    # here: an answer to last night's questions never lands on tonight's rows.
+    base["questions"] = [r for r in (data.get("eod_question_ids") or [])
+                         if isinstance(r, dict) and r.get("id")]
     return base
 
 
 # The verbs a tap may carry, and the block each is legal in. A verb offered on
 # a block that never rendered it is a refusal, not a best-effort guess.
+#
+# FOLD1A fix round 2 (REVIEW_FOLD1A R-2) — three verbs ADDED, none changed.
+# `yes` / `no` / `skip` are legal on `QUESTION_BLOCK` and on nothing else, so
+# there is no verb in this table whose block set is ambiguous and no shipped
+# route is widened: `confirm`, `drop`, `mark done` and the rest resolve
+# exactly as they did. The widget's one tap arrives as the canonical `confirm`
+# verb carrying `context: "eod_questions"`, and `apply-choices` reads that
+# tuple as `yes` before it calls `resolve_choice` (the dispatcher's own
+# paragraph says so) — which is why `confirm` itself did not have to be
+# widened onto a second block.
 ROUTES = {
     "mark done": ("slipped", "confirm"),
     "resolved": ("slipped", "confirm"),
@@ -5266,7 +6109,24 @@ ROUTES = {
     "add person": (PERSON_CANDIDATE_BLOCK,),
     "same as [existing]": (PERSON_CANDIDATE_BLOCK,),
     "not a person": (PERSON_CANDIDATE_BLOCK,),
+    # FOLD1A fix round 2 — the evening's <= 2 pre-picked confirms, answered by
+    # number. `yes` takes the pick (the queue's `confirm`), `no` drops it, and
+    # `skip` leaves it alone and writes nothing.
+    "yes": (QUESTION_BLOCK,),
+    "no": (QUESTION_BLOCK,),
+    "skip": (QUESTION_BLOCK,),
+    # SPEC SURFACES2_11c Lane 3 item 3 — the self-scored answer, by number:
+    # `score 1 7` is "row one, seven out of ten". Legal on the question block
+    # and nowhere else, and `resolve_coach_score` refuses it on a row that is
+    # not a scored one — a score landing on a confirm row would close a
+    # promise, which is the wrong-target hazard CLOSEID1 exists to stop.
+    "score": (QUESTION_BLOCK,),
 }
+
+#: The verbs that resolve against the QUESTION map rather than `confirm_ids`.
+#: Derived from ROUTES so the two can never drift into two lists.
+QUESTION_VERBS = tuple(v for v, blocks in ROUTES.items()
+                       if blocks == (QUESTION_BLOCK,))
 
 
 def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
@@ -5301,9 +6161,21 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
         out["refusal"] = ("I could not read that item number. Say the number "
                           "from the list, for example `mark done 2`.")
         return out
-    rows = mapping["rows"]
+    # FOLD1A fix round 2 (R-2) — a question verb resolves against the QUESTION
+    # map, which lives in its own key on the same receipt. `confirm_ids` is
+    # empty on this surface by construction (`NUMBERED_BLOCKS` is `()`) and
+    # stays that way; the two index spaces never mix because no verb is legal
+    # in both (`QUESTION_VERBS` is derived from `ROUTES`, so that stays true).
+    is_question = verb in QUESTION_VERBS
+    rows = (mapping.get("questions") or []) if is_question else mapping["rows"]
     if index < 1 or index > len(rows):
         total = len(rows)
+        if is_question:
+            out["refusal"] = (
+                f"There is no question {index} on this End of Day. It asked "
+                f"{total} {'question' if total == 1 else 'questions'}. Say the "
+                f"number from the list.")
+            return out
         # CLOSEID1 DD-4 — this used to end "or tell me what you mean by name."
         # The safety property of this whole surface is POSITIONAL resolution
         # against the receipt this fire rendered; inviting a name after refusing
@@ -5315,7 +6187,9 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
             f"list.")
         return out
     row = rows[index - 1]
-    block = row.get("block")
+    # A question-map entry carries no `block` of its own — the map IS the
+    # block — so it is named here rather than stored N times on the receipt.
+    block = QUESTION_BLOCK if is_question else row.get("block")
     if block not in ROUTES[verb]:
         out["refusal"] = (
             f"Item {index} is not one I can '{verb}' from here. That action "
@@ -5330,8 +6204,51 @@ def resolve_choice(workspace_root, n, *, action: str, now=None) -> dict:
     # produces.
     payload = row.get("data")
     out["data"] = dict(payload) if isinstance(payload, dict) else None
-    out["source_ref"] = gesture_ref(mapping["receipt_id"], f"row{index}")
+    out["source_ref"] = gesture_ref(mapping["receipt_id"],
+                                    (f"question{index}" if is_question
+                                     else f"row{index}"))
     return out
+
+
+def resolve_coach_score(workspace_root, n, score, *, for_date=None,
+                        answered_by: str = "customer", now=None) -> dict:
+    """`score [n] [1-10]` → the self-scored answer, recorded (11c item 3).
+
+    Resolution is POSITIONAL against this fire's own receipt, exactly like
+    every other tap on this surface (CLOSEID1), through `resolve_choice` —
+    there is no second index space and no string match. Two refusals of its
+    own, before anything is written:
+
+      * the row at that number is not a scored one. A score answered onto a
+        confirm row would close somebody's promise, so the number is refused
+        by name rather than interpreted.
+      * the number is not one to ten. `apply_coach_answer` owns that refusal
+        and states the range; nothing is clamped.
+
+    Returns the writer's dict, with `refusal` set and nothing written on
+    either path.
+    """
+    import eod_question_budget as _eodq
+
+    picked = resolve_choice(workspace_root, n, action="score", now=now)
+    if not picked["ok"]:
+        return {"ok": False, "score": None, "behaviour": "", "batch_id": None,
+                "receipt": False, "refusal": picked["refusal"],
+                "undo": _eodq.COACH_ANSWER_NO_UNDO}
+    mapping = choice_map(workspace_root, now=now)
+    rows = mapping.get("questions") or []
+    row = rows[int(n) - 1] if 0 < int(n) <= len(rows) else {}
+    if row.get("kind") != _eodq.COACH_ROW_KIND:
+        return {"ok": False, "score": None, "behaviour": "", "batch_id": None,
+                "receipt": False,
+                "refusal": (f"Question {n} is not one with a score on it — it "
+                            f"takes `yes {n}` or `no {n}`."),
+                "undo": _eodq.COACH_ANSWER_NO_UNDO}
+    return _eodq.apply_coach_answer(
+        workspace_root, behaviour=str(row.get("behaviour") or ""), score=score,
+        for_date=for_date or workspace_today(workspace_root, now=now),
+        answered_by=answered_by, source_ref=picked["source_ref"],
+        now_iso=now)
 
 
 def resolve_intent_confirm(workspace_root, *, pick: Optional[int] = None,
@@ -5452,8 +6369,14 @@ __all__ = [
     # SPEC EODSYNTH1
     "RENDER_ORDER", "COMPUTED_ONLY", "SYNTHESIS_BLOCKS", "NUMBERED_BLOCKS",
     # CUT-PLATE — the composed screen
+    # SPEC SURFACES2_11c Lane 3 item 3 — the self-scored answer's resolver.
+    "resolve_coach_score",
     "SCREEN_ORDER", "TOMORROW_STATED_LINE", "SCREEN_RETIRED_PATTERNS",
     "ScreenShapeError", "screen_shape_violations", "compose_screen",
+    "MAX_SCREEN_QUESTIONS",
+    # FOLD1A fix round 2 — the question block's key and the verbs that answer
+    # it by number.
+    "QUESTION_BLOCK", "QUESTION_VERBS",
     "SECTION_KEY_MIGRATIONS", "TONE_RETIRED_VALUE", "TONE_SUCCESSOR_VALUE",
     "TONE_PRESERVED_KEY", "migrate_section_config",
     "migrate_section_config_on_disk", "slipped_prose_enabled",
@@ -5471,6 +6394,8 @@ __all__ = [
     "overdue_ask_label", "resting_line", "overdue_ask_after_days",
     "mark_slipped_asked",
     "WINDOW_MORNING_ANCHOR", "WINDOW_DAY_FLOOR",
+    # SPEC SURFACES2_11c Lane 3 item 2 — the ONE window the evening reads.
+    "evening_window",
     "MORE_LINE_SHAPE", "MORE_LINE_TEMPLATES", "more_line",
     "WINS_MORE_LINE_ANCHOR", "WINS_MORE_LINE_DAY_FLOOR", "WINS_MORE_LINES",
     "SLIPPED_MORE_LINE", "CONFIRM_MORE_LINE",
@@ -5506,6 +6431,12 @@ __all__ = [
     "COVERAGE_DISCLOSURE_DEFERRAL_LEAD", "COVERAGE_DISCLOSURE_DEFERRAL_LEAD_UNKNOWN",
     "COVERAGE_DISCLOSURE_CONNECTOR_GAP_LEAD",
     "coverage_has_disclosure", "coverage_disclosure_lead",
+    "coverage_number_caveat", "NUMBER_BEARING_CAPABILITIES",
+    "COVERAGE_NUMBER_CAVEAT", "COVERAGE_NUMBER_CAVEAT_STALE",
+    "compute_machine_acts", "MACHINE_ACT_LINES", "MACHINE_ACT_ORDER",
+    "machine_batch_row", "machine_drop_door", "machine_batch_prefixes",
+    "MACHINE_DROP_DOOR_OTHER", "MACHINE_BATCH_PREFIX_FALLBACK",
+    "SCHEDULED_FIRED_VIA",
     "coverage_render_lines",
     "NO_OPENING_FIGURE", "NO_OPENING_FIGURE_LINE", "LEDGER_LINE",
     "LEDGER_MOVEMENT", "LEDGER_NO_OPENING_FIGURE", "LEDGER_STATUSES",

@@ -148,9 +148,22 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
 
 try:
     import event_refs
@@ -822,7 +835,7 @@ def _doc_measurement(doc) -> dict:
 
 def run_gauge_refresh_job(workspace_root, *, apply: bool = False,
                           now_iso: str | None = None,
-                          fired_via: str = "scheduled") -> dict:
+                          fired_via=None) -> dict:
     """GAUGEJOB1 — compute the gauge, refresh the artifact when the
     measurement changed, and receipt the fire.
 
@@ -837,6 +850,12 @@ def run_gauge_refresh_job(workspace_root, *, apply: bool = False,
     Returns {ran, applied, wrote, changed, n_threads, n_ready,
     events_max_seq, duration_ms, refused, reason, receipt_line, summary}.
     """
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
     import time as _time
 
     def _refusal(refused: str, reason: str) -> dict:
@@ -992,7 +1011,8 @@ def main(argv: list[str]) -> int:
     dry = "--dry-run" in args
     job = "--job" in args
     apply_flag = "--apply" in args
-    fired_via = "scheduled"
+    fired_via = None
+    triggered_by = None
     pos: list[str] = []
     i = 0
     while i < len(args):
@@ -1004,6 +1024,14 @@ def main(argv: list[str]) -> int:
             fired_via = args[i + 1]
             i += 2
             continue
+        if a == "--triggered-by":
+            if i + 1 >= len(args):
+                print("Usage: --triggered-by needs a value",
+                      file=sys.stderr)
+                return 2
+            triggered_by = args[i + 1]
+            i += 2
+            continue
         if not a.startswith("--"):
             pos.append(a)
         i += 1
@@ -1012,6 +1040,8 @@ def main(argv: list[str]) -> int:
               " <workspace_root> --job [--apply] [--fired-via X]",
               file=sys.stderr)
         return 2
+    if triggered_by:
+        os.environ["CR_TRIGGERED_BY"] = str(triggered_by)
     root = Path(pos[0])
     if job:
         # GAUGEJOB1 — the maintenance-job entry. The refusal path prints and

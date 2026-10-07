@@ -159,6 +159,68 @@ PRESET_CONFIG_KEY = "preset"
 TRANSCRIPT_CLOSES_CONFIG_KEY = "auto_close_from_transcript"
 TRANSCRIPT_CLOSES_DEFAULT = False
 
+# SPEC_FLOW1 switches — per workspace, in the SAME store as the key above
+# (`commitment-policy`), DEFAULT ON, off by a plain phrase, FAIL-TO-DEFAULT.
+#
+# The difference from `auto_close_from_transcript` is deliberate and is the
+# whole reason these do not reuse its reader. That key ships OFF and fails
+# to OFF, because reading a missing key as "yes, close promises on a
+# transcript" would spend a grant nobody gave. These ship ON and fail to ON,
+# because the thing they gate is an ACT WITH A RECEIPT AND AN UNDO, and the
+# alternative to the act is a question — which the design rule calls a
+# defect to be justified. A malformed config file must not silently put a
+# seat back on 109 questions.
+#
+# IDENT1 owns the two identity keys. The other three names are reserved here
+# so the lanes that build them (INTAKE1, EXIT1) add a constant, not a second
+# reader with its own fallback.
+IDENTITY_AUTO_CREATE_KEY = "identity.auto_create"
+IDENTITY_AUTO_MERGE_KEY = "identity.auto_merge"
+INTAKE_SECOND_WITNESS_KEY = "intake.second_witness"
+EXIT_OWN_WORD_CLOSES_KEY = "exit.own_word_closes"
+EXIT_SILENCE_AGE_OUT_KEY = "exit.silence_age_out"
+# TTL1 spelled its key in `question_ttl` with an identical reader rather than
+# edit this file while four lanes were open. Its own second eyes then found
+# that the SHARED WRITER refuses a key that is not in this tuple, so the four
+# phrases TTL1 routes ("stop answering old questions for me") woke a skill
+# that could not act on them. The name is registered here, where the writer
+# looks, and its ack text is registered beside the others — TTL1's reader is
+# untouched and stays the reader.
+QUESTIONS_EXPIRE_TO_DEFAULT_KEY = "questions.expire_to_default"
+# LEARN1 — the learning job's own switch. Same posture as its siblings: per
+# workspace, DEFAULT ON, off by a plain phrase, fail-to-default. What it
+# gates is an act with a receipt and an undo, so a malformed config file must
+# not silently stop the product learning from corrections the customer has
+# already made a dozen times.
+LEARNING_AUTO_APPLY_KEY = "learning.auto_apply"
+FLOW_SWITCH_KEYS = (IDENTITY_AUTO_CREATE_KEY, IDENTITY_AUTO_MERGE_KEY,
+                    INTAKE_SECOND_WITNESS_KEY, EXIT_OWN_WORD_CLOSES_KEY,
+                    EXIT_SILENCE_AGE_OUT_KEY,
+                    QUESTIONS_EXPIRE_TO_DEFAULT_KEY,
+                    LEARNING_AUTO_APPLY_KEY)
+FLOW_SWITCH_DEFAULT = True
+
+
+def flow_switch_enabled(workspace_root, key, *, default: bool = FLOW_SWITCH_DEFAULT) -> bool:
+    """Is a SPEC_FLOW1 switch on for this workspace?
+
+    Read by IDENTITY off the stored value: only a literal `False` turns a
+    switch off. A missing key, a string, a malformed store, an unreadable
+    file and `None` (no workspace) all read as the DEFAULT — which is ON.
+    A typo in a config file is not a customer saying "stop"."""
+    if key not in FLOW_SWITCH_KEYS:
+        raise ValueError(f"unknown flow switch {key!r} (known: {FLOW_SWITCH_KEYS})")
+    if workspace_root is None:
+        return default
+    try:
+        from skill_config_writer import load_skill_config
+        stored = load_skill_config(workspace_root, PRESET_SKILL_KEY) or {}
+        cfg = stored.get("config") if isinstance(stored, dict) else None
+        val = (cfg or {}).get(key) if isinstance(cfg, dict) else None
+        return False if val is False else default
+    except Exception:
+        return default
+
 # Evidence classes — what the (score, signals) pair amounts to.
 EVIDENCE_STRONG = "strong"              # meets a close bar (a named row below)
 EVIDENCE_CORROBORATING = "corroborating"  # worth one question on a confirmed row
@@ -249,6 +311,47 @@ REFUSAL_NO_COMPLETION_TURN = "NoCompletionTurn"  # no single turn both says "don
 # The change class the transcript closer stamps with its batch id, so
 # `brain_undo`'s registered reverser (reopen) finds the rows (pairing rule).
 CLOSE_CHANGE_CLASS = "commitment_close"
+
+# EXIT1 / M's ruling 1 of the ten (2026-09-07) — THE CALENDAR LEG IS ON.
+#
+# CUT-A put ONE switch in front of every evidence-based close, and the
+# calendar closer inherited it because it shipped in the same week. M ruled
+# them apart: a meeting with the other side, after the row was captured, is a
+# FACT — it does not depend on reading anybody's words, and it is the same
+# class of evidence as a delivered message, which has never been behind a
+# switch. So the calendar leg gets its OWN key, in the same store, and its
+# default is the opposite of the transcript leg's:
+#
+#   `auto_close_from_transcript`  default OFF, fails to OFF — an ungiven
+#                                 grant is not a grant.
+#   `auto_close_from_calendar`    default ON, fails to ON — the act carries a
+#                                 receipt and an `undo`, and the alternative
+#                                 to it is the offer that M ruled out ("never
+#                                 'say the word and I'll close them'").
+#
+# Read by IDENTITY, like its sibling, but the other way round: only a literal
+# `False` turns it off. There is no spoken verb for this key in v5.30.0 — M
+# ruled the leg ON and asked for no word to turn it off — so nothing writes
+# it today; it is honoured when present so a seat can be settled without a
+# release. NAMED OPEN in the build record.
+CALENDAR_CLOSES_CONFIG_KEY = "auto_close_from_calendar"
+CALENDAR_CLOSES_DEFAULT = True
+
+
+def calendar_closes_enabled(workspace_root=None) -> bool:
+    """Is the CALENDAR leg on for this workspace? Default ON, fail-to-ON.
+    `None` (no workspace) is ON too — unlike the transcript leg, where no
+    store to read means no grant: here the default IS the ruling."""
+    if workspace_root is None:
+        return CALENDAR_CLOSES_DEFAULT
+    try:
+        from skill_config_writer import load_skill_config
+        stored = load_skill_config(workspace_root, PRESET_SKILL_KEY) or {}
+        cfg = stored.get("config") if isinstance(stored, dict) else None
+        val = (cfg or {}).get(CALENDAR_CLOSES_CONFIG_KEY) if isinstance(cfg, dict) else None
+        return False if val is False else CALENDAR_CLOSES_DEFAULT
+    except Exception:
+        return CALENDAR_CLOSES_DEFAULT
 
 
 class FixedEvidenceError(ValueError):

@@ -166,6 +166,110 @@ PACK_GLOB = "end-of-day-pack-*.json"
 SCREEN_LAYERS = ("delta",)
 
 # ---------------------------------------------------------------------------
+# SPEC SURFACES2_11c Lane 3 — WHAT A SEAT THAT OPENED THE DOOR SEES INSTEAD
+# ---------------------------------------------------------------------------
+#
+# Ruling R-3 (§8, default in force): CODE WINS on an observed seat — nothing
+# new renders there, the cut above stands exactly as M ruled it on 2026-09-06.
+# On a seat that opened the coaching door the evening may carry ONE pattern
+# line, re-templated so it cannot say the two things M retired
+# (`end_of_day.SCREEN_RETIRED_PATTERNS` bans "survived N closes" and
+# "consecutive close"), and the PUSH line stays off on every seat — the push
+# is the sentence that told the reader what their evenings amounted to, and
+# nobody asked for that back.
+#
+# Item 4 adds the knowledge line on a COACHED seat only: one sourced reading
+# per close, at most two in an ISO week.
+SCREEN_LAYER_DELTA = "delta"
+SCREEN_LAYER_PATTERN = "pattern"
+SCREEN_LAYER_KNOWLEDGE = "knowledge"
+
+#: Shape -> the layers that reach `coach["text"]`. The shape IS the switch
+#: (§7: `coaching.enabled` IS `coaching_doors.coaching_shape`), so
+#: `turn off coaching` puts the evening back to the CUT-PLATE line with no
+#: other key to unset.
+SCREEN_LAYERS_BY_SHAPE = {
+    "observed": (SCREEN_LAYER_DELTA,),
+    "named": (SCREEN_LAYER_DELTA, SCREEN_LAYER_PATTERN),
+    "coached": (SCREEN_LAYER_DELTA, SCREEN_LAYER_PATTERN,
+                SCREEN_LAYER_KNOWLEDGE),
+}
+
+#: At most ONE pattern line on the screen, whatever Layer 1 kept.
+CAP_SCREEN_PATTERNS = 1
+
+#: At most two sourced readings in an ISO week, counted off prior packs.
+KNOWLEDGE_PER_WEEK = 2
+
+#: The shipped library and how an entry is spelled in it.
+KNOWLEDGE_FILE_PARTS = ("shared", "coach", "knowledge.md")
+KNOWLEDGE_SEP = " :: "
+
+#: The pattern kinds the library is shelved by — the same three
+#: `compute_patterns` produces, so a pattern the evening found always has a
+#: shelf and a shelf never exists for a pattern that cannot occur.
+KNOWLEDGE_KINDS = ("stillness", "mention", "survival")
+
+# The screen spellings of the three patterns. Each says the SAME counted fact
+# its Layer 1 twin says, in words the retired-prose fence allows: no
+# "survived", no "consecutive close", no "did not move". The counts stay —
+# they are counts of repetitions, which is what R-1 left room for — and no
+# line tells the reader what to do about it.
+T_SCREEN_STILLNESS = "{label} sat still through the last {n} closes."
+T_SCREEN_MENTION = ("{label} came up in meetings on {count} of the last "
+                    "{of_days} days with nothing sent.")
+T_SCREEN_SURVIVAL = "{label} has stayed open past its date for {n} closes."
+
+
+def _screen_claim(text: str, *, count: int, window: str) -> Optional[dict]:
+    """The DECLARATION behind one screen pattern line (fix round 1,
+    REVIEW_EOD2 M-4).
+
+    Every one of the three screen lines renders a counted figure, and until
+    this existed none of them declared it: scanned bare, `claims.scan_surface`
+    returned `unresolved_figure` on all three. It was latent — the day-close
+    builds no claims manifest for the coach block — but the named and coached
+    seats are the first seats ever to put a counted sentence in that slot, and
+    "a number you have not observed is not a number" is the rule the whole
+    plugin renders under.
+
+    The declaration is an OBSERVATION — a projection over a window, which is
+    exactly what a repetition count IS — minted HERE, beside the line itself,
+    for the same reason the line is minted beside its Layer 1 twin: a claim
+    built anywhere else can drift from the sentence it is supposed to be
+    about. `make_claim` raises at the write on fields that cannot support the
+    kind, so a template that grows a figure it cannot account for fails where
+    it was written.
+
+    Returns None only when the shared checker is unreachable, which leaves the
+    line exactly as it was before this existed rather than failing a fire.
+    """
+    try:
+        import claims as _claims
+    except Exception:  # pragma: no cover — no checker, no declaration
+        return None
+    try:
+        return _claims.make_claim(text, count=int(count), window=str(window))
+    except Exception:  # pragma: no cover — never fail a fire to label one
+        return None
+
+
+def _assert_screen_claims(text: str, manifest: List[dict]) -> None:
+    """The write-time gate over the composed pattern block: every figure on it
+    is covered by a declaration, no score, no comparison, no bare outcome.
+
+    The same posture as `syn.assert_no_score` and `_assert_screen_shape`
+    beside it — a bad line fails in the composer that wrote it rather than on
+    the screen. Silent when the checker cannot be imported."""
+    if not text:
+        return
+    try:
+        import claims as _claims
+    except Exception:  # pragma: no cover — no checker, no gate
+        return
+    _claims.assert_surface_resolved("end-of-day", text, manifest)
+
+# ---------------------------------------------------------------------------
 # Templates. Counted claims only — no template below carries a denominator
 # against a PLAN (the shape `eod_synthesis.SCORE_PATTERNS` bans); every
 # number in them is a count of REPETITIONS, which is exactly what R-1 leaves
@@ -229,8 +333,9 @@ def _packs_dir(workspace_root) -> Path:
 
 
 def read_prior_packs(workspace_root, *, before_for_date: Optional[str] = None,
-                      limit: int = MAX_PRIOR_PACKS) -> List[dict]:
-    """The last `limit` EOD pack records on disk, NEWEST FIRST.
+                      limit: int = MAX_PRIOR_PACKS,
+                      collapse_for_date: bool = True) -> List[dict]:
+    """The last `limit` prior EVENINGS on disk, NEWEST FIRST.
 
     Reads `_hq/.system/briefs/end-of-day-pack-*.json` — the audit copies
     `surface_drivers.build_end_of_day_pack` writes at the end of every prior
@@ -244,6 +349,22 @@ def read_prior_packs(workspace_root, *, before_for_date: Optional[str] = None,
     anything; `state on the pack record, not a new store` (§0) means every
     write this spec makes rides the SAME pack file the driver already
     writes, and this is the reader for it.
+
+    ONE EVENING IS ONE PACK, AND THE CALLERS ALL SAY "EVENINGS"
+    (REVIEW_NIGHT11C H-3, 2026-09-15). Every fire writes its own
+    `end-of-day-pack-<stamp>.json`, so a day closed twice used to arrive
+    here as two records — and `quiet.earned_offer` ("has come up on 3 of
+    your recent evenings"), `quiet.bigger_picture` and this module's own
+    "last {n} closes" all count PACKS. Two evenings could clear the earned
+    door's once-ever floor of three. So packs are COLLAPSED by `for_date`,
+    newest file wins: the list is evenings, in the unit the sentences claim.
+    A pack with no `for_date` at all cannot be collapsed and is kept as it
+    comes. `limit` counts evenings, after the collapse.
+
+    `collapse_for_date=False` returns every FILE — the shape a caller wants
+    when its unit is renders rather than days, which is the knowledge cap's
+    case (H-2): a line rendered twice in one evening is two of the week's
+    two, and a collapsed list cannot see the first one.
     """
     d = _packs_dir(workspace_root)
     if not d.is_dir():
@@ -253,6 +374,7 @@ def read_prior_packs(workspace_root, *, before_for_date: Optional[str] = None,
     except OSError:
         return []
     out: List[dict] = []
+    seen_dates: set = set()
     for f in files:
         if len(out) >= limit:
             break
@@ -265,6 +387,10 @@ def read_prior_packs(workspace_root, *, before_for_date: Optional[str] = None,
         fd = data.get("for_date")
         if before_for_date and isinstance(fd, str) and fd >= before_for_date:
             continue
+        if collapse_for_date and isinstance(fd, str) and fd.strip():
+            if fd in seen_dates:
+                continue
+            seen_dates.add(fd)
         out.append(data)
     return out
 
@@ -389,6 +515,13 @@ def detect_stillness(*, today_what_it_meant: Optional[dict],
             "label": label, "refs": refs,
             "text": T_STILLNESS.format(ordinal=_ordinal(streak), label=label),
             "push_text": PUSH_STILLNESS.format(label=label, streak=streak),
+            # 11c R-3 — the same counted fact, in words the retired-prose
+            # fence allows. Minted HERE, beside its twin, so the two can
+            # never come to say different things about one pattern.
+            "screen_text": T_SCREEN_STILLNESS.format(label=label, n=streak),
+            "screen_claim": _screen_claim(
+                T_SCREEN_STILLNESS.format(label=label, n=streak),
+                count=streak, window=f"the last {streak} closes"),
         })
     return out
 
@@ -441,6 +574,12 @@ def detect_mention(*, today_slipped_prose: Optional[dict],
                                       of_days=days_examined),
             "push_text": PUSH_MENTION.format(label=label, count=n,
                                               of_days=days_examined),
+            "screen_text": T_SCREEN_MENTION.format(label=label, count=n,
+                                                   of_days=days_examined),
+            "screen_claim": _screen_claim(
+                T_SCREEN_MENTION.format(label=label, count=n,
+                                        of_days=days_examined),
+                count=n, window=f"the last {days_examined} days"),
         })
     return out
 
@@ -479,6 +618,10 @@ def detect_survival(*, today_open_rows: Optional[List[dict]],
             "label": label, "refs": [identity],
             "text": T_SURVIVAL.format(label=label, n=streak),
             "push_text": PUSH_SURVIVAL.format(label=label, n=streak),
+            "screen_text": T_SCREEN_SURVIVAL.format(label=label, n=streak),
+            "screen_claim": _screen_claim(
+                T_SCREEN_SURVIVAL.format(label=label, n=streak),
+                count=streak, window=f"the last {streak} closes"),
         })
     return out
 
@@ -704,6 +847,187 @@ def compute_push(*, patterns_kept: List[dict], prior_packs: List[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SPEC SURFACES2_11c Lane 3 item 4 — THE SOURCED KNOWLEDGE LINE
+# ---------------------------------------------------------------------------
+
+def _shape(workspace_root, shape: Optional[str] = None) -> str:
+    """The seat's coaching shape. Fail-to-observed, like the door itself.
+
+    A caller may state it (a fixture, a preview); absent, it is read through
+    `coaching_doors.coaching_shape`, whose own safe direction is OFF — a
+    malformed store never promotes a seat into coaching it did not ask for.
+    """
+    if shape in SCREEN_LAYERS_BY_SHAPE:
+        return str(shape)
+    try:
+        import coaching_doors
+        value = coaching_doors.coaching_shape(workspace_root)
+    except Exception:  # noqa: BLE001 — no door, no coaching
+        return "observed"
+    return value if value in SCREEN_LAYERS_BY_SHAPE else "observed"
+
+
+def _assert_screen_shape(text: str) -> None:
+    """The coach's own text may never carry a sentence M retired, or an ask.
+
+    The day-close's composer runs `end_of_day.screen_shape_violations` over
+    the WHOLE screen and raises, which is the real fence; this runs the same
+    scanner over this block alone so a bad template fails where it was
+    written rather than at assembly, naming the block. Ruling R-3 permits one
+    pattern line in a NEW spelling — the retired spellings stay retired, and
+    this is what makes that a fact rather than an intention.
+    """
+    if not text:
+        return
+    try:
+        from end_of_day import screen_shape_violations
+    except Exception:  # pragma: no cover — the composer still fences
+        return
+    bad = screen_shape_violations(text)
+    if bad:
+        raise ValueError(f"coach: retired or asking prose on the screen: {bad!r}")
+
+
+def _knowledge_path() -> Path:
+    p = Path(__file__).resolve().parent.parent.parent
+    for part in KNOWLEDGE_FILE_PARTS:
+        p = p / part
+    return p
+
+
+def read_knowledge(path=None) -> dict:
+    """The shipped library, shelved by pattern kind.
+
+    `{kind: [{"text", "source", "line"}, ...]}`. A heading this module does
+    not recognise is IGNORED rather than merged into a neighbouring shelf —
+    `shared/coach/knowledge.md` has a `## resources` section that belongs to
+    another surface, and a reader that swept every bullet into the last
+    heading it saw would put it on the day-close.
+
+    Never raises: a library that cannot be read is an evening with no
+    knowledge line, which is the same evening every seat had yesterday.
+    """
+    out: dict = {k: [] for k in KNOWLEDGE_KINDS}
+    try:
+        text = Path(path or _knowledge_path()).read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001 — no library, no line
+        return out
+    shelf = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            head = line[3:].strip().lower()
+            shelf = head if head in KNOWLEDGE_KINDS else None
+            continue
+        if shelf is None or not line.startswith("- "):
+            continue
+        body = line[2:].strip()
+        if KNOWLEDGE_SEP not in body:
+            # An entry with no source is not an entry. Dropped in silence
+            # rather than rendered sourceless: the source is the whole of
+            # what makes this a reading rather than an opinion.
+            continue
+        claim, source = body.split(KNOWLEDGE_SEP, 1)
+        claim, source = claim.strip(), source.strip()
+        if not claim or not source:
+            continue
+        out[shelf].append({"text": claim, "source": source,
+                           "line": f"{claim} — {source}"})
+    return out
+
+
+def _iso_week(day: str):
+    """`(iso_year, iso_week)` for a `YYYY-MM-DD` string, or None."""
+    import datetime as _dt
+    try:
+        y, m, d = (int(x) for x in str(day).strip()[:10].split("-"))
+        cal = _dt.date(y, m, d).isocalendar()
+        return (cal[0], cal[1])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def knowledge_used_this_week(prior_packs, for_date: str) -> List[str]:
+    """The knowledge lines prior closes in THIS ISO week already rendered.
+
+    Read off the packs this module already reads for its patterns — no new
+    store, the same discipline `push_state` follows. A pack from another week
+    does not count, and a pack whose coach block has no knowledge line is a
+    close that spent none of the week's two.
+    """
+    week = _iso_week(for_date)
+    used: List[str] = []
+    if week is None:
+        return used
+    for pack in (prior_packs or []):
+        if not isinstance(pack, dict):
+            continue
+        if _iso_week(str(pack.get("for_date") or "")) != week:
+            continue
+        block = pack.get(BLOCK_COACH)
+        know = (block or {}).get("knowledge") if isinstance(block, dict) else None
+        if isinstance(know, dict) and know.get("renders") and know.get("line"):
+            used.append(str(know["line"]))
+    return used
+
+
+#: How far back the knowledge cap reads FILES. The cap's window is the ISO
+#: week and its unit is renders, not evenings, so it cannot ride
+#: `MAX_PRIOR_PACKS` (7 evenings): a week closed every night with one re-fire
+#: is already eight files. Three weeks of nightly closes fit.
+KNOWLEDGE_WEEK_PACK_LIMIT = 21
+
+
+def compute_knowledge(*, patterns_kept, prior_packs, for_date: str,
+                      library: Optional[dict] = None,
+                      week_packs: Optional[list] = None) -> dict:
+    """ONE sourced reading, or the empty shape (item 4).
+
+    Rendered only when this close actually FOUND a pattern — the line is the
+    bigger picture behind THAT pattern, keyed to its kind, never a thought
+    for the day — and only while the ISO week has one of its two left. The
+    library is shelved by kind, so a shelf with nothing on it renders
+    nothing rather than borrowing a neighbour's line.
+
+    Within a shelf the pick ROTATES past what this week already used, so two
+    closes in one week never repeat a line, and it falls back to the first
+    entry rather than going silent when the whole shelf has been used (which
+    can only happen on the week's second line, by which point the cap is
+    about to close it anyway).
+
+    THE CAP COUNTS RENDERS, NOT EVENINGS (REVIEW_NIGHT11C H-2, 2026-09-15),
+    so it reads `week_packs` — every pack FILE, today's included — and not
+    `prior_packs`, which is the evenings list and is filtered by
+    `before_for_date` to keep a re-fire from reading itself. The cap was
+    counted off that same filtered list, so no line rendered earlier the
+    SAME evening was ever counted: a manual `end of day` after the scheduled
+    one rendered the same reading again, and again, without limit. `used` is
+    also what the rotation steps past, so the repeat and the overrun were
+    one bug. `week_packs=None` falls back to `prior_packs` for a caller that
+    has only the one list.
+    """
+    out = {"kind": None, "text": "", "source": "", "line": "",
+           "renders": False, "n_used_this_week": 0}
+    kept = [p for p in (patterns_kept or []) if isinstance(p, dict)]
+    used = knowledge_used_this_week(
+        week_packs if week_packs is not None else prior_packs, for_date)
+    out["n_used_this_week"] = len(used)
+    if not kept or len(used) >= KNOWLEDGE_PER_WEEK:
+        return out
+    kind = str(kept[0].get("template") or "")
+    if kind not in KNOWLEDGE_KINDS:
+        return out
+    shelf = (library if library is not None else read_knowledge()).get(kind) or []
+    if not shelf:
+        return out
+    fresh = [e for e in shelf if e["line"] not in used]
+    entry = (fresh or shelf)[0]
+    out.update({"kind": kind, "text": entry["text"], "source": entry["source"],
+                "line": entry["line"], "renders": True})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # The one entry point
 # ---------------------------------------------------------------------------
 
@@ -712,7 +1036,8 @@ def build_coach(*, workspace_root, for_date: str,
                  today_slipped_prose: Optional[dict],
                  today_closures: Optional[Iterable[dict]],
                  today_open_rows: Optional[Iterable[dict]],
-                 arc_label_by_ref: Optional[dict] = None) -> dict:
+                 arc_label_by_ref: Optional[dict] = None,
+                 shape: Optional[str] = None) -> dict:
     """Every EODCOACH2 block, computed once. Prose only, ZERO new
     interactions (§0). Reads the last `MAX_PRIOR_PACKS` EOD packs off disk as
     this evening's ONLY history; nothing here fetches a connector or writes
@@ -728,7 +1053,15 @@ def build_coach(*, workspace_root, for_date: str,
     THIRD door onto the same rows the arc read and the tomorrow rollover
     already had to fence (EODARC1 §3.6), and it inherits the same discipline
     rather than re-implementing it.
+
+    `shape` is the seat's coaching shape (SPEC SURFACES2_11c Lane 3, rulings
+    R-3 and item 4). Left unset it is READ from the workspace, so the default
+    is the seat's own door rather than a caller's opinion of it; an observed
+    seat — every seat that never opened one — gets exactly the CUT-PLATE
+    screen it got yesterday, and nothing below changes for it.
     """
+    shape = _shape(workspace_root, shape)
+    layers = SCREEN_LAYERS_BY_SHAPE.get(shape) or SCREEN_LAYERS
     open_rows = [r for r in (today_open_rows or []) if isinstance(r, dict)]
     closures = [c for c in (today_closures or []) if isinstance(c, dict)]
 
@@ -795,7 +1128,41 @@ def build_coach(*, workspace_root, for_date: str,
                 layer1_refs.append(r)
     syn.assert_no_score(layer1_text, where="coach.layer1")
 
-    parts = [t for t in (delta.get("text"),) if t]
+    # THE SCREEN, BY SHAPE (11c ruling R-3 and item 4). An observed seat gets
+    # the delta and nothing else — `SCREEN_LAYERS_BY_SHAPE["observed"]` IS
+    # `SCREEN_LAYERS`, so the CUT-PLATE screen is byte-identical. A seat that
+    # opened the door gets at most ONE pattern line in its re-templated
+    # spelling, and a coached seat gets the sourced reading behind it. The
+    # PUSH line stays off on every seat: it is the sentence that told the
+    # reader what their evenings amounted to, and no ruling asked for it back.
+    screen_pattern = ""
+    screen_claims: List[dict] = []
+    if SCREEN_LAYER_PATTERN in layers:
+        rendered = [c for c in patterns["kept"][:CAP_SCREEN_PATTERNS]
+                    if c.get("screen_text")]
+        screen_pattern = "\n".join(str(c["screen_text"]) for c in rendered)
+        # The declarations behind the figures on those lines (fix round 1,
+        # M-4) — carried on the pack so a reader can check the sentence
+        # against what was claimed, not just take the composer's word.
+        screen_claims = [c["screen_claim"] for c in rendered
+                         if c.get("screen_claim")]
+    # Every pack FILE, today's re-fires included — the cap's unit is renders
+    # (H-2). `prior_packs` stays the evenings list for everything else.
+    knowledge = compute_knowledge(
+        patterns_kept=patterns["kept"], prior_packs=prior_packs,
+        for_date=for_date,
+        week_packs=read_prior_packs(workspace_root,
+                                    limit=KNOWLEDGE_WEEK_PACK_LIMIT,
+                                    collapse_for_date=False))
+    if SCREEN_LAYER_KNOWLEDGE not in layers or not screen_pattern:
+        # No shelf without a pattern line to stand under, and none at all on
+        # a seat below the coached shape. The computed record still rides the
+        # pack, so the week's count is readable either way.
+        knowledge = dict(knowledge, renders=False)
+
+    parts = [t for t in (delta.get("text"), screen_pattern,
+                         knowledge["line"] if knowledge["renders"] else "")
+             if t]
     text = "\n".join(parts)
     refs: List[str] = []
     for block in (pattern_render_block, delta, push):
@@ -804,12 +1171,18 @@ def build_coach(*, workspace_root, for_date: str,
                 refs.append(r)
 
     syn.assert_no_score(text, where="coach")
+    _assert_screen_shape(text)
+    _assert_screen_claims(screen_pattern, screen_claims)
 
     return {
         "text": text,
         "refs": refs,
         "renders": bool(text),
-        "screen_layers": list(SCREEN_LAYERS),
+        "shape": shape,
+        "screen_layers": list(layers),
+        "screen_pattern": screen_pattern,
+        "screen_claims": screen_claims,
+        "knowledge": knowledge,
         "layer1": {"text": layer1_text, "refs": layer1_refs,
                    "renders": bool(layer1_text)},
         "patterns": pattern_block,
@@ -824,6 +1197,14 @@ def build_coach(*, workspace_root, for_date: str,
 
 __all__ = [
     "BLOCK_COACH", "SCREEN_LAYERS",
+    # SPEC SURFACES2_11c Lane 3 — the screen by shape (R-3) and the sourced
+    # reading behind the pattern (item 4).
+    "SCREEN_LAYERS_BY_SHAPE", "SCREEN_LAYER_DELTA", "SCREEN_LAYER_PATTERN",
+    "SCREEN_LAYER_KNOWLEDGE", "CAP_SCREEN_PATTERNS", "KNOWLEDGE_PER_WEEK",
+    "KNOWLEDGE_KINDS", "KNOWLEDGE_SEP", "KNOWLEDGE_FILE_PARTS",
+    "KNOWLEDGE_WEEK_PACK_LIMIT",
+    "T_SCREEN_STILLNESS", "T_SCREEN_MENTION", "T_SCREEN_SURVIVAL",
+    "read_knowledge", "knowledge_used_this_week", "compute_knowledge",
     "CAP_PATTERNS", "CAP_DELTA", "CAP_PUSH",
     "MIN_PRIOR_PACKS", "MAX_PRIOR_PACKS",
     "STILLNESS_MIN_STREAK", "MENTION_MIN_COUNT", "SURVIVAL_MIN_STREAK",

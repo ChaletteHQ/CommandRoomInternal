@@ -30,9 +30,12 @@
     },
     "superhuman": {
       "category": "email",
+      "categories": ["email", "calendar"],
       "label": "Superhuman",
       "fingerprint": ["list_splits", "get_read_status_feed", "undo_send", "create_or_update_draft", "query_email_and_calendar"],
       "whoami": true,
+      "whoami_tool": "list_accounts",
+      "account_param": "acting_email",
       "capabilities": {
         "draft": true,
         "send": true,
@@ -48,9 +51,15 @@
         "splits": true,
         "unsubscribe": true,
         "mark_spam": true,
-        "from_addressing": true
+        "from_addressing": true,
+        "availability": true,
+        "event_crud": true,
+        "free_busy": true,
+        "rsvp": false,
+        "calendar_addressing": true,
+        "event_id_shape": "superhuman_event_id"
       },
-      "notes": "Fronts calendar too (create_or_update_event, get_availability). from-alias addressing supported (verified aliases). Sync lag ~1min after send (hole #9) — reconcile-sent must tolerate."
+      "notes": "Fronts calendar too (create_or_update_event, get_availability) — `categories` carries that, and the calendar seam's fingerprint pass reads it; `category: email` stays for every reader that predates the list. No respond/RSVP tool exists in the connector's tool set, so `rsvp` is false and the seam refuses respond_to_event rather than soft-binding an event-write tool to an invitation. Per-account routing parameter is `acting_email` (the connector's own schema), which is what `account_param` names. from-alias addressing supported (verified aliases). Sync lag ~1min after send (hole #9) — reconcile-sent must tolerate."
     },
     "outlook": {
       "category": "email",
@@ -165,12 +174,26 @@
         "channel_search_requires_scope": "ChannelMessage.Read.All"
       },
       "notes": "Asking for a DATE-FILTERED search silently degrades: the connector stops running a search at all and walks the newest 50 chats reading 50 messages each, channels excluded. That path is a PARTIAL sweep, so any leg taking it must record its scan mode and a coverage note rather than report a clean reconcile. `channel_search` is false because the tenant grant (ChannelMessage.Read.All) is not assumed — a tenant that grants it detects true at declaration and the detected row overrides. `channel_list` is false because NO tool exists to enumerate channels, which detection cannot change. `send` is write-gated and defaults false: the M365 connectors we have shipped against are read-only, so a Teams write path would ship untested by construction (the same posture as the `outlook` row)."
+    },
+    "claude_docs": {
+      "category": "docs",
+      "label": "Claude Docs (the app's built-in living-doc page)",
+      "fingerprint": ["batch", "guide", "export"],
+      "whoami": false,
+      "capabilities": {
+        "doc_create": true,
+        "doc_read": true,
+        "doc_export": true,
+        "export_formats": ["markdown", "text", "html", "docx", "pdf"]
+      },
+      "notes": "DOCS1 (2026-09-24). The server id is a UUID on some accounts and a display name on others, so identity is the fingerprint: `batch` and `guide` are the two operations no other connector spells (`discover_docs_tool` requires both; the fingerprint is the identity pair plus `export`, never a bare `read`/`update` that any server may spell). `docs` is deliberately NOT in the manifest's `categories` list: a category is something a workspace DECLARES and the update bridge's re-pin migration declares on sight, and a declared docs backend would contradict the document-routing rule and be consumed by nothing. Command Room never CREATES a doc through this seam; the one consumer is `deliverables.export_claude_doc`, landing a doc the composer made anyway, read through the discovered `export`, into the workspace folder."
     }
   },
   "baseline": {
     "$note": "Unknown-provider fallback (C4). At declaration an unrecognized server feature-detects into this shape (can it draft? send? create events?) rather than hard-failing. Absent booleans are treated as false (fail-closed).",
     "email": {"draft": false, "send": false, "reply_threaded": false, "from_addressing": false},
     "calendar": {"availability": false, "event_crud": false, "free_busy": false, "rsvp": false},
-    "chat": {"channel_search": false, "channel_list": false, "chat_resource_read": false, "send": false, "date_filtered_search": false, "thread_read": false}
+    "chat": {"channel_search": false, "channel_list": false, "chat_resource_read": false, "send": false, "date_filtered_search": false, "thread_read": false},
+    "docs": {"doc_create": false, "doc_read": false, "doc_export": false}
   }
 }

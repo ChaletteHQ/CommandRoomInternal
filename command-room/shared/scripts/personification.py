@@ -100,7 +100,7 @@ def detect_vocative_address(message: str, brain_name: str) -> tuple[bool, str]:
         return True, ""
     first_char = after_name[0]
     if first_char not in _VOCATIVE_SEPARATORS:
-        # Name is a prefix of another word ("Penelopes", "Penelopina") —
+        # Name is a prefix of another word ("Penelopea", "Penelopina") —
         # not addressing.
         return False, message
 

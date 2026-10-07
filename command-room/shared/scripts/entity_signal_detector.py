@@ -128,6 +128,12 @@ CONFIRM_TUPLES = [
 ]
 
 
+def _safe_name(candidate) -> str:
+    """LEAK2 — a display name or the honest label, never the record's id."""
+    from narration_names import safe_name
+    return safe_name(candidate)
+
+
 def _clock_now(workspace_root=None):
     """CLOCK1 - the corroborated UTC instant this module stamps from.
 
@@ -270,7 +276,8 @@ def detect_entity_signals(workspace_root: str | Path) -> list[dict]:
 
         for pid in ev_people:
             person = people[pid]
-            name = person.get("canonical_name") or pid
+            # LEAK2 — never the id as a name (B3.4 fallback class).
+            name = _safe_name(person.get("canonical_name"))
 
             promo = next((m for m in PROMOTION_MARKERS if m in text), None)
             if promo:
@@ -332,7 +339,7 @@ def detect_entity_signals(workspace_root: str | Path) -> list[dict]:
         for oid in ev_orgs:
             news = next((m for m in ORG_NEWS_MARKERS if m in text), None)
             if news:
-                org_name = orgs[oid].get("canonical_name") or oid
+                org_name = _safe_name(orgs[oid].get("canonical_name"))
                 _push({
                     "kind": "entity_fact",
                     "proposal_kind": "fact",

@@ -454,6 +454,220 @@ CONSERVATIVE_DISCLAIMER = (
 )
 
 
+# ---------------------------------------------------------------------------
+# COACH2 5.2 item 3 — the four measures, on a seat that opened a door
+# ---------------------------------------------------------------------------
+#
+# The receipt already says what the product ABSORBED. These four say what the
+# customer's own work looks like against the thing they said they are working
+# on — and they render ONLY on a seat whose coaching shape is not `observed`,
+# because on an observed seat there is no such thing and a block that appears
+# anyway is the product deciding to coach somebody who never opened a door.
+#
+# The completion measure is the one with teeth. Its numerator is closes that
+# came from the customer or from evidence; its ELIGIBLE BASE deliberately
+# leaves out every row that left because nobody ever came back to it — the
+# review expiry, the rest and let-go doors, the age-out amnesty. Counting
+# those as failures would make the number a verdict on the customer's memory
+# rather than a reading of their work; counting them in the numerator would
+# make the product look good for forgetting things. They are named on their
+# own line and nowhere else. Every number is read off
+# `flow_measure.window_counts` by door — never recomputed here, so the receipt
+# and the wrap can never disagree about one week.
+
+COACHING_HEADING = "What you are working on"
+
+#: EOD2's self-scored answer (SURFACES2 ruling 5). The receipt lists the
+#: numbers the CUSTOMER said, as a list — no mean, no arrow, no trend word.
+#: They are the customer's own words about their own week, which is exactly
+#: why they are never averaged into a grade.
+COACHING_ANSWER_TYPE = "coaching_answer"
+
+#: The doors whose rows leave the eligible base — SPEC 5.2 item 3's FOUR, by
+#: name: `unconfirmed_expired` (the review expiry), `rested_quiet` and
+#: `let_go_quiet` (the silence rail), `aged_out` (the amnesty). The first is a
+#: resolution REASON inside `flow_measure`'s `lapse` route; the other three
+#: are that module's whole `silence` route.
+#:
+#: WHY NOT THE ROUTE (fix round 1, reviewer F-4): `lapse` is wider than the
+#: expiry. It also carries `ingest_killed`, `target_never_created` and
+#: `policy_retracted` — and those rows were leaving the eligible base under a
+#: customer sentence that says they "left through the expiry, rest and let-go
+#: doors", which is not true of a policy the system retracted. Zero rows on
+#: the book carry them today, so this was a wording risk rather than a wrong
+#: number; it is closed by naming the doors instead of the routes.
+EXCLUDED_ROUTES = ("silence",)
+#: The `lapse`-route reasons that ARE one of the four doors — the review
+#: expiry and nothing else. Spelled through `event_types` so the reason has
+#: one home; the literal is the fallback for a tree without it.
+try:  # pragma: no cover — the constant has shipped since REFINT1
+    from event_types import REVIEW_EXPIRY_REASON as _REVIEW_EXPIRY
+except ImportError:  # pragma: no cover
+    _REVIEW_EXPIRY = "review_expired"
+EXCLUDED_LAPSE_REASONS = (_REVIEW_EXPIRY,)
+#: The doors that count as a close the customer or the evidence made.
+COMPLETION_ROUTES = ("fact", "own_word")
+
+#: The quarterly stakeholder read has no questions to report against until
+#: the first coaching quarter ends (night 12c/13). It says so rather than
+#: rendering an empty section.
+STAKEHOLDER_NOT_ASKED = (
+    "Quarterly stakeholder perception: not yet asked — the first quarter of "
+    "coaching has not closed yet."
+)
+
+
+def _coaching_shape(workspace_root) -> str:
+    try:
+        import coaching_doors as _doors
+        return _doors.coaching_shape(workspace_root)
+    except Exception:  # noqa: BLE001 — no coaching module is an observed seat
+        return "observed"
+
+
+def _behaviour(workspace_root) -> str:
+    try:
+        import coaching_doors as _doors
+        obj = _doors.relationship(workspace_root)
+        return str((obj or {}).get("behaviour") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _answer_scores(events, start_dt, end_dt) -> list:
+    out = []
+    for ev in events or []:
+        if ev.get("type") != COACHING_ANSWER_TYPE:
+            continue
+        if not _in_window(event_time(ev), start_dt, end_dt):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        value = data.get("score")
+        if isinstance(value, (int, float)):
+            out.append(int(value) if float(value).is_integer() else value)
+    return out
+
+
+def _behaviour_closes_by_week(events, start_dt, end_dt, behaviour: str) -> list:
+    """How many closes carried the behaviour's own words, week by week. A
+    LIST, never a slope: four numbers a reader can look at beats one number
+    that has already decided what they mean."""
+    words = {w for w in str(behaviour or "").lower().split() if len(w) > 3}
+    if not words:
+        return []
+    buckets: dict = {}
+    for ev in events or []:
+        if ev.get("type") != "commitment_resolved":
+            continue
+        dt = event_dt(ev)
+        if dt is None or not _in_window(event_time(ev), start_dt, end_dt):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        blob = " ".join(str(data.get(k) or "")
+                        for k in ("title", "evidence", "quote")).lower()
+        if not any(w in blob for w in words):
+            continue
+        week = int((dt - start_dt).days // 7)
+        buckets[week] = buckets.get(week, 0) + 1
+    if not buckets:
+        return []
+    return [buckets.get(i, 0) for i in range(max(buckets) + 1)]
+
+
+def _excluded_by_door(events, start_dt, end_dt, routes) -> int:
+    """How many rows left by one of SPEC 5.2 item 3's FOUR doors.
+
+    The whole `silence` route (rest, let-go, the age-out amnesty) read off
+    `flow_measure.window_counts` by door as before — plus the `lapse` rows
+    whose own resolution reason is the review expiry, counted through
+    `flow_measure.route_of`, the same classifier, never a second one. The
+    other three lapse reasons are not one of the four doors and stay in the
+    eligible base."""
+    from flow_measure import route_of
+    n = sum(int(routes.get(r, 0) or 0) for r in EXCLUDED_ROUTES)
+    for ev in events or []:
+        if route_of(ev) != "lapse":
+            continue
+        if not _in_window(event_time(ev), start_dt, end_dt):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        reason = str(data.get("resolution_reason") or "").strip().lower()
+        if reason in EXCLUDED_LAPSE_REASONS:
+            n += 1
+    return n
+
+
+def coaching_block(workspace_root, window_start, window_end, *,
+                   events=None, shape=None) -> dict:
+    """The four measures, or nothing at all.
+
+    Returns `{"renders": bool, "heading", "bullets", "claims", "numbers"}`.
+    `renders` is False on an observed seat, and the caller adds no section.
+    """
+    import claims as _claims
+
+    shape = shape if shape is not None else _coaching_shape(workspace_root)
+    if shape == "observed":
+        return {"renders": False, "heading": COACHING_HEADING, "bullets": [],
+                "claims": [], "numbers": {}, "shape": shape}
+
+    start_dt = _parse_dt(window_start)
+    end_dt = _parse_dt(window_end)
+    if events is None:
+        events, _skipped = load_events_org_scoped(workspace_root)
+    events = list(events or [])
+
+    from flow_measure import window_counts
+    counts = window_counts(events, start_dt, end_dt)
+    routes = counts.get("out_by_route") or {}
+    completed = sum(int(routes.get(r, 0) or 0) for r in COMPLETION_ROUTES)
+    excluded = _excluded_by_door(events, start_dt, end_dt, routes)
+    eligible = max(0, int(counts.get("out", 0) or 0) - excluded)
+
+    label = window_label(start_dt, end_dt)
+    bullets: list = []
+    claim_list: list = []
+
+    # (i) completion, own word + fact doors only.
+    line = (f"Rows that ended by your own word or on evidence: "
+            f"{completed} of {eligible} eligible.")
+    bullets.append(line)
+    claim_list.append(_claims.make_claim(line, count=completed, window=label))
+    if excluded:
+        ex = (f"{excluded} more left through the expiry, rest and let-go "
+              f"doors — outside the count either way.")
+        bullets.append(ex)
+        claim_list.append(_claims.make_claim(ex, count=excluded, window=label))
+
+    # (ii) the daily question, as the list of what the customer said.
+    scores = _answer_scores(events, start_dt, end_dt)
+    if scores:
+        said = ", ".join(str(s) for s in scores)
+        line = f"What you said about your own days, in order: {said}."
+        bullets.append(line)
+        claim_list.append(_claims.make_claim(line, count=len(scores),
+                                             window=label))
+
+    # (iii) the quarterly read, which has nothing to report yet.
+    bullets.append(STAKEHOLDER_NOT_ASKED)
+
+    # (iv) the behaviour, week by week.
+    behaviour = _behaviour(workspace_root)
+    weekly = _behaviour_closes_by_week(events, start_dt, end_dt, behaviour)
+    if behaviour and weekly:
+        line = (f"{behaviour} appeared in closes, week by week: "
+                f"{', '.join(str(n) for n in weekly)}.")
+        bullets.append(line)
+        claim_list.append(_claims.make_claim(line, count=sum(weekly),
+                                             window=label))
+
+    return {"renders": True, "heading": COACHING_HEADING, "bullets": bullets,
+            "claims": claim_list, "shape": shape,
+            "numbers": {"completed": completed, "eligible": eligible,
+                        "excluded": excluded, "answers": list(scores),
+                        "behaviour_weeks": list(weekly)}}
+
+
 def _count_bullets(metrics: dict) -> list:
     """Plain-English count lines, counts only — zero names/topics so the
     forwardable .docx passes the leak scanner. Omit zero lines (omit-don't-pad);
@@ -660,7 +874,8 @@ def build_value_receipt_infographic(
     )
 
 
-def _build_sections(metrics: dict, hours_estimate: float, per_month: list, rollup: str) -> list:
+def _build_sections(metrics: dict, hours_estimate: float, per_month: list,
+                    rollup: str, coaching: dict = None) -> list:
     """A ready-to-pass make_brief sections list. Code builds every number into
     the strings, so the skill renders — it never recomputes in prose."""
     sections = []
@@ -696,6 +911,12 @@ def _build_sections(metrics: dict, hours_estimate: float, per_month: list, rollu
         if trend:
             section["charts"] = [trend]
         sections.append(section)
+    # COACH2 5.2 item 3 — last, and only through the door. A block that is
+    # not built (observed seat) adds no heading at all: an empty "What you
+    # are working on" would announce a layer the seat never opened.
+    if coaching and coaching.get("renders") and coaching.get("bullets"):
+        sections.append({"heading": coaching["heading"],
+                         "bullets": list(coaching["bullets"])})
     return sections
 
 
@@ -834,7 +1055,13 @@ def compute_value_receipt(
     end_dt = _parse_dt(window_end)
     label = window_label(start_dt, end_dt)
 
-    sections = _build_sections(metrics, hours_estimate, per_month, rollup)
+    # COACH2 5.2 item 3 — computed from the SAME events this receipt already
+    # loaded, so the block and the counts above it describe one read of one
+    # book. An observed seat gets `renders: False` and no section.
+    coaching = coaching_block(workspace_root, window_start, window_end,
+                              events=events)
+    sections = _build_sections(metrics, hours_estimate, per_month, rollup,
+                               coaching)
     summary = _build_summary(metrics, hours_estimate, label)
 
     # Idempotency guard (v4.5.2 R4 / F-09+F-36): if the latest prior receipt

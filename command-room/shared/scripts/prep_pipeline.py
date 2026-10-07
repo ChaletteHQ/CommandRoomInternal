@@ -163,28 +163,46 @@ _EXISTING_BRIEF_RE = re.compile(
 )
 
 
-def find_existing_prep_brief(workspace_root, meeting_id: str) -> Optional[str]:
-    """Absolute path of the existing Call_Prep_*.docx for this meeting id,
-    or None. Matches by the meeting-id hash embedded in the slug, so a brief
-    survives title rewording and date moves. Newest date wins if historic
-    duplicates exist (the pre-fix F-29b siblings)."""
+def find_existing_prep_brief(workspace_root, meeting_id: str, *,
+                             date_iso: Optional[str] = None) -> Optional[str]:
+    """Absolute path of an existing Call_Prep_*.docx for this meeting, or None.
+
+    Matches by the meeting-id hash embedded in the slug, so a brief survives
+    title rewording.
+
+    `date_iso` NAMES AN OCCURRENCE (fix round 2). A calendar id is stable
+    across a recurring series, so "the brief for this meeting" is not a
+    question with one answer: the Sep 18 standup and the Sep 22 standup share
+    an id and are different documents. With a date, only that occurrence's
+    file matches. Without one, the newest date wins, which is today's
+    behaviour and what a caller asking "is there a brief for this meeting at
+    all" means.
+
+    The walk found the cost of having only the second answer: preparing for a
+    Sep 22 meeting matched the Sep 18 file, refreshed it in place, and the Sep
+    18 content was gone - with the Sep 18 name still on it.
+    """
     h = _meeting_hash(meeting_id)
     meetings_dir = Path(workspace_root) / "_hq" / "meetings"
     if not meetings_dir.is_dir():
         return None
+    wanted = str(date_iso).strip() if date_iso else ""
     candidates = []
     for name in os.listdir(meetings_dir):
         m = _EXISTING_BRIEF_RE.match(name)
         if not m:
             continue
         slug = m.group("slug")
-        if slug == h or slug.endswith("-" + h):
-            candidates.append((m.group("date"), name))
+        if slug != h and not slug.endswith("-" + h):
+            continue
+        if wanted and m.group("date") != wanted:
+            continue
+        candidates.append((m.group("date"), name))
     if not candidates:
         return None
     candidates.sort()
     newest = candidates[-1][1]
-    return str(meetings_dir / newest).replace("\\", "/")
+    return str(meetings_dir / newest).replace(chr(92), "/")
 
 
 def resolve_prep_brief_path(
@@ -196,14 +214,24 @@ def resolve_prep_brief_path(
 ) -> dict:
     """The ONE path a prep brief for `meeting_id` may be written to.
 
-    Refresh-in-place contract: if a brief for this meeting id already exists
-    (matched by the hash suffix, regardless of title/date drift), THAT path is
-    returned and the regeneration overwrites it — no sibling is ever minted.
-    Otherwise the canonical new path via brief_path.get_brief_path.
+    Refresh-in-place contract, keyed on the OCCURRENCE (fix round 2): a brief
+    already written for THIS date is returned and the regeneration overwrites
+    it - the same occurrence prepared twice is one document, which is F-29b
+    and is still right. A DIFFERENT date gets its own file, and the older
+    occurrence's file is never touched.
+
+    Before this the match ignored the date entirely, so preparing for the Sep
+    22 instance of a recurring meeting returned the Sep 18 file, overwrote it,
+    and kept the Sep 18 name - one document destroyed and the new one
+    mislabelled, from one calendar id shared by a series (the 2026-09-20 gate
+    walk, HOLD driver 3). Ruling R-FIX-3: occurrence keying is the fix; there
+    is no `.rev` sidecar for deliverables, because a same-occurrence refresh
+    is meant to overwrite.
 
     Returns {"path": <absolute str>, "slug": <slug>, "refresh": <bool>}.
     """
-    existing = find_existing_prep_brief(workspace_root, meeting_id)
+    existing = find_existing_prep_brief(workspace_root, meeting_id,
+                                        date_iso=date_iso)
     if existing:
         m = _EXISTING_BRIEF_RE.match(os.path.basename(existing))
         return {"path": existing, "slug": m.group("slug"), "refresh": True}

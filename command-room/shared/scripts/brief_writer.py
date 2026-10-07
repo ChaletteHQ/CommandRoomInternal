@@ -52,27 +52,72 @@ if str(_HERE) not in sys.path:
 PYTHON_DOCX_PIN = "1.2.0"
 
 
+class BriefDependencyError(RuntimeError):
+    """python-docx is not here and this run cannot fetch it (DELIV1 F-6).
+
+    Carries `.line` — the one composed customer sentence — for the same reason
+    a refused landing does: the bash boundary says the sentence and stops.
+    """
+
+    def __init__(self, line: str = "", detail: str = "") -> None:
+        self.line = line
+        self.detail = detail
+        super().__init__(line or detail)
+
+
+def _offline_runtime() -> bool:
+    """True where `pip install` cannot succeed — the sandbox VM and the cloud
+    container, both of which run without a network (DELIV1 F-6). Anything this
+    cannot answer is False, which is today's behaviour on every seat."""
+    try:
+        from deliverables import offline_runtime  # noqa: WPS433 (lazy by design)
+        return bool(offline_runtime())
+    except Exception:
+        return False
+
+
+def _dependency_line(detail: str) -> str:
+    try:
+        from deliverables import dependency_line  # noqa: WPS433
+        return dependency_line()
+    except Exception:
+        return detail
+
+
 def _ensure_python_docx() -> None:
     try:
         import docx  # noqa: F401
+        return
     except ImportError:
-        print(
-            f"Installing python-docx (=={PYTHON_DOCX_PIN}) — one-time setup. "
-            "(Plugin requires this for .docx generation. "
-            "See README Requirements section to pre-install in locked-down environments.)",
-            file=sys.stderr,
-        )
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--quiet",
-                f"python-docx=={PYTHON_DOCX_PIN}",
-            ],
-            check=True,
-        )
+        pass
+    # DELIV1 (review F-6) — the install fence. The merged app's VM ships
+    # python-docx, so this branch is not the normal merged path; it is the
+    # guard against a run that would otherwise shell out to a package
+    # installer with no network to reach, wait for it, and fail with a
+    # subprocess error instead of a sentence.
+    detail = (
+        f"python-docx (=={PYTHON_DOCX_PIN}) is not available in this runtime "
+        "and cannot be installed here (no network)."
+    )
+    if _offline_runtime():
+        raise BriefDependencyError(_dependency_line(detail), detail)
+    print(
+        f"Installing python-docx (=={PYTHON_DOCX_PIN}) — one-time setup. "
+        "(Plugin requires this for .docx generation. "
+        "See README Requirements section to pre-install in locked-down environments.)",
+        file=sys.stderr,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            f"python-docx=={PYTHON_DOCX_PIN}",
+        ],
+        check=True,
+    )
 
 
 _ensure_python_docx()
@@ -144,6 +189,22 @@ from brief_gates import (  # noqa: E402
     emit_brief_meta_audit as _emit_brief_meta_audit,
     emit_gate_ran_audit as _emit_gate_ran_audit,
 )
+
+def _delivery_for(output_path, workspace_root):
+    """DELIV1 — the build-then-land plan for one rendered document.
+
+    `deliverables.Delivery` decides where the bytes are built and how they
+    reach the customer's folder (SPEC_NIGHTM2 §5). `None` means this workspace
+    is running a runtime that predates DELIV1: the caller then saves exactly
+    where it saved before, which is the dual-backend rule (M1 ruling 23), not
+    a silent fallback — a seat with the module always lands through the layer.
+    """
+    try:
+        from deliverables import Delivery  # noqa: WPS433 (lazy by design)
+    except ImportError:
+        return None
+    return Delivery(output_path, workspace_root)
+
 
 _DEFAULT_RESOLVED = get_brand()  # pure defaults; no I/O at import
 
@@ -787,6 +848,54 @@ def _add_asks_block(doc, asks: List[Dict[str, str]]) -> None:
 
 # ---------- Public API ----------
 
+#: How long a finished build stands for (FIX3 F3-7). The 2026-09-21 prep built
+#: the same document twice inside one turn and emitted two `gate_ran` audits
+#: for one file. A rebuild with a CHANGED payload is a different document and
+#: always runs; a rebuild outside the window always runs; what this stops is
+#: the same bytes being written twice because the caller reached the composer
+#: twice in one turn.
+BRIEF_BUILD_WINDOW_SECONDS = 10 * 60
+
+#: `{(final_path, digest): monotonic}` for this process only. Deliberately not
+#: persisted: the defect is two builds inside ONE turn, and a process-local
+#: memory cannot outlive the turn or reach another seat.
+_RECENT_BUILDS: dict = {}
+_RECENT_BUILDS_MAX = 64
+
+
+def _build_digest(payload) -> str:
+    """A stable digest of everything that decides what the document says."""
+    import hashlib as _hashlib
+    import json as _json
+
+    try:
+        blob = _json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        blob = repr(payload)
+    return _hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _recent_build(key) -> bool:
+    """True when this exact document was built here, just now."""
+    import time as _time
+
+    at = _RECENT_BUILDS.get(key)
+    if at is None:
+        return False
+    if _time.monotonic() - at > BRIEF_BUILD_WINDOW_SECONDS:
+        _RECENT_BUILDS.pop(key, None)
+        return False
+    return True
+
+
+def _remember_build(key) -> None:
+    import time as _time
+
+    if len(_RECENT_BUILDS) >= _RECENT_BUILDS_MAX:
+        _RECENT_BUILDS.pop(next(iter(_RECENT_BUILDS)), None)
+    _RECENT_BUILDS[key] = _time.monotonic()
+
+
 def make_brief(
     output_path: str,
     *,
@@ -805,6 +914,13 @@ def make_brief(
     org_id: Optional[str] = None,
 ) -> str:
     """Write a polished brief .docx to `output_path` and return the path.
+
+    Builds the SAME document at most once per window (FIX3 F3-7): same final
+    path, same rendered content, inside ten minutes, in this process. A second
+    call then returns the path it already wrote, writes no second file and
+    emits no second `gate_ran`. A changed payload is a different document and
+    always rebuilds - which is what `prep_pipeline`'s same-occurrence refresh
+    relies on, and it is untouched.
 
     Args:
       output_path: absolute path to write the .docx (already resolved via
@@ -918,7 +1034,12 @@ def make_brief(
         brand, for a document scoped to one client org. Only consulted when
         `brand` is not passed and `workspace_root` is set.
 
-    Returns: `output_path` on success.
+    Returns on success: `output_path` itself on every seat where the plugin
+    and the customer's folder share a filesystem — every legacy and local
+    seat, byte for byte, unchanged. On the sandbox VM, where the document is
+    built in the session scratch and landed across into the folder, it is the
+    path on the CUSTOMER's own computer, or the folder-relative path when this
+    run cannot know that spelling (see `deliverables.Delivery.finish`).
 
     Raises:
       ValueError on bad inputs.
@@ -934,6 +1055,18 @@ def make_brief(
     Canonical pre-save gate order (B2 / B3): input validation → contract gate →
     voice gate → render (Document) → post-render leak scan.
     """
+    _dedup_key = (str(output_path), _build_digest(
+        {"kind": brief_kind, "title": title, "subtitle": subtitle,
+         "sections": sections, "footer": footer_text,
+         "exec_header": exec_header, "asks": asks,
+         "voice_gate": voice_gate, "contract": contract,
+         "profile": contract_profile, "brand": brand,
+         "org": org_id, "workspace": workspace_root}))
+    if _recent_build(_dedup_key):
+        # Already built, this turn, byte for byte. Returning the same
+        # path is the honest answer; writing the file again and
+        # auditing it again says two documents were produced.
+        return str(output_path)
     # SPEC OUT5 §3b — the canonical pre-save gate sequence (input validation →
     # EXEC1 kwarg validation → rec-ordering → contract gate → voice gate →
     # exec-header requirement) runs through the SHARED stack in brief_gates.py,
@@ -1089,7 +1222,16 @@ def make_brief(
         # Footer: caller override wins; otherwise the brand footer_line (which
         # is "Command Room" on the default brand).
         _add_footer(doc, footer_text if footer_text is not None else FOOTER_DEFAULT)
-        doc.save(output_path)
+
+        # DELIV1 (SPEC_NIGHTM2 §5) — BUILD here, LAND through the access layer.
+        # The render target is the session's own scratch whenever the final
+        # path is inside a resolvable workspace; the bytes reach the customer's
+        # folder through one fenced verb that runs where the data is. On every
+        # other seat `build_path` IS `output_path` and `finish()` is a no-op,
+        # so the save is byte-for-byte what it has always been.
+        delivery = _delivery_for(output_path, workspace_root)
+        build_path = delivery.build_path if delivery is not None else output_path
+        doc.save(build_path)
 
         # v3.13.8+ — universal post-render leak scan gate (Bug #57 + #59 + #54).
         # Runs against every brief regardless of which skill called us. The
@@ -1097,7 +1239,37 @@ def make_brief(
         # dependency cycle during partial-install scenarios.
         try:
             from docx_leak_scanner import scan_docx_for_leaks, LeakScanError
-            scan_docx_for_leaks(output_path)
+            # REVIEW_ONEPLATE1 F-1 - PROVENANCE. A section may declare the
+            # customer's OWN words (`user_spans`); the marketing vocabulary
+            # then stops reading them, exactly as the chat gate already
+            # does (`chat_output_renderer.USER_TEXT_BLANKED_LABELS`). Every
+            # other family still scans the whole document, and a section
+            # that declares nothing scans exactly as it did before.
+            user_spans: List[str] = []
+            for _sec in sections:
+                for _span in (_sec.get("user_spans") or []):
+                    if isinstance(_span, str) and _span.strip():
+                        user_spans.append(_span)
+            try:
+                scan_docx_for_leaks(build_path, user_spans=user_spans or None)
+            except LeakScanError:
+                # A REFUSED FILE IS NEVER LANDED (DELIV1, spec §5 item 5). The
+                # scan can only read a document that is already on disk, so the
+                # bytes are written first — but they are written to the SCRATCH,
+                # and the scan runs before anything is landed. A refusal
+                # therefore removes a scratch copy (where unlink works) and the
+                # customer's folder never held the file at all. The older shape
+                # deleted the deliverable after writing it into the workspace,
+                # which left residue wherever the delete was refused — EPERM on
+                # the merged mount (REVIEW_ONEPLATE1 F-1, P2_RESULT).
+                if delivery is not None:
+                    delivery.discard()
+                else:
+                    try:
+                        Path(build_path).unlink()
+                    except OSError:  # pragma: no cover - refusal still raises
+                        pass
+                raise
             gates_ran.append("leak")
         except ImportError:
             # docx_leak_scanner not installed yet (e.g. a workspace that hasn't
@@ -1105,19 +1277,73 @@ def make_brief(
             # apply on the next plugin update.
             pass
 
+        # The landing. Every gate has passed, so the bytes may cross into the
+        # customer's folder — and only now. `finish()` raises DeliveryRefused
+        # (one composed line, no path in it) when the layer cannot reach the
+        # workspace from here, after removing the scratch copy: no file
+        # anywhere, and a sentence that says so.
+        final_path = delivery.finish() if delivery is not None else output_path
+
         # SPEC GATE1 — emit the detectable-bypass audit AFTER a fully successful
         # render+save (deliverable on disk, all wired gates passed). A composer
         # fire that produces a doc with NO gate_ran event for that turn is a
         # flaggable bypass. Best-effort + never raises (deliverable already valid).
-        _emit_gate_ran_audit(brief_kind, gates_ran, output_path, workspace_root)
+        # IDENT1 I-2: ONE audit per prep. The in-process dedup above cannot see
+        # a second PROCESS, and through the write door every build is one - so
+        # the 2026-09-22 prep's in-place refresh wrote a second `gate_ran` for
+        # the same document. The ledger is asked instead: a `gate_ran` for this
+        # same file and kind inside the prep window means the gates already
+        # ran for this prep and are on the record.
+        if not _recent_gate_ran(workspace_root, final_path, brief_kind):
+            _emit_gate_ran_audit(brief_kind, gates_ran, final_path, workspace_root)
+        _remember_build(_dedup_key)
 
-        return output_path
+        return final_path
     finally:
         # Restore defaults so the next render in this process is never
         # contaminated by this render's theme or profile (byte-stable defaults
         # invariant).
         _apply_brand(_DEFAULT_RESOLVED)
         _apply_output_profile(DEFAULT_OUTPUT_PROFILE)
+
+
+#: How long a second build of the SAME document is read as the same prep
+#: for the `gate_ran` audit (IDENT1 I-2) - the prep receipt's own window.
+GATE_RAN_DEDUP_WINDOW_S = 600
+
+
+def _recent_gate_ran(workspace_root, final_path, brief_kind) -> bool:
+    """True when the ledger already carries a `gate_ran` for this document
+    (same basename, same kind) inside the window. Never raises; no workspace
+    root means no ledger and the audit is emitted exactly as before."""
+    if not workspace_root or not final_path:
+        return False
+    try:
+        import datetime as _dt
+        from os.path import basename
+        from events_io import iter_events
+        from event_time import event_dt
+
+        name = basename(str(final_path).replace("\\", "/"))
+        now = _dt.datetime.now(_dt.timezone.utc)
+        for ev in iter_events(workspace_root):
+            if not isinstance(ev, dict) or ev.get("type") != "gate_ran":
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if data.get("brief_kind") != brief_kind:
+                continue
+            if name not in (data.get("artifact") or []):
+                continue
+            at = event_dt(ev)
+            if at is None:
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=_dt.timezone.utc)
+            if (now - at).total_seconds() <= GATE_RAN_DEDUP_WINDOW_S:
+                return True
+    except Exception:  # noqa: BLE001 - an audit question never blocks a save
+        return False
+    return False
 
 
 def make_brief_from_json(json_payload: str) -> str:
@@ -1127,8 +1353,14 @@ def make_brief_from_json(json_payload: str) -> str:
     Required keys mirror `make_brief()` kwargs.
 
     Returns the output path (also printed to stdout for shell capture).
+
+    IDENT1 I-0/I-2: through the write door (`workspace_access.run_writer`)
+    the payload arrives already parsed - an `args_file` in the session's own
+    scratch holding `{"json_payload": {...}}` - so an object is taken as it
+    is. A string is parsed exactly as before.
     """
-    payload = json.loads(json_payload)
+    payload = (json.loads(json_payload) if isinstance(json_payload, str)
+               else dict(json_payload))
     path = make_brief(
         payload["output_path"],
         brief_kind=payload["brief_kind"],
@@ -1149,12 +1381,37 @@ def make_brief_from_json(json_payload: str) -> str:
     return path
 
 
-__all__ = ["make_brief", "make_brief_from_json"]
+def _cli(payload: str) -> int:
+    """The bash boundary (DELIV1, review F-4).
+
+    A refused landing and a missing document engine are the two things this
+    entry point can end in that the MODEL is supposed to relay. Both carry one
+    composed sentence; both print that sentence alone on stderr and exit
+    non-zero. Neither prints a traceback, because on a merged seat the frames
+    spell the runtime path inside the session mount — a session id in the text
+    the model reads back, which is the leak class this lane exists to close.
+    Every other exception still raises, tracebacks and all: an unexpected
+    failure that prints one tidy sentence is a failure nobody can debug.
+    """
+    try:
+        make_brief_from_json(payload)
+    except Exception as exc:  # noqa: BLE001 — re-raised unless it is ours
+        try:
+            from deliverables import refusal_sentence  # noqa: WPS433
+            line = refusal_sentence(exc)
+        except Exception:
+            line = None
+        if not line:
+            raise
+        print(line, file=sys.stderr)
+        return 2
+    return 0
+
+
+__all__ = ["BriefDependencyError", "make_brief", "make_brief_from_json"]
 
 
 if __name__ == "__main__":
     # CLI: `python3 brief_writer.py '<json>'` OR pipe JSON on stdin.
-    if len(sys.argv) > 1:
-        make_brief_from_json(sys.argv[1])
-    else:
-        make_brief_from_json(sys.stdin.read())
+    raise SystemExit(_cli(sys.argv[1] if len(sys.argv) > 1
+                          else sys.stdin.read()))

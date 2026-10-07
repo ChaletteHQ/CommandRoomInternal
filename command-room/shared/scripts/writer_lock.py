@@ -281,11 +281,72 @@ def machine_id_path() -> Path:
     return Path(os.path.expanduser("~")) / ".commandroom" / "machine_id"
 
 
+def _shared_writer_id():
+    """The account+workspace writer id (ACCESS1), or None on every other seat.
+
+    The two identity systems disagreed (this uuid4 in a machine-local home vs
+    `machine_identity`'s derived token in a different machine-local home), and
+    in the merged environment BOTH homes are wiped between fires. One derived
+    answer, persisted in the workspace, replaces both — but only where there is
+    an account to derive it from, so a legacy seat's lock diagnostics keep the
+    id they have always carried."""
+    try:
+        import writer_identity  # type: ignore
+    except ImportError:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import writer_identity  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return writer_identity.writer_id()
+    except Exception:
+        return None
+
+
+def _require_named_writer() -> None:
+    """BRIEFDOOR1 MUST 5 (ruling R-RW3-8) -- `receipts.require_writer_on_vm_seat`.
+
+    On a merged seat's sandbox VM with no writer id this raises the one
+    sentence (`WriterIdentityRequired`) BEFORE the ledger lock is taken and
+    before a machine id is minted: the walk's `.writer.lock.info` stamps were
+    raw 32-hex uuid4 tokens minted in a home that dies with the session, and
+    append-only history kept every one. Every legacy and local seat reads the
+    environment and returns. Import-tolerant: a runtime whose `receipts`
+    predates the question keeps today's behaviour.
+    """
+    try:
+        import receipts as _receipts  # type: ignore
+    except ImportError:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import receipts as _receipts  # type: ignore
+        except Exception:
+            return
+    except Exception:
+        return
+    ask = getattr(_receipts, "require_writer_on_vm_seat", None)
+    if ask is not None:
+        ask()
+
+
 def machine_id() -> str:
     """A stable per-machine id, persisted on first use (a uuid4). Falls back to
     the hostname if the id file can't be written (a read-only home). The whole
     point (B3): every lock diagnostic + marker names the offending machine, so
     the NEXT multi-machine incident is attributable at a glance."""
+    shared = _shared_writer_id()
+    if shared:
+        return shared
+    # BRIEFDOOR1 MUST 5 -- never MINT on a merged seat's sandbox VM: with no
+    # writer id there, the uuid4 below would be a session token wearing a
+    # machine's name. The question refuses instead; everywhere else it
+    # returns and the id is read or minted exactly as before.
+    _require_named_writer()
     p = machine_id_path()
     try:
         existing = p.read_text(encoding="utf-8").strip()
@@ -330,7 +391,13 @@ def _write_info_sidecar(lock_path: Path, holder: str, mode: str) -> None:
             "machine_id": machine_id(),
             "pid": os.getpid(),
             "holder": holder,
-            "acquired_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            # UTC-aware, never a naive local wall clock (TZ1). This sidecar
+            # is read by a HUMAN comparing two writers, and after the merge
+            # those writers live in three zones at once — a container on PDT,
+            # a sandbox VM on UTC, a legacy PC on whatever the customer set.
+            # Two naive stamps seven hours apart with nothing on either to
+            # say so is a diagnostic that misleads exactly when it is needed.
+            "acquired_at": _diagnostic_stamp(),
             "mode": mode,
             "seqhw_seen": seqhw_seen,
         }
@@ -503,6 +570,24 @@ def _release(entry: dict) -> None:
             release_write_lock(lock_file)
 
 
+def _diagnostic_stamp() -> str:
+    """A UTC-AWARE ISO stamp for a lock diagnostic (TZ1, SPEC_NIGHTM2 §6).
+
+    Routed through `clock_policy.diagnostic_stamp` so "which clock a stamp is
+    in" is answered in ONE place for the whole tree. That helper imports
+    nothing from this tree, so there is no cycle; the local fallback keeps
+    this module standalone in a stripped install.
+    """
+    try:
+        from clock_policy import diagnostic_stamp
+
+        return diagnostic_stamp()
+    except Exception:  # noqa: BLE001 — a diagnostic never blocks a write
+        import datetime as _dtx
+
+        return _dtx.datetime.now(_dtx.timezone.utc).isoformat(timespec="seconds")
+
+
 def _now_iso() -> str:
     import datetime as _dt
 
@@ -543,6 +628,9 @@ def events_writer_lock(workspace_root_or_events_path, holder: str = "unknown", t
             entry["depth"] -= 1
         return
 
+    # BRIEFDOOR1 MUST 5 -- the lock is not taken for a writer that cannot be
+    # named on a merged seat (the reentrant branch above already passed it).
+    _require_named_writer()
     acquired = _acquire_os(lock_path, root, holder, timeout_s)
     acquired["depth"] = 1
     state[key] = acquired

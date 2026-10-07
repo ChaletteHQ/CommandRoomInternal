@@ -526,7 +526,7 @@ def apply_later(
     """
     calendar_day, utc_stamp = _later_when(when_iso)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"apply_later:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -665,6 +665,52 @@ def later_missing_ack(display_n) -> dict:
 PARK_CHANGE_CLASS = "commitment_park"
 STATUS_HINT_PARKED = "parked"
 
+# MF-5 (night 11c, CARD1) — WHOSE WORDS THE PARK REASON IS.
+#
+# LEAK3 built the contract and left it with no writer: `chat_output_renderer
+# .customer_typed(item, "reason")` answers True only when the item carries
+# `reason_origin: "customer"`, and nothing in the tree wrote that key. The
+# consequence was not theoretical — a customer who typed `park 12 because the
+# vendor is on leave` had his own sentence scanned as machine text, and a file
+# name inside it made the whole render REFUSE rather than blank the name.
+# Meanwhile `plate_view` kept a legacy arm (`reason_stored`) alive purely
+# because there was no stamp to read instead, which exempted the PRODUCT's own
+# stored why-lines from the scan they exist for.
+#
+# The rule, and it is two conditions because either alone is wrong:
+#   * the park names a PERSON as the one who did it (`parked_by` is a person
+#     id — `event_types.is_person_actor`), and
+#   * it was written under a CUSTOMER VERB, not a rail (`event_types
+#     .is_machine_source` says no).
+# A rail that parks under its own name fails the first; a scheduled pass that
+# somehow carried a person id fails the second — the same two-sided test
+# `resolve_actor` already applies to every act's actor, asked here of the
+# WORDS instead of the deed. Anything else is unstamped, and an unstamped
+# reason is machine text and faces the whole scan (LEAK3's safe direction).
+#
+# A caller that KNOWS better may say so: `reason_origin` in `extra_data`
+# wins, which is how `exit_doors`' silence park stamps `product` on words it
+# composed itself.
+REASON_ORIGIN_KEY = "reason_origin"
+REASON_ORIGIN_CUSTOMER = "customer"
+REASON_ORIGIN_PRODUCT = "product"
+
+
+def park_reason_origin(parked_by, source_skill) -> str:
+    """`"customer"` when a person typed this reason under a customer verb,
+    `"product"` otherwise. ONE derivation, so the single-row park and the
+    batch park can never disagree about whose words a reason is."""
+    try:
+        from event_types import is_machine_source, is_person_actor
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parent))
+        from event_types import is_machine_source, is_person_actor
+    if is_person_actor(parked_by) and not is_machine_source(source_skill):
+        return REASON_ORIGIN_CUSTOMER
+    return REASON_ORIGIN_PRODUCT
+
 
 def park_commitment(
     workspace_root,
@@ -684,7 +730,7 @@ def park_commitment(
         raise ValueError("park_commitment needs a reason — a parked row "
                          "renders its reason line, and one with none is hidden")
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"park_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -703,6 +749,10 @@ def park_commitment(
             "parked_by": parked_by,
             "brain_change_class": PARK_CHANGE_CLASS,
         })
+        # MF-5 — whose words the reason is. A caller that already said so in
+        # `extra_data` keeps its answer (the silence park's `product`).
+        data.setdefault(REASON_ORIGIN_KEY,
+                        park_reason_origin(parked_by, source_skill))
         if brain_batch_id:
             data["brain_batch_id"] = str(brain_batch_id)
         if isinstance(target.get("seq"), int):
@@ -729,7 +779,7 @@ def unpark_commitment(
     caused it rides in `reason` (no separate field — G29: a field nobody
     reads is a dead field). `already_open` when the row is not parked."""
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"unpark_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -766,7 +816,7 @@ def park_commitments(workspace_root, rows, *, parked_by: str, source_skill: str)
     mirror `park_commitment` (`parked` / `not_open` / `already_parked` /
     `refused` for a blank reason / `not_found`); nothing raises per row."""
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     from event_gate import append_event
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     results: list = []
@@ -797,6 +847,10 @@ def park_commitments(workspace_root, rows, *, parked_by: str, source_skill: str)
             data.update({"commitment_id": cid, "status_hint": STATUS_HINT_PARKED,
                          "park_reason": reason[:200], "reason": reason[:200],
                          "parked_by": parked_by, "brain_change_class": PARK_CHANGE_CLASS})
+            # MF-5 — the same derivation as the single-row park; a caller
+            # that stamped its own origin in `extra_data` keeps it.
+            data.setdefault(REASON_ORIGIN_KEY,
+                            park_reason_origin(parked_by, source_skill))
             if row.get("brain_batch_id"):
                 data["brain_batch_id"] = str(row["brain_batch_id"])
             if isinstance(target.get("seq"), int):
@@ -812,12 +866,13 @@ def park_commitments(workspace_root, rows, *, parked_by: str, source_skill: str)
 
 
 def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
-                       source_skill: str, reason: str = "movement") -> list:
+                       source_skill: str, reason: str = "movement",
+                       extra_data: Optional[dict] = None) -> list:
     """F-6 — the batch twin of `unpark_commitment`: one lock, one scan, one
     open-set read, N `status_hint: null` events in one append. Statuses per
     row: `unparked` / `not_open` / `already_open` / `not_found`."""
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     from event_gate import append_event
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     results: list = []
@@ -838,9 +893,14 @@ def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
             if hints.get(cid) != STATUS_HINT_PARKED:
                 results.append({"status": "already_open", "commitment_id": cid})
                 continue
-            data: dict = {"commitment_id": cid, "status_hint": None, "unparked": True,
-                          "reason": str(reason or "movement").strip()[:200],
-                          "unparked_by": unparked_by}
+            # EXIT1 FIX ROUND 2 (review R-5) — `extra_data` first, so a
+            # caller can carry its change class, its batch id and what the
+            # park it is undoing said, and can never overwrite the fields
+            # that make this an un-park.
+            data: dict = dict(extra_data or {})
+            data.update({"commitment_id": cid, "status_hint": None, "unparked": True,
+                         "reason": str(reason or "movement").strip()[:200],
+                         "unparked_by": unparked_by})
             if isinstance(target.get("seq"), int):
                 data["commitment_seq"] = target["seq"]
             ev = {"type": "commitment_updated", "source_skill": source_skill,
@@ -888,6 +948,59 @@ COUNTERPARTY_CLEARED_KEY = "counterparty_cleared"
 COUNTERPARTY_RESTORED_KEY = "counterparty_restored"
 
 
+# ---------------------------------------------------------------------------
+# WHO ACTED — the additive stamp beside every act (ATTRIB2 vocabulary)
+# ---------------------------------------------------------------------------
+#
+# TTL1 fix round 1 (reviewer F-2). ATTRIB2 threads `actor=` through the two
+# writers IT needed (`close_commitment`, `reopen_commitment`) and stamps
+# `data.actor_kind` so no surface has to infer who did a thing. The two
+# writers a QUESTION EXPIRY goes through — the reassign that applies a
+# card's likely answer, and the clear that takes a row off the queue —
+# were not among them, so a timeout wrote two acts that read as the
+# customer's own gesture: `actor_kind` absent, no actor field ATTRIB2
+# recognises, and `is_customer_act` therefore answering True. On a merged
+# tree the morning brief and End of Day would have credited M with a
+# question he never answered — the seqs 15503-15506 regression, one lane
+# over.
+#
+# The argument is spelled `actor` and takes the same sentinel
+# (`event_types.MACHINE`) for the same reason: one vocabulary, read by name.
+# It is OPTIONAL everywhere and defaults to the writer's existing actor
+# field, so every shipped call site writes the byte-identical event it wrote
+# before — except for the additive `actor_kind`, which is what the reader
+# wants. Guarded import: `event_types.resolve_actor` arrives WITH ATTRIB2,
+# and until then the same two values are written directly rather than left
+# blank, so the merged tree needs no backfill.
+_ACTOR_KIND_KEY = "actor_kind"
+_ACTOR_MACHINE = "machine"
+_ACTOR_PERSON = "person"
+
+
+def _resolve_act_actor(actor, *, source_skill, user_confirmed: bool = False):
+    """`(actor_value, actor_kind)` for one act — ATTRIB2's answer when that
+    branch is in the tree, and its own vocabulary written directly when it
+    is not."""
+    try:
+        from event_types import resolve_actor as _ra
+        return _ra(actor, source_skill=source_skill,
+                   user_confirmed=user_confirmed)
+    except Exception:
+        pass
+    raw = actor.strip() if isinstance(actor, str) else actor
+    if raw == _ACTOR_MACHINE:
+        return (str(source_skill or "system").strip() or "system",
+                _ACTOR_MACHINE)
+    if isinstance(raw, str) and re.match(r"^person_\d+$", raw, re.IGNORECASE):
+        return raw, _ACTOR_PERSON
+    if not raw or not isinstance(raw, str):
+        return (str(source_skill or "system").strip() or "system",
+                _ACTOR_MACHINE)
+    if raw.lower() == "system" or raw == str(source_skill or "").strip():
+        return raw, _ACTOR_MACHINE
+    return raw, _ACTOR_PERSON
+
+
 def effective_parties(events_jsonl_path, commitment_id) -> dict:
     """The row's owner / counterparty as the OPEN-SET projection sees them
     now, or None for each — through the loader, so writer and readers agree."""
@@ -922,7 +1035,7 @@ def restore_counterparty(
     case — the 4b exception). The projection restores the counterparty and
     nothing else. A closed row moves nothing."""
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"restore_counterparty:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -1012,7 +1125,7 @@ def restore_due(
     refuses before the lock — a restore must never write a date it cannot
     read back."""
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     new_due = None
     if prior_due not in (None, ""):
         calendar_day, _utc = _later_when(str(prior_due))
@@ -2067,8 +2180,73 @@ def cap_needs_attention(rows, *, cap: int = BRIEF_ATTENTION_CAP,
     }
 
 
+#: NUMBER1 3.5 (routed in from SCHEDVIEW1) — how long two identical
+#: `brief_state` payloads are read as ONE render arriving twice. The same
+#: fifteen minutes `surface_drivers._REFIRE_RECEIPT_GUARD` uses for a
+#: re-fired receipt, deliberately: one idiom, two writers, so a reader who
+#: knows one knows the other. The guard is on the PAYLOAD, not the clock
+#: alone — a book that moved between two fires writes two rows however
+#: close together they are.
+BRIEF_STATE_REFIRE_GUARD = datetime.timedelta(minutes=15)
+
+
+def _brief_state_projection(workspace_root, plate_open, now_iso):
+    """THE PROJECTION for the audit row, or `None` (NUMBER1 3.4).
+
+    Never guesses and never falls back to a second arithmetic: a caller
+    that already built the plate hands its `open` straight in; nobody else
+    gets an answer this module invented.
+    """
+    if isinstance(plate_open, bool):
+        return None
+    if isinstance(plate_open, int):
+        return plate_open
+    try:
+        from plate_view import surface_numbers
+        nums = surface_numbers(workspace_root, now_iso=now_iso)
+        if nums.get("ok") is False:
+            return None
+        value = nums.get("open")
+        return int(value) if isinstance(value, int) else None
+    except Exception:  # noqa: BLE001 — an audit read never breaks a brief
+        return None
+
+
+def _brief_state_already_written(events_path, payload) -> bool:
+    """True when this exact `brief_state` payload was written inside the
+    guard (NUMBER1 3.5). Reads the tail only; unreadable means "write it",
+    because a missed row is the defect this event exists to catch."""
+    try:
+        import json as _json
+        from event_time import parse_ts
+        from pathlib import Path as _Path
+        p = _Path(events_path)
+        if not p.exists():
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc)
+        lines = p.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines[-400:]):
+            if '"brief_state"' not in line:
+                continue
+            try:
+                ev = _json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(ev, dict) or ev.get("type") != "brief_state":
+                continue
+            when = parse_ts(ev.get("ts"))
+            if when is None or (now - when) > BRIEF_STATE_REFIRE_GUARD:
+                return False
+            if ev.get("data") == payload:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefing",
-                                fired_via="manual", **kwargs):
+                                fired_via=None, plate_open=None,
+                                **kwargs):
     """Compute the brief state AND emit a `brief_state` audit event carrying the
     CODE's real numbers (Bug #99).
 
@@ -2099,11 +2277,46 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     hand-run brief from a scheduled one — which is how the receipt-ordering
     check came to read every manual brief as the defect it was built to catch.
 
+    NUMBER1 3.4 (night 11d) — `plate_open` is THE PROJECTION
+    (`plate_view.plate_numbers(view)["open"]`), passed by a caller that
+    already built the plate for this same instant and derived here when
+    it is not. `data.counts.total` states it, and the confirmed-only book
+    `compute_brief_state` counts keeps its own name beside it
+    (`counts.open_confirmed`). The 2026-09-16 brief wrote 342 and 305
+    into this event while the plate rendered 354: two internal numbers
+    for one book, neither of them the one any surface showed (A4, B2.5).
+    A derivation that fails writes `projection: null` and leaves
+    `counts.total` as the confirmed number — never a guessed equality.
+
+    NUMBER1 3.5 (routed in from SCHEDVIEW1) — ONE ROW PER RENDER. This
+    function appends unconditionally and is called once per computation,
+    so a fire that computed the state three times wrote three audit rows
+    and the receipt-ordering check read the newest of three. A row whose
+    payload and `fired_via` match one already written inside
+    `BRIEF_STATE_REFIRE_GUARD` is the same render arriving again and
+    writes nothing; two genuinely separate fires differ in their payload
+    or fall outside the guard and both still write.
+
     The default is `manual` on purpose, per RECEIPT_CONTRACT § Run-mode
     detection: an unlabelled fire is treated as the interactive one, because
     mislabelling a manual costs a missing note while mislabelling a scheduled
     fabricates history (F-47 P1a). Callers that KNOW pass the value.
+
+    BRIEFDOOR1 MUST 4 (ruling R-RW3-8) — THE WRITER IS NAMED FIRST. On a
+    merged seat's sandbox VM this asks `receipts.require_writer_identity`
+    before anything is computed, and a run that cannot name its writer
+    refuses with the one sentence instead of landing a row stamped
+    `machine_id_fallback` (the audit write below swallows its own failures,
+    so a refusal left to the append would vanish into a silent no-row). A
+    legacy or local seat is not a VM seat: nothing is asked and nothing
+    changes.
     """
+    try:
+        import receipts as _receipts
+    except Exception:  # noqa: BLE001 — an older runtime: today's behaviour
+        _receipts = None
+    if _receipts is not None and _receipts._is_vm_seat():
+        _receipts.require_writer_identity(workspace_root=workspace_root)
     if "commitment_movement" not in kwargs:
         try:
             from pathlib import Path as _Path
@@ -2120,11 +2333,20 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     state = compute_brief_state(**kwargs)
 
     def _normalize_fired_via(value):
-        """The canonical spelling, or `manual` when the value means nothing.
-        Import-tolerant: the audit write must never be what breaks a brief."""
+        """The canonical spelling, or the environment's, or `manual`.
+
+        MECHANICAL, NOT MODEL-SUPPLIED (fix round 2). The walk's hand-typed
+        brief landed `scheduled` in the ledger, because the only thing that
+        decided was a value a model typed. Now: a caller that KNOWS still
+        wins, and a caller that says nothing gets `CR_FIRED_VIA` — which only
+        the bootloader sets, and only because the bootloader IS the scheduled
+        fire. An interactive chat carries no such variable and lands `manual`.
+
+        Import-tolerant: the audit write must never be what breaks a brief.
+        """
         try:
-            from receipts import FIRED_VIA, normalize_fired_via
-            via = normalize_fired_via(value)
+            from receipts import FIRED_VIA, resolve_fired_via
+            via = resolve_fired_via(value)
             return via if via in FIRED_VIA else "manual"
         except Exception:  # noqa: BLE001
             return value if value in ("scheduled", "manual", "catchup") else "manual"
@@ -2138,21 +2360,44 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
         # by_kind is dropped from the audit payload to keep the event small;
         # "stuck" is dropped because it is a deprecated alias of "overdue"
         # (v4.5.2 R1b) — new events never carry the false label.
-        _append(events_path, [{
-            "type": "brief_state",
-            "source_skill": source_skill,
-            "data": {
-                "counts": {k: v for k, v in state["counts"].items()
-                           if k not in ("by_kind", "stuck")},
-                "n_needs_attention": len(state["needs_attention"]),
-                "n_meeting_linked": len(state.get("meeting_linked") or []),
-                "reconcile_stale": state["reconcile_stale"],
-                # Which kind of fire computed this (BRIEFFIX1 Item C / F1).
-                # Normalized through the receipt vocabulary so `catchup`,
-                # `user-trigger` and the rest land in one spelling.
-                "fired_via": _normalize_fired_via(fired_via),
-            },
-        }])
+        counts = {k: v for k, v in state["counts"].items()
+                  if k not in ("by_kind", "stuck")}
+        # NUMBER1 3.4 -- the projection, or an honest null.
+        confirmed = counts.get("total")
+        projection = _brief_state_projection(workspace_root, plate_open,
+                                             kwargs.get("now_iso"))
+        counts["open_confirmed"] = confirmed
+        if projection is not None:
+            counts["total"] = projection
+        payload = {
+            "counts": counts,
+            "projection": projection,
+            "n_needs_attention": len(state["needs_attention"]),
+            "n_meeting_linked": len(state.get("meeting_linked") or []),
+            "reconcile_stale": state["reconcile_stale"],
+            # Which kind of fire computed this (BRIEFFIX1 Item C / F1).
+            # Normalized through the receipt vocabulary so `catchup`,
+            # `user-trigger` and the rest land in one spelling.
+            "fired_via": _normalize_fired_via(fired_via),
+        }
+        # WHO wrote it, the same way every other receipt says so. This row is
+        # the brief's audit trail and was the one receipt in the walk with no
+        # writer at all; `machine_fields` is the single stamp helper, so the
+        # identity, the VM suppression and the fallback flag arrive here
+        # already decided. Import-tolerant: the audit write never blocks a
+        # brief, and the dedup above compares payloads that both carry it.
+        try:
+            from receipts import machine_fields as _machine_fields
+            payload.update(_machine_fields())
+        except Exception:  # noqa: BLE001
+            pass
+        # NUMBER1 3.5 -- one row per render.
+        if not _brief_state_already_written(events_path, payload):
+            _append(events_path, [{
+                "type": "brief_state",
+                "source_skill": source_skill,
+                "data": payload,
+            }])
     except Exception:
         # Never let the audit write block the brief — the state is what matters.
         pass
@@ -2232,6 +2477,41 @@ def _transcript_closes_on(workspace_root) -> bool:
         return _tce(workspace_root) is True
     except Exception:  # noqa: BLE001 — an unreadable switch is OFF
         return False
+
+
+# EXIT1 — route 2's rail, spelled HERE as well as in `exit_doors`, for the
+# same reason `_TRANSCRIPT_PROSE_CLOSERS` is: the writer is a DOOR for that
+# pass and must not import it. The lane's suite pins the two spellings equal,
+# so they cannot drift silently.
+_OWN_WORD_CONFIRMED_BY = "own_word"
+_OWN_WORD_SOURCE_SKILL = "exit-own-word"
+
+# EXIT1 FIX ROUND 3 (review L-4) — WHICH ROUTE closed it is a LABEL, and
+# `extra_data` is free-form, so any skill could stamp one on a plain close
+# and have it counted as an automatic exit it never was. The three routes
+# and the rails that own them; a close from anybody else loses the label
+# (the close itself is real and stands — it just stops claiming a rail's
+# argument). An unknown route belongs to nobody and is dropped the same way.
+_EXIT_ROUTE_KEY = "exit_route"
+_EXIT_ROUTE_OWNERS = {
+    "own_word": (_OWN_WORD_SOURCE_SKILL,),
+    "fact": ("exit-proof", "calendar-close"),
+    "silence": ("exit-silence",),
+}
+
+
+def _own_word_closes_on(workspace_root) -> bool:
+    """EXIT1 — the writer's own read of the own-word switch, by identity
+    through `commitment_policy.flow_switch_enabled`. DEFAULT ON and
+    fail-to-ON, unlike the transcript switch above and for the stated
+    reason: what this gates is an act with a receipt and an `undo`, and the
+    alternative to the act is a question. An unreadable settings file is not
+    a customer saying stop."""
+    try:
+        from commitment_policy import EXIT_OWN_WORD_CLOSES_KEY, flow_switch_enabled
+        return flow_switch_enabled(workspace_root, EXIT_OWN_WORD_CLOSES_KEY) is True
+    except Exception:  # noqa: BLE001 — an unreadable switch keeps the default
+        return True
 MATCH_KEY = "resolved_by_match"
 
 # CLOSEID2 — the SESSION LANE: skills whose closes arrive from an ad-hoc chat
@@ -2292,6 +2572,26 @@ class TranscriptCloseWithheldError(ValueError):
     name so a model that ignores the prose — or hand-stamps the pass's own
     `match` fields — still cannot close. The message states the rule and the
     ON verb only; it never names a bypass argument (REVIEW_CUTA F1a)."""
+
+
+class OwnWordCloseWithheldError(ValueError):
+    """EXIT1 (SPEC_FLOW1 Lane B item 2) — refused a close that claimed the
+    OWN-WORD door without being the own-word rail, or while that rail is
+    switched off.
+
+    Route 2 closes a promise on the OWNER'S OWN completion sentence. That is
+    a real door and it is deliberately narrow: `exit_doors` reads the OWNER'S
+    OWN TURNS ONLY, so a sentence in somebody else's mouth never reaches it.
+    The gap the reviewer of CUT-A named is that a door is only as narrow as
+    its writer: a caller with any `source_skill` at all could hand-stamp the
+    fields and close on a transcript quote without going near the transcript
+    closer — which is OFF, and stays off. So the writer asks the two
+    questions the rail's own narrowness rests on: is this the own-word rail,
+    and is the own-word switch on for this workspace? Anything else is
+    refused by name and nothing is written.
+
+    The message states the rule and the customer's own OFF/ON words; it never
+    names an argument that would get round it."""
 
 
 class AmbiguousTargetError(ValueError):
@@ -2641,6 +2941,7 @@ def close_commitment(
     title_query: Optional[str] = None,
     source_ref=None,
     mint_now_iso=None,
+    actor=None,
 ) -> dict:
     """THE closure path (F2). Every closer — log-resolution, apply-choices,
     the workspace-manager catch-all, reconcile-sent, the Commitments
@@ -2690,6 +2991,20 @@ def close_commitment(
         candidates and writes nothing. When stated, the value is stamped on
         `data.resolved_by_match` so the ledger records how identity was
         established, not just that something closed.
+      actor: ATTRIB2 (2026-09-07) — WHO closed it, when that is not the same
+        question as `resolved_by`. `resolved_by` keeps its own long-standing
+        meaning and its bytes (a person id, or the rail's name on the silent
+        task); this argument only decides the ADDITIVE `data.actor_kind` stamp
+        the customer surfaces read before they say "you". A close or a drop a
+        background pass wrote on its own judgment stamps `machine` whatever
+        the call site passed, an explicit `user_confirmed=True` tap by a real
+        person stamps `person`, and `actor=event_types.MACHINE` says so on any
+        source — INCLUDING one that also passes `user_confirmed=True`, because
+        on the backlog sweep's review tier that flag is a PERMISSION rather
+        than a person (fix round 1). THE
+        REGRESSION: End of Day's "1 thing you let go" on 2026-09-07 was the
+        undo chat's own drop (seq 15520, `source_skill: "meeting-notes"`),
+        credited to M, who had asked for no such thing.
       title_candidates: how many open items the caller's name match hit. Only
         read when `resolved_by_match="title"`; anything but 1 refuses.
       title_query: the user's actual WORDS, when the caller has them. This is
@@ -2787,6 +3102,27 @@ def close_commitment(
                 f"{confirmed_by!r} needs a real source_ref (the meeting or "
                 "message the evidence came from). The minted surface receipt "
                 "is not a source for a close nobody asked about.")
+        # EXIT1 — the OWN-WORD door, guarded at the writer. `own_word` is the
+        # confirmation route 2 claims, and it is claimable only by route 2's
+        # own rail and only while the customer's own-word switch is on. Both
+        # halves matter: the first stops a forged own-word close from any
+        # other skill string (the gap REVIEW_CUTA named on the match door),
+        # the second means the OFF word turns the route off AT THE WRITER,
+        # not merely at the caller that agrees to read it.
+        if confirmed_by == _OWN_WORD_CONFIRMED_BY:
+            if str(source_skill or "").strip().lower() != _OWN_WORD_SOURCE_SKILL:
+                raise OwnWordCloseWithheldError(
+                    f"refusing to close {commitment_id!r}: {source_skill} may "
+                    "not close on your own word. A completion sentence closes "
+                    "a promise only through the pass that reads YOUR OWN turns "
+                    "of a dictation or a call — no other caller may claim it. "
+                    "Nothing was written.")
+            if not _own_word_closes_on(workspace_root):
+                raise OwnWordCloseWithheldError(
+                    f"refusing to close {commitment_id!r}: closing when you "
+                    "say it is done is switched off for this workspace (say "
+                    "`turn on closing when I say it is done` to put it back). "
+                    "Nothing was written.")
     # CUT-A (R-A) — belt-and-braces for the prose closers: a meeting-notes /
     # follow-up-ritual / team-intelligence close on transcript evidence must
     # come through the policy pass (`resolved_by_match='match'`) AND only while
@@ -2835,7 +3171,7 @@ def close_commitment(
                                            mint_for=source_skill,
                                            now_iso=mint_now_iso)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
 
     with events_writer_lock(events_path, holder=f"close_commitment:{source_skill}"):
@@ -3023,9 +3359,31 @@ def close_commitment(
             _append_ev(events_path, child_closers, holder=source_skill)
 
         data = dict(extra_data) if isinstance(extra_data, dict) else {}
+        # ATTRIB2 — WHO acted, stamped BESIDE `resolved_by` (never instead of
+        # it). Popped first for the same reason the door and the pointer are:
+        # this is a statement THIS writer makes about how it was called, so a
+        # caller must not be able to smuggle one in through extra_data and make
+        # the product's own drop read as the customer's.
+        from event_types import ACTOR_KIND_KEY as _AKK
+        from event_types import resolve_actor as _resolve_actor
+        data.pop(_AKK, None)
+        # The "explicit user action" flag wins over the source: a tap is the
+        # customer's whatever surface carried it. FIX ROUND 1: it does NOT
+        # win over a call site that says `actor=event_types.MACHINE`, and it
+        # does not turn a rail's own name into a person. On the backlog
+        # sweep's review tier `user_confirmed=True` is a PERMISSION — the
+        # module's own words, "what lets an unconfirmed extraction close at
+        # all" — not a report that anybody tapped, so a drain close was
+        # stamping `person` and End of Day would have said "N things you let
+        # go" about the lapse drain again (B2.2, one tier over).
+        _actor_kind = _resolve_actor(
+            resolved_by if actor is None else actor,
+            source_skill=source_skill,
+            user_confirmed=(user_confirmed is True))[1]
         data.update({
             "commitment_id": cid,
             "resolved_by": resolved_by,
+            _AKK: _actor_kind,
             "evidence": clip(evidence),
             "resolution": resolution,
             # EODFIX1 — the title SNAPSHOT. Additive, never required: every
@@ -3054,6 +3412,15 @@ def close_commitment(
         data.pop("confirmed_by", None)
         if confirmed_by:
             data["confirmed_by"] = confirmed_by
+        # EXIT1 FIX ROUND 3 (review L-4) — the ROUTE label, kept only for the
+        # rail that owns it. Same reason as the two pops above: this is a
+        # statement about WHO closed the row, so a caller must not be able to
+        # hand one in and have an ordinary tap-close counted as an automatic
+        # exit. The close still happens; only the borrowed label goes.
+        _route = str(data.get(_EXIT_ROUTE_KEY) or "").strip()
+        if _route and str(source_skill or "").strip().lower() not in \
+                _EXIT_ROUTE_OWNERS.get(_route, ()):
+            data.pop(_EXIT_ROUTE_KEY, None)
         # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
         # through extra_data, and the marker can never sit next to a real ref.
         # PROVMINT1: the GRAIN marker is popped with them — it is a statement
@@ -3438,7 +3805,7 @@ def supersede_commitment(
     # close_commitment); an absent one becomes the marker.
     pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
 
     with events_writer_lock(events_path, holder=f"supersede_commitment:{source_skill}"):
@@ -3591,7 +3958,7 @@ def edit_commitment_wording(
             "an empty wording fix changes nothing"
         )
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"edit_wording:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -3633,6 +4000,7 @@ def reassign_commitment(
     confirmed: bool = False,
     brain_batch_id: Optional[str] = None,
     brain_change_class: Optional[str] = None,
+    actor=None,
 ) -> dict:
     """THE reassignment writer (v4.6.0 S4). Today "not mine" DISCARDS a
     cross-attendee capture; this ROUTES it instead — the item leaves the
@@ -3651,6 +4019,14 @@ def reassign_commitment(
     first; reassigning a tombstone routes nothing), at least one of
     new_owner_id / new_counterparty_id required, scan→append inside the
     writer lock (R1c).
+
+    TTL1 fix round 1 (reviewer F-2) — `actor`. WHO made this reassignment,
+    when that is not the same question as `reassigned_by`. A card question
+    the QUESTION-EXPIRY engine settles because nobody answered it is the
+    product's own act, not the customer's, and pass `actor=MACHINE` says so
+    on any source. Omitted, it falls back to `reassigned_by`, so every
+    existing call site keeps its bytes apart from the additive
+    `data.actor_kind` stamp the customer surfaces read before saying "you".
     """
     if not (new_owner_id or new_counterparty_id):
         raise ValueError(
@@ -3660,7 +4036,7 @@ def reassign_commitment(
             "resolution='dropped')"
         )
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"reassign_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -3671,9 +4047,16 @@ def reassign_commitment(
         # POLICY1-B F-9 — what the projection said BEFORE this write, so a
         # reverser can put the row back exactly (including "no counterparty").
         prior = effective_parties(events_path, cid)
+        # TTL1 F-2 — WHO acted, stamped BESIDE `reassigned_by`, never
+        # instead of it (ATTRIB2's posture for the closure family).
+        _actor_kind = _resolve_act_actor(
+            reassigned_by if actor is None else actor,
+            source_skill=source_skill,
+            user_confirmed=bool(confirmed))[1]
         data: dict = {
             "commitment_id": cid,
             "reassigned_by": reassigned_by,
+            _ACTOR_KIND_KEY: _actor_kind,
             "reason": (reason or "")[:200],
             "confirmed": bool(confirmed),
         }
@@ -3751,7 +4134,7 @@ def disown_commitment(
     written), scan->append inside the writer lock (R1c).
     """
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"disown_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -3829,7 +4212,7 @@ def confirm_commitment_owner(
         raise ValueError("confirm_commitment_owner needs an owner_id — "
                          "'Mine' claims the item for a specific person")
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"confirm_owner:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -3872,6 +4255,7 @@ def clear_review_flags(
     brain_batch_id: Optional[str] = None,
     brain_change_class: Optional[str] = None,
     confirmed_by: Optional[str] = None,
+    actor=None,
 ) -> dict:
     """THE Keep-both writer (v4.6.1 W4b / C4). A suspected duplicate the
     user adjudicates as a real, separate item: appends a `commitment_updated`
@@ -3912,6 +4296,15 @@ def clear_review_flags(
     Optional; None writes the byte-identical pre-A10 event. It is
     provenance the change feed and the replay read; it never changes the
     fold.
+
+    TTL1 fix round 1 (reviewer F-2) — `actor`. WHO cleared the flag, when
+    that is not the same question as `cleared_by`. A clear the
+    QUESTION-EXPIRY engine writes because a question timed out — the "track
+    it" default, and the second half of the card default — is the product's
+    own act; `actor=MACHINE` stamps `data.actor_kind: "machine"` so no
+    surface tells the customer they answered something they never saw.
+    Omitted, it falls back to `cleared_by` and the event is byte-identical
+    to before apart from that additive stamp.
     """
     if (brain_batch_id is None) != (brain_change_class is None):
         raise ValueError(
@@ -3921,7 +4314,7 @@ def clear_review_flags(
     pointer_fields = _close_pointer_fields(source_ref, mint_for=source_skill,
                                            now_iso=mint_now_iso)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"clear_review:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -3929,11 +4322,16 @@ def clear_review_flags(
         target = index["by_id"][cid]
         if _currently_closed(index, cid, target.get("seq")):
             return {"status": "not_open", "commitment_id": cid}
+        # TTL1 F-2 — WHO acted, beside `cleared_by` and never instead of it.
+        _actor_kind = _resolve_act_actor(
+            cleared_by if actor is None else actor,
+            source_skill=source_skill)[1]
         data: dict = {
             "commitment_id": cid,
             "review_flags_cleared": True,
             "pending_review": False,
             "cleared_by": cleared_by,
+            _ACTOR_KIND_KEY: _actor_kind,
             "note": (note or "")[:200],
         }
         data.update(pointer_fields)
@@ -3995,7 +4393,7 @@ def flag_duplicate_for_review(
     which is the only reading that sees a previously folded flag.
     """
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"flag_review:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -4103,7 +4501,7 @@ def restore_review_flags(
     writer lock (R1c).
     """
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path,
                             holder=f"restore_review:{source_skill}"):
@@ -4285,7 +4683,7 @@ def mark_asked(
             "until something explicitly un-asks it. Pass the row's effective "
             "due, or force=True if a permanent mark is genuinely intended.")
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     # THE PROJECTION HAPPENS OUTSIDE THE LOCK (REVIEW OVERDUE1 F-5). No other
     # writer in this module reads a whole workspace projection while holding
@@ -4424,7 +4822,7 @@ def mark_partial_received(
         )
     pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"mark_received:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -4533,6 +4931,11 @@ def _mint_child_commitments(
             cdata["counterparty_name"] = cp_name
         if isinstance(parent_ref, str) and parent_ref.strip():
             cdata["source_ref"] = parent_ref
+        # night 11b trial merge: the lineage stamp the capture chokepoint
+        # reads (`source_ref_index.LINEAGE_FIELDS`) - without it a child
+        # that inherits a processed meeting's source_ref is refused as a
+        # re-run and the split closes the parent with no parts on disk.
+        cdata["split_from"] = pdata.get("id") or parent.get("id")
         child_events.append({
             "type": "commitment",
             "source_skill": source_skill,
@@ -4599,7 +5002,7 @@ def split_commitment(
                              "must be a Stage-D-complete commitment")
     pointer_fields = _close_pointer_fields(source_ref)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"split_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -4636,7 +5039,23 @@ def split_commitment(
         )
         # Children FIRST (crash-safe: a parent is never closed without its
         # parts on disk), then the split closer referencing the child ids.
-        append_event(events_path, child_events, holder=source_skill)
+        _written = append_event(events_path, child_events, holder=source_skill)
+        _n_written = (len(_written) if isinstance(_written, list)
+                      else len(child_events))
+        if _n_written < len(child_events):
+            # night 11b trial merge (merged-tree review): the chokepoint
+            # refused some children - the parent is NOT closed over parts
+            # that never landed. Say so; nothing else is written.
+            return {
+                "ok": False,
+                "commitment_id": cid,
+                "children": [],
+                "n_written": _n_written,
+                "n_refused": len(child_events) - _n_written,
+                "receipt_line": ("Couldn't split that - some of the new items were "
+                                 "refused as already on your plate, so the original "
+                                 "stays as it was."),
+            }
 
         closer_data: dict = {
             "commitment_id": cid,
@@ -4724,7 +5143,7 @@ def add_subitems(
             raise ValueError(f"sub-item {i} has no title — every child "
                              "must be a Stage-D-complete commitment")
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"add_subitems:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -4858,6 +5277,9 @@ def reopen_commitment(
     source_skill: str,
     source_ref=None,
     mint_now_iso=None,
+    actor=None,
+    user_confirmed: bool = False,
+    extra_data: Optional[dict] = None,
 ) -> dict:
     """S4 undo: reopen a closed commitment ADDITIVELY — append a
     `commitment_reopened` event; the tombstone stays in history and the
@@ -4871,6 +5293,28 @@ def reopen_commitment(
     should pass that receipt); nothing supplied mints
     `session:<source_skill>:<now>` with `ref_grain: "surface_minted"`.
 
+    ATTRIB2 (2026-09-07) — `actor`. WHO reopened this. A reversal a fire or a
+    chat performs on its OWN judgment is the MACHINE'S act and is stamped with
+    the rail's own name, never the customer's person id: pass
+    `actor=event_types.MACHINE` when the product decided, and the writer does
+    it for you whenever `source_skill` is a background source
+    (`event_types.is_machine_source`). Omitted, `actor` falls back to
+    `reopened_by`, so every call site that was already right stays
+    byte-identical. The resolved kind is stamped on `data.actor_kind` so no
+    surface has to infer it. THE REGRESSION: the maintenance fire reopened two
+    sent-mail closes it judged wrong (seqs 15503/15505, `source_skill:
+    "reconcile-sent"`) and both went down as `reopened_by: "person_001"`; the
+    morning brief then told M he had reversed them.
+
+    `user_confirmed=True` — THE CUSTOMER'S ESCAPE (fix round 1, reviewer
+    F-1/F-2). This writer REWRITES `reopened_by`, so without an escape a
+    person's own reopen typed on a surface that also runs unattended work
+    (`cleanup`, `session-sweep`, `meeting-notes`) would lose their id
+    entirely rather than only be mislabelled. Pass it whenever a human just
+    made the gesture; it is the same "explicit user action" flag
+    `close_commitment` has always honoured, and it is honoured here only when
+    `reopened_by` is a real person id.
+
     SUB1 D3 — reopening a cascade-closed PARENT reopens the PARENT ONLY;
     each child has its own tombstone and is reopened individually. The
     triage batch-undo already caches every closed id in the batch (the
@@ -4879,8 +5323,14 @@ def reopen_commitment(
     """
     pointer_fields = _close_pointer_fields(source_ref, mint_for=source_skill,
                                            now_iso=mint_now_iso)
+    # ATTRIB2 — the writer-side fence. A fire cannot write `person_001`.
+    from event_types import ACTOR_KIND_KEY as _AKK
+    from event_types import resolve_actor as _resolve_actor
+    reopened_by, _actor_kind = _resolve_actor(
+        reopened_by if actor is None else actor, source_skill=source_skill,
+        user_confirmed=user_confirmed)
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"reopen_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -4893,8 +5343,14 @@ def reopen_commitment(
             "source_skill": source_skill,
             "primary_thread_id": target.get("primary_thread_id") or "",
             "data": {
+                # EXIT1 FIX ROUND 2 (review R-4) — `extra_data` FIRST, so a
+                # caller can carry its change class, its batch id and what it
+                # is reversing, and can never overwrite the four fields that
+                # make this a reopen.
+                **(extra_data or {}),
                 "commitment_id": cid,
                 "reopened_by": reopened_by,
+                _AKK: _actor_kind,
                 "reason": (reason or "")[:200],
                 **pointer_fields,
             },
@@ -4921,7 +5377,7 @@ def promote_task_to_commitment(
     if new_kind not in KIND_VALUES_SAFE:
         raise ValueError(f"invalid new_kind {new_kind!r} (allowed: {sorted(KIND_VALUES_SAFE)})")
     from pathlib import Path as _Path
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"promote_task:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -5004,6 +5460,105 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     append_event(events_path, [ev], holder=source_skill)
     return {"ok": True, "status": "created", "commitment": ev}
+
+
+def book_scheduling_row(workspace_root, *, title, owner_id,
+                        counterparty_id=None, counterparty_name=None,
+                        due=None, source_ref=None, source_event_seq=None,
+                        primary_thread_id=None, evidence=None,
+                        source_skill="calendar-writer") -> dict:
+    """SCHEDLINE1 — a scheduling line BOOKS THE ROW as well as drafting the
+    invite.
+
+    THE REGRESSION (attended test B3.6, 2026-09-07). "Set up 30 minutes with
+    X next week" routed to the calendar writer, which drafted a perfectly good
+    invite and wrote NO commitment row and held nothing. So until somebody
+    actually sent that invite the workspace had no record that the meeting had
+    been promised at all — and if nobody sent it, nothing anywhere would ever
+    say so. A spoken intention to schedule is a commitment like any other; the
+    draft is how it gets kept, not a substitute for keeping it.
+
+    The row is `kind: scheduling` with the counterparty on it, so
+    `surface_split` files it under SCHEDULE rather than as a personal task,
+    and the calendar writer's existing CRU leg closes it the moment the event
+    is really created (`cru_match.match_calendar_to_commitments`) — so the
+    normal path is book, draft, create, close, all inside one turn, with the
+    row only outliving the turn when the invite never went.
+
+    Everything goes through the shared admission block
+    (`capture_gate.gate_commitment_data`) exactly like every other capture:
+    this adds a caller, never a second contract. The home rule then decides
+    whether it opens or is held, on the same terms as anything else."""
+    from pathlib import Path as _Path
+    from capture_gate import (classify_capture, gate_commitment_data,
+                              intake_kwargs, observed_from_commitment_event,
+                              user_initiated_source_ref,
+                              workspace_capture_context)
+    from event_gate import append_event
+
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("a scheduling row needs a non-empty title")
+    owner_id = str(owner_id or "").strip()
+    if not owner_id:
+        raise ValueError(
+            "a scheduling row needs an owner — whoever is setting the time up")
+    data = {
+        "title": title,
+        "kind": "scheduling",
+        "owner_id": owner_id,
+        "status": "open",
+        "origin": "user_stated",
+        "source_ref": user_initiated_source_ref(source_ref),
+    }
+    if due:
+        data["due"] = str(due).strip()[:10]
+    else:
+        data["no_due"] = True
+    if counterparty_id:
+        data["counterparty_id"] = str(counterparty_id).strip()
+    elif counterparty_name:
+        data["counterparty_name"] = str(counterparty_name).strip()
+    if evidence:
+        # The shared clipper, never a bare slice — it stops on a word boundary
+        # and marks the cut, which is what the evidence census pins.
+        from text_clip import clip as _clip
+        data["evidence"] = _clip(evidence)
+    if source_event_seq is not None:
+        data["source_event_seq"] = source_event_seq
+    gate_commitment_data(data, subject="scheduling line")
+    person_ids = [p for p in (owner_id, data.get("counterparty_id")) if p]
+    ev = {"type": "commitment", "source_skill": source_skill,
+          "person_ids": person_ids, "data": data}
+    if primary_thread_id:
+        ev["primary_thread_id"] = primary_thread_id
+    # THE HOME RULE JUDGES THIS ROW LIKE ANY OTHER (fix round 1, review F-1).
+    # The first cut of this function ran the admission block and then appended
+    # straight to the ledger, so the one writer this lane ADDED was the one
+    # writer that never asked the door: "set up 30 minutes with someone not
+    # yet on file", no date, no project, opened, while the identical payload
+    # through any other route was held. The docstring above already said the
+    # home rule decided; now it does. A scheduling line WITH a date still
+    # opens (the caution rail lifts it over everything), which is the whole of
+    # SCHEDLINE1's regression.
+    ctx = workspace_capture_context(workspace_root)
+    verdict = classify_capture(
+        data,
+        mode=ctx["mode"],
+        user_id=ctx["user_id"],
+        user_names=ctx["user_names"],
+        team_ids=ctx["team_ids"],
+        known_ids=ctx["known_ids"],
+        **intake_kwargs(ctx, primary_thread_id=primary_thread_id),
+    )
+    if verdict.get("tier") == "observed":
+        ev = observed_from_commitment_event(
+            ev, reason=verdict.get("reason") or "")
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    stamped = append_event(events_path, [ev], holder=source_skill)
+    written = stamped[0] if stamped else ev
+    return {"ok": True, "status": "created", "commitment": written,
+            "held": written.get("type") == "commitment_observed"}
 
 
 def stale_tasks(

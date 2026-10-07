@@ -1,7 +1,7 @@
 ---
 name: board-pack-assembler
 surfaces: both
-description: "Assemble a multi-page board pack .docx from the workspace's own signal — KPIs vs targets, period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials via QuickBooks where connected. Fires on: 'build the board pack', 'prep the board pack', 'assemble the board pack', 'board pack for [date]', 'board package', 'build board deck', 'generate this month's board update'. Reads the full reporting period's events, the decision log, entity status, and prior packs for format consistency. Does NOT fire on 'board update' as a short memo (memo-writer), 'monthly recap' (weekly-recap), 'investor update' (memo-writer), or 'prep me for the board meeting' (call-prep — the meeting brief, not the pack)."
+description: "Assemble a multi-page board pack .docx from the workspace's own signal — KPIs vs targets, period deltas, top wins, top concerns, decisions logged, asks, hiring slate, financials via QuickBooks where connected. Fires on: 'build the board pack', 'prep the board pack', 'assemble the board pack', 'board pack for [date]', 'board package', 'build board deck', 'generate this month's board update'. Reads the full reporting period's events, the decision log, entity status, and prior packs for format consistency. Does NOT fire on 'board update' as a short memo (memo-writer), 'monthly recap' (weekly-recap), 'investor update' (memo-writer), or 'prep me for the board meeting' (call-prep — the meeting brief, not the pack). Owns the named forms above; cedes a bare `deck` — no pack, no period — to the app's own slide route."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
 template_version: 1.0.0
@@ -12,6 +12,7 @@ template_version: 1.0.0
 This skill produces a `.docx` (and optional `.pptx`) deliverable. The `.docx` MUST be produced through the canonical chokepoint — no exceptions:
 
 - **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="board_pack", ...)`.** That single call runs the output-contract gate (B3 — exec-summary cap, no blank KPI cells), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written.
+- **The file is BUILT in this session's scratch and LANDED in the workspace by the access layer (SPEC_NIGHTM2 §5, `shared/scripts/deliverables.py`).** The render call returns where the document is on the CUSTOMER'S OWN COMPUTER — the path you handed in, byte for byte, on a seat where the plugin and the folder share a filesystem, and the customer's own spelling on the merged seat. Link THAT RETURN and pass THAT to any receipt: never a path you re-derive or re-spell yourself, and never the landing's `landed_path`, which on a merged seat names the mount this run reads through and opens nothing on their machine. When you know the workspace folder's absolute path on their computer — a scheduled chat is given it, and `get_device_info` returns it — export it as `CR_DEVICE_WORKSPACE` before the call and the returned path is absolute; without it the return is the folder-relative path, `pc_path_unknown` is set, and you say where the document went in words with no link at all. When the layer cannot reach the folder the call raises `deliverables.DeliveryRefused`: say its one sentence — it is chosen for that reason and it is the whole answer — and stop. Nothing was written anywhere, so there is nothing to clean up and no second way to save it.
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode). A board pack is the highest-stakes external surface — a bypass here is the worst case.
 - **The `.pptx` companion renders ONLY via `shared/scripts/deck_writer.py` `make_deck(...)`** (SPEC OUT6) — same chokepoint discipline: grammar validation (`shared/DECK_GRAMMAR.md`), brand resolution, and a pre-save leak scan on every text run. NEVER hand-roll a deck with the generic pptx skill, `python-pptx` directly, or pptxgenjs, and NEVER improvise "1-2 slides with key bullets" — if `make_deck` fails, say so in one line, deliver the .docx, and stop.
 - **NEVER create, render, copy, upload, or update the pack, its `.pptx` companion, or any part, derivative, or restatement of either ("the KPI page", "the deck", "a summary") — through Google Docs, Google Slides, Google Drive, or ANY other document/file/presentation connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). **It covers the DECK exactly as it covers the doc:** a Slides-connector deck is the same bypass class as a Google-Doc pack, and "build it in Slides so the board can present from it" is not a carve-out — the `.pptx` renders through `make_deck` or it does not exist. It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc or a Slides deck, and for a parentless Drive upload of the canonical `.docx` / `.pptx` itself, that is My Drive root, not `_hq/board-packs/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the board can comment inline", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the board pack in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link. A board pack is the highest-stakes external surface in the workspace — the ungated copy is the one that reaches the board.
@@ -88,8 +89,7 @@ Read config through `get_config` — never the raw file.
 
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
-# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -228,8 +228,55 @@ Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structur
 **Mechanical voice-tell gate (B2 — bash-gated, not prose).** After composing each section's prose and before Phase 4 render, run the composed text through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 printf '%s' "$SECTION_TEXT" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
 ```
 
@@ -239,7 +286,7 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The s
 
 > **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: **§1 becomes the exec-header shape** (board-pack §1 is a sanctioned synthesis-lead surface) and **the Asks move to PAGE 1 with dollar sizes** — "an ask on page 5 is an ask not made." Pass `make_brief(brief_kind="board_pack", ...)` an `exec_header` (verdict = the biggest move; CHANGED = what changed since last board; DECIDE = the decision the board must make; NEEDED = the top board ask with its dollar size). The page-1 ask summary carries dollar sizes via `quantify.money_time_tag` (or a logged target/envelope figure) — "$340K Q3 envelope" — ONLY when derivable, never estimated. **§6 keeps the ask DETAIL** (this is the one place a board-pack legitimately restates: §1/exec-header is the page-1 summary, §6 is the backing detail — not a washing duplicate).
 
-**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("board_pack", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the §1–§7 spine and the prior-pack KPI-list inheritance below stay authoritative; the exemplar anchors layout within them). Workspace exemplar (`_hq/exemplars/board_pack/`) beats the shipped seed; `None` = compose on the defaults below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the pack. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered pack ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="board_pack", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
+**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("board_pack", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the §1–§7 spine and the prior-pack KPI-list inheritance below stay authoritative; the exemplar anchors layout within them). Workspace exemplar (`_hq/exemplars/board_pack/`) beats the shipped seed; `None` = compose on the defaults below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the pack. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered pack ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="board_pack", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
 **§1 Executive Summary → exec-header shape (EXEC1).** What changed since last board (≤6 bullets) + the page-1 Asks summary with dollar sizes. The verdict/CHANGED/DECIDE/NEEDED of the exec header are drawn from here.
 
@@ -356,6 +403,26 @@ APPENDICES (auto)
 - Modify entities.json beyond `last_pack_received_ts` (and only when user explicitly marks the pack as shared).
 - Override the KPI list arbitrarily. KPI list is inherited from prior pack unless an explicit `decision` event in period adjusted it.
 - Run if no prior board pack AND no explicit KPI list defined. First-use bootstrap: ask the user to define the KPI list (5-question wizard) → write a `decision` event capturing it → then proceed.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 

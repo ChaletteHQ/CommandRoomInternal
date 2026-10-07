@@ -289,7 +289,10 @@ def detect_deal_signals(workspace_root: str | Path, *,
     def _push(kind, oid, *, proposal_kind, evidence, thread=None,
               proposed_stage=None, proposed_value=None, source_ev=None):
         org = tracked[oid]
-        name = org.get("canonical_name") or oid
+        # LEAK2 — a company with no name on file renders the honest
+        # label, never its id (the B3.4 fallback class).
+        from narration_names import safe_name
+        name = safe_name(org.get("canonical_name"))
         tid = thread.get("id") if thread else None
         fingerprint = f"deal:{tid or oid}:{proposal_kind}" + (
             f":{proposed_stage}" if proposed_stage else "")
@@ -514,14 +517,38 @@ def propose_candidates(workspace_root: str | Path, candidates: list[dict]) -> di
     return {"n_proposed": n_proposed, "n_suppressed": n_suppressed}
 
 
-def run_deal_signal_job(workspace_root: str | Path, *, fired_via: str = "scheduled") -> dict:
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
+
+
+def run_deal_signal_job(workspace_root: str | Path, *, fired_via=None) -> dict:
     """The `deal-signals` MAINTENANCE_JOBS entry point: retire settled nags →
     promote every settled prospect (M ruling 4 — automatic, receipted,
     undoable) → detect → propose each
     candidate through the Living Brain rails (tier=confirm, ledger cooldown +
     open-dedup enforced inside propose()) → write the job's pack_run receipt.
     Returns {n_candidates, n_proposed, n_suppressed, receipt}."""
-    from receipts import log_receipt
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    # MAINTJOBS1 MUST 3 - THE WRITER IS NAMED FIRST. Retire, promote and
+    # propose all write before the pack_run does, so on a merged seat with no
+    # forwarded identity the refusal has to come here, before any of them.
+    from receipts import log_receipt, require_writer_identity
+
+    require_writer_identity(workspace_root=workspace_root)
+    fired_via = _effective_fired_via(fired_via)
     from deal_signal_retire import retire_settled
     from org_promotion import promote_settled_prospects
 
@@ -590,7 +617,36 @@ __all__ = [
 ]
 
 
+def main(argv=None) -> int:
+    """`deal_signal_detector.py <ws>` prints the candidates (today's
+    behaviour, unchanged). `--workspace <ws> --apply` RUNS the maintenance
+    job (MAINTJOBS1 MUST 3: the `deal-signals` row of
+    `maintenance_dispatcher.JOB_LEGS`, run by `run_job` through the write
+    door like every other script job) and prints its return as ONE JSON
+    line. `--fired-via` / `--triggered-by` are the two flags every job leg
+    ends in: the first is handed to the job, the second rides the receipt the
+    way `log_receipt` reads it (`CR_TRIGGERED_BY`)."""
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(prog="deal_signal_detector.py")
+    parser.add_argument("root", nargs="?", default=None)
+    parser.add_argument("--workspace", default=None)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--fired-via", dest="fired_via", default=None)
+    parser.add_argument("--triggered-by", dest="triggered_by", default=None)
+    args = parser.parse_args(argv)
+    ws = args.workspace or args.root or "."
+    if not args.apply:
+        for c in detect_deal_signals(ws):
+            print(f"[{c['kind']:13s}] {c['org_name']:24s} — {c['evidence']}")
+        return 0
+    if args.triggered_by:
+        os.environ["CR_TRIGGERED_BY"] = args.triggered_by
+    result = run_deal_signal_job(ws, fired_via=args.fired_via)
+    print(json.dumps(result, default=str, sort_keys=True))
+    return 0
+
+
 if __name__ == "__main__":
-    ws = sys.argv[1] if len(sys.argv) > 1 else "."
-    for c in detect_deal_signals(ws):
-        print(f"[{c['kind']:13s}] {c['org_name']:24s} — {c['evidence']}")
+    raise SystemExit(main())

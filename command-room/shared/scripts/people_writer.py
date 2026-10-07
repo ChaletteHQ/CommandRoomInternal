@@ -852,6 +852,46 @@ def record_person_fact(
 
 # ---------- public API ----------
 
+def _resolve_shared_address(holders: list, name: str | None) -> dict:
+    """TWO OR MORE records hold one address — which one does it resolve to?
+
+    M's ruling, IDENT1 fix round 1 (review F-6). Two people really do share a
+    mailbox (a household, a shared work account), and after a split BOTH
+    records legitimately carry the address, because they both really use it.
+    Before this, Tier 1 returned the FIRST record in list order, silently —
+    so after a split every later proof, chase and brief still named the person
+    the address was folded under, which is the complaint the split was built
+    to answer.
+
+    THE RULE:
+      1. If the caller says WHO it is looking at — the given name the invite,
+         thread or capture carries — the record answering to that name wins.
+         An exact full-name match first, then the given name alone; the
+         surname is shared in every shape this exists for, so the given name
+         is the whole of the discriminating evidence.
+      2. Otherwise the OLDER record wins (`first_seen`, then list order). Not
+         a guess: with nothing naming a person, the address is more likely the
+         one it always was, and stability beats novelty for a value every
+         downstream reader keys on.
+
+    Never raises. An ambiguity error here would turn a shared mailbox into a
+    question on every single lookup, which is the opposite of the ruling.
+    """
+    want = _normalize_name(name or "")
+    want_first = want.split()[0] if want else ""
+
+    def key(item):
+        idx, p = item
+        cn = _normalize_name(p.get("canonical_name", ""))
+        exact = bool(want) and cn == want
+        given = bool(want_first) and cn.split()[:1] == [want_first]
+        archived = str(p.get("status") or "") == "archived"
+        seen = str(p.get("first_seen") or "9999-12-31")
+        return (not exact, not given, archived, seen, idx)
+
+    return sorted(holders, key=key)[0][1]
+
+
 def find_existing_person(
     workspace_root: str | Path,
     *,
@@ -863,8 +903,13 @@ def find_existing_person(
 
     Three tiers in order:
 
-      Tier 1 — email exact (case-insensitive). Always safe to auto-match because
-      email is unique. Returns the matching record on first hit.
+      Tier 1 — email exact (case-insensitive). Always safe to auto-match
+      because email is unique. One holder returns that record, unchanged. When
+      SEVERAL records hold one address — a shared mailbox, or a record the
+      split rule pulled two people out of — `_resolve_shared_address` decides:
+      the record whose given name the caller named, else the older record. It
+      never raises, because a shared mailbox must not become a question on
+      every lookup (review F-6, ruled 2026-09-08).
 
       Tier 2 — multi-token canonical_name exact match (query has ≥2 tokens AND
       matches an existing record's `canonical_name` exactly, whitespace-normalized
@@ -902,12 +947,18 @@ def find_existing_person(
     # Tier 1 — email exact
     if email:
         target = email.strip().lower()
-        for p in people:
+        holders: list[tuple[int, dict]] = []
+        for idx, p in enumerate(people):
             # Check both canonical `emails` array (v3.13.0+) and deprecated
             # singular `email`. A record might carry one, the other, or both.
             for e in get_person_emails(p):
                 if e.strip().lower() == target:
-                    return p
+                    holders.append((idx, p))
+                    break
+        if len(holders) == 1:
+            return holders[0][1]
+        if holders:
+            return _resolve_shared_address(holders, name)
 
     query_strings = [c for c in [name, *(aliases or [])] if c]
     if not query_strings:
@@ -971,6 +1022,33 @@ def find_existing_person(
     )
 
 
+SINGLE_WORD_NAME_LINE = (
+    "Nothing was saved, because a person needs a first and last name here - "
+    "say the full name and it will be added.")
+
+
+class SingleWordNameRefused(ValueError):
+    """IDN-01 (PARALLEL-A lane B, 2026-09-24): a NEW person record may not be
+    created under a one-word canonical name. One-word stubs (a bare first
+    name) are what the resolver used to pick over real contacts; refusing
+    them at the writer keeps new ones out. Carries `cr_refusal_reason` and
+    `line` so a door caller answers `ok:false` with the one sentence."""
+
+    cr_refusal_reason = "single_word_name"
+
+    def __init__(self, name: str):
+        super().__init__(SINGLE_WORD_NAME_LINE)
+        self.name = name
+        self.line = SINGLE_WORD_NAME_LINE
+
+
+def refuse_single_word_name(canonical_name: str) -> None:
+    """Raise SingleWordNameRefused when `canonical_name` has fewer than two
+    whole tokens. Existing records are never touched - only creation."""
+    if len((canonical_name or "").strip().split()) < 2:
+        raise SingleWordNameRefused(canonical_name)
+
+
 def create_person(
     workspace_root: str | Path,
     *,
@@ -1022,6 +1100,7 @@ def create_person(
             "brain_batch_id and brain_change_class travel together — a batch "
             "id with no change class is a creation `undo_batch` will list and "
             "then refuse to reverse")
+    refuse_single_word_name(canonical_name)
     _enforce_record_scope(workspace_root, provenance=provenance,
                           source_ref=source_ref,
                           account_address=account_address,
@@ -1295,6 +1374,110 @@ def add_person_alias(
     }
 
 
+def remove_person_alias(
+    workspace_root: str | Path,
+    person_id: str,
+    alias: str,
+    *,
+    source_skill: str = "people_writer",
+) -> dict:
+    """The exact inverse of `add_person_alias` (IDENT1).
+
+    `add_person_alias` shipped with NO removal path, and that absence was
+    load-bearing in the wrong direction: two separate auto rails
+    (`attendee_evidence`, `contact_capture`) deliberately write no alias at
+    all, purely so their reversers stay complete — "an undo that leaves
+    residue is not a reversal". The cost of that omission is now visible on
+    a live book: a nickname saved against one record, later found to be
+    another person's name too, could not be taken back by any code path,
+    so the collision had to be repaired by hand — which is exactly the kind
+    of hand repair SPEC_FLOW1 forbids.
+
+    Two writes, mirroring the two the adder makes:
+      1. aliases.json — drop the `mappings.people` entry whose `raw`
+         normalizes to this spelling AND whose `canonical_id` is this
+         person. An entry pointing at a DIFFERENT person is left alone and
+         reported (`status: "other_owner"`) — never silently re-pointed or
+         deleted, the same asymmetry the adder enforces.
+      2. entities.json — drop the spelling from the record's `aliases`
+         array via `update_person`.
+
+    Idempotent: nothing on file returns {"status": "absent"} and writes
+    nothing. The person's CANONICAL name is never removable through here —
+    a record must always have a name to be called by, and removing it would
+    be a rename wearing an alias's clothes."""
+    alias = (alias or "").strip()
+    if not alias:
+        raise ValueError("remove_person_alias needs a non-empty alias spelling")
+    workspace_root = Path(workspace_root)
+    alias_norm = _normalize_name(alias)
+
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+    if _normalize_name(target.get("canonical_name") or "") == alias_norm:
+        raise ValueError(
+            f"{alias!r} is {person_id}'s canonical name, not an alias — "
+            "removing it would leave a record with nothing to call it by; "
+            "rename through update_person if that is what you mean")
+
+    apath = _aliases_path(workspace_root)
+    mapping_removed = False
+    other_owner = None
+    if apath.exists():
+        try:
+            aliases_doc = json.loads(apath.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            raise ValueError(
+                f"aliases.json at {apath} is unreadable — refusing to "
+                "overwrite it; restore it (cleanup keeps backups) and retry"
+            )
+        mappings = aliases_doc.get("mappings")
+        tier = mappings if isinstance(mappings, list) else (
+            (mappings or {}).get("people") if isinstance(mappings, dict) else None)
+        if isinstance(tier, list):
+            keep = []
+            for m in tier:
+                if (isinstance(m, dict) and isinstance(m.get("raw"), str)
+                        and _normalize_name(m["raw"]) == alias_norm):
+                    if m.get("canonical_id") == person_id:
+                        mapping_removed = True
+                        continue
+                    other_owner = m.get("canonical_id")
+                keep.append(m)
+            if mapping_removed:
+                if isinstance(mappings, list):
+                    aliases_doc["mappings"] = keep
+                else:
+                    aliases_doc["mappings"]["people"] = keep
+                atomic_write_json_locked(apath, aliases_doc, holder=source_skill)
+
+    record_written = False
+    current = list(target.get("aliases") or [])
+    pruned = [a for a in current if _normalize_name(str(a)) != alias_norm]
+    if len(pruned) != len(current):
+        update_person(workspace_root, person_id, aliases=pruned,
+                      source_skill=source_skill)
+        record_written = True
+
+    if mapping_removed or record_written:
+        status = "removed"
+    elif other_owner:
+        status = "other_owner"
+    else:
+        status = "absent"
+    return {
+        "status": status,
+        "person_id": person_id,
+        "alias": alias,
+        "mapping_removed": mapping_removed,
+        "record_written": record_written,
+        "other_owner": other_owner,
+    }
+
+
 def merge_person_into(
     workspace_root: str | Path,
     *,
@@ -1385,6 +1568,144 @@ def merge_person_into(
     return keep
 
 
+def split_person_from_shared_address(
+    workspace_root: str | Path,
+    *,
+    folded_person_id: str,
+    canonical_name: str,
+    shared_email: str,
+    email_provenance: dict | str,
+    brain_batch_id: str,
+    brain_change_class: str = "person_split",
+    source_skill: str = "people_writer",
+) -> dict:
+    """SPEC_FLOW1 Lane F rule 4 — the INVERSE of `merge_person_into`, for the
+    one shape that produced it by accident: two people on ONE record because
+    they share ONE address.
+
+    `merge_person_into` is confirm-forever and has no reverser, so a record
+    that got folded this way could only be repaired by hand-editing
+    entities.json. That is exactly the hand repair the spec forbids, and it is
+    why this writer exists: the product does the split, on its own evidence,
+    receipted and reversible.
+
+    WHAT IT WRITES, AND WHY THAT IS ALL
+      * ONE new person record, carrying `canonical_name` and `shared_email`.
+      * NOTHING on the folded record. The shared address STAYS on it — both
+        people really do use that address, and stripping it from the original
+        would make this an edit of somebody's existing record rather than an
+        addition beside it. Add beside, never displace, applies to the entity
+        graph too.
+
+    So the reversal is complete by construction: `brain_undo`'s `person_split`
+    reverser archives the new record AND clears the shared address off it, and
+    the graph is byte-equivalent to before — the address resolves to the
+    record it always resolved to.
+
+    THE DEDUP IT KEEPS AND THE ONE IT DELIBERATELY BYPASSES. `create_person`'s
+    dedup runs `find_existing_person(name=..., email=...)`, whose Tier 1 is
+    email-exact — and email-exact is PRECISELY the tier that must not refuse
+    here, because a shared address is the whole premise. So the email tier is
+    bypassed (the address is attached after the create) while the NAME tiers
+    are run FIRST and in full, by this function, against the same shipped
+    resolver: a record already carrying this canonical name means the second
+    person is already on file and there is nothing to split. An ambiguous name
+    lookup refuses outright. Nothing here can fork a record on a name.
+
+    F-08 AT CAPTURE, MIRRORED. `email_provenance` is REQUIRED and the call
+    raises without it. The address is only ever written because it was
+    OBSERVED on the invite or thread this split was decided from; a
+    provenance-less split would be storing an address on a guess, which is the
+    one thing the whole identity family refuses.
+
+    Returns one of:
+      {"status": "split", "person_id", "canonical_name", "shared_email",
+       "from_person_id", "record"}
+      {"status": "already_on_file", "person_id", "detail"}
+      {"status": "refused", "detail"}
+    Raises ValueError on a malformed call (no provenance, no batch id, a name
+    equal to the folded record's own, a record that does not hold the address).
+    """
+    workspace_root = Path(workspace_root)
+    canonical_name = (canonical_name or "").strip()
+    shared_email = (shared_email or "").strip().lower()
+    if not canonical_name:
+        raise ValueError("a split needs the second person's name")
+    if not shared_email:
+        raise ValueError("a split needs the address the two records share")
+    if not email_provenance:
+        raise ValueError(
+            "split_person_from_shared_address needs `email_provenance` — the "
+            "address is written only because it was OBSERVED on the invite or "
+            "thread this split was decided from (F-08 at capture)")
+    if not brain_batch_id or not brain_change_class:
+        raise ValueError(
+            "a split is an automatic act, so it must be reversible: "
+            "brain_batch_id and brain_change_class travel together")
+
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    folded = next((p for p in people if p.get("id") == folded_person_id), None)
+    if folded is None:
+        raise KeyError(f"no person with id {folded_person_id!r}")
+    if str(folded.get("status") or "") == "archived":
+        return {"status": "refused",
+                "detail": "the record at that address is archived — splitting "
+                          "somebody out of a retired record would resurrect "
+                          "half of it"}
+    if shared_email.lower() not in {e.strip().lower()
+                                    for e in get_person_emails(folded)}:
+        raise ValueError(
+            f"{folded_person_id} does not carry {shared_email!r} — a split is "
+            f"only defined on an address the two records actually share")
+    if _normalize_name(folded.get("canonical_name", "")) == \
+            _normalize_name(canonical_name):
+        raise ValueError(
+            "the split name equals the record's own name — that is the same "
+            "person, not a second one")
+
+    # The NAME tiers, in full, before anything is written. Tier 2 (exact
+    # multi-token canonical) is the one that matters: it means the second
+    # person already has their own record.
+    try:
+        by_name = find_existing_person(workspace_root, name=canonical_name)
+    except MultipleCandidatesError:
+        return {"status": "refused",
+                "detail": "that name is ambiguous on this workspace — a split "
+                          "is never the write that resolves an ambiguity"}
+    if by_name is not None:
+        return {"status": "already_on_file",
+                "person_id": by_name.get("id"),
+                "detail": "the second person is already on file"}
+
+    record = create_person(
+        workspace_root,
+        canonical_name=canonical_name,
+        email=None,                      # attached below — see the dedup note
+        needs_enrichment=True,
+        source_skill=source_skill,
+        brain_batch_id=brain_batch_id,
+        brain_change_class=brain_change_class,
+    )
+    try:
+        record = update_person(
+            workspace_root, record["id"], source_skill=source_skill,
+            email=shared_email, suppress_lineage=True,
+        )
+    except Exception as exc:
+        # The record exists and IS stamped, so `undo` reverses it cleanly; it
+        # simply has no address yet. Loud, never silent, never half-claimed.
+        return {"status": "split_no_address",
+                "person_id": record.get("id"),
+                "canonical_name": canonical_name,
+                "from_person_id": folded_person_id,
+                "detail": f"the record was created but the shared address "
+                          f"could not be attached: {type(exc).__name__}: {exc}"}
+    return {"status": "split", "person_id": record.get("id"),
+            "canonical_name": canonical_name, "shared_email": shared_email,
+            "from_person_id": folded_person_id, "record": record}
+
+
 def repair_person(
     workspace_root: str | Path,
     person_id: str,
@@ -1428,6 +1749,246 @@ def repair_person(
     _save_entities(workspace_root, data, source_skill)
     _log_event(workspace_root, "person_repaired", target, source_skill, before=before)
     return target
+
+
+# ---------- door wrappers (PEOPLEWRITE2, ruling D-W2-5) ----------
+#
+# people-crm's person writes cross the access layer's doors through these five
+# functions and never through the raw writers above. Through the door a raise
+# is `helper_failed` with a traceback tail, which a chat must never see
+# (SURFACEFIX1 5.3), so each wrapper answers a JSON-able `{ok, ...}` for the
+# DOMAIN refusals the raw writers raise (a duplicate, an ambiguous name, a
+# one-word name, an out-of-scope account, an id that is not on file) and lets
+# anything else raise as today, which the door reports. A typed refusal the
+# door already knows (a lease lost, a writer with no identity) is never caught
+# here: it carries `cr_refusal_reason` and the door answers it by its own line.
+# `door_find_person` is the READ (on the helper door's list) and writes
+# nothing; the other four are on the writer door's list, each with a row in
+# `shared/WORKSPACE_ACCESS.md`'s writer table.
+
+#: The one sentence a create answers when the record is already on file.
+DOOR_DUPLICATE_LINE = "That person is already on file, so nothing new was added."
+#: The one sentence an update or a fact answers for an id that is not on file.
+DOOR_UNKNOWN_PERSON_LINE = "Nothing was saved, because that person is not on file yet."
+#: The one sentence a write answers when the account-scope wall refused it.
+DOOR_OUT_OF_SCOPE_LINE = (
+    "Nothing was saved, because that contact came through an account that is "
+    "not part of your business mail.")
+#: The one sentence the dedup read answers when the people file cannot be read.
+DOOR_UNREADABLE_LINE = (
+    "Nothing was saved, because your people records could not be read just now.")
+#: The one sentence an update answers when it tries to change who a record is.
+DOOR_IDENTITY_FIELD_LINE = (
+    "Nothing was saved, because a person's record cannot be renumbered or have "
+    "its history hidden here.")
+#: The keys `door_update_person` refuses (N-1): the record's identity, and the
+#: switch that would drop the role and company lineage rows.
+DOOR_UPDATE_REFUSED_KEYS = frozenset({"id", "suppress_lineage"})
+
+DOOR_SOURCE_SKILL = "people-crm"
+
+
+def _account_scope_error():
+    """The account-scope wall's refusal class, or a class nothing raises when
+    the module is absent (the writers' own never-brick posture)."""
+    try:
+        from account_scope_gate import AccountScopeError
+    except ImportError:
+        class _Absent(Exception):
+            pass
+        return _Absent
+    return AccountScopeError
+
+
+def _door_candidates(candidates) -> list:
+    """The ambiguous answer's candidates: id and name only, JSON-able."""
+    return [{"id": c.get("id"), "canonical_name": c.get("canonical_name")}
+            for c in (candidates or []) if isinstance(c, dict)]
+
+
+def _person_on_file(workspace_root, person_id) -> bool:
+    """True when `person_id` names a record in the people collection."""
+    data = _load_entities(Path(workspace_root))
+    return any(p.get("id") == person_id
+               for p in entities_collection(data, "people"))
+
+
+def door_find_person(
+    workspace_root: str | Path,
+    *,
+    name: str | None = None,
+    email: str | None = None,
+    aliases: list[str] | None = None,
+) -> dict:
+    """The dedup read through the helper door: `{ok: true, match}` (the record
+    or null), or `{ok: false, reason: "ambiguous", candidates}` where
+    `find_existing_person` raises `MultipleCandidatesError`, or `{ok: false,
+    reason: "unreadable", line}` when the people file cannot be opened or
+    parsed. Writes nothing."""
+    try:
+        match = find_existing_person(workspace_root, name=name, email=email,
+                                     aliases=aliases)
+    except MultipleCandidatesError as exc:
+        return {"ok": False, "reason": "ambiguous",
+                "candidates": _door_candidates(exc.candidates)}
+    except (OSError, ValueError):  # ValueError: a JSON or a UTF-8 decode error (N-5)
+        # An unreadable people file is never a null match (that would send
+        # the caller on to a create over a damaged anchor, FS-15): it is a
+        # stop, said in one sentence, and nothing is written.
+        return {"ok": False, "reason": "unreadable",
+                "line": DOOR_UNREADABLE_LINE}
+    return {"ok": True, "match": match}
+
+
+def door_create_person(
+    workspace_root: str | Path,
+    *,
+    canonical_name: str,
+    primary_org_id: str | None = None,
+    email: str | None = None,
+    role: str | None = None,
+    notes: str | None = None,
+    aliases: list[str] | None = None,
+    affiliation_ids: list[str] | None = None,
+    project_ids: list[str] | None = None,
+    first_seen: str | None = None,
+    last_interaction: str | None = None,
+    needs_enrichment: bool = False,
+    provenance: dict | None = None,
+    source_ref: str | None = None,
+    account_address: str | None = None,
+    source_skill: str = DOOR_SOURCE_SKILL,
+) -> dict:
+    """`create_person` through the writer door. Dedup always runs (no
+    `skip_dedup` here). Answers `{ok: true, id, canonical_name}`, or `ok:
+    false` with `reason` `duplicate` (and `existing_id`), `ambiguous` (and
+    `candidates`), `single_word_name` or `out_of_scope`, each with nothing
+    written."""
+    scope_error = _account_scope_error()
+    try:
+        record = create_person(
+            workspace_root, canonical_name=canonical_name,
+            primary_org_id=primary_org_id, email=email, role=role,
+            notes=notes, aliases=aliases, affiliation_ids=affiliation_ids,
+            project_ids=project_ids, first_seen=first_seen,
+            last_interaction=last_interaction,
+            needs_enrichment=needs_enrichment, provenance=provenance,
+            source_ref=source_ref, account_address=account_address,
+            source_skill=source_skill)
+    except DuplicatePersonError as exc:
+        return {"ok": False, "reason": "duplicate",
+                "existing_id": exc.person_id,
+                "canonical_name": exc.canonical_name,
+                "line": DOOR_DUPLICATE_LINE}
+    except MultipleCandidatesError as exc:
+        return {"ok": False, "reason": "ambiguous",
+                "candidates": _door_candidates(exc.candidates)}
+    except SingleWordNameRefused as exc:
+        return {"ok": False, "reason": "single_word_name", "line": exc.line}
+    except scope_error:
+        return {"ok": False, "reason": "out_of_scope",
+                "line": DOOR_OUT_OF_SCOPE_LINE}
+    return {"ok": True, "id": record.get("id"),
+            "canonical_name": record.get("canonical_name")}
+
+
+def door_update_person(
+    workspace_root: str | Path,
+    *,
+    person_id: str,
+    source_skill: str = DOOR_SOURCE_SKILL,
+    **fields: Any,
+) -> dict:
+    """`update_person` through the writer door. Answers `{ok: true, id,
+    record}`, or `ok: false` with `reason` `identity_field`,
+    `unknown_person` or `out_of_scope`, each with nothing written. A field
+    the schema refuses still raises, as today.
+
+    `id` is the record's identity and `suppress_lineage` hides a role or
+    company move from the history; neither is a change a chat can carry
+    (REVIEW_W2_PEOPLEWRITE2 N-1: `id` passed through `update_person`, which
+    has taken it since the base, left two records with one id and another
+    person gone from the book)."""
+    if DOOR_UPDATE_REFUSED_KEYS & set(fields):
+        return {"ok": False, "reason": "identity_field",
+                "line": DOOR_IDENTITY_FIELD_LINE}
+    if not _person_on_file(workspace_root, person_id):
+        return {"ok": False, "reason": "unknown_person",
+                "line": DOOR_UNKNOWN_PERSON_LINE}
+    scope_error = _account_scope_error()
+    try:
+        record = update_person(workspace_root, person_id,
+                               source_skill=source_skill, **fields)
+    except scope_error:
+        return {"ok": False, "reason": "out_of_scope",
+                "line": DOOR_OUT_OF_SCOPE_LINE}
+    return {"ok": True, "id": person_id, "record": record}
+
+
+def door_record_person_fact(
+    workspace_root: str | Path,
+    *,
+    person_id: str,
+    fact: str,
+    source_ref: str,
+    category: str | None = None,
+    source_skill: str = DOOR_SOURCE_SKILL,
+) -> dict:
+    """`record_person_fact` through the writer door: one `person_fact_observed`
+    row. Answers `{ok: true, person_id, canonical_name, fact, category}`, or
+    `{ok: false, reason: "unknown_person"}` with nothing written."""
+    if not _person_on_file(workspace_root, person_id):
+        return {"ok": False, "reason": "unknown_person",
+                "line": DOOR_UNKNOWN_PERSON_LINE}
+    event = record_person_fact(workspace_root, person_id, fact, source_ref,
+                               category=category, source_skill=source_skill)
+    data = event.get("data") or {}
+    return {"ok": True, "person_id": person_id,
+            "canonical_name": data.get("canonical_name"),
+            "fact": data.get("fact"), "category": data.get("category")}
+
+
+def door_auto_add_person(
+    workspace_root: str | Path,
+    *,
+    canonical_name: str,
+    email: str | None = None,
+    email_provenance: dict | str | None = None,
+    role: str | None = None,
+    primary_org_id: str | None = None,
+    provenance: dict | None = None,
+    source_ref: str | None = None,
+    account_address: str | None = None,
+    source_skill: str = DOOR_SOURCE_SKILL,
+) -> dict:
+    """`auto_add_person` through the writer door: the function's own status
+    dict (`added` or `needs_confirm`) with `ok: true`, or `ok: false` with
+    the create refusals `door_create_person` names, nothing written."""
+    scope_error = _account_scope_error()
+    extra = {k: v for k, v in (("role", role),
+                               ("primary_org_id", primary_org_id),
+                               ("provenance", provenance),
+                               ("source_ref", source_ref),
+                               ("account_address", account_address))
+             if v is not None}
+    try:
+        answer = auto_add_person(workspace_root, canonical_name=canonical_name,
+                                 email=email, email_provenance=email_provenance,
+                                 source_skill=source_skill, **extra)
+    except DuplicatePersonError as exc:
+        return {"ok": False, "reason": "duplicate",
+                "existing_id": exc.person_id,
+                "canonical_name": exc.canonical_name,
+                "line": DOOR_DUPLICATE_LINE}
+    except MultipleCandidatesError as exc:
+        return {"ok": False, "reason": "ambiguous",
+                "candidates": _door_candidates(exc.candidates)}
+    except SingleWordNameRefused as exc:
+        return {"ok": False, "reason": "single_word_name", "line": exc.line}
+    except scope_error:
+        return {"ok": False, "reason": "out_of_scope",
+                "line": DOOR_OUT_OF_SCOPE_LINE}
+    return {"ok": True, **answer}
 
 
 # ---------- CLI ----------

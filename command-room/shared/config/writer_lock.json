@@ -1,0 +1,4 @@
+{
+  "_comment": "The events ledger's cross-process writer lock backend (lease_lock.writer_lock_backend). 'flock' = the OS byte-range lock on _hq/data/.writer.lock (the backend before 2026-09-26). 'lease' = the mkdir directory lease beside events.jsonl (findings LCK-02: excludes across sessions on the bridged folder, 0 duplicate seqs in 1,100 raced appends where flock produced 83 in 30 s). Any other value reads as 'flock'. CR_WRITER_LOCK_BACKEND in the environment overrides this file for one process. Flipped to 'lease' on 2026-09-26 (Train 2, D1/D12, REVIEW_T2_LEASE2): under lease every append takes the same-machine flock first, then the folder lease.",
+  "backend": "lease"
+}

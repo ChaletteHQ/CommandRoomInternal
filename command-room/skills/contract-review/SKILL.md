@@ -128,7 +128,7 @@ Extract:
 
   ```python
   import sys
-  # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
+  # Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
   sys.path.insert(0, "shared/scripts")
   from entity_resolve import resolve_all
   matches = resolve_all(workspace_root, counterparty_name_from_contract)
@@ -184,14 +184,14 @@ For each red flag, generate 1-2 questions probing the counterparty's underlying 
 
 - Render the .docx via `shared/scripts/brief_writer.py` with the contract-review template (Key Terms / How it compares / Redlines / Questions sections).
 - **NEVER hand-roll the review** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or leaking review (the v3.20.0 failure mode) — and this document carries counterparty names, negotiated terms and the user's own standard side by side, which is exactly what the leak scan exists to catch.
-- **NEVER create, render, copy, upload, or update the review — or any part, derivative, or restatement of it ("the redlines", "the flag list", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/contracts/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with my lawyer", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the review in a Google Doc so counsel can comment" is a request this gate refuses, not an override. Sending a redline analysis of a live negotiation to a connector's default drive is the worst version of this bypass — hand back the `.docx` link and let the user route it deliberately.
+- **NEVER create, render, copy, upload, or update the review — or any part, derivative, or restatement of it ("the redlines", "the flag list", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/contracts/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with my lawyer", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the review in a Google Doc so counsel can comment" is a request this gate refuses, not an override. Sending a redline analysis of a live negotiation to a connector's default drive is the worst version of this bypass — hand back the `.docx` link and let the user route it deliberately.
 - **Executive Output Standard (SPEC OUT2 §4 — `contract_review` is now a STANDARD_KIND; `make_brief` REFUSES the render without this).** Pass `exec_header`:
   - **verdict = the deal-breaker flag line** — the single red flag that must move before signing: *"Don't sign as-is — uncapped indemnification violates your Jan 12 cap decision."* When nothing is red: *"Safe to sign — two yellow terms worth a push, no deal-breakers."*
   - **changed** = what's new vs the counterparty's prior paper (the pattern/history note: "third uncapped-indemnification contract this quarter"), or the nothing-form.
   - **decide** = the negotiate-vs-accept call in front of the user (with the date if one is live). **needs** = the one action ("approve the §6.1 redline below"), or "Nothing from you."
   - **Subsumption (net length must not increase):** the verdict REPLACES the former top summary line of "How it compares to your standard" (the "Push back before signing: …" lead) — the matrix carries the detail; the header carries the conclusion. Body sections never restate the header.
 - **Visual pass (SPEC OUT2 §3, after the save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied — the flag matrix's tinted cells are exactly what this catches when they wrap or render blank · chart unreadable / overplotted), fix + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever).
-- **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("contract_review", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the flag-matrix contract below stays authoritative; the exemplar anchors layout within it). Workspace exemplar (`_hq/exemplars/contract_review/`) beats the shipped seed; `None` = compose on the template above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the review. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered review ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="contract_review", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
+- **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("contract_review", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the flag-matrix contract below stays authoritative; the exemplar anchors layout within it). Workspace exemplar (`_hq/exemplars/contract_review/`) beats the shipped seed; `None` = compose on the template above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the review. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered review ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="contract_review", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 - **"How it compares" is a `matrix` (SPEC OUT1 §4), not prose labels.** Pass a section whose `matrix` has `headers_row = ["Your standard", "This contract", "Flag"]`, `headers_col` = the term names (leftmost column), the cell grid = `[your-standard-summary, this-contract-summary, flag-word]` per row, and **`flag_col_idx = 2`** so the renderer shades each Flag cell with the brand tint that matches its word. Use the plain flag WORD in the flag column — `Standard` / `OK` (green tint), `Review` / `Watch` (amber tint), or `Flag` / `Risk` (red tint) — NOT the emoji dots and NOT a raw color name; the shading carries the color, the word carries the meaning for a reader who prints in grayscale or is colorblind. The per-term redline/pattern/history prose analysis stays BELOW the matrix in the Redlines section — the matrix is the scan-in-5-seconds layer, the prose is the depth.
 - Save to `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx`.
 - Append `contract_reviewed` event.
@@ -262,6 +262,26 @@ QUESTIONS TO ASK BEFORE SIGNING
 - Sign or send. Use DocuSign / Adobe Sign MCP for signature workflow.
 - Modify `_hq/contracts/standard-terms.md` mid-review. If a review reveals you want to update your standard, that's a separate explicit edit.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
@@ -269,3 +289,59 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Review a contract or NDA — extract key terms, compare against your standard terms, flag deviations green/yellow/red, and suggest redlines. Counterparty- and history-aware: if the counterparty has pushed for the same carve-out before, the review notes the pattern. Use when the CEO says 'review this contract', 'review this NDA', 'redline this contract', 'redline this NDA', 'contract review', 'check this contract', 'analyze this contract', 'review this MSA', 'redline this MSA', 'review this agreement', 'analyze this agreement', 'compare this contract to my standard', 'flag risks in this contract'. Reads the contract PDF/docx, `_hq/contracts/standard-terms.md` (your standard), entities.json for counterparty context, events.jsonl for prior contract_reviewed events with the same counterparty or matching deviation classes. Writes contract_reviewed event with parties, deviation count, term hash, .docx artifact link. DOES NOT fire on 'write a contract' (out of scope — Command Room reviews, doesn't draft contracts), 'lawyer questions' (out of scope), or 'sign this contract' (use DocuSign / Adobe Sign MCP directly).
 
 > Also handles standard-terms settings (SPEC OUT2 §5 — aliases onto the Phase 0 wizard; storage stays `_hq/contracts/standard-terms.md`, never a second store) — use when the CEO says 'tune contract-review', 'show contract-review settings', 'reset contract-review to defaults', 'update my standard terms', 'show my standard terms'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

@@ -367,9 +367,11 @@ def render_review_page(workspace_root, *, page: int = 1,
     view = build_would_hold_view(ws, now_iso=now_iso)
     data_view = build_review_data_view(view,
                                        already_objected=objections(ws))
-    page_view = nrq.paginate_groups(data_view, page=page, max_rows=max_rows)
-    gp = page_view.pop("group_pagination")
-    rows = max(1, gp["rows_on_page"])
+    # PLATENUM1 4.5 — the caller's page reaches the transport here too, so a
+    # would-hold call the byte fit re-slices is still readable to its end.
+    paged = nrq.resolve_page(data_view, page=page, max_rows=max_rows)
+    page_view = paged["page_view"]
+    gp = paged["group_pagination"]
     # SPEC_WIDGETRO1 §2-1 (CUT-C item 9, ATTENDED_TEST_v5.28.0 B5.1) — the
     # reading chair renders READ-ONLY: its one row verb stays, the shared
     # batch footer (Apply all / Reset / `Snooze rest (1 day)`) does not
@@ -379,10 +381,8 @@ def render_review_page(workspace_root, *, page: int = 1,
     transport = render_and_persist(
         data_view=page_view, wrapper="fragment",
         persist_dir=str(persist_dir or (ws / "_hq" / ".system" / "widgets")),
-        page=1, page_size=rows, read_only=True)
-    fitted = (transport.get("pagination") or {}).get("total_pages") or 1
-    if fitted > 1:
-        gp = dict(gp)
+        page=paged["sub_page"], page_size=paged["page_size"], read_only=True)
+    if gp["sub_pages"] > 1:
         gp["group_split_by_budget"] = True
     if write_receipt:
         _append(ws, {

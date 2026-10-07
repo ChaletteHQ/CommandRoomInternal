@@ -1,7 +1,7 @@
 ---
 name: decision-memo-composer
 surfaces: both
-description: "Walk through a structured tradeoff between options and produce a decision memo .docx — framing, options, weighted criteria, comparison, recommendation. Fires on: 'decision memo on [topic]', 'decision memo for [topic]', 'help me decide between [A] and [B]', 'tradeoff analysis', 'choose between [options]', 'compare [A] vs [B] for [decision]'. Interactive criteria weighting with the CEO, evidence pulled from the workspace where entities are named, one-tap chain to stress-test for the inversion pass, and 'log decision' on the way out. Does NOT fire on 'we decided X' / 'what did we decide' (decision-log — logging/retrieval), 'revisit the [topic] decision' (decision-log — its revisit mode), 'deal memo on [target]' (single-opportunity evaluation), or 'convene the board' (boardroom)."
+description: "Walk through a structured tradeoff between options and produce a decision memo .docx — framing, options, weighted criteria, comparison, recommendation. Fires on: 'decision memo on [topic]', 'decision memo for [topic]', 'help me decide between [A] and [B]', 'tradeoff analysis', 'choose between [options]', 'compare [A] vs [B] for [decision]'. Interactive criteria weighting with the CEO, evidence pulled from the workspace where entities are named, one-tap chain to stress-test for the inversion pass, and 'log decision' on the way out. Does NOT fire on 'we decided X' / 'what did we decide' (decision-log — logging/retrieval), 'revisit the [topic] decision' (decision-log — its revisit mode), 'deal memo on [target]' (single-opportunity evaluation), or 'convene the board' (boardroom). Owns the named forms above; cedes a bare `memo` — no topic, no options — to the app's own document route."
 voice_block_last_refreshed: 2026-05-19
 calibration_level: default
 template_version: 1.0.0
@@ -12,8 +12,10 @@ template_version: 1.0.0
 This skill produces a `.docx` deliverable. It MUST be produced through the canonical chokepoint — no exceptions:
 
 - **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="decision_memo", ...)`.** That single call runs the output-contract gate (B3 — required sections, no blank comparison cells), the voice-tell gate (B2), and the post-render leak scan, in that order, BEFORE the file is written.
+- **The file is BUILT in this session's scratch and LANDED in the workspace by the access layer (SPEC_NIGHTM2 §5, `shared/scripts/deliverables.py`).** The render call returns where the document is on the CUSTOMER'S OWN COMPUTER — the path you handed in, byte for byte, on a seat where the plugin and the folder share a filesystem, and the customer's own spelling on the merged seat. Link THAT RETURN and pass THAT to any receipt: never a path you re-derive or re-spell yourself, and never the landing's `landed_path`, which on a merged seat names the mount this run reads through and opens nothing on their machine. When you know the workspace folder's absolute path on their computer — a scheduled chat is given it, and `get_device_info` returns it — export it as `CR_DEVICE_WORKSPACE` before the call and the returned path is absolute; without it the return is the folder-relative path, `pc_path_unknown` is set, and you say where the document went in words with no link at all. When the layer cannot reach the folder the call raises `deliverables.DeliveryRefused`: say its one sentence — it is chosen for that reason and it is the whole answer — and stop. Nothing was written anywhere, so there is nothing to clean up and no second way to save it.
 - **NEVER hand-roll a `.docx`** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship substandard, voice-violating, or PII-leaking documents (the v3.20.0 failure mode).
-- **NEVER create, render, copy, upload, or update the memo — or any part, derivative, or restatement of it ("the comparison table", "the recommendation", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). This is the same severity as the hand-rolled-`.docx` ban and fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `[Project]/deliverables/memos/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the team can weigh the options with me", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the tradeoff in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link. The weighted criteria are the memo's argument — a connector copy strips the gates that checked them.
+- **NEVER create, render, copy, upload, or update the memo — or any part, derivative, or restatement of it ("the comparison table", "the recommendation", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). This is the same severity as the hand-rolled-`.docx` ban and fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `[Project]/deliverables/memos/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the team can weigh the options with me", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the tradeoff in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link. The weighted criteria are the memo's argument — a connector copy strips the gates that checked them.
+- **A Claude Doc produced anyway is exported into the folder (DOCS1 D-2, 2026-09-24).** When the host's built-in docs skill made a page despite the document-routing rule, the page is not the deliverable and is not left as the only copy: discover the docs seam with `tool_discovery.discover_docs_tool(<the tool ids visible in THIS session>, "export")` — never a remembered tool id; `None` means no docs tools in this chat, say so in one line and stop — then call the discovered tool for that doc's ONE tab with `format: "docx"` (a doc with several tabs: `read` the doc first and take the tab that holds the document). Put the payload — `{"doc_ref": "<the doc's link>", "kind": "decision_memo", "title": "<the doc's title>", "content_base64": "<what the export returned>", "format": "docx", "workspace_root": "<WS>", "project": "<the project folder name>"}` — as JSON into THIS SESSION'S OWN scratch (never under the workspace; a document does not survive a pasted command line — the same carrier the prep's payload uses) and land it through the WRITE door: `plan run_writer` naming `deliverables:export_claude_doc` with `args_file` pointing at that file. Its answer names the file by `rel` and carries `opener_line` — print that verbatim — and `receipt_row`, which you append through `plan append_jsonl` to `_hq/data/events.jsonl` (ONE `deliverable_landed` row; `null` means the same doc was exported inside the window and the file was refreshed in place — append nothing). The doc itself stays where it is: the product never deletes what it did not make. The gates above still bind — an exported doc is a copy of what the composer already said, landed where the workspace can see it, not a second render.
 - **NEVER answer a deliverable request with a chat-only draft.** "Just give me a quick tradeoff" is still a decision-memo request — produce the `.docx` through `make_brief`. Only if the user explicitly says "draft it in chat, don't make a file" do you skip the file — and then say plainly that the gates only run on the rendered file, and offer to produce it.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event recording which gates ran. A fire of this skill that yields a document with NO `gate_ran` event for that turn is a flagged bypass (an inferior path was substituted). Pass `workspace_root` to `make_brief` so the event lands in substrate.
 - **Visual pass (SPEC OUT2 §3, after every save):** run the render-then-critique pass per `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The visual pass" — call `shared/scripts/visual_gate.py` `render_preview(<saved path>)`, LOOK at the returned page images against the 7-item checklist (orphaned heading at a page break · empty/placeholder tile · table overflow/wrap damage · cramped spacing · header/footer intact · brand palette applied · chart unreadable / overplotted), fix the sections payload + re-save AT MOST ONCE, then log `visual_gate.log_visual_gate(WORKSPACE_ROOT, doc, rendered, findings, fixed)` either way. `None` from the ladder = no renderer on this machine — log `rendered: false` with a `skipped_reason` and proceed exactly as before (warn-only forever: a finding never refuses a save, and the pass never loops).
@@ -77,8 +79,7 @@ decisions are **show-then-tune (STT)**. Read config through `get_config` — nev
 
 ```python
 # Resolve the plugin root first (CONTRACT Rule 22). Bash preamble:
-# SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -213,7 +214,7 @@ Render the .docx through `shared/scripts/brief_writer.py` `make_brief(brief_kind
 
 **Executive Output Standard (EXEC1, v3.20.0+) — RECOMMENDATION ABOVE COMPARISON.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md` element 2, the analysis-first document order (Framing → Options → Criteria → Comparison → Recommendation) is INVERTED at the document level: **the Recommendation section moves ABOVE Comparison** (it now sits right after Framing). Analysis exists so the reader can AUDIT the recommendation, not for suspense. **The interactive Phase-1/2 weight-setting FLOW is UNCHANGED — only the rendered document order flips.** `decision_memo` is decision-shaped, so `make_brief` ENFORCES this: a Recommendation/Decision-headed section first appearing at section index > 2 raises `ValueError`. The `exec_header.verdict` carries the rec + condition + decide-by: *"Option A — hire now, gated on Sales Playbook v0 — decide by Jun 15."*
 
-**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("decision_memo", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the rec-above-comparison rule above stays enforced regardless). Workspace exemplar (`_hq/exemplars/decision_memo/`) beats the shipped seed; `None` = compose on the structure below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or the ordering check, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the memo. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered memo ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="decision_memo", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
+**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("decision_memo", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the rec-above-comparison rule above stays enforced regardless). Workspace exemplar (`_hq/exemplars/decision_memo/`) beats the shipped seed; `None` = compose on the structure below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or the ordering check, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the memo. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered memo ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="decision_memo", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
 Use the v3.13.8 `table` + `matrix` section primitives for the criteria + comparison sections rather than synthesizing bullets (this was the Bug #58 precondition):
 
@@ -253,8 +254,55 @@ Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md` (structur
 **Mechanical voice-tell gate (B2 — bash-gated, not prose).** Before calling `make_brief`, run the composed memo prose through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context brief
 ```
 
@@ -351,6 +399,26 @@ WHAT KILLS THIS DECISION  (stress-test integration — optional)
 - Auto-log the decision. Logging requires explicit "Log decision" click.
 - Re-litigate a previously-decided topic without surfacing the prior decision. If a `decision` event already exists for this exact topic in the last 90 days, the Phase 3 substrate pass surfaces it prominently as "you already decided this; this memo would supersede" — and the user has to explicitly confirm.
 - Capture user-edited weights silently. If user adjusts weights via "Edit weights," the new weights are saved in the `decision_memo_drafted` event for future-self reference.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 

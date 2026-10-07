@@ -1,0 +1,40 @@
+{
+  "version": "5.31.0",
+  "headline": "Your morning brief, End of Day and Friday wrap now tell the truth and nothing else: one open number everywhere, a row number that belongs to the item, no plumbing lines, the machine's acts credited to the machine by door with an undo, and nothing already reversed reported as standing. A mail that only asks a question closes nothing; one send closes one item; a meeting processed twice writes nothing new; mark won plus undo reverses everything. The 30-day cleanup is retired. And the product now learns from your edits, keeps a profile page you can read and correct, and lets you shape your brief in a sentence.",
+  "items": [
+    {
+      "id": "v5310_retire_age_out_job",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.retire_age_out_job",
+      "action_function": "retire_age_out_job",
+      "notice_template": "Retired the 30-day cleanup — the 45/60-day silence door is the only one now.",
+      "fallback_prompt_template": "The 30-day cleanup is being retired (the 45/60-day silence door replaces it); switching it off on this workspace is pending and will retry on the next update."
+    },
+    {
+      "id": "v5310_readiness_retirement",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.force_readiness_retirement",
+      "action_function": "force_readiness_retirement",
+      "notice_template": "Switched off {n_paused} scheduled chat{plural} that had already been retired — nothing you had asked for is affected.",
+      "fallback_prompt_template": "Two retired chats may still be firing on this workspace; switching them off is pending and will retry on the next update."
+    },
+    {
+      "id": "v5310_announce_fix_train",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "What changed on the surfaces you read. (1) The morning brief leads with one open number and every other count is a breakdown of it; it never asks you a question and carries no connector or health lines (say 'health check' for those). (2) End of Day credits what the product did on its own to the door that did it, one line per batch with an undo, never as 'you let go'; a close you already undid is never listed; and if it cannot render it says so in one sentence and you say 'end of day' to retry. (3) The Friday wrap's Parked list shows at most ten items with a real reason each, one in-and-out pair, and 'Decided for you' names each act. (4) A row's number now belongs to the item, so 'later 83 to friday' lands on the same row tomorrow; 'show waiting' and 'show scheduling' answer on their own; and the two switch phrases 'turn off closing when I say it is done' and 'turn off parking items nobody touches' now work as announced.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5310_announce_truth_and_learning",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Also new. A sent email that only asks a question closes nothing, one send closes at most one item, and a title match alone never closes without a completion signal or an attachment. Processing a meeting a second time writes nothing new; it only corrects what is already there. 'Mark won' followed by 'undo' puts the deal, the company and the win back exactly as they were. An invoice or a retainer never lapses through the two-day door. Say 'undo the three items you let go' and the product finds that batch. No raw id, file path or internal name reaches you on any surface. And from night 11a: say 'my profile' for one page of what the product knows about you, every line with where it came from; say 'group my brief by workstream', 'lead with my calendar' or 'keep it short enough for my phone' to shape the brief in a sentence, and 'reset my brief' to put it back; your in-passing corrections now change how the product writes, each with an undo, and 'stop learning from my edits' turns that off.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -474,6 +474,38 @@ def detect_completion_signal(text: Optional[str]) -> bool:
     return any(phrase in lo for phrase in _phrases("completion_phrases", COMPLETION_PHRASES))
 
 
+#: One sentence end. Same shape as `exit_doors._SENTENCE_SPLIT_RE` — the two
+#: doors grade the same kind of English and must not drift on where a
+#: sentence stops.
+_QUESTION_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+
+def is_question_shaped(text: Optional[str]) -> bool:
+    """True when `text` ASKS and never reports.
+
+    CLOSETRUTH1 3.1 (M's ruling 2, 2026-09-13). `exit_doors.own_word_statements`
+    already drops a question — "did I send the deck?" is not a report — and
+    that `?`-rule lives HERE now so one rule covers both doors: a spoken
+    statement and an outbound mail are graded the same way.
+
+    The rule in full: a text carrying at least one question sentence is
+    question-shaped UNLESS one of its NON-question sentences reports
+    completion. So "which week do you want to start, and which day suits a
+    weekly review?" is a question; "here is the rollback process — does
+    Tuesday work?" is still a report and closes on its own merits. A text
+    with no question at all is never in this class, so every statement mail
+    behaves exactly as it did before.
+    """
+    if not text:
+        return False
+    sentences = [s.strip() for s in
+                 _QUESTION_SENTENCE_SPLIT_RE.split(str(text)) if s.strip()]
+    if not any(s.endswith("?") for s in sentences):
+        return False
+    return not any(detect_completion_signal(s)
+                   for s in sentences if not s.endswith("?"))
+
+
 def detect_schedule_shift_signal(text: Optional[str]) -> bool:
     """True if `text` contains a phrase suggesting the deadline moved
     (`pushed to`, `delayed`, etc.) — used to write `commitment_updated`
@@ -2466,9 +2498,136 @@ def _delivery_counterparty_hit(d: dict, recipient_set: set,
     return False
 
 
+def addressed_to_counterparty(d: dict, recipient_set: set,
+                              recipient_name_tokens: set, party_ids: set,
+                              owner_id: str, title: str,
+                              sender_name_tokens: set = frozenset()) -> bool:
+    """SELFMAIL1 — did this send actually go TO the person the row is owed to?
+
+    THE RULING (M, 2026-09-07, after a note he mailed to himself closed two
+    real promises): a fact-proved close happens wherever the product notices
+    it, and on the mail rail a fact means THE MESSAGE WENT TO THE
+    COUNTERPARTY. Anything not addressed to the counterparty is neither a
+    close nor a proposal.
+
+    The candidacy gate below is deliberately wide — its job is only to open the
+    door, and the score decides. What it could not see is that one of its three
+    routes is satisfiable BY THE SENDER: a commitment's `person_ids` carries
+    its owner, so a message addressed to the user matched every row the user
+    owns, and the title score alone then closed the two that echoed loudest.
+    This is the same question `_delivery_counterparty_hit` already asks of
+    signal A, asked of the title-graded closes too — GRADING, not candidacy,
+    so the diagnostic row still exists and says `no_action`.
+
+    The routes, all of them requiring SOMEBODY OTHER THAN THE USER:
+      1 + 2. `_delivery_counterparty_hit` — a resolved recipient who is a
+        party to the item and is not its owner, or a recipient name matching a
+        free-text `counterparty_name` receipt. Reused verbatim, not restated.
+      3. the Bug #103 recall fallback — a recipient name token in the row's
+        TITLE ("Send Bowie Stone the recap" mailed to Bowie Stone). RIGHT here
+        and wrong for signal A: signal A closes without reading the title, so
+        a name in a title is not a statement about who is owed; a title-graded
+        close IS the title being read, and M's ruling names it — "moderate =
+        to the counterparty by title". The sender's OWN name tokens are
+        subtracted from THIS route only, so your own name in your own title
+        can never make a note to yourself read as a delivery.
+
+    WHERE THE SENDER'S TOKENS ARE SUBTRACTED, AND WHERE THEY ARE NOT (review
+    F-4). The first cut handed the SUBTRACTED set to route 2 as well, and that
+    quietly REVOKED closes the strong route had already earned: a row whose
+    free-text `counterparty_name` shares its only long-enough token with the
+    sender ("Bowie Stone" against a sender called "Sample Stone") lost a
+    delivery-evidence close on a send that really did carry the deliverable to
+    the person the row was owed to — and M's ruling names that exact route as
+    the strong one. Handing route 2 the RAW set instead is the other half of
+    the same mistake: on a note to yourself every recipient name IS the
+    sender, and "Sample Creations" then matches "Operator Sample" on the token
+    they share, which is layer 2 letting through the very class layer 1 exists
+    to stop (the builder's own fixture caught that).
+
+    So the question is asked of the message, once, before either name route:
+    IS EVERY RECIPIENT NAME ON THIS MESSAGE THE SENDER'S OWN? If it is, the
+    name channel is looking at the sender and may not speak for anybody — both
+    name routes go quiet and only the resolved-id route (which already
+    excludes the owner) can answer. If it is NOT, there is a real other
+    recipient on the message, the shared token is as likely theirs as the
+    sender's, and route 2 gets the raw set — which is `_delivery_counterparty_hit`
+    exactly, so on every message that went to somebody this predicate is a
+    genuine superset of the conjunct signal A already carries and the gate
+    below can only take away title- and thread-graded rows. Route 3 keeps the
+    subtraction either way: a name in a title the sender wrote himself is
+    never a statement about who is owed.
+
+    A row with no counterparty on record and no recipient named in its title
+    can no longer be closed by sent mail at all. That is the intended
+    narrowing: nothing anyone mails can prove such a row done (EXIT1 routes 2
+    and 3 — your own word, and silence — are what close those)."""
+    all_names = set(recipient_name_tokens or ())
+    sender = set(sender_name_tokens or ())
+    # The name channel can only speak for a recipient who is not the sender.
+    names = set() if (all_names and sender and all_names <= sender) else all_names
+    if _delivery_counterparty_hit(d, recipient_set, names,
+                                  party_ids, owner_id):
+        return True
+    # Route 3 keeps the subtraction: your own name in your own title is not a
+    # statement about who the row is owed to.
+    others = names - sender
+    if others and others & set(_tokenize(title)):
+        return True
+    return False
+
+
 # -----------------------------------------------------------------------------
 # Path 1 — match an outbound send to open commitments
 # -----------------------------------------------------------------------------
+
+
+def _sender_tokens_from_workspace(workspace_root, sender_person_id) -> set:
+    """SELFMAIL1 fix round 2 — THE CALLER CANNOT FORGET THIS ARGUMENT.
+
+    `addressed_to_counterparty` subtracts the sender's own name tokens from
+    the title route, so "Operator Sample to send the pricing deck" mailed by
+    Operator Sample cannot read as a delivery to Operator Sample. The
+    reviewer measured what happens when a caller passes `recipient_names`
+    and omits the tokens: the title route opens back up to the user's own
+    name and the row grades `auto_resolve` — the whole 2026-09-07 regression,
+    reachable by any future caller who simply did not know the keyword
+    existed. A fence that depends on every caller remembering it is not a
+    fence.
+
+    Making the argument REQUIRED would break the two shipped prose call sites
+    (`apply-choices` and `orchestrator-commitments` Phase 2.5) that pass
+    recipient ids and no names, and displacing a shipped signature is not
+    something this lane does. So the function fills it in instead: when a
+    caller hands over recipient NAMES, a workspace, and no tokens, the tokens
+    are read from the workspace — the same `own_name_tokens` the sent rail
+    resolves for itself.
+
+    ONLY WHEN THE SENDER IS THE WORKSPACE'S OWN USER. `own_name_tokens`
+    answers for the primary user and nobody else, so on a send from anyone
+    else it would subtract the wrong person's name and cost a real close.
+    Both reads happen only on the omitted-argument path, so the sent rail —
+    which passes the tokens it already resolved once per run — reads nothing
+    extra and review F-7 stands. Read-only, never raises into a caller: a
+    workspace that cannot answer returns the empty set, which is exactly the
+    behaviour every pre-SELFMAIL1 caller already had.
+    """
+    if not workspace_root or not sender_person_id:
+        return set()
+    try:
+        from primary_user import resolve_primary_user
+
+        if resolve_primary_user(workspace_root) != sender_person_id:
+            return set()
+        from contact_capture import own_name_tokens
+
+        toks = {str(t).strip().lower()
+                for t in (own_name_tokens(workspace_root) or set())}
+        toks.discard("")
+        return toks
+    except Exception:  # pragma: no cover — both reads are optional
+        return set()
+
 
 
 def match_send_to_commitments(
@@ -2479,10 +2638,12 @@ def match_send_to_commitments(
     subject: Optional[str],
     body: Optional[str],
     recipient_names: Optional[Iterable[str]] = None,
+    sender_name_tokens: Optional[Iterable[str]] = None,
     workspace_root=None,
     send_source_ref: Optional[str] = None,
     exclude_captured_since=None,
     has_attachment: bool = False,
+    require_title_proof: bool = True,
     send_thread_ref: Optional[str] = None,
     send_ts=None,
     diagnostics: Optional[dict] = None,
@@ -2566,6 +2727,19 @@ def match_send_to_commitments(
     NEITHER basis widens the candidacy gate above (owner + recipient), and
     NEITHER lowers `_hi` / `_pend`. Both run after both RECONFENCE layers.
 
+    SELFMAIL1 — THE SEND MUST HAVE GONE TO THE COUNTERPARTY. After the grade is
+    settled, `addressed_to_counterparty` has the last word: a row the message
+    was not addressed to drops to `no_action`, so it is neither closed nor
+    proposed. `sender_name_tokens` (the caller's own name and mail local-parts)
+    is subtracted from that predicate's title route, so the SENDER's own name
+    in a title can never stand in for the counterparty. OMIT IT AND IT IS
+    FILLED IN: a caller that passes `recipient_names` with a `workspace_root`
+    and no tokens has them read from the workspace, because a fence every
+    caller has to remember is not a fence (fix round 2). Pass an explicit
+    empty iterable to say there are none. With no workspace to read, or a
+    sender who is not the workspace's own user, the route behaves exactly as
+    it did before.
+
     Returns a list of `{commitment_id, score, recommendation, title}` dicts,
     sorted by score descending. recommendation is one of:
       - "auto_resolve" (score >= HIGH_CONFIDENCE_THRESHOLD, or SENTMATCH
@@ -2588,6 +2762,20 @@ def match_send_to_commitments(
         for tok in _tokenize(n):
             if len(tok) >= 3:
                 recipient_name_tokens.add(tok)
+    # SELFMAIL1 — the tokens that mean "the sender". Subtracted from the title
+    # route in `addressed_to_counterparty` so a send whose only recipient name
+    # is the user's own can never satisfy it. None/absent → empty → the route
+    # behaves exactly as it did before for every caller that does not pass it.
+    sender_tokens: set[str] = {str(t).strip().lower()
+                               for t in (sender_name_tokens or [])}
+    sender_tokens.discard("")
+    # SELFMAIL1 fix round 2 — a caller that hands over NAMES and forgets the
+    # tokens gets them read from the workspace rather than getting the title
+    # route back. `None` is "I did not say"; an explicit empty iterable is "I
+    # said, and there are none", and is left alone.
+    if sender_name_tokens is None and recipient_name_tokens and workspace_root:
+        sender_tokens = _sender_tokens_from_workspace(
+            workspace_root, sender_person_id)
     # Need SOME recipient signal — either resolved ids or names — or we can't
     # attribute the send to anyone.
     if not recipient_set and not recipient_name_tokens:
@@ -2599,11 +2787,14 @@ def match_send_to_commitments(
     # SENTMATCH signal A — the two body-level conjuncts, computed once. A
     # schedule shift is the explicit NEGATIVE: "attaching the old deck, the
     # updated one is pushed to Friday" carries an attachment AND completion
-    # language AND is not a delivery. It only blocks the new basis; a title
-    # match at >= 0.55 closes exactly as it did before.
+    # language AND is not a delivery. It only blocks the new basis; the title
+    # path is graded by its own gate below (CLOSETRUTH1 3.1).
     has_completion = detect_completion_signal(query)
     has_schedule_shift = detect_schedule_shift_signal(query)
     delivery_body_ok = bool(has_attachment) and has_completion and not has_schedule_shift
+    # CLOSETRUTH1 3.1 — computed ONCE per message, beside the other body-level
+    # signals, and read by the title-path gate below.
+    question_shaped = is_question_shaped(query)
 
     # RECONFENCE fence prep. `own_ref` empty / `fire_start` None → the fence
     # is inert and every pre-RECONFENCE call behaves byte-identically.
@@ -2738,6 +2929,68 @@ def match_send_to_commitments(
                     and commitment_matches_thread_ref(ev, send_thread_ref)):
                 rec = "pending_review"
                 basis = THREAD_BASIS
+        # CLOSETRUTH1 3.1 (M's ruling 2, 2026-09-13) — THE TITLE PATH IS A
+        # GUESS. M's 09-03 ruling 1 closes a guess that carries a COMPLETION
+        # SIGNAL; a bare title echo is not one, and a mail that ASKS proves
+        # nothing at all. So a title-graded auto_resolve (`basis == ""`) now
+        # needs one of the two things that make a send evidence — completion
+        # language or an attachment — and a question-shaped mail never gets
+        # there however well its words overlap a title. It is a DOWNGRADE to
+        # `pending_review`, never a drop: the match still reaches the person
+        # as a confirm, which is what "closes neither and proposes both" means
+        # one layer up. The two SENTMATCH bases are untouched: a delivery
+        # already proves itself (attachment AND completion AND addressed), and
+        # a thread match is a confirm already.
+        #
+        # The 19:53 PT 2026-09-13 "Agreement" mail is the measured case: it
+        # asked which week to start and which day suited a weekly review, and
+        # two open rows closed off it, neither kept.
+        #
+        # TWO HALVES, TWO SCOPES. The QUESTION half applies to every caller:
+        # a message that only asks proves nothing, whatever door it came
+        # through. The PROOF half — completion language or an attachment — is
+        # M's SENT-MAIL ruling, and `require_title_proof=False` is how a
+        # caller whose messages are not mail says so. The chat rail is the
+        # one: a person typing "just sent the deck" in a channel is reporting
+        # in their own words, which is a different kind of evidence from a
+        # mail whose subject happens to echo a row, and no ruling has been
+        # made about that door. Widening this bar to cover it would move a
+        # number nobody agreed to move; it is written into the record instead.
+        if rec == "auto_resolve" and not basis and (
+                question_shaped
+                or (require_title_proof
+                    and not (has_completion or bool(has_attachment)))):
+            rec = "pending_review"
+            if isinstance(diagnostics, dict):
+                key = ("title_question_downgraded" if question_shaped
+                       else "title_unproven_downgraded")
+                diagnostics[key] = diagnostics.get(key, 0) + 1
+        # SELFMAIL1 layer 2 — the send has to have gone TO the person the row
+        # is owed to. Applied AFTER both SENTMATCH bases and BEFORE every
+        # downgrade below, so it is the last word on whether this message may
+        # say anything at all about this row: no close, and no proposal.
+        # (On any message that went to somebody other than the sender,
+        # `addressed_to_counterparty` runs `_delivery_counterparty_hit` on the
+        # RAW recipient names, so it is a genuine superset of the conjunct
+        # signal A already carries: a delivery-graded row that reaches here has
+        # already passed it, and the gate can only take away title- and
+        # thread-graded rows, which is exactly M's ruling. On a message whose
+        # every recipient name is the sender's own it is deliberately NOT a
+        # superset — a note to yourself is not a delivery. Review F-4: the
+        # first cut passed the subtracted set unconditionally, which revoked a
+        # delivery close that had been earned.)
+        if rec in ("auto_resolve", "pending_review"):
+            _addressed = addressed_to_counterparty(
+                _d, recipient_set, recipient_name_tokens, person_ids,
+                sender_person_id, title, sender_tokens)
+        else:
+            _addressed = True
+        if not _addressed:
+            rec = "no_action"
+            basis = ""
+            if isinstance(diagnostics, dict):
+                diagnostics["not_addressed_dropped"] = (
+                    diagnostics.get("not_addressed_dropped", 0) + 1)
         if rec == "auto_resolve" and _is_pending_review(ev):
             rec = "pending_review"
         # MC1: a send to ONE counterparty of a MULTI-counterparty commitment
@@ -2789,8 +3042,9 @@ def match_send_to_commitments(
     # second auto-grade row on the same message the delivery-evidence rows
     # step down to a confirm. This is FS-11's ruling applied to the new basis
     # ("only multi-candidate AMBIGUITY stays a confirm proposal"), and it is
-    # the guard that makes signal A's thin conjunction safe: the title path is
-    # never touched by it, so a >= 0.55 match keeps closing.
+    # the guard that makes signal A's thin conjunction safe. (The title path
+    # has its own proof gate since CLOSETRUTH1 3.1 and the caller applies the
+    # one-send-one-item rule across BOTH bands.)
     _delivery_rows = [r for r in results if r["close_basis"] == DELIVERY_BASIS]
     if _delivery_rows and sum(
             1 for r in results if r["recommendation"] == "auto_resolve") > 1:
@@ -4240,6 +4494,7 @@ __all__ = [
     "score_match",
     "extract_snippet",
     "detect_completion_signal",
+    "is_question_shaped",
     "detect_schedule_shift_signal",
     "detect_new_ask_signal",
     "detect_scheduling_intent",
@@ -4257,6 +4512,7 @@ __all__ = [
     "commitment_matches_source_ref",
     "commitment_thread_refs",
     "commitment_matches_thread_ref",
+    "addressed_to_counterparty",
     "DELIVERY_BASIS",
     "THREAD_BASIS",
     "AMBIGUOUS_DELIVERY_BASIS",

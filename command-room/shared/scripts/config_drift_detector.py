@@ -94,23 +94,19 @@ def _configured_skills(workspace_root) -> List[dict]:
 
 def _correction_signals(workspace_root, skill: str, knob: str,
                         since: datetime) -> int:
-    """Channel 1 — knob-tagged voice-corrections rows newer than `since`."""
-    path = Path(workspace_root) / "_hq" / "voice" / f"corrections-{skill}.jsonl"
-    if not path.exists():
+    """Channel 1 — knob-tagged voice-corrections rows newer than `since`.
+
+    LEARNFIX1 1.1 — read through `voice_corrections.load_corrections`, the
+    one chokepoint, so a correction the customer has since taken back stops
+    counting as drift here too. This used to glob the file itself, which is
+    how a retracted lesson would have gone on proposing a config change."""
+    try:
+        from voice_corrections import load_corrections
+        rows = load_corrections(workspace_root, skill)
+    except Exception:
         return 0
     n = 0
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return 0
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for row in rows:
         if not isinstance(row, dict):
             continue
         ts = _parse_ts(row.get("timestamp"))

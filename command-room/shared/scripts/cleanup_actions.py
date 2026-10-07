@@ -42,6 +42,7 @@ Public API
 from __future__ import annotations
 
 import datetime
+import os
 import re
 import time
 from collections import Counter
@@ -80,6 +81,41 @@ import render_router_misses  # noqa: E402
 _LOCK_GLOB = "*.lock.stale.*"
 _LOCK_DIRS = ("_hq/data", "_hq/.system")
 _ARCHIVE_ROOT = "_archive"
+
+# ACCESS1 — the plugin-owned runtime cache inside the workspace
+# (PLUGIN_BOUNDARY invariant 4, as amended). Content-hashed plugin CODE, not
+# customer data and not machine cruft: every sweep in this module stops at its
+# edge, and nothing here ever deletes, moves or archives anything under it. A
+# swept runtime is a runtime whose manifest no longer verifies, which is a
+# fire that refuses to run — the sweep would cause the outage it is tidying up
+# after. Retirement of old versions is `runtime_cache_report`, which reports
+# and deletes nothing (§0.26; on the merged mount deletes are refused anyway).
+RUNTIME_CACHE_REL = "_hq/.cache/cr-runtime"
+
+
+def _under_runtime_cache(root: Path, path: Path) -> bool:
+    """True when `path` is inside the runtime cache — the one exemption every
+    sweep in this module shares."""
+    try:
+        rel = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return False
+    return rel == RUNTIME_CACHE_REL or rel.startswith(RUNTIME_CACHE_REL + "/")
+
+
+def lock_dirs_can_reach_runtime_cache() -> bool:
+    """True when a `_LOCK_DIRS` entry could contain the runtime cache.
+
+    It cannot today (`_hq/data` and `_hq/.system` against `_hq/.cache/
+    cr-runtime`), so the `_under_runtime_cache` calls inside `sweep_stale_locks`
+    are defence-in-depth against a future widening of `_LOCK_DIRS` rather than a
+    live fence — and a removal proof cannot make them red. The suite asserts
+    this out loud instead of counting an unreachable branch as a proven one
+    (review finding L-2). `prune_stale_readalarms`' exemption IS live: it walks
+    the whole tree, and removing it deletes a readalarm inside the cache.
+    """
+    return any(RUNTIME_CACHE_REL == d or RUNTIME_CACHE_REL.startswith(d + "/")
+               for d in _LOCK_DIRS)
 
 
 def _never_clobber(dest: Path) -> Path:
@@ -140,6 +176,25 @@ def _archive_move(root: Path, src: Path, bucket: str) -> bool:
         return False
 
 
+def _archive_replace(root: Path, src: Path, bucket: str,
+                     left: list | None) -> bool:
+    """`_archive_move`'s MOUNT-SAFE twin (MAINTJOBS1 MUST 5): ONE
+    `os.replace` into `_archive/<bucket>/...`, and nothing else. On the
+    merged seat's mount `os.unlink` is refused (probe P1/P2) while
+    `os.replace` works, and `shutil.move`'s copy-then-unlink fallback would
+    leave the original AND a copy behind. A move that fails is recorded on
+    `left` (path + the error's class) and is never retried in this call."""
+    dest = _archive_dest(root, src, bucket)
+    try:
+        os.replace(str(src), str(dest))
+        return True
+    except OSError as exc:
+        if left is not None:
+            left.append({"path": str(src.relative_to(root)).replace("\\", "/"),
+                         "reason": type(exc).__name__})
+        return False
+
+
 # Locks that exist BY DESIGN and must never be swept: the A1 events writer
 # lock file (content never changes, byte-range locked at write time — its age
 # means nothing) and its info sidecar's shape is not *.lock anyway.
@@ -147,7 +202,9 @@ _PERMANENT_LOCK_NAMES = frozenset({".writer.lock"})
 
 
 def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
-                      now: float | None = None) -> list[str]:
+                      now: float | None = None, *,
+                      orphans: bool = True,
+                      left: list | None = None) -> list[str]:
     """Archive stale lock litter under `_hq/data/` and `_hq/.system/` by
     MOVING it into `_archive/stale-locks/` — nothing is deleted. Returns the
     workspace-relative paths cleared. Two passes:
@@ -164,7 +221,20 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
          lock file, permanent by design) is exempt.
 
     Idempotent: a second run finds nothing to archive (the moved sentinels now
-    live under `_archive/`, outside the `_LOCK_DIRS` it scans)."""
+    live under `_archive/`, outside the `_LOCK_DIRS` it scans).
+
+    LEASE3 MUST 1: once per sweep it also calls `lease_lock.reap_released` on
+    `_hq/data/events.jsonl`, the events lease's own reaper (its released
+    sidecars are removed by the lease module's allow-listed delete, not
+    archived); the reaped names join the returned list.
+
+    MAINTJOBS1 MUST 5: every move is ONE `os.replace` (`_archive_replace`) -
+    mount-safe, never a copy-then-unlink - and a move that fails is appended
+    to `left` when the caller hands a list. `orphans=False` skips pass 2: a
+    bare lock's pid means nothing on a host that did not take it (a merged
+    fire runs on the customer's computer's VM, not the process that holds a
+    lock), so the merged fire sweeps only the `.stale.*` sentinels a writer
+    already moved aside."""
     root = Path(root)
     cutoff_now = time.time() if now is None else now
     archived: list[str] = []
@@ -173,7 +243,7 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
         if not d.is_dir():
             continue
         for f in d.glob(_LOCK_GLOB):
-            if not f.is_file():
+            if not f.is_file() or _under_runtime_cache(root, f):
                 continue
             try:
                 age = cutoff_now - f.stat().st_mtime
@@ -181,12 +251,15 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
                 continue
             if age > max_age_s:
                 src_rel = str(f.relative_to(root)).replace("\\", "/")
-                if _archive_move(root, f, "stale-locks"):
+                if _archive_replace(root, f, "stale-locks", left):
                     archived.append(src_rel)
+        if not orphans:
+            continue
         # Pass 2 — bare orphaned sentinels (dead holder + past the floor).
         from atomic_write import _pid_alive, _read_lock_payload
         for f in d.glob("*.lock"):
-            if not f.is_file() or f.name in _PERMANENT_LOCK_NAMES:
+            if (not f.is_file() or f.name in _PERMANENT_LOCK_NAMES
+                    or _under_runtime_cache(root, f)):
                 continue
             try:
                 age = cutoff_now - f.stat().st_mtime
@@ -201,8 +274,27 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
             if pid and _pid_alive(pid):
                 continue  # a live holder is never swept, however old
             src_rel = str(f.relative_to(root)).replace("\\", "/")
-            if _archive_move(root, f, "stale-locks"):
+            if _archive_replace(root, f, "stale-locks", left):
                 archived.append(src_rel)
+    # LEASE3 MUST 1 — the events lease's reaper, once per sweep. A release
+    # whose directory the mount refused to remove leaves an
+    # `events.jsonl.lease.released.<stamp>` sidecar; `lease_lock.reap_released`
+    # removes them through the lease module's own allow-listed delete
+    # (`_remove_released`), and this sweep is its caller. A LIVE lease
+    # (`events.jsonl.lease/`) never matches the `.released.` prefix. The reaped
+    # names join the list, workspace-relative. A missing lease module or any
+    # OSError never fails the sweep.
+    try:
+        try:
+            import lease_lock as _lease_lock
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import lease_lock as _lease_lock
+        _reaped = _lease_lock.reap_released(root / "_hq" / "data" / "events.jsonl")
+        archived.extend(f"_hq/data/{n}" for n in _reaped)
+    except Exception:
+        pass
     return archived
 
 
@@ -222,7 +314,8 @@ def sweep_stale_locks(root: str | Path, max_age_s: int = 3600,
 # brief/system-health fire first.
 
 def prune_stale_readalarms(root: str | Path, max_age_days: int = 30,
-                           now: float | None = None) -> list[str]:
+                           now: float | None = None, *,
+                           left: list | None = None) -> list[str]:
     """Delete `*.readalarm.json` sidecars under `_hq/` whose recorded
     `last_seen` (fallback: file mtime, for an unreadable sidecar) is older
     than `max_age_days`. Returns the workspace-relative paths deleted.
@@ -241,7 +334,7 @@ def prune_stale_readalarms(root: str | Path, max_age_days: int = 30,
     max_age_s = max(max_age_days * 86400, floor_s)
     deleted: list[str] = []
     for f in hq.rglob("*.readalarm.json"):
-        if not f.is_file():
+        if not f.is_file() or _under_runtime_cache(root, f):
             continue
         age_ref = None
         try:
@@ -265,9 +358,106 @@ def prune_stale_readalarms(root: str | Path, max_age_days: int = 30,
             try:
                 f.unlink()
                 deleted.append(rel)
-            except OSError:
+            except OSError as exc:
+                # ACCESS1 (probe P2): on the merged mount every delete is
+                # refused. The sidecar stays and the sweep carries on — the
+                # posture was already right, the silence was not.
+                try:
+                    from atomic_write import left_in_place
+                    left_in_place("readalarm prune", f, exc)
+                except Exception:
+                    pass
+                if left is not None:
+                    left.append({"path": rel, "reason": type(exc).__name__})
                 continue
     return deleted
+
+
+def sweep_lock_litter(workspace_root, *, max_age_s: int = 3600,
+                      now: float | None = None) -> dict:
+    """The maintenance fire's DAILY lock-litter sweep on the merged shape
+    (MAINTJOBS1 MUST 5; on `workspace_access.RUN_WRITER_ALLOWLIST`).
+
+    The walks left `_hq/data/entities.json.lock.stale.*` and
+    `_hq/.system/atomic.lock.stale.*` behind because the mount refuses a
+    delete and the only sweep (`cleanup` Rule 9) is weekly and in prose. This
+    runs both hygiene passes a merged fire can run safely:
+      * `sweep_stale_locks(..., orphans=False)` - `.stale.*` sentinels older
+        than `max_age_s` archived by ONE `os.replace` each;
+      * `prune_stale_readalarms` - the LB2 D5 sidecar prune.
+    A file that cannot be moved or removed is named in `left` and is not
+    tried again in this call. The writer is named first
+    (`receipts.require_writer_identity`). Returns
+    `{archived, pruned, left, n_archived, n_pruned, n_left}` - counts and
+    workspace-relative paths only."""
+    from receipts import require_writer_identity
+
+    require_writer_identity(workspace_root=workspace_root)
+    left: list = []
+    archived = sweep_stale_locks(workspace_root, max_age_s=max_age_s, now=now,
+                                 orphans=False, left=left)
+    pruned = prune_stale_readalarms(workspace_root, now=now, left=left)
+    return {"archived": archived, "pruned": pruned, "left": left,
+            "n_archived": len(archived), "n_pruned": len(pruned),
+            "n_left": len(left)}
+
+
+def runtime_cache_report(root: str | Path) -> dict:
+    """What is installed under the runtime cache, and what is past its keep.
+
+    READ-ONLY, always: it lists the versions present, names the current one
+    from the `current.json` pointer, and says which ones are older than
+    current + previous (§0.26's retention). It deletes nothing — the ruling's
+    "remove older ones when the VM permits a Python unlink" collapsed to "keep,
+    flag in the Monday note" the moment probe P2 came back EPERM, and a report
+    that cannot act is still worth having: it is how an install that has been
+    re-run a dozen times becomes visible before the folder is full.
+    """
+    import json as _json
+
+    root = Path(root)
+    cache = root / "_hq" / ".cache" / "cr-runtime"
+    out: dict = {"present": [], "current": None, "keep": [], "retire": [],
+                 "cache_rel": RUNTIME_CACHE_REL}
+    if not cache.is_dir():
+        return out
+    versions = sorted(d.name for d in cache.iterdir() if d.is_dir())
+    out["present"] = versions
+    try:
+        pointer = _json.loads((cache / "current.json").read_text(encoding="utf-8"))
+        current = pointer.get("version")
+        out["current"] = current if isinstance(current, str) else None
+    except (OSError, ValueError, AttributeError):
+        out["current"] = None
+    # Keep the current version and the highest one BELOW it (§0.26's
+    # "current + previous"). Everything else retires — including a version
+    # ABOVE current, which is the residue of a downgrade and is exactly the
+    # thing a keep-the-two-newest rule would protect by mistake.
+    current = out["current"]
+    keep = set()
+    if current in versions:
+        keep.add(current)
+        below = [v for v in versions if _version_key(v) < _version_key(current)]
+        if below:
+            keep.add(max(below, key=_version_key))
+    else:
+        keep.update(sorted(versions, key=_version_key)[-2:])
+    out["keep"] = [v for v in versions if v in keep]
+    out["retire"] = [v for v in versions if v not in keep]
+    return out
+
+
+def _version_key(value: str) -> tuple:
+    """A sortable key for a dotted version. Non-numeric parts sort as 0 with
+    their text kept as a tiebreak, so an unexpected shape degrades to something
+    ordered rather than raising in the middle of a weekly sweep."""
+    parts = []
+    for chunk in str(value).split("."):
+        try:
+            parts.append((int(chunk), ""))
+        except ValueError:
+            parts.append((0, chunk))
+    return tuple(parts)
 
 
 # --- D3: missing SESSION_NOTES scaffold backfill -------------------------------

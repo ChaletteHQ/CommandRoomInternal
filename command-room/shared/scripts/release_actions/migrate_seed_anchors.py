@@ -105,6 +105,7 @@ sys.path.insert(0, str(_HERE.parent.parent))  # shared/scripts on path
 
 import render_brain_block as rbb  # noqa: E402  — marker grammar authority
 import witnessed_write as ww  # noqa: E402
+from delete_grant import SUFFIX_STALE, remove_or_move_aside  # noqa: E402
 
 # The five question-section anchor ids (Memory Program v2, R4).
 QUESTION_BLOCK_IDS = [
@@ -991,11 +992,25 @@ def rollback(root, receipt_dir) -> dict:
 
 
 def _remove_file(path) -> None:
+    """Drop a backup this migration itself wrote, once its content is back in
+    the live file.
+
+    DEL1: the rollback loop calls this AFTER the restore landed, so a refused
+    delete may not raise — it would abandon the remaining files mid-rollback
+    and leave a receipt that never got written. On a mount that refuses
+    deletes the backup is RENAMED aside (`.stale.<epoch>.<pid>`, beside the
+    file it belongs to): the `*.pre-migrate1` glob that finds backups no
+    longer claims it, so a second rollback does not try to restore from a
+    backup that has already been consumed.
+
+    The read-only attribute is cleared first either way — a Windows read-only
+    bit blocks the rename as surely as the delete."""
     try:
         os.chmod(_lp(path), stat.S_IWRITE | stat.S_IREAD)
     except OSError:
         pass
-    os.unlink(_lp(path))
+    remove_or_move_aside(_lp(path), "migration rollback backup",
+                         suffix=SUFFIX_STALE)
 
 
 # --------------------------------------------------------------------------

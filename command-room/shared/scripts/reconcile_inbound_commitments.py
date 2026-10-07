@@ -310,6 +310,15 @@ def _record_blocked_run(workspace_root, events_path, *, reason, source_skill,
         "n_partial_receipts": 0,
         "partial": [],
         "partial_propose_closure": [],
+        # A blocked run read nothing, so it saw no counter-evidence either.
+        "n_reopened_on_counter_evidence": 0,
+        "reopened_on_counter_evidence": [],
+        "counter_evidence_receipt_line": "",
+        "counter_evidence_batch_id": None,
+        "n_counterparty_activity": 0,
+        "n_unrested_on_counterparty_activity": 0,
+        "counterparty_activity_receipt_line": "",
+        "counterparty_activity_batch_id": None,
         "signal_fields": _empty_signal_fields(),
         "coverage": _empty_coverage(),
         "mail_provider": provider,
@@ -692,6 +701,7 @@ def reconcile_inbound_and_receipt(
     batch_id=None,
     uncorroborated_thread_ids=None,
     fetch_blocked=None,
+    thread_participants=None,
 ):
     """Run inbound→commitment reconciliation end-to-end and return a receipt.
 
@@ -718,8 +728,25 @@ def reconcile_inbound_and_receipt(
          "resolved": [...], "pending": [...], "updated": [...],
          "n_partial_receipts": int, "partial": [...],
          "n_held_uncorroborated": int, "held": [...],   # MAILTRUST1
+         "n_reopened_on_counter_evidence": int,         # SPEC_FLOW1 Lane B 4
+         "reopened_on_counter_evidence": [...],
+         "counter_evidence_receipt_line": str,
+         "counter_evidence_batch_id": str|None,
+         "n_counterparty_activity": int,                # review R-5
+         "n_unrested_on_counterparty_activity": int,
+         "counterparty_activity_receipt_line": str,
          "signal_fields": {...}, "coverage": {...},
          "mail_provider": str|None, "summary": str}
+
+    COUNTER-EVIDENCE (SPEC_FLOW1 Lane B item 4). Three rails close rows on an
+    argument — the customer's own word, a fact on file, six weeks of silence.
+    Their reply outranks all three, and this is the only rail that reads their
+    replies. A message from the counterparty that arrives on a closed row's
+    own conversation, or that names it from someone the row puts on the other
+    side, puts the row back with a receipt and the word `undo`. A reply on a
+    row that is still open does nothing (it is not in the closed set), and a
+    row the CUSTOMER closed is never touched (only the three rails' closes
+    are eligible).
 
     MAILTRUST1 — pass `uncorroborated_thread_ids` (thread ids whose reads
     disagreed per `mail_absence.corroborate_absence`) and every match on
@@ -732,6 +759,24 @@ def reconcile_inbound_and_receipt(
     `brain_undo.recent_auto_batches` lists and `brain_undo.undo_batch` reverses
     — so a run this rail narrates is reversible by the same `undo` the sent rail
     advertises, with no new reverser and no new batch kind.
+
+    `thread_participants` (SPEC_FLOW1 Lane F rule 1, the MAIL-THREAD half) —
+    the name+address pairs the caller already read off the threads it fetched,
+    in any shape `attendee_evidence.normalize_attendee_records` accepts. When
+    supplied, every participant at a COMPANY domain who is not on file gets a
+    record created before matching runs, receipted and undoable — never a
+    question. That closes this rail's single most common way of going quiet:
+    `n_sender_unresolved` counts a message whose sender has no record, and a
+    sender with no record was, until now, a proposal nobody answered.
+
+    The payoff lands in the SAME fire, not the next one: a message carrying
+    `sender_email` and no `sender_person_id` is re-pointed at the record this
+    pass just created, so the reply that proves a promise done is matched
+    today. `sender_email` is optional and absent means unchanged — the caller
+    still resolves what it can, and this only fills what it could not.
+
+    `None` (the default, and every shipped caller) is BYTE-IDENTICAL: nothing
+    is read, no writer is imported, no message is touched.
 
     `fetch_blocked` (TRAINFIX F-4 — the inbound mirror of MAILSEAM item 8) — a
     plain-English reason the INBOUND read could not happen (no mail connector,
@@ -781,13 +826,84 @@ def reconcile_inbound_and_receipt(
             batch_id=batch_id,
         )
 
+    # §7 precedent (efb_/idr_/pbs_/rcc_): ONE batch per RUN, timestamped. A
+    # per-SKILL constant would group every close this skill ever applied into
+    # one undoable batch, so a single `undo` would reach back across days.
+    batch_id = batch_id or ("inr_" + _clock_now(workspace_root)
+                            .strftime("%Y%m%dT%H%M%SZ"))
+
+    # SPEC_FLOW1 Lane F rule 1, the MAIL-THREAD half. It runs BEFORE the
+    # opens are loaded and before matching, because the record it creates is
+    # what `sender_person_id` needs to point at — created after the match, it
+    # would help only the next fire, and "next fire" is how a person sits
+    # unresolved for four passes.
+    inbound_messages = list(inbound_messages or [])
+    contacts_seeded = None
+    if thread_participants is not None:
+        try:
+            from attendee_evidence import (INVITE_ORIGIN_THREAD,
+                                           seed_people_from_participants)
+            from contact_capture import own_addresses as _own_addresses
+
+            # The own-address fence: an empty set means clause 4 of the bar
+            # ("never the user's own address") cannot be judged, and on a mail
+            # thread the user is the one participant guaranteed to be there.
+            # Empty stands the pass down rather than minting a duplicate
+            # record of the CEO.
+            _mine = _own_addresses(workspace_root)
+            if _mine:
+                # §7 AGAIN, and it is the same rule twelve lines up: ONE batch
+                # per RUN. Handing the identity pass no batch and no clock
+                # reading let it mint `new_batch_id("")` — a CONSTANT — so
+                # every person this rail ever filed shared one undo handle and
+                # a single `undo` reached back across days. The run's own
+                # `inr_` batch is minted immediately above; the identity leg
+                # rides it, so the create, the drained rows and the closes all
+                # come back together and nothing older does.
+                contacts_seeded = seed_people_from_participants(
+                    workspace_root, thread_participants,
+                    source_ref=f"inbound:{batch_id}",
+                    origin=INVITE_ORIGIN_THREAD,
+                    source_skill=source_skill,
+                    own_addresses=_mine,
+                    batch_id=batch_id,
+                    now_iso=_clock_now(workspace_root)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+        except Exception as exc:  # never sink the reconciliation
+            print(f"inbound reconcile: identity pass skipped: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            contacts_seeded = None
+    if contacts_seeded and (contacts_seeded["created"] or contacts_seeded["split"]):
+        by_addr = {str(e.get("email") or "").lower(): e.get("person_id")
+                   for e in (list(contacts_seeded["created"])
+                             + list(contacts_seeded["split"]))
+                   if e.get("email") and e.get("person_id")}
+        repointed = []
+        for msg in inbound_messages:
+            if not isinstance(msg, dict):
+                repointed.append(msg)
+                continue
+            if str(msg.get("sender_person_id") or "").strip():
+                repointed.append(msg)
+                continue
+            pid = by_addr.get(str(msg.get("sender_email") or "").strip().lower())
+            if not pid:
+                repointed.append(msg)
+                continue
+            # A shallow COPY — the caller's dicts are never mutated.
+            fixed = dict(msg)
+            fixed["sender_person_id"] = pid
+            repointed.append(fixed)
+        inbound_messages = repointed
+
     # F-28 — same reasoning as the sent driver: one workspace per fire, so the
     # projection's all-received stamp and the roster reader agree.
     opens = load_open_commitments(str(events_path), workspace_root=workspace_root)
     n_open_before = len(opens)
     coverage = _coverage_for(opens, user_person_id)
 
-    res = reconcile_inbound(opens, inbound_messages or [],
+    res = reconcile_inbound(opens, inbound_messages,
                             user_person_id=user_person_id,
                             provider=provider,
                             exclude_captured_since=exclude_captured_since,
@@ -805,12 +921,6 @@ def reconcile_inbound_and_receipt(
     partial = res["partial"]
     held = res["held"]
     signal_fields = res["signal_fields"]
-
-    # §7 precedent (efb_/idr_/pbs_/rcc_): ONE batch per RUN, timestamped. A
-    # per-SKILL constant would group every close this skill ever applied into
-    # one undoable batch, so a single `undo` would reach back across days.
-    batch_id = batch_id or ("inr_" + _clock_now(workspace_root)
-                            .strftime("%Y%m%dT%H%M%SZ"))
 
     events_written = 0
     # POLICY1-A D8 — the close leg passes through `decide` (see the sent
@@ -896,6 +1006,29 @@ def reconcile_inbound_and_receipt(
                                     _AMBIGUOUS_REPLY_BASIS):
             signal_fields["n_proposed_on_reply"] += 1
 
+    # COUNTER-EVIDENCE (SPEC_FLOW1 Lane B item 4; wired in EXIT1 FIX ROUND 1,
+    # F-1). The three exit rails close rows on an argument — your own word, a
+    # fact on file, or six weeks of silence. Their reply is the one thing that
+    # outranks all three, and this rail is the ONLY place their replies are
+    # read. Loaded ONCE per run, before the receipts loop, so a run with no
+    # recent exit close pays nothing.
+    #
+    # Never raises into the rail: the reopen is a safety net, and a safety net
+    # that can take the mail run down is worse than no net.
+    _exit_closed: list = []
+    try:
+        from exit_doors import exit_closed_rows
+        _exit_closed = exit_closed_rows(workspace_root)
+    except Exception:  # noqa: BLE001
+        _exit_closed = []
+
+    # FIX ROUND 2 (review R-7) — the automated-mail gate both legs below use.
+    try:
+        from exit_doors import is_automated_message as _is_automated
+    except Exception:  # noqa: BLE001 — never take the mail run down
+        def _is_automated(_msg):
+            return False
+
     # MC1 per-person receipts, same contract as the sent rail: informational,
     # never a closure, idempotent per (commitment, counterparty).
     n_partial_receipts = 0
@@ -947,6 +1080,109 @@ def reconcile_inbound_and_receipt(
                     "commitment_id": p["commitment_id"],
                     "title": p.get("title") or "",
                 })
+
+    # COUNTER-EVIDENCE, part two: which of this batch's messages is THEM
+    # coming back about a row one of the exit rails closed.
+    #
+    # ONE matcher, not a second one: `cru_match.score_match` is the same
+    # scorer `match_inbound_to_commitments` grades every open row with, and
+    # the bar is the rail's own `pending_review` threshold (the CONFIRM bar,
+    # not the close bar — putting a row back is the reversible direction, and
+    # the customer sees a receipt and the word `undo` either way).
+    #
+    # A message reopens a closed row when it arrives on THAT ROW'S OWN
+    # conversation, or when it comes from someone the row names on the other
+    # side AND reads as being about it. A row the customer closed themselves
+    # is not here (only the three rails' closes are), and a row that is still
+    # open is not here either — so a reply on an open row does nothing.
+    reopen_out = {"n_reopened": 0, "reopened": [], "errors": [],
+                  "receipt_line": "", "batch_id": None}
+    if _exit_closed:
+        from cru_match import (_match_thresholds, commitment_matches_thread_ref,
+                               score_match)
+        _, _reopen_bar = _match_thresholds(workspace_root)
+        _seen_cids: set = set()
+        _matches: list = []
+        for msg in inbound_messages or []:
+            if not isinstance(msg, dict):
+                continue
+            _sender = str(msg.get("sender_person_id") or "").strip()
+            if not _sender or _sender == user_person_id:
+                continue
+            # FIX ROUND 2 (review R-7) — an out-of-office echoes the subject
+            # line back, so it scored against the row's own words and put
+            # closed items back. A machine talking is not them coming back.
+            if _is_automated(msg):
+                continue
+            _tid = str(msg.get("thread_id") or "").strip()
+            _thread_key = primary_artifact_key(provider, _tid)
+            _text = " ".join(str(msg.get(f) or "")
+                             for f in ("subject", "body")).strip()
+            for row in _exit_closed:
+                cid = row.get("commitment_id") or ""
+                if not cid or cid in _seen_cids:
+                    continue
+                _cap = row.get("capture_event")
+                on_thread = bool(_thread_key) and bool(_cap) and \
+                    commitment_matches_thread_ref(_cap, _thread_key)
+                theirs = _sender in set(row.get("counterparty_ids") or [])
+                if not on_thread:
+                    if not theirs:
+                        continue
+                    if score_match(_text, row.get("title") or "") < _reopen_bar:
+                        continue
+                _seen_cids.add(cid)
+                _matches.append({
+                    "commitment_id": cid,
+                    # Plain words, no id and no rail name (Rule 4).
+                    "why": "they came back about it after it was closed",
+                    "source_ref": primary_artifact_key(provider,
+                                                       msg.get("message_id")),
+                    # FIX ROUND 2 (review R-4) — what the closure said, so
+                    # the put-back's own `undo` can close it again exactly
+                    # as it was closed rather than on invented evidence.
+                    "resolved_by": row.get("resolved_by") or "",
+                    "evidence": row.get("evidence") or "",
+                    "resolution": row.get("resolution") or "done",
+                    "closed_source_ref": row.get("closed_source_ref"),
+                    "closed_source_skill": row.get("closed_source_skill") or "",
+                    # FIX ROUND 3 (review L-1) — which route closed it, so
+                    # the re-close on `undo` is filed where the first close
+                    # was rather than under "other".
+                    "exit_route": row.get("route") or "",
+                })
+        if _matches:
+            try:
+                from exit_doors import reopen_on_counter_evidence
+                reopen_out = reopen_on_counter_evidence(
+                    workspace_root, matches=_matches,
+                    # The RAIL owns the reversal, not the customer and not
+                    # the exit rail that closed it (ATTRIB2: `resolved_by`
+                    # and `source_skill` are the same string, so this lands
+                    # as a machine act).
+                    source_skill=source_skill)
+            except Exception:  # noqa: BLE001
+                reopen_out = {"n_reopened": 0, "reopened": [], "errors": [],
+                              "receipt_line": "", "batch_id": None}
+
+    # COUNTERPARTY ACTIVITY (SPEC_FLOW1 Lane B; wired in EXIT1 FIX ROUND 2,
+    # review R-5). Route 3 rests rows saying "nobody has touched this in six
+    # weeks". The other side's own move is one of the things that counts as
+    # touching it, and the event the movement baseline names for it
+    # (`email_received`) had NO WRITER anywhere in the product — so a row the
+    # counterparty chased two days ago still rested, under a sentence that
+    # was false. This is that writer, and it un-rests a row this rail had
+    # already rested. No close, no proposal, no question.
+    activity_out = {"n_marked": 0, "n_unrested": 0, "marked": [],
+                    "unrested": [], "receipt_line": "", "batch_id": None}
+    try:
+        from exit_doors import record_counterparty_activity
+        activity_out = record_counterparty_activity(
+            workspace_root, opens=opens, messages=inbound_messages or [],
+            user_person_id=user_person_id, source_skill=source_skill,
+            provider=provider)
+    except Exception:  # noqa: BLE001 — a marker never takes the mail run down
+        pass
 
     # The confirm band MUST NOT evaporate — persist each proposal as a
     # `commitment_review_proposed` so the next Waiting On chat surfaces it for
@@ -1034,6 +1270,13 @@ def reconcile_inbound_and_receipt(
             "n_updated": n_upd,
             "n_held_uncorroborated": len(held),
             "n_partial_receipts": n_partial_receipts,
+            # SPEC_FLOW1 Lane B item 4 — rows one of the exit rails had
+            # closed that their reply put back on this run.
+            "n_reopened_on_counter_evidence": reopen_out["n_reopened"],
+            # R-5 — how many rows the other side's own move touched, and how
+            # many rests that undid.
+            "n_counterparty_activity": activity_out["n_marked"],
+            "n_unrested_on_counterparty_activity": activity_out["n_unrested"],
             # MAILSEAM — the provider every ref this run compared was built
             # under. None means the run could not establish one, which is a
             # fact worth reading back off the trace rather than a silent
@@ -1068,6 +1311,13 @@ def reconcile_inbound_and_receipt(
                    f"waiting on — they came in by email{tail}.")
     if n_upd:
         summary += (f" {n_upd} moved to a new date on their side.")
+    # Counter-evidence: their word outranks every argument the exit rails
+    # close on, and the customer is told in the same breath as the rest.
+    if reopen_out["receipt_line"]:
+        summary += " " + reopen_out["receipt_line"]
+    # R-5 — a row they came back about is a row that stops resting.
+    if activity_out["receipt_line"]:
+        summary += " " + activity_out["receipt_line"]
     # MAILTRUST1 — the held caveat is user-facing on purpose: a hold with no
     # sentence is a silent wrong answer wearing a different hat.
     if held:
@@ -1147,9 +1397,24 @@ def reconcile_inbound_and_receipt(
         "partial_propose_closure": partial_propose_closure,
         "n_held_uncorroborated": len(held),
         "held": held,
+        "n_reopened_on_counter_evidence": reopen_out["n_reopened"],
+        "reopened_on_counter_evidence": reopen_out["reopened"],
+        "counter_evidence_receipt_line": reopen_out["receipt_line"],
+        # R-4 — the batch a bare `undo` names to close them again.
+        "counter_evidence_batch_id": reopen_out.get("batch_id"),
+        # R-5 — their own move, recorded against the rows it is about, and
+        # the rests it undid.
+        "n_counterparty_activity": activity_out["n_marked"],
+        "n_unrested_on_counterparty_activity": activity_out["n_unrested"],
+        "counterparty_activity_receipt_line": activity_out["receipt_line"],
+        "counterparty_activity_batch_id": activity_out.get("batch_id"),
         "signal_fields": signal_fields,
         "coverage": coverage,
         "mail_provider": provider,
+        # SPEC_FLOW1 Lane F rule 1 — the identity pass's own receipt, or None
+        # when no participants were handed in. `receipt_lines` is what the
+        # surface renders: an auto-creation with no receipt is a silent write.
+        "contacts": contacts_seeded,
         "summary": summary,
     }
 

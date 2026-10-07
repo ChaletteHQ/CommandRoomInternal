@@ -112,12 +112,16 @@ from capture_gate import (  # noqa: E402
     OBSERVED_TYPE,
     classify_capture,
     gate_commitment_data,
+    intake_kwargs,
     stamp_confidence as _stamp_confidence,
     matches_open_commitment,
     observed_from_commitment_event,
     resolve_capture_mode,
     workspace_capture_context,
 )
+# FIX3 F3-9 — the DD-1 ladder's derivation half, from the vocabulary module
+# that owns it. One spelling, the same one `capture_gate` uses.
+from event_types import derive_primary_thread_id  # noqa: E402
 from connector_adapters.provenance import (  # noqa: E402
     LEGACY_MAIL_PROVIDER,
     is_same_artifact,
@@ -457,13 +461,35 @@ def build_inbound_commitment_event(
         if pid and pid not in pids:
             pids.append(pid)
 
+    # THREADSTAMP1 DD-1, applied HERE too (FIX3 F3-9). This site wrote the
+    # caller's value RAW, so an item that carried no thread of its own landed
+    # with `primary_thread_id: None` — which every daily surface filtering on
+    # that key reads as "no thread", and the 2026-09-21 fire's captured
+    # commitment was invisible to all of them. Same ladder as
+    # `capture_gate.build_observed_event`: a real caller value wins, else the
+    # payload is asked (`thread_ref` and `source_ref` are on `data` by now),
+    # else the KEY IS ABSENT — never None, never "".
+    # HONEST LIMIT, named where it bites: `THREAD_REF_DERIVE_FIELDS` walks
+    # `thread_id` / `project_id` / `primary_project_id`, and THIS payload's
+    # thread reference lives at `data["thread_ref"]` in the provider-qualified
+    # spelling `inbound_source_ref` produces. So the canonical field is asked
+    # for by name first, and the shared ladder is the rung under it — one
+    # spelling either way, and no new member added to a constant four other
+    # writers read.
+    _carried = data.get("thread_ref")
+    _stamped_thread = (
+        (primary_thread_id.strip() if isinstance(primary_thread_id, str) else "")
+        or (_carried.strip() if isinstance(_carried, str) else "")
+        or derive_primary_thread_id({"data": data})
+        or "")
     event: dict = {
         "type": "commitment",
         "source_skill": source_skill,
-        "primary_thread_id": primary_thread_id,
         "person_ids": pids,
         "data": data,
     }
+    if _stamped_thread:
+        event["primary_thread_id"] = _stamped_thread
     # CONFCLAMP2 seam 3 of 5 (ATTRIB1-A A2): one confidence vocabulary, one
     # write seam — clamped where it is written, never passed straight through.
     _stamp_confidence(event, classification_confidence,
@@ -506,6 +532,25 @@ def already_captured(workspace_root, message_id: str, title: str,
     provider = resolve_mail_provider(workspace_root, provider)
     want_id = inbound_source_ref(message_id, provider).split(":", 1)[1]
     want_title = _title_key(title)
+    # CAPTUREONCE1 §2.2 — ASK THE INDEX FIRST. `source_ref_index.check(...,
+    # title=...)` answers the same `(source_ref, title)` question this scan
+    # answers, off the sidecar index, without walking the whole book. A HIT is
+    # final: the index mints a `t:` key only for a capture row whose stored
+    # `data.source_ref` folds to this same identity and whose title-key is
+    # exactly this one, and an exact title match is a subset of the substring
+    # rule below — so anything the index says yes to, the scan below would say
+    # yes to as well. A MISS falls through and scans, because the index cannot
+    # answer the two questions the scan also answers: a CLOSURE covering this
+    # identity, and a title that matches by substring rather than exactly.
+    # Accelerator only, and never a new refusal.
+    try:
+        from source_ref_index import check as _idx_check
+        if _idx_check(workspace_root,
+                      source_ref=inbound_source_ref(message_id, provider),
+                      title=title):
+            return True
+    except Exception:
+        pass
     for ev in iter_events(workspace_root):
         ev_key = canonical_dedup_key(event=ev)
         if not is_same_artifact(ev_key, provider, want_id):
@@ -513,7 +558,13 @@ def already_captured(workspace_root, message_id: str, title: str,
         etype = ev.get("type")
         if etype in ("commitment_resolved", "thread_resolved"):
             return True
-        if etype == "commitment":
+        # INTAKE1 — A HELD ROW IS A CAPTURE. Since SPEC_FLOW1 the door sets
+        # rows aside instead of opening them, and an idempotency check that
+        # reads only `commitment` would call every held row uncaptured and
+        # re-hold it on the next fire over the same mailbox — the same
+        # unbounded re-capture this function exists to prevent, moved one
+        # tier down. Same identity, same title rule, same answer.
+        if etype in ("commitment", "commitment_observed"):
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             ev_title = _title_key(data.get("title") or data.get("summary"))
             if ev_title and want_title and (
@@ -716,6 +767,10 @@ def capture_inbound_items(
             user_names=user_names,
             team_ids=ctx.get("team_ids") or (),
             known_ids=ctx.get("known_ids") or (),
+            # INTAKE1 — an inbound-mail row takes the THREAD's project as its
+            # home when the thread has one.
+            **intake_kwargs(ctx,
+                            primary_thread_id=ev.get("primary_thread_id")),
         )
         if direction == DIRECTION_WAITING_ON:
             n_waiting_on += 1

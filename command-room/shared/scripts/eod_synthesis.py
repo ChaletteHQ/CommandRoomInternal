@@ -141,6 +141,30 @@ SCORE_PATTERNS = (
     # an explicit grade
     re.compile(r"\bscored?\s+(?:the\s+)?day\b", re.IGNORECASE),
     re.compile(r"\b(?:you\s+)?closed\s+\d+\s+of\s+\d+", re.IGNORECASE),
+    # MF-11c-3 (night 11c trial merge, WRAP2 review F6) — the MEAN shape.
+    # "You scored 7 on average", "Your average was 7.4", "You averaged 6
+    # across five evenings", "On average you closed 3 a day" all passed
+    # this fence at v5.31.0: an average IS a grade, rendered as a number
+    # nobody asked for.
+    #
+    # NARROWED 2026-09-15 (REVIEW_MF11C_EOD_SET F-1, BLOCKING). The first
+    # cut matched the WORD, not the grade: `\bon\s+average\b` alone and
+    # `averag…<24 chars>…<digit>` refused two of ten ordinary sentences
+    # ("On average the Stone renewal cycle runs ninety days", "Average deal
+    # size is 42000 dollars") — and `assert_no_score` RAISES over text with
+    # the customer's own commitment TITLE interpolated into it
+    # (`compute_slipped_prose`), so a commitment titled "Pull the average
+    # response time for the 3 open threads" took the whole evening close
+    # down. A grade fence has no business refusing the customer's words.
+    #
+    # The fence's stated concern is a grade ABOUT THE READER, so the mean
+    # shape is bound to a second-person subject. Measured on the reviewer's
+    # inputs: 4 of 4 mean sentences still caught, 0 of 10 ordinary
+    # sentences refused, 0 of 2 customer titles refused.
+    re.compile(r"\b(?:you|your)\b[^.\n]{0,40}\bon\s+average\b", re.IGNORECASE),
+    re.compile(r"\bon\s+average\b[^.\n]{0,40}\b(?:you|your)\b", re.IGNORECASE),
+    re.compile(r"\byour\s+averag(?:e|es)\b[^.\n]{0,24}\b\d", re.IGNORECASE),
+    re.compile(r"\byou\s+averaged\b", re.IGNORECASE),
 )
 
 
@@ -286,6 +310,16 @@ def ref_window(for_date) -> str:
     return f"window:{str(for_date).strip()}" if str(for_date or "").strip() else ""
 
 
+def ref_behaviour(slug) -> str:
+    """SPEC SURFACES2_11c Lane 3 item 5 — the ref the behaviour arc carries.
+
+    The SLUG, never the sentence: the ref is a join key that lands on the
+    pack and its receipt, and the seat's own words belong in the rendered
+    line, where they can be read, rather than in an id, where they would be
+    copied into every ref list that quotes the sentence."""
+    return f"behaviour:{str(slug).strip()}" if str(slug or "").strip() else ""
+
+
 def ref_ledger(field: str) -> str:
     """A ref onto the LEDGER FIELD a number came from (§3.5).
 
@@ -304,7 +338,13 @@ def ref_ledger(field: str) -> str:
 # read by key: a composer that recomputed a count from rows would be a SECOND
 # source for a number the receipt already carries, which is the F-W1 defect
 # ("closed 4" on the Staff Meeting and "0 closed" on the End of Day, same day).
-LEDGER_COUNT_FIELDS = ("n_closed", "n_opened", "n_dropped")
+# ATTRIB2 (M's ruling 2026-09-07) — `n_dropped_by_you` joins the tuple, CITED
+# rather than silently sized: the "you let go" sentence is a claim about the
+# CUSTOMER, and `n_dropped` counts every drop the book saw, the product's own
+# included. On 2026-09-07 the one thing End of Day said M had let go was the
+# undo chat's own drop. The old field is untouched and still read by the
+# movement line, where "the book lost one" is true whoever dropped it.
+LEDGER_COUNT_FIELDS = ("n_closed", "n_opened", "n_dropped", "n_dropped_by_you")
 LEDGER_BOOK_FIELDS = ("book_at_open", "book_now")
 
 
@@ -471,6 +511,12 @@ T1_CLOSED = "{n} {noun} closed today."
 T1_CLOSED_NAMED = "{n} {noun} closed today, including {names}."
 T1_OPENED = "{n} new {noun} landed on the book."
 T1_DROPPED = "{n} {noun} you let go."
+# FIX ROUND 1 (reviewer F-3) — the machine's share, BY DOOR. `ledger` has
+# carried `n_dropped_by_machine` since amendment E-2 and no surface rendered
+# it, so the only thing the evening said about a day's drops was "you let
+# go" — over a maintenance batch on the day the attended test scored. The
+# sentence per door is `end_of_day.MACHINE_ACT_LINES`' own, read from there
+# rather than restated, so the day-close speaks ONE door vocabulary.
 T1_MEETINGS = "You were in {n} {noun}."
 T1_DECISIONS = "{n} {noun} got made and written down."
 T1_NOTHING = "Nothing closed today that I can see."
@@ -480,10 +526,69 @@ def _plural(n: int, one: str, many: str) -> str:
     return one if n == 1 else many
 
 
+def _machine_closes(machine_acts: Optional[dict]) -> int:
+    """How many CLOSES the machine-acts block named (fix round 2, R-1).
+
+    Read from `end_of_day.machine_closes` rather than restated here, the same
+    way `machine_door_lines` reads the door vocabulary from there: one rule
+    about what counts as a close, in one place, so the sentence this gates
+    and the block it defers to can never drift apart.
+    """
+    try:
+        from end_of_day import machine_closes
+    except Exception:  # pragma: no cover — no block means no closes
+        return 0
+    try:
+        return int(machine_closes(machine_acts) or 0)
+    except Exception:  # pragma: no cover
+        return 0
+
+
+def machine_door_lines(ledger: Optional[dict],
+                       machine_acts: Optional[dict] = None) -> list:
+    """The ledger's machine drops, one plain sentence per DOOR (F-3).
+
+    `machine_acts` is `end_of_day.compute_machine_acts`' result when the
+    caller has one. Any door it ALREADY narrated is skipped here: the two
+    readers see the same day from different angles, and one act must be
+    narrated exactly once. With no `machine_acts` (a unit call, a pre-E-3
+    caller) every door the ledger found is rendered.
+
+    Read-only, never raises: an unreadable door vocabulary means the machine
+    simply has no sentence tonight, not an evening that fails to close.
+    """
+    rows = (ledger or {}).get("dropped_by_machine_doors") \
+        if isinstance(ledger, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return []
+    try:
+        from end_of_day import MACHINE_ACT_LINES
+    except Exception:  # pragma: no cover
+        return []
+    already = {r.get("category") for r in ((machine_acts or {}).get("rows")
+                                           or []) if isinstance(r, dict)}
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        door = row.get("category")
+        try:
+            n = int(row.get("n") or 0)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        if n <= 0 or door in already or door not in MACHINE_ACT_LINES:
+            continue
+        out.append(MACHINE_ACT_LINES[door].format(
+            n=n, items=("item" if n == 1 else "items"),
+            them=("it" if n == 1 else "them")))
+    return out
+
+
 def compute_day_went(*, ledger: Optional[dict],
                      closures: Optional[Iterable[dict]] = None,
                      meetings: Optional[Iterable[dict]] = None,
                      decisions: Optional[Iterable[dict]] = None,
+                     machine_acts: Optional[dict] = None,
                      name_cap: int = 3) -> dict:
     """TIER 1 — one grounded paragraph about what moved today.
 
@@ -522,9 +627,26 @@ def compute_day_went(*, ledger: Optional[dict],
         else:
             out.append(sentence(T1_CLOSED.format(n=n_closed, noun=noun),
                                 refs, tier=TIER_HAPPENED, kind="closed"))
-    elif isinstance(n_closed, int) and n_closed == 0:
+    elif isinstance(n_closed, int) and n_closed == 0 \
+            and not _machine_closes(machine_acts):
         # The honest empty. It is a claim about today and it is supported by
         # the same field a non-zero count would be, so it carries the same ref.
+        #
+        # FIX ROUND 2 (reviewer R-1) — AND IT IS ONLY HONEST IF THE SCREEN
+        # AGREES WITH IT. `ledger.n_closed` is measured from the MORNING
+        # anchor; the machine-acts block three lines above is measured from
+        # the DAY floor (F-1b), and on a day whose rails ran before the brief
+        # the block names closes the ledger never saw. On 2026-09-11 that put
+        # *"The review door closed 5 …"*, *"The calendar closed 3 …"* and
+        # *"Your sent mail closed 2 …"* directly above *"Nothing closed today
+        # that I can see."* — one screen, two windows, an open contradiction
+        # in the customer's own reading order.
+        #
+        # So the sentence is gated on the block's own closes. Not on the whole
+        # block: `machine_closes` counts the CLOSING doors only, because a
+        # silence-door rest is not a close and an evening that rested two
+        # things and closed nothing may still say so. The block carries the
+        # day's closes; this line stands down rather than contradicting it.
         out.append(sentence(T1_NOTHING, [ref_ledger("n_closed")],
                             tier=TIER_HAPPENED, kind="closed"))
 
@@ -535,12 +657,27 @@ def compute_day_went(*, ledger: Optional[dict],
                              noun=_plural(n_opened, "promise", "promises")),
             [ref_ledger("n_opened")], tier=TIER_HAPPENED, kind="opened"))
 
-    n_dropped = nums["n_dropped"]
+    # ATTRIB2 — the customer's own drops. A ledger written before this lane
+    # carries no such field, and then the old count is the honest best answer.
+    dropped_field = "n_dropped_by_you"
+    n_dropped = nums[dropped_field]
+    if n_dropped is None:
+        dropped_field = "n_dropped"
+        n_dropped = nums[dropped_field]
     if isinstance(n_dropped, int) and n_dropped > 0:
         out.append(sentence(
             T1_DROPPED.format(n=n_dropped,
                               noun=_plural(n_dropped, "thing", "things")),
-            [ref_ledger("n_dropped")], tier=TIER_HAPPENED, kind="dropped"))
+            # The ref names the field ACTUALLY read, so a pre-ATTRIB2 ledger's
+            # sentence still points at the number it came from.
+            [ref_ledger(dropped_field)], tier=TIER_HAPPENED, kind="dropped"))
+
+    # ...and the machine's share, by door (F-3). Its own `kind`, so a reader
+    # counting "what the customer let go" can never pick these up, and its
+    # own ref onto the field it came from.
+    for line in machine_door_lines(ledger, machine_acts):
+        out.append(sentence(line, [ref_ledger("n_dropped_by_machine")],
+                            tier=TIER_HAPPENED, kind="dropped_by_machine"))
 
     mrows = [m for m in (meetings or []) if isinstance(m, dict)]
     if mrows:
@@ -606,8 +743,18 @@ ARC_DEAL = "deal"
 #               no thread was ever minted for it.
 ARC_ORG = "org"
 ARC_COMMITMENT = "commitment"
+# SPEC SURFACES2_11c Lane 3 item 5 — THE BEHAVIOUR THE SEAT NAMED.
+#
+# `coaching_doors.surface_deltas` has promised this sentence to every seat
+# that opens the coaching door since PROFILE1, and nothing produced it (11a
+# N-13). It is a DECLARED arc in the strictest sense this module uses: the
+# seat said it out loud, in their own words, in answer to the walk's first
+# question ("What is the one thing you want to be better at this quarter?"),
+# and it is stored as `relationship.behaviour`. Nothing here infers it, and a
+# seat that never opened the door has no behaviour arc at all.
+ARC_BEHAVIOUR = "behaviour"
 ARC_KINDS = (ARC_OBJECTIVE, ARC_DAY_INTENT, ARC_WORKSTREAM, ARC_DEAL,
-             ARC_ORG, ARC_COMMITMENT)
+             ARC_ORG, ARC_COMMITMENT, ARC_BEHAVIOUR)
 
 # ---------------------------------------------------------------------------
 # SPEC EODARC1 — the arc read's templates. Three questions, in §"shape of
@@ -694,6 +841,8 @@ def arc_ref(arc: dict) -> str:
         # A commitment arc's ref IS the commitment ref — one spelling per row
         # (§3.1), so the arc and the evidence resolve to the same record.
         return ref_commitment(arc.get("arc_id"))
+    if kind == ARC_BEHAVIOUR:
+        return ref_behaviour(arc.get("arc_id"))
     return f"{kind}:{arc.get('arc_id')}"
 
 
@@ -738,6 +887,15 @@ def join_to_arcs(rows: Iterable[dict], arcs: Iterable[dict]) -> List[dict]:
     PROPOSER (`_shares_words` orders a draft the CEO confirms), and this is a
     claim about meaning that renders as fact.
 
+    THE ONE EXCEPTION, AND WHY IT IS NOT A CRACK IN THAT RULE (SPEC
+    SURFACES2_11c Lane 3 item 5). A BEHAVIOUR arc has no id to link to and
+    never will: it is a sentence the seat said about themselves, not a record
+    with a thread. Its join is `behaviour_mention` — the seat's OWN declared
+    words, matched literally and whole in the row's own title. That is not a
+    similarity heuristic: there is no stemming, no synonym, no scoring and no
+    threshold, and the only phrase that can ever match is one the seat typed.
+    It is gated on the kind, so no other arc can reach it.
+
     Returns `[{"arc": <arc>, "rows": [...]}, ...]`, arcs with no rows omitted.
     """
     declared = [a for a in (arcs or [])
@@ -755,9 +913,77 @@ def join_to_arcs(rows: Iterable[dict], arcs: Iterable[dict]) -> List[dict]:
                     or any(t in linked
                            for t in (arc.get("thread_ids") or []))):
                 hits.append(row)
+            elif (arc.get("kind") == ARC_BEHAVIOUR
+                    and behaviour_mention(row, arc)):
+                hits.append(row)
         if hits:
             out.append({"arc": arc, "rows": hits})
     return out
+
+
+#: The row fields a behaviour mention may be read from — the row's own NAME,
+#: never its evidence blob or its notes. A mention has to be in what the
+#: surface would print, or the sentence names a connection the reader cannot
+#: see on their own screen.
+BEHAVIOUR_MENTION_FIELDS = ("title", "decision", "summary")
+
+
+def behaviour_mention(row: dict, arc: dict) -> bool:
+    """True when a row NAMES the behaviour the seat declared, literally.
+
+    Whole-phrase, case-insensitive, bounded by non-word characters so
+    "delegating" does not match "delegate" and vice versa — the seat's exact
+    words or nothing. An arc that is not a behaviour arc never reaches here
+    (`join_to_arcs` gates on the kind); a behaviour of fewer than four
+    characters never matches at all, because a two-letter "word" the seat
+    happened to type would join half the book.
+    """
+    if not isinstance(row, dict) or not isinstance(arc, dict):
+        return False
+    phrase = str(arc.get("label") or "").strip().lower()
+    if len(phrase) < 4:
+        return False
+    pattern = r"(?<![0-9A-Za-z])" + re.escape(phrase) + r"(?![0-9A-Za-z])"
+    for field in BEHAVIOUR_MENTION_FIELDS:
+        text = str(row.get(field) or "").strip().lower()
+        if text and re.search(pattern, text):
+            return True
+    return False
+
+
+def behaviour_slug(behaviour: str) -> str:
+    """A stable id for a behaviour sentence: lowercase, words joined by `-`.
+
+    Stable across renders so the ref means the same thing on two evenings,
+    and derived rather than minted so no store has to hold a second id for
+    something the seat already stated once."""
+    words = re.findall(r"[0-9a-z]+", str(behaviour or "").lower())
+    return "-".join(words)[:64]
+
+
+def behaviour_arc(workspace_root) -> Optional[dict]:
+    """The seat's declared behaviour as an arc, or None (SPEC SURFACES2_11c
+    Lane 3 item 5).
+
+    None on an OBSERVED seat, whatever is in the store: the coaching shape is
+    the switch (§7 — `turn off coaching` reverts everything), and a seat that
+    never opened a door has no behaviour to read the day against. None on a
+    store that cannot be read, and None on an empty behaviour: the honest
+    absence is no sentence, never a placeholder one.
+    """
+    try:
+        import coaching_doors
+        if coaching_doors.coaching_shape(workspace_root) \
+                == coaching_doors.SHAPE_OBSERVED:
+            return None
+        behaviour = str((coaching_doors.relationship(workspace_root)
+                         or {}).get("behaviour") or "").strip()
+    except Exception:  # noqa: BLE001 — the day closes with no arc, never a raise
+        return None
+    slug = behaviour_slug(behaviour)
+    if not behaviour or not slug:
+        return None
+    return declared_arc(ARC_BEHAVIOUR, slug, behaviour)
 
 
 def arc_stated_consequence(row: dict) -> Optional[dict]:
@@ -1382,6 +1608,7 @@ def build_synthesis(*, ledger: Optional[dict],
                     slipped_rows: Optional[Iterable[dict]] = None,
                     echo_candidates: Optional[Iterable[dict]] = None,
                     held_ids: Optional[Iterable[str]] = None,
+                    machine_acts: Optional[dict] = None,
                     workspace_root=None,
                     now_iso: Optional[str] = None,
                     render_unmoved: bool = True) -> dict:
@@ -1422,7 +1649,8 @@ def build_synthesis(*, ledger: Optional[dict],
     day_went = compute_day_went(ledger=ledger,
                                 closures=fenced_closures["rows"],
                                 meetings=meetings,
-                                decisions=fenced_decisions["rows"])
+                                decisions=fenced_decisions["rows"],
+                                machine_acts=machine_acts)
     what_it_meant = compute_what_it_meant(rows=fenced_arc_rows["rows"],
                                           arcs=arcs,
                                           open_rows=fenced_open_rows["rows"],
@@ -1504,9 +1732,13 @@ __all__ = [
     "QuoteRefused", "transcript_is_labelled", "admit_quote",
     "visible_rows",
     "compute_day_went",
+    "machine_door_lines",
     "ARC_KINDS", "ARC_OBJECTIVE", "ARC_DAY_INTENT", "ARC_WORKSTREAM",
     "ARC_DEAL", "ARC_ORG", "ARC_COMMITMENT", "declared_arc", "arc_ref",
     "join_to_arcs", "ref_org", "ref_window",
+    # SPEC SURFACES2_11c Lane 3 item 5 — the behaviour the seat named.
+    "ARC_BEHAVIOUR", "ref_behaviour", "behaviour_arc", "behaviour_slug",
+    "behaviour_mention", "BEHAVIOUR_MENTION_FIELDS",
     "KIND_EMPTY_DAY", "CONSEQUENCE_BLOCKER", "ARC_CONSEQUENCE_KINDS",
     "arc_stated_consequence", "mint_commitment_arcs", "drop_rows_only",
     "compute_what_it_meant",

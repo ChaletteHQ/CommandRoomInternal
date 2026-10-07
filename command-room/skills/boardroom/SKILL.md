@@ -46,7 +46,7 @@ This skill produces a `.docx` deliverable. It MUST be produced through the canon
 
 - **Render ONLY via `shared/scripts/brief_writer.py` `make_brief(brief_kind="board_review", ...)`** (eyebrow "BOARD REVIEW"). That single call runs the output-contract gate (required sections: Subject & framing / Verdicts / Conflict map / Per-seat detail / The board's asks), the voice-tell gate, and the post-render leak scan, in that order, BEFORE the file is written.
 - **NEVER hand-roll a `.docx`** with the generic docx skill, `python-docx` directly, or docx-js — those paths bypass every gate.
-- **NEVER create, render, copy, upload, or update the board review — or any part, derivative, or restatement of it ("the conflict map", "one seat's verdict", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not the project's `deliverables/` folder (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can send it to the real advisor this seat is modeled on", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the board review in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link. Seat verdicts read as attributed positions — an ungated copy of a persona seat's reasoning is the worst thing in this workspace to lose folder control of.
+- **NEVER create, render, copy, upload, or update the board review — or any part, derivative, or restatement of it ("the conflict map", "one seat's verdict", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not the project's `deliverables/` folder (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can send it to the real advisor this seat is modeled on", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the board review in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link. Seat verdicts read as attributed positions — an ungated copy of a persona seat's reasoning is the worst thing in this workspace to lose folder control of.
 - **NEVER answer a board review with a chat-only draft** unless the user explicitly asks for no file — and then flag that the gates only run on the rendered file.
 - **Detectability:** `make_brief` emits a `gate_ran` audit event; a boardroom fire that yields a document with no `gate_ran` event for that turn is a flagged bypass. Pass `workspace_root`.
 - The bench config at `_hq/data/skill_config/boardroom.json` via `shared/scripts/skill_config_writer.py` (`save_skill_config` / `load_skill_config` / `wipe_skill_config`). Emits `skill_first_run_configured` / `skill_reconfigured`.
@@ -98,6 +98,8 @@ On the very first convene with no `boardroom.json`, do NOT interrogate first: ru
 On `configure my board` / `change my board`: load current bench, let M drop seats, sharpen a mandate, rename, add from the seat library (CTO/product, General Counsel/risk, CPO/people, Brand/comms), or **add a persona seat** from any advisor in `list_advisors()`. Cap six. Save via `save_skill_config`. `show my board` renders the current bench read-only; `reset my board` wipes the config.
 
 ### Round 1 — the grilling (skippable)
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
 Each seat reads its substrate slice and asks **its single hardest question** — the one M would least want asked. All questions surface together in one widget rendered via `shared/scripts/chat_output_renderer.py::render_chat_output_widget()` and posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) per `shared/CHAT_ACTION_WIDGET.md` § Transport — never markdown numbered actions — each with an answer field, plus one widget-level **`skip all`** action (canonical bulk verb — displays "Skip all"; the intro line above the widget says "answer any, or skip all to go straight to verdicts"; dispatch in apply-choices' `boardroom` source entry). The user answers inline, selectively, or skips all. The trigger `quick board take on` skips Round 1 entirely.
 
 ### Round 2 — verdicts (parallel subagents)
@@ -128,8 +130,84 @@ A final pass over all verdicts builds the **conflict map**: each disagreement, t
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Put one subject — a plan, deal, quarter, hire, pricing change, or product direction — to a board of independent perspectives and get back the conflict map: where the seats disagree and why, because that's where the blind spots are. Each seat runs as its own subagent reading its own slice of your substrate (financials, commitments, decisions, customers, intel), blind to the others, so the views argue from evidence instead of improvising. Seats are functional archetypes by default (CFO, COO, customer voice, skeptical independent director, strategy) and can be customized; a seat can also be a real colleague's imported Advisor Profile so your board includes how they'd actually think. Use when the CEO says 'convene the board on', 'boardroom', 'what would my board say about', 'run this by the board', 'C-suite take on', 'board review of', 'quick board take on'. Setup: 'configure my board', 'set up my board', 'change my board', 'show my board'. DOES NOT fire on 'stress test' / 'pre-mortem' / 'poke holes' (stress-test — single-lens failure-mode mapping), 'help me decide between' / 'decision memo' (decision-memo-composer — structured A-vs-B tradeoff), 'build the board pack' (board-pack-assembler — reporting artifact, not deliberation), 'what did we decide' (decision-log retrieval), or 'forge my advisor profile' / 'import advisor profile' (advisor-export — produces the persona packs this skill seats).
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

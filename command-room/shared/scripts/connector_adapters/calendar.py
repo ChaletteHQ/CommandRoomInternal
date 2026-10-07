@@ -36,7 +36,14 @@ _RSVP = {
 _CALENDAR_ADDRESSING = {
     "google_calendar": "calendarId",
     "outlook_calendar": "calendarId",
-    "superhuman": "account",
+    # DISC1 / gap-analysis §0.31: the live Superhuman server names its
+    # per-account parameter `acting_email`, and its own connector instructions
+    # say to enumerate with `list_accounts` and then pass `acting_email` per
+    # call. `account` was this module's guess and appeared nowhere in the
+    # connector's schema, so a caller that trusted it addressed nothing — the
+    # silent kind of wrong, since the call still succeeds against the default
+    # account. The manifest row carries the same name (`account_param`).
+    "superhuman": "acting_email",
 }
 
 _DEEP_LINK = {

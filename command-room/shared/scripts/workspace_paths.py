@@ -85,6 +85,12 @@ WORKSPACE_ANCHORS: tuple = ("_hq",)
 # The file-pointer fields this plugin persists into substrate records. Kept as
 # data so the writers and the guard-tier sweep read one list.
 POINTER_FIELDS: tuple = (
+    # DOCS1 D-1 (2026-09-24). `workspace_migration_applied.data.target_file`
+    # has always been written by the bridge's prose-driven CLAUDE.md rule
+    # migrations; `release_actions.claude_md_docs_rule_v1` is the first CODE
+    # writer of it, persisting the constant `CLAUDE.md` - workspace-relative
+    # by construction, and now read by the sweep like every other pointer.
+    "target_file",
     "brief_path",
     "digest_path",
     "prep_path",

@@ -52,7 +52,7 @@ except Exception:  # pragma: no cover
 WINDOW_DAYS = 30
 # Small-n floor: never propose a rule off fewer than this many actions on the
 # same sender/domain in the window (the inbox is high-volume; 4 is stricter than
-# Pass 11's 3-correction floor precisely because a wrong demotion could bury a
+# the voice leg's 3-correction floor precisely because a wrong demotion could bury a
 # real high-value sender).
 MIN_ACTIONS = 4
 # The behavior must be at least this consistent (fraction of actions in the

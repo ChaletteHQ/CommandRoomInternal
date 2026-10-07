@@ -54,7 +54,7 @@ NEVER_AUTHORIZED VS LATE — TWO DIFFERENT SENTENCES (ruling #3). A task that
 never fired at all (the global_limit-skip class — Cowork's one-time
 permission gate was never cleared) and a task that fired before and then
 stopped have different fixes, and conflating them sends the customer to
-press the wrong button. `_never_authorized_line` always reads "was never set
+say the wrong thing. `_never_authorized_line` always reads "was never set
 up on this machine"; `_late_line` / `_receipt_gap_line` always read "has
 stopped firing" / "ran but hasn't recorded any work" — never the other
 sentence. The acceptance pin checks this by literal substring.
@@ -211,52 +211,95 @@ def _spoken_name(r: dict) -> str:
     return r["display_name"]
 
 
-def _never_authorized_line(name: str) -> str:
+def _never_authorized_line(name: str, task_id: str = "") -> str:
     # The "never set up" sentence — MUST NOT read like "stopped firing"
     # (ruling #3: different fixes, must not conflate).
+    #
+    # TRUTH1 (SPEC_MERGEFIX1 §3 constraint 6, 2026-09-20): the fix is the
+    # phrase, never a button. On a merged build the Scheduled section is the
+    # cloud routine list and holds no Command Room chat, so the old closer
+    # named a screen where the fix is not; the phrase works on every seat.
+    # The leading clause is UNCHANGED on purpose — system-health's render
+    # contract pins that a never_authorized entry always reads "was never set
+    # up on this machine", and ruling #3 is about exactly that clause.
     return (
-        f"Your {name} task was never set up on this machine — open it in the "
-        f"Scheduled section and press Run Now once."
+        f"Your {name} task was never set up on this machine — "
+        f"{_tw.typed_action(task_id)} once to run it now."
     )
 
 
 def _late_line(name: str, last_receipt: Optional[_dt.datetime],
-              now: _dt.datetime) -> str:
+              now: _dt.datetime, task_id: str = "") -> str:
     # The "stopped firing" sentence — MUST NOT read like "was never set up"
-    # (ruling #3).
+    # (ruling #3). TRUTH1: the catch-up is the typed phrase, not a button.
+    action = _tw.typed_action(task_id, capital=True)
     if last_receipt is not None:
         days = max((now - last_receipt) // _DAY, 1)
         word = "day" if days == 1 else "days"
         return (
             f"Your {name} task has stopped firing — no receipt in {days} {word}. "
-            f"Open it in the Scheduled section and press Run Now to catch up."
+            f"{action} to catch it up."
         )
     return (
         f"Your {name} task has stopped firing — I can't tell from here why. "
-        f"Open it in the Scheduled section and press Run Now to catch up."
+        f"{action} to catch it up."
     )
 
 
 def _receipt_gap_line(name: str, last_receipt: Optional[_dt.datetime],
-                      now: _dt.datetime) -> str:
+                      now: _dt.datetime, task_id: str = "") -> str:
+    # TRUTH1: same fact, same shape, the typed phrase as the one action.
+    action = _tw.typed_action(task_id)
     if last_receipt is not None:
         days = max((now - last_receipt) // _DAY, 1)
         word = "day" if days == 1 else "days"
         return (
             f"The schedule shows your {name} task running, but it hasn't recorded "
-            f"any work in {days} {word} — open it and press Run Now once, and "
+            f"any work in {days} {word} — {action} once, and "
             f"check the result looks right."
         )
     return (
         f"The schedule shows your {name} task running, but it has never recorded "
-        f"any work — open it and press Run Now once, and check the result looks right."
+        f"any work — {action} once, and check the result looks right."
     )
 
 
 DEAD_ROOT_TASK_ID = "workspace-root"
 
 
-def _dead_root_line(plan_class: str, candidates: Optional[list] = None) -> str:
+#: SCHEDREG1 (SPEC_V5330_FIXLANES §1 MUST 7): the two dead-root sentences'
+#: closing clauses, invitation and honest alternative. The invitation is
+#: today's text byte for byte; `schedule_config.setup_invite_line` decides.
+DEAD_ROOT_AMBIGUOUS_INVITE = (
+    " Open Command Room and say \"set up command room schedules\" to confirm "
+    "which folder to use."
+)
+DEAD_ROOT_COMMON_INVITE = (
+    " Open Command Room and say \"set up command room schedules\" to "
+    "reconnect it."
+)
+DEAD_ROOT_ALTERNATIVE = (
+    " Your scheduled chats find it again the next time they are set up from "
+    "a Command Room chat in the Claude desktop app with your Command Room "
+    "folder attached."
+)
+
+
+def _dead_root_close(invite: str, workspace_root=None) -> str:
+    try:
+        from schedule_config import setup_invite_line
+    except ImportError:  # pragma: no cover - shipped beside this module
+        return invite
+    try:
+        return setup_invite_line(None, workspace_root=workspace_root,
+                                 invite=invite,
+                                 alternative=DEAD_ROOT_ALTERNATIVE)
+    except Exception:  # noqa: BLE001 - a sentence never fails on a read
+        return DEAD_ROOT_ALTERNATIVE
+
+
+def _dead_root_line(plan_class: str, candidates: Optional[list] = None,
+                    workspace_root=None) -> str:
     # SPEC PATHREPAIR1 — the THIRD distinct sentence (ruling #3's posture
     # extended): must read like neither "was never set up on this machine"
     # (never_authorized) NOR "has stopped firing" (late/receipt_gap) —
@@ -269,8 +312,8 @@ def _dead_root_line(plan_class: str, candidates: Optional[list] = None) -> str:
         return (
             f"Your Command Room workspace folder doesn't match what's on "
             f"record, and I found {n} {noun} that could be it — I won't "
-            f"guess which one. Open Command Room and say \"set up command "
-            f"room schedules\" to confirm which folder to use."
+            f"guess which one."
+            + _dead_root_close(DEAD_ROOT_AMBIGUOUS_INVITE, workspace_root)
         )
     # no_candidate / no_fingerprint — the honest common sentence: something
     # is wrong with the registration and this module found no safe way to
@@ -278,8 +321,8 @@ def _dead_root_line(plan_class: str, candidates: Optional[list] = None) -> str:
     return (
         "Your Command Room workspace folder doesn't match what's on record "
         "— it may have moved or been renamed, and I couldn't find where it "
-        "went. Open Command Room and say \"set up command room schedules\" "
-        "to reconnect it."
+        "went."
+        + _dead_root_close(DEAD_ROOT_COMMON_INVITE, workspace_root)
     )
 
 
@@ -326,13 +369,14 @@ def _classify_dead_root(workspace_root, *, now: _dt.datetime,
         "class": "dead_root",
         "last_receipt": None,
         "windows_missed": None,
-        "line": _dead_root_line(plan["class"], candidates),
+        "line": _dead_root_line(plan["class"], candidates, workspace_root),
         "_anchor": anchor,
     }
 
 
 def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None,
-                           task_records=None, machine: Optional[str] = None) -> list[dict]:
+                           task_records=None, machine: Optional[str] = None,
+                           device_path: Optional[str] = None) -> list[dict]:
     """Every currently-dark task, classified — no ledger, no suppression.
     This is the ONE entry point system-health's on-demand table reads
     (ruling §0.4): a chat the customer explicitly asked must always answer
@@ -352,12 +396,23 @@ def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None
     dead_root finding co-occurs with the other three. Otherwise, worst-first
     ordering among the other three is never_authorized, then late, then
     receipt_gap; within a class, the longest-dark task first.
+
+    LOWS2 row 6 (HEALTH3 N-9): `device_path` is this seat's folder on the
+    customer's computer, from the keyword or else `CR_DEVICE_WORKSPACE`
+    (every rendered line forwards it). It is handed to `check_tasks`, so the
+    dark table reads THIS seat's records and stored rows, as the on-demand
+    report does, and another computer's copy never decides a row.
     """
     now = now or _now_local()
     dead_root_finding = _classify_dead_root(workspace_root, now=now, machine=machine)
     if dead_root_finding is not None:
         return [dead_root_finding]
-    reports = _tw.check_tasks(workspace_root, now=now, task_records=task_records)
+    if device_path is None:
+        import os as _os
+
+        device_path = str(_os.environ.get("CR_DEVICE_WORKSPACE", "") or "").strip() or None
+    reports = _tw.check_tasks(workspace_root, now=now, task_records=task_records,
+                              device_path=device_path)
 
     ws_config = _tw.read_workspace_config(workspace_root)
     registered_at = _to_local_naive(parse_ts(ws_config.get("registered_at") or ""))
@@ -396,18 +451,18 @@ def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None
                 last_receipt = None
 
         if cls == "never_authorized":
-            line = _never_authorized_line(name)
+            line = _never_authorized_line(name, r["task"])
             windows_missed = None
             anchor = registered_at.isoformat() if registered_at else "unregistered"
         elif cls == "late":
             cron = (config.get(r["task"]) or {}).get("cron")
             windows_missed = _windows_missed(cron, last_receipt, now)
-            line = _late_line(name, last_receipt, now)
+            line = _late_line(name, last_receipt, now, r["task"])
             anchor = last_fired_iso or "never"
         else:  # receipt_gap
             cron = (config.get(r["task"]) or {}).get("cron")
             windows_missed = _windows_missed(cron, last_receipt, now)
-            line = _receipt_gap_line(name, last_receipt, now)
+            line = _receipt_gap_line(name, last_receipt, now, r["task"])
             anchor = last_fired_iso or (r.get("last_run_at") or "never")
 
         out.append({

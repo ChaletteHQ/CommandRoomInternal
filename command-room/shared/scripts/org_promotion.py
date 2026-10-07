@@ -167,6 +167,15 @@ def _new_batch_id(workspace_root) -> str:
         f"{workspace_root}|{_now_iso()}|{uuid.uuid4().hex}".encode("utf-8")).hexdigest()[:10]
 
 
+def new_promotion_batch_id(workspace_root) -> str:
+    """CLOSETRUTH1 3.2 — the PUBLIC minter, so a win and the promotion it
+    drives can share ONE batch id. `deal_state.close_deal` mints the id
+    before it writes the `deal_won` event and hands the same id to
+    `promote_org`, which is what makes a single `undo` reverse both legs of
+    one act (and what makes a win with no promotion undoable at all)."""
+    return _new_batch_id(workspace_root)
+
+
 def _rollback(ws, org_id, eng, created, prev_label, prev_active, prev_kind,
               *, source_skill: str) -> None:
     """REVIEW DEALNAG1 F-1 — put the record back after a promotion whose
@@ -237,6 +246,8 @@ def promote_org(
     deal_thread_id: Optional[str] = None,
     won_seq: Optional[int] = None,
     deal_manufactured: bool = False,
+    prev_deal_stage: Optional[str] = None,
+    prev_thread_status: Optional[str] = None,
     explicit: bool = False,
 ) -> dict:
     """Promote ONE settled prospect to client on the auto rail. Returns
@@ -372,6 +383,15 @@ def promote_org(
                 **({"deal_thread_id": deal_thread_id} if deal_thread_id else {}),
                 **({"won_seq": won_seq} if won_seq is not None else {}),
                 **({"deal_manufactured": True} if deal_manufactured else {}),
+                # CLOSETRUTH1 3.2 (M's ruling 5) — the deal's own prior
+                # shape. Without these the reverser could put the ORG back
+                # and nothing else, which is the 2026-09-13 defect: a won
+                # deal with nothing paid or signed stood on the book after
+                # the person reversed the act that made it.
+                **({"prev_deal_stage": prev_deal_stage}
+                   if prev_deal_stage else {}),
+                **({"prev_thread_status": prev_thread_status}
+                   if prev_thread_status else {}),
                 **({"explicit": True} if explicit else {}),
             },
         }], holder="org_promotion")
@@ -466,6 +486,7 @@ __all__ = [
     "primary_focus_org",
     "undone_promotions",
     "promotion_candidates",
+    "new_promotion_batch_id",
     "promote_org",
     "promote_settled_prospects",
 ]

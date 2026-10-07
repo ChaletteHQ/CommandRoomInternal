@@ -432,6 +432,15 @@ STALE_PROMPT_NOTICE = (
     "current — nothing else changes."
 )
 
+#: SCHEDREG1 (SPEC_V5330_FIXLANES §1 MUST 7, D-5): the same fact on a seat
+#: where registration is closed — no phrase to type, what still works named.
+STALE_PROMPT_ALTERNATIVE = (
+    "Your scheduled chats are still running the setup from an older Command "
+    "Room; they are brought current the next time they are set up from a "
+    "Command Room chat in the Claude desktop app with your Command Room "
+    "folder attached, and every chat keeps running meanwhile."
+)
+
 _PLUGIN_ROOT = _HERE.parent.parent
 BOOTLOADER_TEMPLATE_RELPATH = (
     "skills/enable-command-room-schedules/references/scheduled-task-bootloader.md"
@@ -471,13 +480,70 @@ def orchestrator_filename(task_id: str, plugin_root=None) -> Optional[str]:
     return val if isinstance(val, str) and val else None
 
 
+#: SCHEDREG1 (SPEC_V5330_FIXLANES §1 MUST 3, D-1) — every placeholder the
+#: shipped bootloader template carries. The set is FIXED (the template's owner
+#: neither adds nor removes one; `run_schedreg1_test` pins it against the
+#: file). The first four are the legacy composition's; the merged composition
+#: substitutes all seven and bakes (or removes) the writer pair.
+LEGACY_PLACEHOLDERS = ("<TASK_ID>", "<ORCHESTRATOR_FILENAME>",
+                       "<WORKSPACE_BASENAME>", "<PLUGIN_VERSION>")
+MERGED_PLACEHOLDERS = LEGACY_PLACEHOLDERS + (
+    "<WORKSPACE_ABSOLUTE_PATH>", "<CHAT_DISPLAY_NAME>", "<DISCOVER_BLOCK>")
+PAIR_PLACEHOLDERS = ("<WRITER_ID>", "<WRITER_DERIVATION>")
+BOOTLOADER_PLACEHOLDERS = MERGED_PLACEHOLDERS + PAIR_PLACEHOLDERS
+
+
+def default_discover_block() -> str:
+    """`workspace_access.DISCOVER_BLOCK`, exactly as the bootloader carries it
+    (the template indents its first line; the block is substituted as is)."""
+    import workspace_access as _wa  # noqa: WPS433 - lazy: import cost
+
+    return _wa.DISCOVER_BLOCK
+
+
+def substitute_bootloader(body: str, *, task_id: str, orchestrator: str,
+                          basename: str, version: str, abs_path: str,
+                          display_name: str, discover_block: str) -> str:
+    """The seven substitutions, in the order the dev renderer always made
+    them. No checks here: `compose_bootloader_body` is the checked door."""
+    for placeholder, value in (
+        ("<TASK_ID>", task_id),
+        ("<ORCHESTRATOR_FILENAME>", orchestrator),
+        ("<WORKSPACE_BASENAME>", basename),
+        ("<PLUGIN_VERSION>", version),
+        ("<WORKSPACE_ABSOLUTE_PATH>", abs_path),
+        ("<CHAT_DISPLAY_NAME>", display_name),
+        ("<DISCOVER_BLOCK>", discover_block),
+    ):
+        body = body.replace(placeholder, value)
+    return body
+
+
 def compose_bootloader_body(task_id: str, *, workspace_basename: str,
                             plugin_version: str, plugin_root=None,
-                            orchestrator_filename_override: Optional[str] = None) -> str:
-    """Step 1.B's composition, in code: the four substitutions over the
+                            orchestrator_filename_override: Optional[str] = None,
+                            abs_path: Optional[str] = None,
+                            display_name: Optional[str] = None,
+                            discover_block: Optional[str] = None,
+                            writer_id: Optional[str] = None,
+                            writer_derivation: Optional[str] = None) -> str:
+    """THE composer (SCHEDREG1 MUST 3, D-1): registration, the drift compare,
+    the refresh and the dev renderer all compose through here.
+
+    With NONE of the merged inputs (`abs_path`, `display_name`,
+    `discover_block`, `writer_id`, `writer_derivation`) it is Step 1.B's
+    historical composition, byte for byte: the four substitutions over the
     shipped template body. Raises on an unknown task id, a path-shaped
-    basename or a placeholder left unsubstituted — the same hard checks
-    the skill's inline Python asserts."""
+    basename or one of those four left unsubstituted.
+
+    With ANY merged input it is the merged composition: all seven
+    substitutions (`abs_path` required; `display_name` defaults to
+    `schedule_config.task_display_name`; `discover_block` to
+    `workspace_access.DISCOVER_BLOCK`), then the writer pair baked by
+    `writer_identity.bake_pair` - both or neither; a half or malformed pair
+    raises `ValueError(BAD_PAIR_LINE)`; no pair removes the pair's lines - and
+    it asserts ZERO placeholders remain.
+    """
     basename = (workspace_basename or "").strip()
     if not basename or "/" in basename or "\\" in basename:
         raise ValueError(
@@ -485,6 +551,32 @@ def compose_bootloader_body(task_id: str, *, workspace_basename: str,
     fname = orchestrator_filename_override or orchestrator_filename(task_id, plugin_root)
     if not fname:
         raise KeyError(f"{task_id}: no orchestrator in orchestrator-map.json")
+    merged = any(v is not None for v in (abs_path, display_name, discover_block,
+                                         writer_id, writer_derivation))
+    if merged:
+        path = str(abs_path or "").strip()
+        if not path:
+            raise ValueError(
+                f"{task_id}: the merged composition needs the workspace's "
+                "absolute path on the customer's computer")
+        if display_name is None:
+            import schedule_config as _sc  # noqa: WPS433 - lazy
+
+            display_name = _sc.task_display_name(task_id)
+        if discover_block is None:
+            discover_block = default_discover_block()
+        import writer_identity as _wi  # noqa: WPS433 - lazy
+
+        body = substitute_bootloader(
+            bootloader_template_body(plugin_root), task_id=task_id,
+            orchestrator=fname, basename=basename,
+            version=str(plugin_version or ""), abs_path=path,
+            display_name=str(display_name), discover_block=str(discover_block))
+        body = _wi.bake_pair(body, writer_id, writer_derivation)
+        left = [ph for ph in BOOTLOADER_PLACEHOLDERS if ph in body]
+        if left:
+            raise ValueError(f"{task_id}: unsubstituted {left} after compose")
+        return body
     body = (bootloader_template_body(plugin_root)
             .replace("<TASK_ID>", task_id)
             .replace("<ORCHESTRATOR_FILENAME>", fname)
@@ -496,6 +588,94 @@ def compose_bootloader_body(task_id: str, *, workspace_basename: str,
     return body
 
 
+_BAKED_PATH_RE = re.compile(r'paths=\["([^"]+)"\]')
+_BAKED_ID_RE = re.compile(r"CR_WRITER_ID=(acct-[0-9a-f]{12})\b")
+_BAKED_DIGEST_RE = re.compile(r"CR_WRITER_DERIVATION=([0-9a-f]{64})\b")
+
+
+def baked_abs_path(registered_prompt: str) -> Optional[str]:
+    """The absolute path a registered bootloader asks for its folder by, read
+    off its own folder request; None when the body carries none."""
+    m = _BAKED_PATH_RE.search(registered_prompt or "")
+    return m.group(1) if m else None
+
+
+def baked_pair(registered_prompt: str):
+    """The writer pair a registered prompt carries, read off its own lines;
+    None when it carries none (or only half of one)."""
+    text = registered_prompt or ""
+    mi = _BAKED_ID_RE.search(text)
+    md = _BAKED_DIGEST_RE.search(text)
+    return (mi.group(1), md.group(1)) if (mi and md) else None
+
+
+def seat_pair(workspace, registered_prompt: str = "", *, env=None):
+    """The pair THIS seat judges a registered prompt against (MUST 5).
+
+    `schedule_config.silent_prompt_pair` - the one source registration bakes
+    from (a process with an account derives; a helper child uses the pair the
+    door forwarded). A seat with NO pair at all DECLINES to judge the pair
+    (reader F-2/F-3): it composes with the pair the registered prompt already
+    carries, so the content is still compared and no pair-less rewrite is ever
+    proposed from a seat that could not bake one. `workspace` None (no root)
+    declines the same way - never a derivation from a bare name (F-3)."""
+    import schedule_config as _sc  # noqa: WPS433 - lazy
+
+    if workspace:
+        pair = _sc.silent_prompt_pair(workspace, env)
+        if pair:
+            return pair
+    return baked_pair(registered_prompt)
+
+
+def seat_compose_inputs(task_id: str, registered_prompt: str, workspace_root,
+                        *, abs_path: Optional[str] = None, env=None) -> dict:
+    """The merged inputs a compare composes a CHAT with, for this seat.
+
+    `abs_path`: the caller's, else the trigger map's `folders[0]` for this
+    task (the path the registration recorded), else the path the registered
+    body itself asks for (the compare then declines to judge the path - a
+    hand-made or legacy registration has no recorded path to hold it to).
+    The pair: `seat_pair`. Display name and discover block are the shipped
+    ones. Returns `{"abs_path", "writer_id", "writer_derivation"}`;
+    `abs_path` None means nothing could name a path (the body predates the
+    merged template - the caller treats that as drift)."""
+    path = str(abs_path or "").strip() or None
+    if path is None and workspace_root is not None:
+        try:
+            import schedule_backend as _sb  # noqa: WPS433 - lazy
+
+            row = _sb.read_trigger_map(workspace_root).get(task_id) or {}
+            folders = row.get("folders") if isinstance(row, dict) else None
+            if isinstance(folders, list) and folders and str(folders[0]).strip():
+                path = str(folders[0]).strip()
+        except Exception:  # noqa: BLE001 - a compare never raises on a read
+            path = None
+    if path is None:
+        path = baked_abs_path(registered_prompt)
+    pair = seat_pair(path if workspace_root is not None else None,
+                     registered_prompt, env=env)
+    return {"abs_path": path,
+            "writer_id": pair[0] if pair else None,
+            "writer_derivation": pair[1] if pair else None}
+
+
+def compose_for_seat(task_id: str, registered_prompt: str, *, basename: str,
+                     plugin_version: str, workspace_root, plugin_root=None,
+                     abs_path: Optional[str] = None, env=None) -> str:
+    """A CHAT's body composed the way THIS seat would register it (MUST 5).
+    Raises ValueError when no path can be named (the caller: drift)."""
+    inputs = seat_compose_inputs(task_id, registered_prompt, workspace_root,
+                                 abs_path=abs_path, env=env)
+    if not inputs["abs_path"]:
+        raise ValueError(f"{task_id}: no workspace path to compose against")
+    return compose_bootloader_body(
+        task_id, workspace_basename=basename, plugin_version=plugin_version,
+        plugin_root=plugin_root, abs_path=inputs["abs_path"],
+        writer_id=inputs["writer_id"],
+        writer_derivation=inputs["writer_derivation"])
+
+
 def baked_basename(registered_prompt: str) -> Optional[str]:
     """The workspace basename a registered bootloader was bound to, read off
     its own Step 1 line; None for a legacy prompt that predates baking."""
@@ -503,8 +683,39 @@ def baked_basename(registered_prompt: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def silent_baked_basename(task_id: str, registered_prompt: str):
+    """The workspace basename a registered SILENT prompt was composed for,
+    read off the prompt itself; None when it cannot be read.
+
+    THE PATTERN IS DERIVED FROM THE TEMPLATE, never hand-typed: it is built
+    from `schedule_config.SILENT_TASKS[task_id]["prompt"]` by escaping the
+    text either side of the `{BASENAME}` placeholder. A hand-written regex
+    here would be a second copy of the template and would drift from it the
+    first time the prompt's opening sentence was reworded — which is exactly
+    the class of silent staleness this whole item is about.
+    """
+    import schedule_config as _sc
+
+    spec = _sc.SILENT_TASKS.get(task_id)
+    if not isinstance(spec, dict):
+        return None
+    tpl = str(spec.get("prompt") or "")
+    if "{BASENAME}" not in tpl:
+        return None
+    head, tail = tpl.split("{BASENAME}", 1)
+    # Anchor on a short, stable window either side of the placeholder rather
+    # than the whole multi-KB body: the point is to read the basename out of
+    # a prompt that may be STALE everywhere else, and a full-body anchor
+    # would only match a prompt that needed no refresh at all.
+    pat = (re.escape(head[-60:]) + r"(?P<basename>[^\r\n]+?)"
+           + re.escape(tail[:20]))
+    m = re.search(pat, registered_prompt or "")
+    return m.group("basename").strip() if m else None
+
+
 def prompt_body_drift(task_records, *, plugin_version: str,
                       workspace_basename: Optional[str] = None,
+                      workspace_root=None,
                       plugin_root=None) -> list[str]:
     """Task ids whose REGISTERED bootloader body differs from the one this
     plugin composes today, after the stamp is normalized out of both sides —
@@ -512,36 +723,324 @@ def prompt_body_drift(task_records, *, plugin_version: str,
     this off a readback taken AFTER the refresh and it is the set the
     refresh did not reach.
 
-    A stamp-only difference is never drift. Ids with no chat orchestrator
-    (silent tasks) are skipped. Each body is composed against the basename
-    the registered prompt itself bakes in, so a moved workspace is not
-    mistaken for a stale body (`task_watchdog` owns the binding check);
-    `workspace_basename` is the fallback for a legacy prompt that bakes
-    none — without either, that record is skipped (informational).
+    A stamp-only difference is never drift. Each body is composed against the
+    basename the registered prompt itself bakes in, so a moved workspace is
+    not mistaken for a stale body (`task_watchdog` owns the binding check);
+    `workspace_basename` is the fallback for a prompt that bakes none.
+
+    NOTHING IS SKIPPED IN SILENCE (fix round 1, F-1). A record whose prompt
+    yields no basename and has no fallback is reported as DRIFT, not passed
+    over: a skipped task is indistinguishable from a current one in the
+    returned list, and the caller's next sentence is "all current". Pass
+    `workspace_basename` whenever the session knows its own folder — then a
+    legacy prompt is composed against it and judged on its content like any
+    other, instead of being judged on the fact that it is legacy.
+
+    A CROSS-FOLDER RECORD GETS ONE ANSWER TOO (fix round 2, N-2). Pass
+    `workspace_root` and a record the cross-folder guard REFUSES is reported
+    as drift, always — never silently current. Without it this function had
+    no way to see the folder question at all, so a task registered to
+    ANOTHER workspace was judged on its content and answered `not drift`
+    when that other folder's body happened to be current, while
+    `plan_prompt_refresh` answered `refuse` for the same record: two readers,
+    two answers, which is the 2026-09-16 failure this whole item is about.
+    Drift is the safe direction and the honest one — this session cannot
+    certify a prompt it is not allowed to judge or to rewrite, so the
+    caller's "all N current" line must not be sayable over it. The per-row
+    verdict is still `plan_prompt_refresh`'s, and it still says `refuse` and
+    prints its one sentence; nothing is rewritten from here.
+
+    So, with `workspace_root` supplied: this function and
+    `plan_prompt_refresh` return the same verdict for the same record —
+    `rewrite` and `refuse` are drift, `current` and `unknown` are not — and
+    the lane suite pins that over a matrix of shapes.
+
+    IT COVERS THE SILENT TASKS TOO (SCHEDVIEW1 5.4). This function used to
+    open with `if not tid or not orchestrator_filename(tid, plugin_root):
+    continue`, which skipped every task with no chat orchestrator — and
+    `maintenance`, the silent background dispatcher, is exactly such a task
+    and has no row in `orchestrator-map.json`. So the one compare that
+    answers "is every registered prompt current?" never looked at the one
+    prompt that runs the whole maintenance fire. On 2026-09-16 the seat
+    answered "every prompt is current — same 208 lines" while its registered
+    Maintenance prompt still typed a command that had been deleted from the
+    product (attended test v5.31.0, Step 0 e). One compare, two shapes of
+    task: a chat task is composed by `compose_bootloader_body`, a silent task
+    by `schedule_config.compose_silent_task_prompt`, and BOTH go through the
+    same `prompts_equivalent` normalisation, so a stamp-only difference is
+    still not drift on either side.
     """
+    import schedule_config as _sc
+
     drift: list[str] = []
     for rec in task_records or []:
         if not isinstance(rec, dict):
             continue
         tid = rec.get("taskId")
-        registered = rec.get("prompt") or ""
-        if not tid or not orchestrator_filename(tid, plugin_root):
+        registered = rec.get("prompt")
+        if not tid:
             continue
-        basename = baked_basename(registered) or (workspace_basename or "").strip()
+        if registered is None:
+            # BOOT3 (2026-09-19) — THE LISTING CARRIED NO PROMPT TEXT AT ALL.
+            #
+            # That is "unknown, cannot judge", and it is NOT drift. The merged
+            # app's trigger listing may return a trigger with no `prompt` field;
+            # the old desktop listing returned a path rather than the body for
+            # the same reason. Falling into the F-1 branch below would report
+            # every registered chat stale forever on those seats and send the
+            # refresher rewriting prompts it has never read.
+            #
+            # The distinction is `None` versus `""`: a MISSING prompt is
+            # unknown, an EMPTY registered body is a real, readable, empty body
+            # and stays drift exactly as it was.
+            continue
+        registered = registered or ""
+        if workspace_root is not None:
+            # FIX ROUND 2, N-2 — the cross-folder guard runs FIRST here for
+            # the same reason it runs first in `plan_prompt_refresh`: a
+            # prompt that is not this workspace's is not this session's to
+            # judge stale. Refused means "cannot be certified current from
+            # here", and that is DRIFT, whatever the other folder's body
+            # says.
+            if not refresh_workspace_guard(
+                    tid, registered, workspace_root,
+                    plugin_root=plugin_root)["ok"]:
+                drift.append(tid)
+                continue
+        is_chat = bool(orchestrator_filename(tid, plugin_root))
+        if not is_chat and tid not in _sc.SILENT_TASKS:
+            # An id this plugin does not know at all — neither a chat nor a
+            # registered silent task. Nothing to compose it against.
+            continue
+        if is_chat:
+            basename = (baked_basename(registered)
+                        or (workspace_basename or "").strip())
+        else:
+            basename = (silent_baked_basename(tid, registered)
+                        or (workspace_basename or "").strip())
         if not basename:
+            # FIX ROUND 1, F-1 — A PROMPT WITH NO READABLE BASENAME IS DRIFT,
+            # NEVER A SILENT SKIP.
+            #
+            # This line used to `continue`, and a skipped task reads as a
+            # current one: the caller sees an empty drift list and says "all
+            # current" over a prompt nobody looked at. That is the same shape
+            # as the defect item 5.4 exists to close, one door further in,
+            # and the reviewer reached it through the snippet this lane
+            # itself added to the schedules skill.
+            #
+            # DRIFT is the honest answer, not a hedge. Every basename reader
+            # here is derived from the CURRENT template, so a body that is
+            # genuinely current always parses: a bootloader bakes its
+            # workspace into the Step 1 line, and a silent prompt names it in
+            # the anchor sentence. A registered body that cannot yield one is
+            # therefore either pre-baking or worded the way an older template
+            # worded it — and in both cases it cannot equal what this plugin
+            # composes today. Refreshing it is the right act, and it is the
+            # act `plan_prompt_refresh` already returns for the same record
+            # (`rewrite`), which is what makes the two readers agree.
+            drift.append(tid)
             continue
         try:
-            composed = compose_bootloader_body(
-                tid, workspace_basename=basename, plugin_version=plugin_version,
-                plugin_root=plugin_root)
-        except (KeyError, ValueError):
+            if is_chat:
+                # SCHEDREG1 MUST 5 (D-1): the chat is composed the way THIS
+                # seat registers it - seven substitutions and the pair - so a
+                # correctly rendered chat is current, and one rendered for
+                # another path or pair is drift, by name.
+                composed = compose_for_seat(
+                    tid, registered, basename=basename,
+                    plugin_version=plugin_version,
+                    workspace_root=workspace_root, plugin_root=plugin_root)
+            else:
+                composed = _compose_silent(tid, basename, workspace_root,
+                                           registered)
+        except KeyError:
+            continue
+        except ValueError:
+            # A CHAT nothing could name a path for: the body predates the
+            # merged template, so it cannot equal what this plugin composes
+            # today (the F-1 posture - drift, never a silent skip). A silent
+            # task's ValueError (a malformed basename) is skipped, as before.
+            if is_chat:
+                drift.append(tid)
             continue
         if not prompts_equivalent(composed, registered):
             drift.append(tid)
     return drift
 
 
-def stale_prompt_notice(drift, findings=None) -> str:
+def _compose_silent(task_id: str, basename: str, workspace,
+                    registered_prompt: str = "") -> str:
+    """A silent task's prompt composed the way REGISTRATION composes it on
+    this seat - with the writer pair from `schedule_config.silent_prompt_pair`,
+    the one source Step 1.D bakes from (MF-26, merge-fix 2).
+
+    Without the pair here, every maintenance prompt registered with a baked
+    pair would read as drifted against a pair-less recompose, and a refresh
+    would rewrite it WITHOUT the identity the fire needs to land its receipt.
+    With it, a prompt registered under this seat's pair is current, and one
+    registered under any other pair is drift - which is the honest answer:
+    this seat would register it differently."""
+    import schedule_config as _sc
+
+    # SCHEDREG1 MUST 5 / reader F-3: `seat_pair` - with no workspace root, or
+    # on a seat with no pair of its own, the compare DECLINES to derive and
+    # judges the content under the pair the registered prompt carries.
+    pair = seat_pair(workspace, registered_prompt) or (None, None)
+    # T2 CB-4 (REVIEW_T2_FIRE1 N-1): the path registration composed with - the trigger
+    # map's `folders[0]` for this task, else the path the body asks for - so a body
+    # registered WITH its folder request reads as current, never as drift against a
+    # path-less recompose. No path anywhere: today's text, judged as before.
+    # With no workspace root (the MF-26 no-root legs, a helper child on the
+    # device) the trigger map is out of reach and the path is the one the body
+    # itself asks for (`baked_abs_path`); `seat_compose_inputs` does both.
+    try:
+        path = seat_compose_inputs(task_id, registered_prompt, workspace).get("abs_path")
+    except Exception:  # noqa: BLE001 - a compare never raises on a read
+        path = None
+    return _sc.compose_silent_task_prompt(
+        task_id, basename, writer_id=pair[0], writer_derivation=pair[1],
+        workspace_path=(str(path or "").strip() or None))
+
+
+# ---------------------------------------------------------------------------
+# SCHEDVIEW1 5.4 — a refresh writes its receipt where the refresh happened
+# ---------------------------------------------------------------------------
+
+#: The one sentence a cross-folder refresh says instead of acting. Scheduled
+#: tasks are MACHINE-level: one registry serves every workspace on the box, so
+#: a session mounted on folder A can see — and rewrite — the task that belongs
+#: to folder B. On 2026-09-15 that happened: a session on a scratch copy
+#: refreshed the live seat's Maintenance prompt, and the receipt went nowhere,
+#: because the writer was pointed at the copy and the copy was not the
+#: workspace that changed (attended test v5.31.0, Step 0 e — "done from the
+#: copy, which refused to write into the copy").
+CROSS_FOLDER_REFUSAL = (
+    "That scheduled task belongs to a different workspace folder, so I have "
+    "left it alone. Open that workspace and say `set up command room "
+    "schedules` there, and the change will be recorded where it happened."
+)
+
+#: SCHEDREG1 (SPEC_V5330_FIXLANES §1 MUST 7, D-5): the same refusal on a seat
+#: where registration is closed - no phrase to type.
+CROSS_FOLDER_ALTERNATIVE = (
+    "That scheduled task belongs to a different workspace folder, so I have "
+    "left it alone; it is changed from a Command Room chat in the Claude "
+    "desktop app with that folder attached, where the change is recorded."
+)
+
+
+def cross_folder_line(workspace_root=None) -> str:
+    """The cross-folder refusal through the one invite producer."""
+    try:
+        from schedule_config import setup_invite_line
+    except ImportError:  # pragma: no cover - shipped beside this module
+        return CROSS_FOLDER_REFUSAL
+    try:
+        return setup_invite_line(None, workspace_root=workspace_root,
+                                 invite=CROSS_FOLDER_REFUSAL,
+                                 alternative=CROSS_FOLDER_ALTERNATIVE)
+    except Exception:  # noqa: BLE001 - a sentence never fails on a read
+        return CROSS_FOLDER_ALTERNATIVE
+
+
+def refresh_workspace_guard(task_id: str, registered_prompt: str,
+                            workspace_root, *, plugin_root=None) -> dict:
+    """Does this registered task belong to the workspace this session is
+    mounted on? `{"ok", "registered_basename", "session_basename", "line"}`.
+
+    M's default (SPEC_FIXTRAIN_v5310 ruling 3): a cross-folder refresh is
+    REFUSED rather than performed with the receipt written somewhere else. A
+    scheduled task is machine-level and a session editing another workspace's
+    schedule with no receipt anywhere is the condition the finding is about;
+    refusing is the only outcome that leaves both workspaces honest, and the
+    sentence tells the reader exactly where to go to get it done.
+
+    `ok` is True — do the refresh — when the two basenames agree, and also
+    when the registered prompt bakes no basename at all (a legacy prompt
+    names no workspace, so there is no other workspace to be wrong about).
+    """
+    import schedule_config as _sc
+
+    session = Path(workspace_root).name.strip()
+    if task_id in _sc.SILENT_TASKS:
+        registered = silent_baked_basename(task_id, registered_prompt)
+    else:
+        registered = baked_basename(registered_prompt)
+    registered = (registered or "").strip()
+    ok = (not registered) or registered == session
+    return {"ok": ok, "registered_basename": registered or None,
+            "session_basename": session,
+            "line": "" if ok else cross_folder_line(workspace_root)}
+
+
+def plan_prompt_refresh(task_id: str, *, registered_prompt: str,
+                        workspace_root, plugin_version: str,
+                        plugin_root=None) -> dict:
+    """THE one decision for one registered prompt (SCHEDVIEW1 5.4):
+    `{"action", "task_id", "composed", "basename", "line", "guard"}` where
+    `action` is `rewrite` | `current` | `refuse` | `unknown`.
+
+    It is one function because the 2026-09-16 failure was two readers giving
+    two answers about one task twenty minutes apart — the seat said "every
+    prompt is current" and the scratch said "genuinely stale, not a stamp
+    diff" — and neither was reading the other's rule. Chat tasks and silent
+    tasks compose differently and are compared identically; the cross-folder
+    guard runs FIRST, because a prompt that is not this workspace's is not
+    this session's to judge stale.
+
+    `unknown` is an id this plugin cannot compose a prompt for at all. It is
+    never drift and never a refusal — there is nothing to compare.
+    """
+    import schedule_config as _sc
+
+    if registered_prompt is None:
+        # BOOT3 (2026-09-19) — no prompt text came back from the listing, so
+        # there is nothing to compare. `unknown` is the existing answer for
+        # exactly this shape: never drift, never a refusal. See the twin branch
+        # in `prompt_body_drift`.
+        return {"action": "unknown", "task_id": task_id, "composed": None,
+                "basename": None, "line": "", "guard": None}
+
+    guard = refresh_workspace_guard(task_id, registered_prompt,
+                                    workspace_root, plugin_root=plugin_root)
+    if not guard["ok"]:
+        return {"action": "refuse", "task_id": task_id, "composed": None,
+                "basename": guard["registered_basename"],
+                "line": guard["line"], "guard": guard}
+    is_chat = bool(orchestrator_filename(task_id, plugin_root))
+    if not is_chat and task_id not in _sc.SILENT_TASKS:
+        return {"action": "unknown", "task_id": task_id, "composed": None,
+                "basename": None, "line": "", "guard": guard}
+    basename = (guard["registered_basename"] or guard["session_basename"])
+    try:
+        composed = (compose_for_seat(
+            task_id, registered_prompt, basename=basename,
+            plugin_version=plugin_version, workspace_root=workspace_root,
+            plugin_root=plugin_root)
+            if is_chat else
+            _compose_silent(task_id, basename, workspace_root,
+                            registered_prompt))
+    except KeyError:
+        return {"action": "unknown", "task_id": task_id, "composed": None,
+                "basename": basename, "line": "", "guard": guard}
+    except ValueError:
+        if is_chat:
+            # No path could be named for this chat (a pre-merged body): the
+            # same answer `prompt_body_drift` gives it - it needs rewriting,
+            # and the registering seat composes the body (MUST 4).
+            return {"action": "rewrite", "task_id": task_id, "composed": None,
+                    "basename": basename, "line": "", "guard": guard}
+        return {"action": "unknown", "task_id": task_id, "composed": None,
+                "basename": basename, "line": "", "guard": guard}
+    current = prompts_equivalent(composed, registered_prompt)
+    return {"action": "current" if current else "rewrite",
+            "task_id": task_id, "composed": composed, "basename": basename,
+            "line": "", "guard": guard}
+
+
+def stale_prompt_notice(drift, findings=None, *, tools=None,
+                        workspace_root=None, env=None) -> str:
     """The ONE line to say when `prompt_body_drift` is non-empty after the
     readback — a registered body the refresh did not reach; `""` when every
     body is current, whatever the stamps say. `findings` (the
@@ -554,7 +1053,20 @@ def stale_prompt_notice(drift, findings=None) -> str:
         raise TypeError(
             "stale_prompt_notice decides on prompt_body_drift (task ids), "
             "never on check_prompt_versions findings — the stamp is informational")
-    return STALE_PROMPT_NOTICE if drift else ""
+    if not drift:
+        return ""
+    # SCHEDREG1 MUST 7 (D-5): the invitation only where this seat could act
+    # on it — `schedule_config.setup_invite_line` is the one producer.
+    try:
+        from schedule_config import setup_invite_line
+    except ImportError:  # pragma: no cover - shipped beside this module
+        return STALE_PROMPT_NOTICE
+    try:
+        return setup_invite_line(tools, workspace_root=workspace_root,
+                                 env=env, invite=STALE_PROMPT_NOTICE,
+                                 alternative=STALE_PROMPT_ALTERNATIVE)
+    except Exception:  # noqa: BLE001 - a sentence never fails on a read
+        return STALE_PROMPT_ALTERNATIVE
 
 
 def announce_lines(workspace_root, *, cap: int = ANNOUNCE_CAP,

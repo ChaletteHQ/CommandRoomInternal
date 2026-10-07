@@ -53,21 +53,33 @@ Pass over the unread / flagged inbox from a defined window (overnight, last 24 h
 
 This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROTOCOL.md`). All
 three decisions are **show-then-tune (STT)** — the triage always runs first, then offers one-tap
-changes. Read config through `get_config` — never the raw file.
+changes. Read config through the verb below — never the raw file. It runs
+`skill_config_writer.get_config` over the DEFAULTS block, and reports
+`is_configured` beside it.
 
-```python
-# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
-# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
-import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
-from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"defaults": {"default_action": "draft_replies", "discard_aggressiveness": "standard", "vip_seed": []}, "skill_name": "inbox-triage", "workspace_root": "<WS>"}, "name": "inbox_helpers:triage_config"}'
+```
 
-DEFAULTS = {
-    "discard_aggressiveness": "standard",  # standard | aggressive | conservative
-    "vip_seed": [],                        # inferred top-5 VIP senders, confirm/edit (optional extra)
-    "default_action": "draft_replies",     # draft_replies | brief_only
+The answer is `{config, configured}`. `config` is the saved choices deep-merged
+over the defaults below, so a decision added in a later version falls back to its
+default while every choice already saved is honoured. `configured` is false on a
+first fire, which is the one gate the "Make this yours" block renders behind.
+
+```json
+{
+  "discard_aggressiveness": "standard",
+  "vip_seed": [],
+  "default_action": "draft_replies"
 }
-cfg = get_config(workspace_root, "inbox-triage", DEFAULTS)
+```
+
+On the FIRST fire only, save those defaults before rendering — one write, the
+only write door, in the shape `skill_config_writer.save_skill_config` writes
+(the DEFAULTS above under a `config` key, with the origin stamp):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the defaults above, as JSON>", "expected_mtime": null, "rel": "_hq/data/skill_config/inbox-triage.json"}'
 ```
 
 `discard_aggressiveness` shifts the Step 4 Discard-bucket threshold (`aggressive` = more into
@@ -80,10 +92,10 @@ or returns brief-only — persisting the existing "and draft the replies" / "jus
 
 | Mode | Trigger | Behavior |
 |---|---|---|
-| **Detect** (default) | "triage my inbox" | run triage with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "inbox-triage", DEFAULTS)` BEFORE rendering, then append the first-run block. |
+| **Detect** (default) | "triage my inbox" | run triage with the returned `config`. On the FIRST fire only (`configured` is false): write the defaults BEFORE rendering, then append the first-run block. |
 | **Show settings** | "show inbox-triage settings" | render current config in plain English; no triage. |
-| **Tune** | "tune inbox-triage" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-run triage. |
-| **Reset** | "reset inbox-triage to defaults" | `wipe_skill_config(workspace_root, "inbox-triage")` → next fire is a first-fire again. |
+| **Tune** | "tune inbox-triage" | pre-filled re-questionnaire OR freeform (table below) → write the merged config → re-run triage. |
+| **Reset** | "reset inbox-triage to defaults" | write the defaults back over the saved config, the way `skill_config_writer.wipe_skill_config` clears it → the next fire is a first fire again. |
 
 **The first-run block (transport):** when a Reply Now widget renders this fire, the three decisions
 ride as `fr1`/`fr2`/`fr3` items in a "Make this yours" section at the BOTTOM of that all_batch_widget
@@ -95,8 +107,8 @@ fire (no Reply Now drafts), use a 2–3 line FOOTER after the brief headline ins
 > **your top senders: [names]** · **drafting replies by default**. Say "tune inbox triage" to
 > change any, or just tell me ("be more aggressive" / "brief only, don't draft").*
 
-Tap/answer → apply-choices → `save_skill_config(..., is_reconfigure=True, origin="first_fire_override")`.
-The block renders exactly once ever (`is_configured` gate).
+Tap/answer → apply-choices → the merged config is written, stamped as a first-fire override.
+The block renders exactly once ever, behind the `configured` gate.
 
 **Freeform tune (natural language → config):**
 
@@ -109,7 +121,7 @@ The block renders exactly once ever (`is_configured` gate).
 | "add [name] to my VIPs" | append to `vip_seed` |
 | "drop [name] from VIPs" | remove from `vip_seed` |
 
-After applying: `save_skill_config(..., is_reconfigure=True)` + re-run triage + confirm in one line.
+After applying: write the merged config, re-run triage, confirm in one line.
 
 ## How to Use
 
@@ -167,8 +179,55 @@ Optional modifiers:
    - **Mechanical voice-tell gate (B2 — bash-gated, not prose).** After drafting each reply body and before surfacing it in the widget, run it through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells warn. This backstops the Step 2 critique, it does not replace it:
 
      ```bash
-     SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-     PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+     # >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+     # The substrate is on the customer's machine; this process may not be. Every
+     # read, helper and write goes through workspace_access ON the host that holds
+     # the data. Never open, copy or tar a workspace file into this session, and
+     # never write one from here.
+     #  1 RESOLVE, once per call. The four lines below name the plugin root, the
+     #    environment, and -- on a seat whose files are local -- the workspace. On a
+     #    merged seat resolve instead with `workspace_access.py discover`, hand the
+     #    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+     #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+     #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+     #    before the first plan, so a saved document can name the folder the
+     #    customer opens. A runtime that is absent, or a runtime_version that
+     #    differs, is a STOP: run the update-bridge install step. There is no
+     #    container fallback.
+     #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+     #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+     #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+     #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+     #    variables in front of python3, which carry the writer identity and the
+     #    run mode to the host that holds the data. The reply is one JSON
+     #    envelope; ok:false is a stop, never a hand retry.
+     #  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+     #    redirect, an in-place edit, a heredoc into the workspace, or a python body
+     #    that opens a substrate file.
+     #  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+     #    sandbox seat, or a Code session on the customer's own machine -- the same
+     #    verbs run in this shell, and the four lines below resolve it for them.
+     #  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+     #    sentence with no file, script, path, variable, shell text or mechanism
+     #    in it -- "One step could not run here; what is below is complete." or
+     #    "... is partial." Never narrate a workaround, never say what you tried.
+     #  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+     #    render -- lives in this session's own scratch, never under the
+     #    workspace. Nothing under `_hq/` is created, copied or removed by a
+     #    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+     #    removed by `plan remove`, and a removal is reported in the envelope's
+     #    own words -- removed, moved aside, or still there -- never as done.
+     #  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+     #    `plan run_writer` naming a writer on its list -- never by importing a
+     #    writer in a shell. The door forwards who you are; a writer with no
+     #    identity on this seat refuses in one sentence, and that sentence is the
+     #    whole answer.
+     SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+     PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+     eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+     WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+     [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+     # <<< CR ACCESS PREAMBLE v6 <<<
      printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
      ```
 
@@ -177,7 +236,7 @@ Optional modifiers:
    - Save: `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].docx` — the triage brief is ALWAYS a `.docx` (never a `.md` file), matching the "Saved triage brief file" contract below.
    - **Rendering (SPEC TRIAGEROUTE).** Render the `.docx` via the canonical `shared/scripts/brief_writer.py` `make_brief(brief_kind="inbox_triage", ...)`, passing the sections payload and exec header in "Output Structure" below. That route is mandatory, not a preference: it is what runs the output-contract gate, the voice-tell gate and the post-render leak scanner, and it enforces canonical typography and heading hierarchy. Before this route existed, the step named a `.docx` and no way to produce one, so the brief was hand-rolled every morning — every gate skipped, on the one document in this product assembled entirely out of the CEO's mail.
      - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and this brief carries senders, subjects and quoted body text lifted straight out of real mail, which is exactly what the leak scan exists to catch.
-     - **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the top five", "a summary", "just the drafts") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/inbox/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can read it on the way in", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the triage in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link.
+     - **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the top five", "a summary", "just the drafts") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/inbox/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can read it on the way in", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the triage in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link.
    - Record timestamp in `_hq/inbox/LAST_TRIAGE.txt`
 8. **Return:** file link + headline ("12 overnight emails. 3 top items flagged. 2 replies drafted. 1 decision needed: Acme pricing.") — the same sentence is the brief's exec-header verdict, written once and used twice.
 
@@ -216,28 +275,20 @@ Vague phrases ("I'll think about it", "let's circle back", "we should consider")
 
 ### The writer (MANDATORY — never hand-append)
 
-Every capture in this step goes through `shared/scripts/inbound_capture.py`. Build one extraction dict per qualifying item and hand the batch to `capture_inbound_items` — it runs the shared Stage-D / S2 / Stage-E capture gate, mints `source_ref` and `thread_ref` from the connector's real ids, dedups, applies the relevance gate and the per-fire volume cap, and lands the survivors in ONE locked append:
+Every capture in this step goes through the capture verb. Build one extraction dict per qualifying item and hand the batch over — the verb runs the shared Stage-D / S2 / Stage-E capture gate, mints `source_ref` and `thread_ref` from the connector's real ids, dedups against what is already on the book, applies the relevance gate and the per-fire volume cap, and composes the survivors. The append is yours, and it is ONE call:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from inbound_capture import capture_inbound_items
-from primary_user import resolve_primary_user
-
-workspace_root = '<absolute path to the workspace root>'
-user_id = resolve_primary_user(workspace_root)   # deterministic — never guess (Bug #102)
-
-items = <[{'message_id', 'thread_id', 'ts', 'direction', 'sender_person_id'|'sender_name',
-           'title', 'kind', 'due'|'no_due', 'evidence', 'org_id', 'person_ids',
-           'classification_confidence'}, ...]>
-
-r = capture_inbound_items(workspace_root, items, user_person_id=user_id,
-                          source_skill='inbox-triage',
-                          provider='<the seam-resolved provider>')
-print(r['summary'])
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"items": [<one dict per qualifying item: message_id, thread_id, ts, direction, sender_person_id|sender_name, title, kind, due|no_due, evidence, org_id, person_ids, classification_confidence, below_bar|below_bar_reason>], "provider": "<the seam-resolved provider>", "source_skill": "inbox-triage", "user_person_id": "<resolved, never guessed>", "workspace_root": "<WS>"}, "name": "inbox_helpers:plan_inbound_capture"}'
 ```
+
+The answer carries `rows`, `counters` and `errors`. The rows are composed, not
+written — append them in ONE call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "inbox-triage", "rel": "_hq/data/events.jsonl", "rows": [<the rows from the answer above>]}'
+```
+
+An empty `rows` list needs no append.
 
 - **`direction` is required per item** and is never defaulted — it is the whole table above, and a wrong default writes the promise onto the wrong person's plate.
 - **Ids are the connector's real ones.** Never a draft id: the writer refuses `draft:`-shaped message and thread ids outright (F-22), because a row anchored to a draft can never be matched against the message that was actually sent.
@@ -247,7 +298,7 @@ print(r['summary'])
 
 ### Field mapping
 
-The shape `capture_inbound_items` composes, for reference — read it to understand what lands, do not hand-build it:
+The shape the capture verb composes, for reference — read it to understand what lands, do not hand-build it:
 
 ```json
 {
@@ -281,7 +332,7 @@ The shape `capture_inbound_items` composes, for reference — read it to underst
 
 **Dedup:** handled by the writer, two layers. Per-message identity `(source_ref, title)` — first 60 chars, case-insensitive, compared as canonical keys so one message under two provider labels is one identity — plus a cross-channel restatement match against the open set, so a promise already tracked from a meeting or from Slack MERGES instead of double-tracking. Re-fires over the same mailbox therefore write nothing; do not add a dedup pass of your own.
 
-**Volume:** one fire writes at most `inbound_capture.DEFAULT_CAPTURE_CAP` items. On a catch-up spanning months the remainder is DEFERRED, not dropped — nothing is marked captured, so the next fire takes the next slice — and `r['summary']` says how many are waiting. Never raise the cap to "get through the backlog" in one morning.
+**Volume:** one fire captures at most the per-fire cap the verb reports back as `cap`. On a catch-up spanning months the remainder is DEFERRED, not dropped — nothing is marked captured, so the next fire takes the next slice — and `counters.n_capped` says how many are waiting. Never raise the cap to "get through the backlog" in one morning.
 
 > **Sent-mail reconciliation is NOT done here (v3.18.12 — Bug #98-v3).** Closing commitments the CEO completed by emailing directly is the dedicated silent `reconcile-sent` task's single job (it fires 6:45 AM). It was briefly folded into this triage pass (v3.18.11) and got skipped in real use — same structural reason the brief skipped it: an invisible substrate write loses to the visible deliverable. Don't re-add it here. Extract NEW commitments above; the `reconcile-sent` task closes the ones already sent.
 
@@ -398,22 +449,30 @@ data_view = {
 **Render + post:**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from widget_transport import render_and_persist
-data_view = json.loads('''<DATA_VIEW_JSON>''')
-transport = render_and_persist(data_view=data_view, wrapper='fragment',
-                               persist_dir='<WORKSPACE>/_hq/.system/widgets',
-                               name_hint='inbox-triage')
-print(transport['html'])
-"
-# Pass the rendered HTML (transport["html"]) to mcp__visualize__show_widget as widget_code (EW2+T, F-15 —
-# shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"data_view": <the data view built above>, "name_hint": "inbox-triage", "wrapper": "fragment", "workspace_root": "<WS>"}, "name": "inbox_helpers:render_inbox_page"}'
 ```
+
+Then persist the audit page — the only write door. `inbox_helpers:render_inbox_page` runs the same renderer, the same wrapper contract and the same leak scan as `widget_transport.render_and_persist`; the prose you compose around it still goes through `validate_chat_output`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the html from the answer above, verbatim>", "expected_mtime": null, "rel": "<the page_rel from the answer above>"}'
+```
+
+Then append the answer's `pending_rows` — every element, in order, nothing
+dropped. They are the ledger's record that this page went through the gates
+rather than being hand-composed, and the render helper has no write door of its
+own, so a row left in that field is a row the ledger never gets. When the field
+is empty this call is skipped:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "inbox", "rel": "_hq/data/events.jsonl", "rows": [<every row in pending_rows from the render answer above, in order>]}'
+```
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
+Pass the returned `html` to `mcp__visualize__show_widget` as `widget_code`
+(EW2+T, F-15 — `shared/CHAT_ACTION_WIDGET.md` § Transport). Never hand-compose
+or post-process it.
 
 **Action semantics** — same lazy contract as email-writer Phase 4 (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The draft text lives in the widget; NO connector draft exists until the user acts (the tool named is the resolved draft/send path on the declared backend per EMAIL_DRAFT_PROTOCOL §0.5/§3c — Gmail via Zapier leg, Superhuman native, read-only backend degrades to paste):
 - `N send` — apply-choices creates the draft and sends it in one motion via the resolved send dispatch (EMAIL_DRAFT_PROTOCOL §3c order). Logs `email_drafted` + `email_sent`. (Body edits happen directly on the card before Apply — FB-10 inline body; `edit then send` is retired per FB-17, never emitted anew.)
@@ -438,6 +497,57 @@ If no sources were referenced (rare), omit the section.
 
 **Saved triage brief file** (the `.docx` at `_hq/inbox/TRIAGE_[YYYY-MM-DD_HH-MM].docx` — always `.docx`, separate from the chat widget) — the brief lists the reply drafts under "Reply Drafts" by recipient + subject. No `gmail://drafts/<id>` URLs are stamped at fire time, because under lazy creation no Gmail draft exists until the user clicks `draft`/`send` (per `shared/EMAIL_DRAFT_PROTOCOL.md` §1). The body of each draft does NOT need to appear inside the brief — the widget carries it in chat. (Same simplification follow-up-ritual got in v3.13.0 — the .docx stopped embedding the email body once the widget became the editing surface.)
 
+## "Treat [vendor] as billing" — the phrase door (SPEC FIXTRAIN 6.2)
+
+When an invoice or a statement lands in a bucket the CEO would not have put it in, the fix is that the sender should count as billing from now on. On 09-11 this surface handed the CEO a file path under the workspace's internal folder and told them to edit it. **Never do that.** They do not have that folder open, the path means nothing to them, and it is the exact shape of leak the gate exists to stop.
+
+Offer the door instead, in the customer's own words, and let the product do the write:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"sender": "<the sender address or domain>", "vendor": "<vendor display name>", "workspace_root": "<WS>"}, "name": "inbox_helpers:billing_door"}'
+```
+
+Behind the verb: `surface_composers.billing_door_line(vendor)` composes the
+offer, `surface_composers.add_billing_domain`'s ordering composes the file,
+and the whole reply leaves through the one door — `surface_composers.post(
+whole_reply, surface="inbox", workspace=workspace_root,
+relayed=composed_text)` — whose return is the entire reply.
+
+The verb composes `surface_composers.billing_door_line` for the offer and
+`surface_composers.billing_door_receipt` for the answer, and it composes the
+file the way `surface_composers.add_billing_domain` writes it — order preserved,
+the new domain appended last, created on first use.
+
+The answer carries `line` (the offer, next to the misfiled message), `receipt`
+(what to say once they used the door), `result` (the domain and the counts — the
+customer's own vendor, theirs to see) and, when the list would change, `text`:
+the whole file's new contents, order preserved, the new domain appended last.
+Write it in ONE call, and only when `text` is not null:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the text from the answer above>", "expected_mtime": null, "rel": "<the rel from the answer above>"}'
+```
+
+The writer is idempotent, keeps the list in order, and creates it on first use. A vendor NAME with no domain in it comes back asking which sender they mean rather than writing a junk line — the receipt composer says that for you. The file the phrase writes is never named in anything the CEO reads, in this skill or any other.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. A door whose receipt is gated and whose explanation is not still hands the reader the path. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"customer_rows": [<the rows a section was composed around, or null>], "relayed": "<the composed line, verbatim>", "surface": "inbox", "text": "<everything you intend to post>", "workspace_root": "<WS>"}, "name": "inbox_helpers:gate_reply"}'
+```
+
+`relayed` is `composed_text`: the composer's own return from this same run —
+`billing_door_line`'s or `billing_door_receipt`'s, relayed line for line, never
+retyped. The answer's `text` is your entire
+reply. The answer also carries `pending_rows`: the door's own record that this
+reply was gated. Append it, in the same call as anything else this fire owes:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "inbox-triage", "rel": "_hq/data/events.jsonl", "rows": [<the pending_rows from the answer above>]}'
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
 ## Triggers
 
 - "triage my inbox"
@@ -447,6 +557,27 @@ If no sources were referenced (rare), omit the section.
 - "go through my email"
 - "email triage"
 - "morning email pass"
+- "treat [vendor] as billing" (the phrase door above — only inside a triage run or a reply to one)
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 
@@ -497,10 +628,28 @@ The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the stan
 
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
-Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+Widget bodies are scanned inside the render verb; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 
 The settings-trigger family for this skill, relocated verbatim from the pre-G11-diet description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Also handles first-run personalization settings — use when the user says 'tune inbox triage', 'tune inbox-triage', 'show inbox triage settings', 'show inbox-triage settings', 'reset inbox triage to defaults', 'reset inbox-triage to defaults'.
+## Draft date scan (DRAFTDATE1 — MANDATORY on every rendered draft)
+
+**A draft never states a date, day or deadline the row does not hold.** On 2026-09-07 the drafts on this product invented three: "I'll have it finished by Friday" and "this is on your calendar today" on rows with no due date and no calendar event, and "let's get this paid this week" on a row with neither. Nobody had promised any of those days; sending one makes a commitment the book does not know about.
+
+Before you show or save ANY draft you composed — status note, nudge, chase, follow-up, reply, invite body — run it through the scan:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"draft_text": "<the draft text>", "row": <the row>, "today": "<the workspace's own day>", "workspace_root": "<WS>"}, "name": "inbox_helpers:check_draft_dates"}'
+```
+
+The answer is `{ok, phrases, detail}`. A false `ok` names every phrase the row
+cannot support — the verb runs `draft_date_scan.assert_draft_dates` and reports
+what it raised instead of raising.
+
+A date phrase is allowed only when it traces to (1) the row's due date, (2) a calendar event on the row, or (3) a date in the row's OWN words — its title, its quote, the thread subject. `today` is the workspace's day (`tz.py`), never a UTC re-slice.
+
+**NEVER catch the error and send anyway, and never invent a date so the sentence reads better.** The fix is one of two things: drop the day from the draft ("I'll come back to you with a date" is honest and costs nothing), or set a real date on the row first and then say it. A draft with no date at all is always allowed.
+

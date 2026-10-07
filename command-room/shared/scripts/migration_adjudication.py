@@ -25,7 +25,9 @@ skipped/declined) suppresses "pending" on every future run, deterministically.
 SEMANTICS
 ---------
 Latest adjudication event per migration id wins (events.jsonl is append-only;
-file order is authoritative — old lines may predate `seq`).
+file order is authoritative — old lines may predate `seq`). A workspace root
+reads every yearly shard, oldest first, then the active file (SEAMS3, BRIDGE2
+S-7), so a decision that rotated into `events-<year>.jsonl` still counts.
 
   * status "applied"  -> suppressed (the apply-once deliberate-deletion rule and
     the partially-applied re-confirm edge case are the CALLER's per-type policy;
@@ -77,13 +79,6 @@ RE_SURFACE_REASONS = frozenset({
 })
 
 
-def _events_path(root_or_file) -> Path:
-    p = Path(root_or_file)
-    if p.is_dir():
-        return p / "_hq" / "data" / "events.jsonl"
-    return p
-
-
 def _field(ev: dict, key: str):
     """An adjudication field lives at the top level (older fires) or under
     `data` (current shape). Top level wins when both are present."""
@@ -96,16 +91,72 @@ def _field(ev: dict, key: str):
 
 
 def load_adjudications(root_or_file) -> dict:
-    """Fold events.jsonl into {migration_id: latest adjudication record}.
+    """Fold the event history into {migration_id: latest adjudication record}.
 
     Record shape: {"status": "applied"|"skipped", "reason": str|None,
                    "ts": str|None, "suppressed": bool}
     Missing file -> {} (a workspace with no event log has no adjudications).
     """
-    path = _events_path(root_or_file)
     out: dict = {}
+    for ev in _adjudication_rows(root_or_file):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") not in ADJUDICATION_TYPES:
+            continue
+        mig_id = _field(ev, "migration_id")
+        if not isinstance(mig_id, str) or not mig_id:
+            continue
+        status = ("applied" if ev.get("type") == "workspace_migration_applied"
+                  else "skipped")
+        reason = _field(ev, "reason")
+        record = {
+            "status": status,
+            "reason": reason if isinstance(reason, str) else None,
+            "ts": ev.get("ts") or ev.get("timestamp"),
+        }
+        record["suppressed"] = _suppresses(record)
+        out[mig_id] = record  # later row wins — shards, then the active file
+    return out
+
+
+def _adjudication_rows(root_or_file):
+    """The rows `load_adjudications` folds, in chronological file order.
+
+    SEAMS3 MUST 3 (BRIDGE2 S-7): a WORKSPACE ROOT reads the whole history -
+    every yearly shard (`events-<year>.jsonl`) and then the active
+    `events.jsonl` - through the owner-tier shard reader
+    (`events_io.load_events_owner_scoped`: shard-transparent, no account
+    mask, no personal-lane drop, and not a new raw-read site for the
+    personal firewall). Before, only the active file was opened, so a
+    decision that rotated into a year shard was invisible and the bridge
+    re-proposed the migration (the FB-5 class again, after sharding).
+    An explicit FILE argument (the CLI's shape) keeps the single-file read.
+    """
+    p = Path(root_or_file)
+    if p.is_dir():
+        try:
+            from events_io import load_events_owner_scoped
+        except ImportError:  # pragma: no cover - direct-path fallback
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from events_io import load_events_owner_scoped
+        try:
+            events, _skipped = load_events_owner_scoped(p)
+            return events
+        except UnicodeDecodeError:
+            # REVIEW_T3_SEAMS3 N-1: the owner-tier loader opens strict UTF-8,
+            # so one bad byte (or a sync-truncated multibyte tail) in any
+            # shard or the active file would raise and STOP the bridge's
+            # gate. Fall back to the same file set, same order (shards
+            # oldest first, then the active file), each read with
+            # errors="replace" exactly as the base single-file read was.
+            from events_io import shard_paths
+            return [ev for fp in shard_paths(p) for ev in _single_file_rows(fp)]
+    return list(_single_file_rows(p))
+
+
+def _single_file_rows(path: Path):
     if not path.exists():
-        return out
+        return
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.strip()
@@ -115,24 +166,8 @@ def load_adjudications(root_or_file) -> dict:
                 ev = json.loads(line)
             except (ValueError, TypeError):
                 continue  # malformed substrate line — never fatal here
-            if not isinstance(ev, dict):
-                continue
-            if ev.get("type") not in ADJUDICATION_TYPES:
-                continue
-            mig_id = _field(ev, "migration_id")
-            if not isinstance(mig_id, str) or not mig_id:
-                continue
-            status = ("applied" if ev.get("type") == "workspace_migration_applied"
-                      else "skipped")
-            reason = _field(ev, "reason")
-            record = {
-                "status": status,
-                "reason": reason if isinstance(reason, str) else None,
-                "ts": ev.get("ts") or ev.get("timestamp"),
-            }
-            record["suppressed"] = _suppresses(record)
-            out[mig_id] = record  # later line wins — append-only log order
-    return out
+            if isinstance(ev, dict):
+                yield ev
 
 
 def _suppresses(record: dict) -> bool:

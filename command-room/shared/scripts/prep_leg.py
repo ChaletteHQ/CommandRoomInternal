@@ -891,12 +891,27 @@ def legs_block(leg_result, *, brief_status: str = STATUS_RAN) -> dict:
     return {BRIEF_LEG_ID: brief_status, LEG_ID: prep_status}
 
 
+def _effective_fired_via(explicit):
+    """The seat's answer for a composer whose default claims a slot (M-3).
+    Import-tolerant: a receipt never fails over its run mode."""
+    try:
+        from receipts import effective_fired_via
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit
+
+
 def log_combined_receipt(
     workspace_root,
     *,
     leg_result,
     brief_status: str = STATUS_RAN,
-    fired_via: str = "scheduled",
+    # NOT `"scheduled"` (re-verify M-3). A literal default here is an
+    # EXPLICIT value by the time the resolver sees it, so it short-circuits
+    # the merged-seat branch and this composer records a slot nobody claimed.
+    # `effective_fired_via(None)` answers `"scheduled"` on every non-VM seat,
+    # so a legacy caller that omits the argument is byte-identical.
+    fired_via: Optional[str] = None,
     duration_ms: Optional[int] = None,
     late_tier: Optional[str] = None,
     extra_data: Optional[dict] = None,
@@ -925,7 +940,7 @@ def log_combined_receipt(
         workspace_root,
         "morning-brief",
         receipt_type="pack_run",
-        fired_via=fired_via,
+        fired_via=_effective_fired_via(fired_via),
         duration_ms=duration_ms,
         late_tier=late_tier,
         extra_data=data,
@@ -1005,6 +1020,16 @@ def failed_source_meetings(block, source: str = MAIL_SOURCE) -> list:
     return out
 
 
+#: T3 FIRE3 MUST 3 - the "brief ran, prep didn't" line for a WHOLE-leg
+#: failure: a remedy a typed `prep me for` can act on, and the scheduled fire
+#: that clears it. Validated with the fire families on; typed here only.
+WHOLE_LEG_PREP_LINE = (
+    "Your Morning Brief ran, but meeting prep didn't. Say `prep me for` a "
+    "meeting to build its brief now; the next scheduled Morning Brief preps "
+    "again."
+)
+
+
 def prep_leg_finding(workspace_root) -> Optional[dict]:
     """The watchdog's "brief ran, prep didn't" finding, or None.
 
@@ -1064,11 +1089,14 @@ def prep_leg_finding(workspace_root) -> Optional[dict]:
     degraded = int(counts.get(OUTCOME_DEGRADED) or 0)
     whole_leg = (block.get("status") == STATUS_DEGRADED)
     if whole_leg:
-        line = (
-            "Your Morning Brief ran, but meeting prep didn't — open the "
-            "Morning Brief in the Scheduled section and press Run Now once, "
-            "and check the prep briefs land."
-        )
+        # TRUTH1 (SPEC_MERGEFIX1 §3 constraint 6) — the typed phrase, never a
+        # button: on a merged build there is no Scheduled section holding a
+        # Command Room chat, and the same words work on every seat.
+        # T3 FIRE3 MUST 3 (FIRE1 N-4): the pinned whole-leg line. A typed
+        # brief never runs the prep leg (its receipt is SKIP_NO_LEG and is
+        # skipped here by design, RV-2), so the remedy is one a typed request
+        # CAN act on, and the finding clears on the next scheduled fire.
+        line = WHOLE_LEG_PREP_LINE
     else:
         noun = "meeting" if degraded == 1 else "meetings"
         line = (

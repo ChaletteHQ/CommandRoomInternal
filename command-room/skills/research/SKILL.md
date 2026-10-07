@@ -101,12 +101,13 @@ The default output is a **self-contained, branded premium HTML brief** (SPEC OUT
 
 **The render is a MECHANICAL call — no exceptions, no hand-fill.** Call `shared/scripts/premium_html.py` `make_premium_brief(...)` (or pipe a JSON payload to it on the CLI) with the assembled `sections` (bullets may be `{text, url, low_confidence}` dicts for cited findings; `people` / `events` / `sources` section keys carry the decision-makers, signals, and source list), `exec_header={"verdict": ...}`, `badges={"source": ..., "confidence": ...}`, `source_summary`, and `workspace_root`. That single call runs the full gate stack (output-contract → voice-tell → exec-header → post-save leak scan — the same gates every .docx deliverable passes, parity-pinned by G16) and resolves the brand per render. The old contract — "replace the `{{TOKENS}}` in the template by hand" — is RETIRED: hand renders got skipped at the end of long research turns and live fires shipped NO artifact at all (field report 2026-07-16, the #104 prose-instructed class). Never fill the template yourself; if `make_premium_brief` raises, fix the flagged payload and re-call (max 2 retries), then say plainly that the brief could not be rendered — do not improvise HTML.
 
+- **The file is BUILT in this session's scratch and LANDED in the workspace by the access layer (SPEC_NIGHTM2 §5, `shared/scripts/deliverables.py`).** The render call returns where the document is on the CUSTOMER'S OWN COMPUTER — the path you handed in, byte for byte, on a seat where the plugin and the folder share a filesystem, and the customer's own spelling on the merged seat. Link THAT RETURN and pass THAT to any receipt: never a path you re-derive or re-spell yourself, and never the landing's `landed_path`, which on a merged seat names the mount this run reads through and opens nothing on their machine. When you know the workspace folder's absolute path on their computer — a scheduled chat is given it, and `get_device_info` returns it — export it as `CR_DEVICE_WORKSPACE` before the call and the returned path is absolute; without it the return is the folder-relative path, `pc_path_unknown` is set, and you say where the document went in words with no link at all. When the layer cannot reach the folder the call raises `deliverables.DeliveryRefused`: say its one sentence — it is chosen for that reason and it is the whole answer — and stop. Nothing was written anywhere, so there is nothing to clean up and no second way to save it.
 **Assert the artifact, don't assume it.** After the call returns, CHECK the file exists on disk at the routed path (list the directory or stat the file). Only then emit the artifact link. A research fire that ends with no `.html` on disk and no stated render failure is a bug — the exact regression this step closes.
 
 **Delivery is the rendered file, and only the rendered file (DOCFENCE1).** Both backends below are gated chokepoints; nothing else is:
 
 - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js (and never improvise the HTML by hand — see above). Those paths bypass every gate and ship substandard or PII-leaking research (the v3.20.0 failure mode).
-- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("talking points", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical file itself, that is My Drive root, so the artifact violates the workspace routing rule by construction (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put that research in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link.
+- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("talking points", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical file itself, that is My Drive root, so the artifact violates the workspace routing rule by construction (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "as a copy alongside the canonical file" — **nor a direct instruction**: "put that research in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link.
 
 **Format override (SPEC OUT5 §3c):** research renders premium HTML by default; a client can pin it to `.docx` via `tune output` (`format_by_kind: {research: "docx"}`) — check `output_profile.resolve_format_for_kind("research", workspace_root)` and, when it answers `docx`, render via `brief_writer.make_brief()` instead (same sections payload minus the research-only keys, exec-header verdict carried over). An explicit ask in the trigger ("as a doc") beats the profile for that render.
 
@@ -116,6 +117,8 @@ The default output is a **self-contained, branded premium HTML brief** (SPEC OUT
 - **Quick lookup** ("what do we know about Acme Co") → bottom line + a few cited key findings + sources. Omit the optional sections.
 - **Deep / account brief** ("research Acme Co before my call") → add `Who & what matters` (decision-makers, likely buyer highlighted), `Recent signals` (trigger events), and a narrative section.
 - The badges are NOT optional: emit exactly one source badge reflecting the strongest tier actually used — `Verified · Vibe Prospecting` (enrichment ran) > `Deep web · Tavily` (Tavily ran, no enrichment) > `Web sources only` (built-in web) — plus one confidence chip (`high` / `medium` / `low`). Never claim a tier whose tools were absent. The footer source-summary names the engines used honestly (e.g., "5 sources via Tavily + Vibe Prospecting enrichment").
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 
 Then offer to fold the findings into the workspace as a confirm-choice surface (rendered via `render_chat_output_widget`, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) per `shared/CHAT_ACTION_WIDGET.md` § Transport — never markdown numbered actions):
 
@@ -156,6 +159,26 @@ Same skill, same request. The branch simply turns on when the tools are there.
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
@@ -163,3 +186,59 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Produce a verified, cited research brief on any company, person, market, or topic — then fold the findings into the CEO's workspace so they compound instead of evaporating. Reads entities.json + events.jsonl FIRST to frame the question through the CEO's own projects, people, and threads, then runs fan-out web search with source verification. Uses Tavily for deeper web search and clean page extraction when that connector is present, and the Vibe Prospecting enrichment tools to verify firmographics, surface funding / hiring / leadership trigger events, and identify real decision-makers when that connector is present; both are optional upgrades over built-in web search, and the brief honestly labels which sources were used. Hands verified findings to intel-intake to save and to people-crm to record any decision-makers. Use when the CEO says 'research [company]', 'look into [company]', 'dig into [company]', 'background on [person]', 'what do we know about [company]', 'pull together research on [topic]', 'do some research on [topic]', 'research brief on [topic]', 'research [person] before my call'. DOES NOT fire when the CEO already has the source in hand and says break this down or parse this — that is intel-intake; research is for when there is no source yet. DOES NOT fire on what did anyone say about [topic] or transcript search — that is transcript-search, which searches the CEO's own meetings, not the web. DOES NOT fire on prep me for my meeting (call-prep) or one-pager on [topic] (one-pager-composer).
 
 **Built-in deep-research fence (RSR1):** research owns ALL research intents in this workspace — including any ask the generic built-in deep-research skill could plausibly take. That skill is workspace-blind: no entity framing, no Tavily / Vibe Prospecting enrichment, and its findings evaporate instead of being saved where call-prep and briefings can reuse them. Any 'research', 'deep dive on', 'dig into', 'look into', 'background on', 'what's the story on', 'what do we know about', 'pull together research on', 'do some research on', 'research brief on' phrasing routes HERE, never to the built-in skill. (The unbracketed stems in this paragraph are deliberate — they are the mechanical trigger family `tests/run_trigger_test.py` asserts against; the client-workspace CLAUDE.md session rule is the lever that decides live routing ties.)
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

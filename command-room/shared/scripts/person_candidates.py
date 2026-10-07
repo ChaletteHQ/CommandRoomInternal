@@ -932,7 +932,7 @@ def auto_answer_candidates(workspace_root, *, records_by_ref,
     # receipt say "Added <name>" for somebody nobody added, with a null
     # person_id behind it.
     n_already_on_file = 0
-    batch_id = new_batch_id(now_iso or "")
+    batch_id = new_batch_id(now_iso)
 
     if not ledger_ok:
         # The fence, at the top of the pass rather than per candidate: if the

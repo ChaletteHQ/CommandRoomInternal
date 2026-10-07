@@ -82,6 +82,7 @@ SOURCES (`machine_identity()["source"]`):
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import re
 import secrets
@@ -202,10 +203,22 @@ def _write_marker(path: Optional[Path], token: str) -> Optional[str]:
     Exclusive-create, so two fires racing on first use settle on ONE token —
     the loser re-reads rather than overwriting a value the winner may already
     have stamped on a receipt.
+
+    NOT UNDER THE HELPER DOOR (MF-M2-21, 2026-09-20). The marker lives in the
+    home directory, OUTSIDE the workspace, and a merged seat's home is a
+    fresh per-session sandbox — so on that seat the trigger is armed on every
+    fire, and two allow-listed READS (`inbox_helpers:setup` and
+    `plan_fire_receipt`) were minting it on the customer's machine through a
+    door whose docstring says it writes nothing. Under `CR_HELPER_DOOR` a
+    read gets whatever is already on disk, or None; the token is minted by a
+    writer. The test sits INSIDE the `try` (MF-M2-25), which is also what
+    keeps the `path is None` answer identical.
     """
-    if path is None:
-        return None
     try:
+        if os.environ.get("CR_HELPER_DOOR"):
+            return _read_marker(path)
+        if path is None:
+            return None
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "x", encoding="utf-8", newline="\n") as fh:
             fh.write(token + "\n")
@@ -246,8 +259,54 @@ def machine_identity(home=None) -> dict:
             "path": str(path) if path else None}
 
 
+def _shared_writer_id(env=None) -> Optional[str]:
+    """The account+workspace writer id (ACCESS1), or None on every other seat.
+
+    Asked FIRST because on a merged seat the home this module was designed
+    around is a per-session directory in the sandbox VM, so the marker it
+    persists cannot survive to the next fire (probe P4). `writer_identity`
+    returns None when there is no account uuid in the environment — which is
+    every legacy Cowork and local seat — and on None everything below runs
+    exactly as it does today.
+    """
+    try:
+        import writer_identity  # type: ignore
+    except ImportError:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import writer_identity  # type: ignore
+        except Exception:  # noqa: BLE001 — identity never raises
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        # `env` is honoured so an in-process pin can drive a synthetic
+        # environment (re-verifier L-3). No product path passes one: every
+        # real caller already has the environment in its own process.
+        return (writer_identity.writer_id(env=env) if env is not None
+                else writer_identity.writer_id())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def shared_writer_id(env=None) -> Optional[str]:
+    """The public name for the ACCESS1 writer id, or None on every other seat.
+
+    `receipts.machine_fields` asks THIS before it asks the marker, in the same
+    order `machine_id` uses. Before fix round 2 it called `machine_identity()`
+    directly and so could never see the account-derived id at all — which is
+    why the gate walk's ledger carried a per-session token on every receipt
+    while `machine_id()` would have answered correctly one frame away.
+    """
+    return _shared_writer_id(env)
+
+
 def machine_id(home=None) -> Optional[str]:
     """The machine token for receipts, or None when nothing is knowable."""
+    shared = _shared_writer_id()
+    if shared:
+        return shared
     return machine_identity(home).get("machine")
 
 
@@ -259,4 +318,5 @@ __all__ = [
     "machine_id",
     "machine_identity",
     "marker_path",
+    "shared_writer_id",
 ]

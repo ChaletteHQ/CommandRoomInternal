@@ -100,6 +100,15 @@ When a new plugin version is installed, the installer:
 - Does NOT read or transmit anything under `[WORKSPACE_ROOT]`.
 - Does NOT modify anything under `[WORKSPACE_ROOT]` (migrations, if any, run via the `migration-v2` skill on the customer's next session, logged locally).
 
+**One exception, scoped to one directory: the runtime cache.** In the merged Claude environment the plugin's helper scripts and the customer's workspace are on different machines, and nothing bridges them — a helper in the cloud container cannot open a workspace file. So a plugin update installs a version-stamped, content-hashed copy of the runtime (`shared/scripts/**`, `shared/data-schemas/**`, the `references/**` files those scripts open, and `plugin.json`) at `[WORKSPACE_ROOT]/_hq/.cache/cr-runtime/<version>/`, and every substrate operation runs there, beside the data. This is the ONLY write a plugin update makes under the root, and it is narrow by construction:
+
+- It is plugin CODE, never customer data — the directory carries no entity, event, message or document content, and `cleanup`'s Validation 1 grep below covers it.
+- It is content-hashed: every file's sha256 is listed in `manifest.json`, the whole set is re-verified before the runtime is ever used, and a single mismatched byte refuses to run rather than running modified plugin code (`Customer → Plugin: NEVER`, below).
+- It is disposable: deleting the directory costs a re-install and nothing else. No customer state lives there.
+- It reads nothing on the way in. The install is a one-way copy of files the plugin already ships.
+
+Precedent for plugin-owned collateral inside the workspace already exists in `_hq/.system/` and the product's own `Command Room/` folder; this amendment adds one more directory with a hash to prove it has not been tampered with. Nothing else about invariant 4 changes: a plugin update still reads nothing under `[WORKSPACE_ROOT]` and still transmits nothing out of it.
+
 ### 5. Cross-customer data never exists
 
 There is no shared data layer. There is no "aggregate insights across customers." There is no "benchmark your metrics against other customers." Every install is an island. Feature proposals that require cross-customer aggregation are out of scope for this plugin.
@@ -150,7 +159,7 @@ The only runtime information about customer usage that crosses back out of the w
 
 `cleanup` runs these checks every Sunday:
 
-1. `grep` all files under `[WORKSPACE_ROOT]/.claude/plugins/.../the plugin install directory (command-room/)` for strings matching canonical person names from customer's entities.json. Any hit = violation, surface immediately.
+1. `grep` all files under `[WORKSPACE_ROOT]/.claude/plugins/.../the plugin install directory (command-room/)` **and under `[WORKSPACE_ROOT]/_hq/.cache/cr-runtime/`** (the installed runtime — invariant 4's one exception; it ships plugin code only, so a customer name appearing there is the same violation with the same severity) for strings matching canonical person names from customer's entities.json. Any hit = violation, surface immediately.
 2. Check that no skill writes outside `[WORKSPACE_ROOT]` (by scanning for hard-coded paths in SKILL.md files).
 3. Check that no `telemetry_*` events are being EXFILTRATED by any source_skill in this plugin (the customer-facing `beta-telemetry` skill was retired v3.9.0; residual customer-facing telemetry writes indicate a stale install). Per-workspace `pack_run` telemetry events are workspace-local and expected.
 4. Check that connector results are not cached anywhere under plugin directory.
@@ -166,6 +175,7 @@ Every new skill MUST be reviewed against this contract before merge:
 - [ ] No literal customer names, projects, or entity references anywhere in the skill file.
 - [ ] All writes resolve under `[WORKSPACE_ROOT]`.
 - [ ] All reads stay within `[WORKSPACE_ROOT]` + connector scope.
+- [ ] Nothing the skill writes lands under `[WORKSPACE_ROOT]/_hq/.cache/cr-runtime/` — that directory is the plugin's own verified runtime (invariant 4), and the access layer's verbs refuse every path inside it.
 - [ ] No network calls outside connector endpoints.
 - [ ] No customer-facing telemetry skills in this plugin (retired v3.9.0; the chalette internal plugin is the home for any plugin-developer telemetry). Per-workspace `pack_run` events written to the customer's own events.jsonl are not telemetry — they are workspace-local diagnostics consumed by `usage-report`.
 - [ ] Any customer-specific behavior is driven by `BUSINESS_CONTEXT.md` or a user-controlled config file, not hard-coded.

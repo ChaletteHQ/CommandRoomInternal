@@ -12,6 +12,20 @@ template_version: 1.0.0
 
 # Email Writer
 
+**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="email-writer")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost.
+
+**Learned constraints, read BEFORE composing (SPEC_SURFACES2 §1).** Once the recipient is resolved and before you write a single line, load what they have already corrected:
+
+```python
+from draft_constraints import load_draft_constraints, apply_draft_constraints
+c = load_draft_constraints(workspace_root, "email-writer",
+                           recipient_id=<person id or None>,
+                           domain=<the draft's domain or None>)
+```
+
+`c["lines"]` are CONSTRAINTS, not suggestions — obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. Anything the person has STATED in this request outranks all of it. When you have a draft, run it through `apply_draft_constraints(draft, c)` before you show it — that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
+
+
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, load the canonical thread payload — `load_thread_knowledge(workspace_root, primary_thread_id, "email-writer")` per the MANDATORY context load below — to ground the substrate-aware agenda; do not re-derive thread context with a freelance substrate read. The profile applies the org scope at the source (PGUARD2 D2 — drafts must not see personal-lane or masked-account commitments) and keeps only the confirmed half of the open set (INTAKE — the org scope is not the pending filter; see the Reads bullet below). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. Once resolved, the greeting and every rendered mention of the recipient use the record's `canonical_name` spelling (or its nickname field for warm registers) — never a transcript/ASR or email-display-name spelling (F-50 P2b; protocol § Display names).
@@ -71,7 +85,7 @@ Other skills and mid-task turns hand email drafts off to THIS skill instead of c
 
 **The chained back half is where live fires freelance (EW2+T — F-07/F-08: delegation landed 3/3, the protocol below held only 1/3). These four rules bind a chained fire exactly as hard as a direct one:**
 
-1. **MUST render the editable widget** — via the Phase 4 transport (`widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`)). The widget is the ONLY draft surface. Inline chat text, a markdown preview, a blockquoted "here's the draft:" — none of those is a render. If you have draft text on screen and no widget, you are mid-violation (this was 2 of 3 live fires).
+1. **MUST render the editable widget** — via the Phase 4 transport (`widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`)). The widget is the ONLY draft surface. Inline chat text, a markdown preview, a blockquoted "here's the draft:" — none of those is a render. If you have draft text on screen and no widget, you are mid-violation (this was 2 of 3 live fires). **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 2. **MUST NOT create any connector draft, send, or queue anything pre-click.** The MUST-language preamble below binds chained fires verbatim — "I'll just queue it to the mail backend's Drafts so it's ready" is the exact live failure (an eager Superhuman queue with no widget and no event). Nothing touches the mail backend until the user's widget click dispatches through apply-choices.
 3. **Event writes stay at apply-choices** (the lazy contract, unchanged): chained invocation changes the ENTRY point, never the exit. No `email_drafted` append from this skill's own path — the click owns it.
 4. **No-address recovery — never a guess (Bug #44 verb, pinned here after F-08).** When the resolved recipient has no actionable email on file, render the widget anyway with the `add email then send` recovery verb and an empty To:. **Address inference is BANNED:** never derive a recipient address from the org's email-address pattern, a coworker's address shape, a domain convention, or any "most likely" construction — not even presented as a suggestion behind a confirm. The one live guess gated behind a confirm and was still WRONG; a plausible wrong address is worse than an empty field, because the user rubber-stamps plausible. Investigate context, say plainly no address is on file, offer the recovery paths — that observed behavior is the contract.
@@ -97,7 +111,7 @@ Before writing, read `shared/WORKSPACE_API.md`.
 - `shared/VOICE_CALIBRATION.md` — universal protocol.
 
 **Never writes to:**
-- This SKILL.md's own Voice Block (only `insight-generator` or Chalette refresh does that).
+- This SKILL.md's own Voice Block (only the `learning` job's voice leg or a Chalette refresh does that).
 - Plugin source files outside this skill's folder.
 
 ---
@@ -129,9 +143,7 @@ This skill adopts the First-Run Personalization Protocol (`shared/FIRST_RUN_PROT
 Always read config through `get_config` — never read the raw file.
 
 ```python
-# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
-# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -263,8 +275,55 @@ Rewrite what fails each pass, re-check once, then return.
 **Mechanical voice-tell gate (B2 — bash-gated, not prose).** After the two passes above, run the draft body through the deterministic detector. It hard-fails on the exact banned phrases in `shared/VOICE_CALIBRATION.md`; structural tells (em-dash pile-ups, tri-colons, hedging stacks, bullets-in-email) warn. This is enforced, not advisory — it does not replace the binary checklist, it backstops it:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_detector.py" - --context email
 ```
 
@@ -404,9 +463,55 @@ Each draft's `N send` lands in apply-choices the same way the n=1 case does — 
 **Render + post:**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -420,6 +525,7 @@ print(transport['html'])
 # Pass transport["html"] (the persisted page's validated bytes, verbatim) to
 # mcp__visualize__show_widget as widget_code (T2 — shared/CHAT_ACTION_WIDGET.md
 # § Transport). Never hand-compose or post-process the HTML.
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 **Action semantics (handled by apply-choices — mail-backend tool calls fire HERE, not in Phase 4):**
@@ -592,9 +698,44 @@ Quick note: your writing voice profile hasn't been refreshed in a while (last up
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Draft emails in the CEO's voice — short external, long external, internal, cold outreach, and intro/connector emails. Use when the CEO says 'draft an email', 'draft an email to [recipient]', 'email [name] about [topic]', 'email to', 'write an email', 'respond to [thread]', 'cold email to [prospect]', 'intro email', 'reply to [person]', 'write an email saying', 'send [recipient] an email about', 'follow up with [name] about [topic]', 'follow up with' (qualified below — a follow-up REQUEST, not a reminder), 'draft a check-in', 'draft a check-in to [name]' (a plain outbound draft, no meeting in context). Produces a ready-to-send draft saved to the recipient's thread or a staging folder. Runs voice calibration protocol per shared/VOICE_CALIBRATION.md with this skill's Voice Block. Also handles first-run personalization settings — use when the CEO says 'tune my email drafts', 'tune email-writer', 'show email-writer settings', 'reset email-writer to defaults', 'change my email draft posture'. DOES NOT fire on 'follow up on that call' / 'follow up on the meeting' / 'draft follow-ups' from a meeting (follow-up-ritual — meeting-shaped), 'triage my inbox' (inbox-triage), or 'write a memo' / 'recurring update' (memo-writer). DOES NOT fire on 'draft a Slack message' / 'text [name]' / 'draft a text to' (out of scope — this skill drafts email only; chat-message drafting has no owner today, say so plainly instead of improvising).
 > DOES NOT fire on 'remind me to' / 'remind me about' phrasings, even when they contain a follow-up-with fragment — *remind me to follow up with Acme Friday* is a reminder capture (show-my-reminders), not a draft request. The bare follow-up-with trigger applies only when the utterance IS the ask to draft now (SPEC PIPE1 latent-collision fix, 2026-07-13).
+## Draft date scan (DRAFTDATE1 — MANDATORY on every rendered draft)
+
+**A draft never states a date, day or deadline the row does not hold.** On 2026-09-07 the drafts on this product invented three: "I'll have it finished by Friday" and "this is on your calendar today" on rows with no due date and no calendar event, and "let's get this paid this week" on a row with neither. Nobody had promised any of those days; sending one makes a commitment the book does not know about.
+
+Before you show or save ANY draft you composed — status note, nudge, chase, follow-up, reply, invite body — run it through the scan:
+
+```python
+from draft_date_scan import assert_draft_dates
+assert_draft_dates(<the draft text>, <the row>, today=<the workspace's own day>)
+```
+
+It raises `DraftDateError` naming every phrase the row cannot support. A date phrase is allowed only when it traces to (1) the row's due date, (2) a calendar event on the row, or (3) a date in the row's OWN words — its title, its quote, the thread subject. `today` is the workspace's day (`tz.py`), never a UTC re-slice.
+
+**NEVER catch the error and send anyway, and never invent a date so the sentence reads better.** The fix is one of two things: drop the day from the draft ("I'll come back to you with a date" is honest and costs nothing), or set a real date on the row first and then say it. A draft with no date at all is always allowed.
+

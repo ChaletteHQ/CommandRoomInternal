@@ -40,6 +40,14 @@ here changes any of that.
   **This module corrects WHICH INSTANT it is. It never corrects WHICH ZONE that
   instant is expressed in.**
 
+WHICH ZONE "LOCAL" MEANS (TZ1, 2026-09-20). R8 above is a legacy-seat rule and
+it stands there unchanged. On a merged/cloud seat there is no machine to be
+local to — the fire is a container that read PDT, the helpers run in a sandbox
+VM on UTC, and the cron is evaluated in UTC — so `clock_policy` names the
+WORKSPACE zone as that seat's user-local clock, and `_as_zone` picks it up for
+every caller that injects none. That is still not a correction of this module's
+kind: it decides how an instant is SPELLED, never which instant it is.
+
 `trusted_now_local_naive()` returns the corrected instant in the MACHINE's own
 zone, naive — a drop-in for `datetime.now()` that moves the instant and leaves
 the clock it is expressed in exactly where it was. If you find yourself routing
@@ -477,17 +485,40 @@ def _workspace_local_date(instant_utc: _dt.datetime,
     return instant_utc.astimezone().date()
 
 
+def _default_zone():
+    """The zone this seat expresses a "local" instant in when no caller
+    injected one (TZ1, SPEC_NIGHTM2 §6).
+
+    `None` on a legacy desktop seat — the OS zone, exactly as before. On a
+    merged/cloud seat `clock_policy` hands back the WORKSPACE zone instead,
+    because the container's PDT and the sandbox VM's UTC are accidents of
+    where the fire ran, not facts about the customer. This module still
+    corrects only WHICH INSTANT it is; which ZONE that instant is expressed
+    in is `clock_policy`'s single decision, and this is where the ~20 writer
+    helpers that call `trusted_now_local_naive()` with no zone pick it up.
+
+    `clock_policy.user_local_zone` never calls back into this module, so
+    there is no cycle.
+    """
+    try:
+        from clock_policy import user_local_zone
+
+        return user_local_zone()
+    except Exception:  # noqa: BLE001 — a clock read never raises
+        return None
+
+
 def _as_zone(machine_zone):
-    """A tzinfo for an injected machine zone, or None meaning "the OS zone".
+    """A tzinfo for an injected machine zone, or the seat's default zone.
 
     Accepts a tzinfo or a zone NAME. Injectable so a test can pin the machine
     zone and stop depending on whichever machine happens to run the suite —
     the dependence that made this suite pass on one runner and fail on another.
-    Unresolvable names degrade to None (the OS zone) rather than raising, in
+    Unresolvable names degrade to the default zone rather than raising, in
     keeping with everything else here.
     """
     if machine_zone is None:
-        return None
+        return _default_zone()
     if isinstance(machine_zone, _dt.tzinfo):
         return machine_zone
     try:
@@ -495,7 +526,7 @@ def _as_zone(machine_zone):
 
         return ZoneInfo(str(machine_zone))
     except Exception:
-        return None
+        return _default_zone()
 
 
 def _machine_zone_dt(instant_utc: _dt.datetime, machine_zone=None):

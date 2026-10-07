@@ -294,7 +294,7 @@ def hold_item(
     if not isinstance(ttl_days, int) or isinstance(ttl_days, bool) or ttl_days <= 0:
         raise ValueError(f"ttl_days must be a positive int; got {ttl_days!r}")
 
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     now_iso = now_iso or _clock_now(workspace_root).strftime("%Y-%m-%dT%H:%M:%SZ")
     now = _parse_dt(now_iso) or _clock_now(workspace_root)
@@ -364,7 +364,7 @@ def clear_dismissal(
             f"dismissal_seq {dismissal_seq!r} is not an event seq — pass the "
             "chat_dismissal event's seq (the ledger row carries it verbatim)"
         )
-    from writer_lock import events_writer_lock
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"clear_dismissal:{source_skill}"):
         events = _load_events(events_path)

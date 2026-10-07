@@ -101,6 +101,19 @@ from components import (  # noqa: E402
     build_timeline_html,
 )
 
+def _delivery_for(output_path, workspace_root):
+    """DELIV1 — the build-then-land plan for one rendered page.
+
+    The format twin of `brief_writer._delivery_for`; see that docstring for
+    why `None` is the pre-DELIV1 runtime and not a silent fallback.
+    """
+    try:
+        from deliverables import Delivery  # noqa: WPS433 (lazy by design)
+    except ImportError:
+        return None
+    return Delivery(output_path, workspace_root)
+
+
 TEMPLATE_PATH = _HERE.parent / "templates" / "premium_brief.html"
 
 # The premium backend renders every docx kind PLUS research (research has no
@@ -613,7 +626,13 @@ def make_premium_brief(
     for token, value in fills.items():
         page = page.replace("{{" + token + "}}", value)
 
-    out = Path(output_path)
+    # DELIV1 (SPEC_NIGHTM2 §5) — BUILD in the session's scratch, LAND through
+    # the access layer. Identical shape to the docx twin in brief_writer: the
+    # gates read the built file, the landing happens only after they pass, and
+    # on a seat where the target is not inside a resolvable workspace the build
+    # path IS the final path (byte-for-byte today's behaviour).
+    delivery = _delivery_for(output_path, workspace_root)
+    out = Path(delivery.build_path if delivery is not None else output_path)
     out.write_text(page, encoding="utf-8")
 
     # Post-save leak scan — the format twin of make_brief's docx scan, same
@@ -621,19 +640,38 @@ def make_premium_brief(
     # mid-update that lacks the scanner still saves; the scanner applies on
     # the next plugin update).
     try:
-        from docx_leak_scanner import scan_html_for_leaks
-        scan_html_for_leaks(str(out))
-        gates_ran.append("leak")
+        from docx_leak_scanner import LeakScanError, scan_html_for_leaks
     except ImportError:
         pass
+    else:
+        try:
+            scan_html_for_leaks(str(out))
+        except LeakScanError:
+            # A REFUSED FILE IS NEVER LANDED (DELIV1, spec §5 item 5). NIGHT
+            # 11a merged-tree review N-15 made this path unlink the page the
+            # scan refused; DELIV1 moves the write that precedes it into the
+            # scratch, so the refusal now removes a scratch copy and the
+            # customer's folder never held the page at all.
+            if delivery is not None:
+                delivery.discard()
+            else:
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+            raise
+        gates_ran.append("leak")
+
+    # The landing — after every gate, never before.
+    final_path = delivery.finish() if delivery is not None else str(output_path)
 
     # SPEC GATE1 — the detectable-bypass audit, surface="premium_html" so the
     # verify loop's *_drafted ⋈ gate_ran join works per backend.
     emit_gate_ran_audit(
-        brief_kind, gates_ran, str(out), workspace_root, surface="premium_html"
+        brief_kind, gates_ran, final_path, workspace_root, surface="premium_html"
     )
 
-    return str(output_path)
+    return final_path
 
 
 def make_premium_brief_from_json(json_payload: str) -> str:
@@ -674,9 +712,29 @@ __all__ = [
 ]
 
 
+def _cli(payload: str) -> int:
+    """The bash boundary — the format twin of `brief_writer._cli` (review F-4).
+
+    A refused landing prints its one composed sentence on stderr and exits
+    non-zero; a traceback here would spell the runtime path inside the session
+    mount, which is a session id in the text the model reads back.
+    """
+    try:
+        make_premium_brief_from_json(payload)
+    except Exception as exc:  # noqa: BLE001 — re-raised unless it is ours
+        try:
+            from deliverables import refusal_sentence  # noqa: WPS433
+            line = refusal_sentence(exc)
+        except Exception:
+            line = None
+        if not line:
+            raise
+        print(line, file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
     # CLI: `python3 premium_html.py '<json>'` OR pipe JSON on stdin.
-    if len(sys.argv) > 1:
-        make_premium_brief_from_json(sys.argv[1])
-    else:
-        make_premium_brief_from_json(sys.stdin.read())
+    raise SystemExit(_cli(sys.argv[1] if len(sys.argv) > 1
+                          else sys.stdin.read()))

@@ -69,10 +69,10 @@ RECEIPT_EVENT = "pack_run"
 # The check id, named so the red line can be pointed at.
 CHECK_BRIEF_WITHOUT_RECEIPT = "brief-posted-without-receipt"
 
-# The run modes whose finding should say "press Run Now on the scheduled
-# task". A catch-up IS a scheduled fire arriving late, so it belongs here;
-# everything else — `manual`, and an absent value on any pre-BRIEFFIX1 row —
-# takes the hand-run wording, matching the writer's own default (RV-4).
+# The run modes whose finding takes the SCHEDULED wording (`ORPHAN_LINE`). A
+# catch-up IS a scheduled fire arriving late, so it belongs here; everything
+# else — `manual`, and an absent value on any pre-BRIEFFIX1 row — takes the
+# hand-run wording, matching the writer's own default (RV-4).
 SCHEDULED_WORDING = frozenset({"scheduled", "catchup"})
 
 # How long after a `brief_state` the receipt may still be in flight. A fire
@@ -102,17 +102,25 @@ _ORDER_TOLERANCE = _dt.timedelta(seconds=10)
 # The plain-English line. Facts plus the one action, no cause invented, no
 # internal vocabulary (R3) — "brief_state" and "pack_run" are our words, not
 # the CEO's.
+# TRUTH1 (SPEC_MERGEFIX1 §3 constraint 6, 2026-09-20) — the action is the
+# phrase, never a button. "The Scheduled section" is the cloud routine list
+# on a merged build and it holds no Command Room chat, so the old closer sent
+# the customer to a screen where the fix is not. The two wordings below still
+# differ, because the two FACTS differ (a scheduled fire that recorded
+# nothing vs a brief this person ran by hand) — what no longer differs is the
+# next step, and that is honest: on either path, saying it again is what
+# re-computes the numbering and records it.
 ORPHAN_LINE = (
     "Your Morning Brief posted without recording that it ran, so its numbers "
-    "can't be used for one-tap closes right now — open the Morning Brief in "
-    "the Scheduled section and press Run Now once."
+    "can't be used for one-tap closes right now — say 'morning briefing' "
+    "once and it will record them."
 )
 
 # The same fact, said to someone who ran the brief by hand (BRIEFFIX1 F6).
-# "Press Run Now on the scheduled task" is the wrong instruction there: the
-# scheduled task is not what fell over, and following it would re-run a
-# different fire. Saying it again is the action, because saying it again is
-# what re-computes the numbering and records it.
+# Pointing at the scheduled task is the wrong instruction there: the scheduled
+# task is not what fell over, and following it would re-run a different fire.
+# Saying it again is the action, because saying it again is what re-computes
+# the numbering and records it.
 ORPHAN_LINE_MANUAL = (
     "The last Morning Brief you ran by hand didn't record its numbered list, "
     "so closing an item by its number isn't safe right now — say "

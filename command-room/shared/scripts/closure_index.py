@@ -241,6 +241,136 @@ def reversed_closer_positions(events, *, until=None) -> set:
     return reversed_at
 
 
+
+def reversed_act_positions(events, *, until=None) -> set:
+    """ATTRIB2 (M's ruling, 2026-09-07) — the append positions of every act a
+    later undo REVERSED, whatever kind of act it was.
+
+    POLICY1-B taught this module one fold: a CLOSE a reopen reversed is not a
+    close a surface may count (`reversed_closer_positions`, above, unchanged).
+    The attended test found the same defect one family over — the morning
+    brief reported a prospect-to-client promotion after its undo, and the
+    Friday wrap listed a second one under "Decided for you" WITH AN UNDO
+    OFFER for something already put back. Promotions, reopens, drops, links
+    and facts all reverse the same way; the fold is the same fold.
+
+    THE ANCHOR IS THE UNDO'S OWN MARKER, not a per-family guess.
+    `brain_undo.undo_batch` appends one `brain_change_undone` per reversed
+    change carrying `data.change_ref == "seq:<the reversed event's seq>"` —
+    the module's established spelling (`auto_merges_undone` reads the same
+    key). Every registered reverser produces one, so a family added later is
+    covered the day its reverser is registered, with no edit here.
+    `deal_won_reversed.won_seq` folds beside it: the CUTB-item-4 marker names
+    the win the undo put back on a path that writes no second marker.
+
+    `until` (aware datetime or ISO string) bounds the REVERSAL, exactly as it
+    does above: a surface firing at noon must not fold away an act reversed at
+    four. Returns positions (indices into `events`), so a caller that is
+    already enumerating with `enumerate` asks `pos in reversed_at` and nothing
+    else changes.
+
+    Read-only. Never raises on a malformed row."""
+    try:
+        from event_time import parse_ts as _pts
+    except Exception:  # pragma: no cover
+        _pts = None
+    limit = None
+    if until is not None:
+        if isinstance(until, str) and _pts is not None:
+            limit = _pts(until)
+        elif not isinstance(until, str):
+            limit = until
+
+    pos_by_seq: dict = {}
+    reversal_seqs: list = []
+    for idx, ev in enumerate(events or ()):
+        if not isinstance(ev, dict):
+            continue
+        seq = _as_seq(ev.get("seq"))
+        if seq is not None and seq not in pos_by_seq:
+            pos_by_seq[seq] = idx
+        et = ev.get("type") or ev.get("event") or ""
+        if et not in ("brain_change_undone", "deal_won_reversed"):
+            continue
+        if limit is not None and _pts is not None:
+            when = _pts(ev.get("ts"))
+            if when is not None and when > limit:
+                continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if et == "brain_change_undone":
+            ref = str(d.get("change_ref") or "")
+            if ref.startswith("seq:"):
+                target = _as_seq(ref[4:])
+                if target is not None:
+                    reversal_seqs.append(target)
+        else:
+            target = _as_seq(d.get("won_seq"))
+            if target is not None:
+                reversal_seqs.append(target)
+
+    out: set = set()
+    for seq in reversal_seqs:
+        pos = pos_by_seq.get(seq)
+        if pos is not None:
+            out.add(pos)
+    return out
+
+
+#: The actor `reconcile_sent_commitments` writes on a close it made on its own
+#: judgment — POLICY1-B's rail convention, and the value `brain_undo`'s own
+#: `_changes_for_sent_reconcile` matches on when it resolves a sent batch.
+SENT_RECONCILE_ACTOR = "sent_reconcile"
+
+
+def reversed_sent_closes_by_receipt(events, *, until=None) -> dict:
+    """ATTRIB2 fix round 1 (reviewer F-4, 2026-09-07) — for each
+    `sent_reconcile` RECEIPT, how many of the closes it covers a later undo
+    has reversed. Returns `{receipt_position: n_reversed}`; a receipt with
+    nothing reversed is absent.
+
+    WHY A SECOND SHAPE. Every other line in the CHANGED feed is counted from
+    the per-row events, so `reversed_closer_positions` folds it by position.
+    The sent rail's line is counted from the receipt's own `n_closed` (the
+    receipt-honesty rule: narrate what was written, not what was planned), and
+    a receipt has no position of its own to fold — so on 2026-09-07 the brief
+    still said "Closed 4 commitments matched to your sent mail — say `undo` to
+    reopen any" on a morning when the same fire had reopened two of them a
+    minute later (closes 15495/15496, reopens 15503/15505). This gives the
+    receipt the same fold at its own grain.
+
+    THE COVERAGE RULE IS `brain_undo`'s, restated: the closes ONE run narrates
+    are the `commitment_resolved` rows with `resolved_by == "sent_reconcile"`
+    appended after the PREVIOUS `sent_reconcile` audit and at or before this
+    one (`brain_undo._changes_for_sent_reconcile`, which is what a person's
+    `undo` of that batch reverses). Keeping the two definitions the same is
+    the point: the line and its undo offer describe the same set of rows.
+
+    `until` bounds the REVERSAL exactly as `reversed_closer_positions` does —
+    a surface firing at noon must not fold away a close reopened at four.
+
+    Read-only. Never raises on a malformed row."""
+    try:
+        reversed_at = reversed_closer_positions(events, until=until)
+    except Exception:  # pragma: no cover — never shrink a count on a read failure
+        return {}
+    out: dict = {}
+    pending: list = []
+    for idx, ev in enumerate(events or ()):
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("type") or ev.get("event") or ""
+        if et == "commitment_resolved":
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if d.get("resolved_by") == SENT_RECONCILE_ACTOR:
+                pending.append(idx)
+        elif et == "sent_reconcile":
+            n = sum(1 for pos in pending if pos in reversed_at)
+            if n:
+                out[idx] = n
+            pending = []
+    return out
+
+
 def build_closure_index(events) -> ClosureIndex:
     """One pass over `events` (append order) → a ClosureIndex."""
     index = ClosureIndex()
@@ -448,4 +578,7 @@ __all__ = [
     "pointer_coverage_line",
     "reopen_target",
     "resolve_closure_target",
+    "reversed_act_positions",
+    "reversed_sent_closes_by_receipt",
+    "SENT_RECONCILE_ACTOR",
 ]

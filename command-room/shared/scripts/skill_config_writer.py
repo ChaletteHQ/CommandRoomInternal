@@ -37,6 +37,7 @@ writes are FORBIDDEN.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from atomic_write import atomic_append_jsonl, atomic_write_json  # noqa: E402
+from delete_grant import SUFFIX_STALE, remove_or_move_aside  # noqa: E402
 from next_seq import next_seq  # noqa: E402
 
 CONFIG_DIR_SUBPATH = ("_hq", "data", "skill_config")
@@ -89,8 +91,32 @@ def _config_dir(workspace_root: Path) -> Path:
     return workspace_root.joinpath(*CONFIG_DIR_SUBPATH)
 
 
+#: LOWS2 row 1 (MIGRATE3-MB known limit 7): the only shape a stored config's
+#: name may take. A name is one lower-case word of letters, digits, hyphens and
+#: underscores, at most 64 characters. An absolute name (pathlib's join drops
+#: the config folder), a `..` or a separator (a climb out of it) and an
+#: over-long padded name (past the door's path-length fence) are all refused
+#: here, BEFORE any path is built, so no load, save, wipe or probe can reach a
+#: file outside `_hq/data/skill_config/`. The underscore is admitted because
+#: four stores already carry one (`chat_persona`, `output_profile`,
+#: `brain_render`, `binding_gauge`); it cannot climb or root a path.
+SKILL_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def check_skill_name(skill_name: Any) -> str:
+    """Return `skill_name` unchanged when it is a legal config name; raise
+    `ValueError` otherwise. Never touches the disk."""
+    if not isinstance(skill_name, str) or SKILL_NAME_RE.fullmatch(skill_name) is None:
+        shown = skill_name if isinstance(skill_name, str) else type(skill_name).__name__
+        raise ValueError(
+            "skill_config_writer: refused config name %r (a config name is "
+            "lower-case letters, digits, hyphens or underscores, at most 64 "
+            "characters, and never a path)" % (str(shown)[:80],))
+    return skill_name
+
+
 def _config_path(workspace_root: Path, skill_name: str) -> Path:
-    return _config_dir(workspace_root) / f"{skill_name}.json"
+    return _config_dir(workspace_root) / f"{check_skill_name(skill_name)}.json"
 
 
 def _events_path(workspace_root: Path) -> Path:
@@ -174,9 +200,10 @@ def save_skill_config(
             f"in the same commit as the DEFAULTS change — CONTRACT Rule 29.)"
         )
 
+    # The name is fenced (inside `_config_path`) BEFORE the folder is made.
+    config_path = _config_path(workspace_root, skill_name)
     config_dir = _config_dir(workspace_root)
     config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = _config_path(workspace_root, skill_name)
     events_path = _events_path(workspace_root)
 
     # Auto-detect reconfigure vs first-run if not explicitly specified
@@ -221,6 +248,33 @@ def save_skill_config(
     atomic_append_jsonl(events_path, event)
 
 
+def wipe_skill_config_result(workspace_root: str | Path,
+                             skill_name: str) -> dict:
+    """`wipe_skill_config` with the whole story instead of one bit.
+
+        {"existed": bool, "cleared": bool, "left_in_place": bool,
+         "moved_to": str|None}
+
+    `cleared` is True only when the next fire of the skill will really see no
+    stored config. On a mount that refuses the delete the file is renamed
+    aside and `cleared` is still True — the reader is answered either way.
+    When the mount refuses the RENAME as well (the degenerate branch: P1
+    proved `os.rename` works on the merged mount, so this is the mount going
+    read-only under us) the config is STILL LIVE, and saying so is the only
+    honest answer — a caller that reported a successful wipe would leave the
+    customer's old answers in place and tell them they were cleared (fix
+    round 1, finding M-3)."""
+    path = _config_path(Path(workspace_root), skill_name)
+    if not path.exists():
+        return {"existed": False, "cleared": False, "left_in_place": False,
+                "moved_to": None}
+    out = remove_or_move_aside(path, "reconfigure config wipe",
+                               suffix=SUFFIX_STALE)
+    left = bool(out.get("left_in_place"))
+    return {"existed": True, "cleared": not left, "left_in_place": left,
+            "moved_to": out.get("moved_to")}
+
+
 def wipe_skill_config(workspace_root: str | Path, skill_name: str) -> bool:
     """Remove the stored config for a skill.
 
@@ -228,14 +282,27 @@ def wipe_skill_config(workspace_root: str | Path, skill_name: str) -> bool:
     next skill fire re-runs the questionnaire.
 
     Returns:
-        True if a config file existed and was deleted; False if no config
-        existed to wipe.
+        True if a config file EXISTED when the call was made, False if there
+        was nothing stored to wipe. That is the question every caller of this
+        bool actually asks — twenty SKILL.md reset paths are written against
+        it, and one of them turns the answer straight into a customer
+        sentence ("no settings to reset — you're already on defaults"). A bool
+        that quietly changed to mean "really gone" told that customer they
+        were on defaults while their old answers were live (fix round 2,
+        finding M-4), so the meaning stays where it was.
+
+    DEL1: on the merged environment's mount a delete is refused (probe P2), so
+    the wipe is a rename aside and the next fire of the skill sees no stored
+    config either way — which is the whole point of the call. What it must
+    never do is RAISE, because the reconfigure UX has already told the
+    customer their answers are being cleared. The degenerate case — the mount
+    refuses the rename TOO and the config is still live — cannot be told from
+    a clean wipe through one bit, so a caller that needs it (a customer
+    sentence, an undo trail) calls `wipe_skill_config_result` and reads
+    `cleared` / `left_in_place`. `brain_undo` and the stalled-projects reset
+    both do.
     """
-    path = _config_path(Path(workspace_root), skill_name)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
+    return wipe_skill_config_result(workspace_root, skill_name)["existed"]
 
 
 def is_configured(workspace_root: str | Path, skill_name: str) -> bool:
@@ -306,6 +373,7 @@ __all__ = [
     "save_skill_config",
     "get_config",
     "wipe_skill_config",
+    "wipe_skill_config_result",
     "is_configured",
     "validate_skill_config",
     "lint_skill_configs",

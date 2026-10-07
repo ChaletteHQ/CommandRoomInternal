@@ -95,6 +95,63 @@ def _license_gate_check(path) -> None:
     license_gate.check(path)
 
 
+def _require_named_writer() -> None:
+    """BRIEFDOOR1 MUST 5 (ruling R-RW3-8) -- no write without a named writer
+    on a merged seat's sandbox VM.
+
+    `receipts.require_writer_on_vm_seat`, asked by the two paths every
+    writer in the tree funnels through: `atomic_append_jsonl` (the one
+    append path -- `event_gate.append_event` delegates to it) and
+    `acquire_write_lock` (the sentinel lock under every `entities.json` /
+    `aliases.json` rewrite). Asked BEFORE anything is read, locked or
+    written, so a refusal leaves the ledger, the anchor file and the lock
+    directory exactly as they were. On every legacy and local seat the
+    question reads the environment and returns: byte for byte today.
+
+    Lazy and import-tolerant with the same shape as `_license_gate_check`:
+    this module sits at the bottom of the import graph, and a runtime whose
+    `receipts` predates the question keeps today's behaviour.
+    """
+    try:
+        import receipts as _receipts
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            import receipts as _receipts
+        except Exception:
+            return
+    except Exception:
+        return
+    ask = getattr(_receipts, "require_writer_on_vm_seat", None)
+    if ask is not None:
+        ask()
+
+
+def left_in_place(op: str, path, exc: BaseException) -> None:
+    """Say ONE line when a delete was refused and the file was left behind.
+
+    ACCESS1 (probe P2, `build/P1_RESULT_2026-09-19.md`): on the merged
+    environment's mount `os.unlink` raises `PermissionError(1, 'Operation not
+    permitted')` — the device shell's no-delete policy, not a filesystem ACL.
+    Every delete in the write path was already written to swallow `OSError` and
+    carry on, which is the right POSTURE and the wrong volume: a refused delete
+    became invisible, so the residue it leaves had no explanation and no trail.
+    The behaviour is unchanged (leave it, carry on); the line is the change.
+
+    Never raises, never fails a write. Warnings go to stderr, which the access
+    layer returns to the caller as `stderr_tail`.
+    """
+    try:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[atomic_write] {op}: could not remove {path} "
+            f"({type(exc).__name__}: {exc}); left in place\n"
+        )
+    except Exception:
+        pass
+
+
 def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
                       create_parents: bool = True) -> None:
     """Write text to `path` atomically. Guarantees that any concurrent reader
@@ -142,8 +199,8 @@ def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
-        except OSError:
-            pass
+        except OSError as _exc:
+            left_in_place("atomic_write_text temp cleanup", tmp_path, _exc)
         raise
 
 
@@ -266,10 +323,15 @@ def _note_seqhw_write_failed(events_path: Path, intended_max_seq: int,
 
 
 def _clear_rescan_marker(events_path: Path) -> None:
+    marker = _rescan_marker_path(events_path)
     try:
-        _rescan_marker_path(events_path).unlink()
-    except OSError:
+        marker.unlink()
+    except FileNotFoundError:
         pass
+    except OSError as exc:
+        # The marker stays; the L638 truth-check self-heals it later. Said out
+        # loud so a mount that refuses deletes explains its own residue.
+        left_in_place("rescan marker", marker, exc)
 
 
 # INDEX1 Phase A — the append path opens the ledger in BINARY mode on every
@@ -650,6 +712,167 @@ def _archive_resolved_marker(events_path: Path, marker_path: Path, marker: dict)
         pass
 
 
+# CAPTUREONCE1 — what the capture-once filter refused on the LAST append, so a
+# receipt can say it. The chokepoint returns only the rows that landed (it has
+# to: every caller reads the stamped copies), so the count of what it refused
+# has nowhere else to go. Read it with `last_capture_once_refusal()`
+# IMMEDIATELY after the append that produced it; it is diagnostics for the
+# receipt line, never a source of truth about the ledger — `count_meeting_
+# writes` is that, and G59 makes the receipt agree with it either way.
+_LAST_CAPTURE_ONCE: dict[str, Any] = {
+    "holder": "", "n_rerun": 0, "n_deduped_on_disk": 0, "by_source_ref": {}}
+
+
+def _refusal_ref_keys(ref) -> set:
+    """Both spellings of one transcript pointer, folded. Mirrors
+    `meeting_capture._norm_ref_keys` deliberately: the substrate carries
+    `granola:<id>` and bare `<id>` for the same meeting, and a receipt asking
+    for its own refusals must match either."""
+    keys = set()
+    s = str(ref or "").strip().lower()
+    if not s:
+        return keys
+    keys.add(s)
+    if ":" in s:
+        prefix, _, tail = s.partition(":")
+        if prefix in ("granola", "fireflies", "otter", "zoom", "teams") and tail:
+            keys.add(tail)
+    return keys
+
+
+def _note_capture_once(holder: str, split: dict) -> None:
+    # CAPTUREONCE1 (review F-2, 2026-09-14) — PER SOURCE_REF, not just a
+    # total. A receipt derives its own on-disk count from this, and a total
+    # alone would let the count of an unrelated append land on it. The map is
+    # keyed on the refused row's own pointer, so a receipt gets a number only
+    # when the refusal was about ITS meeting.
+    by_ref: dict[str, dict[str, int]] = {}
+    for row in (split.get("dropped") or []):
+        if not isinstance(row, dict):
+            continue
+        data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        ref = str(data.get("source_ref") or row.get("source_ref") or "").strip()
+        if not ref:
+            continue
+        reason = row.get("_capture_dedup_reason")
+        slot = by_ref.setdefault(
+            ref.lower(), {"n_rerun": 0, "n_deduped_on_disk": 0})
+        if reason == "on_disk":
+            slot["n_deduped_on_disk"] += 1
+        elif reason == "rerun":
+            slot["n_rerun"] += 1
+    _LAST_CAPTURE_ONCE.update({
+        "holder": holder,
+        "n_rerun": int(split.get("n_rerun") or 0),
+        "n_deduped_on_disk": int(split.get("n_deduped_on_disk") or 0),
+        "by_source_ref": by_ref,
+    })
+
+
+def last_capture_once_refusal(source_ref=None) -> dict[str, Any]:
+    """What the capture-once filter refused on the last append.
+
+    With no argument: the whole batch's totals (plus `by_source_ref`).
+    With a `source_ref`: only the refusals whose own pointer is that
+    transcript, in either spelling — which is what a `meeting_processed`
+    receipt needs, and the reason it can derive its own on-disk count instead
+    of being handed one by a sentence in a SKILL file (review F-2)."""
+    if source_ref is None:
+        return dict(_LAST_CAPTURE_ONCE)
+    wanted = _refusal_ref_keys(source_ref)
+    out = {"holder": _LAST_CAPTURE_ONCE.get("holder", ""),
+           "n_rerun": 0, "n_deduped_on_disk": 0}
+    if not wanted:
+        return out
+    for ref, slot in (_LAST_CAPTURE_ONCE.get("by_source_ref") or {}).items():
+        if _refusal_ref_keys(ref) & wanted:
+            out["n_rerun"] += int(slot.get("n_rerun") or 0)
+            out["n_deduped_on_disk"] += int(slot.get("n_deduped_on_disk") or 0)
+    return out
+
+
+def _receipts_module():
+    """`receipts`, imported beside this file, or None. Never raises."""
+    try:
+        import receipts as _r
+        return _r
+    except ImportError:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:  # LOWS2 row 7 (LEDGER3 N-6): insert once
+            _sys.path.insert(0, _here)
+        try:
+            import receipts as _r
+            return _r
+        except Exception:  # noqa: BLE001
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def stamp_receipt_machine(events: list, env=None) -> list:
+    """LEDGER3 (F-T2-6, D-T2B-4): every receipt row lands with a writer id.
+
+    THE FINDING (the v5.33.x walk, 2026-09-27). Four receipts on M's book had
+    no `data.machine`: the bridge's hand-typed `plugin_update` row, the brief
+    writer's `gate_ran`, a `question_expiry_run` and a `flow_measure`. Each
+    writer composed its own `data` and none of them asked
+    `receipts.machine_fields`, so the one question the field exists to answer
+    ("which seat wrote this?") had no answer on those rows.
+
+    THE FIX is at the one place every row passes, the same doctrine as the
+    `seq` / `ts` auto-stamp beside the call: a row whose `type` is in
+    `receipts.MACHINE_STAMPED_TYPES` and whose `data` is a dict carrying
+    neither `machine` nor the fallback flag gains exactly what
+    `receipts.machine_fields(env)` answers, merged into `data`. So a merged
+    seat with a forwarded writer id stamps that id, a VM seat with no writer
+    stamps the fallback flag and no machine, and a legacy seat stamps its
+    marker, all through the one helper every receipt writer already calls.
+
+    What it never does: touch a row of any other type (a `type` that is not
+    a string included), a row whose `data` is not a dict, or a row that
+    already names its writer with a non-empty `machine` or the fallback flag
+    (the caller's value wins, as an explicit `seq` or `ts` does). Those rows
+    are returned as the very objects handed in. The stamped row is a NEW dict
+    with a NEW `data`, so a caller's own dicts are never mutated.
+    `machine_fields` is asked at most once per batch; an empty answer stamps
+    nothing. It never raises, for any row shape: identity never blocks a
+    write.
+    """
+    rmod = _receipts_module()
+    types = getattr(rmod, "MACHINE_STAMPED_TYPES", None) if rmod else None
+    # Fix round 1 (REVIEW N-1): a set that is not a set is no set to test
+    # against, and a membership test on it could raise.
+    if not isinstance(types, (set, frozenset)) or not types:
+        return list(events)
+    try:
+        from machine_identity import FALLBACK_FIELD as _fallback
+    except Exception:  # noqa: BLE001
+        _fallback = getattr(rmod, "_FALLBACK_FIELD_FALLBACK",
+                            "machine_id_fallback")
+    fields = None
+    out = []
+    for ev in events:
+        data = ev.get("data") if isinstance(ev, dict) else None
+        etype = ev.get("type") if isinstance(ev, dict) else None
+        # Fix round 1: the type is tested as a STRING before the set lookup
+        # (REVIEW N-1: a list or dict `type` raised TypeError here and lost
+        # the batch under CR_EVENT_GATE=0), and an empty or null `machine`
+        # does not count as naming the writer (REVIEW N-3).
+        if (isinstance(data, dict) and isinstance(etype, str)
+                and etype in types
+                and not data.get("machine") and _fallback not in data):
+            if fields is None:
+                try:
+                    fields = dict(rmod.machine_fields(env) or {})
+                except Exception:  # noqa: BLE001 - identity never blocks a write
+                    fields = {}
+            if fields:
+                ev = {**ev, "data": {**data, **fields}}
+        out.append(ev)
+    return out
+
+
 def atomic_append_jsonl(
     path: str | Path,
     events: list[dict[str, Any]] | dict[str, Any],
@@ -736,6 +959,9 @@ def atomic_append_jsonl(
     # has to sit here too. Checked BEFORE the writer lock so a refusal never
     # holds it. Fail-open shape is inside _license_gate_check.
     _license_gate_check(path)
+    # BRIEFDOOR1 MUST 5 -- the writer is named before anything is read or
+    # locked (see `_require_named_writer`).
+    _require_named_writer()
     # Defensive wrap — tolerate single-dict callers (Bug #68 fix)
     if isinstance(events, dict):
         events = [events]
@@ -838,6 +1064,43 @@ def atomic_append_jsonl(
             except Exception:
                 pass
 
+        # CAPTURE-ONCE AT THE WRITE (CAPTUREONCE1, M's ruling R4, 2026-09-14).
+        # `flag_suspected_duplicates` above is a FLAGGER by design — it guesses
+        # at semantic twins and must never drop one. This is the other half,
+        # and it is not a guess: a capture row whose `(source_ref, title)` is
+        # already on disk, or whose meeting already carries a
+        # `meeting_processed` receipt, is a row this workspace has written
+        # before. It is refused HERE, caller-agnostically, for the same reason
+        # the gate and the account-scope wall are: the capture legs are driven
+        # from SKILL prose, so any check that lives in a helper a model has to
+        # remember to call is a check that is one re-worded instruction away
+        # from being absent. The v5.30.0 attended test measured exactly that —
+        # a reprocess of one call wrote 13 duplicate rows and resurrected 4
+        # the customer had dropped, while `meeting_capture.already_processed`
+        # sat two modules away, correct and never consulted on a write path.
+        # O(1) via the source_ref index; fail-open (a check failure appends the
+        # batch unchanged); CR_CAPTURE_ONCE=0 disables.
+        if os.environ.get("CR_CAPTURE_ONCE", "1") != "0":
+            try:
+                from source_ref_index import filter_capture_duplicates
+            except ImportError:
+                import sys as _sys
+                _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                try:
+                    from source_ref_index import filter_capture_duplicates
+                except Exception:
+                    filter_capture_duplicates = None
+            except Exception:
+                filter_capture_duplicates = None
+            if filter_capture_duplicates is not None:
+                try:
+                    _split = filter_capture_duplicates(
+                        path.parent.parent.parent, events)
+                    _note_capture_once(holder, _split)
+                    events = _split["kept"]
+                except Exception:
+                    pass
+
     # BUG-8330 item 7 — the stamped copies (assigned seq/ts) are RETURNED so
     # callers that need the allocated seq read it from the return value.
     # Pre-computing via next_seq() then stamping "seq" by hand is the racy
@@ -909,6 +1172,10 @@ def atomic_append_jsonl(
             import datetime as _dt
             EPOCH_THRESHOLD = _EPOCH_THRESHOLD
             evs = [{**ev} for ev in evs]
+            # LEDGER3 (D-T2B-4): a receipt-type row that does not name its
+            # writer gains `receipts.machine_fields()`'s answer in `data`;
+            # every other row is the object it was (`stamp_receipt_machine`).
+            evs = stamp_receipt_machine(evs)
             # R1 — the allocation base is max(file max, .seqhw), NEVER the
             # sidecar alone: a sidecar that fell behind the file (a failed
             # advance, a repair that moved the file without it) must not hand
@@ -1220,7 +1487,16 @@ def atomic_append_jsonl(
             verify = _read_events_tail(
                 path, encoding=encoding,
                 max_bytes=max(_TAIL_READ_BYTES, len(lines_bytes) + 1024))
-            landed = lines_bytes in verify.raw_all
+            # CAPTUREONCE1 (review F-6, 2026-09-14) - AN EMPTY BATCH IS NOT
+            # A WRITE. When the capture-once chokepoint refuses every row,
+            # `evs` is empty and the payload is zero bytes: `landed` is
+            # trivially True (an empty bytes is in any bytes) and there is no
+            # expected last seq, so the check below accused an untouched
+            # ledger of being appended to OUTSIDE the writer lock on every
+            # all-refused batch - the loudest line in the run, printed by the
+            # new fence working exactly as designed. Nothing was written, so
+            # there is nothing to read back.
+            landed = (lines_bytes in verify.raw_all) if evs else True
             last_seq_expected = evs[-1].get("seq") if evs else None
             last_line_ok = False
             try:
@@ -1230,7 +1506,7 @@ def atomic_append_jsonl(
                                 and parsed_last.get("seq") == last_seq_expected)
             except (ValueError, TypeError):
                 last_line_ok = False
-            if landed and not last_line_ok:
+            if evs and landed and not last_line_ok:
                 import sys as _sys
                 _sys.stderr.write(
                     f"[atomic_append_jsonl] read-back: the batch landed but "
@@ -1326,7 +1602,41 @@ def atomic_append_jsonl(
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
             from writer_lock import events_writer_lock
-        with events_writer_lock(path, holder=holder):
+        # LEASE2 MUST 3 (seam S-1) — the lock is taken through the ONE backend
+        # flag (`shared/config/writer_lock.json`, `lease_lock.writer_lock_backend`).
+        # `flock` (the shipped value) hands back `events_writer_lock` itself, so
+        # this path is today's byte for byte. `lease` holds the directory lease
+        # around the append, and a hold that is no longer this writer's at the
+        # write raises `LeaseLost` (door: `ok:false, reason: lease_lost`) with
+        # NOTHING appended. A lease module that cannot load is the flock path.
+        # Under `lease` the flock is STILL taken first, outside the lease: the
+        # read-check-then-append sections that hold `events_writer_lock`
+        # directly (commitment_state, mute_ledger, rotation, the repair tools)
+        # keep excluding this append on the same machine, where flock works;
+        # the lease adds the exclusion across sessions, where it does not.
+        # Always flock then lease, never the reverse, so no order inverts.
+        # LEASE3 MUST 5 (REVIEW_T2_LEASE2 N-8, D-T3-4): a lease module that
+        # cannot load is the flock path ONLY when the flag says flock. When the
+        # flag (read here, without the module) says lease, falling back would
+        # run every append with no cross-session exclusion, silently; so it is
+        # a typed refusal instead (`lease_unavailable`), NOTHING appended.
+        _lease_mod = None
+        _lock_cm = events_writer_lock
+        try:
+            import lease_lock as _lease_mod
+            _lock_cm = _lease_mod.writer_lock_backend()
+        except Exception as _lease_exc:
+            _lease_mod, _lock_cm = None, events_writer_lock
+            if _writer_lock_flag() == "lease":
+                raise LeaseBackendUnavailable(
+                    f"{type(_lease_exc).__name__}: {_lease_exc}") from _lease_exc
+        _on_lease = _lease_mod is not None and _lock_cm is _lease_mod.events_lease
+        import contextlib as _ctx
+        _same_machine = (events_writer_lock(path, holder=holder) if _on_lease
+                         else _ctx.nullcontext())
+        with _same_machine, _lock_cm(path, holder=holder):
+            if _on_lease:
+                _lease_mod.check_held(path)
             # SPEC SYNC1 A3 — quarantine auto-reconcile + fail-closed merge-
             # forward, INSIDE the lock, BEFORE the FS-04 check below. Fast no-op
             # unless a marker / quarantine / Drive conflict-copy is present, so
@@ -1356,10 +1666,102 @@ def atomic_append_jsonl(
                         reconcile_forward(path, holder=holder)
                     except Exception:
                         pass
+            if _on_lease:
+                _lease_mod.check_held(path)
             _read_stamp_write(events)
+            if _on_lease:
+                # LEASE3 fix N-1: count what landed under this hold, so a
+                # SECTION holding the lease (events_write_section) can say a
+                # takeover after its appends when it lets go.
+                _lease_mod.note_appended(path, len(stamped))
+        if _on_lease:
+            # The release's answer is read, never discarded: a hold taken over
+            # AFTER the pre-write check means the batch landed under a lease
+            # that was no longer ours. The batch is on disk (retrying would
+            # duplicate it), so this is said on stderr, never raised.
+            _rel = _lease_mod.last_release(path) or {}
+            if _rel.get("reason") == "not_ours":
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[lease] {len(stamped)} event(s) appended to {path.name} by "
+                    f"{holder} under a lease that was taken over before release\n")
+                # LEASE3 MUST 3 — and ONE marker the health check reads
+                # (`_hq/.system/lease_hold_lost.json`); never raises.
+                try:
+                    _lease_mod.record_hold_lost(path, holder, len(stamped))
+                except Exception:
+                    pass
     else:
         _read_stamp_write(events)
     return stamped
+
+
+#: LEASE3 MUST 5 — the one sentence an append refused because the lease module
+#: could not load under the `lease` flag carries to the door. Nothing was saved.
+LEASE_UNAVAILABLE_LINE = ("Nothing was saved, because part of the Command Room install that "
+                          "keeps two sessions from writing at once is missing - say update "
+                          "command room, then say it again.")
+
+#: The flag file, spelled the way `lease_lock._config_path` and the runtime
+#: manifest's asset scan read it (`shared/config/writer_lock.json`).
+_WRITER_LOCK_FLAG_REL = ("config", "writer_lock.json")
+
+
+class LeaseBackendUnavailable(RuntimeError):
+    """The writer-lock flag says `lease` but `lease_lock` could not load (or
+    `writer_lock_backend()` raised): NOTHING was appended. Carries
+    `cr_refusal_reason = "lease_unavailable"` and `line`, so a door answers
+    `ok:false, reason: lease_unavailable` with `LEASE_UNAVAILABLE_LINE`."""
+
+    cr_refusal_reason = "lease_unavailable"
+
+    def __init__(self, detail: str = ""):
+        super().__init__("the events lease backend is unavailable under the lease flag"
+                         + (f": {detail}" if detail else ""))
+        self.cause = detail
+        self.line = LEASE_UNAVAILABLE_LINE
+
+
+def _writer_lock_flag() -> str:
+    """The writer-lock flag read WITHOUT `lease_lock` (LEASE3 MUST 5):
+    `CR_WRITER_LOCK_BACKEND`, else `shared/config/writer_lock.json` beside this
+    file. `lease` or `flock`; anything unknown or unreadable is `flock`, the
+    same default `lease_lock.configured_backend` applies."""
+    override = str(os.environ.get("CR_WRITER_LOCK_BACKEND", "") or "").strip().lower()
+    if override in ("flock", "lease"):
+        return override
+    try:
+        cfg = Path(__file__).resolve().parent.parent.joinpath(*_WRITER_LOCK_FLAG_REL)
+        b = str(json.loads(cfg.read_text(encoding="utf-8")).get("backend", "")).strip().lower()
+    except (OSError, ValueError, AttributeError):
+        return "flock"
+    return b if b in ("flock", "lease") else "flock"
+
+
+def events_write_section(events_path, holder: str = "unknown", **kw):
+    """The direct read-check-then-append sections' ONE import (LEASE3 fix N-3).
+
+    Hands back `lease_lock.events_write_section(events_path, holder=..., **kw)`
+    (flock then lease on `lease`, the plain flock on `flock`). When `lease_lock`
+    cannot be imported it answers the way the append does (D-T3-4): under the
+    `lease` flag `LeaseBackendUnavailable` (`lease_unavailable`, the pinned
+    line), nothing read or written; under `flock` exactly
+    `writer_lock.events_writer_lock(events_path, holder=..., **kw)`, the call the
+    sections made before LEASE3."""
+    try:
+        from lease_lock import events_write_section as _section
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            from lease_lock import events_write_section as _section
+        except ImportError as exc:
+            if _writer_lock_flag() == "lease":
+                raise LeaseBackendUnavailable(f"{type(exc).__name__}: {exc}") from exc
+            import writer_lock as _wl
+            kw.pop("ttl_s", None)
+            return _wl.events_writer_lock(events_path, holder=holder, **kw)
+    return _section(events_path, holder=holder, **kw)
 
 
 def acquire_write_lock(
@@ -1411,6 +1813,9 @@ def acquire_write_lock(
     import os as _os
     import time as _time
 
+    # BRIEFDOOR1 MUST 5 -- no sentinel is minted for a writer that cannot be
+    # named on a merged seat (see `_require_named_writer`).
+    _require_named_writer()
     path = Path(path)
     lock_path = path.parent / (path.name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1486,7 +1891,13 @@ def acquire_write_lock(
                 payload = {
                     "pid": _os.getpid(),
                     "holder": holder,
-                    "acquired_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    # UTC-aware (TZ1) — `_read_lock_payload` turns this
+                    # string into an epoch through `fromisoformat`, so a
+                    # NAIVE stamp was read in the READER's zone and the
+                    # stale-lock window was computed against a clock the
+                    # writer never used. Across a container / VM / PC split
+                    # that is hours of error in a reclaim decision.
+                    "acquired_at": _diagnostic_stamp(),
                 }
                 f.write(json.dumps(payload))
         except Exception:
@@ -1519,15 +1930,22 @@ def _clear_lock_file(lock_path: Path, unlink_retries: int = 3,
     import os as _os
     import time as _time
 
+    last_exc: BaseException | None = None
     for attempt in range(max(1, unlink_retries)):
         try:
             lock_path.unlink()
             return True
         except FileNotFoundError:
             return True  # someone else cleared it; done
-        except OSError:
+        except OSError as exc:
+            last_exc = exc
             if attempt + 1 < max(1, unlink_retries):
                 _time.sleep(retry_delay_s)
+    if last_exc is not None:
+        # Falling to the mv-aside path below. On the merged mount this is the
+        # STEADY state, not an anomaly (unlink is EPERM there), so it is said
+        # once per lock release rather than per retry.
+        left_in_place("lock release", lock_path, last_exc)
     # Unlink keeps getting refused — mv-aside with the deterministic
     # stale-name (`<file>.lock.stale.<epoch>.<pid>`, the exact pattern the
     # weekly sweep archives into _archive/stale-locks/).
@@ -1563,6 +1981,24 @@ def release_write_lock(lock_path: Path) -> None:
 
 class AtomicWriteLockError(RuntimeError):
     """Raised by multi_write_context when the lock cannot be acquired."""
+
+
+def _diagnostic_stamp() -> str:
+    """A UTC-AWARE ISO stamp for a lock diagnostic (TZ1, SPEC_NIGHTM2 §6).
+
+    Routed through `clock_policy.diagnostic_stamp` so "which clock a stamp is
+    in" is answered in ONE place for the whole tree. That helper imports
+    nothing from this tree, so there is no cycle; the local fallback keeps
+    this module standalone in a stripped install.
+    """
+    try:
+        from clock_policy import diagnostic_stamp
+
+        return diagnostic_stamp()
+    except Exception:  # noqa: BLE001 — a diagnostic never blocks a write
+        import datetime as _dtx
+
+        return _dtx.datetime.now(_dtx.timezone.utc).isoformat(timespec="seconds")
 
 
 def _read_lock_payload(lock_path: Path) -> tuple[int, float]:
@@ -1765,7 +2201,7 @@ def multi_write_context(
                 payload = {
                     "pid": pid,
                     "holder": holder,
-                    "acquired_at": _dt.datetime.now().isoformat(timespec="seconds"),
+                    "acquired_at": _diagnostic_stamp(),  # UTC-aware (TZ1)
                 }
                 f.write(json.dumps(payload))
             acquired = True
@@ -1825,6 +2261,7 @@ def atomic_write_json_locked(
     ensure_ascii: bool = False,
     timeout_s: float = 10.0,
     verify_parse: bool = True,
+    precheck: Any = None,
 ) -> None:
     """Atomic JSON write WITH cross-process lock + post-write parse check.
 
@@ -1849,6 +2286,15 @@ def atomic_write_json_locked(
       - the file is read-modify-written (concurrent writers can race)
       - downstream readers depend on the file being valid JSON
 
+    `precheck` (ACCESS1, SPEC_NIGHTM1 §2 item 2) is an optional callable run
+    with `path` INSIDE the lock and before the write. It exists so a
+    compare-and-swap ("write only if the file is still the one I read") can be
+    a real critical section rather than a narrowed window: the access layer's
+    `write` verb stats the file here, with the lock held, on the same host that
+    is about to write it. A precheck that raises aborts the write and the lock
+    is still released. None (the default) leaves every existing caller's
+    behaviour byte-identical.
+
     For append-only events.jsonl: prefer atomic_append_jsonl directly
     (it's append-only so the lock helps less, and the read+rewrite cost
     is already paid).
@@ -1856,6 +2302,8 @@ def atomic_write_json_locked(
     path = Path(path)
     lock_path = acquire_write_lock(path, holder=holder, timeout_s=timeout_s)
     try:
+        if precheck is not None:
+            precheck(path)
         atomic_write_json(path, data, indent=indent, ensure_ascii=ensure_ascii)
         if verify_parse:
             try:

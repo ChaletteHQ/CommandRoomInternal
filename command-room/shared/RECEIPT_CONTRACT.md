@@ -58,6 +58,23 @@ every writer calls one helper; every reader goes through one parser.
    the hostname did, silently. Nothing in the repo can settle that; comparing
    `~/.command-room/machine_id` on two machines after a fire is the only test,
    and until it is run this field is `probably` per-machine, not `known` to be.
+
+4b. **`model`** (optional, additive, TZ1 2026-09-20) — the serving model id,
+   present ONLY when the environment names it (`CLAUDE_MODEL`, then
+   `CR_MODEL`, then `ANTHROPIC_MODEL`; `receipts.MODEL_ENV_KEYS` is the one
+   spelling of that list), absent otherwise and NEVER inferred. Writers call
+   `receipts.model_fields()`, never a private copy — same posture as
+   `machine`. It is ledger vocabulary and a diagnostic: "which model served
+   this fire?" is a question your own records answer, and it is **never
+   rendered on a customer surface** — `surface_leak_patterns`'
+   `serving_model_id` row refuses a model id in any composed sentence and
+   `internal receipt field` refuses the field's own name. A reader that finds
+   the key absent has learned nothing about the run except that the harness
+   did not state it. *(This line is written by TZ1 out of its ownership row —
+   the contract had no owner in the night's table and a permanent field that
+   only its writer's header documents is a field the next reader will not
+   know to parse.)*
+
 5. **Readers parse ALL legacy shapes forever.** events.jsonl is append-only
    history. Back-compat lives read-side; history is NEVER migrated in place.
 6. **Writers never hand-roll receipt JSON.** An orchestrator's final phase is

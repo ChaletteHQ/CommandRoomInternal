@@ -367,10 +367,16 @@ def write_touches(workspace_root, entities, *, provider: str,
         except Exception as exc:  # noqa: BLE001 — contained per item, counted
             errors.append({"id": e.get("id"),
                            "error": f"{type(exc).__name__}: {exc}"})
+    n_written = 0
     if events:
-        append_event(Path(workspace_root) / "_hq" / "data" / "events.jsonl",
-                     events, holder=source_skill)
-    return {"n_written": len(events), "errors": errors}
+        written = append_event(Path(workspace_root) / "_hq" / "data" / "events.jsonl",
+                               events, holder=source_skill)
+        # night 11b trial merge: the receipt counts what LANDED - the capture
+        # chokepoint may refuse a row, and a count taken before the append
+        # would say it landed anyway.
+        n_written = len(written) if isinstance(written, list) else len(events)
+    return {"n_written": n_written, "n_refused": len(events) - n_written,
+            "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +449,40 @@ CONNECTOR_READ_EVENT_TYPE = "connector_read"
 GO_CONTEXT_LEG = "go-context"
 
 
+def connector_read_row(*, provider, scope, n_results,
+                       leg: str = GO_CONTEXT_LEG, window_days=None,
+                       query=None, source_skill: str = "workspace-manager"):
+    """`{"row": {...}}` — the event `log_connector_read` would append, COMPOSED
+    and not written (FIX3 F3-10, ruling R-FIX3-4).
+
+    The 2026-09-21 fire needed this row and had no way to write it. Its
+    orchestrator said "append a connector_read for the mail fetch" with no
+    rendered form under it, so the chat improvised `run_helper` at the WRITER —
+    which the access layer refused, correctly, because a read door writes
+    nothing. The refusal was recorded honestly as the fire's one error and the
+    row was simply lost.
+
+    So the phase stays (a leg that found nothing must still say it looked) and
+    it splits the way every other ORCH1 write does: this composes, and the
+    caller appends what it returns through `plan append_jsonl`. There is one
+    composer — `log_connector_read` calls it too — so the row a merged seat
+    writes and the row a legacy seat writes cannot drift.
+    """
+    data: Dict[str, Any] = {
+        "provider": _norm(provider),
+        "leg": _norm(leg),
+        "scope": _norm(scope),
+        "n_results": int(n_results),
+    }
+    if window_days is not None:
+        data["window_days"] = int(window_days)
+    if query:
+        data["query"] = _norm(query)[:200]
+    return {"row": {"type": CONNECTOR_READ_EVENT_TYPE,
+                    "source_skill": _norm(source_skill) or "workspace-manager",
+                    "data": data}}
+
+
 def log_connector_read(workspace_root, *, provider, scope, n_results,
                        leg: str = GO_CONTEXT_LEG, window_days=None,
                        query=None, source_skill: str = "workspace-manager"):
@@ -474,19 +514,14 @@ def log_connector_read(workspace_root, *, provider, scope, n_results,
     try:
         from event_gate import append_event
 
-        data: Dict[str, Any] = {
-            "provider": _norm(provider),
-            "leg": _norm(leg),
-            "scope": _norm(scope),
-            "n_results": int(n_results),
-        }
-        if window_days is not None:
-            data["window_days"] = int(window_days)
-        if query:
-            data["query"] = _norm(query)[:200]
-        event = {"type": CONNECTOR_READ_EVENT_TYPE,
-                 "source_skill": _norm(source_skill) or "workspace-manager",
-                 "data": data}
+        # ONE composer (FIX3 F3-10). This function is now the WRITING half of
+        # a pair; the row itself is built by the read half, so a merged seat
+        # appending through the door and a legacy seat appending here cannot
+        # write two different shapes.
+        event = connector_read_row(
+            provider=provider, scope=scope, n_results=n_results, leg=leg,
+            window_days=window_days, query=query,
+            source_skill=source_skill)["row"]
         # `append_event` returns None (the writer lock stamps seq/ts in place),
         # so the event dict is what comes back — a caller that wants to say
         # "recorded" needs something truthy, and None is the failure answer.
@@ -504,5 +539,6 @@ __all__ = [
     "CONNECTOR_READ_EVENT_TYPE", "GO_CONTEXT_LEG",
     "ReadBudget", "apply_budget", "collect_mentions", "context_line",
     "build_touch_event", "write_touches", "run_chat_context",
+    "connector_read_row",
     "log_connector_read",
 ]

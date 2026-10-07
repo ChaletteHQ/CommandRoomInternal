@@ -82,6 +82,7 @@ transport = render_review_page("<WORKSPACE>", page=1)
 # transport["html"]              -> show_widget widget_code, byte-exact
 # transport["group_pagination"]  -> {page, total_pages, has_more, total_groups, …}
 # transport["view"]["total"]     -> the count the header leads with
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 `render_review_page` builds the scoped view

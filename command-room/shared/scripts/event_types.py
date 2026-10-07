@@ -27,6 +27,7 @@ pick it up from the schema.
 from __future__ import annotations
 
 import json
+import re as _re
 from pathlib import Path
 from typing import FrozenSet, Optional
 
@@ -634,7 +635,7 @@ PRE_REGISTRY_FOSSILS: FrozenSet[str] = frozenset({
     "person_enrichment_pending", "person_merge_proposed",
     "person_record_review_queued", "person_review_pending", "probe_click",
     "project_status_change", "prospect_stage_changed", "reclassification_batch",
-    "scan_completed", "schedule_skipped", "schedule_updated", "session_close",
+    "scan_completed", "schedule_updated", "session_close",
     "session_end", "substrate_cleanup",
 })
 
@@ -648,6 +649,291 @@ def is_pre_registry_fossil(event_type) -> bool:
     deliberately not writable.
     """
     return isinstance(event_type, str) and event_type in PRE_REGISTRY_FOSSILS
+
+
+
+# ---------------------------------------------------------------------------
+# ATTRIB2 (M's ruling on the v5.29.0 attended test, 2026-09-07) — WHO ACTED
+# ---------------------------------------------------------------------------
+# "Machine acts are the machine's." A reversal or a close a fire or a chat
+# performed on its OWN judgment is stamped with the machine actor, never the
+# customer's person id — and no customer surface credits the customer with it.
+#
+# THE VOCABULARY IS POLICY1-B's, REUSED, NOT A NEW ONE. The closer family
+# already names its actor by the RAIL that acted (`resolved_by="sent_reconcile"`
+# on the silent sent task, `resolved_by="system"` on the deal-signal
+# retirement, `confirmed_by="transcript"` / `"calendar"` above), and
+# `change_feed._machine_resolved` already reads "the actor equals the event's
+# own source_skill" as "the machine did this". This block spells that same
+# convention once, adds the explicit stamp so a reader never has to infer it,
+# and names the background sources a customer gesture never runs under.
+#
+# THE REGRESSION IT CLOSES: 2026-09-07 seqs 15503-15506 on M's book — the
+# maintenance fire read its own sent-mail closes, judged them wrong and
+# reopened both, and the reversals went down as `reopened_by: "person_001"`
+# under `source_skill: "reconcile-sent"`. M did nothing. The morning brief
+# then told him he had reversed them.
+
+#: The stamp the sanctioned writers now put on every act they write, so no
+#: reader has to infer the answer from the actor's spelling. Additive: absent
+#: on every row written before this lane, which is what the fallbacks below
+#: are for.
+ACTOR_KIND_KEY = "actor_kind"
+ACTOR_PERSON = "person"
+ACTOR_MACHINE = "machine"
+
+#: The sentinel a CALL SITE passes when the act is the product's own judgment
+#: rather than a gesture the customer just made: `actor=event_types.MACHINE`.
+#: The writer turns it into the rail's own name (POLICY1-B's convention).
+MACHINE = ACTOR_MACHINE
+
+#: `resolved_by="system"` — deal_signal_retire's existing spelling, kept.
+SYSTEM_ACTOR = "system"
+
+#: A person id — the only spelling a customer's own act may carry.
+PERSON_ACTOR_RE = _re.compile(r"^person_\d+$", _re.IGNORECASE)
+
+#: The actor fields the act writers use, in the order a reader should look.
+#: One list, so no surface hand-spells a field name and misses a family.
+#:
+#: FIX ROUND 1 (reviewer F-6, 2026-09-07) — THE SET NOW MATCHES THE WRITERS,
+#: with the citation on each line. It is presented as the one place a reader
+#: asks, so a name nothing writes is dead weight and a field that IS written
+#: and missing is a wrong answer: a person-parked row read as a machine act.
+#: Removed: `actor_id`, `closed_by`, `dropped_by` — no writer in
+#: `shared/scripts/` writes any of the three, and none appears on M's book
+#: (15,957 events; the actor fields actually present are `resolved_by` 1,235,
+#: `undone_by` 270, `reopened_by` 134, `confirmed_by` 6, `reversed_by` 4,
+#: `disowned_by` 3, `restored_by` 3). Added: `parked_by`.
+#: `confirmed_by` stays OUT on purpose — its values are `"transcript"` /
+#: `"calendar"`, an evidence door rather than an actor.
+#:
+#: FIX ROUND 2 (2026-09-08) — **DO NOT TIDY THIS TUPLE.** `parked_by` looks
+#: like a housekeeping field and is not: it is the ONLY thing that keeps two
+#: other lanes' machine parks out of the customer's column. EXIT1's silence
+#: door and CLEANUP1's bridge park both write `parked_by == <their own
+#: source_skill>` and no `actor_kind`; with the field on this list `act_actor`
+#: finds the rail's name and `is_customer_act` answers False. Take it off and
+#: `act_actor` returns `""` for a park, `is_customer_act` answers **True**,
+#: and both lanes' parks start rendering as the customer's own doing on the
+#: brief, the day-close and the wrap. `tests/run_attrib2_test.py` reds by name
+#: if it leaves.
+ACT_ACTOR_FIELDS = (
+    "reopened_by",     # commitment_state.reopen_commitment · brain_undo
+    "resolved_by",     # commitment_state.close_commitment (THE closure path)
+    "undone_by",       # brain_undo.undo_batch's marker
+    "reversed_by",     # brain_undo · calendar_close · day_intent · deal_state
+    "disowned_by",     # commitment_state.disown_commitment
+    "restored_by",     # commitment_state (restore)
+    "parked_by",       # commitment_state.park_commitments
+    "unparked_by",     # commitment_state.unpark_commitments
+)
+
+#: BACKGROUND SOURCES — the `source_skill` values that are the product running
+#: on its own. A customer never types a gesture into one of these: they are
+#: rails (the mail/chat reconcilers), scheduled passes (maintenance, the
+#: drains) and capture (the meeting passes). The chat surfaces a person DOES
+#: act on — apply-choices, commitment-triage, needs-your-call,
+#: workspace-manager, log-resolution, show-my-list and the daily/weekly chats
+#: themselves — are deliberately NOT here: an explicit gesture on one of them
+#: is the customer's, and `user_confirmed` settles the overlap in the
+#: customer's favour whichever surface carried it.
+#:
+#: FIX ROUND 1 (reviewer F-1/F-2/F-5, 2026-09-07) — A NAME ON THIS LIST IS A
+#: CLAIM ABOUT A WHOLE SURFACE, so a surface that is BOTH is listed by its
+#: unattended LEG and never by its bare name. `commitment-backlog-sweep` was
+#: listed bare and it is not one thing: its unattended legs are
+#: `:review-amnesty` (the lapse drain) and `:review-expiry` (the retract
+#: pass), but the BARE name is what the customer's own `undo` of a sweep
+#: batch carries — 365 such acts on M's book (258 `brain_change_undone` +
+#: 107 `commitment_reopened`, every one of them M's, the 2026-08-19 106-row
+#: operator undo the sweep's own SKILL.md §D describes among them) and NOT
+#: ONE `commitment_resolved`. Listing it bare erased the customer from their
+#: own biggest gesture of the month and took "Undid 257 changes you reversed"
+#: off that morning's brief. `:amnesty` — the preview-and-confirm bulk drop
+#: the customer runs by hand — is deliberately absent for the same reason
+#: (M's ruling 1 below; the default is the customer's, because the customer
+#: said the word).
+#:
+#: The three chat surfaces that stay — `cleanup`, `session-sweep` and
+#: `meeting-notes` — are audited and kept: on M's book they write NO reopens
+#: and no undos, and `meeting-notes` is the source of the drop End of Day
+#: credited to M (seq 15520). What protects a person's own gesture on one of
+#: them is `user_confirmed=True`, which every reversal writer now honours.
+MACHINE_SOURCE_SKILLS: FrozenSet[str] = frozenset({
+    # rails — the mail and chat reconcilers
+    "reconcile-sent", "reconcile-chat", "reconcile-inbound",
+    # scheduled passes, drains and maintenance
+    "maintenance", "session-sweep", "cleanup",
+    "review-expiry", "age-out", "identity-reconcile",
+    "deal-signals", "dormant-customer-scan", "dormant-scan",
+    "calendar-close", "binding-gauge", "lifecycle", "automation-scanner",
+    # SCHEDVIEW1 5.2 — the duplicate-merge apply leg inside `maintenance`.
+    #
+    # DEFENCE IN DEPTH, and the word is exact: measured on 2026-09-18, no
+    # reader in this tree hands one of this job's rows to a decision that
+    # needs the entry.
+    #   * `end_of_day.machine_batch_row` is reached only from End of Day's
+    #     DROPPED-CLOSURE rows, and `end_of_day._CLOSE_TYPES` is
+    #     `("commitment_resolved", "thread_resolved")` — a merge writes
+    #     `commitment_superseded` and a `pack_run`, so the day-close never
+    #     sees this leg's work at all. (Whether it SHOULD is a widening of
+    #     `_CLOSE_TYPES` and belongs to a later night, not to this lane.)
+    #   * `change_feed._job_batches` DOES pick this fire's batch up — off the
+    #     `pack_run`'s own `fired_via: "scheduled"`, its first clause, which
+    #     answers before the machine-source clause is consulted.
+    #   * `resolve_actor` answers `("dedup-apply", "machine")` either way,
+    #     because the job passes no person id; `is_customer_act` DOES consult
+    #     `is_machine_source` (its question 3) and removing the entry would
+    #     flip this fire's `brain_proposal` and `pack_run` rows to True -- but
+    #     no reader ever asks it about them: `flow_measure._is_tap` and
+    #     `end_of_day`'s closure projection ask only about `_CLOSE_TYPES`
+    #     rows, and `change_feed` asks only about `brain_change_undone`,
+    #     which carries an explicit `actor_kind` and answers at question 1;
+    #     and
+    #     `commitment_state.park_reason_origin` is not on this leg's path (the
+    #     job never parks).
+    # The entry is correct, free, and keeps the answer right the day any one
+    # of those changes — a merge that writes a close row, a widened
+    # `_CLOSE_TYPES`, or a caller that ever passes a person id. None of the
+    # three is true today, and this comment must not claim otherwise.
+    "dedup-apply",
+    # night 10 at merge: TTL1's question-expiry run (REVIEW_TTL1 at-merge)
+    # and the update bridge that parks silent work (REVIEW_CLEANUP1 F-9)
+    "question-expiry", "command-room-update-bridge",
+    # the backlog sweep's UNATTENDED LEGS ONLY, by their full spelling
+    # (`commitment_backlog_sweep.REVIEW_SOURCE_SKILL` and
+    # `commitment_policy_pass.RETRACT_SOURCE_SKILL`). The bare name and the
+    # `:amnesty` leg are the customer's — see the note above.
+    "commitment-backlog-sweep:review-amnesty",
+    "commitment-backlog-sweep:review-expiry",
+    # capture passes
+    "meeting-capture",
+    "meeting-notes", "past-meetings", "cr-past-meetings",
+})
+
+
+def is_person_actor(value) -> bool:
+    """True when `value` is a person id — the ONLY spelling a customer's own
+    act carries. `"system"`, a rail's own name and an empty actor are not."""
+    return bool(isinstance(value, str) and PERSON_ACTOR_RE.match(value.strip()))
+
+
+def is_machine_source(source_skill) -> bool:
+    """True when `source_skill` is a background source (a rail, a scheduled
+    pass, a capture pass).
+
+    A `skill:leg` spelling matches on its SKILL HALF only when that skill is
+    ITSELF on the list — a whole background run's legs are all background.
+    THE RULE DOES NOT RUN BACKWARDS (fix round 1, reviewer F-1): listing a
+    LEG never drags its skill in, so `commitment-backlog-sweep:review-amnesty`
+    is the machine's while the bare `commitment-backlog-sweep` — the chat
+    surface, and the `source_skill` on the customer's own `undo` of a sweep
+    batch — is the customer's."""
+    s = str(source_skill or "").strip()
+    if not s:
+        return False
+    return s in MACHINE_SOURCE_SKILLS or s.split(":", 1)[0] in MACHINE_SOURCE_SKILLS
+
+
+def machine_actor(source_skill) -> str:
+    """The machine actor for an act written under `source_skill` — the RAIL'S
+    OWN NAME, which is exactly what POLICY1-B already writes
+    (`resolved_by="sent_reconcile"`). A nameless caller falls back to
+    `"system"`, deal_signal_retire's existing spelling."""
+    s = str(source_skill or "").strip()
+    return s or SYSTEM_ACTOR
+
+
+def resolve_actor(actor, *, source_skill, user_confirmed: bool = False):
+    """THE WRITER-SIDE FENCE. Returns `(actor_value, actor_kind)` for one act.
+
+    A FIRE CANNOT WRITE `person_001` AS THE ACTOR. When the act is written
+    under a background source the actor is that rail's own name, whatever the
+    call site passed — which is the whole ruling: the maintenance fire that
+    reopened two closes on its own judgment may not sign the customer's name
+    to it. A call site that KNOWS it is acting on the product's judgment says
+    so with `actor=event_types.MACHINE` and gets the same answer on any
+    source.
+
+    A person id on a person's own surface passes through untouched, so every
+    real gesture keeps its credit and its undo.
+
+    `user_confirmed=True` IS THE CUSTOMER'S ESCAPE (fix round 1, reviewer
+    F-1/F-2). It is the same escape `close_commitment` already gives the
+    closure family — "an explicit user action", true whatever surface carried
+    it — extended to the REVERSAL family, which needs it more because those
+    writers REWRITE the actor rather than only stamping beside it. It fires
+    only when the call site handed a real person id, so a fire that says
+    `actor=MACHINE` still gets the machine and the two can never contradict
+    each other into the wrong answer.
+    """
+    raw = actor.strip() if isinstance(actor, str) else actor
+    if user_confirmed is True and is_person_actor(raw):
+        return raw, ACTOR_PERSON
+    if raw == ACTOR_MACHINE or is_machine_source(source_skill):
+        return machine_actor(source_skill), ACTOR_MACHINE
+    if is_person_actor(raw):
+        return raw, ACTOR_PERSON
+    if not raw or not isinstance(raw, str):
+        return machine_actor(source_skill), ACTOR_MACHINE
+    # POLICY1-B's own reading (`change_feed._machine_resolved`): the literal
+    # "system", or an actor that IS the event's source_skill, is the machine.
+    if raw.lower() == SYSTEM_ACTOR or raw == str(source_skill or "").strip():
+        return raw, ACTOR_MACHINE
+    # A legacy free-text actor on a person's surface stays the person's.
+    return raw, ACTOR_PERSON
+
+
+def act_actor(ev) -> str:
+    """The actor an act event names, walking `ACT_ACTOR_FIELDS` in order."""
+    if not isinstance(ev, dict):
+        return ""
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for field in ACT_ACTOR_FIELDS:
+        v = d.get(field)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def is_customer_act(ev) -> bool:
+    """THE READER. True when this act was the CUSTOMER'S OWN gesture — the
+    only kind a surface may say "you" about.
+
+    Four questions, in this order, because history has to read right too:
+      1. the stamp `resolve_actor` writes (every act written from now on);
+      2. `user_confirmed: true` — the existing "explicit user action" flag on
+         the closure family. It wins over question 3 on purpose: a tap is the
+         customer's whatever surface carried it;
+      3. a background `source_skill` — the fire/rail/capture answer for every
+         row already on the book, seqs 15503-15506 included;
+      4. otherwise the actor's own spelling.
+    """
+    if not isinstance(ev, dict):
+        return False
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    kind = d.get(ACTOR_KIND_KEY)
+    if kind in (ACTOR_PERSON, ACTOR_MACHINE):
+        return kind == ACTOR_PERSON
+    if d.get("user_confirmed") is True:
+        return True
+    if is_machine_source(ev.get("source_skill")):
+        return False
+    actor = act_actor(ev)
+    if not actor:
+        # `change_feed._machine_resolved`'s own precedent, kept: a legacy row
+        # that names NO actor at all, written on a person's surface, only ever
+        # came from the confirm card. Absent is not the machine.
+        return True
+    _value, resolved = resolve_actor(actor, source_skill=ev.get("source_skill"))
+    return resolved == ACTOR_PERSON
+
+
+def is_machine_act(ev) -> bool:
+    """The complement of `is_customer_act` for an ACT event (a row that names
+    an actor). Spelled out so a surface reads the question it means."""
+    return not is_customer_act(ev)
 
 
 __all__ = [
@@ -680,6 +966,21 @@ __all__ = [
     "load_event_types",
     "is_known_type",
     "is_pre_registry_fossil",
+    "ACTOR_KIND_KEY",
+    "ACTOR_PERSON",
+    "ACTOR_MACHINE",
+    "MACHINE",
+    "SYSTEM_ACTOR",
+    "PERSON_ACTOR_RE",
+    "ACT_ACTOR_FIELDS",
+    "MACHINE_SOURCE_SKILLS",
+    "is_person_actor",
+    "is_machine_source",
+    "machine_actor",
+    "resolve_actor",
+    "act_actor",
+    "is_customer_act",
+    "is_machine_act",
 ]
 
 

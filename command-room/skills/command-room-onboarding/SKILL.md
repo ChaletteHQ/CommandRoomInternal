@@ -1,7 +1,7 @@
 ---
 name: command-room-onboarding
 surfaces: cowork
-slack_fallback: "Setup runs on desktop — open Cowork to onboard Command Room; once set up, just talk to me here."
+slack_fallback: "Setup runs from a chat with your Command Room folder attached — onboard Command Room there; once set up, just talk to me here."
 description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately)."
 ---
 
@@ -56,7 +56,7 @@ Onboarding spans the chats below. The chat numbers are kept stable from prior bu
 | # | Chat name | Created at | What it hosts | Model |
 |---|---|---|---|---|
 | 1 | Main onboarding | T=0:00 (customer opens, types `set up command room`) | Phase 0 widget + Phase 1 light scan + Phase 1b workspace-map handoff | Sonnet |
-| 3 | Workspace Map install | T=0:07 (customer opens, types `install workspace map`) | Installs sidebar artifact | Sonnet |
+| 3 | Workspace Map, in chat | T=0:07 (customer opens, types `list active projects`) | Shows the company tree in chat (nothing is installed — the sidebar dashboards are retired, Night M3) | Sonnet |
 | 4 | **AI home chat (default "Penelope")** | T=0:08 (customer opens, types `show me what you know about me`) | Beats (Mirror v1 → Voice contrast → user-triggered Insights) + training prompts + brand-voice calibration proof (Phase 5b) + accomplishment summary; becomes the customer's permanent coach surface | **Opus** |
 | 11 | Training command 1 | T=~0:18 (customer types `prep me for [person]`) | Output of first training command | Sonnet |
 | 12 | Training command 2 | T=~0:20 (customer types `tell me about [person]`) | Output of second training command | Sonnet |
@@ -64,7 +64,7 @@ Onboarding spans the chats below. The chat numbers are kept stable from prior bu
 
 **No Run Now ritual.** Onboarding registers nothing for the customer to authorize. Prior builds had 6 Run Now clicks (1 backfill + 5 scheduled tasks); all are gone.
 
-**Scheduled tasks set up separately (opt-in).** When the customer is ready for the daily/weekly rhythm, they open a fresh chat and run `set up command room schedules`, which triggers `enable-command-room-schedules` to register the first-install task set. **Do not hand-type that set here** — it is `schedule_config.FIRST_INSTALL_TASK_IDS`, and the copy that used to sit in this sentence had gone stale, still naming `upcoming-meetings` after BRIEFMERGE retired it. Read the registry (customer-facing names via `schedule_config.task_display_name`; `inbox` surfaces as `inbox-triage`, `friday-wrap` as `weekly-recap`, and `maintenance` is the silent background one the customer never sees as a chat). This is the only path that registers them, and it works because it runs in its own chat. Phase 6 points the customer to it; onboarding never fires it. When Phase 6 points them there, include the keep-awake note (W3, Phase 3 reliability — the 06-30 sleep-stall fix): scheduled tasks run on the customer's computer, so a closed lid or sleep mode at fire time delays them until the machine wakes; suggest setting the computer to stay awake (or plugged in overnight) if they want the morning chats waiting for them, and tell them plainly that a task that "stopped working" after a quiet laptop weekend almost always just slept — not an error, not a usage limit.
+**Scheduled tasks set up separately (opt-in).** When the customer is ready for the daily/weekly rhythm, they open a fresh chat and run `set up command room schedules`, which triggers `enable-command-room-schedules` to register the first-install task set. **Do not hand-type that set here** — it is `schedule_config.FIRST_INSTALL_TASK_IDS`, and the copy that used to sit in this sentence had gone stale, still naming `upcoming-meetings` after BRIEFMERGE retired it. Read the registry (customer-facing names via `schedule_config.task_display_name`; `inbox` surfaces as `inbox-triage`, `friday-wrap` as `weekly-recap`, and `maintenance` is the silent background one the customer never sees as a chat). This is the only path that registers them, and it works because it runs in its own chat. Phase 6 points the customer to it; onboarding never fires it. **What Phase 6 says about how they run (SPEC_NIGHTM1_LANES §7, COPY1 — this replaces the keep-awake note):** a scheduled chat runs in the cloud and reaches the customer's computer through the Claude app, so the app has to be open there when one is due — "Only on this computer" in Settings → Preferences → Tasks is what stops a chat when the app closes, and a chat that "stopped working" over a quiet weekend is almost always a closed app rather than an error or a usage limit. There is one setting to mention and it is rendered verbatim from `schedule_config.TRUSTED_FOLDERS_PARAGRAPH`, never retyped here — the setup skill and the update bridge say the same paragraph from the same constant. Say it only when the customer asks how it works or when Phase 6 is actually pointing them at setup; it is one sentence of setup, not a lecture.
 
 ---
 
@@ -107,7 +107,11 @@ Onboarding spans the chats below. The chat numbers are kept stable from prior bu
 
 ### Setup widget rendering (Phase 0 widget — direct visualize render)
 
-The Phase 0 setup widget renders as a **single progressive-reveal widget** via `mcp__visualize__show_widget` called directly with the inline HTML from `{SKILL_DIR}/references/step1_widget_v2.html` — bypassing `shared/scripts/chat_output_renderer.py::render_chat_output_widget` and the standard CR brand-strip wrapping. **Five questions** batched in one widget (role / timezone / AI name / email draft posture / check-in cadence), Q1 active first, the others dimmed and locked. Q1 has two-level drill-down (top chip → sub-chips → optional refinement textbox). Q2 / Q3 are single-level (top chip → either advance or open textbox for the Other-style chip); Q4 is two simple chips (show-first / auto-queue); Q5 is three simple chips (daily / a few times a week / rarely — SPEC QUIET1 D1). Each completed question collapses to a checkmarked summary line and unlocks the next. The final Q5 click fires one consolidated `sendPrompt('apply choices: [...]')` that apply-choices dispatches back to this skill's "Reply handling — Phase 0 setup" section below.
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
+The Phase 0 setup widget renders as a **single progressive-reveal widget** via `mcp__visualize__show_widget` called directly with what `onboarding_profile.setup_widget_html(workspace_root)` returns — bypassing `shared/scripts/chat_output_renderer.py::render_chat_output_widget` and the standard CR brand-strip wrapping. **Never read `{SKILL_DIR}/references/step1_widget_v2.html` and pass it to the widget yourself:** it ships with its mail-name tokens unfilled (ONBOARDGUARD1 2.2), so a raw read puts `{{MAIL_LABEL}}` on the customer's first screen. **Four questions** batched in one widget (role / timezone / AI name / email draft posture), Q1 active first, the others dimmed and locked. Q1 has two-level drill-down (top chip → sub-chips → optional refinement textbox). Q2 / Q3 are single-level (top chip → either advance or open textbox for the Other-style chip); Q4 is two simple chips (show-first / auto-queue) and closes the widget. Each completed question collapses to a checkmarked summary line and unlocks the next. The final Q4 click fires one consolidated `sendPrompt('apply choices: [...]')` that apply-choices dispatches back to this skill's "Reply handling — Phase 0 setup" section below.
+
+**Q5 (check-in cadence) was removed 2026-09-08 — ruling 7 (`cr-rulings-2026-09-07-ten.md`), SPEC_SURFACES2 §9 ("the product asks the client NOTHING").** The widget used to ask "how often will you check in" even though every answer stamped the same `light` preset (CUT-D, M ruling 2026-09-06) — a question whose answer never changed anything. It is gone from the widget and from the tuple count; Item 5 below still runs, unconditionally, with no client-facing question anywhere in the path.
 
 **Why direct render, not `render_chat_output_widget`:** (a) Phase 0 is the customer's first widget surface — the brand-strip wrapping earns little before they've seen anything CR-branded; (b) decoupling Phase 0 from the shared renderer means a future renderer regression cannot take down onboarding (the truncation incident of 2026-05-17 was the precipitating cause); (c) the widget is self-contained — fewer moving parts is fewer failure modes. The scheduled-task orchestrators continue to render via `render_chat_output_widget` — that path is unchanged.
 
@@ -137,7 +141,7 @@ At the **start** of each phase (Phases 0 through 6), append an event to `_hq/dat
 {"id": "evt_...", "timestamp": "<ISO>", "type": "onboarding_checkpoint", "phase": "<N>", "phase_name": "<name>", "status": "in_progress", "last_step": "<one-line description of the phase just entered>", "last_writer": "command-room-onboarding"}
 ```
 
-Update the same checkpoint (by appending a new one — events.jsonl is append-only) whenever a sub-beat completes that would be painful to re-do (widget submitted, scan finished, voice profile saved, Workspace Map installed, Chat 4 first message rendered, training commands done, voice calibration proof shown).
+Update the same checkpoint (by appending a new one — events.jsonl is append-only) whenever a sub-beat completes that would be painful to re-do (widget submitted, scan finished, voice profile saved, Chat 4 first message rendered, training commands done, voice calibration proof shown).
 
 At the **end** of onboarding (after Phase 6 lands), append a final checkpoint with `phase: "6"` and `status: "complete"`. This is what Phase 0's existing-workspace guard reads to decide between the "already-set-up" route and the "resume" route.
 
@@ -186,27 +190,48 @@ Phase 0's existing-workspace guard reads the most recent `onboarding_checkpoint`
 
 ### 0a. Workspace guard (route detection — preserved from prior onboarding versions)
 
-Probe the mounted folder for workspace-shape signals. Route one of five ways:
+**The route is decided in CODE, not by reading this section** (ONBOARDGUARD1 2.1, M's ruling R-19, 2026-09-17). Call it and obey what it returns:
 
-1. **Already on latest (M1 complete, or onboarding-v2 complete)** — `_hq/data/entities.json` exists AND orgs carry `scope` field AND the most recent `onboarding_checkpoint` event in `events.jsonl` has `status: "complete"` (or no checkpoint events exist at all — legacy installs).
-   → Stop. Say: *"Your Command Room is all set up already. Say **'new project [Name]'** to add a project, **'scan my files'** to take another look at your tools, or **'what version am I on'** if you want a quick health check."*
+```python
+import sys, json
+sys.path.insert(0, f"{PLUGIN_ROOT}/shared/scripts")
+import onboarding_profile
 
-2. **Legacy plugin (v1.4 / v1.7 / v1.8) in place** — `_hq/MASTER_TRACKER.md` exists AND `_hq/data/entities.json` does NOT exist.
-   → Stop with: *"Looks like you've got an earlier version of Command Room here with data already in it. Setup won't move that over for you — say `update my command room` and I'll bring your existing stuff into the new format first. Once that's done, we can run setup on top of it."*
+route = onboarding_profile.workspace_route(
+    workspace_root,   # the mounted workspace folder — the one that holds (or would hold) `_hq`,
+                      # resolved exactly as every other fire in this plugin resolves it. Never a
+                      # parent, never a subfolder: pointing the guard at the wrong folder is the
+                      # one remaining way to make it say "fresh" about a workspace that is not.
+    restart_requested=<True only when the customer typed the exact phrase "restart onboarding">,
+)
+print(json.dumps(route, ensure_ascii=False))
+```
 
-3. **Legacy JSON (v2.0 / v2.1) in place** — `_hq/data/entities.json` exists AND orgs carry legacy `type` field (no `scope`).
-   → Same instruction as case #2 — onboarding doesn't migrate; user runs `workspace-ingest` separately.
+`route["route"]` is one of six values, `route["say"]` is the one sentence to print when there is one, and `route["auto_fire"]` is True on exactly one route. **Print `route["say"]` verbatim and add nothing to it.** Never re-derive the route from a file listing, a field name or a judgement about how the workspace looks — that judgement was the defect this replaced: the old five-way prose rule required orgs to carry a `scope` field to count as set up, so a real book whose orgs carry none satisfied no rule at all, fell through to "fresh", and a seat that followed the rule would have seeded a new workspace over the top of live data.
 
-4. **Fresh workspace** — none of the above. No `_hq/` folder, no registry files.
-   → Proceed with normal onboarding flow starting at Phase 0b.
+| `route` | What it means | What you do |
+|---|---|---|
+| `already_set_up` | There is a book in this folder — events, companies, a completed setup checkpoint, **or a workspace this guard could not read**, in which case `say` says exactly that instead of claiming setup is finished | **Stop.** Print `say` verbatim, whichever of the two it is. |
+| `legacy_tracker` | An older Command Room's tracker, no registry | **Stop.** Print `say`. Onboarding does not migrate; `update my command room` does. |
+| `legacy_json` | An early registry whose companies carry the legacy kind field only | **Stop.** Print `say`, same instruction as above. |
+| `in_progress` | Setup started and never finished | **Resume**, never restart — branch on age and phase below. |
+| `refuse_restart` | `restart onboarding` was typed at a workspace that has a book in it | **Stop.** Print `say`. Write nothing, archive nothing. |
+| `fresh` | Nothing on file | Proceed to Phase 0b. This is the ONE auto-fire route. |
 
-5. **In-progress onboarding (checkpoint exists, not complete)** — `events.jsonl` contains one or more `onboarding_checkpoint` events AND the most recent has `status: "in_progress"`.
-   → Resume, don't blind-restart. Read the most recent `onboarding_checkpoint` (its age computed from `ts`, falling back to `timestamp` per the line-133 shape), apply the legacy-mapping table above if it's a pre-M1 phase identifier, then branch on **age + phase danger**:
-   - **Age ≤ 6 hours** (any phase) → current behavior: *"Picking up right where we left off. We were [plain description of the last thing we did — e.g. "scanning your email and calendar"; never an internal phase slug like "triple-beat" or "coach-handoff"]. Want to keep going?"* Wait for confirmation, then resume from the next sub-beat. Do NOT re-run earlier phases, re-scan connectors, or re-seed files.
-   - **Age > 6 hours AND mapped phase ∈ {0, 1, 2}** (dangerous — substrate mid-seed, scan data stale) → present an explicit **two-option choice, neither auto-taken**: *"We started setting up your Command Room a while back and stopped partway through [phase name]. Two options: I can **pick up where we left off**, or **start fresh**, where I archive the partial setup and run it clean. Which do you want?"* On "pick up," resume from the next sub-beat; on "start fresh," run the `"restart onboarding"` archive path.
+**The never-fresh rule, which the function applies first and you never override:** a workspace whose ledger carries more than `onboarding_profile.FRESH_MAX_EVENTS` events, whose registry carries more than `FRESH_MAX_ORGS` companies, **or whose activity log or registry is on disk and will not read**, is **never** `fresh` — whatever any field says, and whether or not its companies carry a `scope`. A missing or malformed `scope` is a data-quality fact, reported by the maintenance run (see "Company-type hygiene" below), and is never evidence that a book does not exist. **A folder the guard could not read is never resumed either** — it comes back as `already_set_up` with the honest sentence, never as `in_progress`, because resuming a half-finished setup means writing into the folder it just said it could not read.
+
+**`restart onboarding` is refused in code on any such workspace.** The refusal is the rule now, not a judgement: the restart path archives the activity log and re-seeds with nothing merged and no undo. On a workspace with nothing in it the ordinary route comes back and the restart path runs as before (archive the existing `events.jsonl` to `_archive/events_restarted_YYYY-MM-DD.jsonl` first). Phrases that imply data migration (`"update my command room"`, `"ingest my existing workspace"`) do NOT trigger this skill — they route to `workspace-ingest`.
+
+**On `in_progress`, the resume branch is unchanged.** Read `route["signals"]["checkpoint_phase"]` and `route["signals"]["checkpoint_ts"]`, apply the legacy-mapping table above if it is a pre-M1 phase identifier, then branch on **age + phase danger**:
+   - **Age ≤ 6 hours** (any phase) → *"Picking up right where we left off. We were [plain description of the last thing we did — e.g. "scanning your email and calendar"; never an internal phase slug like "triple-beat" or "coach-handoff"]. Want to keep going?"* Wait for confirmation, then resume from the next sub-beat. Do NOT re-run earlier phases, re-scan connectors, or re-seed files.
+   - **Age > 6 hours AND mapped phase ∈ {0, 1, 2}** (dangerous — substrate mid-seed, scan data stale) → **branch on `route["signals"]["populated"]`, and offer only what can actually happen:**
+     - **`populated` is True** — there is a book in this folder, so a restart is refused in code and must not be offered. ONE verb: *"We started setting up your Command Room a while back and stopped partway through [phase name]. I'll pick up where we left off."* Resume from the next sub-beat. (Fix round 1, review finding M2: offering a clean restart here and then refusing it is a promised verb that cannot act, and it is a second option on a card M's standing rule says to cut.)
+     - **`populated` is False** — the genuine mid-seed this branch was written for. Present the explicit **two-option choice, neither auto-taken**: *"We started setting up your Command Room a while back and stopped partway through [phase name]. Two options: I can **pick up where we left off**, or **start fresh**, where I archive the partial setup and run it clean. Which do you want?"* On "pick up," resume from the next sub-beat; on "start fresh," re-call `workspace_route(..., restart_requested=True)` and obey it.
    - **Age > 6 hours AND mapped phase ∈ {3, 4, 5}** (safe — substrate is already built) → resume: re-render the current phase's customer instruction and continue. Do NOT re-seed files. (No scheduled-task externals to re-verify — onboarding registers none.)
 
-The explicit phrase `"restart onboarding"` forces a full re-run regardless of checkpoint state (archive the existing `events.jsonl` to `_archive/events_restarted_YYYY-MM-DD.jsonl` first). Phrases that imply data migration (`"update my command room"`, `"ingest my existing workspace"`) do NOT trigger this skill — they route to `workspace-ingest`.
+### 0a-bis. Company-type hygiene (a note for the maintenance run, never a write)
+
+`onboarding_profile.scope_hygiene(workspace_root)` counts the companies whose type is missing or not one of `holding | operating | division | brand | fund | other`, and `scope_hygiene_line(workspace_root)` composes the one plain sentence. **This skill writes nothing to the registry on any path**, and the note does not belong on any of the three customer surfaces — under M's 2026-09-07 ruling and its extension, the condition of the plumbing is reported by the **maintenance run** and nowhere else, because that is the only surface where a cleanup can actually be offered and performed. The `examples` the read returns carry company names; whatever composes them gates them.
 
 ### 0b. Auto-detection trigger + intro
 
@@ -221,38 +246,36 @@ All subsequent references use **"Chalette Command Room"** or **"Command Room"**.
 
 If no tools are connected, pivot to the cold start path. Read **{SKILL_DIR}/references/cold-start-path.md** (skill-local) for activation.
 
-### 0c. Setup widget — 5 questions (M1 + SPEC FRP1 + SPEC QUIET1)
+### 0c. Setup widget — 4 questions (M1 + SPEC FRP1)
 
-The Phase 0 setup widget renders five questions in one progressive-reveal HTML widget per the "Setup widget rendering" section at the top of this file. Source: `{SKILL_DIR}/references/step1_widget_v2.html`.
+The Phase 0 setup widget renders four questions in one progressive-reveal HTML widget per the "Setup widget rendering" section at the top of this file. Composed by `onboarding_profile.setup_widget_html(workspace_root)`, which is the only supported way to obtain the markup.
 
-**Seed pre-answers (Spec 3).** Before rendering the widget, do a read-only check for a pre-onboarding brief at the workspace root (`onboarding_seed.find_seed` / `pre_answers` — read-only; the full ingest happens at 1a.0, not here). If the brief supplies **timezone** (Q2) or **AI name** (Q3), those questions render **pre-filled with the brief's value, still editable** — the customer confirms rather than answers from scratch, and a declared `seniority` pre-answers the Q1 sub-chip. The widget still shows all five questions (nothing is removed); the seed just fills the chips it can. Never say "seed"/"brief file"/a path — if anything, "I already had your timezone from our call."
+**Q5 (check-in cadence) removed 2026-09-08 — ruling 7, SPEC_SURFACES2 §9.** Every answer used to stamp the identical `light` preset (CUT-D, M ruling 2026-09-06) — the question never changed anything it asked about, which made it exactly the kind of client-facing question §9 retires ("the product asks the client NOTHING"). The preset write moved to an unconditional call in Item 5 below; nothing here asks the client about it.
 
-**The 5 questions:**
+**Seed pre-answers (Spec 3).** Before rendering the widget, do a read-only check for a pre-onboarding brief at the workspace root (`onboarding_seed.find_seed` / `pre_answers` — read-only; the full ingest happens at 1a.0, not here). If the brief supplies **timezone** (Q2) or **AI name** (Q3), those questions render **pre-filled with the brief's value, still editable** — the customer confirms rather than answers from scratch, and a declared `seniority` pre-answers the Q1 sub-chip. The widget still shows all four questions (nothing else is removed); the seed just fills the chips it can. Never say "seed"/"brief file"/a path — if anything, "I already had your timezone from our call."
+
+**The 4 questions:**
 
 | Q | Topic | Storage field |
 |---|---|---|
 | Q1 | Workspace shape (run-company / senior-leader / investor / client-work / nonprofit / other) with sub-chip drill-down | `workspace.shape` + `workspace.shape_detail` + `workspace.seniority` |
 | Q2 | Timezone | `workspace.user_timezone` + `workspace.schedule_timezone` |
 | Q3 **M1** | AI name (default "Penelope") | `workspace.brain_name` |
-| Q4 **FRP1** | Email draft posture (show_first / auto_queue) | `email-writer` skill_config `draft_posture` (NOT entities.json — written via `save_skill_config(..., origin="m1_batch")`) |
-| Q5 **QUIET1** | Check-in cadence (daily / few_times_a_week / rarely) | `commitment-policy` skill_config `preset` — `light` for EVERY answer (CUT-D, M ruling 2026-09-06); NOT entities.json; written via `quiet.stamp_onboarding_preset(...)` (origin `m1_batch`), receipted and undoable |
+| Q4 **FRP1** | Email draft posture (show_first / auto_queue) | `email-writer` skill_config `draft_posture` (NOT entities.json — written via `save_skill_config(..., origin="m1_batch")`) — closes the widget |
 
-The email-exclusion question was removed in v5 (2026-06-30). Exclusions are no longer collected at onboarding — a customer who wants to hold a domain back says "add [domain] to my exclusion list" any time (handled by `workspace-manager`).
+The check-in-cadence question was removed in v7 (2026-09-08, ruling 7 — see above); the interaction preset is now stamped unconditionally by Item 5 below, no widget slot. The email-exclusion question was removed in v5 (2026-06-30). Exclusions are no longer collected at onboarding — a customer who wants to hold a domain back says "add [domain] to my exclusion list" any time (handled by `workspace-manager`).
 
 **Q3 wording (rendered inline in the widget):**
 > *"What do you want to call your AI? Default is Penelope. Pick anything that feels right — Jarvis, Alfred, your own first name. She runs your Command Room and shows up by name in every chat ('ask Penelope,' 'Penelope said'). Her workspace folder becomes `[Name]'s Brain`."*
 
-**Q4 wording (rendered inline in the widget — SPEC FRP1):**
-> *"How should I handle email drafts? When you ask me to write an email, I can show you the draft first and only touch Gmail when you click — or drop every draft straight into your Gmail Drafts. You can change this anytime by saying 'tune email-writer.'"*
+**Q4 wording (rendered inline in the widget — SPEC FRP1; the mail name is the seat's own, ONBOARDGUARD1 2.2):** print what `onboarding_profile.draft_posture_line(workspace_root)` returns. It names the declared email backend’s own label, and says "your mail" and names no provider at all when nothing is declared. The shape:
+> *"How should I handle email drafts? When you ask me to write an email, I can show you the draft first and only touch [their mail] when you click — or drop every draft straight into [their drafts]. You can change this anytime by saying 'tune email-writer.'"*
+
+Never type a provider name here by hand, not even as an example — the walked 2026-09-16 seat declares a different mailbox and was told about the wrong one three times, because the name was a literal in this file and in the widget.
 
 Q4 is an ask-first first-run decision batched into onboarding (per SPEC FRP1 D6 — draft posture gates outbound, so it earns a slot like timezone). Every other skill's first-run personalization stays at natural first-fire. Default (and the safe escape if the customer never clicks it) is `show_first`, matching the v3.13.7 lazy email contract.
 
-**Q5 wording (rendered inline in the widget — SPEC QUIET1 D1):**
-> *"How often will you check in? Whichever you pick, I start light: a handful of questions a week at most, and your plate shows 40 items at a time. Everything else resolves on its own with the sensible default, and anything I decide for you shows up in your Friday wrap with an undo. Say 'ask me more' whenever you want more."*
-
-Q5 is the interaction posture. **Every answer stamps `light`** (M rulings 2026-09-03 and 2026-09-06: every client seat starts `light`; "Daily" never means `engaged`; the only door up is `ask me more`). The answer itself is kept on the stamp's `triggered_by` line and sets nothing else — no first-brief timing, no second value. An unanswered Q5 (an older widget, a customer who never clicks it) lands in the same place: `light`, which the update bridge also stamps on any workspace with no stored posture.
-
-Note: spec numbering inside Cowork session-notes documents may differ when counting Q1's compound (role + seniority) as two questions. The widget surfaces 5 questions to the customer; the apply-choices payload carries 5 tuples.
+Note: spec numbering inside Cowork session-notes documents may differ when counting Q1's compound (role + seniority) as two questions. The widget surfaces 4 questions to the customer; the apply-choices payload carries 4 tuples.
 
 **Pre-widget fire-marker (MANDATORY — apply-choices uses this to identify the source skill):**
 
@@ -265,31 +288,30 @@ Before calling `mcp__visualize__show_widget`, append a fire-marker event to `eve
   "type": "onboarding_setup_widget_emitted",
   "source_skill": "command-room-onboarding",
   "phase": "0",
-  "data": {"widget_kind": "step_1_setup_v6"},
+  "data": {"widget_kind": "step_1_setup_v7"},
   "last_writer": "command-room-onboarding"
 }
 ```
 
-`apply-choices` Step 2 reads this event (timestamp within last 60 min) to identify `command-room-onboarding` as the source (it keys on `source_skill`, so the `widget_kind` value is informational, not a match key — older payloads still dispatch). The `widget_kind: step_1_setup_v6` value distinguishes the current widget (5 questions: role / timezone / AI name / email draft posture / check-in cadence) from `step_1_setup_v5` (4 questions, no cadence), `step_1_setup_v4` (5 questions, + email exclusions), `step_1_setup_v3` (4 questions, M1, + AI name), `step_1_setup_v2` (3 questions), and the pre-v2 `step_1_setup` (4 questions, no sub-chip drill-down).
+`apply-choices` Step 2 reads this event (timestamp within last 60 min) to identify `command-room-onboarding` as the source (it keys on `source_skill`, so the `widget_kind` value is informational, not a match key — older payloads still dispatch). The `widget_kind: step_1_setup_v7` value distinguishes the current widget (4 questions: role / timezone / AI name / email draft posture) from `step_1_setup_v6` (5 questions, + check-in cadence — Q5 removed 2026-09-08, ruling 7), `step_1_setup_v5` (4 questions, no cadence), `step_1_setup_v4` (5 questions, + email exclusions), `step_1_setup_v3` (4 questions, M1, + AI name), `step_1_setup_v2` (3 questions), and the pre-v2 `step_1_setup` (4 questions, no sub-chip drill-down).
 
 **No renderer pre-flight needed.** The widget bypasses `chat_output_renderer.py` entirely.
 
 **Widget call:**
 
-1. Read the inline widget HTML from `{SKILL_DIR}/references/step1_widget_v2.html` (inside this skill's folder). The file contains the complete `<div>` markup + `<style>` + `<script>` block — pass it through verbatim, no transformations.
-2. Pass the HTML as the body of a single `mcp__visualize__show_widget` call. NO accompanying markdown chat text, no header line, no "here are your questions" preamble — the widget is the entire surface for Phase 0c per `shared/CHAT_ACTION_WIDGET.md` MUST rule #2.
+1. Compose the widget HTML by calling `onboarding_profile.setup_widget_html(workspace_root)` — it reads `{SKILL_DIR}/references/step1_widget_v2.html` (the complete `<div>` markup + `<style>` + `<script>` block) and fills the three mail-name tokens from the seat's declared email backend. Pass its return through verbatim, no further transformations. **Do not read the reference file directly** — it ships with `{{MAIL_LABEL}}` / `{{MAIL_DRAFTS}}` / `{{MAIL_QUEUE_CHIP}}` unfilled, and the function raises rather than return markup that still carries one.
+2. Pass the HTML as the body of a single `mcp__visualize__show_widget` call. NO accompanying markdown chat text, no header line, no "here are your questions" preamble — the widget is the entire surface for Phase 0c per `shared/CHAT_ACTION_WIDGET.md` MUST rule #2. **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 
-Q1 chips (top + sub), Q2 / Q3 / Q4 / Q5 chips are baked into the HTML — do NOT regenerate them dynamically. Any future change to the chip taxonomy is an edit to `{SKILL_DIR}/references/step1_widget_v2.html`, not a string-template patch from this skill.
+Q1 chips (top + sub), Q2 / Q3 / Q4 chips are baked into the HTML — do NOT regenerate them dynamically (the mail-name tokens are the one substitution, and `setup_widget_html` is what makes it). Any future change to the chip taxonomy is an edit to `{SKILL_DIR}/references/step1_widget_v2.html`, not a string-template patch from this skill.
 
-**Wire shape on submission (5 tuples, `sub` and `input` optional per tuple):**
+**Wire shape on submission (4 tuples, `sub` and `input` optional per tuple):**
 
 ```
 apply choices: [
   {"n":1,"action":"run-company","sub":"holdco","input":"3 portcos, fintech + AI tools"},
   {"n":2,"action":"eastern"},
   {"n":3,"action":"default"},
-  {"n":4,"action":"show_first"},
-  {"n":5,"action":"few_times_a_week"}
+  {"n":4,"action":"show_first"}
 ]
 ```
 
@@ -297,14 +319,69 @@ Examples of the optional fields:
 - `n:1` (role) always has `action`; has `sub` whenever the user picked a sub-chip (every top-level except top-level `other`); has `input` whenever the user typed into the refinement textbox (required for any chip flagged `other` at any level, optional otherwise).
 - `n:2` (timezone) has `action: pacific|mountain|central|eastern` (no `input`) or `action: other` with `input` (required).
 - `n:3` (AI name) has `action: default` (no `input`, customer kept "Penelope") or `action: custom` with `input` (the customer-typed name, required).
-- `n:4` (email draft posture) has `action: show_first` (default) or `action: auto_queue`. No `input`. Routes to email-writer skill_config per Item 4 below (origin `m1_batch`), NOT entities.json.
-- `n:5` (check-in cadence) has `action: daily | few_times_a_week | rarely`. No `input`. Routes to the commitment-policy preset per Item 5 below (origin `m1_batch`), NOT entities.json.
+- `n:4` (email draft posture) has `action: show_first` (default) or `action: auto_queue`. No `input`. Routes to email-writer skill_config per Item 4 below (origin `m1_batch`), NOT entities.json. Closes the widget.
 
 ### Reply handling — Phase 0 setup (apply-choices dispatches here)
 
-When `apply-choices` parses an `apply choices: [...]` payload AND its Step 2 source-identification reads the `onboarding_setup_widget_emitted` fire-marker event with `source_skill: command-room-onboarding` (current `data.widget_kind: step_1_setup_v6`), it dispatches each `{n, action, sub?, input?}` tuple back to this section.
+When `apply-choices` parses an `apply choices: [...]` payload AND its Step 2 source-identification reads the `onboarding_setup_widget_emitted` fire-marker event with `source_skill: command-room-onboarding` (current `data.widget_kind: step_1_setup_v7`), it dispatches each `{n, action, sub?, input?}` tuple back to this section.
 
-Process the tuples in order — 5 for `step_1_setup_v6`. (Earlier widgets emitted a different tuple count — `step_1_setup_v5` = 4 (no cadence item; Item 5 is skipped and the update bridge's stamp supplies `light`), `step_1_setup_v4` = 5 with an email-exclusions item at `n:2`, `step_1_setup_v3` = 4, `step_1_setup_v2` = 3 — and workspaces with prior payloads in `events.jsonl` are unaffected; the route key is `source_skill`, and each Item handler below matches on the tuple's topic rather than a fixed `n`, so a legacy 5-tuple payload's exclusion item is simply ignored and the remaining items still land.)
+Process the tuples in order — 4 for `step_1_setup_v7`. (Earlier widgets emitted a different tuple count — `step_1_setup_v6` = 5 with a check-in-cadence item at `n:5` (Q5, removed 2026-09-08 — ruling 7; the item is simply ignored on a legacy payload, and Item 5 below runs its unconditional call regardless), `step_1_setup_v5` = 4 (no cadence item), `step_1_setup_v4` = 5 with an email-exclusions item at `n:2`, `step_1_setup_v3` = 4, `step_1_setup_v2` = 3 — and workspaces with prior payloads in `events.jsonl` are unaffected; the route key is `source_skill`, and each Item handler below matches on the tuple's topic rather than a fixed `n`, so a legacy payload's exclusion/cadence item is simply ignored and the remaining items still land.)
+
+**The typed door — the customer pasted the card's own sentence.** When a Phase-0 setup card cannot reach the chat it hands the customer a line to paste, and that line is the four questions with their own answers in the words the card printed back: `Your role: Run a company → Single operating company; Timezone: Pacific; AI name: Keep Penelope; Email drafts: Show me first`. It is readable on purpose (it carries no wire enums), which means it also needs a ROUTE — do not infer one. Run it through the table below, which lives in code:
+
+```python
+# Same PLUGIN_ROOT preamble as Item 4; run FROM $PLUGIN_ROOT.
+import sys; sys.path.insert(0, "shared/scripts")
+from onboarding_profile import parse_setup_sentence
+tuples = parse_setup_sentence(pasted_text)   # raises ValueError on anything it cannot read
+```
+
+`parse_setup_sentence` returns the SAME `{n, action, sub?, input?}` tuples the widget's wire carries, so dispatch them through Items 1–5 below exactly as if `apply-choices` had delivered them — no fire-marker is involved on this path, and nothing else changes. A refinement rides as `input` (`Timezone: Other — America/Los_Angeles` → `{"n": 2, "action": "other", "input": "America/Los_Angeles"}`; the card shortens a long refinement to 38 characters and an ellipsis, so a pasted `input` may be the shortened text). **If it raises, say so plainly and ask for that one answer again — apply nothing.** A `ValueError` names the question and what it read; never guess which chip was meant, and never fall back to a default the customer did not pick.
+
+Label → enum, the fixed shipped set (`onboarding_profile.SETUP_CHIP_LABELS` / `SETUP_SUB_CHIP_LABELS` — the widget prints these labels and this skill maps them; neither file may drift from the other):
+
+| Q1 role — the chip | `action` |
+|---|---|
+| `Run a company` | `run-company` |
+| `Senior leader (not owner)` | `senior-leader` |
+| `Investor / board / advisor` | `investor` |
+| `Client work / service` | `client-work` |
+| `Nonprofit` | `nonprofit` |
+| `Other` | `other` |
+
+| Q1 role — under | the sub-chip | `sub` |
+|---|---|---|
+| `Run a company` | `Single operating company` | `single-op-co` |
+| `Run a company` | `Multiple companies (holdco)` | `holdco` |
+| `Run a company` | `Family business` | `family-business` |
+| `Senior leader (not owner)` | `C-suite` | `c-suite` |
+| `Senior leader (not owner)` | `VP / SVP` | `vp` |
+| `Senior leader (not owner)` | `Director or below` | `director-below` |
+| `Investor / board / advisor` | `GP / fund partner` | `gp-fund` |
+| `Investor / board / advisor` | `Board director` | `board-director` |
+| `Investor / board / advisor` | `Independent advisor` | `independent-advisor` |
+| `Investor / board / advisor` | `Family office principal` | `family-office` |
+| `Client work / service` | `Consulting` | `consulting` |
+| `Client work / service` | `Agency` | `agency` |
+| `Client work / service` | `Professional services` | `professional-services` |
+| `Nonprofit` | `Executive director` | `exec-director` |
+| `Nonprofit` | `Senior staff` | `senior-staff` |
+| `Nonprofit` | `Board member` | `board-member` |
+| every top chip above | `Other` | `other` |
+
+| Question | the chip | `action` |
+|---|---|---|
+| Q2 timezone | `Pacific` | `pacific` |
+| Q2 timezone | `Mountain` | `mountain` |
+| Q2 timezone | `Central` | `central` |
+| Q2 timezone | `Eastern` | `eastern` |
+| Q2 timezone | `Other` | `other` |
+| Q3 AI name | `Keep Penelope` | `default` |
+| Q3 AI name | `Pick my own` | `custom` |
+| Q4 email drafts | `Show me first` | `show_first` |
+| Q4 email drafts | `Auto-queue to …` | `auto_queue` |
+
+Q4's auto-queue chip is named after the seat's own mailbox ("Auto-queue to my drafts", "Auto-queue to [Mailbox] Drafts"), so it is the one answer matched on its prefix rather than on a fixed string.
 
 **Item 1 (role) — map `action` + `sub` to schema-compatible enum + seniority:**
 
@@ -405,9 +482,7 @@ onboarding rather than at first email-writer fire:
 | `auto_queue` | `auto_queue` |
 
 ```python
-# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
-# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config
 posture = item4_action if item4_action in ("show_first", "auto_queue") else "show_first"
@@ -422,44 +497,43 @@ question does NOT re-ask it (`is_configured(workspace_root, "email-writer")` is 
 item 4 is absent (older widget), skip this write — email-writer asks the posture question on its
 own first fire instead. Nothing else email-writer personalizes (sign-off, length) is touched here.
 
-**Item 5 (check-in cadence — SPEC QUIET1 D1) — write the commitment-policy preset, NOT entities.json:**
+**Item 5 (check-in cadence — SPEC QUIET1 D1, question REMOVED 2026-09-08 ruling 7) — write the commitment-policy preset, NOT entities.json:**
 
 The interaction posture: how many questions Command Room may ask in a week, across every asker.
+**The widget no longer asks about it (ruling 7, SPEC_SURFACES2 §9 — the product asks the client
+NOTHING) — this Item runs unconditionally, from the widget's own submission, with no client-facing
+question anywhere in the path.**
+
 Written through `quiet.stamp_onboarding_preset`, which stamps through `quiet.stamp_preset` (the typed
 `skill_config_writer` path, batch-stamped so a bare `undo` lists it as "set how often it asks you"
-and puts the previous value back exactly) — on a FRESH seat only; see the stored-posture rule below:
+and puts the previous value back exactly) — on a FRESH seat only; see the stored-posture rule below.
 
-| Q5 `action` | commitment-policy `preset` | what it means |
-|---|---|---|
-| `daily` | `light` | up to 5 questions a week; the plate shows 40 at a time |
-| `few_times_a_week` (default) | `light` | the same |
-| `rarely` | `light` | the same |
-
-Every answer stamps `light` (CUT-D, M ruling 2026-09-06). The answer is not lost — it rides the
-receipt's `triggered_by` line (`onboarding Q5: daily`) — but it changes no value. `engaged` is
-reachable only by the customer saying `ask me more` or by the operator command
-(`quiet.py <ws> --stamp engaged --apply`); never from this widget.
+Every seat starts `light` (CUT-D, M ruling 2026-09-06; no-posture fallback = light, ruling 8) —
+there was never a chip whose answer changed this, which is exactly why ruling 7 removed the chips.
+`engaged` is reachable only by the customer saying `ask me more` or by the operator command
+(`quiet.py <ws> --stamp engaged --apply`); never from onboarding.
 
 **A seat with a posture already stored is left alone (CUT-D R2).** "Every seat STARTS light" is about
 fresh seats. When `commitment-policy.preset` already holds a valid value — the update bridge stamped
-`light` before this widget was answered (the usual order on a new seat), an `engaged` seat is
+`light` before Phase 0 ran (the usual order on a new seat), an `engaged` seat is
 re-running onboarding (`restart onboarding`, or the operator's own seat), or the customer already said
 `ask me more` — the call stamps NOTHING (`ran False, skipped True, preset = the stored one`), so a
 re-run can never knock a seat down. The skip is receipted once per seat (`interaction_posture` /
-`onboarding_kept`, the Q5 answer on its `triggered_by` line), which is why the answer is recorded on
-every path: on the stamp's receipt on a fresh seat, on the skip's receipt otherwise. Nothing to undo
-on a skip — nothing changed.
+`onboarding_kept`), which is why an answer marker is recorded on every path: on the stamp's receipt on
+a fresh seat, on the skip's receipt otherwise. Nothing to undo on a skip — nothing changed.
 
 ```python
 # Same PLUGIN_ROOT preamble as Item 4; run FROM $PLUGIN_ROOT.
 import sys; sys.path.insert(0, "shared/scripts")
 import quiet
-quiet.stamp_onboarding_preset(workspace_root, item5_action)   # light, whatever the answer; a stored posture is kept
+item5_action = None  # ruling 7 (2026-09-08): Q5 removed — no widget input; this call is unconditional
+quiet.stamp_onboarding_preset(workspace_root, item5_action)   # light either way; a stored posture is kept
 ```
 
-If item 5 is absent (an older widget), skip this write — the update bridge stamps `light` on any
-workspace with no stored posture, so the customer lands on the default either way. Never say
-"preset", "engaged", "light" or "quiet" to the customer; the ack says how many a week.
+`None` normalizes to `"unanswered"` inside `stamp_onboarding_preset`, which stamps `light` exactly the
+same as every named answer used to (see `quiet.onboarding_preset`). This call always runs at Phase 0
+submission now — it does not wait on, or read, any widget tuple. Never say
+"preset", "engaged", "light" or "quiet" to the customer.
 
 **Apply-time response (short plain-English ack, NO new widget):**
 
@@ -469,7 +543,7 @@ The customer already confirmed by clicking Finish. Don't re-render the form. Sur
 
 Then immediately enter Phase 1 (don't wait for further customer input — the orchestration takes over from here).
 
-**Deliverable:** widget emitted; on the final Q5 click, the 5 selections write `workspace.shape` + `seniority` + `shape_detail` (when sub-chip picked) + `shape_freetext` (when refinement textbox filled) + `user_timezone` + `schedule_timezone` + `first_go_months` + `brain_name` to entities.json, AND email-writer `draft_posture` to its skill_config (origin `m1_batch`), AND the commitment-policy `preset` (origin `m1_batch`, receipted as an undoable batch). Checkpoint event written with `phase: "0"`, `status: "in_progress"`.
+**Deliverable:** widget emitted; on the final Q4 click, the 4 selections write `workspace.shape` + `seniority` + `shape_detail` (when sub-chip picked) + `shape_freetext` (when refinement textbox filled) + `user_timezone` + `schedule_timezone` + `first_go_months` + `brain_name` to entities.json, AND email-writer `draft_posture` to its skill_config (origin `m1_batch`); the same submission unconditionally stamps the commitment-policy `preset` (origin `m1_batch`, receipted as an undoable batch, Item 5 above — no widget input). Checkpoint event written with `phase: "0"`, `status: "in_progress"`.
 
 **Transition:** Phase 1a begins in Chat 1 — the light scan runs and the workspace is built. (No parallel schedules chat is opened; scheduled tasks are an opt-in the customer sets up after the call.)
 
@@ -477,7 +551,7 @@ Then immediately enter Phase 1 (don't wait for further customer input — the or
 
 ## Phase 1 — Scan + workspace build + Workspace Map (T=0:02 → T=0:08)
 
-This phase runs across **2 chats**: Chat 1 (light scan + workspace build) and Chat 3 (workspace map install). Onboarding does **not** register or orchestrate any scheduled tasks here — the schedules-install chat that older builds opened in parallel at this point is gone (the customer opts into schedules later, after the call, via `set up command room schedules`).
+This phase runs across **2 chats**: Chat 1 (light scan + workspace build) and Chat 3 (the Workspace Map, in chat). Onboarding does **not** register or orchestrate any scheduled tasks here — the schedules-install chat that older builds opened in parallel at this point is gone (the customer opts into schedules later, after the call, via `set up command room schedules`).
 
 ### Phase 1a — Light scan in Chat 1 (T=0:02 → T=0:07)
 
@@ -519,24 +593,36 @@ The `onboarding_seed_ingested` event is appended by the helper (consumers: coach
 
 > *"Connected and ready: M365, Calendar, Granola. Not seeing: Slack, Drive.*
 >
-> *If you were expecting one of those to be there, it's probably a permissions thing — check Cowork Settings → Connectors and make sure they're turned on for this chat. Then say `re-scan` and I'll try again. I'll keep going with what I have for now."*
+> *If you were expecting one of those to be there, it's probably a permissions thing — open your Claude app's Settings → Connectors and make sure they're turned on for this chat. Then say `re-scan` and I'll try again. I'll keep going with what I have for now."*
 
-Detection rule: a connector is "detected" iff at least one of its MCP tools is callable from the current session. Do NOT infer connector availability from app-level Cowork status — only from session-level tool availability.
+Detection rule: a connector is "detected" iff at least one of its MCP tools is callable from the current session. Do NOT infer connector availability from app-level connector status — only from session-level tool availability.
 
 **Meeting-transcript sources are generalized.** Map any of these to the same role:
 
-- Granola (`mcp__granola__*`)
-- Fireflies (`mcp__fireflies__*`)
-- Otter (`mcp__otter__*`)
-- Read.ai (`mcp__read*__*`)
-- Zoom AI Companion (`mcp__zoom__*`)
-- Microsoft Teams meeting summaries (`mcp__teams__*` with summary scope)
+A connector's tool prefix is built from its display name — spaces become
+underscores, the case is kept — so match on the prefix the session actually
+shows and never on a lower-cased guess. Read the prefix off the live tool
+list, not off this page: the only prefixes confirmed against the merged app
+are `mcp__Granola__*`, `mcp__Superhuman_Mail__*`, `mcp__Slack__*` and
+`mcp__Google_Drive__*`. The others below are PRODUCT names, and a product name
+is not always its display name (Read.ai carries a dot, not a space), so this
+list names the sources, not their prefixes. Where a prefix has to be written
+down, it belongs in the display-name registry
+(`shared/data-schemas/connector_capabilities.json`, owned by DISC1) and is
+reconciled there, never guessed here.
+
+- Granola (`mcp__Granola__*` — confirmed)
+- Fireflies
+- Otter
+- Read.ai
+- Zoom AI Companion
+- Microsoft Teams meeting summaries (summary scope)
 
 If multiple are wired, all contribute. The inventory line above names whichever ones are detected.
 
 #### 1a.i-b — Account-enumeration gate (R11, `shared/ACCOUNT_SCOPE.md`) — runs BEFORE any mail/calendar scan
 
-Enumerate **ACCOUNTS, not connectors** — a single connector can front multiple mailboxes (Superhuman-class), and two connectors can front one mailbox. Where a connector exposes a whoami-class tool (`get_account_info` / `get_me` / profile reads — check the fire-time tool list), call it and collect the account ADDRESSES it fronts. A connector with no whoami (native Gmail) contributes its one implied account with the address unconfirmed (binding `user_asserted`).
+Enumerate **ACCOUNTS, not connectors** — a single connector can front multiple mailboxes (Superhuman-class), and two connectors can front one mailbox. Where a connector exposes a whoami-class tool (`list_accounts` / `get_account_info` / `get_me` / profile reads — check the fire-time tool list), call it and collect the account ADDRESSES it fronts; an address the connector itself returned is bound `connector_asserted`. A connector with no whoami (native Gmail) contributes its one implied account with the address unconfirmed (binding `user_asserted`).
 
 - **Exactly ONE account enumerated** → classify it `business-primary` SILENTLY via `connector_config.set_account_classification(root, address, role="business-primary")` + an `account_classified` event through `event_gate.append_event`. Zero friction — a single-account workspace never sees a question.
 - **More than one account** → ask ONE question, listing the addresses: *"I can see mail for [A] and [B]. Which is your business account? The other stays out of your business records until you tell me otherwise — you can reclassify any account later by telling me it's personal, business, or a second business email (workspace-manager owns those verbs)."* Classify the answer(s) via the same setter; accounts the user doesn't classify stay `unclassified`.
@@ -623,14 +709,6 @@ Key files written during the scan, with narration:
 
 After this sub-beat, entities.json has the full primary user + org + project picture written.
 
-#### 1a.vi — Quick Commands install (silent)
-
-Call `level-up-command-room` (Mode: Quick Commands) silently. Required placeholders:
-- `CEO_DISPLAY_NAME` from `entities.json` `person_001.canonical_name`
-- `LAST_BUILT` ISO timestamp
-
-~5 sec cost. Surface as a tiny inline notification ("Quick Commands pinned to sidebar"), no narration interruption.
-
 ### Phase 1b — Workspace Map handoff + open the home chat (T=0:07 → T=0:08)
 
 **OPERATOR (verbal):** *"Head back to your main chat. [BrainName]'s wrapping up pass one."*
@@ -640,18 +718,18 @@ Call `level-up-command-room` (Mode: Quick Commands) silently. Required placehold
 **CHAT 1 SHOWS:**
 > *"Pass one complete. [BrainName] now knows your 24 orgs, 83 people, 10 active workstreams — read from your last 60 days.*
 >
-> *Open a new chat and say `install workspace map` — that puts your company tree in the sidebar.*"
+> *Open a new chat and say `list active projects` — that shows your company tree, right in chat.*"
 
 **No scheduled tasks are registered here.** Onboarding does not create a deep-read task. The sharper last-7-days read is available to the customer on demand later by running `weekly-recap` — Phase 2 points them to it; this phase just builds the chassis from the 60-day scan and opens the home chat.
 
 **CUSTOMER ACTIONS:**
-1. New chat → `install workspace map` → Enter → **Chat 3** opens, completes ~30 sec via `level-up-command-room` (Mode: Workspace Map)
+1. New chat → `list active projects` → Enter → **Chat 3** opens and shows the Workspace Map in chat (`list-active`). Nothing is installed.
 
 **OPERATOR:** *"Now open one more new chat — type `show me what you know about me`. That opens [BrainName]'s home chat where you'll spend most of your time with her."*
 
 **CUSTOMER:** New chat → `show me what you know about me` → Enter → **Chat 4** opens on Opus.
 
-**Deliverable:** Chat 1 scan complete + workspace built; Chat 3 Workspace Map installing. Checkpoint event written with `phase: "1"`, `status: "in_progress"`.
+**Deliverable:** Chat 1 scan complete + workspace built; Chat 3 showing the Workspace Map in chat. Checkpoint event written with `phase: "1"`, `status: "in_progress"`.
 
 **Transition:** Phase 2 starts in Chat 4 the moment it opens.
 
@@ -849,7 +927,12 @@ Do not fabricate last-7-days specifics here — the deep read is the customer's 
 **CHAT 4 SHOWS:**
 > *"Quick note on how this gets sharper. Right now I know you from a 60-day overview — entity counts, voice profile, top relationships, the patterns you just saw. Everything you do from here compounds on top of that: every meeting you process, every decision you log, every follow-up you send, every weekly recap you run. The [BrainName] you talk to in 60 days knows you better than the one you're talking to right now — because she's been reading the whole time."*
 
-**Deliverable:** compounding loop framed. Checkpoint written with `phase: "3"`, `status: "in_progress"`.
+**CHAT 4 ALSO SHOWS (SPEC_FLOW1 A7 — the one habit that pays for itself, MANDATORY):**
+> *"One habit worth picking up now, because it pays for itself every week: when you say you'll do something, say when, and say who. "I'll send Aria the pricing sheet Thursday" goes straight onto your list with the date on it. "I'll send Aria the pricing sheet at some point" I keep on file instead, and bring up the moment anything confirms it — a reply from Aria, a meeting with her, you mentioning it again. Nothing is ever thrown away either way; saying the date is just the difference between it being on your list today and it waiting quietly. Say `show me what you'd hide` any time to see everything that's waiting."*
+
+**OPERATOR NOTE (do not read aloud).** Say this ONCE, here, and never again — it is a habit, not a rule to police. Never correct the customer for leaving a date off, never mention it in a brief, and never name a tier, a rule or a setting. If they ask what happens to the undated ones, the honest answer is the one sentence above: kept, searchable, and back on the list the moment anything else confirms it.
+
+**Deliverable:** compounding loop framed; the say-the-date habit taught once, in the customer's own words. Checkpoint written with `phase: "3"`, `status: "in_progress"`.
 
 **Transition:** Phase 5 starts as the next Chat 4 message. (There is no Phase 4 — the old "Run Now ritual for 5 scheduled chats" was removed when scheduled-task generation was stripped from onboarding. Phase numbering is kept stable; Phase 4 is intentionally vacant.)
 
@@ -866,7 +949,7 @@ Do not fabricate last-7-days specifics here — the deep read is the customer's 
 **Where:** Chat 4 sends the instructions; customer fires each training command in a new chat (Chats 11, 12, 13).
 
 **CHAT 4 SHOWS:**
-> *"Three commands to try yourself. Each one opens its own new chat — that's the pattern: one focused task per chat. Open a new chat in your sidebar for each.*
+> *"Three commands to try yourself. Each one opens its own new chat — that's the pattern: one focused task per chat. Open a new chat for each. Before you type, check that your Command Room folder is attached to the chat (without it I can't see your files) and that Output is off (Docs or Slides would send my work to a page on claude.ai instead of into your files).*
 >
 > *1. `prep me for [your next real meeting]` — I'll surface what I know about who you're meeting, what's open, what to lead with.*
 >
@@ -986,10 +1069,10 @@ Choose by **sent-email count** (voice signal), read from the Phase 1 scan / `BRA
 > *• Voice profile calibrated from your sent emails — you just saw it in `BRAND_VOICE.md` and side-by-side against a generic draft*
 > *• [N] commitments captured, [N] decisions logged from your last 60 days*
 > *• 3 training chats you can revisit anytime*
-> *• Workspace Map pinned to your sidebar*
+> *• Your Workspace Map, in chat any time — say `list active projects`*
 >
 > *Two things to do on your own time, whenever you're ready:*
-> *• Want me running on a daily rhythm — a morning brief, inbox triage, a Friday recap, a Monday staff meeting? Open a new chat and say `set up command room schedules` and I'll set those up.*
+> *• Want me running on a daily rhythm — a morning brief, inbox triage, a Friday recap, a Monday staff meeting? Open a new chat and say `set up command room schedules`. If schedules aren't available on your setup yet, that chat will say so and tell you the words that produce each one on demand — everything works today either way.*
 > *• Want the sharp read of your last week? Say `weekly recap` in a new chat anytime.*
 >
 > *This chat is now your home with me. Come back here anytime — that's how you'll spend most of your time with me going forward. I'll be your coach.*
@@ -1013,6 +1096,59 @@ and skip both OPERATOR blocks below entirely (per the no-operator rule in Flow C
 Append the final `onboarding_checkpoint` event with `phase: "6"`, `status: "complete"`. This is what 0a's existing-workspace guard reads to detect "already-set-up" on next session.
 
 Also append the `plugin_install` event with `fresh: true` (per Checkpoint Protocol section above) so `command-room-update-bridge` has a baseline.
+
+### 6a2. Profile capture — the day-one profile object (operator only)
+
+**OPERATOR ONLY.** Everything below is entered by the operator from what came up on the live call — never a question the product puts to the client (SPEC_SURFACES2 §9: "the product asks the client NOTHING"). **When no operator is present (self-serve install), skip this whole sub-step** — the profile stays observed and fills in as the customer talks with [BrainName] over the first week, never a form. This is the same no-operator rule that already governs every other OPERATOR line in this file (Flow Control, rule 6).
+
+This writes the profile page PROFILE1 renders back on `my profile` / `what do you know about me` (`shared/scripts/profile.py`), so the customer's "who / how they think / how they like it / boundaries" is on file from day one, dated to this call. Nothing here is asked twice — running onboarding again does not overwrite a section already set unless the operator explicitly says so.
+
+**How they think — workstreams, in their own order and words.** If the client named their workstreams on the call, record them verbatim — not the scan's inferred cluster labels. This lands under the profile store's own `workstreams` key and renders under How you think ("Your workstreams, in your order: …"); it never touches a brief setting:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from onboarding_profile import record_how_they_think
+record_how_they_think(workspace_root,
+                       "<verbatim from the call, e.g. 'Ops first, then the "
+                       "Acme Co deal, then everything else'>")
+```
+
+**How they like it.** If the client stated a preference for how much detail they want (not inferred from the scan):
+
+```python
+from onboarding_profile import record_how_they_like_it
+record_how_they_like_it(workspace_root, "morning-briefing", "depth",
+                        "headline")   # the setting's own word: headline | full
+```
+
+The value is the setting's own word, never the client's phrasing — `depth` reads `headline | full`, and every `brief_settings` axis (`leads_with`, `organization`, …) reads its own closed set; the writer refuses anything else. The client's phrasing ("headlines only") goes in the session note. (NIGHT 11a fix round, N-1: a free sentence stored in a brief enum rendered on the profile page and in CLAUDE.md as a fact the brief never acted on.)
+
+**Boundaries.** If the client named anything off-limits on the call:
+
+```python
+from onboarding_profile import record_boundaries
+record_boundaries(workspace_root, ["<verbatim boundary 1>", "<verbatim boundary 2>"])
+```
+
+**Assessment (optional — this call, or a later one).** Only when the operator is holding CVI scores or CI centiles with the client's consent from THIS call. The product never offers this door itself (`profile.assessment_offer_scan` pins that no skill's prose asks for it):
+
+```python
+from onboarding_profile import record_assessment_from_session
+record_assessment_from_session(workspace_root, "cvi",
+                               {"builder": 20, "merchant": 18, "innovator": 22, "banker": 12},
+                               "<YYYY-MM-DD, today>")
+```
+
+Any of the four calls above may be skipped entirely — an unset section renders its own honesty line on the profile page and stays that way until the client says otherwise, or a pattern earns the coaching door (COACH2, not this lane).
+
+**Explain-once, armed.** Unconditionally, whether or not any of the four calls above ran:
+
+```python
+from explain_once import arm
+arm(workspace_root, "morning-briefing")
+```
+
+This arms — never renders — the first-week line morning-briefing shows once, the first time it fires for this workspace, and never again (`explain_once.consume`, receipted at the point it renders).
 
 ### 6c. (removed) Day-1 + week-1 retention one-shots
 
@@ -1052,13 +1188,111 @@ Read **{SKILL_DIR}/references/feature-reference.md** (skill-local) for the full 
 - Does not execute the daily-product surfaces (morning brief, etc.). Those run only after the customer has opted into the scheduled chats via `set up command room schedules`; their first runs happen on the normal cadence (or via the customer's own Run Now), not during onboarding.
 - Does not write outside `[WORKSPACE_ROOT]` — all seeding happens in the customer's workspace per `shared/PLUGIN_BOUNDARY.md`.
 - Does not modify `_hq/skills/**` or any custom skill code.
-- Does not install the sidebar dashboards directly. Workspace Map installs via Chat 3 (operator opens at Phase 1b). Quick Commands installs silently in Chat 1 at the end of Phase 1a.
+- Does not install any sidebar dashboard. The sidebar dashboards are retired on every seat (Night M3); the Workspace Map is `list active projects` in Chat 3, and the quick commands work just by saying them.
 - Does not skip phase announcements. Every phase entry begins with the announcement template — no exceptions.
 - Does not ask in-chat corrections on org tree / project list / people. All classification is silent; corrections happen post-meeting through workspace-manager's natural-language flow ("move X under Y", "merge those orgs" — workspace-manager handles the surgical edit).
 - Does not own the post-handoff coach surface. After Phase 6, Chat 4 is `command-room-coach`'s — onboarding does not re-enter it.
+
+## Every sentence this chat posts goes through one door (SPEC FIXTRAIN v5.31.0 6.1 — MANDATORY)
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. The `restart onboarding` probe on 09-16 refused correctly and then explained the refusal, naming a widget filename, a function path, two org ids, a raw record number and four data-file names (recorded leak instance 13). A refusal is one sentence about the reader's own book: there is work in it already, and starting over would throw that away. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post
+# THIS SECTION HAS NO COMPOSER - it writes its own sentences, so it
+# declares NOTHING. No `relayed`: there is no composer return to relay,
+# and the door refuses a relay it cannot vouch for line by line. No
+# `customer_rows` either. The whole reply is this product's own words and
+# is scanned in full, which is the point of the door.
+print(post(whole_reply, surface="onboarding", workspace=workspace_root))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
+**This section composes no sentence in code, so it declares nothing.** There is no `relayed` to pass — a relay the door cannot vouch for is refused, and a section with no composer has no vouched text — and no `customer_rows`. Every word of the reply is this product's own and is scanned in full.
+
+This covers every phase in this file, the route-detection answer and the refusal included — an explanation of a decision is a sentence like any other.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> First-install setup for a new Command Room workspace. Onboarding M1 (2026-05-23; scheduled-task generation stripped 2026-06) is a 6-phase ~30-minute flow distributed across several chats. Establishes the customer's AI as a named operator (default name `Penelope`) who runs their Command Room, demonstrates the substrate in escalating beats (I see you → I can produce work for you → I notice things you don't), trains the customer through 3 hands-on commands they fire themselves, and hands off cleanly to the command-room-coach skill which becomes the customer's permanent home with their AI. Onboarding itself registers NO scheduled tasks — the daily/weekly scheduled chats are an opt-in step the customer sets up separately by running `set up command room schedules` in a fresh chat (enable-command-room-schedules), which registers reliably because it runs in its own chat; the deeper last-7-days read is available anytime by running `weekly-recap`. The onboarding chats: (1) main onboarding, (3) workspace map install, (4) coach home chat on Opus, (11–13) the 3 training-prompt chats. Scans connectors (Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, every meeting-transcript source — Granola/Fireflies/Otter/Read.ai/Zoom AI Companion/Microsoft Teams summaries), seeds entities.json/events.jsonl/aliases.json, writes CLAUDE.md, MASTER_TRACKER, BUSINESS_CONTEXT, per-project files, voice profile, people directory. Works for solo CEOs, holding-co operators, VCs, advisors, family office principals, service-business owners, and senior execs inside an operating company. Auto-fires on first install when the Phase 0a workspace guard routes 'fresh' (no `_hq/` folder, no registry files) — that route is the single auto-fire signal. Also triggers on 'set up command room', 'set up my command room', 'command room setup', 'get started with command room', 'onboard me', 're-onboard'. Idempotent — re-running resumes from where the customer stopped via the Checkpoint Protocol. DOES NOT fire on 'set up command room schedules' (enable-command-room-schedules — the opt-in schedules step, not the onboarding flow), 'new project [name]' (that's workspace-manager's lifecycle command, not setup), 'ingest my existing workspace' or 'update my command room' (those go to workspace-ingest directly), or 'install my dashboards' (that's command-room-update-bridge).
+> First-install setup for a new Command Room workspace. Onboarding M1 (2026-05-23; scheduled-task generation stripped 2026-06) is a 6-phase ~30-minute flow distributed across several chats. Establishes the customer's AI as a named operator (default name `Penelope`) who runs their Command Room, demonstrates the substrate in escalating beats (I see you → I can produce work for you → I notice things you don't), trains the customer through 3 hands-on commands they fire themselves, and hands off cleanly to the command-room-coach skill which becomes the customer's permanent home with their AI. Onboarding itself registers NO scheduled tasks — the daily/weekly scheduled chats are an opt-in step the customer sets up separately by running `set up command room schedules` in a fresh chat (enable-command-room-schedules), which registers reliably because it runs in its own chat; the deeper last-7-days read is available anytime by running `weekly-recap`. The onboarding chats: (1) main onboarding, (3) the Workspace Map, in chat, (4) coach home chat on Opus, (11–13) the 3 training-prompt chats. Scans connectors (Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, every meeting-transcript source — Granola/Fireflies/Otter/Read.ai/Zoom AI Companion/Microsoft Teams summaries), seeds entities.json/events.jsonl/aliases.json, writes CLAUDE.md, MASTER_TRACKER, BUSINESS_CONTEXT, per-project files, voice profile, people directory. Works for solo CEOs, holding-co operators, VCs, advisors, family office principals, service-business owners, and senior execs inside an operating company. Auto-fires on first install when the Phase 0a workspace guard routes 'fresh' — that route is the single auto-fire signal, and it is decided by `onboarding_profile.workspace_route`, never by reading the folder: a workspace with a ledger or a registry in it is never fresh, whatever its fields say. Also triggers on 'set up command room', 'set up my command room', 'command room setup', 'get started with command room', 'onboard me', 're-onboard'. Idempotent — re-running resumes from where the customer stopped via the Checkpoint Protocol. DOES NOT fire on 'set up command room schedules' (enable-command-room-schedules — the opt-in schedules step, not the onboarding flow), 'new project [name]' (that's workspace-manager's lifecycle command, not setup), 'ingest my existing workspace' or 'update my command room' (those go to workspace-ingest directly), or 'install my dashboards' (that's command-room-update-bridge).
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

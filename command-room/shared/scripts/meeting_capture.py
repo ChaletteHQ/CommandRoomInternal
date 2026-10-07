@@ -131,8 +131,14 @@ def build_meeting_event(
     source_had_attendees: Optional[bool] = None,
     transcript_class: Optional[str] = None,
     working_session: Optional[bool] = None,
+    workspace_root=None,
 ) -> dict:
     """The one sanctioned constructor for a `meeting` event (BUG-8244).
+
+    CAPTUREONCE1 — hand it `workspace_root` and it REFUSES to build a second
+    `meeting` row for a source_ref that already carries a `meeting_processed`
+    receipt (`RerunWriteRefused`, M's R4). `None` leaves the gate inert, which
+    is every pure-construction caller and every fixture.
 
     ATTRIB1-A (DD-1 / A1): `transcript_class` is the class `transcript_class()`
     declared for this meeting's transcript before extraction — pass
@@ -176,6 +182,7 @@ def build_meeting_event(
         raise ValueError("meeting event needs a title or summary")
     if not str(source_ref or "").strip():
         raise ValueError("meeting event needs a source_ref (dedup key)")
+    refuse_rerun_write(workspace_root, source_ref, "meeting event")
 
     pids: List[str] = []
     for p in person_ids or []:
@@ -269,6 +276,7 @@ def build_meeting_commitment_event(
     fusion_status: str = "",
     strict_attribution: bool = False,
     evidence_kind: Optional[str] = None,
+    workspace_root=None,
 ) -> dict:
     """One extracted meeting commitment → one canonical `commitment` event
     dict, with the SHARED capture block enforced in code (v4.6.1 W4c
@@ -318,6 +326,9 @@ def build_meeting_commitment_event(
         raise ValueError("a meeting commitment needs a non-empty title")
     if not (source_ref or "").strip():
         raise ValueError(f"meeting commitment '{title}' needs a source_ref")
+    # CAPTUREONCE1 — the commitment half of M's R4. Same gate, same one
+    # place; `workspace_root=None` leaves it inert.
+    refuse_rerun_write(workspace_root, source_ref, "meeting commitment")
 
     due_str = (due or "").strip()
     data: dict = {
@@ -473,6 +484,7 @@ def build_decision_event(
     confidence: Optional[float] = None,
     pending_review: bool = False,
     classification_confidence: Optional[float] = None,
+    workspace_root=None,
 ) -> dict:
     """One extracted decision → one `decision` event (F-46 P1: the write that
     was claimed and skipped). Shape matches the past-meetings writer
@@ -482,9 +494,16 @@ def build_decision_event(
     `pending_review` is FORCED on when `confidence` is below the floor —
     passing a low confidence without the flag is the exact bug class the
     safety inversion closes.
+
+    CAPTUREONCE1 — `workspace_root` arms the re-run refusal (M's R4): a
+    meeting that already carries a `meeting_processed` receipt gets no new
+    `decision` rows, and asking for one raises `RerunWriteRefused`. The End of
+    Day of 2026-09-13 duplicated seven decisions off one such re-run. `None`
+    leaves the gate inert.
     """
     if not summary or not str(summary).strip():
         raise ValueError("decision event needs a non-empty summary")
+    refuse_rerun_write(workspace_root, source_ref, "decision event")
     if confidence is not None and confidence < PENDING_REVIEW_CONFIDENCE_FLOOR:
         pending_review = True
     data: dict = {
@@ -651,7 +670,78 @@ def build_unidentified_attendee_event(
     }
 
 
-def capture_telemetry(routed: Optional[dict]) -> dict:
+def counts_of_appended(appended) -> dict:
+    """INTAKE1 (the reprocess pin) — what a batch of events ACTUALLY WRITTEN
+    amounts to, in the receipt's own vocabulary. Counts only.
+
+    `appended` is what `event_gate.append_event` / `atomic_append_jsonl`
+    RETURNED: the stamped copies of the rows that really went to disk. That
+    return value exists (BUG-8330 item 7) and nothing was reading it, which
+    is how a receipt and a ledger came to disagree about the same fire."""
+    n_book = n_review = n_observed = n_door = 0
+    for ev in appended or []:
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if etype == "commitment":
+            if d.get("pending_review") is True:
+                n_review += 1
+            else:
+                n_book += 1
+        elif etype == "commitment_observed":
+            n_observed += 1
+            if d.get("duplicate_of"):
+                n_door += 1
+    return {"n_book": n_book, "n_review": n_review, "n_observed": n_observed,
+            "n_door_deduped": n_door}
+
+
+def reconcile_capture_counts(counts: dict, appended) -> dict:
+    """THE PIN. A receipt may not claim a number the ledger does not carry.
+
+    Returns a copy of `counts` in which `n_book` / `n_review` / `n_observed`
+    are what was actually appended. When the route's claim and the appended
+    batch disagree, the APPENDED numbers win and the disagreement is recorded
+    on the receipt as `counts_corrected` — a small map of `key: [claimed,
+    written]`, counts only.
+
+    THE REGRESSION THIS EXISTS FOR (attended test B3.3, 2026-09-07). A
+    reprocess of one call reported `n_deduped 12, n_book 0` on its receipt
+    while TWELVE rows were appended in that receipt's own window. The second
+    reviewer established that those twelve were distinct rows with different
+    people on them — nothing had been deduplicated at all — and that false
+    receipt was then used as the justification for hand-deleting twelve real
+    lines out of an append-only ledger. So a receipt that cannot be wrong is
+    not bookkeeping hygiene here; it is what stands between a bad number and
+    a customer's own record. `n_deduped` is left exactly as the route
+    computed it (it counts twins that were never written, so no appended
+    event could ever corroborate it) — what this makes impossible is the
+    other half of that sentence: `n_book: 0` beside twelve appended rows.
+
+    `appended=None` returns `counts` unchanged, so every caller written
+    before this build is byte-identical."""
+    if appended is None:
+        return dict(counts or {})
+    out = dict(counts or {})
+    actual = counts_of_appended(appended)
+    corrected: dict = {}
+    for key in ("n_book", "n_review", "n_observed"):
+        if key not in out:
+            continue
+        claimed = int(out.get(key) or 0)
+        written = int(actual.get(key) or 0)
+        if claimed != written:
+            corrected[key] = [claimed, written]
+            out[key] = written
+    if actual.get("n_door_deduped"):
+        out["n_door_deduped"] = actual["n_door_deduped"]
+    if corrected:
+        out["counts_corrected"] = corrected
+    return out
+
+
+def capture_telemetry(routed: Optional[dict], appended=None) -> dict:
     """The admission gates' own counts for ONE meeting, in receipt shape.
 
     `route_meeting_captures` has always RETURNED these; nothing persisted them,
@@ -708,10 +798,24 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
     # mutation anchor (drop `n_fusion_inert` and the pin must red).
     if "n_working_session" in summary:
         out["n_working_session"] = int(summary.get("n_working_session") or 0)
+    # CAPTUREONCE1 — the on-disk dedup count and the re-run facts, each on its
+    # own line for the same P3 reason as the line above (the tuple is PREC1's
+    # mutation anchor and stays exactly five long). `n_deduped_on_disk` is
+    # NEVER folded into `n_deduped`: intra-batch twins and rows already on
+    # disk are two facts, and G59 is the record of what one number standing
+    # for two facts costs.
+    if "n_deduped_on_disk" in summary:
+        out["n_deduped_on_disk"] = int(summary.get("n_deduped_on_disk") or 0)
+    if summary.get("rerun"):
+        out["rerun"] = True
+        out["n_rerun_refused"] = int(summary.get("n_rerun_refused") or 0)
     # ATTRIB1-B / EXTRACT1 — the ladder's and the draggers' own tallies, each
     # on its own line for the same P3 reason. Counts only, never a name.
     for key in ("n_questions", "n_owner_changed", "n_self_counterparty",
-                "n_asides", "n_paraphrase"):
+                "n_asides", "n_paraphrase",
+                # INTAKE1 — the door's own yield, per rule. Own lines for the
+                # same P3 reason as the two above; counts only, never a name.
+                "n_held_no_home", "n_held_for_witness"):
         if key in summary:
             out[key] = int(summary.get(key) or 0)
     # ATTRIB1-A DD-1 — the class the transcript was declared to be. A label
@@ -744,7 +848,7 @@ def capture_telemetry(routed: Optional[dict]) -> dict:
             reasons[reason] = reasons.get(reason, 0) + 1
     if reasons:
         out["skipped_reasons"] = reasons
-    return out
+    return reconcile_capture_counts(out, appended)
 
 
 def build_meeting_processed_event(
@@ -759,6 +863,11 @@ def build_meeting_processed_event(
     processed_at: Optional[str] = None,
     title: Optional[str] = None,
     capture_summary: Optional[dict] = None,
+    appended=None,
+    rerun: Optional[bool] = None,
+    n_written: Optional[int] = None,
+    n_deduped_on_disk: Optional[int] = None,
+    workspace_root=None,
 ) -> dict:
     """The processing receipt (F-46 P2a: past-meetings emits one, meeting-notes
     didn't — the no-prep / already-processed detectors read receipts, and
@@ -769,7 +878,32 @@ def build_meeting_processed_event(
     `summary`): its counts land on `data.capture_counts` — the only place the
     substrate records that the gates refused anything. Omit it and the receipt
     is byte-identical to the pre-CAPTUREFLOW shape, so every existing reader is
-    untouched (additive key on an open `data` object)."""
+    untouched (additive key on an open `data` object).
+
+    `appended` (INTAKE1, the reprocess pin) is what the append actually
+    RETURNED. Hand it over and the receipt's tier counts are reconciled
+    against the rows that really reached the ledger before they are written —
+    see `reconcile_capture_counts` for the regression that made this
+    necessary. Omit it and nothing changes.
+
+    CAPTUREONCE1 (M's ruling R4) — A RE-RUN SAYS SO ON ITS OWN RECEIPT. This
+    is the ONE event a re-processed meeting is still allowed to write, and it
+    carries `data.rerun: true` and `data.n_written: 0`: every other capture
+    write was refused, and a receipt that looked identical to a first run is
+    how a re-run came to be read as work. `rerun=None` (the default) with a
+    `workspace_root` DERIVES the answer from the receipts already on disk, so
+    a caller cannot forget to say it; pass the boolean explicitly to state it
+    yourself. `n_written` defaults to the rows `appended` actually carries —
+    never to the extraction's intent.
+
+    `n_deduped_on_disk` is the OTHER dedup number, and it is deliberately not
+    `n_deduped`: that one counts twins folded WITHIN one batch before anything
+    was written, this one counts rows refused because the `(source_ref, title)`
+    pair was ALREADY on disk. One number for two different facts is how
+    "n_deduped 12, n_book 0" came to justify deleting twelve real ledger
+    lines (G59), so they stay two numbers. It is DERIVED, not asked for: hand
+    over `appended=` and the receipt reads the chokepoint's own refusals for
+    this `source_ref`. Pass the number explicitly only to state it yourself."""
     if not meeting_id or not str(meeting_id).strip():
         raise ValueError("meeting_processed needs a meeting_id")
     if source_ref is None:
@@ -786,9 +920,50 @@ def build_meeting_processed_event(
         data["brief_path"] = brief_path
     if title:
         data["title"] = title
-    counts = capture_telemetry(capture_summary)
+    counts = capture_telemetry(capture_summary, appended=appended)
+    # CAPTUREONCE1 (review F-2, 2026-09-14) — THE RECEIPT DERIVES ITS OWN
+    # ON-DISK COUNT. `route_meeting_captures` cannot know this number: the
+    # refusal happens later, at the append chokepoint. Until now the only
+    # path from the chokepoint to the receipt was a sentence in
+    # `meeting-notes/SKILL.md` telling the caller to read it and pass it —
+    # which is the exact "a rule whose only home is prose" shape this lane
+    # exists to remove, and it measured 0 on a receipt with 2 rows refused.
+    # A caller that hands over `appended=` (what the append RETURNED) has
+    # just done the append, so the last refusal is its own; it is matched on
+    # this receipt's `source_ref` so an unrelated batch's count can never
+    # land here.
+    if n_deduped_on_disk is None and appended is not None:
+        try:
+            from atomic_write import last_capture_once_refusal
+            n_deduped_on_disk = int(
+                last_capture_once_refusal(source_ref)["n_deduped_on_disk"])
+        except Exception:
+            n_deduped_on_disk = None
+        # A zero never CREATES a counts block that was not going to exist —
+        # a receipt built without a `capture_summary` stays byte-identical to
+        # its pre-CAPTUREFLOW shape. A real refusal always lands.
+        if not n_deduped_on_disk and not counts:
+            n_deduped_on_disk = None
+    if n_deduped_on_disk is not None:
+        counts = dict(counts or {})
+        counts["n_deduped_on_disk"] = int(n_deduped_on_disk)
     if counts:
         data["capture_counts"] = counts
+    # CAPTUREONCE1 — the re-run stamp. Derived when the caller did not say.
+    is_rerun = rerun
+    if is_rerun is None and workspace_root is not None:
+        try:
+            is_rerun = already_processed(workspace_root, source_ref)
+        except Exception:
+            is_rerun = None
+    if is_rerun:
+        data["rerun"] = True
+        written = 0 if n_written is None else int(n_written)
+        if n_written is None and appended is not None:
+            written = len([e for e in appended if isinstance(e, dict)])
+        data["n_written"] = written
+    elif n_written is not None:
+        data["n_written"] = int(n_written)
     return {
         "type": "meeting_processed",
         "source_skill": source_skill,
@@ -1049,6 +1224,96 @@ def already_processed(workspace_root, source_ref: str) -> bool:
         workspace_root, source_ref, types=("meeting_processed",)
     )
     return counts.get("meeting_processed", 0) > 0
+
+
+class RerunWriteRefused(RuntimeError):
+    """A capture writer was asked to build a NEW row for a meeting that has
+    already been processed (CAPTUREONCE1, M's ruling R4, 2026-09-14).
+
+    Raised — not returned, not logged — because every caller of these builders
+    is about to append what they return. A soft answer here is a soft answer a
+    prose-driven caller can step over, and the whole finding was that a
+    correct predicate nobody was obliged to consult changes nothing."""
+
+
+def processed_receipt_times(workspace_root, source_ref: str) -> list:
+    """The `processed_at` / `ts` of every `meeting_processed` receipt this
+    meeting already carries, oldest first. `[]` when it has never been
+    processed. Read through `events_io` like every full-history read."""
+    ref_keys = _norm_ref_keys(source_ref)
+    out: list = []
+    if not ref_keys:
+        return out
+    for ev in iter_events(workspace_root):
+        if ev.get("type") != "meeting_processed":
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ev_keys = _norm_ref_keys(data.get("source_ref")) | _norm_ref_keys(
+            data.get("meeting_id"))
+        if not (ev_keys & ref_keys):
+            continue
+        stamp = str(data.get("processed_at") or ev.get("ts") or "").strip()
+        if stamp:
+            out.append(stamp)
+    return sorted(out)
+
+
+def processed_before(workspace_root, source_ref: str, cutoff) -> bool:
+    """True when this meeting was already processed STRICTLY BEFORE `cutoff`
+    (an ISO string — pass the fire's own start). The question Phase 4.6.b has
+    to ask and never did: "did THIS fire process this transcript, or did some
+    earlier one". A pass that cannot tell re-matches the whole archive against
+    every open decision on every fire, which is the 742-proposal burst (B2.7).
+
+    `cutoff` None → False, so a caller with no fire clock is inert rather than
+    wrong."""
+    if not cutoff:
+        return False
+    cut = str(cutoff).strip()
+    if not cut:
+        return False
+    return any(stamp < cut for stamp in processed_receipt_times(
+        workspace_root, source_ref))
+
+
+def rerun_status(workspace_root, source_ref: str) -> dict:
+    """The one answer the writers and the receipt share: is this a re-run, and
+    how many times has this meeting been processed before now.
+
+    O(n) by construction (it reads the receipts). The WRITE path uses the O(1)
+    index instead (`source_ref_index.check_processed`) — same predicate, same
+    receipt type, affordable inside a writer lock. Both are here on purpose:
+    this one is what a surface or a test asks, and it is the definition the
+    index is a cache of."""
+    stamps = processed_receipt_times(workspace_root, source_ref)
+    return {"rerun": bool(stamps), "n_processed": len(stamps),
+            "first_processed_at": stamps[0] if stamps else "",
+            "last_processed_at": stamps[-1] if stamps else ""}
+
+
+def refuse_rerun_write(workspace_root, source_ref: str, what: str) -> None:
+    """The gate itself, in ONE place so the three builders cannot drift.
+
+    `workspace_root=None` leaves it inert — that is every pure-construction
+    caller and every test that builds an event with no workspace on disk, and
+    they are byte-identical to before. Hand it a workspace and it REFUSES to
+    construct a new row for an already-processed meeting. The refusal is the
+    whole of M's R4: a meeting processed once writes no new commitment, no new
+    decision and no new meeting on a re-run; binding and correction go through
+    the correction writers, which build different events and are untouched."""
+    if workspace_root is None or not str(source_ref or "").strip():
+        return
+    try:
+        from source_ref_index import check_processed
+        hit = check_processed(workspace_root, source_ref)
+    except Exception:
+        hit = already_processed(workspace_root, source_ref)
+    if hit:
+        raise RerunWriteRefused(
+            f"{what} refused: {source_ref} already carries a "
+            f"meeting_processed receipt. A meeting processed once writes no "
+            f"new rows on a re-run — bind or correct the existing rows "
+            f"instead (M's ruling R4, 2026-09-13).")
 
 
 def verify_claims(
@@ -2476,7 +2741,13 @@ def _probe_data(item: dict) -> dict:
                 "counterparty_id", "counterparty_name", "counterparty_ids",
                 "counterparty_names", "attribution_ambiguous",
                 "attribution_unknown", "attribution_candidates",
-                "evidence_kind"):
+                "evidence_kind",
+                # INTAKE1 — the row's own project binding and the extractor's
+                # own uncertainty flag, both READ-ONLY here: the home rule
+                # needs the first and the second-witness rule the second.
+                # Neither is consulted by the floor, whose tests read the
+                # keys they always read.
+                "primary_thread_id", "project_id", "pending_review"):
         if item.get(key) not in (None, "", [], False):
             data[key] = item[key]
     return data
@@ -3887,6 +4158,7 @@ def admit_meeting_capture(
     capture_context: Optional[dict] = None,
     org_override: Optional[str] = None,
     workspace_root=None,
+    primary_thread_id: Optional[str] = None,
 ) -> dict:
     """The admission verdict for ONE meeting-extracted item. Pure.
 
@@ -4027,11 +4299,13 @@ def admit_meeting_capture(
 
     ctx = capture_context or {}
     try:
-        from capture_gate import DEFAULT_MODE, classify_capture
+        from capture_gate import (DEFAULT_MODE, classify_capture,
+                                  intake_kwargs)
     except ImportError:  # pragma: no cover — direct-path import
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from capture_gate import DEFAULT_MODE, classify_capture
+        from capture_gate import (DEFAULT_MODE, classify_capture,
+                                  intake_kwargs)
     verdict = classify_capture(
         data,
         mode=ctx.get("mode") or DEFAULT_MODE,
@@ -4040,6 +4314,12 @@ def admit_meeting_capture(
         team_ids=ctx.get("team_ids") or frozenset(),
         known_ids=ctx.get("known_ids") or frozenset(),
         org_override=org_override,
+        # INTAKE1 — "meeting rows take the meeting's project binding" (rule
+        # 2). The route holds that binding as an ARGUMENT, not on the item,
+        # so it has to be handed down or every meeting row would read as
+        # unbound and be held.
+        **intake_kwargs(ctx, primary_thread_id=(
+            primary_thread_id or item.get("primary_thread_id"))),
     )
     tier = TIER_BOOK if verdict["tier"] == "open" else TIER_OBSERVED
     return {"tier": tier, "reason": verdict["reason"], "floor_reason": "",
@@ -4311,8 +4591,10 @@ def route_meeting_captures(
     BYTE-IDENTICAL to before: nothing is consulted, no writer is imported, and
     the items are passed through by object identity. `now_iso` is the fire's
     own clock reading, handed down so nothing here reads a live clock (G14);
-    absent, the batch id degrades to a constant and the creation is still fully
-    reversible.
+    absent, this fire takes its own corroborated reading once, at the top
+    (review F-1 — a caller that omitted it used to degrade the batch id to a
+    constant, which was reversible but not reversible SEPARATELY from every
+    other omitted-clock fire; it no longer can).
 
     `summary` gains `n_auto_created` (additive — no existing count moves) and
     the return gains `auto_created` + `receipt_lines`, which the surface MUST
@@ -4328,8 +4610,48 @@ def route_meeting_captures(
     item when a rung resolved one, and writes the ladder's ONE question on
     the row when none did (`attribution.question`).
 
+    CAPTUREONCE1 (M's ruling R4) — THE RE-RUN SHORT-CIRCUIT IS THE FIRST
+    THING THIS FUNCTION DOES. A source_ref that already carries a
+    `meeting_processed` receipt routes NOTHING: `book`, `review` and
+    `observed` come back empty, `summary.rerun` is True, and
+    `summary.n_rerun_refused` says how many extractions were handed in and
+    not written. Nothing is scored, nothing is built, no person is
+    auto-created — a re-run must not be able to mint a record either. The
+    repair door for a meeting whose rows are wrong is
+    `brain_undo.undo_after_reprocess` plus the correction writers (bind an
+    owner, fix a date, move a project); re-extraction is not a repair.
+
     Construction only, plus that one seam — append `book + review + observed`
     through `event_gate.append_event` in ONE call, exactly as before."""
+    rerun = False
+    try:
+        from source_ref_index import check_processed as _check_processed
+        rerun = bool(_check_processed(workspace_root, source_ref))
+    except Exception:
+        try:
+            rerun = already_processed(workspace_root, source_ref)
+        except Exception:
+            rerun = False
+    if rerun:
+        n_in = len(list(items or []))
+        return {
+            "book": [], "review": [], "observed": [], "skipped": [],
+            "verdicts": [], "auto_created": [], "receipt_lines": [],
+            "transcript_class": None,
+            "summary": {
+                "n_book": 0, "n_review": 0, "n_observed": 0, "n_skipped": 0,
+                "n_auto_created": 0, "n_already_on_file": 0,
+                "n_floor_gated": 0, "n_deduped": 0, "n_deduped_on_disk": 0,
+                "n_fusion_inert": 0, "n_working_session": 0,
+                "working_session": False,
+                "n_held_no_home": 0, "n_held_for_witness": 0,
+                "n_questions": 0, "n_owner_changed": 0,
+                "n_self_counterparty": 0, "n_asides": 0, "n_paraphrase": 0,
+                "speech_acts": {},
+                "rerun": True,
+                "n_rerun_refused": n_in,
+            },
+        }
     try:
         from capture_gate import (build_observed_event, resolve_capture_mode,
                                   workspace_capture_context)
@@ -4440,6 +4762,20 @@ def route_meeting_captures(
                                                   "agenda")
             and got_attr.get("owner_basis") == BASIS_INFERRED
             and got["owner_id"] == (parties or {}).get("user_id"))
+        # INTAKE1 rule 2 — OWN WORDS TAKE THE USER AS OWNER. The presumption
+        # above stays a presumption on a call, and rightly: "nobody said
+        # whose this is" must not be recorded as "the user owns it" when
+        # somebody else was in the room. On a DICTATION there is nobody else
+        # in the room — the transcript class says so, declared once for the
+        # whole session before any row was judged — so the source has
+        # answered the question and the id is written. This is what stops the
+        # four ownerless to-dos the attended test found rendered as
+        # "delegated" to nobody (Part E), and it is what gives those rows an
+        # owner so the home rule can judge them on their home rather than
+        # holding every one of them.
+        if (presumed_self_owed
+                and tclass.get("class") == TRANSCRIPT_CLASS_DICTATION):
+            presumed_self_owed = False
         patched = dict(item)
         if got["owner_id"] and not presumed_self_owed \
                 and got["owner_id"] != str(item.get("owner_id") or "").strip():
@@ -4465,7 +4801,8 @@ def route_meeting_captures(
     for item in staged:
         verdict = admit_meeting_capture(
             item, transcript_text=transcript_text, capture_context=ctx,
-            org_override=override, workspace_root=workspace_root)
+            org_override=override, workspace_root=workspace_root,
+            primary_thread_id=primary_thread_id)
         verdicts.append({"title": str(item.get("title") or "").strip(),
                          **verdict})
 
@@ -4477,13 +4814,30 @@ def route_meeting_captures(
     n_working_session = 0
     if tclass.get("class") == TRANSCRIPT_CLASS_DICTATION:
         try:
-            from capture_gate import carries_due_or_money as _rail
+            from capture_gate import (carries_due_or_money as _rail,
+                                      HOME_RULE_REASONS, WITNESS_REASON)
         except ImportError:  # pragma: no cover — direct-path import
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from capture_gate import carries_due_or_money as _rail
+            from capture_gate import (carries_due_or_money as _rail,
+                                      HOME_RULE_REASONS, WITNESS_REASON)
+        # A DICTATION OWNS THE REASON ON ITS OWN ROWS (INTAKE1 fix round 1).
+        # A1 used to claim every row that was heading for the plate or the
+        # queue. Since the intake door, a row with no date, no project and
+        # nobody else on it — the commonest shape a person dictates — is
+        # already held by the time this loop runs, so A1 skipped it and the
+        # row kept the DOOR's reason, lost its `working_session` mark and
+        # dropped out of the count. Nothing about the tier changes either
+        # way; what changes is which sentence the row carries and whether
+        # prep can still see it as a working-session row. So the loop also
+        # claims a row the DOOR held — and only the door: a row set aside for
+        # an OLDER reason (between other people, observed-only for this
+        # relationship) was never A1's on any version, and still is not.
+        _door_reasons = set(HOME_RULE_REASONS) | {WITNESS_REASON}
         for item, verdict in zip(staged, verdicts):
-            if verdict["tier"] not in (TIER_BOOK, TIER_REVIEW):
+            if verdict["tier"] not in (TIER_BOOK, TIER_REVIEW) and not (
+                    verdict["tier"] == TIER_OBSERVED
+                    and verdict.get("reason") in _door_reasons):
                 continue
             if _rail(_probe_data(item)):
                 continue
@@ -4491,6 +4845,59 @@ def route_meeting_captures(
             verdict["reason"] = WORKING_SESSION_REASON
             verdict["working_session"] = True
             n_working_session += 1
+
+    # INTAKE1 rule 3 — THE SECOND WITNESS, on the meeting route's own queue
+    # lane. `classify_capture` applies rules 1 and 3 to a row it is asked to
+    # judge, but the two verdicts that reach the QUEUE — a fusion refusal and
+    # a below-floor capture — return from `admit_meeting_capture` BEFORE it,
+    # and both of them mean the same thing the flag means: this is a guess.
+    # A guess is held until a second source says it too; it is not a row on
+    # the plate and it is not a question. M's standing ruling that a
+    # below-floor row is never DROPPED is untouched — held is a tier, it is
+    # searchable, it is promotable, and `show me what you'd hide` renders it.
+    #
+    # Rule 5 is the exemption and it is checked FIRST: a row carrying money,
+    # a date the speaker said, or a client on the other side opens on the
+    # first mention and never waits for a witness.
+    n_held_for_witness = 0
+    n_held_no_home = 0
+    if ctx.get("second_witness", True) is not False:
+        try:
+            from capture_gate import (WITNESS_REASON as _WR,
+                                      is_important_capture as _important)
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from capture_gate import (WITNESS_REASON as _WR,
+                                      is_important_capture as _important)
+        for item, verdict in zip(staged, verdicts):
+            if verdict["tier"] != TIER_REVIEW:
+                continue
+            if verdict.get("floor_reason"):
+                # The floor's own verdict is not the extractor's doubt, and
+                # M ruled in 2026-08-01 where a below-floor row goes: the
+                # queue, answerable in one tap. See
+                # `capture_gate.needs_second_witness`.
+                continue
+            if _important(_probe_data(item),
+                          client_ids=ctx.get("client_ids") or frozenset(),
+                          client_names=ctx.get("client_names") or frozenset()):
+                continue
+            verdict["tier"] = TIER_OBSERVED
+            verdict["reason"] = _WR
+            verdict["held_for_witness"] = True
+            n_held_for_witness += 1
+    # INTAKE1 rule 1 — the count of rows the HOME rule set aside on this
+    # meeting. The verdict itself was made inside `classify_capture`; this
+    # only reads it back so the receipt can say how many and why.
+    try:
+        from capture_gate import HOME_REASON_NO_HOME, HOME_REASON_NO_OWNER
+        _home_reasons = {HOME_REASON_NO_HOME, HOME_REASON_NO_OWNER}
+    except ImportError:  # pragma: no cover
+        _home_reasons = set()
+    n_held_no_home = sum(1 for v in verdicts
+                         if v.get("tier") == TIER_OBSERVED
+                         and v.get("reason") in _home_reasons)
 
     for _v in verdicts:
         if _v.get("speech_act"):
@@ -4530,6 +4937,26 @@ def route_meeting_captures(
     # dropping it would leave an already-on-file counted nowhere at all on the
     # production path, which is worse than the mis-bucketing F-4 reported.
     n_already_on_file = 0
+    # THE FIRE'S OWN READING (review F-1). Taken once, here, so both identity
+    # passes below stamp the same batch and no caller can silently fall back
+    # to a constant by omitting it.
+    now_iso = now_iso or _clock_now(workspace_root).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    n_invite_created = 0
+    n_invite_split = 0
+    # Review F-5/F-12 — the invite rail's OWN counts, all of them, always
+    # written. `participant_telemetry` computed them and nothing called it, so
+    # a participant the rail WITHHELD (a spelling variant, a refusal, a name
+    # set aside) reached no surface at all and the withholding was invisible.
+    # Zeros when the rail never runs, for the same written-zero reason the
+    # census beside them is strict.
+    try:
+        from attendee_evidence import participant_telemetry
+    except ImportError:  # pragma: no cover — direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from attendee_evidence import participant_telemetry
+    invite_counts = participant_telemetry({})
     if attendee_records is not None:
         try:
             from attendee_evidence import seed_people_for_items
@@ -4554,6 +4981,72 @@ def route_meeting_captures(
         auto_receipt = list(seeded["receipt_lines"])
         n_auto_created = int(seeded["n_created"])
         n_already_on_file = int(seeded.get("n_already_on_file") or 0)
+
+        # PASS 2b2 — SPEC_FLOW1 Lane F rule 1 + rule 4, THE INVITE RAIL.
+        #
+        # The pass above is REACTIVE: it settles identity for the people a
+        # capture item happens to name. M ruled the other half in — a person
+        # ON the invite at a COMPANY DOMAIN is created whether or not anybody
+        # promised them anything, because the exit door cannot see a
+        # counterparty who is not a record. The attended test's shape: an
+        # attendee on four invites at a company address, no record after four
+        # passes, four queued proposals about them.
+        #
+        # It runs AFTER 2b and not instead of it, deliberately. 2b's creates
+        # PATCH the item they unblocked; running this first would put those
+        # people on file, 2b would report `already_on_file`, and the patch —
+        # the thing that stops a pending row being minted — would never
+        # happen. Running it second costs one extra roster read on the fires
+        # that create somebody and changes 2b not at all.
+        #
+        # The switch is read INSIDE the call and fails to ON.
+        try:
+            from attendee_evidence import (INVITE_ORIGIN_CALENDAR,
+                                           seed_people_from_participants)
+        except ImportError:  # pragma: no cover — direct-path import
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from attendee_evidence import (INVITE_ORIGIN_CALENDAR,
+                                           seed_people_from_participants)
+        # THE OWN-ADDRESS FENCE. Clause 4 of the bar ("never the user's own
+        # address") cannot be JUDGED without the set of addresses that are the
+        # user — and on an invite the user is the one person guaranteed to be
+        # on it. An empty set is not "nothing of mine is here", it is "I could
+        # not tell", and answering that with a write mints a duplicate record
+        # OF THE CEO from their own calendar (CONTACT1's second eyes
+        # reproduced exactly that on the sent rail). So an empty set stands the
+        # whole pass down; the participants fall through to the existing
+        # propose path, which is what happens today anyway.
+        try:
+            from contact_capture import own_addresses as _own_addresses
+            _mine = _own_addresses(workspace_root)
+        except Exception:
+            _mine = set()
+        if _mine:
+            invited = seed_people_from_participants(
+                workspace_root, attendee_records,
+                source_ref=source_ref,
+                origin=INVITE_ORIGIN_CALENDAR,
+                now_iso=now_iso,
+                batch_id=seeded.get("batch_id"),
+                source_skill=source_skill,
+                own_addresses=_mine,
+            )
+            auto_created.extend(invited["created"])
+            auto_created.extend(invited["split"])
+            auto_receipt.extend(invited["receipt_lines"])
+            invite_counts = participant_telemetry(invited)
+            n_invite_created = int(invited["n_created"])
+            n_invite_split = int(invited["n_split"])
+            # `n_auto_created` is a count of RECORDS this fire put on the
+            # book, so the invite rail's creations belong in it — and it is
+            # what PASS 2c below keys the roster re-resolve on.
+            n_auto_created += n_invite_created + n_invite_split
+            # `n_already_on_file` is NOT touched. It answers the reactive
+            # pass's own question ("the evidence matched somebody who was
+            # already a contact, so the rows drained and nobody was added"),
+            # and folding a second pass's tally into it would make one number
+            # answer two questions — review F-4's finding, one layer up.
 
     # PASS 2c — HYGIENE9 (d): THE ROSTER IS RE-RESOLVED AFTER THE SEAM.
     #
@@ -4869,6 +5362,17 @@ def route_meeting_captures(
             # count that says otherwise is a receipt for work that did not
             # happen. Also a count of records, also a subset of nothing.
             "n_already_on_file": n_already_on_file,
+            # SPEC_FLOW1 Lane F — the INVITE rail's own two counts, beside the
+            # reactive pass's rather than inside them: records created from
+            # the participant list alone, and people split back out of a
+            # record they shared an address with. Both are already inside
+            # `n_auto_created`; these say which pass made them.
+            # `n_invite_created` and `n_invite_split` are two of these
+            # eight; the other six say what the rail WITHHELD and why —
+            # already on file, set aside by the ignore ledger, refused at the
+            # bar, and the spelling variant that is now written as a link
+            # question instead of dropped (review F-5).
+            **invite_counts,
             # A SUBSET of n_review, not a fifth tier: V1 has to be able to
             # read the floor's yield apart from the fusion guardrail's, and
             # one combined review number cannot answer that.
@@ -4876,6 +5380,20 @@ def route_meeting_captures(
             # FLOOR3 E — twins folded into a survivor. Not a tier and not a
             # skip: these rows were never written, so no other count moves.
             "n_deduped": n_deduped,
+            # CAPTUREONCE1 §2.2 — rows the capture chokepoint refused because
+            # the `(source_ref, title)` pair was ALREADY ON DISK. A DIFFERENT
+            # fact from the line above (that one is twins inside this batch),
+            # so a different number: G59 exists because one count standing for
+            # two facts was read as a licence to delete twelve real rows. The
+            # route cannot know this one — the refusal happens later, at the
+            # append — so it is 0 here and `build_meeting_processed_event`
+            # DERIVES the real value from the chokepoint's own refusals for
+            # this source_ref (review F-2).
+            "n_deduped_on_disk": 0,
+            # CAPTUREONCE1 — this fire was a first run. A re-run returns early
+            # and never reaches this dict.
+            "rerun": False,
+            "n_rerun_refused": 0,
             # PREC1 — rows written with the fusion guardrail INERT. Cuts
             # ACROSS the tiers (a book row and a queue row can both be inert),
             # so it is a subset of nothing and is never added to another count.
@@ -4896,6 +5414,14 @@ def route_meeting_captures(
             # the grammar fence re-owned away from the extractor's guess;
             # `n_self_counterparty` is dragger 4's yield. Counts only; each
             # is a subset of nothing and is never added to another number.
+            # INTAKE1 — rows held at the door, by which rule held them. Each
+            # is a SUBSET of n_observed and is never added to another count.
+            # Two numbers rather than one because they answer different
+            # questions: "how many promises had nowhere to live" is a
+            # statement about the customer's own habit (say the date), and
+            # "how many were only guesses" is a statement about extraction.
+            "n_held_no_home": n_held_no_home,
+            "n_held_for_witness": n_held_for_witness,
             "n_questions": n_questions,
             "n_owner_changed": n_owner_changed,
             "n_self_counterparty": n_self_ref,

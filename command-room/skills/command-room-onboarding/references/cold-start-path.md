@@ -17,7 +17,7 @@ If no tools are connected and the customer chose to proceed without them:
      - *"Anyone you talk to weekly or more? Those become your team layer."*
    - 2e find one specific finding — adapt: since there's no scan data, ask: *"What's one thing that's bothering you right now that you'd want me to track from day one?"* Capture as the finding for Step 3a.
    - 2f rank by signal density — adapt: pick the top 3 projects + top 3 people from what the customer named in 2d, by their own emphasis ("which feels most urgent" / "who do you talk to most").
-   - 2g skipped (Quick Commands install moved to Step 4d anyway).
+   - 2g skipped (the Quick Commands install is retired — Night M3).
 3. **Step 3 — Reveal compressed.**
    - 3a opens with the interview-captured finding from 2e.
    - 3b + 3c show the org tree and project list the customer just told you, written to entities.json.

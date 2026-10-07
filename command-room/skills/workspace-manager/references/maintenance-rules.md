@@ -6,6 +6,12 @@
 
 **Write posture (stated once, applies to every rule below).** Maintenance writes only reversible, receipted operations, and never asks permission for them. Unattended means *nobody is watching*, not *don't touch anything*. Archival moves into `_archive/`, memory rollover and compression (archive-never-delete), the bounded self-heal safe set, view regeneration, receipts and cursor advances are all AUTOMATIC — running one of them is the rule, and deferring it to "say the word and I'll do it" is a contract violation. Preference and skill-config writes, capture drops, and repairs the checks cannot call safe stay ATTENDED: flagged, never mutated. Nothing below changes that split.
 
+Exception (SPEC_LEARN1): the `learning` job writes voice-block overrides, call-prep `section_weights` and workspace exemplars through the automatic proposal rail — reversible, narrated in the morning brief, one-word undo, at the shipped floors. Noise rules and confidence thresholds stay ATTENDED.
+
+**Whose act it is (CONTRACT Rule 32, ATTRIB2).** Everything maintenance writes on its own judgment — including a REVERSAL of something the product itself wrote a moment earlier — is the MACHINE'S act. Pass `actor=event_types.MACHINE` to `commitment_state.reopen_commitment` / `close_commitment` / `brain_undo.undo_batch`, never the CEO's person id: he was not asked and did not tap. The writers enforce it for anything running under a background source, and the customer surfaces read the stamp before they say "you". On 2026-09-07 this run correctly reopened two closes it judged wrong, signed them with the CEO's id, and the next morning brief told him he had reversed them.
+
+**The other half: the CEO's own gesture stays his.** This surface runs both ways — an unattended pass AND a chat the CEO types into. When the write is a dispatch he JUST MADE (he typed `undo`, tapped a row, said drop it), pass `user_confirmed=True` to the same three writers. Without it his typed `undo` is overwritten with the skill name one layer down, and the day-close then reads it as the product's own work rather than his. The flag is honoured only when the actor is a real person id, so it can never launder an unattended pass into his act, and it never contradicts `actor=event_types.MACHINE` — the call site wins.
+
 ---
 
 ## When Maintenance Runs

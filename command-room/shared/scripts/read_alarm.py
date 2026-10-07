@@ -38,6 +38,7 @@ can crash a read path would be a worse bug than the silence it fixes.
 from __future__ import annotations
 
 import datetime as _dt
+import os as _os
 import json
 import sys
 from pathlib import Path
@@ -59,6 +60,32 @@ if str(_HERE) not in sys.path:
 RECENT_HOURS = 72
 
 _SUFFIX = ".readalarm.json"
+
+#: THE HELPER DOOR (MF-M2-13, 2026-09-20). `workspace_access run_helper`
+#: promises it writes nothing at all, and its allow-list is read/compute only —
+#: but four listed reads reach this module, and a corrupt substrate file made
+#: the read door drop a sidecar beside the customer's own file, past every
+#: fence the two write verbs carry. Under the door the record is HELD here
+#: instead and comes back in the envelope as `sidecars`, so the evidence is
+#: not lost and nothing is written. Every other reader — an in-process import,
+#: a legacy seat's in-shell python — writes exactly as before.
+_HELD: list = []
+
+#: a fire cannot produce more distinct alarms than it opens files; the cap is
+#: there so a pathological loop cannot grow the envelope without bound.
+HELD_CAP = 20
+
+
+def hold_sidecar(record: dict) -> None:
+    """Keep one sidecar record for the envelope instead of writing it."""
+    if len(_HELD) < HELD_CAP and isinstance(record, dict):
+        _HELD.append(dict(record))
+
+
+def held_sidecars() -> list:
+    """Every record held since this process started (the helper runner reads
+    it once, after the call it was started for)."""
+    return [dict(r) for r in _HELD]
 
 
 class SubstrateReadError(Exception):
@@ -86,8 +113,21 @@ def remedy_line() -> str:
 def record_read_alarm(target: str | Path, error: object, reader: str = "") -> None:
     """Record a read failure on `target` in its sidecar. Merge-updates an
     existing sidecar (first_seen kept, count incremented). Best-effort:
-    NEVER raises."""
+    NEVER raises.
+
+    NOT UNDER THE HELPER DOOR (MF-M2-13): the record is held for the envelope
+    and nothing is written. See `_HELD` above.
+
+    THE DOOR TEST IS INSIDE THE `try` (MF-M2-25). Round one put it above, and
+    `Path(target)` on a bad target then raised `TypeError` from a function
+    whose own first line promises it never raises — a promise its three
+    callers rely on by calling it bare."""
     try:
+        if _os.environ.get("CR_HELPER_DOOR"):
+            hold_sidecar({"kind": "read_alarm", "file": Path(target).name,
+                          "last_error": str(error)[:200],
+                          "last_reader": str(reader)[:80], "written": False})
+            return
         from atomic_write import atomic_write_json
         target = Path(target)
         now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")

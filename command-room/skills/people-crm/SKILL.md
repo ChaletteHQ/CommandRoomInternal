@@ -1,7 +1,7 @@
 ---
 name: people-crm
 surfaces: both
-description: "Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]', 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]' — appends a sourced fact to their history. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export)."
+description: "Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]'. Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Also fires on 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]' — appends a sourced fact to their history. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export)."
 ---
 
 ## Skill Boundary (v2.1)
@@ -27,61 +27,86 @@ description: "Never walk into a meeting or dinner wondering who-is-this-again. T
 - **Account-scope on connector-derived records (connector-agnostic-v1, ACCOUNT_SCOPE §2):** when a person/org record is derived from a CONNECTOR READ (a sender on triaged mail, a meeting attendee from a transcript), pass the read's provenance to the writer — `create_person(..., provenance=<the read's provenance dict>)` or `account_address=<the mailbox it arrived through>` (NOT the contact's own email). The record wall (`account_scope_gate.enforce_record_scope`) rejects an out-of-scope account's contact before the entities.json write. A manual add ("add Dustin to my contacts") passes no provenance kwargs and is never walled.
 - **Promote-queue confirm/demote (R8, ACCOUNT_SCOPE §8):** inbox-triage writes `person_proposal` events (`data.promote_queue: true`) for mixed-account senders not in the entity graph. When the user CONFIRMS ("file it" / promotes the proposal), create the person as a **user-confirmed add — NO provenance kwargs** (the user is the authority; the record wall is for unconfirmed connector derivations); future mail from that sender is then in scope by association (the wall passes events referencing resolved entities on mixed accounts). Append a `person_proposal_resolved` event pointing at the proposal. When the user DEMOTES ("keep personal" / "this is actually personal"), do NOT create a record; write the teaching signal via `connector_config.set_sender_scope_override(root, <account>, <sender>, write_to_business=False, reason="user demoted")` so the proposal never re-fires. The write dial stays fail-closed throughout — a classification error hides business mail (safe), never pollutes records (H-G).
 
-### Bash gate — pre-flight import check (v3.2+ MANDATORY)
+### Bash gate: the Access preamble before any person write (v3.2+ MANDATORY; PEOPLEWRITE2)
 
-Before any person-write step in this skill or its callers, execute:
+Before any person-write step in this skill or its callers, resolve through the Access preamble:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from people_writer import create_person, update_person, find_existing_person, merge_person_into, DuplicatePersonError; print('OK')"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 ```
 
-If stdout is not exactly `OK`, ABORT and surface plain English: `(I couldn't save that contact just now — I'll flag it and retry next time.)` Log the diagnostic detail to `_hq/CONFLICTS.md`, never into chat. Do NOT fall back to direct `entities.json` edits.
+The door's own answers are the abort check (PEOPLEWRITE2). A `not_in_manifest` or `not_allowed_writer` answer, or any other envelope with `ok: false`, means the writer cannot run on this seat: that is ONE sentence, the preamble's rule 6, and `writer_identity_required` means say the envelope's `line`, verbatim, as the whole answer. Never import the writer in a shell to test it, never run `people_writer.py` as a command, and never fall back to direct `entities.json` edits.
 
 ### Writer call shape
 
-```python
-import sys
-sys.path.insert(0, 'shared/scripts')
-from people_writer import (
-    create_person, update_person, find_existing_person,
-    merge_person_into, DuplicatePersonError,
-)
+Three door forms, in this order. Render each with `workspace_access.py plan run_helper` or `plan run_writer` and paste what it prints, verbatim; every form answers ONE envelope, and the writer's own answer is its `result`.
 
-# 1. Always dedup first.
-existing = find_existing_person(
-    workspace_root,
-    name="Rio Sample",
-    email=None,
-    aliases=["Rio N"],
-)
+```bash
+# 1. ALWAYS dedup first: a READ, beside the data. It writes nothing.
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"aliases": ["<each alias the CEO gave>"], "email": "<the address, or null>", "name": "<the full name>", "workspace_root": "<WS>"}, "name": "people_writer:door_find_person"}'
 
-# 2. Branch on result.
-if existing:
-    update_person(workspace_root, existing["id"],
-                  last_interaction="2026-04-30",
-                  source_skill="people-crm")
-else:
-    try:
-        create_person(
-            workspace_root,
-            canonical_name="Rio Sample",
-            primary_org_id="org_005",
-            role="Project Manager",
-            aliases=["Rio N"],
-            notes="Project manager at Summit Company.",
-            first_seen="2026-04-30",
-            source_skill="people-crm",
-        )
-    except DuplicatePersonError as e:
-        # The dedup helper missed a match the writer caught. Surface the
-        # existing id to the user instead of creating a parallel record.
-        # (e.g., if the user's input matched an alias the caller didn't
-        # pass into find_existing_person.)
-        ...
+# 2a. `result.match` is a record: change THAT record, never a parallel one.
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"last_interaction": "<YYYY-MM-DD>", "person_id": "<result.match.id from step 1>", "workspace_root": "<WS>"}, "name": "people_writer:door_update_person"}'
+
+# 2b. `result.match` is null: create. The writer runs its own dedup again.
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"aliases": ["<each alias>"], "canonical_name": "<the full name>", "first_seen": "<YYYY-MM-DD>", "notes": "<one line>", "primary_org_id": "<the org's id from Gate 1's entity_resolve:resolve_all on the company name, or null; never the company name>", "role": "<the role>", "workspace_root": "<WS>"}, "name": "people_writer:door_create_person"}'
 ```
 
-CLI form for bash callers is documented in the docstring of `people_writer.py`.
+The branches, by the writer's own answer (`result`), each of which has written nothing:
+
+- `result.ok: false`, `reason: "ambiguous"` (step 1 or 2b): a lone first name or an alias fits a record that may or may not be this person. Render the disambiguation widget from `result.candidates` (same person, a different person with the same first name, or skip), never a first pick (Bug #19), and never show an id.
+- `reason: "duplicate"` (2b): the writer's dedup found a record step 1 did not (usually by email). Say `result.line`, then treat `result.existing_id` as the match and run 2a on it.
+- `reason: "single_word_name"`, `"unknown_person"`, `"identity_field"` (2a: a change never carries `id` or `suppress_lineage`), `"out_of_scope"` or `"unreadable"` (step 1: the people file could not be read, so nothing may be created): say `result.line`, verbatim, and stop. Ask for the full name on the first.
+
+Fields a change can carry are the schema's (the Writer Contract above); a field the schema refuses is a stop, never a retry with another key.
 
 ---
 
@@ -108,13 +133,33 @@ Tracks what matters: company, role, how you know them, projects they're connecte
 
 People-CRM has TWO canonical helpers that the read paths MUST invoke. Bypassing either was flagged in Session-22 testing (Bugs #11 + #23) as the root cause of "queries work by luck of grep" behavior.
 
-> **Gate 1 — Name resolution.** Before answering any "who is X" / "tell me about X" / "people at Y" / "prep me for [person]" query, you MUST invoke `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query, include_open_proposals=True)` FIRST to resolve the name. Only after the resolver returns NO candidates may you fall back to substring grep on entities.json. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the ladder, tiers, and fallback rules.
+> **Gate 1 — Name resolution.** Before answering any "who is X" / "tell me about X" / "people at Y" / "prep me for [person]" query, you MUST resolve the name FIRST, through the door, in ONE call (ROUTE3, walk finding F-T2-14: a typed "who is" once skipped the resolver, opened the people file in a python body in the mounted folder, and answered "the only one on file" while a second record of that first name sat unlisted). Render it with `workspace_access.py plan run_helper --json '…'` and paste what it prints, verbatim; the shape is:
+>
+> ```bash
+> python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"include_open_proposals": true, "query": "<the name as the CEO typed it>", "workspace_root": "<WS>"}, "name": "entity_resolve:resolve_all"}'
+> ```
+>
+> The envelope's `result` is the resolver's candidate list, in the resolver's order (IDN-01: a fuller record before a one-word stub that shares its first name, then the most recent activity). `ok:false` is a stop, never a hand retry. **Never read the people records any other way**: no heredoc, no grep, no python body over the folder, no copy of a data file into this session. An empty `result` means there is no record of that name; say so in one line. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the ladder and the tiers.
+>
+> **The answer's shape (IDN-01; ROUTE3).** The resolver's FIRST candidate is the person you answer about. EVERY other candidate it returned, one-word stubs included, is named after that answer on ONE line that begins exactly `Also on file:`, each name followed by its org or role in parentheses when the record carries one, separated by semicolons. Never drop a candidate the resolver returned, and never say that someone is the only person of that name on file when the resolver returned more than one candidate. When the resolver returned one candidate there is no such line at all. A Tier-3 ambiguous lone first name still gets the disambiguation widget (Bug #19); this line is for an answer that has a clear first candidate.
 >
 > **The `open_proposal` hit (WG1-B D-B5).** When the ONLY result carries `entity_type: "open_proposal"`, the workspace has no record yet but a PENDING add-person proposal — never answer cold "I don't know who X is". Surface the proposal instead, snippet included: *"[Name] has a pending add-person proposal from [date] — '[evidence, ~140 chars]'. Add them / not relevant?"* Adjudication routes through the EXISTING confirm flow exactly as the staff-meeting person row dispatches (`add person` / `proposal not relevant` / `snooze proposal 7d` via apply-choices — no new wire); a mention is corroboration, never an auto-confirm.
 >
 > **Gate 2 — Commitment surface.** Before surfacing ANY commitment-related state for a person ("what's owed to them," "what they owe me," "what's open with them"), you MUST invoke `shared/scripts/cru_match.py::load_open_commitments(events_jsonl_path)` and filter the resulting list by the resolved `person_id`. Raw grep on events.jsonl is NOT acceptable — it doesn't apply closure-event suppression (commitments closed via `commitment_resolved` / `thread_resolved` / `commitment_superseded`) and produces stale or inflated commitment surfaces.
 >
 > **`data.pending_review` is NOT true — those are UNCONFIRMED extractions, not open commitments (INTAKE).** Run the result through `cru_match.split_pending_review(...)` and surface the confirmed half as this person's state. If they have pending rows, that is ONE labelled pointer line and never rows: *"N unconfirmed with them — say `needs your call`."* A guess rendered as "what they owe you" is the same inflated surface Gate 2 exists to prevent, arriving through a different door.
+>
+> **Gate 2b — a proved item CLOSES here; it is never offered (EXIT1; M's ruling 2026-09-07).** MANDATORY, immediately after Gate 2 and BEFORE you render a line about what is open with this person: run
+>
+> ```bash
+> python3 -c "
+> import sys, json; sys.path.insert(0, 'shared/scripts')
+> from exit_doors import apply_fact_closes
+> print(json.dumps(apply_fact_closes('<workspace_root>', only_person_ids=['<the resolved person_id>'])))
+> "
+> ```
+>
+> then render what is open. If `receipt_line` is non-empty, say it VERBATIM as its own line before the open list — one line, plain words, the `undo` in it. **NEVER write a sentence offering to close things** ("say the word and I'll close them", "want me to close these four?"): a kept promise the record already proves is closed where the product notices it, and this surface is one of the places it notices. The regression is the 2026-09-07 `pull up` that listed four mail-proved items and offered to close them instead. It writes nothing when nothing is proved, so it is safe on every render.
 
 Why both are required: implementation exists; SKILL.md previously referenced them; runtime traces (Session 22, Phases 2D + 2G) showed the LLM substituted raw grep under time pressure. Output looked plausible because M's mature alias graph happened to make substring grep accurate enough. New customers with empty graphs hit the worst case.
 
@@ -215,7 +260,7 @@ Same-first-name examples above use the approved placeholder people
 When a person surfaces with **substance already attached** — a named attendee
 in a processed meeting, a sender on a triaged thread, a person named with role
 + org in a source the CEO is acting on — auto-add them (M: "yes, add people
-with rich context") through `people_writer.auto_add_person`, NOT the sparse
+with rich context") through `people_writer:door_auto_add_person` on the write door, NOT the sparse
 elicit form. That helper enforces the two guardrails so auto-creation stays
 safe:
 
@@ -235,41 +280,83 @@ safe:
    `update_person` (the R1 archive-never-delete reverser `brain_undo`
    registers), never a hard delete — history is preserved.
 
-```python
-from people_writer import auto_add_person
-res = auto_add_person(ws, canonical_name="Quinn Sample", email="quinn@example.com",
-                      email_provenance={"source": "meeting", "meeting_id": "..."},
-                      role="VP Ops", primary_org_id="org_...")
-# res["status"] == "added"  → narrate "Added Quinn Sample — say `undo` to remove."
-# res["status"] == "needs_confirm" → surface res["matches"], ask before creating.
+Through the write door, one form (the Access preamble above resolves first; PEOPLEWRITE2):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"account_address": "<the mailbox the mail or invite arrived through, or omit the key for a manual add>", "canonical_name": "Quinn Sample", "email": "quinn@example.com", "email_provenance": {"meeting_id": "<the meeting id>", "source": "meeting"}, "primary_org_id": "<the org id>", "role": "VP Ops", "workspace_root": "<WS>"}, "name": "people_writer:door_auto_add_person"}'
 ```
+
+`result.status` `added`: narrate "Added Quinn Sample." and promise no `undo` (the door's auto-add stamps no undo batch, so a bare `undo` cannot find it; the reverse is the archive in rule 3, by `people_writer:door_update_person` with `"status": "archived"` when the CEO asks). `result.status` `needs_confirm`: name `result.matches` by canonical name and ask before creating; nothing was written. `result.ok: false`: the same branches as the Writer call shape (`duplicate`, `ambiguous`, `single_word_name`, `out_of_scope`), nothing written.
 
 ### Person facts — `remember [fact] about [name]` / `note that [name] [fact]` (SPEC HIST1 D8)
 
 An explicit user statement of one atomic fact about a person ("remember Sam prefers Signal", "note that Sam Sample prefers morning meetings"). The user is the authority — no proposal, no confirm card. Facts are ADDITIVE, SOURCED events; they never touch the person record (no notes-blob append, no new record field — the history renderer compiles them on read).
 
-1. **ENTITY_RESOLVE first — every name-bearing form.** `entity_resolve.resolve_all(workspace_root, <name>)` per Gate 1 above. A lone-first-name hit that is Tier-3 ambiguous gets the disambiguation widget, never a first-pick (Bug #19); `record_person_fact` is never called on an unresolved id. A name that resolves to a tracked ORG is workspace-manager's org-fact handler — hand it over.
-2. **Write through the ONE fact writer** (Rule 22 discovery preamble required, then):
+1. **ENTITY_RESOLVE first, for every name-bearing form.** The Gate 1 door call above (`entity_resolve:resolve_all` through `run_helper`), never an import. A lone-first-name hit that is Tier-3 ambiguous gets the disambiguation widget, never a first-pick (Bug #19); the fact writer is never called on an unresolved id. A name that resolves to a tracked ORG is workspace-manager's org-fact handler: hand it over.
+2. **Write through the ONE fact writer, on the write door** (Rule 22 discovery preamble required, then ONE form; PEOPLEWRITE2):
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys; sys.path.insert(0, 'shared/scripts')
-from people_writer import record_person_fact
-record_person_fact('<workspace_root>', '<person_id>', 'Prefers Signal over email', 'chat:user-statement', category='preference', source_skill='people-crm')
-print('OK')
-"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"category": "preference", "fact": "Prefers Signal over email", "person_id": "<the resolved person_id>", "source_ref": "chat:user-statement", "workspace_root": "<WS>"}, "name": "people_writer:door_record_person_fact"}'
 ```
 
-`category` is optional — one of preference / contact / personal / role / company_news / other when it's clear; omit when it isn't. `source_ref` names where the fact came from (`chat:user-statement` for a direct statement; a message/meeting ref when the user is reacting to one). 3. **Ack in one line** ("Noted — Sam Sample prefers Signal. It'll show in his history and call prep."). The fact appears in the person's history view (`go [person]`) and in call-prep's relationship context on the next render.
+`category` is optional: one of preference / contact / personal / role / company_news / other when it's clear; omit the key when it isn't. `source_ref` names where the fact came from (`chat:user-statement` for a direct statement; a message/meeting ref when the user is reacting to one). `result.ok: false` with `reason: "unknown_person"` wrote nothing: say `result.line`, verbatim; an envelope `ok: false` is the one-sentence stop above (`writer_identity_required`: its `line`, verbatim). 3. **Ack in one line** ("Noted, Sam Sample prefers Signal. It'll show in his history and call prep."). The fact appears in the person's history view (`go [person]`) and in call-prep's relationship context on the next render.
 
-**Fences:** a role/company CHANGE ("Sam is now CRO at Acme Co") is an `update_person` field change (proposal-gated per the Writer Contract) — the lineage trail is emitted automatically by the writer; do NOT also record it as a fact. Prose-INFERRED facts (a transcript "sounds like…") are never written directly — they ride the confirm rail as proposals (`entity_signal_detector.run_entity_signal_scan` writes them; never hand-write one).
+**Fences:** a role/company CHANGE ("Sam is now CRO at Acme Co") is a field change through the write door, `people_writer:door_update_person` (proposal-gated per the Writer Contract); the lineage trail is emitted automatically by the writer; do NOT also record it as a fact. Prose-INFERRED facts (a transcript "sounds like…") are never written directly: they ride the confirm rail as proposals (`entity_signal_detector.run_entity_signal_scan` writes them; never hand-write one).
 
 **Structured auto-noting (HIST1 Part 2 — the ONE nuance to "enrichment doesn't auto-save"):** when the cross-source enrichment scan surfaces an atomic NON-identity fact from a STRUCTURED connector field (a signature block's "Prefers Signal" line, a calendar location field — never model inference over prose), it may be auto-noted as an additive fact EVENT via `entity_signal_detector.apply_structured_facts` — the person RECORD still never auto-updates, `role`/`company_news` facts still demote to confirm (S2), every auto batch is one-`undo` reversible, and the morning brief's CHANGED line narrates the count. Surface the returned `undo_line` in chat when anything was noted. Everything else in the "Fresh from your tools:" section stays exactly as documented below: shown, not saved, until the user decides.
 
 ### Personal ties — "[name] is my wife/husband/partner/mom/dad/kid" (SPEC BAL1 D1)
 
-A family/personal relationship statement is a FIELD change, not a fact: ENTITY_RESOLVE the name, then `update_person(workspace_root, <person_id>, source_skill='people-crm', tie='personal', role=<the stated relationship, e.g. 'Wife'>)`. The `tie: "personal"` marker moves the person into the Balance surface's lane and OUT of every work surface: relationship-moves drops them and every dormancy emitter skips them at its source gate. Never infer the tie from a transcript — only an explicit user statement sets it (an inferred family relationship rides the confirm rail like any proposal). The reverse ("actually [name] is a client contact") sets `tie='work'`. A cadence statement — "set date-night cadence to 2 weeks", "remind me to call Mom every 3 weeks" said as a cadence (not a reminder) — sets `cadence_days` (days) on the same record via `update_person`; `cadence_days` is read ONLY by the Balance surface and never touches work dormancy math (it is NOT `cadence_override_days`).
+A family/personal relationship statement is a FIELD change, not a fact: ENTITY_RESOLVE the name, then `run_writer people_writer:door_update_person` with `{"person_id": "<person_id>", "role": "<the stated relationship, e.g. Wife>", "tie": "personal", "workspace_root": "<WS>"}` (rendered with `plan run_writer`, pasted verbatim). The `tie: "personal"` marker moves the person into the Balance surface's lane and OUT of every work surface: relationship-moves drops them and every dormancy emitter skips them at its source gate. Never infer the tie from a transcript; only an explicit user statement sets it (an inferred family relationship rides the confirm rail like any proposal). The reverse ("actually [name] is a client contact") sets `tie='work'`. A cadence statement ("set date-night cadence to 2 weeks", "remind me to call Mom every 3 weeks" said as a cadence, not a reminder) sets `cadence_days` (days) on the same record through the same `people_writer:door_update_person` form; `cadence_days` is read ONLY by the Balance surface and never touches work dormancy math (it is NOT `cadence_override_days`).
 
 ## Person Profile Format
 
@@ -307,7 +394,7 @@ Rendered view groups people by primary-focus org first (per `morning-briefing` S
 - Bad: "Threads: project_012, project_020 (person record updated)"
 - Good: "Projects: Acme Tech Partnership, Product Strategy Review"
 
-**The record header is COMPOSED, never typed (CUT-C item 8 — ATTENDED_TEST_v5.28.0 B4.4 printed `person_201` in the header):** the `### [Full Name]` line is `narration_names.person_header(WORKSPACE_ROOT, <resolved person_id>)` (`shared/scripts/narration_names.py`) rendered verbatim — the person's name, then role and org when on record, and never the id; a person the index cannot name renders "(name on file)". Every other line that names a project, org or person resolves the id to its name the same way (`narration_names.humanize`).
+**The record header is COMPOSED, never typed (CUT-C item 8 — ATTENDED_TEST_v5.28.0 B4.4 printed `person_201` in the header):** the `### [Full Name]` line is `narration_names.person_header(WORKSPACE_ROOT, <resolved person_id>)` (`shared/scripts/narration_names.py`) rendered verbatim — the person's name, then role and org when on record, and never the id; a person the index cannot name renders "(no name on file)". Every other line that names a project, org or person resolves the id to its name the same way (`narration_names.humanize`).
 
 **MANDATORY narration scan (CUT-C item 8, mirrors apply-choices Step 4):** before posting the profile, the relationship brief or any "Fresh from your tools" section, run `validate_chat_output(<the whole text>)` from `chat_output_renderer.py`. It raises `LeakDetectedError` on a raw id, an event or field name, a path or a score. ABORT the post and rewrite the offending line. NEVER catch the error and post anyway.
 
@@ -383,6 +470,26 @@ You get their full context plus suggested conversation starters.
 - **Granola** — Pulls meeting notes to populate "Last Interaction" and "Key Notes"
 - **MASTER_TRACKER** — Cross-references people with active projects
 - **cleanup (`--summary` mode)** — Surfaces relationship updates in weekly/monthly summaries
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 

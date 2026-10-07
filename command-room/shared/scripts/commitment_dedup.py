@@ -80,6 +80,18 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
+
 try:
     from cru_match import (
         _bigrams,
@@ -136,6 +148,50 @@ DUP_TITLE_UNCORROBORATED = 0.85
 # tier does not ask, so "near-verbatim" is the floor, not "strong enough to
 # be worth a question".
 DUP_TITLE_AUTO = 0.9
+
+# ---------------------------------------------------------------------------
+# INTAKE1 rule 4 — DEDUP AT THE DOOR.
+# ---------------------------------------------------------------------------
+#
+# What this module has always done with a suspect is FLAG it: the row lands,
+# open, carrying `pending_review` and a "looks like a duplicate of X — merge /
+# keep both" question. That was right when the alternative was three silent
+# open rows for one act. It is not right any more, for two reasons the
+# 2026-09-07 attended test made concrete:
+#
+#   * a flagged duplicate is still a row on the plate AND a question in the
+#     queue — the design rule calls a question a defect to be justified, and
+#     "the same ask, twice, within a week" does not justify one; and
+#   * reprocessing a meeting is the commonest way the same act arrives twice
+#     (the two Sample-agreement rows from two sessions one day apart are
+#     SPEC_FLOW1's named regression), and a customer who re-runs a call
+#     should not be handed a merge decision for doing so.
+#
+# So inside the DOOR WINDOW a suspect COLLAPSES onto the first row: it is
+# written to the held tier carrying `duplicate_of`, the original keeps the
+# plate, and nothing is asked. Outside the door window and inside
+# DUP_WINDOW_DAYS the shipped flag behaviour is unchanged — a same-titled row
+# a fortnight later is far more likely a real recurring ask, and that one is
+# still worth a question.
+#
+# It is a COLLAPSE, not a drop: the held row is on disk, searchable, carries
+# the id of the row it folded onto, is rendered by `show me what you'd hide`,
+# and `promote_observed` puts it back. Append-only is untouched — nothing is
+# rewritten and nothing is deleted (LEDGERFENCE1's rule, which this lane's
+# reprocess pin sits directly beside).
+#
+# WHAT THE SEVEN DAYS ARE MEASURED FROM (fix round 1, review F-7). The window
+# is the ORIGINAL row's age against `now_dt`, not the interval between the two
+# captures — `score_suspected_duplicate` gates on `(now_dt - captured)`, where
+# `captured` is the open row's own capture time. LIVE those are the same
+# number, because the second capture arrives at ~now. ON A REPLAY OR A
+# HISTORICAL BACKFILL THEY ARE NOT: feed the matcher a pair of rows that are
+# both a fortnight old with `now_dt` left at the wall clock and nothing
+# collapses, however close together the two were captured. Any caller
+# replaying history must pass `now_dt` = the SECOND row's capture time, which
+# is what this lane's replay does and what MEASURE1 must do; otherwise the
+# collapse reads as never firing.
+DOOR_WINDOW_DAYS = 7
 
 
 def _clock_now(workspace_root=None):
@@ -711,6 +767,49 @@ def _dedup_enabled() -> bool:
     return os.environ.get("CR_DEDUP_CHECK", "1") != "0"
 
 
+def _door_dedup_disabled() -> bool:
+    """INTAKE1 rule 4's own off switch, for the same reason `CR_DEDUP_CHECK`
+    exists: a repair or migration run that deliberately re-appends history
+    must be able to say so. `CR_DOOR_DEDUP=0` turns the collapse off and
+    leaves the shipped flag behaviour."""
+    return os.environ.get("CR_DOOR_DEDUP", "1") == "0"
+
+
+def _collapse_onto(ev: dict, match: dict):
+    """INTAKE1 rule 4 — one open `commitment` event → its HELD form, folded
+    onto the row it duplicates. Returns None if the conversion is not
+    available, so the caller falls back to the shipped flag (fail-open: an
+    asked-about duplicate is today's behaviour; a lost capture is a new bug).
+
+    The held row keeps everything the open one carried and gains
+    `duplicate_of`, so `promote_observed` can put it back with its lineage
+    intact and a reader can always get from the folded row to the one it
+    folded onto. The SCORE that decided it is deliberately not written: no
+    reader would ever be allowed to render it (a score is one of the two
+    shapes fenced off every customer surface), and a field written for
+    nobody is the dead-field class G29 exists to catch."""
+    try:
+        from capture_gate import (DOOR_DUPLICATE_REASON,
+                                 observed_from_commitment_event)
+    except ImportError:  # pragma: no cover — direct-path fallback
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            from capture_gate import (DOOR_DUPLICATE_REASON,
+                                     observed_from_commitment_event)
+        except Exception:
+            return None
+    except Exception:  # pragma: no cover
+        return None
+    try:
+        held = observed_from_commitment_event(ev,
+                                              reason=DOOR_DUPLICATE_REASON)
+    except Exception:  # pragma: no cover — never block the append
+        return None
+    d = held.setdefault("data", {})
+    d["duplicate_of"] = match["commitment_id"]
+    return held
+
+
 def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
     """The write-path hook (called from atomic_append_jsonl's events branch,
     after the event gate). For each `commitment` event in the batch, look for
@@ -773,6 +872,24 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
             if match is None or match["commitment_id"] == data.get("id"):
                 out.append(ev)
                 continue
+            # INTAKE1 rule 4 — THE DOOR. Inside the door window the suspect
+            # collapses onto the row it duplicates instead of landing open
+            # with a question on it. `find_suspected_duplicate` is re-run
+            # against the SHORTER window rather than the match above being
+            # re-dated, because the window is one of its own gates and
+            # narrowing it can change WHICH open row is the best match.
+            door = None
+            if not _door_dedup_disabled():
+                door = find_suspected_duplicate(
+                    data, open_commitments, name_index=name_index,
+                    now_dt=now_dt, window_days=DOOR_WINDOW_DAYS,
+                    workspace_root=workspace_root,
+                )
+            if door is not None and door["commitment_id"] != data.get("id"):
+                collapsed = _collapse_onto(ev, door)
+                if collapsed is not None:
+                    out.append(collapsed)
+                    continue
             new_data = {**data}
             new_data["pending_review"] = True
             new_data["suspected_duplicate_of"] = match["commitment_id"]
@@ -980,6 +1097,182 @@ def apply_auto_merges(workspace_root, *, source_skill: str,
 
 
 # ---------------------------------------------------------------------------
+# SCHEDVIEW1 5.2 - THE APPLY HALF GETS A FIRE THAT ALWAYS RUNS
+# ---------------------------------------------------------------------------
+#
+# `flag_suspected_duplicates` stamps `data.auto_merge_of` at CAPTURE and
+# cannot supersede there (the new event is not on disk yet - see
+# `apply_auto_merges` own docstring). Until this job, the apply half had
+# exactly ONE caller in the tree: the commitments scheduled chat
+# (`references/orchestrator-commitments.md`). On a seat where that chat is
+# paused - which is the shipped posture since FOLD1-A folded `waiting-on`
+# and `my-plate` - the stamp had no fire to apply it, and a capture stamped
+# as a merge of an open row simply sat open BESIDE the row it duplicates
+# (attended test v5.31.0, B1.1: two open "send the KPI list" rows two days
+# apart, the second stamped `auto_merge_of` the first).
+#
+# A decision that depends on a chat the customer may have switched off is
+# not a rail. So the apply runs from the ONE fire every seat has: the
+# `maintenance` task dispatcher, as the `dedup-apply` job.
+#
+# ORDER. It is registered ahead of `review-expiry` and of every leg behind
+# it -- FIRST OF THE LEGS THAT JUDGE ROWS, which is not the same as first
+# of the daily legs: the capture legs (`meeting-capture`, `session-sweep`)
+# run before it and should, because a duplicate captured in this same fire
+# is stamped before this leg reaches it.
+# A merge is an IDENTITY operation - it says two rows are one promise - and
+# every leg behind it argues about rows: the silence drains argue from a
+# row quiet, the closers argue from a row evidence. Letting a drain reach a
+# duplicate before the merge does means two doors judge one promise twice on
+# the same fire.
+#
+# QUIET-RUN POSTURE (binding-gauge / daily-measure). A fire with nothing
+# stamped writes NOTHING and receipts NOTHING, so the job stays due and
+# re-derives at the next fire. That costs one open-set read and keeps the
+# ledger free of a row that says a run happened when nothing did.
+#
+# THE DEAD-FIRE FALLBACK IS UNCHANGED and stays the second line of defence:
+# `has_stale_auto_merge_stamp` makes CAPTURE stop stamping and go back to
+# ASKING whenever an unapplied stamp ages past the window. This job is what
+# should keep that from ever triggering; it does not replace it.
+
+JOB_ID = "dedup-apply"
+JOB_RECEIPT_TYPE = "pack_run"
+
+
+def run_dedup_apply_job(workspace_root, *, apply: bool = False,
+                        fired_via=None,
+                        source_skill: str = JOB_ID) -> dict:
+    """The `dedup-apply` maintenance job: apply every stamped auto-merge.
+
+    `apply=False` is the dry run - it counts what WOULD merge and writes
+    nothing, not even a receipt (a dry run that receipted would go
+    permanently un-due, the same rule every other `--apply` leg follows).
+
+    Returns `{ran, applied, n_merged, n_skipped, n_errors, batch_id,
+    receipt_written, refused, reason, summary}`. Loud, never fatal: this job
+    runs inside a fire that must finish.
+    """
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
+    def _refusal(refused: str, reason: str) -> dict:
+        return {"ran": False, "applied": False, "n_merged": 0,
+                "n_skipped": 0, "n_errors": 0, "batch_id": None,
+                "receipt_written": False, "refused": refused,
+                "reason": reason, "summary": ""}
+
+    # Validate the receipt vocabulary BEFORE any work (the UNCONFEXP1 review
+    # N-4 posture): `log_receipt` raises on an unknown `fired_via`, and a
+    # receipt that raises AFTER a successful merge leaves the job
+    # permanently due with nothing to explain why.
+    try:
+        from receipts import FIRED_VIA, normalize_fired_via
+    except ImportError:  # pragma: no cover - direct-path fallback
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from receipts import FIRED_VIA, normalize_fired_via
+    via = normalize_fired_via(fired_via)
+    if via not in FIRED_VIA:
+        return _refusal(
+            "unknown_fired_via",
+            f"{fired_via!r} is not a fire provenance I can record, so no "
+            f"merge was applied. Nothing was changed.")
+
+    ws = Path(workspace_root)
+    if not (ws / "_hq" / "data").is_dir():
+        # Never write into a directory that is not a workspace - a receipt
+        # would CREATE _hq/data at a wrong root (the misplaced-substrate
+        # class). No receipt on purpose: there is no workspace to receipt to.
+        return _refusal(
+            "not_a_workspace",
+            f"no _hq/data under {ws} - this is not a workspace root, so "
+            f"nothing was merged and nothing was written.")
+
+    if not apply:
+        pending = stamped_pending_merges(ws)
+        return {"ran": True, "applied": False, "n_merged": 0,
+                "n_skipped": 0, "n_errors": 0, "batch_id": None,
+                "receipt_written": False, "refused": None, "reason": None,
+                "summary": (f"{len(pending)} stamped merge(s) waiting "
+                            f"(dry run - nothing applied)")}
+
+    res = apply_auto_merges(ws, source_skill=source_skill)
+    n_merged = len(res.get("merged") or [])
+    n_skipped = len(res.get("skipped") or [])
+    n_errors = len(res.get("errors") or [])
+    out = {"ran": True, "applied": True, "n_merged": n_merged,
+           "n_skipped": n_skipped, "n_errors": n_errors,
+           "batch_id": res.get("batch_id"), "receipt_written": False,
+           "refused": None, "reason": None,
+           "summary": (f"{n_merged} merged, {n_skipped} sent back to the "
+                       f"question tier, {n_errors} error(s)")}
+    if not (n_merged or n_skipped or n_errors):
+        # The quiet fixed point: nothing was stamped, so nothing happened.
+        # No receipt - the job stays due and costs one open-set read.
+        return out
+    try:
+        from receipts import log_receipt
+        log_receipt(
+            ws, JOB_ID,
+            receipt_type=JOB_RECEIPT_TYPE,
+            fired_via=via,
+            surfaced=0,  # substrate infra - never a line to the CEO
+            extra_data={"n_merged": n_merged, "n_skipped": n_skipped,
+                        "n_errors": n_errors,
+                        "batch_id": res.get("batch_id")},
+        )
+        out["receipt_written"] = True
+    except Exception as exc:  # noqa: BLE001 - loud, never fatal
+        sys.stderr.write(f"[{JOB_ID}] receipt FAILED: "
+                         f"{type(exc).__name__}: {exc}\n")
+    return out
+
+
+def stamped_pending_merges(workspace_root) -> list:
+    """Open commitments carrying an unapplied `auto_merge_of` stamp, ids
+    only - the dry run count and the suite reader. Pure read."""
+    from cru_match import load_open_commitments
+
+    ws = Path(workspace_root)
+    out = []
+    for ev in load_open_commitments(ws / "_hq" / "data" / "events.jsonl"):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("auto_merge_of") and not _is_pending_review(ev):
+            out.append(str(d.get("id") or ""))
+    return out
+
+
+def main(argv: Optional[list] = None) -> int:
+    """`python3 shared/scripts/commitment_dedup.py --workspace <root>
+    [--apply]` - the `dedup-apply` job invocation, the same shape every
+    other maintenance leg registers."""
+    import argparse
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    ap = argparse.ArgumentParser(
+        description="apply every stamped auto-merge (the dedup-apply job)")
+    ap.add_argument("--workspace", required=True)
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--fired-via", default=None,
+                    help="the seat decides when nothing is said (receipts.effective_fired_via); a literal default here IS an explicit value by the time the resolver sees it")
+    ap.add_argument("--triggered-by", default=None,
+                    help="the surface that asked for this run")
+    args = ap.parse_args(argv)
+    # FIX3 F3-6: export what this run was asked by, so every composer
+    # below reads it from one place instead of being threaded through
+    # a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
+    out = run_dedup_apply_job(args.workspace, apply=args.apply,
+                              fired_via=args.fired_via)
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Render-time fold (BUG-8330 item 14)
 # ---------------------------------------------------------------------------
 
@@ -1180,6 +1473,13 @@ __all__ = [
     "stamp_is_stale",
     "has_stale_auto_merge_stamp",
     "apply_auto_merges",
+    "run_dedup_apply_job",
+    "stamped_pending_merges",
+    "JOB_ID",
     "flag_suspected_duplicates",
     "fold_suspected_duplicates",
 ]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -258,7 +258,15 @@ def record_walk(workspace_root, *, evidence_ref: str, evidence_ts,
 # ---------------------------------------------------------------------------
 
 def log_capture_pass_receipt(workspace_root, *,
-                             fired_via: str = "scheduled",
+                             # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 (review
+                             # H-2): NOT `"scheduled"`. A literal default is
+                             # an explicit value by the time the resolver sees
+                             # it, so a typed brief's meeting-capture job on a
+                             # merged seat recorded a scheduled fire nobody
+                             # claimed. `receipts.effective_fired_via(None)`
+                             # answers `scheduled` on every non-VM seat — the
+                             # un-merged fleet is byte-identical.
+                             fired_via: Optional[str] = None,
                              duration_ms: Optional[int] = None,
                              capture_leg_ms: Optional[int] = None,
                              window: Optional[dict] = None,
@@ -295,7 +303,7 @@ def log_capture_pass_receipt(workspace_root, *,
     without the phase fields.
     """
     from catchup import WINDOW_INCOMPLETE_FIELD
-    from receipts import log_receipt, normalize_fired_via
+    from receipts import effective_fired_via, log_receipt
 
     data: dict = {
         "surface": "incremental-capture",
@@ -326,7 +334,10 @@ def log_capture_pass_receipt(workspace_root, *,
         data.setdefault(k, v)
     return log_receipt(workspace_root, CAPTURE_JOB_ID,
                        receipt_type="pack_run",
-                       fired_via=normalize_fired_via(fired_via) or "scheduled",
+                       # P-2 (review H-2): the seat decides when the caller
+                       # did not; an explicit value always wins. `triggered_by`
+                       # rides log_receipt's own `CR_TRIGGERED_BY` rule.
+                       fired_via=effective_fired_via(fired_via),
                        duration_ms=duration_ms,
                        extra_data=data)
 

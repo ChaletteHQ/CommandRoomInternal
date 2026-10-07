@@ -585,6 +585,29 @@ def close_deal(
         ws, thread_id, source_skill=source_skill, **fields)
 
     ev_data: dict[str, Any] = {"thread_id": thread_id, "org_id": org_id}
+    # CLOSETRUTH1 3.2 (M's ruling 5, 2026-09-13) — A WIN IS UNDOABLE ON ITS
+    # OWN. Until now the only handle on a win was the PROMOTION it rode: undo
+    # reversed the org and left the deal closed-won, in the closed-deals list
+    # and in the 90-day rate, and the product then said there was no path to
+    # reverse it (attended test B3). The `deal_won` event carries its own
+    # batch id and change class now, so `brain_undo` lists it, reverses it,
+    # and reverses it EXACTLY ONCE when the promotion is in the same batch
+    # (both legs go through one idempotent reverser). The two prev_* fields
+    # are what the reverser puts back: the deal's stage before the close and
+    # the thread's status before the flip.
+    won_batch_id = None
+    if outcome == "won":
+        from org_promotion import new_promotion_batch_id
+
+        won_batch_id = new_promotion_batch_id(ws)
+        ev_data.update({
+            "brain_batch_id": won_batch_id,
+            "brain_change_class": "deal_won",
+            "deal_thread_id": thread_id,
+            "deal_manufactured": bool(deal_manufactured),
+            "prev_deal_stage": deal.get("stage"),
+            "prev_thread_status": from_status,
+        })
     final_value = new_deal.get("value")
     if final_value is not None:
         ev_data["value"] = final_value
@@ -678,8 +701,15 @@ def close_deal(
             pres = promote_org(ws, org_id, reason="deal_won",
                                since=new_deal.get("closed_at") or "",
                                source_skill=source_skill,
+                               batch_id=won_batch_id,
                                deal_thread_id=thread_id, won_seq=won_seq,
                                deal_manufactured=bool(deal_manufactured),
+                               # CLOSETRUTH1 3.2 — the promotion receipt
+                               # carries the same two anchors, so an undo
+                               # reached through the PROMOTION puts the deal
+                               # back as fully as one reached through the win.
+                               prev_deal_stage=deal.get("stage"),
+                               prev_thread_status=from_status,
                                explicit=explicit_convert)
             promoted = pres.get("status") == "promoted"
             if promoted:
@@ -708,6 +738,9 @@ def close_deal(
         "conversion_suggestion": suggestion,
         "deal_manufactured": bool(deal_manufactured),
         "won_seq": won_seq,
+        # CLOSETRUTH1 3.2 — the win's OWN undo handle, whether or not a
+        # promotion rode it.
+        "brain_batch_id": won_batch_id,
         "n_proposals_retired": n_retired,
         "retire_error": retire_error,
         "event": event,

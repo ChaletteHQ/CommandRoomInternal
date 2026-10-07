@@ -35,7 +35,7 @@ Concretely:
 | "Already captured?" dedup membership | `source_ref_index.check(...)` |
 | Financials (P&L, cash, AR aging) | the QuickBooks MCP directly — never a seat's recollection of a figure |
 
-A subagent that needs a count reads through the same helpers; it does not eyeball events.jsonl and total by hand (that produced failure #1).
+A subagent that needs a count reads through the same helpers; it never eyeballs events.jsonl and totals by hand (that produced failure #1).
 
 ## Enforcement
 

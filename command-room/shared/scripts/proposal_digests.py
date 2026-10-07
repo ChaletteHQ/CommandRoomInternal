@@ -710,6 +710,98 @@ def bound_page(items, *, n_extra_rows: int = 0,
     return kept, stats
 
 
+#: The honest tail a trimmed appended section carries. The phrasing is the
+#: bound's own idiom — what is on the page, and that the rest are still there.
+EXTRA_TRIM_NOTE = " — showing {shown} of {total}; the rest lead the next one"
+# TTL1 FIX ROUND 2 (reviewer R-1). A section that ALREADY trims itself already
+# says so, in ITS OWN idiom — the meeting fold's " — showing 6; say
+# `needs your call` for the rest", the watch section's " — showing 3 of 12,
+# oldest first; …". The round-1 pattern only recognised THIS module's spelling,
+# so the clamp appended a second clause and an ordinary week read
+# "… — showing 6; say `needs your call` for the rest — showing 5 of 6; the rest
+# lead the next one" under a header saying 5: two trim clauses, two numbers, one
+# section. This pattern strips a trailing trim clause of ANY of the three
+# idioms, so the trimmed title is RECOMPOSED from the honest number rather than
+# grown. Group 2 is the ORIGINAL total when the stripped clause named one, so a
+# section trimmed twice still counts against what it started with.
+_EXTRA_TRIM_RE = re.compile(r" — showing (\d+)(?: of (\d+))?[,;][^|]*$")
+
+
+def bound_extra_sections(sections, *, cap: int, queue_rows: int = 0):
+    """Bound what the APPENDED sections render, so the assembled PAGE — queue
+    lane plus every extra section — never exceeds `cap`.
+
+    TTL1 FIX ROUND 1 (reviewer F-5). `bound_page` bounds the QUEUE LANE and
+    hands the extras' row count in as an already-spent budget, so the extras
+    themselves rendered whole and merely squeezed the queue to its floor of
+    one. CONTRACT Rule 35 part 3 says no questions surface renders more in
+    one fire than the seat's budget, and the extras walked straight through
+    it: the meeting fold's own caps (`STAFF_GROUP_CAP` 3 / `STAFF_ROW_CAP`
+    8) are both LARGER than a `light` seat's budget of five, so three calls
+    with two unconfirmed captures each — an ordinary week — put the header
+    back to "6 waiting on you". That header is the exact string this lane
+    set out to fix, and the number in it is what the customer reads.
+
+    THE ALLOCATION. The queue lane keeps ONE row whenever it has any (the
+    same floor `bound_page` guarantees, for the same reason: a page of
+    extras must never silence the queue entirely), and the extras take the
+    rest, in the order the driver appended them — that order is already a
+    priority (the watch asks, then the meeting fold, then person
+    candidates, then this week's moves). A section trimmed to zero rows is
+    dropped whole rather than rendered as an empty frame, and a section
+    that lost rows says so in its own title — in EXACTLY ONE clause,
+    recomposed rather than appended (fix round 2, reviewer R-1), so a
+    section that already trims itself never carries two "showing" numbers
+    under a header that carries a third.
+
+    Returns `(sections, stats)` with `stats` =
+    {"cap", "extra_budget", "rows_before", "rows_after", "dropped",
+     "sections_dropped"}. Sections are COPIED; the caller's list and the
+    rows inside it are never mutated.
+    """
+    secs = [dict(s) for s in (sections or [])]
+    rows_before = sum(len((s.get("items") or [])) for s in secs)
+    cap = max(1, int(cap))
+    floor = 1 if int(queue_rows or 0) > 0 else 0
+    budget = max(0, cap - floor)
+    stats = {"cap": cap, "extra_budget": budget, "rows_before": rows_before,
+             "rows_after": rows_before, "dropped": 0, "sections_dropped": 0}
+    if rows_before <= budget:
+        return secs, stats
+    out: list = []
+    left = budget
+    for sec in secs:
+        items = list(sec.get("items") or [])
+        if left <= 0:
+            stats["sections_dropped"] += 1
+            continue
+        if len(items) > left:
+            total = len(items)
+            sec["items"] = items[:left]
+            raw_title = str(sec.get("title") or "")
+            # R-1 — ONE clause, and its number is the number the header
+            # carries. Any trim clause already on the title is taken OFF and
+            # replaced, never appended to; the total it named (when it named
+            # one) is kept, because that is what this section started with.
+            m = _EXTRA_TRIM_RE.search(raw_title)
+            if m and m.group(2):
+                total = int(m.group(2))
+            elif isinstance(sec.get("total"), int) and sec["total"] > total:
+                total = int(sec["total"])
+            title = _EXTRA_TRIM_RE.sub("", raw_title)
+            sec["title"] = title + EXTRA_TRIM_NOTE.format(shown=left,
+                                                          total=total)
+            if sec.get("count") is not None:
+                sec["count"] = left
+            left = 0
+        else:
+            left -= len(items)
+        out.append(sec)
+    stats["rows_after"] = sum(len((s.get("items") or [])) for s in out)
+    stats["dropped"] = rows_before - stats["rows_after"]
+    return out, stats
+
+
 BOUND_NOTE = ("showing the front {shown} of {total} — the rest stay queued "
               "and lead the next one")
 DIGEST_NOTE = "{items} items grouped into {rows} rows"
@@ -806,5 +898,7 @@ __all__ = [
     "strip_digest_ids",
     "confirm_review_digest",
     "bound_page",
+    "bound_extra_sections",
+    "EXTRA_TRIM_NOTE",
     "section_notes",
 ]

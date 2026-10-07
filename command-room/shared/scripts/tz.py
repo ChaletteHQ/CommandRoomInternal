@@ -309,6 +309,50 @@ def localize_date(
     return ts[:10]
 
 
+#: SCHEDVIEW1 5.5 — the shape every surface header spells the day in.
+#: `%b %d` would render "Sep 06"; the day number is built by hand below
+#: because the platform-specific no-pad directives (`%-d` on POSIX, `%#d` on
+#: Windows) are not portable and this runs on both.
+HEADER_DATE_FMT = "%A, %b"
+
+
+def local_header_date(
+    workspace_path: Union[str, Path, None] = None,
+    now: Union[str, datetime, None] = None,
+) -> str:
+    """The workspace-local `"<Weekday>, <Mon> <D>"` a surface header prints.
+
+    THE WEEKDAY AND THE DATE COME FROM ONE INSTANT (SCHEDVIEW1 5.5). The
+    inbox orchestrator had the MODEL compose `"<weekday>, <date>"` in prose,
+    and on Wednesday 2026-09-16 it printed "Tue Sep 16" — a weekday and a
+    date that do not belong to the same day (attended test v5.31.0, Part E
+    inbox). A header that contradicts itself is worse than one with no
+    weekday at all, and no amount of prose makes arithmetic reliable. Both
+    halves are now read off the SAME localized datetime, so they cannot
+    disagree.
+
+    `now` is any instant `to_local` accepts (ISO with offset, `Z`, naive —
+    read as UTC — or a datetime); omitted, it is the real clock read through
+    the workspace's own timezone, which is what every scheduled fire wants.
+
+    Falls back to the machine-local clock only when the workspace timezone
+    genuinely cannot resolve — the weekday and the date still come from one
+    instant in that case, so the header stays self-consistent even when it
+    is in the wrong zone.
+    """
+    dt_in = now if now is not None else datetime.now(timezone.utc)
+    try:
+        local = to_local(dt_in, workspace_path=workspace_path)
+    except (TZResolutionError, ValueError, TypeError):
+        local = None
+    if local is None:
+        local = (dt_in if isinstance(dt_in, datetime)
+                 else datetime.now(timezone.utc))
+        if local.tzinfo is not None:
+            local = local.astimezone()
+    return f"{local.strftime(HEADER_DATE_FMT)} {local.day}"
+
+
 def format_local(
     value: Union[str, datetime, None],
     fmt: str = "%Y-%m-%d %H:%M %Z",

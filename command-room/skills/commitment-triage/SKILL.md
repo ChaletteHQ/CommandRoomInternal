@@ -1,7 +1,7 @@
 ---
 name: commitment-triage
 surfaces: both
-description: "Your plate. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate'. Every open commitment grouped by what it wants next — DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED, then by project, then Overdue / This week / Later / No date. One widget, four verbs (done / later / drop / not mine), one Apply, everything through the single closure path with undo. On demand only (the opt-in Friday chat is retired). Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
+description: "Your plate. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate'. Every open commitment grouped by what it wants next — DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED, then by project, then Overdue / This week / Later / No date. One board, one line a row, one tap (Done); every other verb typed by the row's number. `work my plate` opens the nine-row page; 'show waiting' and 'show scheduling' answer standalone. Every write through the single closure path with undo. On demand only. Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
 ---
 
 # commitment-triage
@@ -30,7 +30,7 @@ It also appends suppression rules to `_hq/config/commitment-rules.md`
 ## Step 1 — The plate model (ONE grouping, in code)
 
 ```python
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")
 from plate_view import build_plate, render_plate
 view = build_plate("<WORKSPACE>", now_iso="<now ISO>")   # resolves the primary user itself
@@ -213,34 +213,103 @@ Prose uses the same words as the verb row — **Add sub-items** (F-13 P2a).
 
 ## Step 3 — Render the widget (ONE driver call)
 
+**THE DEFAULT RENDER IS THE BOARD (M's ruling, 2026-09-07).** The plate you
+show when someone says "what's on my plate" is one look, not a page: every
+open row grouped by project (or by person, where this workspace's brief is
+organised that way — the board reads the same customization the brief
+does), one line per row, **one tap on a row (Done) and nothing else**, and
+as many rows as the widget's size budget measurably holds. When it does not
+all fit, the board's own line says how many more there are and names the two
+doors — `work my plate` and `show parked`. There is no paging on the board:
+never offer "show more", never ask for a page number.
+
+**Every other verb is TYPED, by the row's number** — "later 12 to friday",
+"drop 7", "not mine 19", "nudge 4", "follow-up call 22". The numbers are the
+row's own and are the same on the board, on the working page and in the text
+form, so a number a reader took off the board still means that row after any
+re-render.
+
 **The entire load → group → render → fit → persist pipeline is ONE CLI
 invocation** (`shared/scripts/surface_drivers.py plate` — it runs Step 1's
-`build_plate` + `render_plate` internally and hands the data view to
+`build_plate` internally and hands the data view to
 `widget_transport.render_and_persist`; Steps 1–2 above are the normative
 spec of what the view contains, never a to-do list of separate commands):
 
 ```bash
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
-python3 shared/scripts/surface_drivers.py plate \
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
+python3 shared/scripts/surface_drivers.py plate --workspace "<WORKSPACE>"
+```
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
+Stdout carries `CR-PAGINATION: {...}` (empty for the board — it is not
+paged) followed by the persisted view's validated bytes between
+`CR-WIDGET-HTML-BEGIN` / `CR-WIDGET-HTML-END` markers. **Relay the bytes
+between the markers to `mcp__visualize__show_widget` as `widget_code`,
+byte-exact.** `widget_transport.render_and_persist` (all validators + the
+audit persist into `_hq/.system/widgets/`) already ran inside the call —
+there is nothing else to prepare.
+
+**On a merged seat the bytes go to `show_widget` and nowhere else** — no
+device copy of the page, no staging file under the workspace, nothing written
+beside the persist the call already did (FIX3 F3-12, preamble rule 7).
+
+## `show waiting` and `show scheduling` — they answer on their own
+
+**Ruled by M, 2026-09-13 (SPEC SURFACEFIX1 5.5).** Both phrases have been
+PRINTED under the plate's WAIT and SCHEDULE blocks since PLATE1 as the way
+to see the rest, the manifest announced `show waiting` as answering any
+time, and every morning brief points at it — and until this build nothing
+claimed either one. Typed on its own, `show waiting` answered *"No open
+plate in this session"* (attended test, B2.9). **They are this skill's, and
+they answer standalone.**
+
+- `show waiting` → the Waiting On view: `surface_drivers.py waiting-on`.
+- `show scheduling` → the schedule view: `surface_drivers.py schedule`.
+
+Both go out through `run_surface`, so the leak gate and the transport see
+them exactly as they see the plate. **Nothing changes on the reply path:**
+on an OPEN plate these are still replies, routed by
+`plate_view.reply_surface` off `PLATE_REPLY_SURFACES`, and they still
+re-fire that surface instead of re-rendering the board over the page the
+reader is answering. One phrase, one answer, whichever way it arrives.
+
+Never point a reader at a phrase that does not answer — that is the whole
+of why this section exists.
+
+**THE CARD IS THE ANSWER — never re-type its rows in chat (SCHEDVIEW1 5.1).**
+Both views come back from `surface_drivers` with their rows inside
+`sections[*]["items"]`, already carrying each row's `display_n` from
+PLATENUM1's persisted map, and `widget_transport.render_and_persist` renders
+them. Relay that and say nothing else about the rows. Do NOT list them as
+text, do NOT summarise them, and above all do NOT number them yourself: a
+number you count off the page is a POSITIONAL number, and a verb typed
+against it resolves through `plate_view.resolve_display_number` onto a
+different item. If the card comes back with no items, say the surface is
+empty — never fill it in by hand. (On 2026-09-16 the schedule view returned
+its rows under the wrong key, the card rendered empty, and the chat
+hand-printed nine rows numbered 1..9 over a book whose real numbers were in
+the 130s. The key is fixed; this paragraph is what stops the improvisation
+from coming back on the next empty card.)
+
+**`work my plate` — the working page.** A reply of `work my plate` on an
+open board (never a fresh trigger) re-fires the SAME driver on the
+`plate-page` surface, which is the nine-row page with the full button set,
+unchanged: four verbs a row plus the block's one tap, in block order
+(CONFIRM → DO IT → CHASE → WAIT → SCHEDULE → PARKED), paged.
+
+```bash
+python3 shared/scripts/surface_drivers.py plate-page \
     --workspace "<WORKSPACE>" --page 1
 ```
 
-Stdout carries `CR-PAGINATION: {...}` (one line of JSON — page / total_pages
-/ has_more, for the position narration) followed by the persisted page's
-validated bytes between `CR-WIDGET-HTML-BEGIN` / `CR-WIDGET-HTML-END`
-markers. **Relay the bytes between the markers to `mcp__visualize__show_widget`
-as `widget_code`, byte-exact.** `widget_transport.render_and_persist` (all
-validators + the byte-budget fit + the audit persist into
-`_hq/.system/widgets/`) already ran inside the call — there is nothing else
-to prepare. The plate is delivered by DESIGN as pages of up to
-`chat_output_renderer.DEFAULT_PAGE_SIZE` rows in block order (CONFIRM → DO
-IT → CHASE → WAIT → SCHEDULE → PARKED); a `show more` reply re-fires the
-SAME one-command driver with `--page N+1`, which slices the page-set page 1
-froze — not a fresh read (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A
-page-set is ONE question asked ONCE"). If `CR-PAGINATION` carries
-`refreshed`, `suppressed`, or `clamped`, SAY it in one line before the rows.
-Never chunk mid-page, never drop rows to fit — every open item reaches a
-page.
+On THAT surface the plate is delivered by DESIGN as pages of up to
+`chat_output_renderer.DEFAULT_PAGE_SIZE` rows; a `show more` reply re-fires
+it with `--page N+1`, which slices the page-set page 1 froze — not a fresh
+read (PAGESNAP; see `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE
+question asked ONCE"). If `CR-PAGINATION` carries `refreshed`,
+`suppressed`, or `clamped`, SAY it in one line before the rows. Never chunk
+mid-page, never drop rows to fit — every open item reaches a page.
 
 **Idempotent single call (RV-3 — the double-render fix):** run the driver
 exactly ONCE per page per fire. If you already hold the driver's output for
@@ -276,13 +345,32 @@ contract, Stage B) with `source_skill: "commitment-triage"` so tuples carry
 `src` for stateless dispatch (W4). Row verbs (display labels from
 `shared/scripts/verb_taxonomy.py` — never restated in widget HTML):
 
-- every row: `resolved` (**Done**, the button) · `push to [date]`
-  (**Later…**) · `drop` · `not mine` — the four verbs, no more (D4);
-- CONFIRM rows: `resolved` · `drop` · `not mine` (Done confirms + closes).
+**A TYPED number never resolves against the page you are holding
+(PLATENUM1 4.2).** A click carries `data.id` verbatim (above) and needs
+nothing further. A TYPED verb — `later 83 to friday`, `drop 83`, `not mine
+83` — carries only the number the reader read off a render, and that
+render can be hours old: close row 5 and rebuild, and the row that used to
+be 83 is a different item. Resolve every typed number through
+`plate_view.resolve_display_number(workspace_root, n)` (strips a leading
+`#`), which reads the persisted `id ↔ number` map — never by re-deriving a
+position from the page-set or the last widget you rendered. `None` back
+means no row in this workspace has ever carried that number: say so plain
+("I don't have a row numbered 83 — say `work my plate` to see the current
+list") rather than guessing the nearest one.
 
-**Board rows (BOARD1 — the artifact still renders the pre-plate row set
-until night 2 adopts the board; its verb lines are kept here only so the
-board's parity pin has a source):**
+- the board (the default render): `resolved` (**Done**) and NOTHING ELSE —
+  one tap a row, or none (M's ruling 2026-09-07). Every other verb is typed
+  by the row's number;
+- the `work my plate` page, every row: `resolved` (**Done**, the button) ·
+  `push to [date]` (**Later…**) · `drop` · `not mine` — the four verbs,
+  no more (D4);
+- the `work my plate` page, CONFIRM rows: `resolved` · `drop` · `not mine`
+  (Done confirms + closes).
+
+**Board rows (BOARD1 — the ARTIFACT board, `--format artifact`; a different
+surface from the chat board above, which is the plate's default widget
+render. The artifact still renders the pre-plate row set; its verb lines are
+kept here only so the artifact board's parity pin has a source):**
 
 - promise/scheduling rows: `resolved` · `push to [date]` · `drop` · `not
   mine` · `make task` · `never track this` — `skip` stays dispatchable but
@@ -295,7 +383,9 @@ board's parity pin has a source):**
 
 **Posting-block rule (t3 FB-11):** chat prose around the widget names ONLY
 the controls the rendered card visibly offers, using their exact labels —
-"tap **Done**, or pick from the row's menu (**Later…**, **Drop**, **Not
+on the board that is "tap **Done** on anything that's finished; for anything
+else say what you want and the row's number"; on the `work my plate` page it
+is "tap **Done**, or pick from the row's menu (**Later…**, **Drop**, **Not
 mine**)". Never enumerate verbs the card doesn't show, and never describe a
 dropdown row as if it had buttons. Same-vocabulary rule (F-13 P2a) applies
 to every verb you name. A Later… pick requires a date or a number of days:
@@ -342,13 +432,65 @@ is down to N.") and ALWAYS ends with:
 
 > *Say `undo` to reverse this.*
 
+**The two doors are a TABLE, not a paragraph** — `plate_view.PLATE_REPLY_SURFACES`
+(`work my plate` -> `plate-page`, `show parked` -> `show-parked`), read by
+`surface_drivers.surface_for_reply`. Fire the surface the table names; never
+improvise a rebuild.
+
 `undo` (same chat) reopens every closed item via `reopen_commitment`, hands a
 disowned item back to its previous owner via `confirm_commitment_owner`,
 reverses reclassifications, AND lifts every mute the batch wrote (via
 `mute_ledger.clear_dismissals`) — all additive; history keeps the tombstone,
 the reopen, and the clear. Never narrate event-type names (CONTRACT Rule
-4/9). `show waiting`, `show scheduling`, `not mine` and `undo <block>` are
-replies on an open plate — never treat one as a fresh trigger.
+4/9). `show parked`, `work my plate`, `not mine` and `undo <block>` are
+replies on an open plate — never treat one as a fresh trigger. `show
+waiting` and `show scheduling` are replies on an open plate AND standalone
+doors (SPEC SURFACEFIX1 5.5): on an open plate they re-fire their surface
+and re-render nothing, typed alone they answer.
+
+**THE BOARD FITS ITSELF; THE WORKING PAGE HONOURS THE PLATE'S CAP.** The
+board (the default render) shows as many open rows as the widget's size
+budget holds, most important first, and its own line says how many more and
+names the doors — relay that line as it is written and never invent a
+count. On the `work my plate` page the forty-row cap still applies under
+`light`: every overdue and due-this-week row renders always, the rest by
+importance, and everything else is behind `show parked`
+(`plate_view.widget_hidden_ids` is the rule). Never page past the cap by
+hand, and never tell the reader there are more pages than the transport
+returned.
+
+**`show parked` — the door, and it is ONE MORE DRIVER CALL.** A reply of
+`show parked` on an open board or page re-fires the SAME driver on the
+`show-parked` surface, which renders EXACTLY the rows that page held back —
+the same build, the same plate, the same row numbers — each one carrying
+its own why:
+
+```bash
+python3 shared/scripts/surface_drivers.py show-parked \
+    --workspace "<WORKSPACE>" --page 1
+```
+
+**NEVER open that door by rebuilding the plate.** An earlier version of
+this page told you to pass `preset="engaged"` to `build_plate`: that is a
+DIFFERENT plate — different block membership, different counts, no cap at
+all — and it lands the reader on the whole book over dozens of pages, which
+is the surface the ruling called irrelevant. The door shows what was held
+back, never everything.
+
+Two things are behind it and the line says which is which: rows that are
+**resting** (nothing is asked of them) and rows **further down the list**
+(the page's own budget cut them, and each one says why). Say the numbers the
+render gives you.
+
+**THE DOOR PAGES, AND IT IS THE WORKING SHAPE, NOT THE BOARD
+(REVIEW_ONEPLATE1 N-4).** Say so rather than implying one look: `show
+parked` renders the held-back rows the way the working page renders rows —
+the full button set, nine to a page — so on a large book it is many pages
+(239 rows, 27 pages, on the 2026-09-07 snapshot). M's ruling governs the
+DEFAULT render, and this is a door a reader walks through on purpose, so
+the shape is legal; it is not a board and must not be described as one.
+Read the page count off the transport's own `pagination` and quote it —
+never estimate it, and never tell the reader it is one look.
 
 ## Publish the board (BOARD1 — the artifact surface, copy-paste apply)
 
@@ -434,12 +576,104 @@ they were sections of this pass that happened to be read on a Friday.
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-**In-chat replies (PLATE1)** — DOES NOT fire on 'show waiting' / 'show scheduling' / 'not mine' / 'undo the parked block' (replies on an OPEN plate — no skill's trigger; ROUTEMISS1 hand rows in tests/triggers.yaml pin that this skill never fires on them).
+**In-chat replies (PLATE1)** — DOES NOT fire on 'show parked' / 'work my plate' / 'not mine' / 'undo the parked block' (replies on an OPEN plate — no skill's trigger; ROUTEMISS1 hand rows in tests/triggers.yaml pin that this skill never fires on them).
+
+**`show waiting` / `show scheduling` ARE this skill's, standalone (SPEC SURFACEFIX1 5.5, M's ruling 4 of 2026-09-13)** — they were fenced off every skill here as reply-only, which left two phrases the plate prints, the manifest announces and every brief points at with no owner at all; typed alone they answered "No open plate in this session" (attended test B2.9). On an OPEN plate they are still replies and re-render nothing (`plate_view.reply_surface`); typed on their own they fire this skill, which answers with the Waiting On view and the schedule view through `run_surface`. See "`show waiting` and `show scheduling` — they answer on their own" above.
 
 **Board triggers (BOARD1)** — 'publish my triage board' / 'put my triage on a page' / 'refresh my board' / 'triage board' fire § Publish the board, NOT the widget path. Same surface, different serialization. These live here rather than in the description because the description sits within 13 characters of the G11a cap: adding them needs a deliberate trim decision, not a silent one. DOES NOT fire on 'board pack' / 'board deck' / 'prep the board meeting' (board-pack-assembler — a governance document, not this list).
 
-> Your plate — the FULL open commitment set grouped by the action it wants next (PLATE1; formerly sorted by age) — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate' (QUICKCMD2, 2026-08-28 — the on-demand ask the my-plate scheduled task never had a chat trigger for). On demand only: the OPT-IN Friday-afternoon scheduled chat was retired in TASKRET1 (2026-08-17) until the review-tier backlog model settles — `add commitment triage` is refused warmly and the skill is otherwise unchanged. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat doesn't rewrite events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
+> Your plate — the FULL open commitment set grouped by the action it wants next (PLATE1; formerly sorted by age) — one widget, one Apply, everything dispatched through the single closure path. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate' (QUICKCMD2, 2026-08-28 — the on-demand ask the my-plate scheduled task never had a chat trigger for). On demand only: the OPT-IN Friday-afternoon scheduled chat was retired in TASKRET1 (2026-08-17) until the review-tier backlog model settles — `add commitment triage` is refused warmly and the skill is otherwise unchanged. Rows carry done / defer / drop / not mine / make task / promote / never-track-this actions; stale tasks (30d+) surface as 'still on your plate?'. Every action is an APPEND (close_commitment / commitment_updated / commitment_reclassified) — this skill exists so the next cleanup chat never rewrites events.jsonl in place (F4). The post-Apply ack offers undo (additive commitment_reopened). DOES NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the backwards-looking pass that reads months of mail history for delivery evidence, closes what the evidence settles, and surfaces duplicates and months-quiet items; triage reads no mail and closes nothing on evidence), 'show my list' (commitment_to_discuss review — show-my-list), 'scan for commitments' (extraction backfill), 'log resolved: <id>' (log-resolution artifact path), or the daily Commitments chat (orchestrator-commitments — actionable subset with chase drafts; triage is the full-set housekeeping pass).
+## Draft date scan (DRAFTDATE1 — MANDATORY on every rendered draft)
+
+**A draft never states a date, day or deadline the row does not hold.** On 2026-09-07 the drafts on this product invented three: "I'll have it finished by Friday" and "this is on your calendar today" on rows with no due date and no calendar event, and "let's get this paid this week" on a row with neither. Nobody had promised any of those days; sending one makes a commitment the book does not know about.
+
+Before you show or save ANY draft you composed — status note, nudge, chase, follow-up, reply, invite body — run it through the scan:
+
+```python
+from draft_date_scan import assert_draft_dates
+assert_draft_dates(<the draft text>, <the row>, today=<the workspace's own day>)
+```
+
+It raises `DraftDateError` naming every phrase the row cannot support. A date phrase is allowed only when it traces to (1) the row's due date, (2) a calendar event on the row, or (3) a date in the row's OWN words — its title, its quote, the thread subject. `today` is the workspace's day (`tz.py`), never a UTC re-slice.
+
+**NEVER catch the error and send anyway, and never invent a date so the sentence reads better.** The fix is one of two things: drop the day from the draft ("I'll come back to you with a date" is honest and costs nothing), or set a real date on the row first and then say it. A draft with no date at all is always allowed.
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

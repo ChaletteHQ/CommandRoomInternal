@@ -150,7 +150,7 @@ This is the flagship command. Output a brief the CEO reads in 60 seconds before 
 
    ```python
    import sys
-   # Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
+   # Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
    sys.path.insert(0, "shared/scripts")
    from cru_match import load_open_commitments, split_pending_review, _commitment_field
 
@@ -239,7 +239,7 @@ Save to `_hq/meetings/` (CONTRACT Rule 27 — never .md), and surface it as the 
 **Same generator means same fence (DOCFENCE1).** This brief is `brief_kind="call_prep"` landing in `_hq/meetings/` — the identical kind and folder call-prep fences, so it inherits the identical bans:
 
 - **NEVER hand-roll the 1:1 brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and a 1:1 brief is the most person-dense document this system writes.
-- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("talking points", "an agenda", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can share it with the report", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the 1:1 in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link. This brief is prep FOR the manager — it is not a document to hand the direct report through a shared connector.
+- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("talking points", "an agenda", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can share it with the report", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the 1:1 in a Google Doc" is a request this gate refuses, not an override. Say the canonical brief already exists and hand back its link. This brief is prep FOR the manager — it is not a document to hand the direct report through a shared connector.
 
 ### "what's [name] working on?" / "status on [name]" / "how's [name] doing?"
 
@@ -381,6 +381,26 @@ The CEO can always directly update person files:
 
 ---
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Gotchas
 
 - **Don't confuse _hq/PEOPLE.md with _people/.** PEOPLE.md is the general contact database (everyone the CEO has ever interacted with). `_people/` is the inner circle — direct reports and key leadership. A person can be in both, but PEOPLE.md is maintained by meeting-notes and workspace-manager; `_people/` is maintained by this skill.
@@ -418,3 +438,59 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Never walk into a 1:1 cold again. Owns the leadership-team layer — direct report profiles, what they're working on, their open commitments, and pattern detection (who's overloaded, who's drifting, who has three overdue asks). Use when the CEO says 'my team', 'team status', 'prep for 1:1', 'prep for 1 1', 'prep for my 1:1', 'prep for my 1 1', 'prep me for my 1:1', 'prep me for my 1 1', 'who owns', 'who owns the', 'log commitment for', 'log commitment for [name]', 'discover my team', 'who's overloaded', 'what has [name] delivered', 'delivered this quarter'. Produces 1:1 briefs, weekly team rollups, and commitment tracking. This is the CEO's private chief-of-staff layer for people — NOT an HR system. DOES NOT fire on 'prep me for the Acme call' / 'prep me for my 2pm' — external-attendee meeting prep (call-prep; this skill owns DIRECT-REPORT 1:1s only), bare 'log a commitment' with no direct report named (workspace-manager), 'who is' ('who is Mira' — people-crm), 'who hasn't replied' (dormant-customer-scan), 'who competes with' (research — no competitive-intel skill ships in this plugin), or 'hire' / compensation / performance reviews (out of scope).
 
 > Also handles team-tracking settings (SPEC OUT2 §5 — aliases onto `_team-config.md`; storage unchanged, never a second store) — use when the CEO says 'tune team-intelligence', 'show team-intelligence settings', 'reset team-intelligence to defaults'. (These verbs live here rather than in the description because the description budget is capped — G11; the runtime router and the trigger tests read the description and this Routing corpus together.)
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

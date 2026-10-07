@@ -54,9 +54,22 @@ from atomic_write import (  # noqa: E402
 )
 from cru_match import load_events_defensively  # noqa: E402
 from next_seq import next_seq  # noqa: E402
+from seq_health import top_level_seq_in_raw  # noqa: E402
 
 
 RECOVERY_VERSION = "v3.13.8.1"
+
+# LEDGERFENCE1 fix round 3 (review finding F-15). A quarantined line is, by
+# construction, a line the parser REJECTED — so reading its number with a JSON
+# parse can never work, and `quarantined_seqs` was `[]` on every receipt this
+# module would ever write. A torn row still SPELLS its number (`"seq": 1948`
+# sits in plain text in the 2026-06-23 sidecar on the operator's own book), so
+# the number is read off the text when the parse fails.
+# FIX ROUND 4 (F-22): the number is read at the row's own top level by
+# `seq_health.top_level_seq_in_raw`, not by a leftmost text search.
+# The `next_seq` contract's own bound — nano-epoch artifacts are not human
+# counter numbers and must never be offered as evidence about a hole.
+EPOCH_THRESHOLD = 10**10
 
 
 def _events_path(workspace_root: Path) -> Path:
@@ -86,6 +99,63 @@ def _gather_malformed_lines(path: Path) -> list[dict]:
     """
     _events, skipped = load_events_defensively(path)
     return skipped
+
+
+def _seqs_of(raw_lines) -> list[int]:
+    """The record numbers carried by the raw lines this pass is setting aside,
+    sorted and de-duplicated.
+
+    LEDGERFENCE1 fix round 2 (review finding F-10). A repair that says WHICH
+    numbers it took is the only kind a later health check can believe: without
+    this list the check had to fall back on proximity — a repair row near a
+    hole cleared it — and proximity cleared five rows a reviewer deleted by
+    hand.
+
+    FIX ROUND 3 (review finding F-15). Round 2 read every line with
+    `json.loads` and said "a malformed line that never parsed carries no
+    number and simply is not here" — but EVERY line here is one the parser
+    rejected, so the list was empty on every receipt this module could ever
+    write, and the whole evidence path was dead on arrival. A torn row still
+    spells its own number in the text it kept, so the number is read off the
+    text when the parse fails, bounded by the `next_seq` contract so a
+    nano-epoch artifact in the `seq` slot is never offered as evidence.
+    `quarantined_count` stays beside this list: a line that spells no number
+    at all is still a line that went.
+
+    FIX ROUND 4 (review finding F-22). Round 3 read the LEFTMOST `"seq"` on
+    the line. The appender stamps the row's own `seq` LAST, so a torn row
+    carrying a nested one first — the `data.batch_ref` shape `brain_undo`
+    writes, or `data.items[].seq` on a `pack_run` row — made this receipt
+    name a number the repair never took, and a hand deletion of that number
+    was then silenced as a repair. The number is read at the top level of the
+    row's own object only, and a line offering two is read as naming none.
+    """
+    out: set[int] = set()
+    for raw in raw_lines or []:
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        seq = None
+        try:
+            ev = json.loads(raw)
+        except Exception:
+            ev = None
+        if isinstance(ev, dict):
+            v = ev.get("seq")
+            if isinstance(v, int) and not isinstance(v, bool):
+                seq = v
+        else:
+            # FIX ROUND 3 (F-15). The line did not parse — which is the only
+            # reason it is here — so read the number off the text.
+            # FIX ROUND 4 (F-22). The row's OWN number, at the top level of
+            # its object: the appender stamps `seq` LAST, so a torn row
+            # carrying a nested one (`data.batch_ref.seq`, `data.items[].seq`)
+            # spells that one FIRST, and the leftmost read made this receipt
+            # claim a number the repair never took.
+            seq = top_level_seq_in_raw(raw)
+        if seq is not None and 0 < seq < EPOCH_THRESHOLD:
+            out.add(seq)
+    return sorted(out)
 
 
 def _gather_lines_to_quarantine(
@@ -217,6 +287,17 @@ def run_recovery_if_needed(
             "data": {
                 "quarantined_lines": sorted(to_quarantine),
                 "quarantined_count": len(to_quarantine),
+                # LEDGERFENCE1 fix round 2 (review finding F-10). The numbers
+                # this pass set aside, by name. Without them the only way a
+                # later health check could tell "the repair did this" from
+                # "somebody deleted lines" was proximity — a repair row within
+                # three rows of a hole cleared it — and proximity gave
+                # immunity to five rows the reviewer deleted by hand. A repair
+                # that says which numbers it took can be believed exactly that
+                # far and no further. Malformed lines that never parsed carry
+                # no seq and are simply absent from this list, which is why
+                # `quarantined_count` stays beside it.
+                "quarantined_seqs": _seqs_of(quarantined_raw),
                 # v3.13.8.1 Bug #65 — carry date_range_label into the event
                 # so audit tooling can reconstruct the friendly span later
                 # without needing to re-derive it from malformed lines.

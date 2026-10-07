@@ -18,6 +18,111 @@ The applies-to-this-orchestrator framing: re-runs of THIS orchestrator (`regener
 
 ---
 
+## Phase 0 — RESOLVE (once, before anything else)
+
+This fire touches the customer's files only through the workspace access layer
+(`shared/WORKSPACE_ACCESS.md`, CONTRACT Rule 22 v6). Every step below is one
+verb and one JSON envelope: `run_helper` for a read or a computation,
+`run_writer` for a writer that must run beside the data (a close, the inbound
+pass, the one-command driver), and `plan write` / `plan append_jsonl` for the
+rows and pages this file lands itself. There are no inline python bodies that
+open the workspace in this file any more, because on a merged seat this process
+is in a container and the customer's folder is on their own machine — an inline
+body there opens nothing at all, which is how this chain used to stop.
+
+Resolve first, once:
+
+- **Merged seat.** Run `workspace_access.py discover` here, hand the block it
+  prints to the device shell, and keep its answer: `WS` (the workspace root),
+  `RT` (the installed runtime), `BRAIN`, `MODE`. `runtime_present: false`, or a
+  `runtime_version` that differs from what this plugin expects, is a STOP — run
+  the update-bridge install step and say so. There is no container fallback.
+- **Legacy or local seat.** The same verbs run in this shell, and the Access
+  preamble below is what resolves `$PLUGIN_ROOT` and `$WORKSPACE` for them. Run
+  it at the top of every bash call — shell state does not survive between tool
+  calls in any of the three environments.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```
+
+**`<WS>` and `<RT>` in every command below are that answer**, substituted before
+the command is pasted — and every command is rendered with `workspace_access.py
+plan <verb>` and pasted verbatim, INCLUDING the variables in front of `python3`,
+which carry the writer identity and the run mode to the host that holds the
+data. An `ok:false` envelope is a stop for the step that asked: surface its
+`reason` in plain English (or, on a pre-render phase, record it in
+`pack_run.data.errors[]` as that phase's failure handling says) — it is never
+a reason to run the operation another way.
+
+---
+
+## Step 0 — FOLD1A gate (SPEC_FLOW1 Lane H, 2026-09-07) — MANDATORY, before Phase 1
+
+**OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** run this check FIRST, before Phase 1, right after Phase 0's resolve — one call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"task_id": "waiting-on", "workspace_root": "<WS>"}, "name": "commitments_helpers:fold_gate"}'
+```
+
+The answer is `{folded, line}`: `folded` is `schedule_config.fold_is_active(WORKSPACE_ROOT, "waiting-on")` and `line` is `schedule_config.folded_fire_line("waiting-on")` itself, both computed where the workspace is and carried back — never retyped.
+
+**If `folded` is True, post EXACTLY the answer's `line` — `schedule_config.folded_fire_line("waiting-on")`, never retyped — as the ENTIRE chat turn, then STOP** — no widget, no connector reads, no CRU scans, not even a receipt: a folded chat that keeps writing receipts is a folded chat that still looks live.
+
+> *Your Waiting On chat folded into your morning brief. Its headline now rides your morning brief — say `show waiting` any time for the full list. Say `undo` right after an update to bring it back as its own chat, or `add waiting on` any time.*
+
+**If `folded` is False** (a fresh install that never had the fold applied, or a seat that reversed it with `undo` / `add waiting on`), this chat is LIVE — fall through to Phase 1 below and run the full chat exactly as documented. This is the one thing that separates a FOLD1A fold from a `RETIRED_TASKS` stub (`schedule_config.FOLDED_FIRES`'s own module comment): the check is PER FIRE, from the workspace's own current state, because the fold is reversible — this file must keep asking, never assume its own history.
+
+---
+
 You are firing the Command Room "Waiting On" chat (CTS1 Surface 1). Surfacing what OTHER PEOPLE owe M — chase drafts, delegated work, the quiet nudged-no-reply tail (Tue/Thu — Phase 3.8), and the unowned/unconfirmed confirm tail. Read-mode is ACCOUNTABILITY: M nudges; M doesn't do. Items M owes render on the My Plate chat, never here (the one exception: nothing — a row where M acts next does not belong in this chat; if the partition puts a row here, someone else acts next).
 
 The CRU pre-render scans below (Phases 2.5/2.6/2.7) still run ALL THREE directions of substrate hygiene — including the OUTBOUND scan that closes items M owed (those rows render on My Plate, which fires 15 minutes after this chat and reads the substrate this fire just reconciled). Splitting the surfaces did NOT split the reconciliation; this fire remains the morning's one bulk scan.
@@ -38,14 +143,18 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
 Cowork fires a missed slot at next app launch, hours or days late, and without this check the run would render a stale surface as if it were fresh. Compute the tier via the shared helper (never inline the math — thresholds live in ONE constant, `late_fire.LATENESS_TIERS`; all math is machine-local, the clock cron actually evaluates in), passing the detected run mode:
 
 ```bash
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from late_fire import check_lateness
-print(json.dumps(check_lateness('<workspace_root>', 'waiting-on', fired_via='<scheduled|manual>', env_date='<session date>')))
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"env_date": "<this session's date>", "fired_via": "<scheduled|manual>", "task_id": "waiting-on", "workspace_root": "<WS>"}, "name": "commitments_helpers:lateness"}'
 ```
 
-**Every python subprocess in this fire carries `CR_WORKSPACE` (CLOCK1).** Prefix them: `CR_WORKSPACE=<WORKSPACE> python3 -c "..."`. Each `python3 -c` is its own process started from the plugin root, so a helper left to guess which workspace it is in finds nothing, cannot cross-check the clock, and stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
+The verb is `late_fire.check_lateness(workspace_root, "waiting-on", fired_via=<the run mode>, env_date=<this session's date>, emit=False)`, run where the data is and recording NOTHING itself. The answer is the verdict this file reads below — `tier`, `banner`, `degrade_notice`, `directive`, `clock`, `receipt_fired_via`, `rerun_of` — plus `pending_rows`: every row the check would have written (the clock record that says which clock produced this fire's dates, and the `late_fire` telemetry row on the note and degrade tiers), in the order it tried to write them. **Append `pending_rows` exactly as it came back — every element, in order, nothing dropped:**
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<every row in pending_rows from the verdict above, in order>]}'
+```
+
+When `pending_rows` is empty there is nothing to append. `telemetry_row` is the `late_fire` row on its own, handed back so a later phase can read its tier — it is ALREADY inside `pending_rows`, so never append it a second time.
+
+**The layer carries the workspace, the clock and the environment for you (CLOCK1).** Every helper and writer process the verbs start gets `CR_WORKSPACE`, `TZ` (the workspace's own timezone), `CR_ENV`, `CR_HOST_MODE` and `CR_RUNTIME_VERSION` — so a helper can never be left guessing which workspace it is in, cannot fail to cross-check the clock, and never stamps whatever this computer says. The phases that run BEFORE the lateness check write to the ledger too, which is exactly where an unchecked clock does its permanent damage.
 
 **Pass the session date too (CLOCK1).** `env_date` is this session's own date — the `Today's date is YYYY-MM-DD` line in your context. It is the second source the run cross-checks this computer's clock against, and the only one that can catch a clock running fast. Substitute the date and nothing else; if you genuinely do not have one, pass an empty string. A value that is not a date is treated as absent: it never moves the clock and never blocks the fire.
 
@@ -72,11 +181,23 @@ The helper already appended the `late_fire` telemetry on note/degrade tiers (cle
 
 - **Record the fire start FIRST, before any read or write:** `fire_start = clock["corroborated_now"]` from the Phase 2.9 return, which you ran before this phase (CLOCK1 — never `datetime.now()` here: a fire whose clock is two days behind sets a fence anchored two days in the past, and every commitment captured in between falls outside it). Hold it as `fire_start` — Phases 2.5 and 2.6 both pass it. It marks the instant this fire began, so a commitment this same fire captured cannot be treated as independent evidence for closing itself (the circularity fence, layer 2). It must be taken HERE, at the top, not next to the calls that use it: taken later it sits after the capture phases and fences nothing.
 - Today's date is `clock["today"]` from the Phase 2.9 return (CLOCK1) — the corroborated instant, already expressed in the workspace timezone by code. Never compute it from this computer's clock: an unsynced sandbox clock reading two days behind is what surfaced a meeting that had already happened as upcoming. Connector timestamps you render later still go through `shared/scripts/tz.py` `to_local(value, workspace_path=<WORKSPACE>)` exactly as before (REQUIRED `workspace_path`; on `TZResolutionError`, proceed with UTC and note it).
-- Read entities.json + aliases.json.
+- **Setup, ONE call** — who the user is, this family's two knobs (and whether this is the first fire), and the mail seams resolved off the tools this session has:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"tools": [<this session's tool list, {name, display, description} each>], "workspace_root": "<WS>"}, "name": "commitments_helpers:setup"}'
+```
+
+  The answer carries `primary_user` (`primary_user.resolve_primary_user` — deterministic, never guessed), `config` + `configured` (FRP1, below) and `seams`. Wherever a phase below says "resolve to person_id via `aliases.json` / `entities.json`", resolve the addresses in ONE call where those files are:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"emails": [<every address this fire needs resolved>], "workspace_root": "<WS>"}, "name": "commitments_helpers:resolve_people"}'
+```
+
+  `by_email` maps each address to its person_id; `unresolved` lists the ones that match nobody — never guessed.
 - Read voice calibration (cache once for the session).
 - **Resolve the mail tools through the seam, ONE call each** — `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))`, `tool_discovery.discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))`, and `tool_discovery.discover_mail_send_tool(tools, declared=connector_config.declared_backend("email"))`. The seam resolves the declared backend first — using that provider's own operation vocabulary — and refuses to substitute another product's tool; with nothing declared it falls back to fingerprint discovery (empty map = today's behavior, R4). Zapier legs are excluded from native discovery automatically (pinned server-ids + signature detection, R12/H-H). Never name a provider tool id directly — Superhuman/UUID servers carry no provider substring. On drift (declared backend NOT PRESENT) in a scheduled fire: skip-and-flag per SHARED_CHAT_OUTPUT_PROTOCOL § Connector drift (R13) — never prompt from a silent fire.
 - **The LABEL operation has no seam of its own — resolve it through the category helper**, `tool_discovery.discover_for_category("email", "label", tools, declared=connector_config.declared_backend("email"))`. There is no `discover_mail_label_tool`; the five seams cover send / reply / draft / search / thread-fetch only, so labelling would otherwise have no named path at all and a fire that needs it would improvise a provider tool id. Same declared-first, same Zapier exclusion, same drift handling as the seams above.
-- **Resolve the calendar tools through the seam** for the `follow-up call` handler (drafts a calendar-invite request) — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))` for the event-create operation, falling back to `discover_calendar_tool(tools, "<op>")` when no backend is declared (empty map = today's behavior, R4). Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE calendar never goes through Zapier (the seam excludes Zapier legs automatically: pinned server-ids + signature detection, R12/H-H). If no native calendar tool resolves, `follow-up call` degrades to email-only (drafts a "let's grab 15 min" message without creating a tentative invite) with a one-time per-session note. Never name a provider tool id directly.
+- **Resolve the calendar tools through the seam** for the `follow-up call` handler (drafts a calendar-invite request) — `tool_discovery.discover_for_category("calendar", "<op>", tools, declared=connector_config.declared_backend("calendar"))` for the event-create operation, or `discover_calendar_tool(tools, "<op>", declared=connector_config.declared_backend("calendar"))`, which routes to the same place and falls back to fingerprint discovery when no backend is declared (empty map = today's behavior, R4). **Never call `discover_calendar_tool` bare** — a bare call cannot honor a declaration the customer has already made. Native calendar via the seam, Zapier-excluded — per `EMAIL_DRAFT_PROTOCOL.md` §3c HARD SCOPE calendar never goes through Zapier (the seam excludes Zapier legs automatically: pinned server-ids + signature detection, R12/H-H). If no native calendar tool resolves, `follow-up call` degrades to email-only (drafts a "let's grab 15 min" message without creating a tentative invite) with a one-time per-session note. Never name a provider tool id directly.
 - Discover Zapier-threaded-send tool per `EMAIL_DRAFT_PROTOCOL.md` §3c (limit to tools whose name OR description contains `Send Threaded Email`; never any other Zapier tool — including, explicitly, no Zapier Calendar / Drive / Sheets tools). Cache for the session. If none, fall back to native Gmail at `N send` time — no error.
 - M's primary `user_id` from entities.json.
 
@@ -94,33 +215,13 @@ Path 2 catches what Path 1 (apply-choices in-Cowork sends) and Path 3 (past-meet
 
 **These skips are exhaustive — the run mode never adds one (v4.5.2 R2, applies equally to 2.6 and 2.7).** A scheduled fire is NOT "an autonomous run with no connector fetch," and a manual fire is interactive by definition — BOTH run these scans in full. The dogfood's improvised skip ("CRU pre-render scans skipped this fire — scheduled autonomous run, no connector fetch", FINDINGS F-47 P1a) left "no email on file" on a chase row for a contact who had emailed that very day.
 
-Otherwise, execute via bash:
+Otherwise, find the window — one call:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from cru_match import load_open_commitments
-
-events_path = '<absolute path to _hq/data/events.jsonl>'
-opens = load_open_commitments(events_path)
-
-# Determine the time window: max(last Waiting On fire ts, today - 7 days).
-# First fire ever defaults to last 7 days. Provided as <newer_than_iso> below.
-# v4.5.2 R1 + CTS1 — find the prior fire through the shared receipt reader
-# (parses every legacy shape: cr-commitments, kind-only, task_id-only —
-# forever). CTS1: read BOTH the new task id and the retired one and take the
-# newest — the first post-split fire must see the last pre-split fire:
-#   from receipts import last_receipt_times
-#   times = last_receipt_times(WORKSPACE_ROOT, ["waiting-on", "commitments"])
-#   last_fire_dt = max((t for t in times.values() if t), default=None)
-# events.jsonl is append-only — never rewritten.
-last_fire_ts = '<ISO of the max above, or today-7d>'
-print(f'WINDOW={last_fire_ts}')
-print(f'OPEN_COUNT={len(opens)}')
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"days": 7, "now_iso": "<clock corroborated_now from Phase 2.9>", "workspace_root": "<WS>"}, "name": "commitments_helpers:cru_window"}'
 ```
+
+The answer is `{window_start, last_fire, open_count, open_ids}`. `window_start` is `max(last Waiting On fire, now - 7 days)` — the prior fire found through the shared receipt reader (`receipts.last_receipt_times`), which parses every legacy receipt shape forever, over BOTH the new task id and the retired `commitments` one (CTS1: the first post-split fire must see the last pre-split fire). A first fire ever gets the last 7 days. `open_count` is `cru_match.load_open_commitments` over the ledger. events.jsonl is append-only — never rewritten.
 
 Then use the seam-resolved mail-search tool (from Phase 2) to query outbound mail since the last fire — the `{"from_me": true, "after": "YYYY/MM/DD"}` intent (or `{"from_me": true, "newer_than": "Nd"}`), compiled per provider by `connector_adapters/mail.py`; pass-through providers take the structured intent directly.
 
@@ -130,122 +231,32 @@ For each result, fetch the thread/message body via the discovered thread-fetch t
 - subject
 - body (last user-authored message in the thread)
 
-Then run `match_send_to_commitments` per send:
+Then plan the pass over ALL the sends in ONE call:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from cru_match import (
-    load_open_commitments,
-    match_send_to_commitments,
-    build_pending_review_event,
-)
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-from connector_adapters.provenance import primary_artifact_key, resolve_mail_provider
-from atomic_write import atomic_append_jsonl
-
-workspace_root = '<absolute path to the workspace root>'
-events_path = '<absolute path to _hq/data/events.jsonl>'
-opens = load_open_commitments(events_path)
-
-# MAILSEAM: resolve the mail provider ONCE. An explicit tag from the Phase-2
-# seam wins; otherwise the declared email backend answers. Never a literal —
-# `gmail:<id>` built on a Superhuman backend matches no commitment on disk,
-# which is a fence that stopped fencing without failing anything.
-provider = resolve_mail_provider(workspace_root, '<the seam-resolved provider, or None>')
-
-# Stage B (F2): auto-resolves close through commitment_state.close_commitment
-# — THE closure path. Matching (Path 1) is unchanged; only the write moved.
-n_resolved = 0
-# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
-# allocates seq inside the writer lock; a peeked value is racy.
-to_append = []
-for send in <list of sends since window>:
-    results = match_send_to_commitments(
-        open_commitments=opens,
-        sender_person_id='<user person_id>',
-        recipient_person_ids=send['recipient_person_ids'],
-        subject=send['subject'],
-        body=send['body'],
-        workspace_root=WORKSPACE,   # Phase 6 Loop 4: honor _hq/data/confidence-overrides.json
-        # RECONFENCE layer 1 — the ref of the message being scored. A commitment
-        # attributed to THIS message is dropped before scoring: the send that
-        # captured a promise is not evidence that the promise was kept.
-        send_source_ref=primary_artifact_key(provider, send['message_id']),
-        # RECONFENCE layer 2 — a commitment THIS fire captured is one source
-        # with the send being scored, not two. Phase 2.5 runs in the same fire
-        # as the capture phases, which is where layer 2 bites hardest.
-        exclude_captured_since=fire_start,   # from Phase 2
-        # EVORDER layer 3 — when the message was actually SENT. Layer 2 fences
-        # against the start of this fire, which is a different question: a
-        # commitment captured before the fire but AFTER the send sails past it,
-        # and a send cannot be evidence for a promise that did not exist yet.
-        # REQUIRED whenever the send carries a timestamp — omitting it silently
-        # disables the guard (F-11 measured four false closes from that gap).
-        send_ts=send['ts'],
-    )
-    for r in results:
-        evidence = f\"Sent via native mail client at {send['ts']} — Subject: {send['subject']}\"
-        if r['recommendation'] == 'auto_resolve':
-            try:
-                res = close_commitment(
-                    workspace_root, r['commitment_id'],
-                    resolved_by='<user person_id>',
-                    evidence=evidence,
-                    source_skill='commitments',
-                    # PROVMINT1 — the send that closed it. The same artifact key
-                    # is already built for the layer-1 fence above; forward it
-                    # instead of letting the writer fall back to a surface
-                    # receipt. (Building a good ref for MATCHING and dropping it
-                    # at the CLOSE is the walk's dominant defect class.)
-                    source_ref=primary_artifact_key(provider, send['message_id']),
-                )
-                if res['status'] == 'closed':
-                    n_resolved += 1
-            except (CommitmentIdError, PendingReviewError) as e:
-                print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-        elif r['recommendation'] == 'partial_received':
-            # MC1: a send to ONE counterparty of a multi-counterparty commitment
-            # records that person's receipt — NEVER a whole close. Closure is
-            # proposed (Phase 4.5) once all are in.
-            from commitment_state import mark_partial_received
-            for cp in r.get('matched_counterparty_ids') or []:
-                try:
-                    mark_partial_received(
-                        workspace_root, r['commitment_id'],
-                        received_by='<user person_id>', source_skill='commitments',
-                        counterparty_id=cp, evidence=evidence,
-                    )
-                except CommitmentIdError as e:
-                    print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-        elif r['recommendation'] == 'pending_review':
-            to_append.append(build_pending_review_event(
-                commitment_id=r['commitment_id'],
-                primary_thread_id=r['primary_thread_id'],
-                source_skill='commitments',
-                proposed_resolution='auto_resolve',
-                score=r['score'],
-                evidence=evidence,
-                next_seq=None,  # appender stamps in-lock
-                # SPEC TITLEMINT1 — the matched commitment's own name, which
-                # this result row already carries. The builder REFUSES an empty
-                # title now, so a forgotten argument raises at the writer
-                # instead of writing a subject-less row onto every review
-                # surface (70 of those on one 2026-08-19 fire).
-                title=r['title'],
-                # WATCHGATE — the matcher's own fulfillment finding + WHEN the
-                # evidence was observed (this send's own timestamp), so the
-                # accept surface screens on the finding rather than on prose.
-                has_completion_signal=r.get('has_completion_signal'),
-                evidence_ts='<this message send ts — the same value as send_ts>',
-            ))
-if to_append:
-    atomic_append_jsonl(events_path, to_append)
-print(f'CRU commitments pre-render: resolved={n_resolved} pending={len(to_append)}')
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"fire_start": "<fire_start>", "provider": "<the seam-resolved provider, or null>", "sends": [<one dict per send, shape below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "commitments_helpers:plan_sent_cru"}'
 ```
+
+`sends` is one dict per outbound message in the window: `message_id` (the connector's native id — RECONFENCE layer 1 needs it: a send cannot be evidence about the commitment it created), `ts` (its raw ISO-8601 send time), `recipient_person_ids`, `subject`, `body`.
+
+The verb is `cru_match.match_send_to_commitments` (Path 1) over the open set, with all three fence layers: RECONFENCE layer 1, `send_source_ref=primary_artifact_key(provider, message_id)` — the send's own artifact key, the provider resolved ONCE through `resolve_mail_provider(workspace_root, provider)`, never a `gmail:` literal (MAILSEAM); layer 2, `exclude_captured_since=fire_start` (a commitment THIS fire captured is one source with the send being scored, not two); and EVORDER layer 3, `send_ts=` the send's own `ts` (omitting it silently disables the guard, F-11). The match honors the workspace's `_hq/data/confidence-overrides.json` (Phase 6 Loop 4). It PLANS and writes nothing: the answer is `{writes, rows, counters}`.
+
+- `writes` — the closes and per-person receipts, in match order: an `auto_resolve` becomes a close through `commitment_state.close_commitment`, THE closure path (Stage B), carrying the send's artifact key as its `source_ref` (PROVMINT1 — the good ref built for MATCHING is the one the CLOSE cites); a `partial_received` becomes one `commitment_state.mark_partial_received` per matched counterparty (MC1 — a send to ONE counterparty of a multi-counterparty commitment records that person's receipt, NEVER a whole close; closure is proposed in Phase 4.5 once all are in).
+- `rows` — the pending-band matches, each built by `cru_match.build_pending_review_event` with the matched commitment's own title (SPEC TITLEMINT1 — the builder refuses an empty one), the matcher's completion finding and this send's timestamp as `evidence_ts` (WATCHGATE), and NO seq (the appender stamps it in-lock; a peeked seq is racy, BUG-8330 item 7).
+
+When `writes` is not empty, perform them — ONE call, through the write door, in the order they came back:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>", "writes": [<the writes from the answer above, in order>]}, "name": "commitments_helpers:apply_cru_writes"}'
+```
+
+A refused close (`CommitmentIdError`, `PendingReviewError`) or receipt is recorded in the answer's `results` and the next write still runs — a stale id in a batch of real closes never loses the real closes. Then, when `rows` is not empty, append them in ONE call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<the rows from the plan above>]}'
+```
+
+If the write door answers `writer_identity_required`, its `line` is the whole answer for this fire: post it and stop (Access rule 8 — a writer with no identity on this seat refuses in one sentence). Any other `ok:false` is this phase's failure, handled below.
 
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: CRU event-type names never appear in chat. The user sees the resolution effect via Phase 3's filter — auto-resolved commitments simply don't appear in today's widget.
 
@@ -268,41 +279,15 @@ Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since th
 For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) and **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached"). Those two fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from reconcile_inbound_commitments import (
-    reconcile_inbound_and_receipt,
-    validate_inbound_reconcile_ran,
-    PrimaryUserUnresolvedError,
-)
-from primary_user import resolve_primary_user
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"exclude_captured_since": "<fire_start>", "fetch_blocked": null, "fired_via": "<scheduled, or manual on a chat-phrase / Run Now fire>", "inbound_messages": [<one dict per inbound message, shape below>], "provider": "<the seam-resolved provider>", "source_skill": "commitments", "uncorroborated_thread_ids": [<the uncorroborated thread ids, MAILTRUST1 below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "reconcile_inbound_commitments:reconcile_inbound_and_receipt"}'
+```
 
-workspace_root = '<absolute path to the workspace root>'
-user_id = resolve_primary_user(workspace_root)   # deterministic — do NOT guess (Bug #102)
+`inbound_messages` is one dict per inbound message in the window: `message_id`, `ts`, `sender_person_id`, `subject`, `body`, `thread_id`, `has_attachment`. Keep the CEO's own messages and the unresolvable senders IN — they are counted, not silently dropped. `user_person_id` is `primary_user.resolve_primary_user`'s answer from setup — deterministic, never guessed (Bug #102). `fetch_blocked` is null on a real read; see TRAINFIX F-4 below for when it carries a reason.
 
-# One dict per inbound message in the window. Keep the CEO's own messages and
-# the unresolvable senders IN — they are counted, not silently dropped.
-inbound_messages = <[{'message_id', 'ts', 'sender_person_id', 'subject', 'body',
-                      'thread_id', 'has_attachment'}, ...]>
+The writer is `reconcile_inbound_and_receipt` — the whole inbound pass: it matches, closes through the single closure path, queues the confirms, and lands its own audit row, under the writer the door names. Its answer is the `receipt` this section reads — `n_auto_closed`, `n_pending`, `n_updated`, `n_held_uncorroborated`, `held`, `summary`, `coverage`, `signal_fields`, `resolved`. Then the self-check, one call:
 
-receipt = reconcile_inbound_and_receipt(
-    workspace_root, inbound_messages,
-    user_person_id=user_id,
-    source_skill='commitments',
-    fired_via='scheduled',              # 'manual' on a chat-phrase / Run Now fire
-    exclude_captured_since=fire_start,  # from Phase 2 — the fence, layer 2
-    provider='<the seam-resolved provider>',
-    uncorroborated_thread_ids=uncorroborated,  # MAILTRUST1 — see below
-    # TRAINFIX F-4 — leave None on a real read. Set it to the plain-English
-    # reason when the inbound read could not happen at all (paragraph below).
-    fetch_blocked=None,
-)
-print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s held=%s batch=%s'
-      % (receipt['n_auto_closed'], receipt['n_pending'], receipt['n_updated'],
-         receipt['n_held_uncorroborated'], receipt['batch_id']))
-"
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"since_ts": "<fire_start>", "workspace_root": "<WS>"}, "name": "commitments_helpers:validate_inbound_ran"}'
 ```
 
 **MAILTRUST1 — corroborate before anything closes (mandatory).** Any single mail read can only prove presence, never absence — on 2026-07-29 a full-content thread-fetch was itself one message short, and v5.6.0's reply-closure turned that class of stale read from a wrong statement into a wrong write. Before the reconcile call: for each distinct `thread_id` in `inbound_messages`, fetch that thread via the seam-resolved thread-fetch tool and run `shared/scripts/mail_absence.py::corroborate_absence(thread_fetch_result, <the batch messages carrying that thread_id>, thread_id=tid)` — the sweep and the fetch are the two differently-shaped reads. Collect every `tid` where `corroborated` came back False into `uncorroborated` and pass it as `uncorroborated_thread_ids`. Matches on those threads land in `receipt["held"]` — neither closed nor declined, with the disagreement named in `receipt["summary"]`; surface that sentence rather than dropping it. A degraded run with no thread-fetch tool passes `uncorroborated=set()` and proceeds (search-only was the pre-MAILTRUST1 behavior); never fake corroboration by comparing a read against itself.
@@ -313,7 +298,7 @@ print('CRU commitments inbound pre-render: closed=%s pending=%s updated=%s held=
 
 **If the inbound read cannot happen at all — no mail connector resolves, the connector budget is exhausted, or every account is still unclassified — do NOT call this helper with an empty list and let it write a clean zero (TRAINFIX F-4).** A fire that read nothing and a fire that read everything and found nothing produce the identical `inbound_scanned_count: 0` audit, and the first is a dead rail wearing the second's receipt. Call it with `inbound_messages=[]` AND `fetch_blocked="<what was missing, in plain language>"`: the audit lands stamped blocked with the reason, nothing closes, no confirm is queued, and `validate_inbound_reconcile_ran` refuses it. Silent to the CEO, loud in the substrate.
 
-**Self-validate (mandatory).** `v = validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — `v["ok"]` must be True, or this pass did not actually run and its zero means nothing. Also read `receipt["signal_fields"]`: messages scored with neither the conversation nor the attachment field present means the reply checks could not run at all; `receipt["summary"]` says so in plain language in exactly that state, and `receipt["coverage"]` reports how many open items have no resolvable owner and therefore can never be closed by any reply.
+**Self-validate (mandatory).** The `validate_inbound_ran` call above is `reconcile_inbound_commitments.validate_inbound_reconcile_ran(workspace_root, since_ts=fire_start)` — its `ok` must be True, or this pass did not actually run and its zero means nothing. Also read `receipt["signal_fields"]`: messages scored with neither the conversation nor the attachment field present means the reply checks could not run at all; `receipt["summary"]` says so in plain language in exactly that state, and `receipt["coverage"]` reports how many open items have no resolvable owner and therefore can never be closed by any reply.
 
 **Graded is not closed.** Same pair the sent rail carries, on this rail's names. `n_graded_on_reply` is what the MATCHER proposed; `n_closed_on_reply` is what the closure path actually WROTE, recomputed from the post-write list so it can never exceed `n_closed`. When they differ, `n_graded_close_refused` says how many graded closes were refused and `close_refusals` names why, keyed by the refusal (`PendingReviewError`, `CommitmentIdError`, `OpenSubitemsError`, `SourceRefError`). **Every refusal is the system working**, so report it as a held item, never as a lost close. `n_proposed_on_reply` is likewise read off the written `pending` band, so a row the matcher graded as a close and something downgraded into the confirm band — SUB1's open-sub-items rule, the one-reply-one-delivery guard — counts as the proposal it actually became. No refusal is reachable on this rail today, so a non-zero `n_graded_close_refused` here is new behavior worth reading, not noise. Reading only the graded half is how the sent rail's receipt came to say `n_closed_on_delivery: 1` beside `n_closed: 0`.
 
@@ -346,103 +331,25 @@ This is the daily backstop to the real-time leg in `calendar-writer` (which reso
 **Precision is structural, not threshold-based** (per Path 5 docstring): a commitment auto-resolves only when it is owed BY the user, its title carries scheduling intent (`detect_scheduling_intent`), and a calendar event exists whose attendees include the commitment's counter-party and doesn't predate the commitment. A deliverable commitment ("send Bo the one-pager") never resolves just because a meeting got booked. Topic-match-without-scheduling-intent → `commitment_review_proposed`, not silent resolve.
 
 **Skip entirely if:**
-- No native calendar tool resolved through the seam in Phase 2 (the event-list reader via `discover_for_category("calendar", …)` / `discover_calendar_tool` — Zapier calendar tools excluded per `EMAIL_DRAFT_PROTOCOL.md` §3c). Degraded → proceed without scan.
+- No native calendar tool resolved through the seam in Phase 2 (the event-list reader via `discover_for_category("calendar", …)` / `discover_calendar_tool(…, declared=connector_config.declared_backend("calendar"))` — Zapier calendar tools excluded per `EMAIL_DRAFT_PROTOCOL.md` §3c). Degraded → proceed without scan.
 - No open commitments owned by the user (OWED-BY-YOU set empty).
 
 Otherwise, use the discovered Calendar tool to list events **created or updated since the last fire** (the created/updated window compiled via `connector_adapters.calendar.compile_window(start, end, provider)`; include events whose start is in the recent past or near future — a just-booked future meeting is the common case). For each event, resolve every attendee email → `person_id` (via `aliases.json` / `entities.json`; drop unresolvable attendees), capture the event `summary`, the `created`/`updated` ts, the `calendar_event_id`, and the set of attendee person_ids accepted per `connector_adapters.calendar.is_accepted(attendee, provider)`. Then run `match_calendar_to_commitments` once over the whole event set:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from cru_match import (
-    load_open_commitments,
-    match_calendar_to_commitments,
-    build_pending_review_event,
-)
-from commitment_state import close_commitment, CommitmentIdError, PendingReviewError
-from atomic_write import atomic_append_jsonl
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"calendar_events": [<one dict per resolved event, shape below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "commitments_helpers:plan_calendar_cru"}'
+```
 
-workspace_root = '<absolute path to the workspace root>'
-events_path = '<absolute path to _hq/data/events.jsonl>'
-opens = load_open_commitments(events_path)
+Each event: `{"attendee_person_ids": [...], "summary": str, "created_ts": ISO, "accepted_by": [...], "calendar_event_id": str}`, resolved to person_ids by you (setup's people lookup).
 
-# Each calendar event resolved to person_ids by the caller:
-#   {'attendee_person_ids': [...], 'summary': str, 'created_ts': ISO,
-#    'accepted_by': [...], 'calendar_event_id': str}
-calendar_events = <list of resolved calendar events created/updated since window>
+The verb is `cru_match.match_calendar_to_commitments(open_commitments=opens, user_person_id=user, calendar_events=events, workspace_root=workspace_root)` (Path 5) — the workspace passed (F-28: the roster reader resolves a free-text counterparty_name against `entities.json` + aliases READ-ONLY, so one person recorded as BOTH an id and a name counts once). Nothing in this phase writes `entities.json`: the people-crm writer owns it. It PLANS: `{writes, rows, results, counters}` — an `auto_resolve` is a close whose `source_ref` is the CALENDAR EVENT (`gcal:<calendar_event_id>`, PROVMINT1; none when the row carries no id), a `partial_received` is one per-person receipt per matched counterparty (MC1), and a `pending_review` is a proposal row built by its own builder with the matched event's `created_ts` as its evidence time. Perform the writes, then append the rows — the same two calls as Phase 2.5, in the same order:
 
-results = match_calendar_to_commitments(
-    open_commitments=opens,
-    user_person_id='<primary user person_id>',
-    calendar_events=calendar_events,
-    # F-28 — the workspace, so the roster reader resolves a free-text
-    # counterparty_name against entities.json + aliases. Without it ONE person
-    # recorded as BOTH a counterparty_id and that person's name counts as TWO:
-    # the close is downgraded to per-leg receipts and the phantom name leg can
-    # never receive one, so the item stops closing through Path 5 at all.
-    # `workspace_root` is already bound above.
-    workspace_root=workspace_root,
-)
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>", "writes": [<the writes from the answer above, in order>]}, "name": "commitments_helpers:apply_cru_writes"}'
+```
 
-# Stage B (F2): auto-resolves close through close_commitment; matching (Path 5)
-# unchanged. Pending events keep their builder.
-n_resolved = 0
-# NO seq peek (BUG-8330 item 7): pass next_seq=None below — the appender
-# allocates seq inside the writer lock; a peeked value is racy.
-to_append = []
-for r in results:
-    if r['recommendation'] == 'auto_resolve':
-        try:
-            res = close_commitment(
-                workspace_root, r['commitment_id'],
-                resolved_by=r['owner_id'],  # the user — they scheduled it
-                evidence=r['evidence'],
-                source_skill='commitments',
-                # PROVMINT1 — the CALENDAR EVENT is what closed it, and the
-                # matcher echoes its id back on every result row. Forward it;
-                # fall through to the writer's minted receipt only when the row
-                # genuinely carries none.
-                source_ref=(f\"gcal:{r['calendar_event_id']}\"
-                            if r.get('calendar_event_id') else None),
-            )
-            if res['status'] == 'closed':
-                n_resolved += 1
-        except (CommitmentIdError, PendingReviewError) as e:
-            print(f'CRU skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-    elif r['recommendation'] == 'partial_received':
-        # MC1: a calendar event with ONE counterparty of a multi-counterparty
-        # scheduling commitment fulfills only that leg — record its receipt.
-        from commitment_state import mark_partial_received
-        for cp in r.get('matched_counterparty_ids') or []:
-            try:
-                mark_partial_received(
-                    workspace_root, r['commitment_id'],
-                    received_by=r['owner_id'], source_skill='commitments',
-                    counterparty_id=cp, evidence=r['evidence'],
-                )
-            except CommitmentIdError as e:
-                print(f'CRU partial skip {r[\"commitment_id\"]}: {type(e).__name__}', file=sys.stderr)
-    elif r['recommendation'] == 'pending_review':
-        to_append.append(build_pending_review_event(
-            commitment_id=r['commitment_id'],
-            primary_thread_id=r['primary_thread_id'],
-            source_skill='commitments',
-            proposed_resolution='auto_resolve',
-            score=r['score'],
-            evidence=r['evidence'],
-            next_seq=None,  # appender stamps in-lock
-            # SPEC TITLEMINT1 — the row's own name; the builder refuses an
-            # empty title rather than accepting one.
-            title=r['title'],
-            has_completion_signal=r.get('has_completion_signal'),
-            evidence_ts='<this message send ts — the same value as send_ts>',
-        ))
-if to_append:
-    atomic_append_jsonl(events_path, to_append)
-print(f'CRU commitments calendar pre-render: resolved={n_resolved} pending={len(to_append)}')
-"
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<the rows from the plan above>]}'
 ```
 
 **The stdout is for diagnostic logging only.** Same Rule 4/9 silence as Phases 2.5/2.6 — CRU event-type names never appear in chat. The user sees the effect via Phase 3's filter: resolved scheduling commitments drop off today's widget.
@@ -455,15 +362,12 @@ print(f'CRU commitments calendar pre-render: resolved={n_resolved} pending={len(
 
 Per `shared/scripts/commitment_dedup.py`. Capture time evaluates the auto-merge gate and STAMPS `data.auto_merge_of` on a new commitment that is beyond doubt the same real-world item as an open one (owner ids equal, counterparty ids overlapping, near-verbatim title after name-stripping, DIFFERENT writers — the cross-writer capture is the corroboration). It cannot apply the merge there: the capture hook runs inside the append, before the new event exists on disk. This phase is the apply half.
 
+**THIS PHASE IS NO LONGER THE ONLY RAIL (SCHEDVIEW1 5.2).** The apply half now also runs as the `dedup-apply` job inside the `maintenance` task, every day, on every seat — because this chat can be paused, and on a seat where it was, a stamped capture sat open beside the row it was stamped a merge of with nothing to apply it (attended test v5.31.0, B1.1). Keeping this phase costs nothing: the apply is idempotent and re-validates the whole gate each time, so whichever fire gets there first does the work and the other finds nothing to do. What it buys is that a merge captured minutes ago does not wait for tomorrow's maintenance fire to leave this widget.
+
 Run BEFORE Phase 3 so the merged duplicate never reaches the widget:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from commitment_dedup import apply_auto_merges
-print(json.dumps(apply_auto_merges('<workspace_root>', source_skill='commitments')))
-"
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"source_skill": "commitments", "workspace_root": "<WS>"}, "name": "commitment_dedup:apply_auto_merges"}'
 ```
 
 Each merge runs `propose(tier='auto')` + `supersede_commitment(auto_merge=True)` + `resolve_proposal('applied')` in one pass — the FB-20 lifecycle, so no auto proposal ever rests open. Reversible: the registered `commitment_merge` reverser splits it back out via `commitment_reopened`.
@@ -488,7 +392,7 @@ Use `cru_match._commitment_field(ev, "<field>")` for every commitment-field read
 
 For the confidence threshold specifically, use `cru_match._commitment_confidence(ev)` (returns a normalized float in [0.0, 1.0]). Some writers store confidence as a string label (`"HIGH"`, `"medium"`, `"high"`) rather than a 0-1 float; the comparison crashes on string values and silently drops the event. The helper coerces both via `_CONFIDENCE_LEVEL_MAP`.
 
-Read events.jsonl. Apply base filter to every commitment event (every field read uses `_commitment_field`; confidence read uses `_commitment_confidence`):
+The base filter below is applied WHERE THE LEDGER IS, by `commitments_helpers:chase_candidates` (the one call is under WAITING ON below) — never by reading events.jsonl in this session. What it applies to every commitment event (every field read uses `_commitment_field`; confidence read uses `_commitment_confidence`):
 - **Kind filter (Phase 2 Stage D, re-scoped by CTS1):** OWNER-ME task-kind items never surface here — they are My Plate · Personal rows (the `surface_split` partition already routes them). **Delegated tasks (owner ≠ M, effective kind `task` — CTS1 §2.3) DO render in this chat**: someone else acts next, so they belong on Waiting On — but `cru_match.cru_eligible` excludes task-kind from CRU, so they get NO pre-staged chase draft and NO reconcile: render with the delegated set only (`nudge` + `mark received` + `snooze 3d` + `add to my plate` — WG1-A D-A4: `nudge` is compose-on-CLICK, connector-free at render; the row carries the owner's resolved email as `To:` metadata; when NO email is on file, `nudge` degrades to the `add email then send` recovery verb and the other three verbs stay — mirror `surface_drivers._DELEGATED_VERBS` + its degrade exactly), tagged "(delegated — nudge is manual, I won't auto-chase this)". The header counts from `count_commitments` still include every kind in `total`/`by_kind` — the split filters SURFACING, not the canonical numbers.
 - **Sub-item filter (SUB1 — REQUIRED):** live sub-items (projected `data.parent_id` naming an open parent) NEVER surface as their own chase rows and NEVER enter the CRU legs — `cru_match.cru_eligible` excludes them in code, same mechanism as the task filter. The PARENT is the commitment of record: its row carries the progress annotation ("2 of 3 sub-items done · next: [step]" — from the loader's `n_subitems_open`/`n_subitems_done`/`next_subitem_due` stamps) and, when the last open child has closed, the propose line "all sub-items done — close it?" (PROPOSE — never auto-close). Child activity already bubbles into the parent's movement (never render a parent "stuck" while its steps are moving). Orphan children (parent closed — cascade crash window) surface as ordinary top-level rows with "was part of: [parent title]". `data.next_subitem_due` is an annotation/ranking signal ONLY — never the parent's due; a deferred parent stays deferred.
 - **Confidence floor — enforced IN CODE, not here (BUG-8330 item 6).** `surface_drivers.build_waiting_on_view` applies `cru_match.passes_surface_floor` (floor = `confidence.surface_min(workspace_root)` — 0.7 shipped, moved by the workspace's calibration override) to the ROW set before partition. Missing confidence is UNSCORED and passes — never apply `_commitment_confidence(ev) >= floor` by hand; that helper's missing→0.0 default silently drops every unscored capture. The header stays full-set; the driver appends "(N low-confidence not shown)" and records `n_filtered_by_confidence` on the fire receipt.
@@ -508,9 +412,9 @@ Read events.jsonl. Apply base filter to every commitment event (every field read
 
 **Principle: unconfirmed items don't age into the pool — they escalate to confirmation** (F-13 P2b / F-56: owner misattributions persisted for days because nothing ever asked). The chat OPENS with this section — it renders ABOVE meeting_today and both directions, titled **"Needs a quick confirm"**. Skip the section entirely when every selector below returns empty (never pad).
 
-Build the row set in code — never hand-derive:
+Build the row set in code — never hand-derive. The one-command driver (Phase 9, `commitments_helpers:run_waiting_on_surface`) builds this section where the data is, with exactly these selectors; the block below names them and is not run in this process:
 
-```python
+```text
 import sys; sys.path.insert(0, "shared/scripts")
 from confirm_flow import (select_confirm_items, select_promotion_proposals,
                           load_open_person_proposals)
@@ -540,11 +444,11 @@ Before the date buckets, build the meeting-relevance set. F-44's failure: sweep-
 2. Resolve each event to `{"meeting_id", "title", "attendee_person_ids", "attendee_names"}` — attendee emails → person_ids via `entities.json`/`aliases.json`; attendee_names include display names PLUS alias spellings from `aliases.json`.
 3. Match in code — never hand-derive:
 
-```python
-from commitment_state import match_commitments_to_meetings
-meeting_today = match_commitments_to_meetings(opens, todays_meetings,
-                                              user_person_id="<M's person_id>")
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"todays_meetings": [<one dict per meeting, shape above>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "commitments_helpers:meeting_today_rows"}'
 ```
+
+The verb is `commitment_state.match_commitments_to_meetings` over the projected open set (loaded with the workspace, F-28); its `rows` are the `meeting_today` matches.
 
 Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR name-mention (an attendee's name appears in the item's own text — catches counterparty-less legacy captures whose title names the person). **CTS1 scope:** render ONLY the rows whose surface is `waiting_on` (owner present, ≠ M) as the FIRST bucket of the chat, labeled with the meeting ("you see [name] at [time] — this is open between you"). The owner-me matches render as My Plate's meeting bucket (that orchestrator runs the same `match_commitments_to_meetings` call over ITS partition) — never here.
 
@@ -554,7 +458,15 @@ Rows match by counterparty (`counterparty_id` / `owner_id` is an attendee) OR na
 
 **Caps:** meeting_today takes priority INSIDE the existing 7-item total cap (cap 3 meeting_today rows per fire, soonest meeting first; the date buckets fill the remainder). No double-surfacing: an item already rendering in meeting_today is excluded from the date buckets below for this fire. Header counts are untouched — this bucket changes SURFACING only.
 
-Then split the surviving `waiting_on` rows into THREE date buckets (the owner-me directions are gone from this chat — CTS1; My Plate owns them):
+Then split the surviving `waiting_on` rows into THREE date buckets (the owner-me directions are gone from this chat — CTS1; My Plate owns them).
+
+**The chase set, in ONE call where the ledger is (REVIEW_ORCH2C HIGH-2).** Every filter, bucket, cap and tier in Phases 3, 3.6, 3.8, 4.5 and 5 is computed by one read — the base filter above, the requester rule, the reachability split, the three date buckets and their caps, the learned chase window, the severity tier with its repeat-chase bump, the counterparty roster, the review proposals and (Tuesday and Thursday only) the nudged tail. The sections below say what it applies; none of it is re-derived by hand:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"held_thread_ids": [<the thread ids the Phase 2.6 receipt held>], "meeting_today_ids": [<the commitment id of every MEETING TODAY row rendering here>], "now_iso": "<now ISO>", "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "commitments_helpers:chase_candidates"}'
+```
+
+The answer: `rows` — this fire's chase candidates in render order (`bucket` is `overdue`, `due_near` or `aging_undated`; `reachable` with `owner_email`, or `unreachable_reason`; `tier` and `tier_bumped` for Phase 5; `suggest_call`; `outstanding` and `all_received` for Phase 4.5), already capped; `review` — Phase 3.6's rows; `nudged_no_reply` — Phase 3.8's rows (empty unless `nudged_ran`); `counts` — how many each filter dropped (diagnostic only, never rendered). Pass `rows` through the surface-preference filter below, draft each survivor (Phase 7), and hand the drafted rows to the driver as `chase_rows`.
 
 ## WAITING ON (`partition["waiting_on"]` — owner present and ≠ M; plus `owner_id null` with non-empty `data.owner_external`)
 
@@ -565,7 +477,7 @@ Filter additionally: M is requester (`requester_id == M's person_id`) OR (`reque
 ### B-reachable: owner has entity record + email in entities.json
 Same date buckets (`overdue`, `due_near`, `aging_undated`). Renders with the standard WAITING ON action set: `["N send", "N draft", "N follow-up call", "N mark received", "N escalate to memo", "N snooze 3d"]`. Pre-staged chase email lives in the widget.
 
-**Learned chase cadence (Phase 6 Loop 6).** When surfacing an OWED-TO-YOU item for chase, honor the per-relationship-type chase window learned by insight-generator's Pass 7b instead of the flat 7-day default: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <owner's org relationship_type>)`. An `aging_undated` item from a relationship that "goes quiet 40% of the time" surfaces to chase at day 3 rather than 7; after `escalate` silent chases, the item's annotation suggests a call (`follow-up call`). Missing store → the default `(7, 3)`, so behavior is unchanged until the CEO approves a policy. This tunes WHEN a chase is offered; it never auto-sends.
+**Learned chase cadence (Phase 6 Loop 6) — applied by the chase-set verb (each row's `chase_days` and `suggest_call`).** When surfacing an OWED-TO-YOU item for chase, honor the per-relationship-type chase window learned by insight-generator's Pass 7b instead of the flat 7-day default: `from chase_policy import load_chase_policy, get_chase_window` → `chase_days, escalate = get_chase_window(policy, <owner's org relationship_type>)`. An `aging_undated` item from a relationship that "goes quiet 40% of the time" surfaces to chase at day 3 rather than 7; after `escalate` silent chases, the item's annotation suggests a call (`follow-up call`). Missing store → the default `(7, 3)`, so behavior is unchanged until the CEO approves a policy. This tunes WHEN a chase is offered; it never auto-sends.
 
 ### B-unreachable: `data.owner_id` is null AND `data.owner_external` is set (e.g., `"Bowie"`) — owner was named in extraction but has no entity record yet
 Same date buckets — **today-due items here STILL count as "needing action."** Renders with a different action set scoped to "you can't auto-chase yet — fix that first": `["N add as person <owner_external> to <inferred_org_or_blank>", "N add to my plate", "N skip"]` (v2.14.36+ — `add context [text]` dropped; the per-item "+ Add context" toggle handles context capture universally). Tag annotation: `(no email on file — adding <owner_external> as a contact enables auto-chase next time)`.
@@ -586,14 +498,11 @@ Per M's v2.14.18 testing: an owed-to-you commitment due today with no contact in
 
 **Surface-preference filter (Phase 6 Loop 2 — before rendering).** After the buckets are built and capped, drop any commitment the CEO has taught the system to stop chasing (insight-generator Pass 14 → `_hq/data/surface-preferences.json`):
 
-```python
-import sys; sys.path.insert(0, "shared/scripts")
-from surface_preferences import load_surface_preferences, is_suppressed
-prefs = load_surface_preferences("<abs workspace root>")   # treat-as-empty-if-missing
-surfaced = [c for c in surfaced
-            if not is_suppressed(prefs, "commitments", item_class="chase",
-                                entity_id=c.counterparty_person_id)]
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"items": [<one dict per surfaced chase row, carrying counterparty_person_id>], "workspace_root": "<WS>"}, "name": "commitments_helpers:filter_chase_rows"}'
 ```
+
+The answer's `surfaced` is the rows `surface_preferences.is_suppressed` did not drop (`load_surface_preferences` — treat-as-empty-if-missing).
 
 Missing store → no-op. This hides the chase PROMPT only; the commitment stays open in the substrate and still counts. The `is_suppressed` filter is the SAME one every widget orchestrator applies.
 
@@ -601,7 +510,7 @@ Missing store → no-op. This hides the chase PROMPT only; the commitment stays 
 
 The pending-band MEDIUM matches (the band is `commitment_policy.py`'s; from apply-choices sends, the 2.5/2.6/2.7 pre-render legs, past-meetings transcripts, AND reconcile-sent's newly-persisted pending band) must not evaporate — this chat is their one-click confirm/deny surface.
 
-1. Load via `cru_match.load_open_review_proposals(events_path)` (last-7-days window, already filtered for confirmed/dismissed/otherwise-closed).
+1. Read the chase-set answer's `review` — `cru_match.load_open_review_proposals` over the ledger where it is (last-7-days window, already filtered for confirmed/dismissed/otherwise-closed), oldest first, capped at 3.
 2. Render as a compact **"Did these get handled?"** section at the BOTTOM of the widget (after the 6 buckets, before any fr-items), sub-namespace `r1/r2/...` — same shape as Pulse's CRU-review items. Cap 3 per fire (oldest first; the rest ride future fires — the 7-day window self-prunes). Each row: the commitment title + the proposal's evidence in plain English ("looks like your Tuesday email to Sam covered this"). NO score display beyond "likely".
 3. Actions per row (REVIEW cluster — all canonical): `confirm` · `not relevant` · `add to my plate`.
 
@@ -620,7 +529,7 @@ The reliability spec's W5 waiting-on chase, riding this orchestrator's Tue/Thu f
 
 **Run only when the fire's machine-local weekday is Tuesday or Thursday.** On other days, skip this phase entirely — no section, no mention.
 
-**Qualification (substrate-only — no connector fetch in this phase):** a WAITING ON item from Phase 3's set qualifies when ALL hold:
+**Qualification (substrate-only — no connector fetch in this phase):** the chase-set answer's `nudged_no_reply` is this section, already qualified, capped and ordered (`reads_disagree` marks the MAILTRUST1 case below); on a Monday, Wednesday or Friday it is empty. A WAITING ON item from Phase 3's set qualifies when ALL hold:
 1. Effective `data.kind != "task"` (same Stage D filter as everything above) and the item is still open after the 2.5/2.6/2.7 pre-render scans. Still-open is the no-reply proxy: if the counterparty had replied or delivered, the inbound leg (Phase 2.6, cumulative across every prior weekday fire) or a `mark received` would have closed it or queued a review proposal.
 2. A prior outbound touch exists: an `outreach_sent` event whose `source_skill` normalizes to `commitments` (via `source_skill_compat.normalize_source_skill`) targeting this commitment_id — OR a `sent_reconcile`-attributed outbound naming its counterparty (Stage E `data.counterparty_id` / `counterparty_name` receipts identify the counterparty; skip items with no resolvable counterparty).
 3. That latest outbound touch is ≥ 3 weekdays old (machine-local, same clock as Phase 2.9).
@@ -640,7 +549,7 @@ If a single owner owes multiple things in the same bucket, merge into ONE chase 
 
 A single commitment can name N counterparties — "send the deck to the board" is owed to three people at once (`data.counterparty_ids` carries the roster; `data.counterparty_id` stays the primary). Do NOT chase or close it as one blob:
 
-1. **Outstanding set:** call `commitment_parties.outstanding_counterparties(commitment, workspace_root=WORKSPACE)` — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change. **`workspace_root` is not optional here (F-28):** without it, one person a writer recorded as BOTH a resolved `counterparty_id` and that same person's free-text `counterparty_name` fans out as TWO rows — and the name row can never be marked received, because a name-only leg gets no receipt by design. That is how an item ends up chased forever after it was already delivered. With the workspace, the roster reader resolves the name against `entities.json` + aliases and collapses the pair into one person.
+1. **Outstanding set:** each chase-set row's `outstanding` (and `all_received`, step 3) — `commitment_parties.outstanding_counterparties(commitment, workspace_root=WORKSPACE)` computed where the ledger is — the roster minus everyone already received (`data.received_from` / `data.received_from_names`, folded onto the projection by the loader). Render **one row per OUTSTANDING counterparty**, grouped per person exactly like Phase 4's per-recipient grouping (received counterparties simply don't appear — they've delivered). A single-counterparty commitment has exactly one entry, so this reduces to today's behavior with zero change. **`workspace_root` is not optional here (F-28):** without it, one person a writer recorded as BOTH a resolved `counterparty_id` and that same person's free-text `counterparty_name` fans out as TWO rows — and the name row can never be marked received, because a name-only leg gets no receipt by design. That is how an item ends up chased forever after it was already delivered. With the workspace, the roster reader resolves the name against `entities.json` + aliases and collapses the pair into one person.
 2. **Per-person verb:** each fan-out row carries `mark received from [name]` (verb_taxonomy `mark received from [name]` → `commitment_state.mark_partial_received`), with the counterparty id embedded on the row so apply-choices dispatches statelessly. An owed-to-M multi-counterparty item drafts one nudge per outstanding recipient (the owner-me fan-out — one status note per outstanding recipient — lives on My Plate now, CTS1). Never chase a counterparty already in `received_from`.
 3. **Closure PROPOSAL, never auto-close:** when the projection carries `data.all_counterparties_received: true` (every counterparty is in), render a single "everyone's received — close it?" row (the `mark done` / `resolved` verb) INSTEAD of the fan-out. **This step and step 1 must read the SAME workspace, or they cancel each other out (F-28 post-review F-2).** Steps 1 and 3 are mutually exclusive modes, and they consult different things: step 1 asks `outstanding_counterparties(...)`, step 3 reads a stamp the LOADER wrote. So the projection must come from `load_open_commitments(events_path, workspace_root=WORKSPACE)` — the same `WORKSPACE` step 1 passes. Load it raw and you get the worst of both: step 1 finds nothing outstanding (fixed) while step 3 finds no stamp (unfixed), so a delivered item renders **no row at all** and sits open silently. Noise is a bug; silence on an open item is a worse one. The item stays open until the user clicks; nothing here auto-closes. The CRU pre-render scans (2.5/2.6/2.7) already record per-person receipts rather than whole-closing a multi-counterparty item (`match_*` returns `recommendation: "partial_received"` with `matched_counterparty_ids` — dispatch each through `mark_partial_received`, never `close_commitment`).
 
@@ -652,7 +561,7 @@ A single commitment can name N counterparties — "send the deck to the board" i
 | 8-30 days | **firmer** | Timing-alignment, no blame. "Touching base on X timing. Looking to align on a revised ETA." |
 | 30+ days | **status check** | Formal request. "Status check on X — want to align on where this stands." |
 
-Pass tier to email-writer as voice directive. Repeat-chase escalation: scan events.jsonl for prior `outreach_sent` whose `source_skill` normalizes to `commitments` (via `source_skill_compat.normalize_source_skill` — matches the bare `commitments` form AND legacy `cr-commitments` / `cr-commitment-chase` history in workspaces that predate the v2.14.27 rename) targeting same commitment_id within last 14 days. If found → bump tier up one level. Prevents identical chase repetition when nothing's moving.
+Pass tier to email-writer as voice directive — each chase-set row's `tier`, with `tier_bumped` true when the repeat-chase escalation below already moved it. Repeat-chase escalation (computed by the chase-set verb, never by scanning events.jsonl here): a prior `outreach_sent` whose `source_skill` normalizes to `commitments` (via `source_skill_compat.normalize_source_skill` — matches the bare `commitments` form AND legacy `cr-commitments` / `cr-commitment-chase` history in workspaces that predate the v2.14.27 rename) targeting same commitment_id within last 14 days. If found → bump tier up one level. Prevents identical chase repetition when nothing's moving.
 
 (CTS1: the owner-me direction's fixed status-email voice tilt and the Phase 6 recipient classification moved to `orchestrator-my-plate.md` with the rows they governed.)
 
@@ -666,30 +575,19 @@ For each chase-eligible row (or grouped set): run `email-writer` with the Phase 
 
 Append to events.jsonl:
 - `connector_read` for events.jsonl scan
-- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1). NEVER hand-roll the receipt JSON** — this exact skill wrote two different receipt shapes in one day during the dogfood (`{task_id: 'cr-commitments', fired_at, outcome}` in the morning, `{kind, date, status, late_tier}` in the afternoon — FINDINGS F-47 P2a):
+- The fire receipt — **ONE call to the canonical receipt helper (`shared/scripts/receipts.py`, v4.5.2 R1). NEVER hand-roll the receipt JSON** — this exact skill wrote two different receipt shapes in one day during the dogfood (`{task_id: 'cr-commitments', fired_at, outcome}` in the morning, `{kind, date, status, late_tier}` in the afternoon — FINDINGS F-47 P2a). **On a fire that renders through the one-command driver (Phase 9), the driver's own call IS this receipt (FB-7) — compose none here.** The call below is for the fire that renders no driver page: the `degrade` tier, and a hand-shaped render:
 
-```python
-from receipts import log_receipt
-log_receipt(
-    WORKSPACE_ROOT, "waiting-on",  # CTS1 — receipts key on the TASK id; events keep source_skill='commitments'
-    fired_via=lateness["receipt_fired_via"],  # from Phase 2.9 — manual | scheduled | catchup; never guess it
-    surfaced=n_surfaced,
-    duration_ms=elapsed_ms,
-    late_tier=lateness["tier"] if lateness["tier"] in ("note", "degrade") else None,
-    extra_data={"items_drafted_text": {...}, "errors": [],
-                # SPEC RERUNFAN1 — on a `rerun` tier ONLY, and it is what lets
-                # the NEXT press render. A receipt carrying `rerun_of` is excluded
-                # from the served-slot marker (a re-run is a delivery a PERSON asked
-                # for, not the scheduled delivery of a slot); one written WITHOUT it
-                # reads as an ordinary scheduled delivery and re-arms the two-hour
-                # skip, so the next press is refused. Copy `lateness["rerun_of"]`
-                # verbatim; OMIT the key entirely on every other tier.
-                "rerun_of": <lateness["rerun_of"], or omit on any other tier>,
-                "telemetry": {...}},
-)
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"duration_ms": <elapsed_ms>, "extra_data": {"errors": [], "items_drafted_text": {...}, "telemetry": {...}}, "fired_via": "<receipt_fired_via from Phase 2.9>", "late_tier": "<note|degrade, else null>", "rerun_of": "<rerun_of on a rerun tier; OMIT the key on every other tier>", "surfaced": <n_surfaced>, "workspace_root": "<WS>"}, "name": "commitments_helpers:plan_commitments_receipt"}'
 ```
 
-**Telemetry capture (v2.14.0+ Phase 1):** Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` (same pattern as orchestrator-inbox.md Phase 7). Track connector calls + prompt/response sizes + duration. Pass it through `extra_data` as `telemetry: {...}`. Silent — never narrated to chat.
+The verb composes the ONE `log_receipt(WORKSPACE_ROOT, "waiting-on", fired_via=…, surfaced=…, extra_data={"errors": [], "rerun_of": <lateness["rerun_of"], or omit on any other tier>})` row this file has always written — `receipts`' own normalisers, canonical vocabularies, machine and model fields and lateness field — and does not write it. `rerun_of` rides `extra_data` under the field name `late_fire` itself uses (SPEC RERUNFAN1) — on a `rerun` tier ONLY. Append the answer's `row` last, in ONE call, and never a second one:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<the row from the answer above>]}'
+```
+
+**Telemetry capture (v2.14.0+ Phase 1):** Build the telemetry block via `shared/scripts/telemetry.py` `build_pack_run_telemetry()` — where the data is, through `inbox_helpers:pack_run_telemetry`, which answers with the block itself (same pattern as orchestrator-inbox.md Phase 7). Track connector calls + prompt/response sizes + duration. Pass it through `extra_data` as `telemetry: {...}`. The value is the INNER block — `build_pack_run_telemetry(...)["telemetry"]` — never the wrapper the builder returns for merging: a receipt carrying `data.telemetry.telemetry` reads as a fire with no measurement at all. Silent — never narrated to chat.
 
 NO `draft_created` events at fire time (lazy creation). Append to staging_emissions.jsonl per item drafted.
 
@@ -699,22 +597,21 @@ NO `draft_created` events at fire time (lazy creation). Append to staging_emissi
 
 **Mandatory execution contract (v2.10.8+):**
 
-You MUST execute the renderer via `mcp__workspace__bash`. You MUST NOT hand-write or paraphrase the chat string.
+You MUST execute the renderer through the access layer's verbs (Phase 0 — `shared/WORKSPACE_ACCESS.md`); the render runs where the data is. You MUST NOT hand-write or paraphrase the chat string.
 
 **Step 1 — verify renderer imports (FIRST action of Phase 9):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
-python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from chat_output_renderer import render_chat_output_widget, validate_chat_output, validate_rendered_widget, CANONICAL_ACTIONS, CanonicalActionError, LeakDetectedError, WrapperContractError; print('OK')"
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "commitments_helpers:renderer_preflight"}'
 ```
 
-If stdout is not exactly `OK`, ABORT the fire and surface plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <error>.)` Do NOT post any chat string.
+If the answer's `ok` is not `true`, ABORT the fire and surface plain English: `(Renderer pre-flight failed — chat output deferred. Diagnostic: <the missing names>.)` Do NOT post any chat string. The verb imports `chat_output_renderer`'s `render_chat_output_widget`, `validate_chat_output`, `validate_rendered_widget`, `CANONICAL_ACTIONS`, `CanonicalActionError`, `LeakDetectedError` and `WrapperContractError` where the data is.
 
 ---
 
 ## ⛔ ZERO-MANIPULATION CONTRACT (v2.14.34+, transport-updated EW2+T) — READ THIS BEFORE STEP 2
 
-**The render is sealed. Post via `widget_transport.render_and_persist` (all validators fire inside) and pass `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code` — never hand-composed or post-processed HTML, and never a post-processed version of `transport["html"]` or the persisted file. Any post-processing is FORBIDDEN.** (`shared/CHAT_ACTION_WIDGET.md` § Transport — EW2+T, F-15.)
+**The render is sealed. Post via the render verb — the one-command driver (`commitments_helpers:run_waiting_on_surface`, which IS `widget_transport.render_and_persist` inside `surface_drivers.run_surface`) or `commitments_helpers:render_waiting_on_page` (the same renderer and validators, all of them) — and pass the answer's `html` (the validated bytes the audit page carries, verbatim) to `mcp__visualize__show_widget` as `widget_code` — never hand-composed or post-processed HTML, and never a post-processed version of that `html` or the persisted file. Any post-processing is FORBIDDEN.** (`shared/CHAT_ACTION_WIDGET.md` § Transport — EW2+T, F-15.)
 
 Specifically forbidden — zero tolerance:
 
@@ -723,10 +620,10 @@ Specifically forbidden — zero tolerance:
 3. **No "cleaning up duplicates."** What looks like a duplicate `cr-action-input` is the wrapper for a different action on the same item. Each `data-input-for-action` value is unique per (n, action). Don't collapse them.
 4. **No filtering items the renderer included.** If the data_view passed all validators, every item the renderer emitted belongs in the widget.
 5. **No re-emitting the HTML in a different shape.** If the canonical output is judged suboptimal, the fix is in `chat_output_renderer.py`, not in agent post-processing.
-6. **(v2.14.37+, EW2+T) No skipping `show_widget` after a clean transport call.** If `widget_transport.render_and_persist()` returns without raising, you MUST call `mcp__visualize__show_widget` with `transport["html"]`. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation, and the widget_code transport removes the size wall those improvisations pointed at. The clean transport call IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute.
-7. **(v2.14.37+) No markdown lists as a substitute for widget rendering.** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is `render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`). Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
+6. **(v2.14.37+, EW2+T) No skipping `show_widget` after a clean transport call.** If the render verb (`widget_transport.render_and_persist()` behind it) answers `ok:true`, you MUST call `mcp__visualize__show_widget` with its `html` — unless `mcp__visualize__show_widget` is absent from this session's tool list, which is the ONE sanctioned text form below. Narrating that the widget "couldn't transmit," "hit a session payload limit," "exceeded the live widget surface," "was too large," "render validated but..." or any other reason is FORBIDDEN — none of those phrases exist anywhere in this codebase, they are pure agent improvisation, and the widget_code transport removes the size wall those improvisations pointed at. The clean transport call IS the contract — the widget ships. If `show_widget` itself errors, surface the error string verbatim and STOP. Do not paraphrase, do not "summarize what the widget would have shown," do not chat-list the items as a substitute.
+7. **(v2.14.37+) No markdown lists as a substitute for widget rendering.** If a user follow-up asks you to "surface past commitments" / "show what's open" / "list the X" — any kind of "render these items in chat" ask — the path is the render verb (`render_and_persist`'s renderer) → `show_widget` (its `html` as `widget_code`). Emitting a markdown bullet list of items in chat is FORBIDDEN, even when the prior widget was empty-state, even when the user explicitly asked for "a list," even when you think markdown is "lighter weight." Re-fire through the canonical path with the appropriate `data_view` (e.g., adjust filter threshold to surface previously-noise-filtered items as `tracked_items`).
 
-**Pre-ship validation is built in (EW2+T):** `render_and_persist` runs the full validator chain — the renderer's canonical-action / data-shape / leak checks AND `validate_rendered_widget` (every input-needing button has its matching wrapper; raises `WrapperContractError`). If it raises, fix the data view and re-render via the canonical path — never hand-patch HTML, never post until the transport call passes clean.
+**Pre-ship validation is built in (EW2+T):** the render verb runs `render_and_persist`'s full validator chain — the renderer's canonical-action / data-shape / leak checks AND `validate_rendered_widget` (every input-needing button has its matching wrapper; raises `WrapperContractError`). If it raises, fix the data view and re-render via the canonical path — never hand-patch HTML, never post until the transport call passes clean.
 
 **Why this contract exists:** 2026-05-07 cr-commitments fire visibly broken — Edit-then-send and Add-context buttons selected gold but no textareas opened. Two days of misdiagnosis chasing CSS / scroll / focus issues (v2.14.30 shipped defensive visibility hardening based on flawed premise). Cowork's structural diagnostic finally caught it: the agent post-minified the renderer's output and dropped 4/11 items' input wrappers. Renderer was correct; the bypass dropped wrappers silently. Same anti-pattern as v2.14.18 (empty-state hand-built widget). `validate_rendered_widget` is the structural defense — it makes this class of bug impossible to ship without raising loudly.
 
@@ -761,57 +658,74 @@ data_view = {
     ],
     "footer": None,  # NEVER add bottom buttons. The agent's instinct to add Show all open / Add email for X / Prep deep work: Y is what produced the v2.14.18 hand-built widget. Empty-state has no buttons.
 }
-from widget_transport import render_and_persist
-transport = render_and_persist(data_view=data_view, wrapper="fragment",
-                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
-                               name_hint="waiting-on")
-# Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — same pipeline
-# as the standard widget (EW2+T, § Transport).
 ```
+
+Render it where the data is, land the audit page, append the render's rows, then post — one call each, the same four steps as Step 2 below:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"data_view": <the data view above>, "workspace_root": "<WS>"}, "name": "commitments_helpers:render_waiting_on_page"}'
+```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the html from the answer above, verbatim>", "expected_mtime": null, "rel": "<the page_rel from the answer above>"}'
+```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<every row in pending_rows from the render answer above, in order>]}'
+```
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+
+Then pass the answer's `html` to `mcp__visualize__show_widget` as `widget_code`, verbatim, and write the Phase 8 receipt (this path has no driver receipt).
 
 **Why this rule exists:** in v2.14.18 the agent fired this orchestrator with 0 items qualifying after the bucket filter, judged the canonical empty-state as worse UX than a richer custom card, and bypassed the renderer entirely. Result: a hand-typed widget with hardcoded "Needing action: 0" counter, four model-improvised bottom buttons (`Show all open`, `Add email for Sloan`, `Add Bowie as contact`, `Prep deep work: EB-5`), and zero validators run. Three contracts broken at once (Rule 1 widget format, Rule 5 canonical actions, Rule 19 data shape) — the enforcement chain is structurally unable to catch a renderer bypass because the validators run AT render time. The fix is to make the canonical empty-state look good enough that the agent has no incentive to improvise. NEVER hand-build the empty-state widget, even if you think the canonical version is mid-tier UX. If the canonical UX feels wrong, file a follow-up to improve `_render_all_clear_summary` in `chat_output_renderer.py` — do not improvise around it.
 
-**One-command driver (FB-15) — the deterministic core in ONE call.** The
-partition, the header counts, the Delegated section, and the Needs-a-quick-confirm
-tail are all deterministic, so a single driver invocation builds them,
-renders + persists the page, and — with `--fired-via` — writes the surface's
-`waiting-on` `pack_run` receipt INSIDE the same call (FB-7; render and receipt
-can never be split). You supply only the connector-dependent part: the
-pre-staged **chase drafts** (email-shaped rows, composed via email-writer's
-lazy-draft path — Phase 7), passed as `--chase-json`, exactly as staff-meeting
-passes `--moves-json`.
+**One-command driver (FB-15) — the deterministic core in ONE call, through the
+write door.** The partition, the header counts, the Delegated section, and the
+Needs-a-quick-confirm tail are all deterministic, so a single driver invocation
+(`surface_drivers.run_surface("waiting-on", …)`, the function
+`surface_drivers.py waiting-on --workspace … --chase-json … --fired-via …` has
+always called) builds them, mints the rows' display numbers, freezes the
+page-set, renders + persists the page, and — with `fired_via` — writes the
+surface's `waiting-on` `pack_run` receipt INSIDE the same call (FB-7; render and
+receipt can never be split). It is a WRITER, so it runs through `run_writer`,
+which names who is writing before it runs. You supply only the
+connector-dependent part: the pre-staged **chase drafts** (email-shaped rows,
+composed via email-writer's lazy-draft path — Phase 7), passed as `chase_rows`,
+exactly as staff-meeting passes its moves.
 
 ```bash
-python3 shared/scripts/surface_drivers.py waiting-on \
-    --workspace "$WORKSPACE" [--page N] [--chase-json <chase-rows.json>] \
-    [--rerun-of "<lateness['rerun_of'] on a `rerun` tier; OMIT THE FLAG on every other tier>"] \
-    --fired-via "<the Phase 2.9 receipt_fired_via>"
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"chase_rows": [<the pre-staged chase rows, Phase 7>], "fired_via": "<the Phase 2.9 receipt_fired_via>", "page": <N, 1 on the fire>, "rerun_of": "<lateness rerun_of on a `rerun` tier; OMIT the key on every other tier>", "workspace_root": "<WS>"}, "name": "commitments_helpers:run_waiting_on_surface"}'
 ```
 
-**`--rerun-of` is SPEC RERUNFAN1, and it is the other half of the re-run contract above.** On a normal fire this surface's `pack_run` receipt is written INSIDE this call (`--fired-via`, FB-7), so on that path the flag — not any receipt call written out in this file — is how `rerun_of` reaches the ledger. Pass `lateness["rerun_of"]` verbatim on a `rerun` tier and OMIT THE FLAG entirely on every other tier; the driver merges it into the receipt's `extra_data` on the page-1 write and ignores it on pages 2+. A re-run receipt written without it reads as an ordinary scheduled delivery and re-arms the two-hour skip, so the next press is refused.
+**`rerun_of` is SPEC RERUNFAN1, and it is the other half of the re-run contract above.** On a normal fire this surface's `pack_run` receipt is written INSIDE this call (`fired_via`, FB-7), so on that path the argument — not any receipt call written out in this file — is how `rerun_of` reaches the ledger. Pass `lateness["rerun_of"]` verbatim on a `rerun` tier and OMIT THE KEY entirely on every other tier; the driver merges it into the receipt's `extra_data` on the page-1 write and ignores it on pages 2+. A re-run receipt written without it reads as an ordinary scheduled delivery and re-arms the two-hour skip, so the next press is refused.
 
-**`--fired-via` is MANDATORY on the page-1 call — it is the receipt (FB-7).**
-Relay the bytes between `CR-WIDGET-HTML-BEGIN`/`END` to `show_widget` as
-`widget_code`, verbatim; the `CR-RECEIPT: {...}` line after the END marker is
-the confirmation — do NOT append a second receipt, NEVER hand-roll receipt JSON.
+**`fired_via` is MANDATORY on the page-1 call — it is the receipt (FB-7).**
+Relay the answer's `html` to `show_widget` as `widget_code`, verbatim; the
+answer's `receipt` (`written`, or `deduped_refire` / `deduped_rerender` when the
+same fire already receipted) is the confirmation — do NOT append a second
+receipt, NEVER hand-roll receipt JSON. `page_rel` names the audit page the call
+landed, workspace-relative. A `{refused: "mount_stale", lines}` answer means
+the folder has not finished syncing: post `lines` as the whole turn and stop —
+nothing was rendered and nothing was written. If the door answers
+`writer_identity_required`, its `line` is the whole turn.
 Pages 2+ (`show more`) never receipt, and a non-manual re-run inside the RV-3
 guard window never double-receipts. Pages 2+ also slice the page-set page 1
 froze rather than re-reading the substrate (PAGESNAP; see
 `shared/CHAT_ACTION_WIDGET.md` § "A page-set is ONE question asked ONCE") — if
 `CR-PAGINATION` carries `refreshed`, `suppressed`, or `clamped`, SAY it in one
-line before the rows. The manual `python3 -c` assembly below
+line before the rows. The manual assembly below
 remains valid for callers that need to hand-shape sections the driver does not
 build (e.g. the meeting-relevance bucket or the Tue/Thu nudged-no-reply tail);
-those still go through the same `render_and_persist` chokepoint.
+those go through `commitments_helpers:render_waiting_on_page` — the same
+renderer and validators as the `render_and_persist` chokepoint, run where the
+data is.
 
 **Step 2 — build data_view, render widget HTML, post via show_widget (v2.10.9+):**
 
 ```python
-# (Inside python3 -c body invoked after the Rule 22 preamble + cd "$PLUGIN_ROOT")
-import sys
-sys.path.insert(0, "shared/scripts")
-from widget_transport import render_and_persist
-
+# The data view you shape - a data shape, not a program: it is handed to the
+# render verb below as `data_view`.
 # Build sections — CTS1: this chat renders the Waiting On partition only
 # (confirm tail first, then meeting_today, then the date buckets, then the
 # Tue/Thu NUDGED — NO REPLY tail). Empty sections omitted.
@@ -843,14 +757,33 @@ data_view = {
     "quick_read": quick_read,           # 1-3 sentences when N>2 and clustering signal exists
 }
 
-transport = render_and_persist(data_view=data_view, wrapper="fragment",
-                               persist_dir="<WORKSPACE>/_hq/.system/widgets",
-                               name_hint="waiting-on")
-# EW2+T (F-15): the transport runs the full validator chain (canonical
-# actions, data shape, leak scan, wrapper contract) and persists the sealed
-# render. Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) — never
-# a hand-composed variant, never a post-processed one.
 ```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"data_view": <the data view built above>, "workspace_root": "<WS>"}, "name": "commitments_helpers:render_waiting_on_page"}'
+```
+
+The answer is `{html, page_rel, bytes_len, wrapper, surfaced, pending_rows}`: `html` is the sealed render — the same renderer and the same wrapper-contract validator `widget_transport.render_and_persist` runs (it runs the full chain: canonical actions, data shape, leak scan, wrapper contract), executed where the data is. Land the audit page — the only write door for it:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the html from the answer above, verbatim>", "expected_mtime": null, "rel": "<the page_rel from the answer above>"}'
+```
+
+**Then append the render's `pending_rows`, every element, in order** (any row the gates emitted while the page was built; skipped when empty):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "commitments", "rel": "_hq/data/events.jsonl", "rows": [<every row in pending_rows from the render answer above, in order>]}'
+```
+
+Then pass `html` to `mcp__visualize__show_widget` as `widget_code`, verbatim — never a hand-composed variant, never a post-processed one. This path writes no receipt of its own: the fire's receipt is Phase 8's `commitments_helpers:plan_commitments_receipt` on this path, or the driver's own on the driver's.
+
+**When `mcp__visualize__show_widget` is ABSENT from this session's tool list after the load in `shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first (a listed deferred tool counts as present: it is loaded, never read as absent)** (the "Require this computer" scheduled shape carries no widget tool — R-RW2-7 (a)), the list still lands, as text — the ONE sanctioned non-widget surface, in this order: (i) land the page exactly as above (the driver already did; a hand-shaped view goes through `plan write`); (ii) render the same view as text, one call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"data_view": <the hand-shaped view, or OMIT the key after the driver>, "workspace_root": "<WS>"}, "name": "commitments_helpers:render_waiting_on_text"}'
+```
+
+After the one-command driver, omit `data_view`: the verb reads the page-set the driver just froze, so the text carries the same rows with the same numbers. (iii) deliver its `text` through `SendUserMessage` when that tool is present, else as this chat turn — one heading per section, one line per row carrying the SAME row number the widget uses (so `3 send` means the same row in both surfaces), the draft's To and Subject under a drafted row as a PREVIEW only, and the saved-page sentence last; (iv) nothing renders after that sentence. The fire never queues, sends, archives, labels or marks read on this shape: a draft is queued only when the CEO replies `N draft` in this chat, through `apply-choices`' own `draft` action. No line may name a tool id, "OUTPUT CONTRACT", "session", "configuration" or the widget tool — the verb validates every line and drops one that fails.
 
 The widget posts via `mcp__visualize__show_widget` instead of being a chat string. User clicks per-item buttons to select actions; widget batches selections and fires one consolidated `apply choices: [...]` payload on Apply all. The `apply-choices` skill catches that payload and dispatches each `{n, action}` through the reply handlers below. See `shared/CHAT_ACTION_WIDGET.md` for full widget behavior, `skills/apply-choices/SKILL.md` for the receiving end.
 
@@ -864,11 +797,11 @@ DEFAULTS = {
 }
 ```
 
-`group_by` drives the Phase 4 grouping; `chase_tone` is read by orchestrator-my-plate.md for its
+(Setup's answer carries `config` and `configured`; nothing here reads the store in this process.) `group_by` drives the Phase 4 grouping; `chase_tone` is read by orchestrator-my-plate.md for its
 status drafts (CTS1: the config store stays under the `"commitments"` key — ONE knob set for the
 commitment family, both surfaces read it; a re-keyed store would orphan every already-configured
 workspace). On the FIRST fire only (`not is_configured(WORKSPACE, "commitments")`):
-`save_skill_config(WORKSPACE, "commitments", DEFAULTS)` BEFORE rendering, then append a
+`save_skill_config(WORKSPACE, "commitments", DEFAULTS)` BEFORE rendering — a writer, so through the door: `python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"config": {"chase_tone": "friendly", "group_by": "person"}, "skill_name": "commitments", "workspace_root": "<WS>"}, "name": "skill_config_writer:save_skill_config"}'` — then append a
 **"Make this yours"** section at the BOTTOM of `sections` carrying two fr-items — `fr1` group-by
 (person/project) and `fr2` chase-tone (friendly/direct) — each rendered as the documented
 current-state fixed-option row (the fr-item preselect exception in `shared/CHAT_ACTION_WIDGET.md`).
@@ -997,7 +930,7 @@ Sub-items render as:
 - Source thread → `original_thread` field (v2.14.36+ MANDATORY when `source_ref` exists). Mirror the inbox-triage pattern. Drop the legacy inline `("Originally", ...)` metadata key — the renderer no longer paints it.
 - Grouping applies only when one owner owes multiple things (Phase 4) — never invent groups across owners
 
-**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the transport (`render_and_persist`); relay its page bytes (`transport["html"]`) as `widget_code` — the persisted render is sealed.
+**No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format. Execute the render verb (the driver, or `render_waiting_on_page` — both `render_and_persist`'s renderer); relay its `html` as `widget_code` — the render is sealed.
 
 **Required visual structure for every email-shaped item (v2.14.36+ HARD CONTRACT — original_thread accordion replaces the legacy `Originally:` line):**
 
@@ -1203,3 +1136,18 @@ The prompt is generated using (internal mechanics — not surfaced in chat):
 - Project context from entities.json (name, deliverables folder path)
 - Last 7 days of events.jsonl entries with `primary_thread_id == this project`
 - Inferred skill based on deliverable type heuristic
+## Draft date scan (DRAFTDATE1 — MANDATORY on every rendered draft)
+
+**A draft never states a date, day or deadline the row does not hold.** On 2026-09-07 the drafts on this product invented three: "I'll have it finished by Friday" and "this is on your calendar today" on rows with no due date and no calendar event, and "let's get this paid this week" on a row with neither. Nobody had promised any of those days; sending one makes a commitment the book does not know about.
+
+Before you show or save ANY draft you composed — status note, nudge, chase, follow-up, reply, invite body — run it through the scan:
+
+```python
+from draft_date_scan import assert_draft_dates
+assert_draft_dates(<the draft text>, <the row>, today=<the workspace's own day>)
+```
+
+It raises `DraftDateError` naming every phrase the row cannot support. A date phrase is allowed only when it traces to (1) the row's due date, (2) a calendar event on the row, or (3) a date in the row's OWN words — its title, its quote, the thread subject. `today` is the workspace's day (`tz.py`), never a UTC re-slice.
+
+**NEVER catch the error and send anyway, and never invent a date so the sentence reads better.** The fix is one of two things: drop the day from the draft ("I'll come back to you with a date" is honest and costs nothing), or set a real date on the row first and then say it. A draft with no date at all is always allowed.
+

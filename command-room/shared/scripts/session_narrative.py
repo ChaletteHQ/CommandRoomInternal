@@ -480,9 +480,11 @@ def promote_swept(notes_path) -> Dict[str, Any]:
 
     try:
         from atomic_write import atomic_write_text
+        from delete_grant import SUFFIX_ARCHIVED, remove_or_move_aside
     except ImportError:
         sys.path.insert(0, str(_HERE))
         from atomic_write import atomic_write_text
+        from delete_grant import SUFFIX_ARCHIVED, remove_or_move_aside
 
     notes_text = notes_path.read_text(encoding="utf-8")
     sidecar_text = sidecar.read_text(encoding="utf-8")
@@ -515,9 +517,29 @@ def promote_swept(notes_path) -> Dict[str, Any]:
         combined = "\n".join(pending)
         atomic_write_text(notes_path, _insert_entry(notes_text, combined),
                           create_parents=False)
-    sidecar.unlink()
+    # DEL1: the notes are written by here, so a refused delete may not raise —
+    # it would leave the promote looking like it failed when it succeeded, and
+    # the next run would see the same sidecar and promote nothing (every block
+    # is already verbatim in the notes). On a mount that refuses deletes the
+    # sidecar is RENAMED aside (`.archived.<epoch>`, beside the notes file
+    # where `.swept.rejected.md` already lives): its content reached the notes
+    # file first, `pending_swept`'s `SESSION_NOTES*.swept.md` glob no longer
+    # sees it, and the disclosure line stops claiming a pending sidecar that
+    # was in fact promoted.
+    moved = remove_or_move_aside(sidecar, "swept sidecar promotion",
+                                 suffix=SUFFIX_ARCHIVED)
     reason = "unparseable_sidecar" if (rejected_path and not pending) else None
+    # DEL1 fix round 1 (M-3): when the mount refuses the rename as well, the
+    # sidecar is STILL THERE and `pending_swept` will go on counting it — so
+    # the result says so rather than reporting a clean promotion. The blocks
+    # did reach the notes file, so `promoted` stays truthful; a second run
+    # promotes nothing (every block is already verbatim in the notes) and the
+    # weekly disclosure keeps naming the project, which is the honest state.
+    sidecar_left = bool(moved.get("left_in_place"))
+    if sidecar_left and reason is None:
+        reason = "sidecar_left_in_place"
     return {"promoted": len(pending), "reason": reason,
+            "sidecar_left_in_place": sidecar_left,
             "notes_path": str(notes_path), "rejected_path": rejected_path}
 
 

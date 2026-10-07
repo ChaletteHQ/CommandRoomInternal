@@ -19,6 +19,7 @@ active file — they don't use this module. Full-history readers do.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterator, Optional
@@ -140,8 +141,38 @@ def _record_stale_read(root: str | Path, reader: str) -> None:
     proceeds (D-2 warn tier: a degraded view beats no view for read-only
     surfaces). Best-effort — NEVER raises, never blocks a read. Freshness applies
     to the active file only (shards are frozen years; seqhw tracks the active
-    file)."""
+    file).
+
+    NOT UNDER THE HELPER DOOR (MF-M2-13, 2026-09-20). `workspace_access
+    run_helper` promises in its own docstring that "this verb writes nothing at
+    all" and its allow-list is read/compute only — but `count_rows` and
+    `load_all` reach here two frames down, and this best-effort sidecar made
+    the read door a writer on a merged seat, where the write would land on the
+    customer's own machine with none of the fences the two write verbs carry.
+    The layer stamps `CR_HELPER_DOOR` on every helper child process, and that
+    is the one condition under which the record is skipped. Every other
+    reader — a legacy seat's in-shell python, an in-process import, any
+    surface calling this module directly — records exactly as before, byte for
+    byte; `tests/run_orch1_test.py` pins both halves.
+
+    THE DOOR TEST IS INSIDE THE `try` (MF-M2-25). Round one put it above,
+    which quietly dropped the "NEVER raises" promise two lines up: a bad
+    `root` returned at base and raised `TypeError` under the door, and a
+    raise here becomes a refused helper call instead of a degraded read —
+    the one thing a best-effort diagnostic must never do."""
     try:
+        if os.environ.get("CR_HELPER_DOOR"):
+            from atomic_write import events_freshness
+            from read_alarm import hold_sidecar
+            fresh = events_freshness(active_path(root))
+            if fresh.get("regressed"):
+                hold_sidecar({"kind": "stale_read",
+                              "file": active_path(root).name,
+                              "file_max_seq": fresh.get("file_max_seq"),
+                              "seqhw_max": fresh.get("seqhw_max"),
+                              "last_reader": str(reader)[:80],
+                              "written": False})
+            return
         from atomic_write import events_freshness
         ap = active_path(root)
         fr = events_freshness(ap)
@@ -190,6 +221,20 @@ def iter_events(root: str | Path, since_ts=None) -> Iterator[dict]:
 def load_all(root: str | Path, since_ts=None) -> list[dict]:
     """Materialized `iter_events` — convenience for callers that want a list."""
     return list(iter_events(root, since_ts=since_ts))
+
+
+def count_rows(root: str | Path, since_ts=None) -> int:
+    """How many events this workspace's ledger holds. BOOT3 (2026-09-19).
+
+    The cheapest read that proves a whole path works. A scheduled chat in the
+    merged environment has to reach across two machines before it can do
+    anything, and this is the one call its bootloader makes to check that the
+    helpers, the workspace and the mount are all reachable together — so it
+    counts rather than loads, and it goes through `iter_events` so the shard
+    rules and the stale-read record are exactly the ones every other reader
+    gets.
+    """
+    return sum(1 for _ in iter_events(root, since_ts=since_ts))
 
 
 # ---- owner-tier seam (READER1 fix round 2026-08-28) ----
@@ -475,6 +520,7 @@ def shard_invariants(root: str | Path) -> list[str]:
 
 
 __all__ = ["shard_paths", "active_path", "iter_events", "load_all",
+           "count_rows",
            "load_events_owner_scoped",
            "load_events_org_scoped", "iter_events_org_scoped",
            "shard_invariants"]

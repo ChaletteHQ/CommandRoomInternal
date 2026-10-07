@@ -57,6 +57,12 @@ Every user turn goes through these layers, in order:
 ### Layer 1 — Exact trigger match
 If the user said one of the clean triggers ("triage my inbox", "follow up on that call", "brief me"), the corresponding skill fires directly. No fuzzy routing needed.
 
+**Phrases that route BEFORE name detection** (HYGIENE3, 2026-09-23). These never pass through Layer 3: a word in them that happens to match a project or person name does not turn them into a context load. The 2026-09-23 walk's `show my scheduled chats` loaded no Command Room skill at all and the app answered from its own scheduler.
+
+| If the sentence contains... | Route to... |
+|---|---|
+| "show my scheduled chats", "list my schedules", "when do my chats run/fire" | `change-schedule` (read-only) — the CHATS' schedule, never the calendar. "show my schedule" is CEDED to the calendar (ruling R-RW-1, 2026-09-22): no skill routes it |
+
 ### Layer 2 — Semantic intent match
 Re-baselined against the live frontmatter 2026-07-02 (P2 routing lattice) — when a fence changes in a skill's description, update the matching row here IN THE SAME COMMIT; this file arbitrates ties and must never contradict the frontmatter it arbitrates.
 

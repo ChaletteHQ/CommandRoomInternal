@@ -1,8 +1,11 @@
 ---
 name: workspace-manager
 surfaces: both
-description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', and how-Claude-talks style feedback: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style', or an in-passing correction. Also: 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', accounts & connectors ('what accounts do I have'), vocative address by the AI name. Default handler when nothing else fits: loose input naming a tracked entity, and the day's intent ('tomorrow is about [X]', 'today is about [X]', 'what's tomorrow about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active) or email drafting (email-writer). Full triggers/fences: in body."
+description: "Catch-all. Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', style: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about', 'next week is about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active)."
 ---
+
+**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="workspace-manager")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost.
+
 
 # Workspace Manager — Command Room
 
@@ -14,7 +17,7 @@ description: "Workspace orchestrator, navigator, catch-all partner. Fires on: 'l
 
 Before responding to any session-start trigger (`let's work`, `lets work`, `what's going on`, `workspace status`, `I'm here`, `catch me up`), silently run the version-mismatch check:
 
-1. Resolve the plugin root via the canonical discovery preamble (`SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"` per CONTRACT.md Rule 22), then read the plugin's current version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field.
+1. Resolve the plugin root via the canonical discovery preamble (the Access preamble (CONTRACT Rule 22 v6 — `shared/WORKSPACE_ACCESS.md`) per CONTRACT.md Rule 22), then read the plugin's current version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field.
 2. Read the most recent `plugin_update` event from `_hq/data/events.jsonl` → `to_version` field.
 3. If no `plugin_update` event exists, infer the installed version from the most recent `onboarding_checkpoint` event with `status: "complete"` (its `last_writer` carries plugin version context).
 4. **Compare.** If current plugin version > last installed version, append ONE line at the END of the session-start response (after the briefing or status, not before — don't bury the lede):
@@ -59,7 +62,7 @@ Closes the Bug #82 new-project routing miss — the gate makes the trigger a one
 
 ### MUST-language enforcement gate — day-intent phrasings beat navigation (SPEC BK1)
 
-> **When the user's input is a DAY-INTENT phrasing — `tomorrow is about [X]`, `tomorrow: [X]`, `tomorrow I'm focused on [X]`, `make tomorrow about [X]`, `today is about [X]`, `today: [X]`, the corrections `actually tomorrow is about [Y]` / `change tomorrow to [Y]`, or the read-backs `what's tomorrow about` / `what is today about` — you MUST execute the "tomorrow is about [X]" day-intent handler (section below), and you MUST NOT fall through to the name-mention ladder's steps 3/4. This holds WHETHER OR NOT the input names a tracked entity: "tomorrow is about deep work" names nothing and is still a day-intent, and "tomorrow is about closing Acme Co" is a day-intent that HAPPENS to name an org — it is not a request to open the Acme Co thread. Resolving the name is step 1 OF the handler (it decides how the name is spelled back), never a reason to route somewhere else.**
+> **When the user's input is a DAY-INTENT phrasing — `tomorrow is about [X]`, `tomorrow: [X]`, `tomorrow I'm focused on [X]`, `make tomorrow about [X]`, `today is about [X]`, `today: [X]`, `next week is about [X]`, the corrections `actually tomorrow is about [Y]` / `change tomorrow to [Y]`, or the read-backs `what's tomorrow about` / `what is today about` — you MUST execute the "tomorrow is about [X]" day-intent handler (section below), and you MUST NOT fall through to the name-mention ladder's steps 3/4. This holds WHETHER OR NOT the input names a tracked entity: "tomorrow is about deep work" names nothing and is still a day-intent, and "tomorrow is about closing Acme Co" is a day-intent that HAPPENS to name an org — it is not a request to open the Acme Co thread. Resolving the name is step 1 OF the handler (it decides how the name is spelled back), never a reason to route somewhere else.**
 
 **Why this gate exists.** The catch-all's own description clause is conditioned on *loose input naming a tracked entity*, and a day-intent is not entity-bearing by construction. Without this gate the family splits two ways and both are wrong: the no-name phrasings route nowhere at all, and the name-bearing ones route into project navigation — the router loads the Acme Co thread and talks about it instead of writing what tomorrow is about. A stem that looks half-healthy in testing and is zero-percent healthy as an intent is the shape this closes.
 
@@ -148,6 +151,8 @@ missing-hyphen skill-ish form ("customize email writer") is a Layer 3 name-menti
 to the skill and confirm ("Did you mean email-writer?"). Never write a directive from here;
 workspace-manager routes, the adopting skill writes.
 
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. So compose everything you intend to post, hand it to `surface_composers.post` ONCE, and print what it returns as your entire reply: **every sentence this turn posts — the answer and anything after it — renders through `surface_composers.post`; nothing is composed after the composer runs; no file name, function, key or id is named in explanation.** A refused directive is the shape that leaked on 09-16: *"on Mondays lead with my calendar"* was correctly refused and the refusal was then explained with two setting keys and a parser status. Say what cannot be done and what can, in the words the customer used; name no key and no parser.
+
 ### "ask me more" / "ask me less" — how often Command Room asks you (SPEC QUIET1)
 
 The one knob for interaction posture (`commitment-policy.preset`: `engaged` / `light` / `quiet`). Every client workspace starts `light` (at most 5 questions a week across every asker; the plate shows 40 at a time); fourteen silent days step it down one level on their own and the next answer brings it back. These two phrases move the STORED posture one level and no further — they are the only way UP.
@@ -155,7 +160,55 @@ The one knob for interaction posture (`commitment-policy.preset`: `engaged` / `l
 **Trigger phrases:** `ask me more`, `ask me less`, `ask me fewer questions`, `ask more questions`, `ask fewer questions`.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 import quiet
@@ -175,7 +228,55 @@ The one switch for the transcript closing-on-evidence pass (`commitment-policy.a
 **Trigger phrases:** `turn on closing on evidence`, `turn off closing on evidence`, `start closing on evidence`, `stop closing on evidence`.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from commitment_policy_pass import set_transcript_closes
@@ -186,6 +287,153 @@ print(json.dumps(set_transcript_closes('<workspace_root>', True, origin='m_actio
 - Say `line` from the return VERBATIM and nothing else — one line, no question back. `ran: True` on the ON verb: *"Done — promises a meeting shows were kept will now close on their own, each carrying the words that closed it; say `undo` to reverse a fire, or `turn off closing on evidence` to stop."* On the OFF verb: *"Done — nothing closes on meeting evidence now; a promise a meeting shows was kept shows up under `needs your call` instead. Say `undo` to put this back."* The write is a batch (`qtc_…`, class `commitment_transcript_closes`) with a registered reverser, so the `undo` is real (bare `undo` lists it as "set whether promises close on meeting evidence" and puts the previous setting back exactly).
 - `ran: False` → already in that state; the line says so ("Closing on evidence is already on." / "…already off."). No `undo` offer, nothing written.
 - Never write the key by hand, never say the key name to the customer.
+
+### "stop answering old questions for me" / "start answering old questions for me" — whether an unanswered question settles itself (SPEC_FLOW1 Lane G / TTL1)
+
+The one switch for the question-expiry engine (`commitment-policy.questions.expire_to_default`, default ON everywhere). While on, a question nobody gets to settles to its class's sensible answer on a daily pass — a question from a call takes its likely answer, a housekeeping question goes away, a who-is-this question resolves to the likeliest person — all under one batch a single `undo` reverses, listed once in the Friday wrap. Nothing overdue, due this week, or carrying a client or money is ever closed or dropped by the timer: it stops being a question and stays on the plate. While off, an unanswered question waits indefinitely and the queue only grows. Read by ONE reader, failing to the DEFAULT (a malformed config value is not a customer asking to be asked forever); written by ONE writer.
+
+**Trigger phrases:** `turn on answering old questions for me`, `turn off answering old questions for me`, `start answering old questions for me`, `stop answering old questions for me`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_policy_pass import set_question_expiry
+print(json.dumps(set_question_expiry('<workspace_root>', False, origin='m_action', triggered_by='stop answering old questions for me')))   # the ON verb passes True
+"
+```
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back. The write is a batch (`qxs_…`, class `question_expiry_switch`) with a registered reverser, so the `undo` is real (a bare `undo` lists it as "set whether old questions answer themselves" and puts the previous setting back exactly).
+- `ran: False` → already in that state; the line says so ("Answering old questions is already on." / "…already off."). No `undo` offer, nothing written.
+- Never write the key by hand, never say the key name to the customer, and never quote a number of days — the lifetimes are per-class and per-workspace.
+
+### "turn off adding people automatically" / "turn off merging duplicate people" — the two identity switches (SPEC_FLOW1 Lane F, M ruling 2026-09-07)
+
+Two switches, both default ON, both failing to ON. They gate the identity acts the product makes on its own: putting someone on file from an invite or a mail thread, and folding a different spelling of someone already on file into their record. Both acts carry a receipt and an `undo`; the alternative to each is a question, which is why they ship on rather than off. A malformed settings file reads as ON — a typo is not a customer saying "stop".
+
+**Trigger phrases:** `turn on adding people automatically`, `turn off adding people automatically`, `start adding people automatically`, `stop adding people automatically`, `turn on merging duplicate people`, `turn off merging duplicate people`, `start merging duplicate people`, `stop merging duplicate people`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import commitment_policy as policy
+from commitment_policy_pass import set_flow_switch
+print(json.dumps(set_flow_switch('<workspace_root>', policy.IDENTITY_AUTO_CREATE_KEY, True, origin='m_action', triggered_by='turn on adding people automatically')))   # the OFF verb passes False; the merging verbs pass policy.IDENTITY_AUTO_MERGE_KEY
+"
+```
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back. The write is a batch (`fsw_…`, class `flow_switch`) with a registered reverser, so the `undo` is real (bare `undo` lists it as "changed one of the automatic-act settings" and puts the previous setting back exactly).
+- `ran: False` → already in that state; the line says so. No `undo` offer, nothing written.
+- Never write the key by hand, never say a key name to the customer — say what stops happening.
+### "stop holding new items until something confirms them" — the second-witness switch (SPEC_FLOW1 Lane A, M ruling 2026-09-07)
+
+One switch, default ON, failing to ON. It governs what happens to a capture the extractor was only GUESSING at: with it on, the item is kept out of sight until a second source says the same thing — a mail with that person naming it, a calendar event with them, or a second mention somewhere else — and it opens the moment one arrives. With it off, a guessed capture opens straight away, the way it did before. Either way nothing is dropped and nothing is asked at capture. A row carrying money, a date the CEO gave, or a client on the other side never waits for a second source in the first place, and this switch does not change that.
+
+**Trigger phrases:** `turn on holding new items until something confirms them`, `turn off holding new items until something confirms them`, `start holding new items until something confirms them`, `stop holding new items until something confirms them`.
+
+Same writer as the sibling switches — `commitment_policy_pass.set_flow_switch(<workspace_root>, commitment_policy.INTAKE_SECOND_WITNESS_KEY, True|False, origin='m_action', triggered_by='<the phrase>')` — one `fsw_…` batch, registered reverser, real `undo`.
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back.
+- `ran: False` → already in that state; the line says so. No `undo` offer, nothing written.
+- Never write the key by hand and never say a key name to the customer — say what stops happening.
+- Say "held" or "kept out of sight", never "observed tier", never "second witness", never "pending review".
 
 ### "tune output" — the cross-skill output profile (SPEC OUT2 §5)
 
@@ -222,6 +470,175 @@ never offer it proactively at first fire of anything. Sanctioned writers: here (
 insight-generator proposal the user confirms, and onboarding's STYLE1 style proposal (inference-
 derived knobs only, origin inferred_provisional, disclosed at the reveal). Never confuse it with a per-skill `tune <skill>`
 (those knobs stay with their skills).
+
+### "publish my scheduled pages" / "stop publishing my scheduled pages" — the fire-delivery setting (IDENT1 I-12 (8), ruling R-RW2-9)
+
+**Trigger phrases:** `publish my scheduled pages`, `stop publishing my scheduled pages`.
+
+A scheduled chat on the "Require this computer" shape has no live widget, so its surface lands as a text list plus the saved page. This setting lets that page ALSO open on a phone, as a published page — which takes the page out of the customer's folder into hosted storage, so it is OFF until the customer says these words, and a client seat never has it turned on for them.
+
+- **`publish my scheduled pages`** → `plan run_writer` `fire_delivery:set_artifact_publish` with `enabled: true`; then, HERE in this interactive chat, publish each registered chat's most recent saved page ONCE with the Artifact tool (a NEW page is only ever published from an interactive chat — a scheduled run may republish, never publish) and store each address with `plan run_writer` `fire_delivery:record_artifact_url` (`task_id`, `url`). Say the setter's `line` and nothing else.
+- **`stop publishing my scheduled pages`** → `fire_delivery:set_artifact_publish` with `enabled: false`; say its `line`.
+- A `fire_delivery_flag` row on the ledger (a fire that was allowed to republish and could not) is answered here, in the next interactive chat, by offering to publish that chat's page once — a fire never asks.
+
+### "export that doc" / "save that doc to my folder" — a Claude Doc made anyway lands in the folder (DOCS1 D-2, 2026-09-24)
+
+**Trigger phrases:** `export that doc`, `save that doc to my folder`.
+
+The document-routing rule (Session Rules, `claude_md_docs_rule_v1`) says a document is produced by the Command Room skill that owns it and lands in the folder. When the host's built-in docs skill won the routing question anyway — the customer is looking at a claude.ai page and nothing is in the folder — these words bring the page home. Nothing here creates a doc, and nothing here deletes one.
+
+1. **Find the doc and its kind.** The doc is the page the customer is pointing at (the link in this chat, or the doc the previous turn made). The kind is what the page is: a prep → `call_prep`; a processed call or meeting notes → `past_meeting`; a recap → `weekly_recap`; a memo → `memo`, a one-pager → `one_pager`, a decision memo → `decision_memo` (these three also need the project folder name — resolve it per Name resolution rules; when it cannot be resolved, ask which project, once); anything else → `notes`.
+2. **Read it back through the discovered seam.** `tool_discovery.discover_docs_tool(<the tool ids visible in THIS session>, "export")` — never a remembered tool id. `None` → say "There are no Claude Docs tools in this chat, so I can't read that page from here." and stop. Otherwise call the discovered tool for that doc's ONE tab with `format: "docx"` (a doc with several tabs: `read` the doc first and take the tab that holds the document).
+3. **Land it through the write door.** The payload — `{"doc_ref": "<the doc's link>", "kind": "<kind>", "title": "<the doc's title>", "content_base64": "<what the export returned>", "format": "docx", "project": "<the project folder name, for memo / one_pager / decision_memo only>", "workspace_root": "<WS>"}` — is written as JSON into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace) and named by `args_file`, because a document does not survive a pasted command line (the same carrier the prep's payload uses). Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args_file": "<your scratch>/cr_doc_export.json", "name": "deliverables:export_claude_doc"}'
+```
+
+4. **Receipt, then the sentence.** The answer carries `receipt_row` — append it through `plan append_jsonl` to `_hq/data/events.jsonl` (ONE `deliverable_landed` row; `null` means the same doc was exported inside the window and the file was refreshed in place — append nothing) — and `opener_line`, which you print verbatim and nothing else about where the file went. `ok: false` → say its `line` and stop.
+
+The doc on claude.ai stays where it is (the product never deletes what it did not make — R-DOCS1-2). A second `export that doc` for the same page refreshes the same file in place.
+
+### "turn off closing when I say it is done" / "turn off parking items nobody touches" — the two exit switches (SPEC_FLOW1 Lane B, EXIT1)
+
+Two switches, both default ON, both failing to ON. They gate the two ways an item leaves your list without you touching it: closing it when you say in a working session or on a call that you finished it, and resting an undated item nobody has touched in six weeks (letting it go at two months, one line in the Friday wrap). Both carry a receipt and an `undo`; the alternative to each is a question or a pile nobody clears, which is why they ship on rather than off. A malformed settings file reads as ON — a typo is not a customer saying "stop". Nothing overdue or due this week is ever rested, whatever the switch says.
+
+**Trigger phrases:** `turn on closing when I say it is done`, `turn off closing when I say it is done`, `start closing when I say it is done`, `stop closing when I say it is done`, `turn on parking items nobody touches`, `turn off parking items nobody touches`, `start parking items nobody touches`, `stop parking items nobody touches`.
+
+**⛔ THE TWO OFF VERBS ARE IN THE FRONTMATTER DESCRIPTION, AND THAT IS LOAD-BEARING (SPEC SURFACEFIX1 5.5, 2026-09-14).** The attended test's addendum recorded `turn off parking items nobody touches` — a phrase the release manifest ANNOUNCED — typed in chat and falling to a freelance handler that searched files and asked a question. The phrases lived here in the body and in the Routing corpus, and `tests/triggers.yaml` pinned a route to this skill. All of that was true and none of it reached the router, **which reads the frontmatter `description` and nothing else.** Both OFF verbs are now front-loaded in that description, inside the G11 budget. If you shorten the description, these two stay: an announced switch that does not route is worse than a switch that was never announced.
+
+**`set_flow_switch` is the ONLY handler.** There is no second path, no config edit, no "I'll note that". A switch phrase that reaches this skill runs the block below or it is not handled at all.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import commitment_policy as policy
+from commitment_policy_pass import set_flow_switch
+print(json.dumps(set_flow_switch('<workspace_root>', policy.EXIT_OWN_WORD_CLOSES_KEY, True, origin='m_action', triggered_by='turn on closing when I say it is done')))   # the OFF verb passes False; the parking verbs pass policy.EXIT_SILENCE_AGE_OUT_KEY
+"
+```
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back. The write is a batch (`fsw_…`, class `flow_switch`) with a registered reverser, so the `undo` is real.
+- `ran: False` → already in that state; the line says so. No `undo` offer, nothing written.
+- Never write the key by hand, never say a key name to the customer — say what stops happening.
+
+### "stop learning from my edits" — the learning switch (SPEC_LEARN1)
+
+One switch, default ON, failing to ON. It gates whether repeated corrections turn into behaviour: when the same phrase gets rewritten out of three or more drafts, or a prep section comes up empty in most of the last six meetings of a kind, the product stops doing it — once, with a line in the next morning brief and an `undo` on it. The alternative to the act is a question every time, which is the friction the correction was already complaining about, so it ships on rather than off. A malformed settings file reads as ON — a typo is not a customer saying "stop". Turning it OFF keeps the record of every correction and changes nothing from it.
+
+**Trigger phrases:** `stop learning from my edits`, `turn off learning from my edits`, `start learning from my edits`, `turn on learning from my edits`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import commitment_policy as policy
+from commitment_policy_pass import set_flow_switch
+print(json.dumps(set_flow_switch('<workspace_root>', policy.LEARNING_AUTO_APPLY_KEY, False, origin='m_action', triggered_by='stop learning from my edits')))   # the ON verbs pass True
+"
+```
+
+- Say `line` from the return VERBATIM and nothing else — one line, no question back. The write is a batch (`fsw_…`, class `flow_switch`) with a registered reverser, so the `undo` is real.
+- `ran: False` → already in that state; the line says so. No `undo` offer, nothing written.
+- Never write the key by hand, never say a key name to the customer — say what stops happening.
+- This is NOT the request to pause the weekly fire, which change-schedule owns under its own phrase for the job. This switch is what stops the product CHANGING anything from a correction; pausing the job stops the fire.
 
 ### Style — how [BrainName] talks to you, and the style card (SPEC STYLE1 / STYLEROUTE1)
 
@@ -290,6 +707,138 @@ ranges. A request that would strip the executive header or ASK block, bypass the
 suppress receipts, or reach the personal lane is refused in one plain sentence — "that one's part
 of the trust machinery, not the style layer" — and nothing is written.
 
+### "my profile" / "what do you know about me" — the workspace profile (SPEC_SURFACES2 PROFILE1)
+
+One page, rendered from the structured layers, never hand-written. Render it with
+`profile.render(workspace_root)` from `shared/scripts/profile.py` and relay the returned
+`chat_block`; the same call regenerates `_hq/views/PROFILE.md`. Never compose the page by hand —
+every line on it carries provenance, and `render` refuses to return a block that has a line
+without one (`assert_every_line_has_provenance`). Seven sections in order: Who you are, How you
+think, How you like it, What you are working on, What you brought, What I learned, Boundaries. An
+empty section says so in ONE line and stops; nothing is padded.
+
+**What I learned reads the learning job's own artifact (LEARNFIX1 1.4).** The voice family is listed from the override files the job WROTE (`voice_corrections.written_overrides`), not from the corrections it has left to read — the job writes its review marker for the same skills in the same fire, so counting leftovers made the page say "nothing yet" four hours after four changes landed. The unreviewed count is the evidence clause only, and drops to "your edits" at zero.
+
+Provenance is four shapes and no others — `asked <date>`, `learned <date>, <evidence>`,
+`uploaded <date>`, `on file since <date>`. **Stated outranks learned, always.**
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. So compose everything you intend to post, hand it to `surface_composers.post` ONCE, and print what it returns as your entire reply: **every sentence this turn posts — the answer and anything after it — renders through `surface_composers.post`; nothing is composed after the composer runs; no file name, function, key or id is named in explanation.** Here it was the page itself that was clean on 09-16 and the paragraph AFTER it that leaked, naming a data file. The page is `render`'s `chat_block` and nothing else; there is no sentence you owe the reader about where it came from, because every line on it already says.
+
+- **Delete a learned line by saying so** ("forget that", "that one's wrong" said about a line) →
+  `profile.delete_learned_line(workspace_root, key)`. It does two things, and the second is the
+  point: it removes the line AND writes the deletion as a STATED override, so the next learning
+  run never re-learns it. Relay the returned receipt. The removal is honoured for EVERY section of
+  the page, not only the learned one - `build_lines` runs every layer through the one filter, so
+  the receipt "gone, and I won't learn it again" is true of whatever line the seat pointed at.
+- **A stated preference in passing** → `profile.state_override(workspace_root, key, value)`. Same
+  store, same precedence. It is recorded, and it is owed a reader: nothing reads the value back
+  today, here or in the learning job, so it does NOT change the line already on the page. Say that
+  plainly rather than implying the page moved: "written down" is true, "changed" is not, until the
+  composer reads the value back.
+- **"why do you say that" / "how do you know that"** → `profile.explain(workspace_root, key)`.
+  Every line can answer for itself; a complaint becomes a correction rather than a loss of trust.
+- **"export my profile"** → `profile_docx.export_profile(workspace_root)` — the page as a .docx through
+  `brief_writer`, with the same gates and post-render leak scan as every other on-demand render.
+- **"reset [section]"** → `profile.reset_section(workspace_root, section)`. Scope, stated plainly:
+  it clears THIS surface's own layer for that section. The persona still has `recalibrate my
+  style` and the per-skill settings still have their own resets — this never becomes a second
+  writer for a store that already has one.
+  **When it clears nothing it says who owns the lines, in ONE sentence, and writes nothing**
+  (LEARNFIX1 1.5): How-you-think's lines are brief settings plus one live-computed count, so on a
+  real seat the announced verb had nothing of its own to clear and still said "back to where it
+  started". Relay `receipt` as returned — it already names the section and the owners, with the
+  phrase that acts where there is one. **Never turn it into a menu**, never name a function, never
+  print a raw value; the walked turn on 2026-09-16 offered four options and printed both.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. So compose everything you intend to post, hand it to `surface_composers.post` ONCE, and print what it returns as your entire reply: **every sentence this turn posts — the answer and anything after it — renders through `surface_composers.post`; nothing is composed after the composer runs; no file name, function, key or id is named in explanation.** On the reset turn this is the leak that followed the refusal: a function call and a raw empty value, printed as an explanation of why nothing cleared. The receipt already says why, in the customer's terms.
+
+
+**The profile document is a rendered artifact, and it renders one way.**
+
+- **NEVER hand-roll the profile document** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and the leak scan (the v3.20.0 failure mode) — and this page is nothing but provenance, which is the first thing a hand-rolled copy loses.
+- **NEVER create, render, copy, upload, or update the profile document — or any part, derivative, or restatement of it ("a summary", "the highlights", "just the learned bits") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/profile/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can send it to someone" — **nor a direct instruction**: "put my profile in a Google Doc" is a request this gate refuses, not an override. Say the canonical document already exists and hand back its link. This page is the seat's own record of what the product knows about them, and it carries what they said in confidence; it is not a document to push through a shared connector.
+
+**A deleted line stays deleted on both rails, and the two never import each other.** This page runs
+every layer through `profile.filter_learned` before it renders, and the learning job reads the same
+deletion rows through `learning_pass.deleted_learned_fingerprints` before it proposes — they meet at
+the `learned_line_deleted` event and nowhere else. (The learning job does NOT call
+`profile.filter_learned`: a call would match nothing, since the job keys on `vbu_`/`pwt_`
+fingerprints and the page keys on profile keys.)
+
+### "turn on coaching" / "turn off coaching" — the two doors (design memo section 2)
+
+**Nothing is required to start.** Every seat is OBSERVED: the surfaces report the day, note the
+pattern, state the bigger picture, and ask nothing. Read the shape with
+`coaching_doors.coaching_shape(workspace_root)` — never assume it.
+
+- **The earned door.** When the record shows the same pattern three times, the Friday wrap offers
+  ONCE, gated by `coaching_doors.earned_offer_due(...)`. Yes → `accept_earned_offer(...)` and the
+  seat is NAMED. No, or silence → `record_earned_offer(..., answer="no"/"silence")` and that
+  pattern is never raised again. Write the row either way; an offer that comes back is a nag.
+- **"coach me on [X]" IS the yes.** The wrap's offer is a statement with a door in it — *"say
+  `coach me on the Sample Co renewal` and I will work it with you"* — so the acceptance arrives as
+  a phrase in chat, not as a tap on a widget that is no longer on screen. This skill owns the
+  phrase. Resolve `[X]` to the offered pattern's key (the wrap's own receipt names it; when the
+  seat says a label that matches no standing offer, take the label as the behaviour and open the
+  named shape anyway — a customer asking to be coached on something is not a routing error), then:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from coaching_doors import accept_earned_offer
+print(json.dumps(accept_earned_offer('<workspace_root>', '<pattern key>',
+      '<the behaviour, in the words the seat used>')))
+"
+```
+
+  That one call records the offer as accepted, moves the seat to NAMED, writes the relationship
+  object and turns the brief's coaching line on. Relay the returned `receipt` in one line and say
+  that `turn off coaching` puts everything back. Do NOT walk the three questions here — that is the
+  chosen door, and a seat that said yes to one named thing did not ask for the whole walk.
+  `coach me` on its own is NOT this: it is the home chat (command-room-coach), whose description
+  fences `coach me on` across to here.
+- **The chosen door.** "turn on coaching" / "coach me" → walk `coaching_doors.walk_questions()`,
+  which is at most THREE questions and never a form. Then **show what changes before changing it**:
+  relay `coaching_doors.preview(workspace_root, answers)`, which names the delta on the morning
+  brief, at End of Day and on the Friday wrap. Only on "keep it" call
+  `coaching_doors.turn_on_coaching(workspace_root, answers)`.
+- **"turn off coaching"** → `coaching_doors.turn_off_coaching(workspace_root)`. Not "disable the
+  feature": the profile page renders byte-for-byte what it rendered before the walk, and the
+  relationship object is ARCHIVED rather than deleted — it is the customer's own. "Before the
+  walk" means before coaching was EVER turned on, however many times it has been applied since —
+  a seat that took the earned door and then the chosen one gets the page from before the earned
+  door, not from halfway back. The undo snapshot is written once per coaching cycle for exactly
+  that reason, and the shape is read back out of the store before the receipt is relayed.
+
+**The one thing that changes on a surface, and where it is switched.** Opening either door also
+turns the morning brief's `coaching_line` setting on — that is the one stated line
+`coaching_doors.preview(...)` promises, and until 11c nothing flipped it, so the preview named a
+delta the apply never produced. `turn off coaching` puts the setting back to exactly what it was
+before the FIRST door, including back to nothing stored at all, which is why the profile page still
+reads byte for byte what it read before. Both moves happen inside `coaching_doors`; never set that
+setting from the brief's own tuning path to fake a coaching seat.
+
+**The assessment.** Entered by the operator at onboarding, or uploaded later, through
+`profile.record_assessment(workspace_root, instrument, scores, consent_date)`. Four values scores
+or seven working-style centiles, plus the consent date. **Never report text** — the writer refuses
+any field that could hold a sentence, because the instrument's report and methodology are the
+vendor's and may not be reproduced. **The product never offers the assessment.** Do not raise it,
+do not suggest it, do not ask whether the customer has one.
+
+**Coaching notes are their own confidentiality tier.** They live under `_hq/coaching/` and they do
+not appear in a shared document, on the brief, on the wrap, or on any team surface — the leak scan
+treats coaching text on a non-coaching surface as a leak (`coaching_confidential`). When you render
+anything from that store, declare a coaching surface to the scan; when you render anything else,
+do not carry a line out of it.
+
+**Nothing the coaching walk writes reaches the workspace instructions.** The generated profile
+block in CLAUDE.md carries How you think and How you like it and nothing else. Boundaries are out
+too, and the reason is the tier: the only writer of a boundary is the walk's third question, so a
+boundary is a sentence said inside a coaching conversation, and CLAUDE.md is a shared file. That
+is structural, not a scan — the scan is marker-based and a boundary is ordinary English that
+carries no marker at all. `profile.COACHING_OWNED_SECTIONS` names the sections, and an assertion
+in the module refuses to load if one of them is ever put back into the instruction set.
+
 ### Name resolution rules
 
 - **Canonical resolver (v3.13.0+):** `shared/scripts/entity_resolve.py` `resolve(workspace_root, query)` or `resolve_to_linked_project(workspace_root, query)` for `go [name]`. Returns a `ResolveResult` with the matched entity, the signal that fired, and a plain-English `reason` suitable for surfacing ("matched alias 'Arya' → Aria Sample" or "phonetic match (sound-alike) to canonical 'Northstar'"). Never re-implement the match ladder inline; this skill calls the helper.
@@ -329,6 +878,42 @@ print(ev.get('seq'))
    - Then refresh the view: `render_router_misses.regenerate(ws)` (`_hq/views/ROUTER_MISSES.md` — a VIEW, regenerated from the log, never hand-edited; cleanup re-renders it weekly as the backstop).
 4. **Acknowledge in one clause inside the real answer** — "Got it — that's a prep brief:" — and then the answer. Never a separate "logged your feedback" line, never the event's name, never "I've recorded a routing miss".
 
+5. **"Show me the router misses" — answer from the composer, never from the view (SPEC FIXTRAIN 6.2 — MANDATORY).** Asked this on 09-13, the answer was produced by opening the view file and paraphrasing it, and the paraphrase carried four workspace paths, five build codes and the name of an event type — none of which the view itself prints. A file read and summarised is a sentence nothing scanned. There is a chat surface now; call it and print what it returns:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from render_router_misses import chat_route, chat_answer
+from surface_composers import post
+
+if chat_route(what_they_typed):                   # the phrase IS the route
+    answer = chat_answer(workspace_root)          # the only answer there is
+    print(post(answer, surface="router-misses",
+               workspace=workspace_root, relayed=answer))
+```
+
+**Registered, not described (SPEC FIXTRAIN v5.31.0 6.2).** This section already said "answer from the composer" and "never open the view file" on 09-13, and on 09-16 the view file was opened and paraphrased again — the same instance, unchanged, twice. Prose that has been ignored twice is not a fence, so the phrases live in `render_router_misses.CHAT_PHRASES` and `chat_route` is what recognises them; `post` is handed the composer's own return as `relayed`, so a paraphrase of it is a refusal rather than a habit. **`_hq/views/ROUTER_MISSES.md` is a REGENERATED ARTIFACT, not an answer source** — `regenerate()` writes it from the same rows `chat_answer` reads, deleting it costs nothing, and reading it to answer this question costs the reader every path, script name and build code the paraphrase carried.
+
+It gives three columns of the CEO's own record — the day, what they said they meant, and which skill it went to instead — with skill folders shown in words, and it goes through the leak gate before it returns. On a workspace with nothing on the log it answers honestly in one line, which is the truth on every workspace today. **Never open the view file to answer this**, and never quote a path, a build code or an event name in the answer. Same phrases: "show me the router misses", "what have I had to redirect", "where have you been routing wrong".
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. Here it was the paraphrase itself that leaked, and a trailer would leak again over a clean composed answer. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post
+# `composed_text` is `render_router_misses.chat_answer`'s return, in this
+# same run - relay it, never retype it. The door vouches a relay LINE FOR
+# LINE against what a composer here actually returned (`chat_answer` ends
+# in `say`, which is the gate AND the stamp), so a sentence you wrote
+# yourself cannot ride in as one. Nothing here is the CEO's own typed
+# text, so no rows are named.
+print(post(whole_reply, surface="router-misses", workspace=workspace_root,
+           relayed=composed_text))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
 **What the log is for, and is not for.** The view and cleanup's Monday-note line (three or more redirects to the same skill in 28 days → one sentence) are pointers for whoever tunes this Command Room. No description is ever auto-edited from them. The user's phrases in `said` / `meant` are their own words — they are OWNER-facing only, and they **never become a test row without a human rewriting them into placeholder vocabulary**; the negative-row generator (`tests/gen_negative_rows.py`) reads fences from skill descriptions, never events.
 
 ---
@@ -349,6 +934,8 @@ You are the **primary writer** for:
 
 - `_hq/data/entities.json` — project records: create via `thread_writer.create_thread`, update via `thread_writer.update_thread`, **archive via `shared/scripts/thread_archive.py::archive_thread`** (the archive path for archiving a project as a project — record stamp + `status_change` + view regen in one call; see the "archive [project]" handler. A lost deal and an archived objective also land `status: "archived"` on their own threads through `deal_state` / `objective_state`, which own those lifecycles — you do not archive those from here). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
 - `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), `connector_backend_changed` / `account_classified` / `account_role_changed` / `account_scope_masked` / `account_scope_restored` (connector-agnostic-v1 — the account-map lifecycle, written via the `connector_config.py` setter + `event_gate.append_event`), `day_intent` (SPEC BK1 — "tomorrow is about X", written ONLY via `day_intent.write_day_intent` with `origin='manual'`; never hand-built, and the reversal goes through `brain_undo.undo_batch`), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
+
+  **The own-word door comes FIRST (CLOSETRUTH1 3.5 — MANDATORY).** When the turn REPORTS work already done in the person's own words — "I sent Bo the deck, I sent Quinn the engagement agreement, and I paid the invoice", one sentence or several in one turn — do NOT call `close_commitment` yourself, row by row. Pass the turn to `shared/scripts/exit_doors.py::close_from_own_word(workspace_root, <what they typed>)`. It grades the sentences against the open rows with route 2's own matcher and bar, honours the customer's own-word switch at the writer, mints ONE `own_` batch across every row it closes, and returns `receipt_line` — relay that verbatim, exactly as returned — it already offers the undo in its own words, so do not append, reword or "correct" its closing clause. Then ack nothing else about the closes. **Why this is not optional:** on 2026-09-13 three rows closed correctly off exactly this turn and minted no batch, because the chat path called the commitment writer directly; nothing listed for `undo`, the receipt offered none, and the only reason `undo` worked at all was that the same chat still remembered what it had closed. A close that is reversible only inside the turn that made it is not reversible. The transcript pass and this door are the same rail and the same batch shape — a close the person spoke into a call and one they typed here behave identically. Rows the door reports as `ambiguous` or `no_match` are NOT yours to close by hand. **The sentence for a report that matched nothing is the door's too (LEARNFIX1 1.6 — MANDATORY):** if `no_match_line` comes back non-empty, say it verbatim, as its own line after `receipt_line`, and say nothing else about those reports — do not name the sentence that missed, do not list candidate rows, and never end with an offer to close one on the person's word. An offer is a question wearing a statement's clothes, and a question on this path is the defect: the product either acts or says plainly that it did not. The person can always say what they meant next, and `show my list` is there when they want to look. The paragraph below is for the OTHER shape — a turn that points at a row and says close it ("mark done", "that's handled", a number from a list, an end-session review) — never for a completion report.
 
   **Commitment closures from the catch-all (Stage B 2026-07 — MANDATORY):** when a loose turn closes a commitment — "mark done", "that's handled", "I sent that", "X is done", or any end-session review confirming an item completed — the write goes through `shared/scripts/commitment_state.py::close_commitment(workspace_root, <id or the user's reference>, resolved_by=<user person_id>, evidence=<what the user said>, source_skill="workspace-manager", user_confirmed=True, resolved_by_match=<"id" | "number" | "title" — the DOOR, mandatory since CLOSEID2; see the resolving rules below>, source_ref="session:<this session/receipt id>")`. **Pass the `source_ref`** — this handler is the one the 2026-08-17 walk caught closing with no pointer at all while the SAME session's day-intent handler (below) passed one seventeen minutes later; a chat close has no message id, so the session/receipt the turn arrived on IS its provenance. If you genuinely have no receipt id, omit it and the writer mints `session:workspace-manager:<now>` and marks it as a surface receipt — a floor, not a substitute for the real id when you hold it. NEVER hand-build a `commitment_resolved` (or `thread_resolved`-as-commitment-closer) append here: the hand-rolled catch-all writes were the source of the 52 `source_event_seq`-keyed dead-letter closures in the 2026-07-01 audit. close_commitment normalizes legacy id spellings (bare seq, `seq_86`, `event_086`, `commitment_seq_86`), raises `CommitmentIdError` when nothing matches (ask the user which item they meant instead of writing an orphan tombstone — offer `show my list`), and is idempotent over the full resolved-id set. **Resolving WHICH commitment (CLOSEID1/CLOSEID2 — a name may PROPOSE, never close; an id YOU resolved may not close at all).** If the turn already carries a surface-resolved id, pass it AND SAY WHICH DOOR it came through: `resolved_by_match="id"` when a widget embedded it, `resolved_by_match="number"` when the user said a row number from a receipt this session rendered. Since CLOSEID2 the writer REFUSES an unstated `resolved_by_match` from this skill (`AmbiguousTargetError`) — in the chat lane silence used to inherit the id-keyed door, and on 2026-08-24 a Skip on a hand-built picker closed three live items through exactly that silence. An id you resolved YOURSELF — your own scan of events.jsonl, your own candidate list, your own picker — is NOT a surface-resolved id and never closes directly, no matter what the user tapped: declare it `resolved_by_match="session"` if you must attempt it and the writer will refuse; the correct move is the one-question path below — and when the CANDIDATES came from your own scan rather than from `resolve_commitment_by_title` over the user's words, pass `resolved_by_match="session"` to `propose_ambiguous_close` too, so the question row records what resolved it (the only place that value legitimately reaches disk). Three consequences, absolute: **a decline affordance on any disambiguation — Skip, dismiss, X, timeout, empty submit — resolves to NO ACTION, zero writes**; **a suspected-dupe drop is never applied without being asked as its own explicit question**; **there is no bulk resolution of an ambiguous close** — one question, one answer in words, one write. Otherwise resolve the user's words through `commitment_state.resolve_commitment_by_title(workspace_root, <what they said>)`. It returns `{ok, id, candidates}` and it never returns a first hit. **`ok: True`** (exactly one open match) → close it, passing `resolved_by_match="title"`, `title_candidates=1`, `title_query=<what they said>` and `user_confirmed=True` alongside the id. **`ok: False` with candidates** → do NOT close. Call `commitment_state.propose_ambiguous_close(workspace_root, query=<what they said>, source_skill="workspace-manager", evidence=<what the user said>, source_ref="session:<this session/receipt id>")` and say its `sentence` back. **Pass the `source_ref` here too** — this is the same handler the 2026-08-17 walk caught writing with no pointer at all, and a proposal whose evidence cannot be traced to a source asks the CEO to take the match on faith. That call writes **ONE** row, not one per candidate: an ambiguity is a single either/or question carrying every candidate, so `needs your call` gains one item and the user picks. Nothing on the commitments moves. **`ok: False` with no candidates** → nothing matched; say so and offer `show my list`. Never take the first hit of a title match, and never pass `title_candidates=1` on a count you did not measure — `close_commitment` re-derives the candidate set from `title_query` and refuses (`AmbiguousTargetError`) when the caller's arithmetic and its own disagree. The 2026-08-22 End of Day fire closed one promise against another's evidence, reopened it, and closed the right one — three ledger events in one fire — because this line used to sanction a first-hit title match with no ambiguity rule and no propose-instead.
 - `_hq/data/entities.json` — provisional `person_*` records from project-creation scans (`pending_review: true`, handed off to people-crm), provisional `org_*` records from Reactive Org Discovery (`pending_review: true`, cleared on CEO confirm).
@@ -671,7 +1258,55 @@ All findings written to events.jsonl as `interaction` / `meeting` / `note` / `fi
 **Live State refresh — runs on EVERY `go [project]`, cold OR cached (v3.16+, brain-substrate-drift fix).** After resolving the project (and after the deep-load on first open), run the deterministic renderer so the brain's People + Status reflect current substrate instead of a frozen hand-copy:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 shared/scripts/render_thread_live_state.py "<workspace_root>" "<thread_id>"
 ```
 
@@ -684,7 +1319,55 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 **Memory-anchor render — runs on EVERY `go [project]`, after the Live State refresh (GORENDER1, coverage-gated).** The five memory sections MIGRATE1 seeded into `PROJECT_BRAIN.md` (`where-things-stand`, `what-we-decided`, `whats-owed`, `landmines-judgment`, `how-we-work-this`) are rendered from the canonical reader (profile "go-render") by the deterministic anchor renderer:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 shared/scripts/render_brain_anchors.py "<workspace_root>" "<thread_id>"
 ```
 
@@ -698,7 +1381,55 @@ The renderer self-gates and self-limits — read its JSON result, never work aro
 **Entity history on `go` (SPEC HIST1 D7).** When the resolver's match is a PERSON (`go Sam Sample` — ENTITY_RESOLVE gated exactly like every name-bearing turn), render/refresh the durable person history and surface the compiled block instead of the thread shape:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 shared/scripts/render_person_history.py "<workspace_root>" "<person_id>"
 ```
 
@@ -758,7 +1489,55 @@ This skill's description is frozen at its budget cap, so there is NO dedicated q
 3. On yes (or the unambiguous case), write through the ONE sanctioned writer — never a hand edit:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys; sys.path.insert(0, 'shared/scripts')
 from org_writer import set_org_money
@@ -777,7 +1556,9 @@ print('OK')
 
 ### "tomorrow is about [X]" — the day-intent handler (SPEC BK1, Daily Bookends)
 
-**Trigger family** (loose input, no dedicated description stem — this skill's description is frozen at its budget cap, so these arrive through the existing catch-all ladder exactly as the HIST1 org-money verbs do): *"tomorrow is about [X]"*, *"tomorrow: [X]"*, *"tomorrow I'm focused on [X]"*, *"make tomorrow about [X]"*, *"today is about [X]"* / *"today: [X]"* (the same record, `for_date` = today), and the corrections *"actually tomorrow is about [Y]"* / *"change tomorrow to [Y]"*. Also answers the read: *"what's tomorrow about"* / *"what is today about"*.
+**Trigger family**: *"tomorrow is about [X]"*, *"tomorrow: [X]"*, *"tomorrow I'm focused on [X]"*, *"make tomorrow about [X]"*, *"today is about [X]"* / *"today: [X]"* (the same record, `for_date` = today), *"next week is about [X]"* (`for_date` = next Monday), and the corrections *"actually tomorrow is about [Y]"* / *"change tomorrow to [Y]"*. Also answers the read: *"what's tomorrow about"* / *"what is today about"*.
+
+The three bare stems — `tomorrow is about`, `today is about`, `next week is about` — are in the frontmatter description, spelled WITHOUT the `[X]` placeholder. That spelling is the whole point: the runtime router reads the description and matches a declared phrase against what the customer typed, and `tomorrow is about [X]` never matches `tomorrow is about deep work` because the placeholder is not a word anybody says (SURFACEFIX1 F-6 measured exactly that — three announced day-intent stems were dark at the router while every body corpus and every suite said they worked). The bare stem matches; the placeholder does not.
 
 **DOES NOT fire on** *"remind me to [X] tomorrow"* (a reminder — show-my-reminders owns that phrase family and only the user may mint one), *"[X] is due tomorrow"* (a commitment due date), or *"what's on tomorrow"* / *"what's my day look like"* (a calendar read — morning-briefing). An intent is what the day is ABOUT; it is not a task, a deadline, or a schedule.
 
@@ -788,7 +1569,55 @@ print('OK')
 3. **Write through the ONE writer** — never a hand-built append, and never a prose note instead:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from day_intent import write_day_intent
@@ -802,6 +1631,21 @@ print(json.dumps(write_day_intent('<workspace_root>',
 
 - `origin='manual'` ALWAYS from here. `wrap` and `proposed` belong to the end-of-day chat; this handler never writes either, and it never writes an intent M did not state.
 - `for_date` is `'tomorrow'` (the default) or `'today'` — resolved workspace-local through `tz.py`, never UTC. Do NOT compute a date yourself: at 9pm Pacific the UTC calendar has already rolled over and your "tomorrow" would be the day after the one M means.
+- **`next week is about [X]`** (SPEC_SURFACES2_11c, WRAP2 4.2 item 2 — the Friday wrap states next week's three and this is how the CEO overrules them in their own words, because stated outranks derived). Same writer, same `origin='manual'`, and `for_date` is **next Monday** — which the writer will not guess for you (`day_intent.resolve_for_date` refuses "next Tuesday" by design). Get the date from `coach_turn.next_monday(<workspace-local today, YYYY-MM-DD>)` and pass what it returns; said on a Monday it means the Monday after, not today. The Monday brief's line two reads it back through `load_day_intent`.
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from coach_turn import next_monday
+from day_intent import write_day_intent
+print(json.dumps(write_day_intent('<workspace_root>',
+      [{'text': 'The Sample Co scope note'}], origin='manual',
+      for_date=next_monday('<workspace-local today>'),
+      source_ref='session:<this session/receipt id>',
+      source_skill='workspace-manager')))
+"
+```
+
 - `source_ref` is this session's receipt id in `session:<id>` form (PROV1). Pass what you have; nothing to point at is fine and lands marked, but never invent a pointer.
 - 1–3 items. If M lists more, say so and ask which three — the cap is the point of the record.
 
@@ -828,7 +1672,55 @@ The catch-all owns this by charter. **In the moment, and later in the same chat,
 On a bare `undo` / "undo that" / "reverse that" with no batch in context — and on `undo all` / `undo <group>` / `undo <run>` (POLICY1-B DD-5), which are the same handler with the choice already made:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from brain_undo import recent_auto_batches, undo_listing_lines
@@ -838,19 +1730,57 @@ print(json.dumps(batches)); print('\n'.join(undo_listing_lines(batches)))
 ```
 
 - **Empty list** → say so plainly: "Nothing automatic in the last 7 days to reverse." Never invent a candidate, and never reach for a user-made change: this handler reverses what Command Room did on its own, not what M did.
+- **A meeting was re-processed in this chat** → this handler is the wrong one, and improvising is forbidden. The re-run's own receipt is its batch: call `brain_undo.undo_after_reprocess(<ws>, "granola:<meeting_id>", undone_by=<user person_id>, source_skill="workspace-manager")` and relay its `line` verbatim — the run's batch goes back, or the answer is *"Nothing to reverse — that re-run didn't change anything."* Never drop a pending row to simulate it, never mark a decision superseded, never hand-edit a notes file, never touch `events.jsonl` (CONTRACT Rule 31; ATTENDED_TEST_v5.29.0 B1.2, where all four happened in one turn).
 - **One or more** → render `undo_listing_lines` verbatim: one numbered line per RUN (a sweep, a transcript fire, a review drain — newest first) and one indented lettered line per GROUP under it (one project, one meeting, one message) — *"1. closed a commitment (×4) — Sep 4 · 1a. closed a commitment (×2) — one project (undo just this group) · 1b. …"*. Use the LABEL, never the change-class name: M is deciding whether to reverse something, and `commitment_merge ×1` is not a thing he saw happen. The three verbs, all through `brain_undo.batch_ref_for_ordinal(batches, <token>)`: **`undo all`** (or a bare `undo` answered with `1`) reverses the newest RUN — every group under it; **`undo 1a`** (`undo <group>`) reverses ONE group and leaves the rest of the run; **`undo 2`** (`undo <run>`) reverses an older run whole. A token that names nothing listed → say so and re-show the list; never guess a batch.
+- **M describes the batch instead of numbering it** — *"undo the three items you let go"*, *"undo yesterday's sent-mail closes"*, *"put back the ones from the silence rule"*. Do NOT read the list yourself and pick. Pass the words through `brain_undo.resolve_undo_phrase(<ws>, '<what M typed>', batches=batches)`, which matches on the three things M can see — the door the batch came out of, how many rows it changed, and the day — and answer by its `status`: `resolved` → undo that batch and ack; `ambiguous` → render its `candidates` through `undo_listing_lines` and ask which (*"Two batches fit that — which one?"*), never pick one; `no_match` → say nothing on the list fits those words and re-show it. When nothing on the 7-day listing fits, `resolve_undo_phrase` searches the whole book once more and comes back with `widened: True` — say where it came from (*"that one is from a while back"*) rather than presenting it as if it were on the list. The 2026-09-13 walk is what this closes: *"undo the three items you let go"* searched the current day only, missed the batch from two days before, printed the ledger's filename and offered a three-way menu. The listing window is 7 days, the resolver reads the whole book including rotated shards, and reversal legality never expires.
+- **The answer to a described batch never quotes the words M typed** (night 11b trial merge, merged-tree review F-6): a typed phrase can carry an id-shaped token ("undo the cmt_016 one", "the seq 3 batch") and a sentence echoing it is refused by the gate with nothing to rewrite. When `resolve_undo_phrase` returns `no_match` or `ambiguous`, print `brain_undo.phrase_door_lines(<the resolution>)` VERBATIM — it says that nothing (or more than one thing) fits and re-shows the numbered list — and never compose your own sentence around the phrase.
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
-from brain_undo import recent_auto_batches, batch_ref_for_ordinal, undo_batch
+from brain_undo import recent_auto_batches, batch_ref_for_ordinal, resolve_undo_phrase, undo_batch, undo_listing_lines
 batches = recent_auto_batches('<workspace_root>')
+# A number (or 'all'): the ordinal door. A description: the phrase door.
 ref = batch_ref_for_ordinal(batches, '<all | 1 | 1a | 2 ...>')
-print(json.dumps(undo_batch('<workspace_root>', ref, undone_by='<user person_id>', source_skill='workspace-manager')) if ref else 'nothing listed under that number')
+if ref is None:
+    hit = resolve_undo_phrase('<workspace_root>', '<what M typed>', batches=batches)
+    ref = hit['batch_ref'] if hit['status'] == 'resolved' else None
+    if hit['status'] == 'ambiguous':
+        print('ambiguous'); print('\n'.join(undo_listing_lines(hit['candidates'])))
+    if hit.get('widened'):
+        print('this one is older than the list')
+print(json.dumps(undo_batch('<workspace_root>', ref, undone_by='<user person_id>', source_skill='workspace-manager')) if ref else 'nothing listed matches that')
 "
 ```
 
-- Ack in plain English with what came back ("Reopened it — it's back on your list."). `n_errors > 0` → say which parts did not reverse; never report a clean undo over a partial one.
+**Whose undo is it (CONTRACT Rule 32, ATTRIB2).** `undone_by='<user person_id>'` above is right because the person TYPED `undo` — that is their gesture, and the brief may say so. When the product reverses its own act on its own judgment (a fire reading back its own writes and deciding they were wrong), pass `actor=event_types.MACHINE` instead: the reversal is stamped with the rail that made it, and no surface tells the customer they reversed something they never touched. Never pass a person id for an act the person did not make.
+
+- **Ack through the composer, never by hand: `brain_undo.undo_receipt_lines(<ws>, <result>, batch=<the listed batch>)`, relayed verbatim.** It names each row by its TITLE — and a reversed promotion or win by the company and the deal, since neither of those is a row with a title — names the door by its phrase, and every line it returns has already been through the leak gate as machine text. Do NOT write your own sentence about what came back and do NOT add the batch, the row ids, the file that was read or the function that ran — on 2026-09-13 two undo receipts carried exactly those onto M's screen (a raw row id and a project id on one, a batch id, two function names, two data-file names and a backups folder on the other). `n_errors > 0` → the composer's last line says how many did not go back; never report a clean undo over a partial one.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. **This is recorded leak instance 7, and the bullet above was already right.** `undo_receipt_lines` composed a clean receipt on 09-16 and the chat then explained what it had reversed, naming an event type in code font and the door's own internal id — after the composer had returned. A rule that forbids adding things to a composed line does not reach the paragraph typed after it. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post, say
+# `undo_receipt_lines` composes in its own module, so its return
+# comes in through `say`: that is the gate AND the stamp the door
+# asks for when it checks where a relayed line came from.
+receipt = say("\n".join(undo_receipt_lines(ws, result, batch=batch)))
+# `customer_rows` NAMES the rows this undo reversed - it does not
+# hand the door their words. The door reads their customer-typed
+# fields off the book itself, so what gets blanked is what the CEO
+# actually typed onto a row, not a string this turn composed.
+undone = [r["change"]["change_ref"] for r in result["results"]
+          if r.get("status") == "undone"]          # ["seq:1234", ...]
+print(post(receipt, surface="undo", workspace=workspace_root,
+           relayed=receipt, customer_rows=undone))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
+Hand `post` the receipt as `relayed` so the composer's lines are relayed byte-exact rather than reworded, and hand it the REFS of the rows this undo reversed as `customer_rows` — never their titles as text. The titles are the customer's own words and the door goes and reads them off those rows itself; a title it cannot find on the book is not a title. **The door's internal id and the event type never print at all** — the receipt names the door by its phrase and each row by its title, which is what the reader recognises.
+
 - **The 7 days bound the LISTING only.** Reversal legality never expires — every reverser is additive, so reversing an older batch is always safe; the window just matches change-feed relevance. If M names something older, pass its ref through anyway.
 
 ### "new project [Name]" / "new client [Name]"
@@ -926,8 +1856,55 @@ Same shape as `new vendor` but with `relationship_type: prospect` defaulted. Use
 3. **Create the records through the typed writers — this is a HARD gate, not prose (v3.18.2+, Bug #83). Run the EXACT block below.** Do NOT hand-write `entities.json`, do NOT copy the shape of an existing prospect org ("same shape as [other prospect]" is the exact v3.18.1 failure), and do NOT route through `track-prospect` or any `org_added`-only path — those skip the engagement edge entirely. **There is no `stage` field on an org** — deal status lives ONLY in the engagement `label`. If you find yourself writing `"stage"` onto an org, you are improvising around the writer: stop and run this block. The block creates BOTH records through the canonical writers (which validate, dedup, atomic-lock, and emit `org_created` + `engagement_created`) and asserts the result:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 sys.path.insert(0, os.path.join(os.getcwd(), 'shared', 'scripts'))
@@ -962,8 +1939,55 @@ Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to
 2. **Convert through the typed writers — HARD gate (v3.18.6+, same class as Bug #83).** Do NOT hand-edit `entities.json`, do NOT write a `stage` field. `new client [Name]` is the WRONG tool here — it creates from scratch and would duplicate the org; conversion must mutate the EXISTING `org_id`. Run the EXACT block:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 sys.path.insert(0, os.path.join(os.getcwd(), 'shared', 'scripts'))
@@ -1324,12 +2348,39 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
    ```json
    {"type":"workspace_setting_changed","ts":"<ISO>","data":{"key":"user_timezone","old_value":"<prior>","new_value":"<new>","triggered_by":"user_explicit"}}
    ```
-4. Confirm in plain English: *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`. Your scheduled chats keep firing at their current clock times — say 'change my schedule' if you'd like to move any of them."* (Scheduled fires run on machine-local time; the workspace timezone is presentation-only. Never promise that a timezone change moves scheduled fires — cadence moves are change-schedule's job, per the Forbidden behaviors below.)
+4. **Re-anchor the schedules that are stored against the OLD zone (TZ1, 2026-09-20).** On a cloud seat the workspace zone is not presentation-only: it is the clock every slot, lateness and receipt computation reads (`shared/scripts/clock_policy.py`), and each registered trigger stores the zone and the UTC offset its cron was projected with. Moving the workspace zone leaves every one of those rows projected from a zone the customer no longer lives in. So, after the write:
+
+   ```python
+   import sys
+   sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+   from clock_policy import trigger_map_reading
+   from schedule_backend import plan_realign
+   reading = trigger_map_reading(WORKSPACE)
+   rows = reading["rows"]
+   realign = (plan_realign(rows) if (reading["ok"] and rows)
+              else {"drifted": [], "plans": []})
+   ```
+
+   **READ THE `ok` FLAG BEFORE THE ROWS (TZ1 fix round 1, review M-6).** `trigger_map_reading` answers two questions, not one: whether this process got to read the schedule registry at all, and what was in it. On a merged seat the workspace is not on this computer — it is on the customer's, behind the access layer — so an in-process read comes back empty and empty looks exactly like "a desktop seat that never registered anything". That is the one place a wrong sentence is worse than no sentence, because the customer cannot tell which of the two they were told. So the reader does the honest thing: it reads the folder directly when the folder is here, asks the access layer to run the same read on the machine that holds it when it is not (`clock_policy.HELPER_READ_TRIGGER_MAP`, allow-listed in `workspace_access.RUN_HELPER_ALLOWLIST`), and reports failure as failure.
+
+   `plan_realign` is handed the rows that were just read rather than a workspace path, so it never repeats the read and never depends on the folder being local. It is a PLANNER — it returns the re-projections, it calls no scheduler itself.
+
+   Three outcomes, and they are three:
+   - **`ok` is false = the schedule could not be read from here.** Say so. Do NOT fall through to the legacy sentence, and do not say anything about what will or will not move: nothing was read, so nothing is known. This covers a workspace that is on another machine AND a `workspace_config.json` that is sitting right there and will not parse (`reason: config_unreadable`, MF-M2-17) — a file nobody could read is not a seat that never registered, and the two must never say the same sentence.
+   - **`ok`, and a `triggers` map with rows in it = a cloud seat.** Read what `plan_realign` returns and say it plainly. Nothing drifted (`plans` empty) means the new zone shares the old offset today and there is nothing to move; say so in one clause rather than inventing a change.
+   - **`ok`, and no `triggers` map = a legacy seat.** Do not touch cron. R8 holds there: the fires run on that computer's own clock and a workspace-zone change does not move them. The old sentence ("your scheduled chats keep firing at their current clock times") is correct on that seat and only on that seat.
+
+5. Confirm in plain English — exactly one of these three, never two:
+   - **Cloud seat, something to re-anchor:** *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`, and I'm moving your scheduled chats so they keep landing at the clock times you picked — [N] of them shift. Say 'change my schedule' if you'd like different times while we're here."*
+   - **Cloud seat with nothing to move, or a legacy seat:** *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`. Your scheduled chats keep firing at their current clock times — say 'change my schedule' if you'd like to move any of them."*
+   - **The schedule could not be read (`ok` is false):** *"Done. Your timezone is now `[readable name]`. Every time and date you see from here on will be in `[that TZ]`. I couldn't read your schedule from here, so I don't know yet whether any of your scheduled chats need to move — ask me again with your Command Room folder attached and I'll check."*
+
+   Never promise a re-anchor you did not plan, never claim a legacy seat's fires moved, and never tell a customer their chats keep firing at their current times when the answer was an unread file rather than an empty one. Cadence CHANGES — a customer asking for a different time — remain change-schedule's job either way, per the Forbidden behaviors below.
 
 **Forbidden behaviors:**
 - Do NOT touch `entities.json` schemas other than the `workspace` block.
 - Do NOT modify historical event timestamps in `events.jsonl` — they stay as-recorded; only future renders use the new TZ.
-- Do NOT modify any cron registration (Cowork's `mcp__scheduled-tasks__update_scheduled_task` does that — surface a one-line follow-up if the user wants schedule fires actually rescheduled, not just the displayed TZ).
+- Do NOT change a customer's requested cadence here. Re-anchoring an EXISTING cron to the new zone through `schedule_backend.plan_realign` is this handler's job (step 4) because the customer's chosen clock time is what is being preserved; moving a chat to a DIFFERENT time is `change-schedule`'s, through `schedule_backend.plan_update`. Surface a one-line follow-up if they want a different time, not just a different zone.
 
 **Why this exists:** product-level requirement — every Command Room workspace has one canonical timezone; display + schedule TZ default to the same value at install (`command-room-onboarding` Phase 0 widget Q3). Plumbing that reads the setting: `shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`. (Origin in references/HISTORY.md.)
 
@@ -1359,6 +2410,29 @@ Workspace-manager OWNS the `workspace.connectors` / `workspace.accounts` blocks 
 - `mark [address] out of scope` / `stop filing [address]` / `[address] is mixed`
 - `add account [address]` / `what accounts do I have` (read-only: list `workspace.accounts` with role + dials)
 
+**`what accounts do I have` is an answer, not a dump, and the answer is a COMPOSER's (SPEC FIXTRAIN v5.31.0 6.4, leak instance 6; FIX3 F3-3).** Asked this on 09-16, the reply named two internal setting keys, a workspace file name and "the substrate". Asked again on 09-21, it opened with the reader's own computer by its short device name, its operating system and how many folders were shared to the task, then listed the app's connector inventory, and never mentioned calendar at all. The reader asked which of their mail addresses this product treats as work and which it leaves alone.
+
+So the reply is not written here any more. `connector_config.accounts_surface(workspace_root)` returns `{"lines": [...], "n_accounts": int}`: mail by its label, calendar by its label, then one line per classified address — the address, what it is in plain words, and the two clauses step 5 below writes. **Those lines ARE the reply.** Print them, in that order, and nothing else.
+
+**The answer names no computer, no device, no operating system, no folder, no connector inventory, and no account of the app itself.** None of those is a mail address the reader classified, and none of them is what was asked. A `Computer:` line, a device in quotes and the grant sentence are now a leak class of their own and the door refuses them.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. The list itself was fine on 09-16; the paragraph after it was the leak. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from connector_config import accounts_surface
+from surface_composers import post
+lines = accounts_surface(workspace_root)["lines"]
+reply = "\n".join(lines)
+print(post(reply, surface="accounts", workspace=workspace_root,
+           relayed=reply))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
+**The relay is the composer's own return, byte for byte.** The door checks it for presence, in the composer's own order, and for origin — every line must be a line a composer returned in this same run. That is why one extra line that carries anything internal refuses the whole post: the relay vouches for the composer's lines and everything beside them is this product's own words, scanned in full, so an accounts answer with a computer in it is exactly the paragraph this door stops. An ordinary extra sentence that carries nothing internal is accepted — the door is a leak gate, not a length gate, and saying otherwise invites a caller to trust it for a job it does not do. There is no `customer_rows` here.
+
 **Behavior (declare a backend):**
 1. Resolve the connector's MCP **server-id** from the fire-time tool registry (the declared backend is keyed by server-id, not name — the substring approach fails for Superhuman/UUID servers). If the connector is the Zapier send leg, pin it via the setter's `is_zapier=True` path (into `_zapier_server_ids`), not as a category backend (R12).
 2. Call `connector_config.set_declared_backend(workspace_root, category, server_id, provider=…, label=…)`.
@@ -1382,6 +2456,7 @@ Server UUIDs rotate on reconnect (CONTRACT Rule 22), so this WILL happen on live
 1. Run `tool_discovery.detect_backend_drift(tools, declared)` — it fingerprints the visible servers and returns the candidate replacement (same provider, new UUID) or none.
 2. **Interactive session** → ASK, never silently re-pin: *"Your [label] connection looks reconnected under a new id — same [provider] account. Keep using it for [category]?"* On yes: `connector_config.set_declared_backend(root, category, <new server_id>, provider=…, label=…)` + a `connector_backend_changed` event + a `connector_detected` event for the new server-id. On no / no candidate: leave the declared row; the category degrades per its skill's rules until the user re-declares.
 3. **Silent / scheduled session** → NEVER prompt, NEVER ingest through an unconfirmed binding: skip that connector's leg for this fire (the fire's output says which leg was skipped in plain English), append ONE `connector_detected` event (`data: {server_id, provider?, fingerprint_matched: true|false}`, deduped against an existing open flag) so the NEXT interactive session surfaces the confirm question. Fail-closed must not mean a dead scheduled brief with no explanation — the skip is stated, the rest of the fire proceeds.
+   **A flag carrying `recorded_alias: true` is NOT a drift to confirm (IDENT1 I-1, ruling R-RW2-1):** a scheduled fire found the SAME declared connector under the scheduled registry's other name and recorded that id beside the declaration, so the declaration now covers both names (`connector_config.declared_backend(...)["server_ids"]`) and both seats resolve it — offer no re-pin for it, because re-pinning to the scheduled registry's id would darken this chat's mail instead.
 4. A brand-new ACCOUNT ADDRESS (not just a rotated server) follows fail-closed-on-new (C3): it stays `unclassified` — silent on both dials, excluded from scans — until the user classifies it (this section's verbs).
 
 **Forbidden behaviors:**
@@ -1532,6 +2607,26 @@ When workspace-manager is already active in a session (e.g., during a "go [proje
 
 ---
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Gotchas
 
 - Never hardcode paths — always resolve from `[WORKSPACE_ROOT]`
@@ -1565,11 +2660,23 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'new prospect', 'new vendor', 'new org', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
 
+> Also owns the fire-delivery setting (IDENT1 I-12 (8)) — use when the CEO says 'publish my scheduled pages' or 'stop publishing my scheduled pages'.
+
+> Also owns bringing a Claude Doc home (DOCS1 D-2, 2026-09-24 — the export of a page the built-in docs skill made despite the document-routing rule) — use when the CEO says 'export that doc' or 'save that doc to my folder'.
+
 > Also owns the cross-skill output profile (SPEC OUT2 §5 — output is not a skill name, so the bare-tune router rule can't resolve it) — use when the CEO says 'tune output', 'tune my output', 'show output settings', 'reset output to defaults'. DOES NOT fire on 'tune [skill-name]' when the name resolves to an actual skill (that skill's own FRP1 family owns it).
 
 > Also owns the interaction posture (SPEC QUIET1 — one knob, not a skill name) — use when the CEO says 'ask me more', 'ask me less', 'ask me fewer questions', 'ask more questions', 'ask fewer questions'. DOES NOT fire on 'needs your call' / 'what needs my call' (needs-your-call — the queue itself) or 'show me what you'd hide' (needs-your-call).
 
 > Also owns the closing-on-evidence switch (CUT-A, M ruling R-A 2026-09-06 — one switch, not a skill name) — use when the CEO says 'turn on closing on evidence', 'turn off closing on evidence', 'start closing on evidence', 'stop closing on evidence'. DOES NOT fire on 'turn on held' / 'turn off held' (needs-your-call — the would-hold switch) or 'commitment triage' (commitment-triage).
+
+> Also owns the two identity switches (SPEC_FLOW1 Lane F, M ruling 2026-09-07 — switches, not skill names) — use when the CEO says 'turn on adding people automatically', 'turn off adding people automatically', 'start adding people automatically', 'stop adding people automatically', 'turn on merging duplicate people', 'turn off merging duplicate people', 'start merging duplicate people', 'stop merging duplicate people'. DOES NOT fire on 'who is Acme' / 'add Acme to my contacts' / 'remember a fact about Acme' (people-crm — the records themselves) or 'merge person records' (needs-your-call — the one-at-a-time human merge, which no switch has ever governed).
+> Also owns the second-witness switch (SPEC_FLOW1 Lane A, M ruling 2026-09-07 — a switch, not a skill name) — use when the CEO says 'turn on holding new items until something confirms them', 'turn off holding new items until something confirms them', 'start holding new items until something confirms them', 'stop holding new items until something confirms them'. DOES NOT fire on 'show me what you'd hide' / 'turn on held' / 'turn off held' (needs-your-call — the reading chair and its own switch) or 'what's on my plate' (commitment-triage).
+> Also owns the learning switch (SPEC_LEARN1, 2026-09-08) — use when the CEO says 'stop learning from my edits', 'turn off learning from my edits', 'start learning from my edits', 'turn on learning from my edits'. That is the SWITCH, not the weekly job; pausing the weekly fire itself belongs to change-schedule.
+> Also owns the earned coaching door's acceptance phrase (SPEC_SURFACES2_11c COACH2 5.2 item 5) — use when the CEO says 'coach me on [X]', 'coach me on the renewal', 'coach me on saying no'. That phrase calls `coaching_doors.accept_earned_offer` and moves the seat to the NAMED shape; it never walks the three-question chosen door. DOES NOT fire on the bare two-word form with no label after it, or on 'show me what's next' (command-room-coach — the home chat; its own description fences the on-a-label form across to this skill).
+>
+> Also owns the two exit switches (SPEC_FLOW1 Lane B / EXIT1, 2026-09-07 — switches, not skill names) — use when the CEO says 'turn on closing when I say it is done', 'turn off closing when I say it is done', 'start closing when I say it is done', 'stop closing when I say it is done', 'turn on parking items nobody touches', 'turn off parking items nobody touches', 'start parking items nobody touches', 'stop parking items nobody touches'. These are NOT the closing-on-evidence switch above — that one governs what a MEETING TRANSCRIPT may close and stays off; this skill owns both. DOES NOT fire on 'triage my commitments' (commitment-triage) or 'clean up my commitments' (commitment-backlog-sweep).
+> Also owns the question-expiry switch (SPEC_FLOW1 Lane G / TTL1 — one switch, not a skill name) — use when the CEO says 'turn on answering old questions for me', 'turn off answering old questions for me', 'start answering old questions for me', 'stop answering old questions for me'. DOES NOT fire on 'needs your call' (needs-your-call — the queue of questions itself). DOES NOT fire on 'triage my commitments' (commitment-triage — the plate). It is a DIFFERENT switch from this skill's own interaction-posture ladder above, which sets how MANY questions a week rather than what happens to one nobody answers.
 
 > Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'talk to me differently', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks' — AND on an in-passing style correction with no verb at all: 'never open with pleasantries', 'never open with...', 'stop saying...', 'stop saying [phrase]', 'change your tone', 'change your style', 'that's too formal' / 'that's too long' / 'shorter next time' said about how THIS assistant talks (SPEC STYLEROUTE1 — routing is frontmatter-driven; these are front-loaded in the description, not body-only). Machine-matchable stems for the mechanical matcher: 'how do you talk to me', 'talk to me differently', 'never open with', 'stop saying', 'change your tone', 'change your style'. Every shape below writes ONLY to the chat_persona/output_profile store via skill_config_writer + event_gate.append_event('style_changed') — NEVER a CLAUDE.md edit, not even a throwaway one-line addition to Working style or Session Rules; see the Style section in the body for the full contract and the D5 bounds it must never cross. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
 
@@ -1582,8 +2689,15 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Also owns the connector & account management verbs (connector-agnostic-v1 C1 — workspace-manager owns the `workspace.connectors` / `workspace.accounts` blocks): 'set my email backend to [connector]', 'set my calendar backend to [connector]', 'use [connector] for email', '[address] is my personal account', '[address] is my business account', '[address] is a second business email', '[address] is mixed', 'mark [address] out of scope', 'stop filing [address]', 'add account [address]', 'what accounts do I have'. Machine-matchable stems for the mechanical matcher: 'set my email backend', 'set my calendar backend', 'is my personal account', 'is my business account', 'is a second business email', 'out of scope', 'stop filing', 'add account'. Behavior in the body's "Connector & account management" section.
 
-> Also owns the DAY-INTENT trigger family via the loose-input catch-all (SPEC BK1, Daily Bookends — same posture as the HIST1 org-money verbs: the description is frozen at its budget cap, so these live HERE and the runtime router reaches them through "loose input naming a tracked entity" / the catch-all): 'tomorrow is about [X]', 'tomorrow: [X]', 'tomorrow I'm focused on [X]', 'make tomorrow about [X]', 'today is about [X]', 'today: [X]', the corrections 'actually tomorrow is about [Y]' / 'change tomorrow to [Y]', and the reads 'what's tomorrow about' / 'what is today about'. Machine-matchable stems for the mechanical matcher: 'tomorrow is about', 'make tomorrow about', 'today is about', "what's tomorrow about". **An intent phrasing WINS over navigation** — 'tomorrow is about closing Acme Co' writes a day_intent, it does not open the Acme Co thread (the MUST-language gate in the body); bare 'go [name]' / 'pull up [name]' navigation is untouched. Writes ONE typed `day_intent` event through `day_intent.write_day_intent` (origin='manual' always — never `wrap`/`proposed`, which belong to the end-of-day chat); reads through `day_intent.load_day_intent`, never a grep. ENTITY_RESOLVE applies to any name-bearing intent. DOES NOT fire on 'remind me to [X] tomorrow' (show-my-reminders — only the user mints a reminder, and an intent is not one). DOES NOT fire on '[X] is due tomorrow' (a commitment due date). DOES NOT fire on "what's on tomorrow" / "what does my day look like" (morning-briefing — a calendar read). Behavior in the body's "tomorrow is about [X]" section.
+> Also owns the DAY-INTENT trigger family via the loose-input catch-all (SPEC BK1, Daily Bookends — same posture as the HIST1 org-money verbs: the description is frozen at its budget cap, so these live HERE and the runtime router reaches them through "loose input naming a tracked entity" / the catch-all): 'tomorrow is about [X]', 'tomorrow: [X]', 'tomorrow I'm focused on [X]', 'make tomorrow about [X]', 'today is about [X]', 'today: [X]', the corrections 'actually tomorrow is about [Y]' / 'change tomorrow to [Y]', and the reads 'what's tomorrow about' / 'what is today about'. Also 'next week is about [X]' (SPEC_SURFACES2_11c WRAP2 4.2 item 2 — the CEO overruling the wrap's derived three in their own words; `for_date` is next Monday, from `coach_turn.next_monday`). Machine-matchable stems for the mechanical matcher, and now for the runtime router too — the three bare stems are in the description without their placeholders: 'tomorrow is about', 'make tomorrow about', 'today is about', 'next week is about', "what's tomorrow about". **An intent phrasing WINS over navigation** — 'tomorrow is about closing Acme Co' writes a day_intent, it does not open the Acme Co thread (the MUST-language gate in the body); bare 'go [name]' / 'pull up [name]' navigation is untouched. Writes ONE typed `day_intent` event through `day_intent.write_day_intent` (origin='manual' always — never `wrap`/`proposed`, which belong to the end-of-day chat); reads through `day_intent.load_day_intent`, never a grep. ENTITY_RESOLVE applies to any name-bearing intent. DOES NOT fire on 'remind me to [X] tomorrow' (show-my-reminders — only the user mints a reminder, and an intent is not one). DOES NOT fire on '[X] is due tomorrow' (a commitment due date). DOES NOT fire on "what's on tomorrow" / "what does my day look like" (morning-briefing — a calendar read). Behavior in the body's "tomorrow is about [X]" section.
 
 > Also owns the routing-correction verb (SPEC ROUTEMISS1 — body-only; the description is frozen at its budget cap and the runtime router reaches these through the catch-all): 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]' — the remainder is re-dispatched as the request and a `router_miss` is logged only when the fences in the body's "Routing corrections" section hold. Machine-matchable stems for the mechanical matcher: 'wrong skill', 'you routed that wrong', 'that should have been'. The redirect shape `no, I meant [X]` is recognised by the handler (`router_miss.split_correction`) but is NOT a stem here or anywhere — `no I meant prep me for my 2pm` belongs to call-prep, and a positive stem would collide with every such remainder. DOES NOT fire on a voice or wording correction after a draft (`no, I meant 'regards'` — the drafting skill's correction lane) or on the answer to a disambiguation question (`no, I meant the other [org]`).
 
 > Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A — D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements — a note-that phrasing whose name resolves to an ORG (e.g. a Series A announcement about Acme Co) routes here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a $120k account', 'is a $120k/yr account'. Money is confirm-only through org_writer.set_org_money — never estimated, never auto. Behavior in the body's "Org money & facts" section.
+> Also owns the WORKSPACE PROFILE and the two coaching doors (SPEC_SURFACES2 PROFILE1, absorbing SPEC_LEARN2 — the primary stems are front-loaded in the description per STYLEROUTE1; the rest live here and the runtime router reaches them through the catch-all): 'my profile', 'what do you know about me', 'what have you learned about me', 'what do you know about how I work', "show what you've learned", 'how have you adapted to me', 'what have you changed on your own', 'export my profile', 'reset [section]' said about a section of the page, a learned line deleted by saying so ('forget that' / 'that one's wrong' said about a line on the page), 'turn on coaching', 'turn off coaching', and the assessment door ('here are my scores', 'load my assessment'). Machine-matchable stems for the mechanical matcher: 'my profile', 'what do you know about me', 'what have you learned about me', 'export my profile', 'turn on coaching', 'turn off coaching'. ABSORBS 'show my style' — the phrase stays live and now renders as the profile's How you like it section, so nothing a customer already says stops working. Every write goes to the settings store through `skill_config_writer` and the coaching object through `coaching_doors` — NEVER a CLAUDE.md edit; the profile lines inside the workspace instructions are REGENERATED by `render_claude_md` on the persona precedent, which is the whole point. DOES NOT fire on 'who is Sam' (people-crm). DOES NOT fire on 'tell me about Sam' (people-crm). DOES NOT fire on 'what did you change' (system-health). DOES NOT fire on the bare two-word coaching ask with no label after it (command-room-coach - the coaching conversation itself; this skill owns the doors that turn it on and off, and the `on a label` form of that ask, which IS the earned door's yes).
+## Narration leak scan (LEAK2 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, an option, a `Sources:` line, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id, a bare mail-message id or UUID), an event or field name, a file name, a folder path, a script name, a spec or lane code, test-battery talk, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution; `narration_names.safe_name` is the one fallback when a record has no name — an honest gap, never the id). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+**The three narrations the 2026-09-07 attended test caught here.** `pull up [name]` / `status on [name]` / `catch me up on [name]` printed a person id, a project id and a view path (B4.4). The routing-corrections answer explained itself in file paths, spec ids and script names (D4) — say what the page is FOR and what it holds; never name the file it lives in, the script that writes it, or the spec it came from. A one-line capture reply printed a project id, a meeting id, two folder paths, a spec code and test-battery numbers (B3.5) — a capture reply says what was booked and to which project BY NAME, and nothing else. All three are this skill's own prose, so this step is the only thing standing between them and the customer.
+

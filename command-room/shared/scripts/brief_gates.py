@@ -87,6 +87,10 @@ EYEBROW_BY_KIND = {
     # product. It takes a NAMED eyebrow because it is brief-family — see the
     # EXEC_EYEBROW_EXCLUDED_KINDS note below.
     "inbox_triage":      "INBOX TRIAGE",
+    # SPEC_SURFACES2 PROFILE1 - "export my profile". The profile page
+    # as a document, through the same writer, the same gates and the
+    # same post-render leak scan as every other on-demand render.
+    "profile":           "PROFILE",
 }
 
 SUPPORTED_BRIEF_KINDS = frozenset(EYEBROW_BY_KIND)

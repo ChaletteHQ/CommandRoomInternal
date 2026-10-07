@@ -164,13 +164,24 @@ def _rules_path(workspace_root) -> Path:
 
 def load_never_track_rules(workspace_root) -> List[str]:
     """Existing never-track pattern lines (the `never-track:`-prefixed lines).
-    Never raises."""
+    Never raises.
+
+    NEVERTRACK2 MUST 1 (REVIEW_T2B_CB2, both observations): the file is read
+    as BYTES, a leading UTF-8 byte order mark is dropped (it hid the rule on
+    line 1 from the prefix test), and the rest is decoded as UTF-8 with
+    `errors="replace"`, so a file saved as cp1252 by a Windows editor yields
+    its rules with a replacement character where an odd byte sat, instead of
+    raising `UnicodeDecodeError` out of a reader that promises never to
+    raise. A missing or unreadable file is no rules."""
     path = _rules_path(workspace_root)
-    if not path.exists():
-        return []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        if not path.exists():
+            return []
+        raw = path.read_bytes()
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+    except (OSError, ValueError, UnicodeError):
         return []
     out = []
     for ln in lines:

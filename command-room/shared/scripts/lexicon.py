@@ -29,6 +29,7 @@ Read-only. Pure data + path logic — never touches the substrate.
 from __future__ import annotations
 
 import json
+import os
 import unicodedata
 from pathlib import Path
 from typing import Iterable, Optional
@@ -47,6 +48,9 @@ _pack_cache: dict[str, dict] = {}
 # Self-locate result memoized by cwd, so the hot tokenizer path never re-walks
 # the tree. Value is the resolved root Path or None.
 _selfloc_cache: dict[str, Optional[Path]] = {}
+# CB-T2B-1: a root's resolved cache key, memoized by the spelling handed in
+# (see `_resolved_key`).
+_resolved_key_cache: dict[str, str] = {}
 # Sentinel: "no workspace/config from this cwd" so the self-locating fast path
 # doesn't re-walk the tree every call.
 _NO_ROOT = "\x00no-root"
@@ -71,11 +75,38 @@ def _resolve_root(workspace_root: Optional[Path | str]) -> Optional[Path]:
     return root
 
 
+def _resolved_key(root: Path) -> str:
+    """The cache key for a root: its resolved path, resolved ONCE per spelling.
+
+    CB-T2B-1. `Path.resolve()` walks the filesystem, and the tokenizer asks for
+    the active languages once per token (221,586 times in one Morning Brief
+    pack build on a real book, where it was about half the build's time through
+    the door). The resolved key is memoized by the spelling handed in; a
+    relative spelling is memoized together with the cwd it was relative to, so
+    a process that changes directory never reads another folder's answer.
+    A link retargeted while the process runs keeps its first answer until
+    `_clear_caches()`; no caller retargets a root inside one process.
+
+    LOWS2 row 12 (CB1 F-3): on Windows a spelling is absolute only when it
+    names a drive AND `isabs` says so; a root-relative `\\foo` (which `isabs`
+    calls absolute on 3.12) and a drive-relative `D:foo` are tied to the cwd
+    like any relative spelling. POSIX is unchanged."""
+    raw = str(root)
+    absolute = os.path.isabs(raw) and (os.name != "nt"
+                                       or bool(os.path.splitdrive(raw)[0]))
+    memo = raw if absolute else raw + "\x00" + os.getcwd()
+    key = _resolved_key_cache.get(memo)
+    if key is None:
+        key = str(root.resolve())
+        _resolved_key_cache[memo] = key
+    return key
+
+
 def _active_languages(workspace_root: Optional[Path | str] = None) -> list[str]:
     """Non-``en`` language codes active for this workspace, priority order.
     Empty ⇒ English-only fast path. Cached per resolved root."""
     root = _resolve_root(workspace_root)
-    key = _NO_ROOT if root is None else str(root.resolve())
+    key = _NO_ROOT if root is None else _resolved_key(root)
     if key in _langs_cache:
         return _langs_cache[key]
 
@@ -187,3 +218,4 @@ def _clear_caches() -> None:
     _langs_cache.clear()
     _pack_cache.clear()
     _selfloc_cache.clear()
+    _resolved_key_cache.clear()

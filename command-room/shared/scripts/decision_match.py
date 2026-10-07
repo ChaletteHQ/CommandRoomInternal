@@ -434,6 +434,105 @@ def load_open_decisions(events_jsonl_path: str | Path) -> list[dict]:
 # -----------------------------------------------------------------------------
 
 
+def _ref_forms(ref: str) -> set:
+    """Every spelling ONE transcript reference can be on file under — the bare
+    id and the `granola:`-prefixed one. Same drift `meeting_capture.
+    _norm_ref_keys` absorbs; said here because a fence that matched only the
+    caller's spelling would be inert on exactly the callers that matter."""
+    ref = str(ref or "").strip()
+    if not ref:
+        return set()
+    out = {ref}
+    if ":" in ref:
+        out.add(ref.split(":", 1)[1])
+    else:
+        out.add("granola:" + ref)
+    return {r for r in out if r}
+
+
+def _ref_in(ref: str, refs: set) -> bool:
+    """True when `ref` names the same transcript as something in `refs`."""
+    mine = _ref_forms(ref)
+    for other in refs:
+        if mine & _ref_forms(other):
+            return True
+    return False
+
+
+def proposal_pair_key(decision_id, source_ref) -> str:
+    """The identity of a (decision, transcript) supersede PROPOSAL.
+
+    CAPTUREONCE1 §2.3. A proposal is a question put to a human, and the same
+    question asked twice is not twice as informative — it is a pile. The
+    v5.30.0 attended run found 742 of them, most of them the same pairs over
+    and over, which is what made the review surface unusable and is why the
+    proposals needed a lifetime (DOORS1) in the first place. Keyed on the
+    PAIR, so a genuinely new transcript still proposes against an old decision
+    exactly once."""
+    ref = str(source_ref or "").strip()
+    # The bare id is the stable half of the two spellings (`granola:x` / `x`),
+    # so key on it and both spellings reduce to one pair.
+    if ":" in ref:
+        ref = ref.split(":", 1)[1]
+    return f"{str(decision_id or '').strip()}||{ref}"
+
+
+def seen_proposal_pairs(events_jsonl_path: str | Path) -> set:
+    """Every (decision, transcript) pair a `decision_supersede_proposed` event
+    already carries on disk. Read defensively — a malformed line is skipped,
+    never fatal.
+
+    `load_events_defensively` returns (events, skipped); iterating its return
+    value directly walks those two LISTS, which is an AttributeError on the
+    first step and takes the whole fire down with it. Found by this lane's
+    own pin, on the reader the orchestrator's Phase 4.6.b calls every fire."""
+    out: set = set()
+    events, _skipped = load_events_defensively(events_jsonl_path)
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") != RECOMMEND_SUPERSEDE_PROPOSED:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ref = data.get("source_ref")
+        if not ref:
+            continue
+        out.add(proposal_pair_key(data.get("decision_id"), ref))
+    return out
+
+
+def new_supersede_proposals(proposals, *, events_jsonl_path=None,
+                            seen_pairs=None) -> dict:
+    """Filter built supersede proposals down to the pairs never proposed
+    before — on disk OR earlier in this same batch.
+
+    Returns {"events", "n_duplicate_pairs"}. A proposal with no `source_ref`
+    cannot be paired and is PASSED THROUGH rather than dropped: refusing a row
+    because it is unidentifiable would lose a real proposal to a shape bug.
+    `build_decision_supersede_proposal_event` stamps the ref, so every proposal
+    this tree builds is identifiable."""
+    seen = set(seen_pairs) if seen_pairs is not None else (
+        seen_proposal_pairs(events_jsonl_path) if events_jsonl_path else set())
+    out: list = []
+    dupes = 0
+    for ev in proposals or []:
+        if not isinstance(ev, dict) or ev.get("type") != RECOMMEND_SUPERSEDE_PROPOSED:
+            out.append(ev)
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ref = data.get("source_ref")
+        if not ref:
+            out.append(ev)
+            continue
+        key = proposal_pair_key(data.get("decision_id"), ref)
+        if key in seen:
+            dupes += 1
+            continue
+        seen.add(key)
+        out.append(ev)
+    return {"events": out, "n_duplicate_pairs": dupes}
+
+
 def match_transcript_to_decisions(
     *,
     open_decisions: list[dict],
@@ -441,6 +540,8 @@ def match_transcript_to_decisions(
     transcript_text: str,
     workspace_root=None,
     exclude_captured_since=None,
+    source_ref: Optional[str] = None,
+    processed_this_fire=None,
 ) -> list[dict]:
     """Path 3 — score a meeting transcript against open decisions.
 
@@ -486,11 +587,63 @@ def match_transcript_to_decisions(
              closed. Same conservative bias as commitments Path 3.)
       - score < HIGH                                  -> "no_action"
 
+    THE THIS-FIRE FENCE (CAPTUREONCE1 §2.3, 2026-09-14)
+    ---------------------------------------------------
+    `exclude_captured_since` above fences the DECISIONS. This fences the
+    TRANSCRIPTS, and it is the other half of the same bug. Phase 4.6.b's
+    prose has always said "for each NEWLY-PROCESSED transcript", and nothing
+    in code made that true: every fire re-matched the whole processed archive
+    against every open decision, so one attended run wrote 742 supersede
+    proposals off transcripts it had not touched (B2.7). Two ways to say it,
+    either one enough:
+
+      `processed_this_fire`  the caller's own list of source_refs it processed
+                             on THIS fire. A transcript not in it is not
+                             matched at all. The explicit answer.
+      `source_ref` + `workspace_root` + `exclude_captured_since`
+                             the derived answer, for a caller that has no
+                             list: a transcript whose `meeting_processed`
+                             receipt predates the fire start was processed by
+                             an EARLIER fire, so this fire does not re-match
+                             it. Same predicate the capture gate uses.
+
+    BOTH ARMS RUN. They are cumulative, not alternatives (review F-4): the
+    list says which transcripts this fire touched, the receipt says whether
+    an earlier fire already did, and a transcript has to clear both. The
+    reference wiring builds its list from the same collection it loops over,
+    so the list arm alone is self-satisfying there and the derived arm is
+    what actually stops the burst.
+
+    Both default None → inert, and a caller that passes neither behaves
+    exactly as it did. `orchestrator-past-meetings.md` Phase 4.6.b now passes
+    `processed_this_fire`; it is not optional there.
+
     Returns list of dicts sorted by score descending. Caller decides which
     recommendations to write events for.
     """
     if not transcript_text or not open_decisions:
         return []
+    # BOTH ARMS RUN, CUMULATIVELY (review F-4, 2026-09-14). They were an
+    # `if`/`elif`, and in the ONE wiring the reference block documents that
+    # made the sound arm unreachable: Phase 4.6.b builds `processed_this_fire`
+    # from the same collection it then loops over, so every ref the loop hands
+    # in is in the list it is checked against and the explicit arm can never
+    # refuse anything. The derived arm — "this transcript's receipt predates
+    # the fire start, so an EARLIER fire processed it" — is the one that can,
+    # and an `elif` switched it off exactly when a caller did as it was told.
+    if processed_this_fire is not None:
+        fired = {str(r).strip() for r in processed_this_fire if str(r or "").strip()}
+        ref = str(source_ref or "").strip()
+        if not ref or not _ref_in(ref, fired):
+            return []
+    if source_ref and workspace_root is not None and exclude_captured_since:
+        try:
+            from meeting_capture import processed_before
+            if processed_before(workspace_root, source_ref,
+                                exclude_captured_since):
+                return []
+        except Exception:
+            pass
     attendee_set = {a for a in attendee_person_ids if a}
 
     has_completion = detect_completion_signal(transcript_text)
@@ -651,6 +804,7 @@ def build_decision_supersede_proposal_event(
     next_seq: int,
     score: Optional[float] = None,
     title: str = "",
+    source_ref: str = "",
 ) -> dict:
     """Build a `decision_supersede_proposed` event — WALKFIX1 FR-2.
 
@@ -665,6 +819,13 @@ def build_decision_supersede_proposal_event(
     Carries the SCORE and the matched TITLE deliberately. Whoever adjudicates
     this is being asked to overrule a machine, and they can only do that if
     they can see what the machine matched and how confidently.
+
+    CAPTUREONCE1 §2.3 — `source_ref` is the TRANSCRIPT this proposal came out
+    of, and it is written on the row. Without it the (decision, transcript)
+    pair cannot be read back off the ledger, so nothing could tell a second
+    proposal for a pair already proposed from a first proposal for a new one
+    — which is how one fire produced 742 of them. `new_supersede_proposals`
+    is the filter that reads it.
     """
     data = {
         "decision_id": decision_id,
@@ -672,6 +833,8 @@ def build_decision_supersede_proposal_event(
         "evidence": clip(evidence) if evidence else "",
         "status": "proposed",
     }
+    if source_ref:
+        data["source_ref"] = str(source_ref).strip()
     if score is not None:
         data["score"] = round(float(score), 4)
     if title:
@@ -700,6 +863,9 @@ __all__ = [
     "build_decision_resolved_event",
     "build_decision_superseded_event",
     "build_decision_supersede_proposal_event",
+    "proposal_pair_key",
+    "seen_proposal_pairs",
+    "new_supersede_proposals",
     "_decision_field",
     "_decision_id",
 ]

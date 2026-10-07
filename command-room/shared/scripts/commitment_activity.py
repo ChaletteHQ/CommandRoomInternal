@@ -20,7 +20,12 @@ touching its id:
 
     commitment_updated / commitment_reclassified / commitment_reopened
     (lifecycle state changes) · outreach_sent (an outbound chase went out)
-    · draft_created (a chase draft was staged)
+    · the CUSTOMER's own hand on the row (CUSTOMER_TOUCH_EVENT_TYPES — a
+    snooze, an un-snooze, a tapped verb, putting it on the list) · the
+    OTHER SIDE's own move on it (COUNTERPARTY_ACTIVITY_EVENT_TYPES — their
+    reply, their part delivered). Our OWN unsent draft (`draft_created`)
+    is NOT movement — M's ruling R-3, 2026-09-07 (CLEANUP1): the product
+    noticing a row has gone quiet is not somebody touching it.
 
 with the commitment's own capture ts as the floor — a commitment with no
 movement events "last moved" when it was captured. Events reference
@@ -88,19 +93,78 @@ except Exception:  # pragma: no cover
 # quotes THIS constant's behavior — change them together.
 STUCK_DAYS = 21
 
-# What counts as movement. Lifecycle state changes + chase activity.
+# THE CUSTOMER'S OWN HAND on a row (EXIT1 FIX ROUND 1, F-4). Saying "later",
+# taking it back off later, tapping a verb on it in a chat, or putting it on
+# the list to talk about is the customer TOUCHING the item. It is not the
+# system filing a note (that is `_is_bookkeeping_update` below, and it stays
+# excluded) — it is a person looking at the row and acting on it.
+#
+# WHY THIS IS HERE AND NOT IN ONE PREDICATE: the age-out receipt says
+# "nobody has touched" these items. On M's own book four of the rows route 3
+# would rest carry a snooze HE made 33 days ago, so for four of them that
+# sentence was false. A receipt that says something untrue is a defect
+# wherever the sentence is written, so the fix belongs in the ONE derivation
+# every staleness surface passes, not in the surface that happened to print
+# it. Narrowing "stuck" is the safe direction: nothing is hidden that was
+# not hidden before — a touched row simply stops being called untouched.
+CUSTOMER_TOUCH_EVENT_TYPES = frozenset({
+    "chat_dismissal",          # "later" / snooze on any chat surface
+    "chat_dismissal_cleared",  # ...and taking it back off later
+    "chat_action",             # a verb tapped on the row in a chat
+    "dont_forget_snooze",      # the same gesture on the don't-forget surface
+    "commitment_to_discuss",   # put on the list to talk about
+})
+
+# THE OTHER SIDE'S OWN MOVE on a row (EXIT1 FIX ROUND 1, F-4; CLEANUP1's
+# reviewer found the same hole from the other end). The baseline counted only
+# OUR side — our chases, our edits, our re-dates — so a row the counterparty
+# had answered read as untouched. These are the inbound facts the ledger
+# actually records against a commitment id.
+#
+# STILL A LIMIT, STATED: a meeting with them and a calendar acceptance carry
+# no commitment id, so they cannot be joined here without a second, person-
+# shaped derivation — and a second derivation is how two surfaces start
+# disagreeing about the same row. Route 1's calendar leg already CLOSES the
+# rows a meeting with the other side proves, which is the stronger act.
+COUNTERPARTY_ACTIVITY_EVENT_TYPES = frozenset({
+    "email_received",              # their reply, recorded against the row
+    "commitment_partial_received",  # they delivered their part of it
+})
+
+# What counts as movement. Lifecycle state changes + chase activity + the
+# customer's own hand + the other side's own move.
 # `commitment_resolved` is deliberately absent — a closed item leaves the
 # open set entirely; classification only ever sees open commitments.
+#
+# M's ruling R-3 (2026-09-07, CLEANUP1 fix round 1) — OUR OWN UNSENT DRAFT IS
+# NOT SOMEBODY TOUCHING THE ROW, so `draft_created` left this set.
+#
+# A draft is the product noticing a row has gone quiet and staging a nudge
+# nobody has sent. Counting it as movement made the very act of noticing the
+# silence reset the clock that measures the silence — the same inversion the
+# watch mark and the park hint already have named exclusions for
+# (`_BOOKKEEPING_MARKER_KEYS` / `_BOOKKEEPING_PRESENT_KEYS` below, and their
+# reasoning is this reasoning). A row whose only movement in two months is a
+# draft that never went out is exactly the dead backlog the staleness rules
+# exist to find. Nothing is lost when the draft IS sent: the send writes its
+# own `outreach_sent`, which is still movement and still the chase signal.
+#
+# Ruled once, for every staleness surface — the plate's stuck caption, the
+# age-out, the review expiry, EXIT1's silence rule and CLEANUP1's one-shot —
+# because a rule about what "quiet" means that differs by surface is two
+# books. Restoring the old behaviour is one line: put the name back in the
+# set below.
+UNSENT_DRAFT_EVENT_TYPE = "draft_created"
 MOVEMENT_EVENT_TYPES = frozenset({
     "commitment_updated",
     "commitment_reclassified",
     "commitment_reopened",
     "outreach_sent",
-    "draft_created",
-})
+}) | CUSTOMER_TOUCH_EVENT_TYPES | COUNTERPARTY_ACTIVITY_EVENT_TYPES
 
 # The blocked signal: an outbound actually went out. A staged draft
-# (`draft_created`) is movement but not a chase — nothing reached the person.
+# (`draft_created`) is neither a chase nor movement (R-3 above) — nothing
+# reached the person and nobody touched the row.
 CHASE_EVENT_TYPES = frozenset({"outreach_sent"})
 
 
@@ -145,6 +209,34 @@ _BOOKKEEPING_MARKER_KEYS = ("watch_set", "watch_cleared",
 _BOOKKEEPING_PRESENT_KEYS = ("status_hint",)
 
 
+def _is_customer_unpark(ev: dict, d: dict) -> bool:
+    """EXIT1 FIX ROUND 3 (review S-1) — True when a PERSON took an item off
+    the resting list, rather than the product noticing movement.
+
+    DD-6 above is right about the product's own hand: the rail parks a row
+    nobody touched and un-parks it when something moved, and neither is the
+    promise moving, so neither may reset the clock that measures the quiet.
+    It was wrong about the CUSTOMER's hand. When somebody says `undo` on a
+    rest, the un-park IS the touch — a person looked at the item and put it
+    back on their working list. Counting that as bookkeeping left the row's
+    last movement six weeks in the past, so the next morning's run rested it
+    again, and two weeks after that let it go: an undo the machine re-did
+    every day, which is not a reversal at all.
+
+    Told apart by the ACTOR, on the shape every automatic rail already
+    writes: an automatic un-park signs itself (`unparked_by` is the rail's
+    own name, the same string as the event's `source_skill`, exactly the
+    test `change_feed._machine_resolved` uses on a close), and the literal
+    "system" is the other machine spelling. Anything else is a person id.
+    """
+    if not d.get("unparked"):
+        return False                       # a PARK is the product's note
+    by = str(d.get("unparked_by") or "").strip()
+    if not by or by.lower() == "system":
+        return False
+    return by != str(ev.get("source_skill") or "").strip()
+
+
 def _is_bookkeeping_update(ev: dict) -> bool:
     """True for a `commitment_updated` that only files a MARKER on an item —
     parking or un-parking a watch, or raising or clearing an overdue ask.
@@ -163,6 +255,8 @@ def _is_bookkeeping_update(ev: dict) -> bool:
     if (ev.get("type") or ev.get("event")) != "commitment_updated":
         return False
     d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    if _is_customer_unpark(ev, d):    # EXIT1 FIX ROUND 3 — their own hand
+        return False
     if not (any(d.get(k) for k in _BOOKKEEPING_MARKER_KEYS)
             or any(k in d for k in _BOOKKEEPING_PRESENT_KEYS)):  # F-4: a park is a note, not movement
         return False
@@ -485,6 +579,9 @@ __all__ = [
     "event_commitment_refs",
     "CommitmentMovement",
     "MOVEMENT_EVENT_TYPES",
+    "CUSTOMER_TOUCH_EVENT_TYPES",
+    "COUNTERPARTY_ACTIVITY_EVENT_TYPES",
+    "UNSENT_DRAFT_EVENT_TYPE",
     "CHASE_EVENT_TYPES",
     "SUBSTANTIVE_UPDATE_KEYS",
     "STUCK_DAYS",

@@ -19,8 +19,8 @@ TRIGGER
 -------
 A file named `.license_expired` inside the workspace's `_hq/data/` directory,
 resolved from the path being written. Sentinel FILE rather than env var on
-purpose: CONTRACT.md line 278 records that each Cowork `mcp__workspace__bash`
-call is independent with no env carryover, so an env-var trigger would not
+purpose: CONTRACT.md Rule 22 records that each call through the workspace
+access layer is independent with no env carryover, so an env-var trigger would not
 survive between the turn that sets it and the turn that writes.
 
 POSTURE (the shape the real gate inherits)

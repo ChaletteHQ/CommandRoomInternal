@@ -112,6 +112,39 @@ except ImportError:
         return ts[:10] if isinstance(ts, str) and ts else ""
 
 
+def _ledger_now(events: list[dict]):
+    """THE CLOCK THIS READER MEASURES AGE AGAINST: the newest instant in the
+    events it was handed, falling back to wall-clock now.
+
+    Not `datetime.now()`, deliberately. `_categorize_decisions` takes events
+    and no clock, and every caller hands it either the live ledger (whose
+    newest instant IS now, to the second) or a fixture (whose newest instant
+    is the fixture's own now). Reading the wall clock instead would make an
+    age rule true in production and meaningless in every test that pins it —
+    the fixture-temporal blind spot this repo has hit before. One clock,
+    derived from the same rows the ages are derived from."""
+    newest = None
+    for ev in events or []:
+        when = parse_ts(event_time(ev))
+        if when is not None and (newest is None or when > newest):
+            newest = when
+    return newest or datetime.datetime.now(datetime.timezone.utc)
+
+
+def _supersede_proposal_expired(proposed_at, now=None) -> bool:
+    """DOORS1 1.4 — has this supersede proposal outlived its four days?
+
+    `question_ttl` owns the predicate and the number; this is the one-line
+    call, wrapped so a missing or broken engine RENDERS the proposal rather
+    than hiding it. Hiding on an error would make a read failure look like a
+    ruled expiry."""
+    try:
+        from question_ttl import supersede_proposal_expired
+        return bool(supersede_proposal_expired(proposed_at, now=now))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _events_path(workspace_root: Path) -> Path:
     return workspace_root / "_hq" / "data" / "events.jsonl"
 
@@ -204,6 +237,8 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
       - proposals_map: {decision_id: [{score, evidence, proposed_at}]}
         (WALKFIX1 FR-2 — proposed, never applied; status is untouched)
     """
+    # DOORS1 1.4 — the one clock this walk measures proposal age against.
+    now = _ledger_now(events)
     decisions: list[dict] = []
     supersedes_map: dict[Any, list[dict]] = {}
     # DECSHAPES1 — the EXECUTION closer. `decision_resolved` has existed in the
@@ -352,11 +387,24 @@ def _categorize_decisions(events: list[dict]) -> dict[str, Any]:
             # fire quietly closing it. Keyed by decision id, because a proposal
             # names the id (the seq belongs to the proposal event itself).
             did = data.get("decision_id")
-            if did:
+            proposed_at = data.get("reviewed_at") or event_time(ev)
+            # DOORS1 1.4 (M's ruling R6, the proposal half) — A PROPOSAL HAS A
+            # LIFETIME. Past `commitment_policy.PROPOSAL_TTL_DAYS` an
+            # unanswered supersede proposal stops being offered: it never
+            # applied, it never could (the matcher is recommend-only), and a
+            # suggestion the customer has walked past for four days is not a
+            # question any more. The attended test found 742 of these standing
+            # open with no default of any kind. The predicate is
+            # `question_ttl`'s, not a second age test living here, so the log
+            # and the expiry engine can never disagree about which rows are
+            # still an offer. A read that fails RENDERS the proposal — the
+            # safe direction is showing the customer something they can
+            # dismiss, never hiding one because a clock could not be read.
+            if did and not _supersede_proposal_expired(proposed_at, now):
                 proposals_map.setdefault(did, []).append({
                     "score": data.get("score"),
                     "evidence": data.get("evidence", ""),
-                    "proposed_at": data.get("reviewed_at") or event_time(ev),
+                    "proposed_at": proposed_at,
                 })
         elif t == "decision_revisit_scheduled":
             revisit_row = {

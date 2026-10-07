@@ -2,7 +2,7 @@
 
 > LATE-FIRE EXEMPT (one-shot backfill chunk): this is not a recurring reader-facing chat, so the shared lateness tiers do not apply — run in full whenever fired. Documented v4.5.1-era hygiene so the omission reads as a contract, not a gap.
 
-This file is the EXACT prompt registered with `create_scheduled_task` for `taskId: cr-historical-backfill-N` (one-shot, fires once at the scheduled time then expires). One-time per chunk. Multiple chunks are scheduled at install time by `enable-command-room-schedules` Phase 4 to walk back the user's last 12 months of metadata.
+This file is the EXACT prompt registered through `schedule_backend.plan_create` for `taskId: cr-historical-backfill-N` (one-shot, fires once at the scheduled time then expires). One-time per chunk. Multiple chunks are scheduled at install time by `enable-command-room-schedules` Phase 4 to walk back the user's last 12 months of metadata.
 
 **Chat-output rules:** follow `references/SHARED_CHAT_OUTPUT_PROTOCOL.md`.
 **Atomic-write requirement (v2.10.5+):** ALL appends to `events.jsonl` MUST use `shared/scripts/atomic_write.py atomic_append_jsonl`. Backfill chunks emit hundreds of events per run — batch them via `atomic_append_jsonl(path, [event1, event2, ..., eventN])` (one helper call per batch, NOT per event) for efficiency + Drive-sync safety. Same rule for the `.backfill_cursor` resume marker — write via `atomic_write_text`. See `shared/WORKSPACE_API.md` § "Append Protocol — events.jsonl" for the full pattern.

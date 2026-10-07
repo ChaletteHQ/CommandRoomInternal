@@ -34,10 +34,25 @@ format is a three-line change; the recipe is documented at the registry.
 Used by:
   - cleanup/SKILL.md (Phase 3f) — the weekly backstop sweep.
   - check-deliverables/SKILL.md — the on-demand + point-at-target sweep.
-  - gate2_turn_sweep.py — the best-effort same-turn Stop-hook runner.
+  - writer_gate_report.py — the maintenance-run census over what the writer
+    chokepoints already emit (OUTGATE1, 2026-09-08).
+
+RETIRED (OUTGATE1, 2026-09-08): `gate2_turn_sweep.py`, the best-effort
+same-turn `Stop`-hook runner, and `hooks/hooks.json` that wired it. M ruled
+2026-09-07 that Cowork never runs plugin hooks — confirmed by
+BUG_2026-08-04_no-alarm-when-scheduled-surfaces-stop's sibling finding that
+the hook silently stopped emitting for two weeks and nothing noticed. Its one
+detector that this module did not already cover —
+`last_assistant_text_from_transcript` below, extracting the just-finished
+assistant turn from a Stop-hook's transcript payload — is kept here as a
+plain importable function so the capability survives the hook's removal even
+though nothing currently calls it automatically (there is no longer a hook
+to hand it a transcript path); `scan_chat_text` immediately below remains the
+manual route `check-deliverables` uses when the CEO pastes drafted text.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -464,10 +479,69 @@ def scan_chat_text(text: str, *, context: str = "email") -> dict:
     return out
 
 
+def last_assistant_text_from_transcript(transcript_path: str | Path | None) -> str:
+    """Extract the just-finished assistant turn's text from a Stop-hook style
+    transcript JSONL (SPEC GATE2 D4's chat-prose path, folded in from the
+    retired `gate2_turn_sweep.py` — OUTGATE1, 2026-09-08).
+
+    A memo/email drafted entirely as chat text (no skill fired, no .docx
+    saved) never reaches a file, so a file sweep can't see it; when a caller
+    DOES have a transcript path (a Stop hook's own payload, historically —
+    there is no automatic caller today since hooks are retired), this is how
+    it recovers the text to hand to `scan_chat_text`.
+
+    Defensive across transcript shapes: content as a string or a list of
+    `{type: text, text: ...}` blocks. Returns `""` on any problem — a missing
+    path, an unreadable file, a transcript with no assistant turn — never
+    raises."""
+    if not transcript_path:
+        return ""
+    try:
+        p = Path(transcript_path)
+        if not p.is_file():
+            return ""
+        last_text = ""
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") not in ("assistant", None) and entry.get(
+                "role"
+            ) not in ("assistant", None):
+                continue
+            msg = entry.get("message") if isinstance(entry.get("message"), dict) else entry
+            if (msg.get("role") or entry.get("type")) != "assistant":
+                continue
+            content = msg.get("content")
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text") or "")
+                    elif isinstance(block, str):
+                        parts.append(block)
+                text = "\n".join(parts)
+            if text.strip():
+                last_text = text  # keep the most recent assistant text
+        return last_text
+    except Exception:
+        return ""
+
+
 # Phase 6 Quick Win A — filename → producing-skill attribution for the voice
 # corrections feed. Best-effort: a well-attributed tell trains the right skill's
 # voice block; an unrecognized deliverable falls to the generic "deliverables"
-# corpus (still read by Pass 11's corrections-*.jsonl glob). Never a user write.
+# corpus (read by the `learning` job's corrections-*.jsonl glob). Never a
+# user write.
 _SKILL_FILENAME_HINTS = (
     ("call_prep", "call-prep"),
     ("call prep", "call-prep"),
@@ -482,7 +556,7 @@ _SKILL_FILENAME_HINTS = (
     ("board_minutes", "board-pack-assembler"),
 )
 
-# Map a voice-tell rule id to a correction_type bucket so Pass 11 groups these
+# Map a voice-tell rule id to a correction_type bucket so the voice leg groups these
 # alongside user edit-corrections. Voice tells are all "banned phrasing" for the
 # purposes of the corpus — the offending phrase is the pattern to stop using.
 _VOICE_RULE_TO_TYPE = {
@@ -504,12 +578,12 @@ def _infer_skill_from_path(path: str) -> str:
 def feed_voice_corrections(workspace_root: str | Path, result: dict) -> int:
     """Quick Win A — append each FAIL-severity voice tell found in a produced
     deliverable to the relevant `corrections-<skill>.jsonl`, giving
-    insight-generator Pass 11 more training data for free. FLAG-ONLY: this never
+    the `learning` job's voice leg more training data for free. FLAG-ONLY: this never
     edits, moves, or rewrites the user's deliverable — it only appends a
     CR-owned correction row under `_hq/voice/` (same class as the findings
     record). The offending phrase is stored as `original` with an empty
     `corrected` (there is no user rewrite to compare against — the signal is
-    "this tell was produced; stop using it"), so Pass 11 can propose banning it.
+    "this tell was produced; stop using it"), so the voice leg can ban it.
     Privacy/substrate leaks are NOT fed here — they are not a voice pattern and
     stay flag-only. Returns the number of rows written. NEVER raises."""
     written = 0
@@ -866,6 +940,7 @@ __all__ = [
     "sweep_paths",
     "sweep_targets",
     "scan_chat_text",
+    "last_assistant_text_from_transcript",
     "sweep_workspace",
     "summarize_for_user",
     "detect_gate_bypass",

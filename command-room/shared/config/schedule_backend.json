@@ -1,0 +1,15 @@
+{
+  "docs": "BOOT3 — the registration gate for the schedule backend seam, read by shared/scripts/schedule_backend.py::registration_gate. This file is part of the plugin payload: it ships with a version and lands in a workspace only through the normal push -> plugin-update -> promote ritual. A workspace has no supported way to write here. Precedent for a shipped, JSON-editable payload config: shared/config/operator_capabilities.json, shared/config/surface_profiles.json.",
+  "how_to_unblock": "Set cloud.registration to \"allowed\", fill unblocked_on with the date, and say in the note what was walked before unblocking. Ship it. The gate is fleet-wide by construction: the promote fan-out copies command-room/ verbatim into every client repo, so unblocking here unblocks every workspace on that release. While blocked, plan_create and a cron plan_update return a refusal carrying one customer sentence; plan_list, verify, plan_fire on an existing trigger and plan_delete of Command Room's own one-shots and probes stay live. To block again, set cloud.registration back to \"blocked\" with a new blocked_since.",
+  "cloud": {
+    "registration": "allowed",
+    "blocked_since": "2026-09-19",
+    "unblocked_on": "2026-09-23",
+    "reason": "Registration was held until the v3 bootloader and the workspace access layer shipped in the same cut. They did in v5.33.0, with the writer identity baked at registration, so the merged app now registers its chats itself. A seat that cannot bake a writer identity (no account in the process) is still refused by schedule_config.scheduler_availability, so no chat is ever registered without one.",
+    "unblock_evidence": "BOOT3 + ACCESS1 + IDENT1 on v5.33.0 (cut 157fff59); walked by M on the merged seat in the four walks of 2026-09-20, 09-21, 09-22 and 09-23 (re-walk 3): door, discovery, identity forwarding and the hand-made inbox and maintenance fires on the Require-this-computer shape"
+  },
+  "legacy": {
+    "registration": "allowed",
+    "note": "The desktop fleet keeps registering exactly as it does today. This row exists so the file describes both backends; registration_gate short-circuits legacy to allowed before it ever reads the file."
+  }
+}

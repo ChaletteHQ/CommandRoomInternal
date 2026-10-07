@@ -34,7 +34,22 @@ THE RULE THIS MODULE ENFORCES
   4. The chat sentence renders from the same struct, with explicit
      unshipped-tip vocabulary.
 
-Stdlib only. Pure except the two file reads.
+THE DOOR SPLIT (HYGIENE3, 2026-09-23; coordinator decision D-3). On the
+merged app the plugin lives in the container and the workspace lives on the
+customer's computer; neither side can open the other's files. The walk's
+update asked the read door for `resolve_install_versions` and was refused -
+it opens `plugin.json` and `shared/releases/` beside the workspace, a
+plugin-side path the fence refuses, and the staged runtime ships no release
+manifests at all - so the chat imported this module in a shell instead. The
+triple is now resolved in two halves: `plugin_facts` (the CONTAINER half,
+run from the plugin root: `python3 shared/scripts/bridge_versions.py
+plugin-facts`) reads the two plugin-side members, and `install_versions`
+(the WORKSPACE half, on the read door as `bridge_versions:install_versions`)
+takes them as arguments and reads only the workspace stamp - every year
+shard included, through `events_io`. `resolve_install_versions` is the two
+halves in one process, for a seat where both sides are local.
+
+Stdlib only. Pure except the file reads.
 """
 from __future__ import annotations
 
@@ -98,35 +113,47 @@ def _newest_manifest(plugin_root) -> Optional[str]:
 def _workspace_stamp(workspace_root) -> Optional[str]:
     """The version this workspace was last brought current AT — the newest
     `plugin_update` receipt's `to_version`, which is what `from_version` means
-    on the next run."""
-    events = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    stamp = None
+    on the next run. Read across EVERY year shard and the active file through
+    `events_io` (HYGIENE3): a workspace whose last update row rotated into a
+    year shard is still a workspace that was brought current."""
     try:
-        text = events.read_text(encoding="utf-8")
+        import events_io  # noqa: WPS433 — deferred: the container half never needs it
+        rows = events_io.iter_events(workspace_root)
+        stamp = None
+        for ev in rows:
+            if ev.get("type") != "plugin_update":
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            v = data.get("to_version") or ev.get("to_version")
+            if isinstance(v, str) and v.strip():
+                stamp = v.strip()      # append-only: the last one wins
+        return stamp
     except Exception:  # noqa: BLE001 — a fresh install has no ledger yet
         return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or "plugin_update" not in line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if ev.get("type") != "plugin_update":
-            continue
-        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        v = data.get("to_version") or ev.get("to_version")
-        if isinstance(v, str) and v.strip():
-            stamp = v.strip()      # append-only: the last one wins
-    return stamp
 
 
-def resolve_install_versions(plugin_root, workspace_root) -> Dict[str, Any]:
-    """Read the triple from disk. Prefer `resolve_once` — this is the READ,
-    and calling it per pass is exactly the defect."""
-    pj = _read_plugin_version(plugin_root)
-    nm = _newest_manifest(plugin_root)
+def _clean(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip() and value.strip() != UNKNOWN:
+        return value.strip()
+    return None
+
+
+def plugin_facts(plugin_root) -> Dict[str, str]:
+    """The CONTAINER half of the triple: the two members that live beside the
+    plugin, never beside the workspace. Run where the plugin is."""
+    return {"plugin_json_version": _read_plugin_version(plugin_root) or UNKNOWN,
+            "newest_manifest_version": _newest_manifest(plugin_root) or UNKNOWN}
+
+
+def install_versions(workspace_root, *, plugin_json_version: Optional[str] = None,
+                     newest_manifest_version: Optional[str] = None) -> Dict[str, Any]:
+    """The WORKSPACE half of the triple, on the read door
+    (`bridge_versions:install_versions`): the plugin-side members arrive as
+    ARGUMENTS (from `plugin_facts`, run in the container) and the only thing
+    read here is the workspace stamp. Answers the same struct
+    `resolve_install_versions` always has."""
+    pj = _clean(plugin_json_version)
+    nm = _clean(newest_manifest_version)
     ws = _workspace_stamp(workspace_root)
     out: Dict[str, Any] = {
         "plugin_json_version": pj or UNKNOWN,
@@ -139,6 +166,14 @@ def resolve_install_versions(plugin_root, workspace_root) -> Dict[str, Any]:
     out["from_version"] = out["workspace_stamp"]
     out["unshipped_tip"] = _is_ahead(nm, pj)
     return out
+
+
+def resolve_install_versions(plugin_root, workspace_root) -> Dict[str, Any]:
+    """Read the triple from disk, both halves in one process (a seat whose
+    plugin and workspace are on one filesystem). Prefer `resolve_once` — this
+    is the READ, and calling it per pass is exactly the defect."""
+    facts = plugin_facts(plugin_root)
+    return install_versions(workspace_root, **facts)
 
 
 def _is_ahead(newer: Optional[str], older: Optional[str]) -> bool:
@@ -210,6 +245,23 @@ def version_sentence(triple: Dict[str, Any]) -> str:
 
 __all__ = [
     "VERSION_FIELDS", "RUN_STATE_KEY", "UNKNOWN",
+    "install_versions", "plugin_facts",
     "resolve_install_versions", "resolve_once", "receipt_version_fields",
     "version_sentence",
 ]
+
+
+def main(argv=None) -> int:
+    """`plugin-facts [<plugin root>]` - the container half, one JSON line.
+    The plugin root defaults to the one this file lives in."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] != "plugin-facts":
+        sys.stderr.write("usage: bridge_versions.py plugin-facts [<plugin root>]\n")
+        return 2
+    root = Path(argv[1]) if len(argv) > 1 else _HERE.parent.parent
+    sys.stdout.write(json.dumps(plugin_facts(root), sort_keys=True) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

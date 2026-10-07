@@ -698,7 +698,21 @@ def stakes_for(ev, *, workspace_root=None, now_iso=None,
     if due:
         try:
             from commitment_state import is_overdue
-            if is_overdue(due, now_iso or _now_iso()):
+            # DATE1 fix round 1 (REVIEW_DATE1 F-1) — the same raw-UTC-slice
+            # class `_due_phrase` closed elsewhere: `is_overdue` treats
+            # `now_iso` as already being "today" verbatim, so an item due
+            # today read as overdue past ~5pm Pacific. `workspace_root` is
+            # already in hand here (the roster read a few lines up needs
+            # it); anchoring through the SAME `tz.localize_date` door costs
+            # nothing extra and closes this reader too. `now_iso` here is
+            # always the fire's real wall clock, never a simulated one
+            # (`run_watch_expiry_pass` calls with `now_iso=None` on
+            # purpose) — this only corrects which CALENDAR DAY that real
+            # instant falls on, not which instant it is.
+            from tz import localize_date
+            _raw_now = now_iso or _now_iso()
+            _anchor = localize_date(_raw_now, workspace_path=workspace_root) or _raw_now
+            if is_overdue(due, _anchor):
                 reasons.append("overdue")
         except Exception:
             pass

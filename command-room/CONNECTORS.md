@@ -4,14 +4,14 @@
 
 The Command Room plugin gets smarter the more tools you connect. Each connector gives Claude access to a different type of context — email threads, calendar events, Slack conversations, documents, meeting transcripts, and more.
 
-Connect tools during onboarding (Settings → Connectors) or add them anytime later. Skills automatically use whatever's connected and skip what's not — no errors, no reconfiguration needed.
+Connect tools during onboarding (the Claude app's Settings → Connectors) or add them anytime later. Skills automatically use whatever's connected and skip what's not — no errors, no reconfiguration needed.
 
 ## Available Connectors
 
 | Category | Tools | What It Unlocks |
 |----------|-------|-----------------|
 | Email | Gmail, Outlook, Superhuman | Read threads, draft responses, search history. Powers call prep, briefings, and "what did they say about X." |
-| Calendar | Google Calendar, Outlook Calendar, Superhuman | See upcoming meetings, who's on the call, recurring workstreams. Powers meeting prep and time awareness. |
+| Calendar | Google Calendar, Outlook Calendar, Superhuman (the same connection that reads your mail also reads your calendar — nothing extra to connect) | See upcoming meetings, who's on the call, recurring workstreams. Powers meeting prep and time awareness. |
 | Chat | Slack, Microsoft Teams | Read channels, search history, send messages. Powers cross-tool search and team communication. |
 | Cloud Storage | Google Drive, OneDrive, Box, Dropbox | Search and read docs. Powers "find that document about X." |
 | Meeting Transcripts | Granola | Auto-pull meeting transcripts. No more pasting — meetings get processed automatically. |

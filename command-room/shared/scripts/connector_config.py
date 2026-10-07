@@ -48,6 +48,29 @@ _ENTITIES_REL = Path("_hq") / "data" / "entities.json"
 # itself contain single underscores (rare) but never the "__" separator.
 _TOOL_ID_RE = re.compile(r"^mcp__(?P<server>.+?)__(?P<op>.+)$")
 
+# A server-id minted by the old connector runtime: eight hex characters, alone
+# or heading a hyphenated UUID. Those ids ROTATE on reconnect, which is the
+# whole reason a binding has to be re-pinned at all. A display-name server-id
+# ("Superhuman_Mail") does not rotate, so a binding pinned to one is stable —
+# and a UUID binding left behind beside it is a stale route that outbound
+# addressing can still pick up (DISC1).
+_UUID_SHAPED_RE = re.compile(r"^[0-9a-f]{8}(-|$)", re.IGNORECASE)
+
+# `binding_verified` — HOW the address-to-connector binding was established.
+#   user_asserted      the customer said so, or it was implied by a connector
+#                      with no way to name its own account (native Gmail, H-A)
+#   connector_asserted the address came back FROM the connector — Superhuman
+#                      `list_accounts`, Granola `get_account_info` — so it is
+#                      the connector's own answer, not a guess (DISC1, §0.31)
+BINDING_USER_ASSERTED = "user_asserted"
+BINDING_CONNECTOR_ASSERTED = "connector_asserted"
+BINDING_VERIFIED_VALUES = (BINDING_USER_ASSERTED, BINDING_CONNECTOR_ASSERTED)
+
+
+def is_uuid_shaped_server_id(server_id: Optional[str]) -> bool:
+    """True when a server-id has the old rotating UUID shape."""
+    return bool(_UUID_SHAPED_RE.match((server_id or "").strip()))
+
 # Role → default two-dial posture when a classified account leaves the dials
 # unset. business-* accounts file + surface; personal is walled by default;
 # mixed surfaces (liberal) but files only by association (write dial off here —
@@ -132,9 +155,92 @@ def declared_backends(workspace_root=None, entities: Optional[dict] = None) -> D
 def declared_backend(category: str, workspace_root=None,
                      entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
     """The declared backend row for a category ({server_id, provider, label}),
-    or None when undeclared (caller falls back to substring discovery)."""
+    or None when undeclared (caller falls back to substring discovery).
+
+    IDENT1 I-1 (R-RW2-1; coordinator decision D-3): when a workspace root is
+    given, and the ledger has recorded at least one alias for the category,
+    the row also carries `server_ids` - the declared id FIRST, then every
+    alias (`declared_backend_ids`); with no alias the row is today's. The
+    `server_id` key is unchanged for every reader. A
+    call with no workspace root cannot read the ledger and answers the
+    entities row alone, exactly as before."""
     row = declared_backends(workspace_root, entities).get(category)
-    return row if isinstance(row, dict) and row.get("server_id") else None
+    if not (isinstance(row, dict) and row.get("server_id")):
+        return None
+    if workspace_root is None:
+        return row
+    aliases = [a for a in recorded_aliases(category, workspace_root)
+               if a != row["server_id"]]
+    if not aliases:
+        # No alias recorded: the row is today's, byte for byte, on every seat
+        # (fix pass 1, M-5 - a legacy seat's declared row never moves).
+        return row
+    out = dict(row)
+    out["server_ids"] = [row["server_id"]] + aliases
+    return out
+
+
+#: The two ledger rows the alias fold reads (D-3: a recorded alias is a
+#: LEDGER row, never an `entities.json` rewrite from a fire).
+CONNECTOR_DETECTED_EVENT = "connector_detected"
+CONNECTOR_BACKEND_CHANGED_EVENT = "connector_backend_changed"
+
+
+def recorded_aliases(category: str, workspace_root) -> List[str]:
+    """Every server id a silent fire RECORDED for `category` since the
+    category was last re-declared, oldest first.
+
+    THE WALK (2026-09-22, HOLD driver 1). One Superhuman connector, two
+    registries: the interactive seat names it `Superhuman_Mail`, the legacy
+    scheduled sandbox by a UUID. The declaration could match only one, so the
+    fire's mail leg went dark by naming. M ruled the HYBRID (R-RW2-1): a
+    silent fire that finds EXACTLY ONE server fingerprinting to the declared
+    provider uses it and records the id, so the next fire matches exactly and
+    never guesses again. The record is a `connector_detected` row with
+    `recorded_alias: true` (appended by the fire through `append_jsonl`);
+    this fold reads it back. A later `connector_backend_changed` for the
+    category (a deliberate re-declaration) drops every alias recorded before
+    it. Read through `events_io`; any failure answers no aliases."""
+    if workspace_root is None:
+        return []
+    try:
+        from events_io import iter_events
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            from events_io import iter_events
+        except Exception:  # noqa: BLE001
+            return []
+    aliases: List[str] = []
+    try:
+        for ev in iter_events(workspace_root):
+            if not isinstance(ev, dict):
+                continue
+            kind = ev.get("type")
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if data.get("category") != category:
+                continue
+            if kind == CONNECTOR_BACKEND_CHANGED_EVENT:
+                aliases = []
+            elif (kind == CONNECTOR_DETECTED_EVENT
+                  and data.get("recorded_alias") is True):
+                cand = data.get("candidate_server_id")
+                if isinstance(cand, str) and cand and cand not in aliases:
+                    aliases.append(cand)
+    except Exception:  # noqa: BLE001 - a reader never raises
+        return []
+    return aliases
+
+
+def declared_backend_ids(category: str, workspace_root=None,
+                         entities: Optional[dict] = None) -> List[str]:
+    """`[declared server_id] + recorded aliases` for a category, or `[]`
+    when the category is undeclared (IDENT1 I-1)."""
+    row = declared_backend(category, workspace_root, entities)
+    if not row:
+        return []
+    return list(row.get("server_ids") or [row["server_id"]])
 
 
 def zapier_server_ids(workspace_root=None, entities: Optional[dict] = None) -> List[str]:
@@ -414,16 +520,95 @@ def _write_entities(workspace_root, ent: Dict[str, Any], holder: str) -> None:
     atomic_write_json_locked(_entities_path(workspace_root), ent, holder=holder)
 
 
+def retire_uuid_bindings(ws: Dict[str, Any], new_server_id: str,
+                         provider: Optional[str] = None,
+                         *, prior_server_id: Optional[str] = None,
+                         binding_verified: Optional[str] = None) -> List[str]:
+    """Move every account binding that still points at a ROTATING server-id
+    onto `new_server_id`, in place. Returns the retired ids.
+
+    Called from the re-pin path below, and only when the new id is NOT
+    UUID-shaped. `set_account_classification` merges bindings BY server-id, so
+    without this a re-pin leaves the old UUID binding sitting beside the new
+    one — and `binding_for_address` hands out the FIRST binding it finds, so
+    outbound mail could still be addressed through a connection that no longer
+    exists. A binding is only moved when it is for the same provider (or was
+    the exact id being re-pinned): one account can be bound to two different
+    connectors on purpose.
+
+    Mutates `ws` in place; the caller writes."""
+    retired: List[str] = []
+    accts = ws.get("accounts")
+    if not isinstance(accts, list):
+        return retired
+    want = (provider or "").strip().lower() or None
+    for rec in accts:
+        if not isinstance(rec, dict):
+            continue
+        binds = rec.get("bindings")
+        if not isinstance(binds, list):
+            continue
+        kept: List[Any] = []
+        for b in binds:
+            if not isinstance(b, dict):
+                kept.append(b)
+                continue
+            sid = b.get("server_id")
+            if not isinstance(sid, str) or sid == new_server_id:
+                kept.append(b)
+                continue
+            if not is_uuid_shaped_server_id(sid):
+                kept.append(b)
+                continue
+            same_provider = want is not None and (
+                str(b.get("provider") or "").strip().lower() == want
+                or str(b.get("capabilities_ref") or "").strip().lower() == want)
+            if not (same_provider or (prior_server_id and sid == prior_server_id)):
+                kept.append(b)
+                continue
+            moved = dict(b)
+            moved["server_id"] = new_server_id
+            moved["retired_server_id"] = sid
+            if binding_verified:
+                moved["binding_verified"] = binding_verified
+            retired.append(sid)
+            existing = next((k for k in kept
+                             if isinstance(k, dict) and k.get("server_id") == new_server_id),
+                            None)
+            if existing is not None:
+                # Already re-pinned by an earlier pass — merge rather than
+                # leave two rows for one connector.
+                existing.update({k: v for k, v in moved.items() if v is not None})
+            else:
+                kept.append(moved)
+        rec["bindings"] = kept
+    return retired
+
+
 def set_declared_backend(workspace_root, category: str, server_id: str,
                         provider: Optional[str] = None, label: Optional[str] = None,
                         *, is_zapier: bool = False,
+                        binding_verified: Optional[str] = None,
                         holder: str = "workspace-manager") -> Dict[str, Any]:
     """Declare (or re-declare) the backend for a category. Workspace-manager
     owned; the runtime verb `set my email backend to [connector]` and
     update-bridge's migration both route here. Returns the new connectors block.
 
     `is_zapier=True` pins the server-id into `_zapier_server_ids` (R12) instead
-    of a category row — the Zapier dispatch leg is never a category backend."""
+    of a category row — the Zapier dispatch leg is never a category backend.
+
+    RE-PIN (DISC1): when the new server-id is not UUID-shaped — a display-name
+    id, which does not rotate — every account binding still pointing at a
+    rotating id for that provider is moved onto it and the old id recorded as
+    `retired_server_id`. `binding_verified` (`connector_asserted` when the
+    address came back from the connector itself) is stamped on the moved
+    bindings when given. An unknown `binding_verified` value is refused rather
+    than written: a routing field nobody can read is worse than an absent
+    one."""
+    if binding_verified is not None and binding_verified not in BINDING_VERIFIED_VALUES:
+        raise ValueError(
+            f"binding_verified must be one of {BINDING_VERIFIED_VALUES}, "
+            f"got {binding_verified!r}")
     ent = _load_full(workspace_root)
     ws = _workspace_container(ent)
     conn = ws.get("connectors")
@@ -438,7 +623,13 @@ def set_declared_backend(workspace_root, category: str, server_id: str,
         if server_id not in ids:
             ids.append(server_id)
     else:
+        prior = conn.get(category)
+        prior_sid = prior.get("server_id") if isinstance(prior, dict) else None
         conn[category] = {"server_id": server_id, "provider": provider, "label": label}
+        if not is_uuid_shaped_server_id(server_id):
+            retire_uuid_bindings(ws, server_id, provider,
+                                 prior_server_id=prior_sid,
+                                 binding_verified=binding_verified)
     _write_entities(workspace_root, ent, holder)
     return conn
 
@@ -504,8 +695,148 @@ def set_account_classification(workspace_root, address: str, *, role: Optional[s
     return rec
 
 
+# ---------------------------------------------------------------------------
+# The accounts SURFACE (FIX3 F3-3)
+# ---------------------------------------------------------------------------
+#: The two clauses the reply has always written, moved out of the skill's prose
+#: and into the composer that renders them, so one sentence has one home.
+SURFACE_CLAUSE_ON = "I'll show it in your brief"
+SURFACE_CLAUSE_OFF = "I'll keep it out of your brief"
+WRITE_CLAUSE_ON = "I'll file it into your records"
+WRITE_CLAUSE_OFF = "I'll never file it"
+
+#: Plain-English names for the roles. A role name is this product's word for a
+#: shape, not the reader's; the answer says what it MEANS.
+_ROLE_IN_ENGLISH = {
+    "business-primary": "your main work address",
+    "business-secondary": "a second work address",
+    "mixed": "work and personal mixed together",
+    "personal": "personal",
+    "shared-support": "a shared support address",
+    "billing": "a billing address",
+    "cold-outreach": "an outreach address",
+    "unclassified": "not classified yet",
+}
+
+
+#: An address-shaped token on a composed line. Deliberately loose on the
+#: local part and strict on the shape, because this is a REFUSAL gate: a
+#: false positive drops one line of the product's own answer, a false
+#: negative puts somebody else's address in front of the reader.
+#:
+#: FIX PASS 2 (review N-2). The local part is RFC 5322 atext, not a hand-
+#: picked five. The narrow class extracted `sample@example.com` out of
+#: `o'sample@example.com`, which is not in the reader's own accept set, so
+#: the fence dropped the reader's OWN classified line — the one thing this
+#: answer exists to show. The trade named above is still the right one; it
+#: just has to be paid on somebody else's address, not on theirs.
+_ADDRESS_RE = re.compile(
+    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _only_known_addresses(lines: List[str], known: set) -> List[str]:
+    """Drop any line carrying an address the reader never classified.
+
+    `known` is built from `workspace.accounts` alone. The lines are not: the
+    mail and calendar lines quote a connector LABEL, which nothing in this
+    module wrote. That asymmetry is the whole point — a filter whose accept
+    set comes from the same place as the thing it filters accepts everything.
+    """
+    kept: List[str] = []
+    for line in lines:
+        found = _ADDRESS_RE.findall(line or "")
+        if any(_norm_addr(tok) not in known for tok in found):
+            continue
+        kept.append(line)
+    return kept
+
+
+def accounts_surface(workspace_root=None,
+                     entities: Optional[dict] = None) -> Dict[str, Any]:
+    """`{"lines": [...], "n_accounts": int}` — the whole accounts answer.
+
+    The reader asked which of their mail addresses this product treats as work
+    and which it leaves alone. So: which connector carries mail, which carries
+    calendar, and then their own addresses with what each one means. Nothing
+    else. Not a server id, not a key name, not the word substrate, and — the
+    defect this composer exists for (re-walk 2026-09-21) — not the harness's
+    inventory of their computer, its operating system or its shared folders.
+
+    Every line goes through `validate_chat_output` before it is returned, so a
+    line this composer could not gate never reaches the caller. An address that
+    is not in `workspace.accounts` is never emitted — and that is a fence over
+    EVERY line, not only the per-account ones: the backend lines carry a
+    connector LABEL, which is operator-supplied text this composer does not
+    own, and a label with an address in it would otherwise put an unclassified
+    address into the answer. `_ADDRESS_RE` finds address-shaped tokens on a
+    composed line and `_only_known_addresses` drops any line carrying one the
+    reader never classified. (FIX PASS 1, review M-2: the first form of this
+    fence built its `known` set from the same records it filtered, so every
+    address was in it by construction and removing the filter changed
+    nothing.)
+    """
+    ent = entities if isinstance(entities, dict) else load_entities(workspace_root)
+    lines: List[str] = []
+
+    for category, noun in (("email", "Mail"), ("calendar", "Calendar")):
+        row = declared_backend(category, workspace_root, ent)
+        label = str((row or {}).get("label") or "").strip() if row else ""
+        if label:
+            lines.append(f"{noun} runs through {label}.")
+        else:
+            lines.append(f"No {noun.lower()} backend is declared yet.")
+
+    records = accounts(workspace_root, ent)
+    known = {_norm_addr(rec.get("address")) for rec in records if
+             str(rec.get("address") or "").strip()}
+    for rec in records:
+        address = str(rec.get("address") or "").strip()
+        if not address:
+            continue
+        role = str(rec.get("role") or "unclassified")
+        meaning = _ROLE_IN_ENGLISH.get(role, _ROLE_IN_ENGLISH["unclassified"])
+        dials = _dials_for(rec)
+        surface = SURFACE_CLAUSE_ON if dials["surface"] else SURFACE_CLAUSE_OFF
+        write = WRITE_CLAUSE_ON if dials["write_to_business"] else WRITE_CLAUSE_OFF
+        lines.append(f"{address} — {meaning}. {surface}, and {write}.")
+
+    if not records:
+        lines.append("You have not told me about any of your addresses yet.")
+
+    # THE ADDRESS FENCE. `known` is the set of addresses the reader
+    # classified; the lines above it were composed from two sources, and only
+    # one of them is that set. The backend lines are built from a connector
+    # `label` — operator text — so this is the door through which an address
+    # the reader never classified could reach the answer. A line carrying one
+    # is DROPPED; the reader is told about their own addresses or not at all.
+    lines = _only_known_addresses(lines, known)
+
+    # Every line leaves through `surface_composers.say`, which is what makes
+    # this a composer rather than prose with extra steps: it runs the leak
+    # gate AND stamps the line, so `post(..., relayed=...)` can vouch for it
+    # later. This name is on `FOREIGN_COMPOSERS` for that reason. A line the
+    # gate refuses is this product's own words carrying something internal, so
+    # it is dropped rather than posted — and the drop is visible, because
+    # `n_accounts` still counts what was found.
+    gated: List[str] = []
+    try:
+        from surface_composers import say
+    except Exception:  # noqa: BLE001 — a missing gate narrows, never breaks
+        return {"lines": lines, "n_accounts": len(records)}
+    for line in lines:
+        try:
+            gated.append(say(line, workspace=workspace_root,
+                             surface="accounts"))
+        except Exception:  # noqa: BLE001 — a refused line is not posted
+            continue
+    return {"lines": gated, "n_accounts": len(records)}
+
+
 __all__ = [
     # readers
+    "accounts_surface",
+    "SURFACE_CLAUSE_ON", "SURFACE_CLAUSE_OFF",
+    "WRITE_CLAUSE_ON", "WRITE_CLAUSE_OFF",
     "load_entities", "workspace_block", "server_id_of",
     "declared_backends", "declared_backend",
     "zapier_server_ids", "is_zapier_server",
@@ -515,5 +846,8 @@ __all__ = [
     "sender_scope_override",
     # setter (workspace-manager owned)
     "set_declared_backend", "set_account_classification",
+    "retire_uuid_bindings", "is_uuid_shaped_server_id",
+    "BINDING_USER_ASSERTED", "BINDING_CONNECTOR_ASSERTED",
+    "BINDING_VERIFIED_VALUES",
     "set_sender_scope_override",
 ]

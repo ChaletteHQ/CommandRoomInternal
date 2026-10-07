@@ -1,0 +1,40 @@
+{
+  "version": "5.30.0",
+  "headline": "Your plate is now one board, grouped by project, one line per item. What comes in is held or filed with a date; what goes out leaves by a named door — your own word, a fact on your calendar or in your sent mail, or sixty quiet days — each with a receipt and an undo that holds. The machine's own acts are no longer credited to you. Two morning chats fold into the brief, every question has a lifetime, and the health lines leave your brief for the health check.",
+  "items": [
+    {
+      "id": "v5300_park_silent_backlog",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.park_silent_backlog",
+      "action_function": "park_silent_backlog",
+      "notice_template": "Parked {n_parked} {items_word} nobody had touched in {period_words} — say undo to put them all back.",
+      "fallback_prompt_template": "A tidy-up of your plate (resting the items nobody has touched in {period_words}) is pending; it will retry on the next update."
+    },
+    {
+      "id": "v5300_fold_scheduled_fires",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.fold_scheduled_fires",
+      "action_function": "fold_scheduled_fires",
+      "notice_template": "{summary_line}",
+      "fallback_prompt_template": "Folding your Waiting On and My Plate chats into the morning brief is pending; it will retry on the next update."
+    },
+    {
+      "id": "v5300_announce_plate_and_doors",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Three things you will notice. (1) 'What's on my plate' now opens as a board: grouped by project, one line per item, one tap or none, the most important first; say 'work my plate' for the page with every verb, and type a verb by number against the board ('later 3'). (2) Items leave your plate by a named door, each with a receipt and an undo that holds against the next morning: say what you finished in your own words and the matching item closes; a real email you sent or a meeting that happened closes the item it was about; an item nobody has touched in forty-five days rests under Parked, and at sixty it is let go — the Friday wrap lists what was let go and one 'undo' puts them back to rest. Say 'turn off closing when I say it is done' or 'turn off parking items nobody touches' to stop either. (3) New items are held until something confirms them or filed with a date from where they came from, so fewer 'whose is this?' questions reach you; 'turn off holding new items until something confirms them' stops it.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5300_announce_questions_people_and_brief",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Also new. Every question the Staff Meeting asks now has a lifetime and a sensible default; one it cannot wait on any longer is answered for you and the Friday wrap says so under 'Decided for you' ('turn off answering old questions for me' stops it). Duplicate people are merged and new people added without asking, one batch a week with an undo ('turn off merging duplicate people', 'turn off adding people automatically'). The Waiting On and My Plate morning chats no longer fire on their own — their one-line headlines sit on the brief, and 'show waiting' and 'what's on my plate' still answer any time. The brief carries no health or plumbing lines; say 'health check' when you want them. A note you mail to yourself never closes anything, and nothing the product does on its own is ever written up as your doing.",
+      "action": "announce_only"
+    }
+  ]
+}

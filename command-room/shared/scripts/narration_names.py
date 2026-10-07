@@ -20,7 +20,7 @@ is composed by the model from SKILL.md instructions. Two halves close it:
 
 Names come from `_hq/data/entities.json` through `entities_io` (people /
 orgs / threads — the canonical `projects` alias resolves to threads). An id
-with no record renders "(name on file)" — never the id, never a blank that
+with no record renders "(no name on file)" — never the id, never a blank that
 swallows the sentence.
 """
 from __future__ import annotations
@@ -41,7 +41,15 @@ INTERNAL_ID_RE = re.compile(
     r"\b(person|project|org|event|matter|engagement)_\d{3,}\b", re.IGNORECASE
 )
 
-UNRESOLVED_LABEL = "(name on file)"
+# REVIEW_LEAK2 round-2 R-4 — the wording said the OPPOSITE of the fact.
+# "(name on file)" printed where the product has NO name reads as an
+# assurance that a name exists; a card option came out as "Is this
+# (name on file)'s promise?". Pre-existing at v5.29.0 (CUT-C), but LEAK2
+# routes five more composers through it, so it is on materially more
+# surfaces. Every reader takes the constant, not the string, except the
+# two prose copies corrected with it (`render_org_history` and the
+# people-crm SKILL).
+UNRESOLVED_LABEL = "(no name on file)"
 
 
 def _load_doc(workspace_root) -> dict:
@@ -111,6 +119,28 @@ def humanize_lines(lines: Iterable, name_idx: dict[str, str]) -> list[str]:
     return out
 
 
+def safe_name(candidate, *, fallback: str = UNRESOLVED_LABEL) -> str:
+    """The display name a composer may print, or the honest label.
+
+    LEAK2. Half a dozen composers carried the same fallback — `name or
+    the_id` — so a record with no name on file (or no record at all)
+    printed its id straight onto a customer surface: four person ids in the
+    dictation card and its narration (ATTENDED_TEST_v5.29.0 B3.4), a person
+    id and a project id in `pull up` (B4.4). The fallback is the bug: an id
+    is never a name, and "no name on file" is a true sentence a reader can
+    act on.
+
+    Also refuses a candidate that IS an id shape — a record auto-created
+    from a mail id carries the id as its `canonical_name`, and passing it
+    through unchanged leaks exactly what the fallback did.
+    """
+    text = str(candidate or "").strip()
+    if not text:
+        return fallback
+    from surface_leak_patterns import carries_surface_id
+    return fallback if carries_surface_id(text) else text
+
+
 def carries_internal_id(text) -> bool:
     """True when `text` still carries an entity-id token (the composer's own
     post-condition; the SKILL-level scan is `validate_chat_output`)."""
@@ -125,7 +155,7 @@ def person_header(workspace_root, person_id, *, doc: Optional[dict] = None) -> s
     """The people-crm record header (`who is [name]`), composed here so the
     line carries the person's NAME and never their id: "### Name — Role,
     Org" (role and org only when on record). A person the index does not
-    carry renders "### (name on file)" — an honest gap, never `person_NNN`."""
+    carry renders "### (no name on file)" — an honest gap, never `person_NNN`."""
     doc = doc if doc is not None else _load_doc(workspace_root)
     container = unwrap_entities(doc) if isinstance(doc, dict) else {}
     idx = name_index_from_doc(doc)
@@ -190,6 +220,7 @@ def recap_change_lines(workspace_root, since_ts: str, *,
 
 __all__ = [
     "INTERNAL_ID_RE",
+    "safe_name",
     "UNRESOLVED_LABEL",
     "carries_internal_id",
     "humanize",

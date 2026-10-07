@@ -1,7 +1,7 @@
 ---
 name: command-room-coach
 surfaces: both
-description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager)."
+description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'coach me on' (workspace-manager — the earned coaching door names the thing being worked on), 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager)."
 ---
 
 # Command Room Coach — The customer's home chat with their AI
@@ -23,7 +23,7 @@ A three-phase proof, delivered to the CEO in one chat, that earns the answer to 
 - **Use `workspace-manager` for:** the actual `go [project]` / `go [org]` substrate-deepening step. Coach offers the chain; workspace-manager executes the precursor. Coach lets go after the user types the precursor.
 - **Use `people-crm` for:** the actual `tell me about [person]` step. Same handoff pattern.
 - **Use the downstream produce-now skill** (one-pager-composer, memo-writer, stress-test, decision-log (revisit mode), decision-memo-composer, email-writer, intro-broker, call-prep, board-pack-assembler, dormant-customer-scan) **for the second-phrase produce step.** Coach renders the literal trigger phrase; the downstream skill produces against the loaded substrate.
-- **Use `level-up-command-room` for:** the sidebar dashboards menu (Workspace Map, Quick Commands, My Open Commitments). Coach is not a menu of installs.
+- **Use `level-up-command-room` for:** `level up command room` — it answers the one dashboards sentence (dashboards live in chat now). Coach is not a menu of installs.
 - **Use `cleanup` for:** the workspace health report. Different lens (validation + scoring) vs coach's (proof + offers).
 
 The catalog of deliverable shapes coach picks from lives in `references/deliverable-catalog.md`. Coach never invents a deliverable shape that isn't in the catalog — but it always resolves the entity slot fresh from current workspace state.
@@ -43,7 +43,6 @@ The catalog of deliverable shapes coach picks from lives in `references/delivera
 |---|---|
 | "Inbox Triage is one of our pillars" | "Your triage time drops from 45 min to 5 min" |
 | "We have a Commitments scheduled chat" | "You have 12 open commitments, oldest is 14 days stale — this catches it before it costs you a relationship" |
-| "Quick Commands is a Layer 1 dashboard" | "You'll fire your most-used flows in one click instead of typing them out" |
 | "Let me walk you through the pillars" | "Here's what Command Room is doing for you — and what it could be doing that it isn't yet" |
 
 Every win must be anchored to the CEO's specific workspace data. **If a win can't be anchored, skip it.** A generic "save time on email!" without "you handled 312 emails last week" lands as marketing copy.
@@ -120,7 +119,7 @@ The mirror is 8-12 lines of prose (NOT bullets, NOT a list). Read them back to t
 8. **A soft spot** — something specific that wouldn't show up in a generic scan ("the Northstar advisory thread hasn't had a session note in 36 days — that's notable given you formally merged it into the main Northstar project in April").
 9. **Personalization calls (SPEC FRP1)** — one line on how much they've made the skills theirs. Count `skill_first_run_configured` + `skill_reconfigured` events in events.jsonl whose `data.origin` is an *active* personalization (`first_fire_override`, `tune`, `m1_batch`, or `drift_reoffer` — NOT `first_fire_defaults`, which is silent default-acceptance). Render as: *"You've made N personalization calls; everything else is running on smart defaults."* If N is 0, frame it as headroom, not a gap ("everything's on smart defaults so far — say 'tune [skill]' on anything you want to shape"). This is a soft cue, never a nag.
 
-**Tone rules for the mirror:**
+**Voice rules for the mirror:**
 
 - Not boastful ("Command Room knows everything about you!"). Not pitchy. Just: *here's what I see.*
 - Not a feature dump ("I have access to your entities.json, your events stream, your decision log…"). The CEO doesn't care about the substrate — they care that you *know them*.
@@ -140,7 +139,7 @@ That's a mirror. The CEO reads it and feels seen.
 Right after the Mirror, before the Insights: what the workspace did on its own since the CEO's last coach session, and what's waiting on their eyes. **≤3 lines of prose + the card — the beat spends seconds, not attention** (the proportion guard, Hard rule 9, binds it).
 
 - **The lines:** `change_feed.changes_since(<last coach_session event ts, else 7d>)` (`shared/scripts/change_feed.py`) — render up to 3 of its lines verbatim, substance first, drop-empty. Nothing to narrate → skip the prose entirely (no "all quiet" filler; the Mirror already carried the energy).
-- **The card:** `brain_proposals.select_confirm_card(WORKSPACE_ROOT, "coach")` (`shared/scripts/brain_proposals.py`) — when non-empty, post the "Needs your eyes" widget (one all-batch widget, `data_view["source_skill"] = "cr-brain"`, verbs per `shared/CHAT_ACTION_WIDGET.md` § Living Brain card, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`)). The selector already applied the cap (5), the per-detector limit, and the R2 cross-surface dedup — an item the morning brief showed today doesn't re-show here. Render the returned `overflow_line` verbatim when present. Empty card → no widget, no mention.
+- **The card:** `brain_proposals.select_confirm_card(WORKSPACE_ROOT, "coach")` (`shared/scripts/brain_proposals.py`) — when non-empty, post the "Needs your eyes" widget (one all-batch widget, `data_view["source_skill"] = "cr-brain"`, verbs per `shared/CHAT_ACTION_WIDGET.md` § Living Brain card, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`)). The selector already applied the cap (5), the per-detector limit, and the R2 cross-surface dedup — an item the morning brief showed today doesn't re-show here. Render the returned `overflow_line` verbatim when present. Empty card → no widget, no mention. **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 - **First-run gate:** honor the same `daily_confirm_card` config the brief reads (skill_config/system-health.json, default on) — `"off"` skips the card, keeps the lines.
 - The beat never blocks: feed/projector errors → skip the beat silently and continue to 2B (the coach session is the product; the beat is a rider).
 
@@ -369,6 +368,133 @@ Then stop. Workspace-manager / people-crm takes the wheel when the user types th
 
 ---
 
+## When you ask me if you are right (SPEC_SURFACES2_11c COACH2 5.2 items 1, 2, 4)
+
+*"Am I right that my plate is 60?"* is the question this product gets wrong by being
+agreeable. There is a shared counter — one projection every surface reads its numbers out of —
+and answering *"yes"* over a counter that says something else is agreeing with the customer
+against their own book. So the order is fixed, and it is fixed in code, not here:
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import coach_turn
+case = coach_turn.counter_case('<workspace_root>', '<what they just typed>')
+print(json.dumps(coach_turn.render_turn('<workspace_root>', case)))
+"
+```
+
+**Relay `text` in that order and do not reorder it.**
+
+1. **The record first.** What the book says — the count, or the row with its pointer.
+2. **Then the counter**, whenever `agrees` is `false`: the gap, named. Never softened into
+   *"roughly"*, never dropped because the number is unflattering.
+3. **Then at most one question**, and only when `asked` is true — which happens only on a seat
+   that opened a coaching door, and only in the stances that asked for a question first. On a
+   `tell_first` seat you give the read and then the pushback, with no question at all.
+
+**Never say yes over a record that disagrees.** There is no phrasing of this rule that has an
+exception in it. `agrees: null` is not agreement either — it means the book has nothing of its
+own to say, and the honest answer is that, not a shrug in the customer's favour.
+
+**A sentence with two numbers in it gets no yes.** *"My plate went from 335 to 60"*, *"it's not
+335, it's 60, right?"*, *"is my plate 335 or 60?"* — the claim in each of those is 60, and a
+coach that picks the first number it sees agrees with the one the customer is arguing against.
+`counter_case` refuses to choose: `agrees` comes back `null`, `claimed` comes back `null`, and
+the record line says the count the book holds and why it is not reading a figure out of that
+sentence. Relay it as it comes. A year is never read as a count either.
+
+**The push dial names counter-facts, never the voice.** `light` names none of the extra ones,
+`steady` one, `hard` two. It cannot buy agreement: over a record that disagrees the counter line
+renders at every setting, including `light`.
+
+**A pattern needs three.** `coach_turn.pattern_break(ws, key)` counts the pattern on the closes
+that are on disk. Two instances are an observation and nothing more — say the count, stop there.
+At three or more you get one feedforward line *and* the basis line under it, which says what the
+reading rests on. Relay both or neither: a reading with its basis hidden is an opinion wearing a
+number.
+
+### The disclosure, once
+
+The first time the coaching layer renders in a session, `coach_turn.session_preamble(ws,
+<session id>)` returns one line — say it, once. Every later turn in the same session returns an
+empty string; do not repeat it, and do not paraphrase it into the answer.
+
+### If the turn carries distress
+
+**The stop is in the code, not in this instruction.** `counter_case` composes nothing on a
+sentence carrying a cue, and `render_turn` returns the paragraph instead of a turn — both ask
+`coach_turn.distress_gate`. So the call above returns the paragraph in `text` with
+`distress: true` and `asked: false`, and relaying `text` as always is already the whole
+behaviour. Relay it **and nothing else that turn** — no counter-case, no question, no pattern,
+no deliverable offers, no closing line. One plain paragraph: I am stopping, this is bigger than
+the record, talk to a person, here is where to find one.
+
+Do not name what is happening to them, do not assess it, and do not offer to keep going in a
+gentler register. The next turn starts clean; the cue is re-checked on that turn like any other.
+
+### What this coach never does
+
+It never reads a meeting record, a transcript or any stored text to work out how the customer is
+feeling, and it never renders a word about their state of mind. Everything above is arithmetic
+over rows the customer can see, plus a literal list of sentences they themselves typed. The pin
+in `tests/run_coach2_test.py` greps this file and `shared/scripts/coach_turn.py` for that whole
+family of words and requires zero hits, so this is checked rather than promised.
+
+One voice. There is no second character here: the coach is the workspace persona doing a
+different job, never a named coach standing beside it.
+
+---
+
 ## Phase 4: Log the session
 
 Append one event to `_hq/data/events.jsonl` via `atomic_append_jsonl`. The canonical shape — OMIT `seq` and `ts`: the append gate auto-stamps both inside the writer lock, `ts` in UTC (hand-typing "now" was the F-15 naive-local-clock bug class — v4.5.2 R4). `ran_at` is a domain-specific duplicate kept for backward compatibility with consumers that already grep for it — write it as UTC ISO-8601 (never the local wall clock):
@@ -411,7 +537,7 @@ Better to skip than to render generic.
 ## What this skill is NOT
 
 - **Not a feature tour.** No pillar walkthroughs. No "Command Room has 5 layers — let me explain each."
-- **Not a menu of 50 things to install.** That's `level-up-command-room`'s lane.
+- **Not a menu of things to install.** Nothing installs into a sidebar any more — dashboards live in chat.
 - **Not a tutorial on how the architecture works.** If the CEO asks how X works mechanically, answer briefly and offer the output that uses X — don't pivot into a technical explainer.
 - **Not a pitch for infrastructure that doesn't exist yet.** Stay grounded in shipped skills. No "imagine if we built…" — only "here's what your workspace already supports."
 - **Not a place to upsell.** If they're on Pro and an output requires Max, mention it once, neutrally, and move on. The skill exists to surface value, not to sell.
@@ -437,6 +563,26 @@ Better to skip than to render generic.
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 

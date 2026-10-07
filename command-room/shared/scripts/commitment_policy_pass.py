@@ -86,11 +86,141 @@ ACK_TRANSCRIPT_CLOSES_OFF = (
     "to put this back.")
 ACK_TRANSCRIPT_CLOSES_ALREADY_ON = "Closing on evidence is already on."
 ACK_TRANSCRIPT_CLOSES_ALREADY_OFF = "Closing on evidence is already off."
+# TTL1 fix round 1 (reviewer F-3) — THE QUESTION-EXPIRY SWITCH, on the same
+# pattern and in the same store. It shipped with four trigger phrases routed
+# to workspace-manager and NO handler behind them: nothing in `skills/` even
+# mentioned the key, so the record's closing promise ("they can say `stop
+# answering old questions for me` and it stops") was not true as built. A
+# switch a customer cannot actually flip is not a switch.
+EXPIRY_SWITCH_BATCH_PREFIX = "qxs_"
+EXPIRY_SWITCH_CHANGE_CLASS = "question_expiry_switch"
+VERB_QUESTION_EXPIRY_ON = "start answering old questions for me"
+VERB_QUESTION_EXPIRY_OFF = "stop answering old questions for me"
+ACK_QUESTION_EXPIRY_ON = (
+    "Done — a question nobody gets to now settles to its sensible answer "
+    "on its own, listed once in your Friday wrap; say `undo` to reverse a "
+    "run, or `stop answering old questions for me` to stop.")
+ACK_QUESTION_EXPIRY_OFF = (
+    "Done — nothing answers itself now; an unanswered question waits for "
+    "you however long that takes. Say `undo` to put this back.")
+ACK_QUESTION_EXPIRY_ALREADY_ON = "Answering old questions is already on."
+ACK_QUESTION_EXPIRY_ALREADY_OFF = "Answering old questions is already off."
+
+# SPEC_FLOW1 — the flow switches' own batch prefix and change class. Same
+# reverser as the two above (`_reverse_commitment_preset` puts the previous
+# stored config back exactly, key-agnostically), a SEPARATE change class so
+# a bare `undo` can say which switch moved instead of one blurred phrase.
+FLOW_SWITCH_BATCH_PREFIX = "fsw_"
+FLOW_SWITCH_CHANGE_CLASS = "flow_switch"
+# IDENT1's two verbs and their acks. Every phrase here is a trigger phrase
+# and carries a ROUTEMISS1 row. The OWNER is workspace-manager, not
+# people-crm: a switch is not a skill name, so it sits with the sibling
+# switches (`turn off closing on evidence`, `ask me less`) rather than with
+# the skill whose records the act happens to touch. people-crm is FENCED
+# against these phrases in the same block.
+VERB_IDENTITY_AUTO_CREATE_ON = "turn on adding people automatically"
+VERB_IDENTITY_AUTO_CREATE_OFF = "turn off adding people automatically"
+VERB_IDENTITY_AUTO_MERGE_ON = "turn on merging duplicate people"
+VERB_IDENTITY_AUTO_MERGE_OFF = "turn off merging duplicate people"
+FLOW_SWITCH_ACKS = {
+    policy.IDENTITY_AUTO_CREATE_KEY: {
+        "on": ("Done — someone on a meeting invite or a mail thread with a "
+               "work address goes on file on their own from now on, each one "
+               "in the changed feed with `undo`. Say `turn off adding people "
+               "automatically` to stop."),
+        "off": ("Done — nobody goes on file on their own now; a new face "
+                "waits for you under `needs your call` instead. Say `undo` "
+                "to put this back."),
+        "already_on": "Adding people automatically is already on.",
+        "already_off": "Adding people automatically is already off.",
+    },
+    policy.IDENTITY_AUTO_MERGE_KEY: {
+        "on": ("Done — a different spelling of someone already on file will "
+               "be folded into their record on its own, with `undo` on every "
+               "one. Say `turn off merging duplicate people` to stop."),
+        "off": ("Done — a different spelling of someone already on file will "
+                "be asked about instead of folded in. Say `undo` to put this "
+                "back."),
+        "already_on": "Merging duplicate people is already on.",
+        "already_off": "Merging duplicate people is already off.",
+    },
+}
 # The prose closers whose direct `close_commitment` call the door now refuses
 # on transcript evidence (belt-and-braces for meeting-notes 5e-bis). Widened
 # 2026-09-06 with `team-intelligence` (REVIEW_CUTA F2); the writer's copy
 # `commitment_state._TRANSCRIPT_PROSE_CLOSERS` is kept identical and pinned so.
 TRANSCRIPT_PROSE_CLOSERS = frozenset({"meeting-notes", "follow-up-ritual", "team-intelligence"})
+
+
+# ---------------------------------------------------------------------------
+# The other lanes' switch text — registered here, at the BOTTOM, deliberately.
+#
+# IDENT1 owns `FLOW_SWITCH_KEYS` and this table by its own design note: a lane
+# that builds a switch adds a CONSTANT and its words, never a second reader
+# with its own fallback. `set_flow_switch` refuses a key with no ack text ("a
+# switch a customer cannot be told about in their own words does not ship"),
+# which is the right failure — but it means a lane that reserves a name and
+# stops there leaves a phrase that WAKES A SKILL AND RAISES. Both of the
+# lanes below found exactly that in their own second eyes.
+#
+# Registered by assignment rather than inside the dict literal above, so four
+# lanes editing one file on one night do not all collide at one anchor. The
+# registration is module-level, so `set_flow_switch` sees every key the moment
+# anything imports this module — which it must, since the writer lives here.
+#
+# AT MERGE (done, 2026-09-04): EXIT1's branch registered its own two keys
+# with this same text, in this same place. The duplicate existed so that the
+# invariant "every key in FLOW_SWITCH_KEYS has ack text" was TRUE ON EVERY
+# MERGE ORDER rather than only on the last one; both copies then shipped, and
+# WRAPSTAFF1 4.8 kept ONE (EXIT1's, at the end of the module). The invariant
+# is now held by a pin rather than by a second copy — `run_ident1_test` [13]
+# and `run_wrapstaff1_test` [8].
+
+# INTAKE1 (BUILD_INTAKE1 §7) — the second-witness door. Its branch ships the
+# read, the four phrases and the workspace-manager section; the writing of it
+# was left here by that lane's own design.
+FLOW_SWITCH_ACKS[policy.INTAKE_SECOND_WITNESS_KEY] = {
+    "on": ("New items will be kept out of sight until something confirms "
+           "them."),
+    "off": ("New items will go straight onto your plate, even when I'm only "
+            "guessing."),
+    "already_on": "New items are already kept until something confirms them.",
+    "already_off": "New items already go straight onto your plate.",
+}
+
+# EXIT1 — the two exit doors. WRAPSTAFF1 4.8 (2026-09-17): this was the
+# SECOND, byte-identical copy of both dictionaries, written here in advance
+# of EXIT1's merge so that "every key in FLOW_SWITCH_KEYS has ack text" was
+# true on either merge order (see the note above). The merge happened; both
+# copies shipped; the one at the end of the module silently overwrote this
+# one on every import, so the text a reader edited here changed nothing.
+# ONE definition now — EXIT1's own, at the bottom, beside its verbs.
+
+# TTL1 (REVIEW_TTL1 F-3) — a question nobody answers takes its default. TTL1's
+# four phrases route to workspace-manager and the shared writer refused the
+# key; the name is now in `FLOW_SWITCH_KEYS` and these are its words.
+# LEARN1 — the learning job's switch, in the customer's words. Never names
+# the job, the store or a class; what the switch does is "picking up how you
+# rewrite things".
+FLOW_SWITCH_ACKS[policy.LEARNING_AUTO_APPLY_KEY] = {
+    "on": ("Done — when you rewrite the same thing out of my drafts three or "
+           "more times I will stop writing it that way, tell you in the "
+           "morning, and leave `undo` on it. Say `stop learning from my "
+           "edits` to turn this off."),
+    "off": ("Done — I will keep a record of your rewrites but change nothing "
+            "on my own from them. Say `undo` to put this back."),
+    "already_on": "Learning from your edits is already on.",
+    "already_off": "Learning from your edits is already off.",
+}
+
+FLOW_SWITCH_ACKS[policy.QUESTIONS_EXPIRE_TO_DEFAULT_KEY] = {
+    # AT MERGE (night 10): ONE text for this switch — TTL1's words, so
+    # `set_flow_switch` and `set_question_expiry` say the same sentence.
+    "on": ACK_QUESTION_EXPIRY_ON,
+    "off": ACK_QUESTION_EXPIRY_OFF,
+    "already_on": ACK_QUESTION_EXPIRY_ALREADY_ON,
+    "already_off": ACK_QUESTION_EXPIRY_ALREADY_OFF,
+}
 
 
 def _events_path(workspace_root) -> Path:
@@ -186,6 +316,10 @@ def _empty_counts() -> dict:
         # it withheld (rows that met every fence and were written as a
         # proposal, or nothing, instead).
         "closes_enabled": False, "n_close_withheld": 0,
+        # M's ruling 6 (2026-09-07), wired in EXIT1 FIX ROUND 1 (F-2): a
+        # withheld close that WOULD have become a chip, on a row that is
+        # already carrying a question. Counted, never asked twice.
+        "n_silent_already_asked": 0,
     }
 
 
@@ -256,6 +390,17 @@ def apply_transcript_results(
     counts["closes_enabled"] = closes_on
     if not results:
         return counts
+    # M'S RULING 6 (2026-09-07) — ONE question per row. Read the asked marks
+    # ONCE per fire, beside the other per-run reads, so the fence below costs
+    # one pass over the open set however many rows this transcript touches.
+    # EXIT1 FIX ROUND 1, F-2: `exit_doors.row_already_asked` was written,
+    # tested and cited by CONTRACT Rule 34 fence 3 — and called by nothing,
+    # so a withheld close still wrote a second proposal onto a row already
+    # carrying a question. A contract rule naming a function nothing calls is
+    # worse than no rule.
+    from commitment_state import asked_commitment_marks
+    from exit_doors import row_already_asked
+    _asked = asked_commitment_marks(workspace_root)
     events_path = _events_path(workspace_root)
     events = _load_all(workspace_root)
     pending_ids = _pending_ids_from(events, events_path)
@@ -358,6 +503,13 @@ def apply_transcript_results(
             except (TypeError, ValueError):
                 _sc = 0.0
             if _sc >= policy.CHIP_BAND_LOW:
+                # Ruling 6, in the act: this row is already carrying a
+                # question. The withheld close is still COUNTED (the numbers
+                # M watches do not go dark) — it just does not become a
+                # SECOND ask.
+                if row_already_asked(workspace_root, cid, marks=_asked):
+                    counts["n_silent_already_asked"] += 1
+                    continue
                 action = policy.ACTION_PROPOSE
             else:
                 counts["n_silent_out_of_band"] += 1
@@ -375,6 +527,14 @@ def apply_transcript_results(
             except (TypeError, ValueError):
                 _sc = 0.0
             if policy.CHIP_BAND_LOW <= _sc <= policy.CHIP_BAND_HIGH:
+                # FIX ROUND 2 (review R-6). Ruling 6 is "one question per
+                # row", not "one question per row unless the closer is on":
+                # this demotion is the OTHER way a withheld close becomes a
+                # question, and it read no asked mark. Same fence, same
+                # counter, same place — before the proposal, never after.
+                if row_already_asked(workspace_root, cid, marks=_asked):
+                    counts["n_silent_already_asked"] += 1
+                    continue
                 action = policy.ACTION_PROPOSE
             else:
                 action = policy.ACTION_NONE
@@ -730,6 +890,116 @@ def set_transcript_closes(workspace_root, enabled: bool, *, origin: str = "m_act
             "line": ACK_TRANSCRIPT_CLOSES_ON if enabled else ACK_TRANSCRIPT_CLOSES_OFF}
 
 
+def set_question_expiry(workspace_root, enabled: bool, *,
+                        origin: str = "m_action", triggered_by: str = "",
+                        now_iso=None) -> dict:
+    """TTL1 fix round 1 (reviewer F-3) — THE writer for the question-expiry
+    switch (`start answering old questions for me` / `stop answering old
+    questions for me`).
+
+    The same shape as `set_transcript_closes` in every respect: the typed
+    store, one `qxs_` batch carrying the previous config, the SAME registered
+    reverser (`_reverse_commitment_preset`, which puts the previous config
+    back exactly or clears the key when there was none), every other key in
+    the store carried over untouched, idempotent, and a one-line ack the
+    surface says verbatim. It gets its own change class purely so the bare
+    `undo` listing names the right thing.
+
+    Returns {ran, enabled, prev_enabled, batch_id, line}."""
+    from skill_config_writer import load_skill_config, save_skill_config
+    from question_ttl import (EXPIRE_SWITCH_KEY, EXPIRE_SWITCH_DEFAULT,
+                              expiry_enabled)
+    if enabled is not True and enabled is not False:
+        raise ValueError("set_question_expiry: enabled must be a bool")
+    stored = load_skill_config(workspace_root, policy.PRESET_SKILL_KEY) or {}
+    prev_cfg = stored.get("config") if isinstance(stored, dict) else None
+    prev_cfg = prev_cfg if isinstance(prev_cfg, dict) else None
+    prev = expiry_enabled(workspace_root, default=EXPIRE_SWITCH_DEFAULT)
+    if prev is enabled:
+        return {"ran": False, "enabled": enabled, "prev_enabled": prev,
+                "batch_id": None,
+                "line": (ACK_QUESTION_EXPIRY_ALREADY_ON if enabled
+                         else ACK_QUESTION_EXPIRY_ALREADY_OFF)}
+    from datetime import datetime, timezone
+    import secrets
+    from cru_match import _parse_ts
+    dt = (_parse_ts(now_iso) if now_iso else None) or datetime.now(timezone.utc)
+    batch_id = (f"{EXPIRY_SWITCH_BATCH_PREFIX}"
+                f"{dt.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}")
+    cfg = dict(prev_cfg or {})
+    cfg[EXPIRE_SWITCH_KEY] = enabled
+    save_skill_config(
+        workspace_root, policy.PRESET_SKILL_KEY, cfg,
+        is_reconfigure=bool(prev_cfg), origin=origin,
+        event_extra={"brain_batch_id": batch_id,
+                     "brain_change_class": EXPIRY_SWITCH_CHANGE_CLASS,
+                     "skill_name": policy.PRESET_SKILL_KEY,
+                     "prev_config_present": prev_cfg is not None,
+                     "prev_config": prev_cfg,
+                     "triggered_by": triggered_by},
+        event_ts=(dt.isoformat() if now_iso else None))
+    return {"ran": True, "enabled": enabled, "prev_enabled": prev,
+            "batch_id": batch_id,
+            "line": ACK_QUESTION_EXPIRY_ON if enabled
+            else ACK_QUESTION_EXPIRY_OFF}
+
+
+
+def set_flow_switch(workspace_root, key: str, enabled: bool, *,
+                    origin: str = "m_action", triggered_by: str = "",
+                    now_iso=None) -> dict:
+    """SPEC_FLOW1 — THE writer for a flow switch (`turn off adding people
+    automatically`, and its siblings). The shape is `set_transcript_closes`
+    verbatim: one `brain_batch` (`fsw_…`, class `flow_switch`) carrying the
+    PREVIOUS config, so a bare `undo` lists it and the registered reverser
+    puts the previous config back exactly (or clears the key when there was
+    none). Every other key in the store is carried over untouched.
+    Idempotent: the value already stored is a no-op with no receipt.
+
+    Returns {ran, key, enabled, prev_enabled, batch_id, line} — `line` is
+    the one-line ack the surface says verbatim."""
+    from skill_config_writer import load_skill_config, save_skill_config
+    if enabled is not True and enabled is not False:
+        raise ValueError("set_flow_switch: enabled must be a bool")
+    if key not in policy.FLOW_SWITCH_KEYS:
+        raise ValueError(f"set_flow_switch: unknown switch {key!r}")
+    acks = FLOW_SWITCH_ACKS.get(key)
+    if not acks:
+        raise ValueError(
+            f"set_flow_switch: {key!r} has no ack text — a switch a customer "
+            "cannot be told about in their own words does not ship")
+    stored = load_skill_config(workspace_root, policy.PRESET_SKILL_KEY) or {}
+    prev_cfg = stored.get("config") if isinstance(stored, dict) else None
+    prev_cfg = prev_cfg if isinstance(prev_cfg, dict) else None
+    prev = policy.flow_switch_enabled(workspace_root, key)
+    if prev is enabled:
+        return {"ran": False, "key": key, "enabled": enabled,
+                "prev_enabled": prev, "batch_id": None,
+                "line": acks["already_on"] if enabled else acks["already_off"]}
+    from datetime import datetime, timezone
+    import secrets
+    from cru_match import _parse_ts
+    dt = (_parse_ts(now_iso) if now_iso else None) or datetime.now(timezone.utc)
+    batch_id = (f"{FLOW_SWITCH_BATCH_PREFIX}"
+                f"{dt.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}")
+    cfg = dict(prev_cfg or {})
+    cfg[key] = enabled
+    save_skill_config(
+        workspace_root, policy.PRESET_SKILL_KEY, cfg,
+        is_reconfigure=bool(prev_cfg), origin=origin,
+        event_extra={"brain_batch_id": batch_id,
+                     "brain_change_class": FLOW_SWITCH_CHANGE_CLASS,
+                     "skill_name": policy.PRESET_SKILL_KEY,
+                     "switch_key": key,
+                     "prev_config_present": prev_cfg is not None,
+                     "prev_config": prev_cfg,
+                     "triggered_by": triggered_by},
+        event_ts=(dt.isoformat() if now_iso else None))
+    return {"ran": True, "key": key, "enabled": enabled, "prev_enabled": prev,
+            "batch_id": batch_id,
+            "line": acks["on"] if enabled else acks["off"]}
+
+
 def apply_meeting_closes(workspace_root, *, meeting_ref: str, transcript_ts,
                          transcript_text: str, attendee_person_ids,
                          source_skill: str = "meeting-notes",
@@ -844,8 +1114,124 @@ __all__ = [
     "SWITCH_BATCH_PREFIX", "SWITCH_CHANGE_CLASS",
     "VERB_TRANSCRIPT_CLOSES_ON", "VERB_TRANSCRIPT_CLOSES_OFF",
     "ACK_TRANSCRIPT_CLOSES_ON", "ACK_TRANSCRIPT_CLOSES_OFF",
+    "EXPIRY_SWITCH_BATCH_PREFIX", "EXPIRY_SWITCH_CHANGE_CLASS",
+    "VERB_QUESTION_EXPIRY_ON", "VERB_QUESTION_EXPIRY_OFF",
+    "ACK_QUESTION_EXPIRY_ON", "ACK_QUESTION_EXPIRY_OFF",
+    "ACK_QUESTION_EXPIRY_ALREADY_ON", "ACK_QUESTION_EXPIRY_ALREADY_OFF",
+    "set_question_expiry",
     "TRANSCRIPT_PROSE_CLOSERS",
     "apply_transcript_results", "resolve_stale_chips",
     "retract_stale_proposals", "policy_gate_closes",
     "set_transcript_closes", "apply_meeting_closes",
+    "EXPIRY_SWITCH_BATCH_PREFIX", "EXPIRY_SWITCH_CHANGE_CLASS",
+    "VERB_QUESTION_EXPIRY_ON", "VERB_QUESTION_EXPIRY_OFF",
+    "ACK_QUESTION_EXPIRY_ON", "ACK_QUESTION_EXPIRY_OFF",
+    "ACK_QUESTION_EXPIRY_ALREADY_ON", "ACK_QUESTION_EXPIRY_ALREADY_OFF",
+    "set_question_expiry",
 ]
+# ---------------------------------------------------------------------------
+# INTAKE1 — the words for `intake.second_witness`, in the customer's own
+# language (fix round 1, review F-4).
+#
+# THE SEAM THIS CLOSES. `skills/workspace-manager/SKILL.md` ships four
+# customer phrases for this switch and `tests/triggers.yaml` carries six rows
+# routing them here. The shared writer refuses a key with no ack text — "a
+# switch a customer cannot be told about in their own words does not ship" —
+# which is the right failure, and it means a lane that reserves a key name and
+# stops there leaves a shipped phrase that wakes a skill and raises.
+#
+# WHY IT IS GUARDED, AND WHY IT SITS AT THE FOOT OF THE FILE. This branch is
+# cut from v5.29.0, where neither `FLOW_SWITCH_ACKS` nor the writer nor the
+# key constant exists: that table is IDENT1's, by that lane's own design note
+# (a lane that builds a switch adds a constant and its words, never a second
+# reader with its own fallback). An unconditional assignment here would raise
+# at import on this branch, and re-declaring the table would be the second
+# reader IDENT1 exists to prevent. So the registration runs when the table is
+# there and is a no-op when it is not, and it is anchored far from every hunk
+# IDENT1 and EXIT1 touch so four lanes editing one file on one night do not
+# collide at one anchor.
+#
+# AT MERGE (order is IDENT1 -> INTAKE1): IDENT1's HEAD already registers this
+# key with this text, character for character, citing BUILD_INTAKE1 §7. KEEP
+# EITHER COPY — they are identical, a second assignment of the same key to the
+# same value changes nothing, and the duplicate is deliberate so that the
+# invariant "every key in FLOW_SWITCH_KEYS has ack text" is true on EVERY
+# merge order rather than only on the last one.
+INTAKE_SECOND_WITNESS_ACKS = {
+    "on": ("New items will be kept out of sight until something confirms "
+           "them."),
+    "off": ("New items will go straight onto your plate, even when I'm only "
+            "guessing."),
+    "already_on": "New items are already kept until something confirms them.",
+    "already_off": "New items already go straight onto your plate.",
+}
+try:  # pragma: no cover - the guard is the point, not a branch to exercise
+    FLOW_SWITCH_ACKS[policy.INTAKE_SECOND_WITNESS_KEY] =         INTAKE_SECOND_WITNESS_ACKS
+except (NameError, AttributeError):
+    pass
+
+# ---------------------------------------------------------------------------
+# SPEC_FLOW1 Lane B (EXIT1) — the two exit switches' verbs and acks
+# ---------------------------------------------------------------------------
+#
+# Registered HERE, at the end of the module, rather than beside the identity
+# entries in `FLOW_SWITCH_ACKS` above: two lanes added switch text to this one
+# file on the same night, and two additions at one anchor is a merge conflict
+# for no reason. The registration is module-level, so `set_flow_switch` sees
+# both keys the moment anything imports this module — which it must, since it
+# lives here.
+#
+# Both switches are DEFAULT ON and fail to ON. What they gate is an act with a
+# receipt and an `undo`; what happens without them is that 197 of M's 317 open
+# rows have no way off the plate at all except a tap. A misbehaving rule on a
+# client's seat turns off by word, without a release.
+VERB_EXIT_OWN_WORD_ON = "turn on closing when I say it is done"
+VERB_EXIT_OWN_WORD_OFF = "turn off closing when I say it is done"
+VERB_EXIT_SILENCE_ON = "turn on parking items nobody touches"
+VERB_EXIT_SILENCE_OFF = "turn off parking items nobody touches"
+FLOW_SWITCH_ACKS[policy.EXIT_OWN_WORD_CLOSES_KEY] = {
+    "on": ("Done — when you say in a working session or on a call that you "
+           "finished something, I will close the matching item on my own and "
+           "show it in the changed feed with `undo`. Say `turn off closing "
+           "when I say it is done` to stop."),
+    "off": ("Done — saying you finished something will not close anything "
+            "now; the item stays open until you close it. Say `undo` to put "
+            "this back."),
+    "already_on": "Closing when you say it is done is already on.",
+    "already_off": "Closing when you say it is done is already off.",
+}
+# WRAPSTAFF1 4.8 — THE RECEIPT DESCRIBES THE DOOR THAT EXISTS.
+#
+# It used to say "an item with no date that neither side has touched in six
+# weeks will rest itself, and after two months I will let it go". The door is
+# 45 and 60 days (`exit_doors.SILENCE_PARK_DAYS` / `SILENCE_LET_GO_DAYS`,
+# SPEC_FLOW1 Lane B item 3, M's numbers), and the rows it rests are undated
+# BY ITS OWN CANDIDATE RULE rather than by the row having no date — so the
+# customer read "with no date", then read the Friday wrap resting dated rows
+# at 32–46 days (ATTENDED_TEST_v5.31.0 B2.9: "words vs door").
+#
+# The sentence is composed from the two constants at import, so the words
+# cannot drift from the door again, and it states what is NEVER rested —
+# which since R-23 is the rule the reader most needs (`plate_view.
+# rests_under_parked`).
+from exit_doors import SILENCE_LET_GO_DAYS, SILENCE_PARK_DAYS  # noqa: E402
+
+
+def silence_switch_on_text(park_days: int = SILENCE_PARK_DAYS,
+                           let_go_days: int = SILENCE_LET_GO_DAYS) -> str:
+    """The parking switch-on receipt, in the door's own numbers."""
+    return (f"Done — an item nobody has touched in {park_days} days will rest "
+            f"itself, and after {let_go_days} days I will let it go and tell "
+            "you in the Friday wrap, with `undo` on the whole lot. Anything "
+            "overdue or due this week is never rested. Say `turn off parking "
+            "items nobody touches` to stop.")
+
+
+FLOW_SWITCH_ACKS[policy.EXIT_SILENCE_AGE_OUT_KEY] = {
+    "on": silence_switch_on_text(),
+    "off": ("Done — nothing will rest or be let go for going quiet; every "
+            "item stays on your plate until you move it. Say `undo` to put "
+            "this back."),
+    "already_on": "Parking items nobody touches is already on.",
+    "already_off": "Parking items nobody touches is already off.",
+}

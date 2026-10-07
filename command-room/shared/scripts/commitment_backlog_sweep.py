@@ -71,6 +71,7 @@ stdlib only.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import sys
 from pathlib import Path
 from typing import Iterable, Optional
@@ -103,7 +104,20 @@ from event_time import event_time, parse_ts  # noqa: E402
 from event_types import (  # noqa: E402
     INGEST_KILL_REASON,
     REVIEW_EXPIRY_REASON,
+    MACHINE as MACHINE_ACTOR,   # ATTRIB2 — "the product decided this"
 )
+
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
 
 
 SOURCE_SKILL = "commitment-backlog-sweep"
@@ -872,9 +886,15 @@ def scan(
     applied: list = []
     n_closed = 0
     if auto and not dry_run:
+        # ATTRIB2 (CONTRACT Rule 32) — the auto tier is the PRODUCT'S
+        # judgment: nobody was asked and nobody tapped. It runs under this
+        # module's bare `source_skill`, which is also the name the customer's
+        # own `undo` of this batch carries, so the actor is stated here
+        # rather than inferred from the surface.
         applied = _close_rows(workspace_root, auto, batch_id=batch_id,
                               source_skill=source_skill,
-                              resolution=EVIDENCE_RESOLUTION)
+                              resolution=EVIDENCE_RESOLUTION,
+                              actor=MACHINE_ACTOR)
         closed_ok = {r["commitment_id"] for r in applied
                      if r.get("status") in ("closed", "already_resolved")}
         n_closed = sum(1 for r in applied if r.get("status") == "closed")
@@ -922,7 +942,16 @@ def scan(
             "sent": sent_counts,
             "inbound": inbound_counts,
             "n_stale_evidence_skipped": stale_skipped,
-            "n_sent_scored": (sent_res.get("signal_fields") or {}).get("n_fetched", 0),
+            # SELFMAIL1 fix round 2 (review R-2) — SCORED means scored on
+            # both legs. This read `n_fetched` while the inbound line one
+            # line below read `n_scored`: two adjacent fields with the same
+            # name-shape and two different meanings, from the moment the
+            # sent leg got an `n_scored` of its own. The fallback keeps every
+            # pre-SELFMAIL1 receipt reading exactly as it did, which is what
+            # the inbound line already does.
+            "n_sent_scored": (sent_res.get("signal_fields") or {}).get(
+                "n_scored", (sent_res.get("signal_fields") or {}).get(
+                    "n_fetched", 0)),
             "n_inbound_scored": (inbound_res.get("signal_fields") or {}).get(
                 "n_scored", (inbound_res.get("signal_fields") or {}).get("n_fetched", 0)),
             # The two ways the inbound leg goes quiet with nothing wrong in the
@@ -939,6 +968,16 @@ def scan(
                 "n_from_user_skipped", 0),
             "n_sender_unresolved": (inbound_res.get("signal_fields") or {}).get(
                 "n_sender_unresolved", 0),
+            # SELFMAIL1 fix round 1 (review F-1) — the SENT leg's two ways of
+            # going quiet with nothing wrong in the matcher, forwarded exactly
+            # as the inbound leg's two above are. A note the CEO mailed to
+            # himself and a row the send never went to are both refusals, and
+            # without these the sweep's receipt cannot tell a fence that fired
+            # from a week with no sent mail worth matching.
+            "n_self_addressed_skipped": (sent_res.get("signal_fields") or {}).get(
+                "n_self_addressed_skipped", 0),
+            "n_not_addressed_skipped": (sent_res.get("signal_fields") or {}).get(
+                "n_not_addressed_skipped", 0),
         },
     }
     receipt["summary"] = summarize(receipt)
@@ -947,7 +986,7 @@ def scan(
 
 
 def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
-                extra=None, user_confirmed: bool = False) -> list:
+                extra=None, user_confirmed: bool = False, actor=None) -> list:
     """Close a list of rows through `close_commitments` — THE single closure path.
 
     Every closure carries its evidence and the two undo stamps, so `undo` lists
@@ -999,6 +1038,11 @@ def _close_rows(workspace_root, rows, *, batch_id, source_skill, resolution,
             "extra_data": data,
             "source_ref": f"session:{batch_id}",
             "user_confirmed": bool(user_confirmed),
+            # ATTRIB2 (CONTRACT Rule 32) — WHO decided. Omitted, the closer
+            # reads it from the source; the two tiers this module runs on its
+            # OWN judgment say so out loud, because this surface is also a
+            # chat a person types into.
+            "actor": actor,
         })
     return [dict(r, commitment_id=str(r.get("commitment_id")))
             for r in close_commitments(workspace_root, closures,
@@ -1546,7 +1590,13 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
             resolution=REVIEW_TIER_RESOLUTION,
             extra={"resolution_reason": spec["reason"],
                    "user_confirmed_from": "backlog-sweep"},
-            user_confirmed=True)
+            user_confirmed=True,
+            # ATTRIB2 (CONTRACT Rule 32) — `user_confirmed=True` here is the
+            # PERMISSION that lets an unconfirmed extraction close at all,
+            # not a report that anyone tapped. Without this the lapse drain
+            # would be stamped as the customer's and End of Day would say
+            # "N things you let go" about work nobody asked for.
+            actor=MACHINE_ACTOR)
 
     merged: list = []
     for group in merges:
@@ -1831,6 +1881,13 @@ def dangling_review_drain(workspace_root, *, now_iso=None,
 # zero new writers: the close events are already told apart by
 # `resolution_reason: "aged_out"` PLUS this source_skill, and `undo` reverses
 # them through the reverser that is already registered.
+#: R1 (M, 2026-09-13) — the RETIRED `age-out` job's ledger stamp, kept as a
+#: constant for exactly one reason: `apply_owed_to_you_quiet` still defaults to
+#: it so parks already on disk and any future park read back as ONE history
+#: under one spelling. Nothing schedules it, nothing types it, and no writer in
+#: the product reaches it except that one default.
+RETIRED_AGE_OUT_SOURCE_SKILL = "age-out"
+
 AMNESTY_SOURCE_SKILL = f"{SOURCE_SKILL}:amnesty"
 
 # The ONLY bucket and verb amnesty may compose. Constants, not caller input —
@@ -2352,6 +2409,108 @@ def review_tier(workspace_root) -> list:
     return split_pending_review(opens_raw)[1]
 
 
+def unowned_tier(workspace_root) -> list:
+    """THE OWNERLESS CONFIRM LANE: every open top-level row with no resolvable
+    owner, as events (DOORS1 1.3, record step B4).
+
+    WHAT THE RECORD FOUND. The attended test's B4 pre-count explained all
+    fifteen unconfirmed rows by the two-day door — and then `work my plate`
+    showed a THIRD population the two explanations did not cover: ten pages of
+    "no owner on record — whose is this?" rows, 25 to 44 days old, on the
+    plate's CONFIRM lane. They are not `pending_review`, so `review_tier`
+    never saw them; they are not INTAKE1's held tier, because they sit on the
+    plate. Nothing drained them and nothing ever would have.
+
+    They are `commitment_state.BUCKET_UNOWNED` — open, top-level, and with no
+    `owner_id` the record can resolve. That is the same predicate
+    `plate_view` uses to put them on the CONFIRM lane in the first place
+    (`bucket == BUCKET_UNOWNED` -> "no owner on record — whose is this?"), so
+    the door and the lane cannot drift apart.
+
+    Sub-items are partitioned out — a step of a promise is not a promise and
+    never carries a bucket of its own — and a row the USER disowned by verb is
+    NOT here: `question_written_by_user` rows are the user's own declines, the
+    plate parks them, and `review_expiry_candidates` skips them anyway.
+    """
+    from commitment_state import BUCKET_UNOWNED, bucket_of
+    from cru_match import load_open_commitments, partition_subitems
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    opens_raw = load_open_commitments(str(events_path),
+                                      workspace_root=workspace_root)
+    tops, _subs = partition_subitems(opens_raw)
+    try:
+        from primary_user import resolve_primary_user
+        uid = resolve_primary_user(workspace_root)
+    except Exception:  # noqa: BLE001
+        uid = None
+    return [ev for ev in tops if bucket_of(ev, uid) == BUCKET_UNOWNED]
+
+
+def review_expiry_tier(workspace_root) -> list:
+    """WHAT THE TWO-DAY DOOR REACHES: the unconfirmed pile plus the ownerless
+    CONFIRM lane, deduplicated, as events.
+
+    ONE function so the plan, the apply-side membership fence and the offer
+    line cannot drift apart — the same reason `review_tier` is one function.
+    It is deliberately NOT `review_tier` itself: `review_tier` answers "what
+    is pending review", which the unconfirmed TILE counts and INTAKE1's held
+    tier reads, and widening that would change a customer-facing number that
+    R2 and B4 never asked to change. This answers the narrower question "what
+    may lapse at the two-day bar", and only the door asks it.
+
+    Order is the unconfirmed pile first, then the ownerless rows, and the
+    candidate pass re-sorts by quiet days anyway.
+    """
+    seen = set()
+    out: list = []
+    for ev in list(review_tier(workspace_root)) + list(unowned_tier(workspace_root)):
+        cid = _cid(ev)
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        out.append(ev)
+    return out
+
+
+#: The plain words a money-held row carries on the CONFIRM lane (R2).
+REVIEW_HOLD_MONEY_REASON = "money — waits for you or a payment"
+
+
+def review_expiry_hold_reason(ev, *, now=None, workspace_root=None):
+    """Why this row may NOT lapse through the two-day door, in plain words, or
+    None (DOORS1 1.2 — M's ruling R2, 2026-09-13).
+
+    "Invoices, retainers, payments never lapse; they stay until M or a payment
+    closes them." The record's B2.2 watched a real inbound invoice lapse
+    through this door TWICE (Sep 6 and Sep 8) while the customer was being
+    told the pile had been cleared.
+
+    THE PREDICATE IS `question_ttl.importance_hold` AND NEVER A SECOND ONE.
+    That function already answers "may this row's question expire to a
+    destructive default", already knows money, and 1.2 widened its money arm
+    to read the caution rail's detector. Importing it here is what keeps ONE
+    definition of money in the product.
+
+    THE DOOR IS SCOPED TO THE MONEY ARM, deliberately. `importance_hold` also
+    holds on overdue, due-this-week and client rows; R2 ruled the MONEY lane
+    and only the money lane, and the spec's own pass line says a non-money row
+    "lapses as before". Holding the other three arms here would be a bigger
+    change than the ruling, made silently, on every seat — so the arms are
+    read and only money is acted on. The others are one line away when M rules
+    them.
+
+    A read that throws holds NOTHING: a hold invented out of an error would
+    freeze a row on the CONFIRM lane forever with no way to tell why.
+    """
+    try:
+        from question_ttl import IMPORTANCE_MONEY, importance_hold
+        when = now or _now_dt(None)
+        hold = importance_hold(ev, now=when, workspace_root=workspace_root)
+    except Exception:  # noqa: BLE001
+        return None
+    return REVIEW_HOLD_MONEY_REASON if hold == IMPORTANCE_MONEY else None
+
+
 def _owner_id(ev) -> str:
     from cru_match import _commitment_field
     return str(_commitment_field(ev, "owner_id") or "")
@@ -2385,10 +2544,29 @@ def _review_row(ev, *, user_person_id, seen=None, now=None) -> dict:
     }
 
 
+def _review_activity(events_path, include_reopened: bool) -> dict:
+    """THE DOOR — REVSCHED1 §0-3, written ONCE.
+
+    With the door SHUT (the default) a reopen counts as movement, so a row an
+    `undo` put back gets a fresh quiet clock. With it OPEN the clock is
+    measured against every movement type EXCEPT the reopen, so a row whose
+    only movement since capture was the reopen can lapse again while a row
+    that was reopened AND THEN genuinely touched is still shielded.
+
+    It is a function rather than four lines repeated because two readers now
+    need it (the candidates and the holds), and two copies of a door are two
+    doors — the mutation that proves this one is a door anchors here."""
+    return last_activity_map(
+        events_path,
+        movement_types=(_movement_types_without_reopen()
+                        if include_reopened else None))
+
+
 def review_expiry_candidates(rows, *, events_path, user_person_id,
                              now_iso=None,
                              older_than_days: Optional[int] = None,
-                             include_reopened: bool = False) -> list:
+                             include_reopened: bool = False,
+                             workspace_root=None) -> list:
     """Review-tier rows with no movement for N days, oldest first.
 
     Movement comes from `last_activity_map` — the SAME baseline the
@@ -2424,10 +2602,7 @@ def review_expiry_candidates(rows, *, events_path, user_person_id,
     days = REVIEW_EXPIRY_DAYS if older_than_days is None else int(older_than_days)
     now = _now_dt(now_iso)
     cutoff = now - _dt.timedelta(days=max(1, days))
-    activity = last_activity_map(
-        events_path,
-        movement_types=(_movement_types_without_reopen()
-                        if include_reopened else None))
+    activity = _review_activity(events_path, include_reopened)
     out: list = []
     for ev in rows or []:
         cid = _cid(ev)
@@ -2442,8 +2617,55 @@ def review_expiry_candidates(rows, *, events_path, user_person_id,
         seen = activity.get(cid)
         if seen is None or seen > cutoff:
             continue
+        # R2 — the money lane never lapses through this door. The held row
+        # stays where it is, on the CONFIRM lane, carrying its reason; it is
+        # reported by `review_expiry_holds` rather than silently vanishing,
+        # because a row the product refuses to clear is a row the customer is
+        # owed a sentence about.
+        if review_expiry_hold_reason(ev, now=now,
+                                     workspace_root=workspace_root):
+            continue
         out.append(_review_row(ev, user_person_id=user_person_id,
                                seen=seen, now=now))
+    out.sort(key=lambda r: (-(r["days_quiet"] or 0), r["commitment_id"]))
+    return out
+
+
+def review_expiry_holds(rows, *, events_path, user_person_id, now_iso=None,
+                        older_than_days: Optional[int] = None,
+                        include_reopened: bool = False,
+                        workspace_root=None) -> list:
+    """The rows this door WOULD have lapsed and is holding instead, with the
+    reason on each (R2).
+
+    Derived exactly as `review_expiry_candidates` derives its own list — same
+    window, same movement baseline, same disowned-row skip — and differing on
+    one line: it keeps what the other drops. Two passes over one substrate,
+    never a second rule.
+    """
+    days = REVIEW_EXPIRY_DAYS if older_than_days is None else int(older_than_days)
+    now = _now_dt(now_iso)
+    cutoff = now - _dt.timedelta(days=max(1, days))
+    # THE DOOR'S OWN MOVEMENT BASELINE, read through the one helper rather
+    # than re-typed here: two copies of the reopen-door gate would eventually
+    # be two doors, and the mutation that proves the door is a door anchors on
+    # the ONE place it is written.
+    activity = _review_activity(events_path, include_reopened)
+    out: list = []
+    for ev in rows or []:
+        cid = _cid(ev)
+        if not cid or question_written_by_user(ev):
+            continue
+        seen = activity.get(cid)
+        if seen is None or seen > cutoff:
+            continue
+        reason = review_expiry_hold_reason(ev, now=now,
+                                           workspace_root=workspace_root)
+        if not reason:
+            continue
+        row = _review_row(ev, user_person_id=user_person_id, seen=seen, now=now)
+        row["hold_reason"] = reason
+        out.append(row)
     out.sort(key=lambda r: (-(r["days_quiet"] or 0), r["commitment_id"]))
     return out
 
@@ -2740,6 +2962,8 @@ def review_expiry_plan(workspace_root, *, user_person_id,
         out["n_review_total"] = 0
         out["include_reopened"] = bool(include_reopened)
         out["n_shielded_by_reopen"] = 0
+        out["held"] = []
+        out["n_held_money"] = 0
         return out
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     threshold = _resolve_review_threshold(workspace_root, older_than_days)
@@ -2757,13 +2981,22 @@ def review_expiry_plan(workspace_root, *, user_person_id,
                 "include_reopened": bool(include_reopened),
                 "rows": [], "n": 0, "n_mine": 0, "n_not_mine": 0,
                 "n_review_total": 0, "n_shielded_by_reopen": 0,
+                "held": [], "n_held_money": 0,
                 "preview": reason, "confirm": reason}
 
-    tier = review_tier(workspace_root)
+    # DOORS1 1.3 — the door reaches the unconfirmed pile AND the ownerless
+    # CONFIRM lane. Same bar, same receipt, same undo.
+    tier = review_expiry_tier(workspace_root)
     rows = review_expiry_candidates(tier, events_path=events_path,
                                     user_person_id=user_person_id,
                                     now_iso=now_iso, older_than_days=threshold,
-                                    include_reopened=include_reopened)
+                                    include_reopened=include_reopened,
+                                    workspace_root=workspace_root)
+    held = review_expiry_holds(tier, events_path=events_path,
+                               user_person_id=user_person_id,
+                               now_iso=now_iso, older_than_days=threshold,
+                               include_reopened=include_reopened,
+                               workspace_root=workspace_root)
     mine, theirs = _owner_split(rows)
     # §0-3 honesty counterpart. Only on a CLOSED-door plan: with the door open
     # nothing is shielded, so re-deriving would be work spent computing zero.
@@ -2772,7 +3005,7 @@ def review_expiry_plan(workspace_root, *, user_person_id,
         wide = review_expiry_candidates(
             tier, events_path=events_path, user_person_id=user_person_id,
             now_iso=now_iso, older_than_days=threshold,
-            include_reopened=True)
+            include_reopened=True, workspace_root=workspace_root)
         here = {r["commitment_id"] for r in rows}
         n_shielded = sum(1 for r in wide if r["commitment_id"] not in here)
     return {
@@ -2789,6 +3022,11 @@ def review_expiry_plan(workspace_root, *, user_person_id,
         # implying the window found everything there is.
         "n_review_total": len(tier),
         "n_shielded_by_reopen": n_shielded,
+        # R2 — what the door refused to touch, and why. Reported, never
+        # silently dropped: a lane the product will not clear is a lane the
+        # customer has to be able to see.
+        "held": held,
+        "n_held_money": len(held),
         "preview": _review_preview(
             rows,
             empty_line=(f"Nothing in the unconfirmed pile has sat unanswered "
@@ -2926,7 +3164,9 @@ def _apply_review(workspace_root, plan, *, bucket, user_person_id, batch_id,
                 "closed": [], "merged": [], "skipped": [],
                 "summary": plan.get("reason")}
 
-    pending_ids = {_cid(ev) for ev in review_tier(workspace_root)}
+    # DOORS1 1.3 — the membership fence has to admit the ownerless CONFIRM
+    # lane too, or the plan would list rows the apply then silently refuses.
+    pending_ids = {_cid(ev) for ev in review_expiry_tier(workspace_root)}
     decisions = _review_decisions(plan.get("rows"), bucket=bucket,
                                   pending_ids=pending_ids)
     n_planned = len(decisions)
@@ -3141,10 +3381,11 @@ def review_offer(workspace_root, *, user_person_id=None, now_iso=None,
         if days < REVIEW_EXPIRY_MIN_DAYS:
             return None
         events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-        tier = review_tier(workspace_root)
+        tier = review_expiry_tier(workspace_root)
         rows = review_expiry_candidates(tier, events_path=events_path,
                                         user_person_id=uid, now_iso=now_iso,
-                                        older_than_days=days)
+                                        older_than_days=days,
+                                        workspace_root=workspace_root)
         n = len(rows)
         if n < bar:
             return None
@@ -3170,7 +3411,7 @@ REVIEW_EXPIRY_RECEIPT_TYPE = "pack_run"
 
 
 def run_review_expiry_job(workspace_root, *, apply: bool = False,
-                          now_iso=None, fired_via: str = "scheduled",
+                          now_iso=None, fired_via=None,
                           batch_id=None) -> dict:
     """REVSCHED1 §3-2 — the scheduled drain, as a maintenance JOB.
 
@@ -3217,6 +3458,12 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     n_held_back, threshold_days, batch_id, refused, reason, receipt_line,
     summary}`.
     """
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
     from primary_user import resolve_primary_user
 
     # REVIEW N-4 — VALIDATE THE RECEIPT VOCABULARY BEFORE ANY WRITE.
@@ -3508,139 +3755,40 @@ def _log_review_expiry_receipt(workspace_root, out, *, fired_via) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SWEEPSCHED1 — the CONFIRMED tier ages out on a SCHEDULE, not on a phrase
+# SWEEPSCHED1 — RETIRED. THE 30-DAY AGE-OUT JOB IS GONE (M's ruling R1,
+# 2026-09-13)
 # ---------------------------------------------------------------------------
 #
-# WHAT WAS MISSING (the 2026-08-22 funnel census). The amnesty above exists,
-# works, and is reversible — and it is wired to nothing. It runs only when
-# somebody types `commitment amnesty`, which is the same shape of problem the
-# review tier had until REVSCHED1 gave it a weekly job: a drain nobody
-# remembers is a drain that never runs, and the confirmed pile is then the one
-# lane that only ever grows.
+# The confirmed tier used to age out on a SCHEDULE at thirty quiet days:
+# `AGE_OUT_JOB_ID`, `run_age_out_job`, its confirm-first counter, its offer
+# line, its receipt writer and its `age-out` CLI subcommand all lived here.
+# On 2026-09-13 one unattended fire closed 48 agreed rows and parked 51 more
+# — including rows that were on that morning's brief — at a bar nobody had
+# ruled, five days after night 10 had ruled the silence door at 45 rest and
+# 60 let-go. M's ruling is one sentence: EXIT1's `exit_doors.py` route 3 is
+# THE ONLY SILENCE DOOR in the product. Three silence bars running at once
+# was the defect; one is the fix.
 #
-# WHY IT IS A JOB AND NOT A TASK — the whole of `run_review_expiry_job`'s
-# reasoning applies here unchanged and is not restated: it rides the already
-# authorized `maintenance` task, so it registers zero scheduled tasks on any
-# machine, and a job id is not a `DEFAULT_SCHEDULES` key, so it cannot inherit
-# a retired predecessor's `enabled: false` through the carry-over seam that
-# silently disabled the end-of-day task on 2026-08-19.
-#
-# WHERE IT DIFFERS FROM THE REVIEW DRAIN, and this is the only difference:
-# CONFIRM-FIRST. The review tier drains guesses nobody ever agreed to, so a
-# weekly confirm nobody answers was the wrong safety there and reversibility
-# was the right one. This tier closes work somebody DID agree to, and nobody
-# has ever watched this job act. So the first `AGE_OUT_CONFIRM_FIRST_RUNS`
-# fires SHOW THEIR HAND — they compute the same plan, close nothing, and write
-# the offer as their receipt line. From the fire after that it applies
-# unattended, reversibly, exactly as the review drain does.
-#
-# THE COUNTER LIVES ON THE RECEIPTS AND NOWHERE ELSE (DD-2). A config flag
-# would be a flag nobody flips, i.e. a job that never applies; a counter in
-# config would be a second piece of state that can disagree with the ledger.
-# The job's own `pack_run` receipts already record every fire it has made, so
-# it counts itself — the same "the receipt is the signal" doctrine the
-# dispatcher's dueness rule already runs on.
-
-# The job's receipt id + type. Registered in `receipts.CANONICAL_TASK_IDS` /
-# `receipts.RECEIPT_TYPES`; read by `maintenance_dispatcher.dispatch_plan`
-# (dueness) and `task_watchdog.check_maintenance_jobs` (lateness,
-# machine-local).
-AGE_OUT_JOB_ID = "age-out"
-AGE_OUT_RECEIPT_TYPE = "pack_run"
-
-# How many fires propose before any fire applies (D2, RULED). Three is not a
-# rounded-up two: it is the number of Sundays a CEO who ignores one and skims
-# the next still gets a third look at before anything closes on its own.
-AGE_OUT_CONFIRM_FIRST_RUNS = 3
-
-# The two modes a fire can record. They are the ONLY values the counter counts,
-# which is what keeps a refusal — a fire that never got as far as a plan — from
-# burning one of the three looks the user is owed.
-AGE_OUT_MODE_PROPOSED = "proposed"
-AGE_OUT_MODE_APPLIED = "applied"
-
-
-def _age_out_prior_runs(workspace_root) -> int:
-    """How many times this job has already proposed or applied.
-
-    Counts THIS JOB'S OWN receipts and nothing else — never config, never a
-    stored counter. `iter_receipts` is shard-transparent and parses every
-    legacy shape, so the count survives a substrate that has been sharded or
-    migrated under it.
-
-    A receipt with no `mode` does not count. Three shapes arrive that way and
-    all must be excluded for the same reason: a `primary_user_unresolved`
-    refusal (the fire never reached a plan), a REFUSED plan
-    (`threshold_below_floor` — the plan came back with nothing to offer and an
-    empty line), and any receipt written under this id by a future sibling.
-    None of them showed the user anything, so none may consume one of the
-    three looks.
-
-    An unreadable substrate returns 0, which reads as "still on probation" —
-    the safe direction. The failure in the other direction is a job that
-    applies unattended because it could not read its own history, which is
-    exactly what confirm-first exists to prevent.
-    """
-    try:
-        from receipts import iter_receipts
-
-        seen = 0
-        for r in iter_receipts(workspace_root, task_ids=[AGE_OUT_JOB_ID]):
-            raw = r.get("raw") if isinstance(r, dict) else None
-            data = raw.get("data") if isinstance(raw, dict) else None
-            mode = data.get("mode") if isinstance(data, dict) else None
-            if mode in (AGE_OUT_MODE_PROPOSED, AGE_OUT_MODE_APPLIED):
-                seen += 1
-        return seen
-    except Exception:
-        return 0
-
-
-def _age_out_offer_line(n, threshold_days, n_prior) -> str:
-    """The line a PROPOSING fire leaves — an offer, not a report (DD-2).
-
-    Empty when the plan is empty, for the same reason
-    `_review_expiry_receipt_line` is: a line saying "nothing to clear" is a
-    line the CEO has to read in order to learn that nothing happened.
-
-    The tail COUNTS DOWN rather than repeating "two more Sundays" at every
-    offer. The spec's sentence is the FIRST offer's sentence; saying it again
-    on the third would be a plausible-looking lie about how much warning is
-    left, and this module refuses those elsewhere for the same reason
-    (`_review_expiry_receipt_line` never offers `undo` on an empty batch).
-    """
-    n = int(n or 0)
-    if not n:
-        return ""
-    remaining = AGE_OUT_CONFIRM_FIRST_RUNS - 1 - int(n_prior or 0)
-    if remaining >= 2:
-        tail = f"after {remaining} more Sundays"
-    elif remaining == 1:
-        tail = "after one more Sunday"
-    else:
-        tail = "from next Sunday"
-    subject = "item has" if n == 1 else "items have"
-    obj = "it" if n == 1 else "them"
-    return (f"{n} agreed {subject} been silent {threshold_days}+ days. Say "
-            f"`commitment amnesty` to let {obj} go in one reversible batch, or "
-            f"nothing and I will start doing it on my own {tail}.")
-
-
-def _age_out_receipt_line(out) -> str:
-    """The ONE line an APPLYING fire leaves for the next day-close to read out.
-
-    Same contract as `_review_expiry_receipt_line`, same empty-on-zero rule,
-    and every number off the writer's own return rather than off the plan — a
-    receipt must never assert a count the writer did not produce.
-    """
-    n = int((out or {}).get("n_applied") or 0)
-    if not n:
-        return ""
-    days = (out or {}).get("threshold_days")
-    them = "it" if n == 1 else "them"
-    return (f"{n} silent agreed item{'' if n == 1 else 's'} aged out after "
-            f"{days} quiet days — say `undo` to put {them} back, `my plate` "
-            f"for what remains.")
+# WHAT SURVIVED, DELIBERATELY:
+#   * `apply_amnesty` / `amnesty_plan` — the HAND-TYPED amnesty. It is the
+#     customer's own act (`AMNESTY_SOURCE_SKILL`, `commitment amnesty`), it
+#     asks before it closes, and nothing about it ever argued from an
+#     unattended clock. R1 retires the JOB, not the verb.
+#   * `_split_owed_to_you` — `amnesty_plan` calls it to keep rows owed TO the
+#     user out of the drop pile.
+#   * `owed_to_you_quiet_plan` / `apply_owed_to_you_quiet` — POLICY1-B's
+#     cadence-relative park engine, which rode INSIDE the deleted job and was
+#     the source of the 51 parks. It now has NO caller anywhere in the
+#     product: no maintenance job, no CLI leg, no skill. It is kept because
+#     POLICY1-B pins its arithmetic and a future ATTENDED surface may offer
+#     it, and a guard pins that nothing unattended reaches it again.
+#   * the `age-out` id itself in `receipts.CANONICAL_TASK_IDS`,
+#     `receipts.RECEIPT_TYPES`, `event_types.MACHINE_SOURCE_SKILLS`,
+#     `flow_measure._FALLBACK_MACHINE_SOURCES` and
+#     `schedule_config.DISPLAY_NAMES` — the `pulse` precedent. Receipts under
+#     that id are on disk, history is append-only, and they have to keep
+#     parsing and keep reading as English. The id parses forever; it is
+#     simply never written again.
 
 
 def _split_owed_to_you(opens, workspace_root) -> tuple:
@@ -3739,7 +3887,13 @@ def apply_owed_to_you_quiet(workspace_root, *, user_person_id, batch_id,
     closure, never a question."""
     from commitment_policy import group_stamps
     from commitment_state import park_commitments, unpark_commitments
-    source_skill = source_skill or AGE_OUT_JOB_ID
+    # R1 (2026-09-13) — the `age-out` JOB that used to call this is deleted,
+    # so there is no constant left to read. The historic stamp is kept as a
+    # literal on purpose: parks already on M's book carry `source_skill:
+    # "age-out"`, `undo` reads them by that string, and changing it now would
+    # split one park history into two spellings. Any future ATTENDED caller
+    # passes its own `source_skill` and never inherits this one.
+    source_skill = source_skill or RETIRED_AGE_OUT_SOURCE_SKILL
     plan = owed_to_you_quiet_plan(workspace_root, now_iso=now_iso)
     parked, unparked = [], []
     # F-6 — ONE lock, ONE scan, N appends (44 per-row parks took 107 s on
@@ -3783,198 +3937,6 @@ def _owed_to_you_receipt_line(q) -> str:
     return " ".join(parts)
 
 
-def run_age_out_job(workspace_root, *, apply: bool = False, now_iso=None,
-                    fired_via: str = "scheduled", batch_id=None) -> dict:
-    """SWEEPSCHED1 DD-1/DD-2 — the confirmed-tier drain, as a maintenance JOB.
-
-    THE ORDER OF OPERATIONS IS `run_review_expiry_job`'S, DELIBERATELY, and the
-    reasoning behind each step is recorded there rather than restated here:
-
-      1. validate `fired_via` FIRST. `log_receipt` raises on a value it does not
-         know, and the receipt call sits after the closes inside a
-         swallow-and-log guard — composed, the two once closed a whole pile and
-         then lost the receipt to the exception, leaving the job permanently
-         due. A refusal at the front means nothing happened at all;
-      2. `resolve_primary_user`, never a guess. Unresolved refuses, and on an
-         apply it STILL receipts, or the job is permanently due;
-      3. `apply=False` is the dry run: plan only, no receipt. The flag
-         mattering is what stops a flagless fire from silently satisfying the
-         dispatcher's dueness rule forever;
-      4. on an apply, the plan goes through `apply_amnesty`, which this build
-         does not touch. The phrase path stays byte-identical; all this wrapper
-         adds is the user resolution `apply_amnesty` has always demanded of its
-         caller — the single thing that kept it from running unattended.
-
-    AND ONE STEP THAT IS THIS JOB'S ALONE: between 3 and 4, the confirm-first
-    gate. Under `AGE_OUT_CONFIRM_FIRST_RUNS` prior proposing/applying fires the
-    job computes the plan, CLOSES NOTHING, and writes the offer as its receipt
-    line. It is a real fire either way — it receipts, so its slot is served and
-    it does not re-derive at every one of the task's three daily slots.
-
-    It reaches the CONFIRMED pile and nothing else, and adds no second
-    derivation to make that true: `amnesty_plan` -> `_amnesty_decisions` ->
-    `apply_decisions` is the one path, `split_pending_review` inside the plan is
-    its fence, and an unconfirmed extraction never enters.
-
-    Returns `{ran, applied, mode, n_prior_runs, n_planned, n_applied,
-    n_drifted, threshold_days, batch_id, refused, reason, preview,
-    receipt_line, summary}`.
-    """
-    from primary_user import resolve_primary_user
-
-    def _blank(**over) -> dict:
-        base = {"ran": False, "applied": False, "mode": None,
-                "n_prior_runs": 0, "n_planned": 0, "n_applied": 0,
-                "n_drifted": 0, "threshold_days": None, "batch_id": None,
-                "refused": None, "reason": "", "preview": "",
-                "receipt_line": "", "summary": ""}
-        base.update(over)
-        return base
-
-    via = _normalize_fired_via_or_none(fired_via)
-    if via is None:
-        return _blank(
-            refused="unknown_fired_via",
-            reason=(f"{fired_via!r} is not a fire provenance I can record, so "
-                    f"I did not touch the agreed pile. Nothing was changed."))
-    fired_via = via
-
-    uid = resolve_primary_user(workspace_root)
-    if not uid:
-        out = _blank(
-            refused="primary_user_unresolved",
-            reason=("I could not work out whose workspace this is, so the "
-                    "agreed pile was left alone."))
-        if apply:
-            _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
-        return out
-
-    if not apply:
-        plan = amnesty_plan(workspace_root, now_iso=now_iso)
-        return _blank(
-            n_prior_runs=_age_out_prior_runs(workspace_root),
-            n_planned=int(plan.get("n") or 0),
-            threshold_days=plan.get("threshold_days"),
-            refused=plan.get("refused"),
-            reason=plan.get("reason") or "",
-            preview=plan.get("preview") or "",
-            summary=plan.get("confirm") or plan.get("reason") or "")
-
-    n_prior = _age_out_prior_runs(workspace_root)
-    if n_prior < AGE_OUT_CONFIRM_FIRST_RUNS:
-        plan = amnesty_plan(workspace_root, now_iso=now_iso)
-        n = int(plan.get("n") or 0)
-        line = _age_out_offer_line(n, plan.get("threshold_days"), n_prior)
-        # QUIET1 D4 — the offer is ONE question ("N have gone quiet — say
-        # `review amnesty`?"), so it goes through the weekly budget as the
-        # `age_out_offer` asker like every other question. Cut by the
-        # budget, the line is withheld (the receipt still counts the look:
-        # below the cut takes the default, and the default here is the
-        # apply after three looks — M's posture, reversible in one batch).
-        if line and apply:
-            try:
-                import quiet as _quiet
-                sub = _quiet.submit_questions(
-                    workspace_root, _quiet.ASKER_AGE_OUT,
-                    [{"commitment_id": f"age-out-offer:{plan.get('threshold_days')}",
-                      "has_counterparty": False, "has_date": False}],
-                    now_iso=now_iso)
-                if not sub["render"]:
-                    line = ""
-            except Exception as exc:  # noqa: BLE001 — loud, never fatal
-                print(f"[age-out] question budget FAILED: "
-                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        out = _blank(
-            ran=bool(n),
-            # A REFUSED plan put NOTHING in front of anybody, so it records no
-            # mode and burns none of the three looks — the same shape the
-            # unresolved-user refusal above already uses, and the same reason
-            # `_age_out_prior_runs` gives for excluding it. `amnesty_plan`
-            # refuses exactly one way here (`threshold_below_floor`, a
-            # workspace configured under the seven-day floor), and a workspace
-            # can sit in that state for weeks; without this the three Sundays
-            # of warning are spent in silence and the fourth closes the pile
-            # having never once shown its hand. An EMPTY plan is NOT a refusal
-            # and still counts — there was nothing to offer, and probation that
-            # can never end is a job that can never act.
-            mode=None if plan.get("refused") else AGE_OUT_MODE_PROPOSED,
-            n_prior_runs=n_prior,
-            n_planned=n,
-            threshold_days=plan.get("threshold_days"),
-            refused=plan.get("refused"),
-            reason=plan.get("reason") or "",
-            preview=plan.get("preview") or "",
-            receipt_line=line,
-            summary=line or plan.get("reason") or "")
-        _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
-        return out
-
-    batch_id = batch_id or _mint_batch_id(now_iso)
-    out = dict(apply_amnesty(workspace_root, user_person_id=uid,
-                             batch_id=batch_id, now_iso=now_iso))
-    out["mode"] = AGE_OUT_MODE_APPLIED
-    out["n_prior_runs"] = n_prior
-    out["preview"] = out.get("preview") or ""
-    # DD-9 — the owed-to-you lane, on the SAME run batch: parks, never drops.
-    try:
-        q = apply_owed_to_you_quiet(workspace_root, user_person_id=uid,
-                                    batch_id=batch_id, now_iso=now_iso)
-    except Exception as exc:  # the drain must not die on the second lane
-        q = {"n_owed_to_you": 0, "n_parked": 0, "n_unparked": 0,
-             "parked": [], "unparked": [], "error": f"{type(exc).__name__}: {exc}"}
-    out["n_owed_to_you_excluded"] = int(q.get("n_owed_to_you") or 0)
-    out["n_owed_to_you_parked"] = int(q.get("n_parked") or 0)
-    out["n_owed_to_you_unparked"] = int(q.get("n_unparked") or 0)
-    out["owed_to_you_parked"] = q.get("parked") or []
-    out["batch_id"] = out.get("batch_id") or batch_id
-    out["receipt_line"] = " ".join(x for x in (_age_out_receipt_line(out),
-                                               _owed_to_you_receipt_line(q)) if x)
-    _log_age_out_receipt(workspace_root, out, fired_via=fired_via)
-    return out
-
-
-def _log_age_out_receipt(workspace_root, out, *, fired_via) -> None:
-    """ONE receipt per fire — proposed, applied, empty and refused alike.
-
-    The receipt is the job's dueness signal AND the confirm-first counter, so
-    it is written on a no-op too. A job that only receipts when it finds work
-    re-derives the whole pile at every one of the task's three daily slots
-    forever; a job that only receipted when it ACTED would additionally never
-    leave probation, because the counter it reads is this very ledger.
-
-    `surfaced` is what the fire PUT IN FRONT OF THE USER: what closed on an
-    applying fire, what was offered on a proposing one. A proposing fire
-    reporting 0 there while its line named 26 items would put the usage report
-    at odds with the sentence the CEO actually read.
-    """
-    try:
-        from receipts import log_receipt
-        mode = (out or {}).get("mode")
-        n_planned = int((out or {}).get("n_planned") or 0)
-        n_applied = int((out or {}).get("n_applied") or 0)
-        surfaced = n_planned if mode == AGE_OUT_MODE_PROPOSED else n_applied
-        log_receipt(
-            workspace_root, AGE_OUT_JOB_ID,
-            receipt_type=AGE_OUT_RECEIPT_TYPE,
-            fired_via=fired_via,
-            surfaced=surfaced,
-            extra_data={
-                "mode": mode,
-                "n_prior_runs": int((out or {}).get("n_prior_runs") or 0),
-                "n_planned": n_planned,
-                "n_applied": n_applied,
-                "n_drifted": int((out or {}).get("n_drifted") or 0),
-                "threshold_days": (out or {}).get("threshold_days"),
-                "batch_id": (out or {}).get("batch_id"),
-                "refused": (out or {}).get("refused"),
-                "preview": (out or {}).get("preview") or "",
-                "receipt_line": (out or {}).get("receipt_line") or "",
-            },
-        )
-    except Exception as exc:  # loud, never fatal — the closes already landed
-        print(f"[backlog-sweep] age-out receipt FAILED: "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr)
-
 __all__ = [
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_AGE_OUT_DAYS",
@@ -4010,7 +3972,12 @@ __all__ = [
     "INGEST_KILL_REASON",
     "REVIEW_TIER_BUCKETS",
     "review_tier",
+    "unowned_tier",
+    "review_expiry_tier",
     "review_expiry_candidates",
+    "review_expiry_holds",
+    "review_expiry_hold_reason",
+    "REVIEW_HOLD_MONEY_REASON",
     "ingest_kill_candidates",
     "review_expiry_plan",
     "apply_review_expiry",
@@ -4042,33 +4009,26 @@ __all__ = [
     "validate_sweep_ran",
     "review_offer",
     "run_review_expiry_job",
-    "AGE_OUT_JOB_ID",
-    "AGE_OUT_RECEIPT_TYPE",
-    "AGE_OUT_CONFIRM_FIRST_RUNS",
-    "AGE_OUT_MODE_PROPOSED",
-    "AGE_OUT_MODE_APPLIED",
-    "run_age_out_job",
 ]
 
 
 def main(argv: Optional[list] = None) -> int:
-    """CLI for the scheduled legs of this module (REVSCHED1 §3-2, SWEEPSCHED1).
+    """CLI for the scheduled leg of this module (REVSCHED1 §3-2).
 
     `python3 commitment_backlog_sweep.py review-expiry --workspace <root>
-    [--apply]` — the unconfirmed pile.
-    `python3 commitment_backlog_sweep.py age-out --workspace <root> [--apply]`
-    — the confirmed pile.
+    [--apply]` — the unconfirmed pile. ONE leg, and a subcommand rather than a
+    bare invocation on purpose: the shape has to stay a named pile, so a new
+    drain can never be added by giving this one a switch.
 
-    Without `--apply` either leg plans and writes nothing — including NO
-    receipt, so a dry run leaves the job due. Same contract as
-    `lifecycle_pass.py` and `identity_reconcile.py`, deliberately: the flag
-    mattering is what stops a dry run from silently satisfying the dispatcher's
-    dueness rule forever.
+    THE `age-out` LEG IS GONE (M's ruling R1, 2026-09-13). It was the
+    confirmed pile's 30-day drain and it is out of the product, prompt and
+    registry; nothing types it any more. `commitment amnesty` — the customer's
+    own hand-typed verb over the same pile — is untouched.
 
-    The two legs are separate subcommands and never one with a switch: they
-    close different piles under different stamps at different bars, and a typo
-    in a shell string that silently selected the other pile is exactly the
-    class of accident a scheduled command line must not be able to have.
+    Without `--apply` the leg plans and writes nothing — including NO receipt,
+    so a dry run leaves the job due. Same contract as `lifecycle_pass.py` and
+    `identity_reconcile.py`, deliberately: the flag mattering is what stops a
+    dry run from silently satisfying the dispatcher's dueness rule forever.
     """
     import argparse
     import json as _json
@@ -4085,18 +4045,23 @@ def main(argv: Optional[list] = None) -> int:
                         help="execute the plan (without it: dry run, no writes)")
         pr.add_argument("--now", default=None,
                         help="frozen ISO instant (testing/simulation)")
-        pr.add_argument("--fired-via", default="scheduled",
+        pr.add_argument("--triggered-by", default=None,
+                        help="the surface that asked for this run")
+        pr.add_argument("--fired-via", default=None,
                         help="scheduled | manual (receipt provenance)")
         return pr
 
-    _leg(REVIEW_EXPIRY_JOB_ID, "the weekly unconfirmed-pile drain")
-    _leg(AGE_OUT_JOB_ID, "the weekly confirmed-pile drain (confirm-first)")
+    _leg(REVIEW_EXPIRY_JOB_ID, "the daily unconfirmed-pile drain")
 
     args = parser.parse_args(argv)
-    runner = (run_age_out_job if args.leg == AGE_OUT_JOB_ID
-              else run_review_expiry_job)
-    result = runner(args.workspace, apply=args.apply, now_iso=args.now,
-                    fired_via=args.fired_via)
+    # FIX3 F3-6: export what this run was asked by, so every composer
+    # below reads it from one place instead of being threaded through
+    # a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
+    result = run_review_expiry_job(args.workspace, apply=args.apply,
+                                   now_iso=args.now,
+                                   fired_via=args.fired_via)
     print(_json.dumps(result, indent=2, default=str))
     return 0
 

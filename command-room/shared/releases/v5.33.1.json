@@ -1,0 +1,13 @@
+{
+  "version": "5.33.1",
+  "headline": "Cards show up again on the new app, and Apply all sends your choices. On some seats the card tool has to be switched on before it can be used; Command Room now switches it on itself instead of posting a plain list.",
+  "items": [
+    {
+      "id": "v5331_announce_widget_load",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Two fixes. On the new app, and on seats whose chats already run in the cloud, your cards were arriving as plain text with no buttons: the card tool was there but switched off, and Command Room read that as missing. It now switches the tool on first and shows the card. And Apply all on a card sends your choices again instead of dropping them without a word. Nothing changes on the older desktop app.",
+      "action": "announce_only"
+    }
+  ]
+}

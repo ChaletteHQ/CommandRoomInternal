@@ -43,10 +43,12 @@ from typing import List
 
 try:
     from connector_id_patterns import connector_id_patterns
+    from surface_leak_patterns import substrate_path_patterns, surface_id_patterns
     from vocabulary_policy import marketing_patterns
 except ImportError:  # pragma: no cover — direct-path import fallback
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from connector_id_patterns import connector_id_patterns
+    from surface_leak_patterns import substrate_path_patterns, surface_id_patterns
     from vocabulary_policy import marketing_patterns
 
 
@@ -62,11 +64,16 @@ _FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
     # Internal IDs — Bug #57 root cause
     ("internal_id", r"\b(?:project|person|org|event|thread)_\d+\b"),
 
-    # Substrate paths — Bug #59 root cause
-    ("substrate_path_events", r"\bevents\.jsonl\b"),
-    ("substrate_path_entities", r"\bentities\.jsonl?\b"),
-    ("substrate_path_aliases", r"\baliases\.json\b"),
-    ("substrate_path_hq", r"\b_hq/(?:data|.system|skills)\b"),
+    # Substrate paths — Bug #59 root cause.
+    #
+    # REVIEW_LEAK3 F-3 — these were four hand-enumerated rows that named
+    # three ledger files and three `_hq/` folders, and LEAK3 6.1 widened
+    # the CHAT scanner's equivalents without touching them. The weekly wrap
+    # is a `.docx`, so THIS is the scanner that reads it, and the recorded
+    # `_hq/…` citation missed here at base and at LEAK3's tip alike. Both
+    # scanners now read one source: add or change a substrate shape in
+    # shared/scripts/surface_leak_patterns.py, never here.
+    *substrate_path_patterns(),
 
     # Voice-contract forbidden — process narration (Bug #16 / #60)
     ("voice_phase", r"\bPhase \d+\b"),
@@ -88,7 +95,61 @@ _FORBIDDEN_PATTERNS: list[tuple[str, str]] = [
     # normalized Slack permalink id (`p1786032197391009`) had zero coverage.
     # Add/remove in shared/scripts/connector_id_patterns.py, never here.
     *connector_id_patterns(),
+
+    # LEAK2 (ATTENDED_TEST_v5.29.0 B1.3 / B3.5) — PREFIXLESS opaque ids: a
+    # bare hex mail-message id and a bare UUID. Every pattern above anchors
+    # on a prefix, so the Superhuman id that stood as a plate group header
+    # and the Granola id in a capture reply had zero coverage.
+    # Add/remove in shared/scripts/surface_leak_patterns.py, never here.
+    # Only the opaque-id half registers on the DELIVERABLE surface: a
+    # research brief may legitimately name a file or a standard.
+    *surface_id_patterns(),
 ]
+
+
+# The pattern NAMES that stop reading user-authored spans (REVIEW_ONEPLATE1
+# F-1). The chat scanner has had this for a long time
+# (`chat_output_renderer.USER_TEXT_BLANKED_LABELS` +
+# `blank_user_text`): a class of pattern whose appearance inside a person's
+# OWN sentence means they were talking about their work, not that a mechanic
+# leaked. The document scanner had no notion of provenance at all, so ONE
+# banned marketing word inside a commitment title the customer's own
+# counterparty wrote refused the whole weekly `.docx`
+# (ATTENDED_TEST_v5.29.0 B2.3, second half) -- and refused it AFTER the file
+# was written, so the failure mode was a document on disk reported as a
+# failed save.
+#
+# ONLY the marketing vocabulary is here, and only when the caller declares
+# the spans. Ids, substrate paths, connector ids and process narration keep
+# scanning the document IN FULL whoever typed them: an opaque id identifies
+# nothing to a reader wherever it came from. No word list is widened by
+# this and nothing the RENDERER writes is exempted -- a marketing word in
+# the product's own prose still refuses the save.
+USER_TEXT_BLANKED_NAMES = frozenset(name for name, _p in marketing_patterns())
+
+_USER_SPAN_MIN = 3   # a one- or two-character "span" would blank half the doc
+
+
+def blank_user_spans(text: str, user_spans) -> str:
+    r"""`text` with every declared user-authored span replaced by spaces of
+    the same length, so offsets and word boundaries around it are unchanged.
+
+    Whitespace inside a span is matched loosely (`\s+`) because the document
+    text has been through Word's run splitting and `_normalize_for_scan`'s
+    whitespace collapse, and the span was declared before either happened.
+    """
+    if not text or not user_spans:
+        return text or ""
+    out = text
+    for span in sorted({str(s).strip() for s in user_spans if str(s).strip()},
+                       key=len, reverse=True):
+        if len(span) < _USER_SPAN_MIN:
+            continue
+        pat = r"\s+".join(re.escape(w) for w in span.split())
+        if not pat:
+            continue
+        out = re.sub(pat, lambda m: " " * len(m.group(0)), out)
+    return out
 
 
 def _read_document_xml(docx_path: Path) -> str:
@@ -182,7 +243,8 @@ def _docx_paragraph_text(xml: str) -> str:
     return "\n\n".join(paras)
 
 
-def scan_text_for_leaks(text: str, *, surface: str | None = None) -> List[dict]:
+def scan_text_for_leaks(text: str, *, surface: str | None = None,
+                        user_text_blanked: str | None = None) -> List[dict]:
     """Run the canonical forbidden-token patterns over an arbitrary text blob
     (a chat-rendered memo/email body, not a .docx). Same patterns the .docx
     scanner uses, so a `Phase 3` / `project_020` / `leverage` leak is caught in
@@ -201,14 +263,23 @@ def scan_text_for_leaks(text: str, *, surface: str | None = None) -> List[dict]:
         return []
     findings: List[dict] = []
     for name, pattern in _FORBIDDEN_PATTERNS:
-        for m in re.finditer(pattern, text):
+        # REVIEW_ONEPLATE1 F-1 - the same split the chat scanner makes
+        # (`chat_output_renderer.scan_for_id_leaks`): the names in
+        # `USER_TEXT_BLANKED_NAMES` read the copy with the customer's own
+        # words blanked; every other name reads `text` in full. Omit
+        # `user_text_blanked` (what every caller before this passed) and the
+        # behaviour is exactly what it always was.
+        haystack = text
+        if user_text_blanked is not None and name in USER_TEXT_BLANKED_NAMES:
+            haystack = user_text_blanked
+        for m in re.finditer(pattern, haystack):
             start, end = m.span()
             findings.append(
                 {
                     "name": name,
                     "pattern": pattern,
                     "match": m.group(0),
-                    "context": text[max(0, start - 20) : min(len(text), end + 20)],
+                    "context": haystack[max(0, start - 20) : min(len(haystack), end + 20)],
                 }
             )
     if surface is not None:
@@ -221,10 +292,29 @@ def scan_text_for_leaks(text: str, *, surface: str | None = None) -> List[dict]:
                 "[docx_leak_scanner] WARN: personal_leak module missing — "
                 "the org-surface personal-content scan did NOT run.\n"
             )
+    # PROFILE1 - the coaching confidentiality tier. Runs on EVERY call, not
+    # only when a surface is declared, and that is the point: this gate fails
+    # CLOSED (only a surface that NAMES itself coaching is exempt), the
+    # inverse of the personal gate above, which fails open because a brief
+    # legitimately carries personal rows. Nothing legitimately carries a
+    # coaching note except the coach's own surfaces, so the safe default
+    # here is "this is a leak". A tier that leaks whenever a writer forgets
+    # to name itself is not a tier.
+    try:
+        from coaching_confidential import (
+            is_coaching_surface, scan_for_coaching_leak)
+        if not is_coaching_surface(surface):
+            findings.extend(scan_for_coaching_leak(text))
+    except ImportError:  # partial-update tolerance; the base scan stands
+        sys.stderr.write(
+            "[docx_leak_scanner] WARN: coaching_confidential module "
+            "missing - the coaching-tier scan did NOT run.\n"
+        )
     return findings
 
 
-def scan_docx_for_leaks(docx_path: str | Path, *, surface: str | None = None) -> List[dict]:
+def scan_docx_for_leaks(docx_path: str | Path, *, surface: str | None = None,
+                        user_spans=None) -> List[dict]:
     """Scan `docx_path` for any forbidden tokens. Returns the list of
     findings (empty if clean). Raises LeakScanError if findings are
     non-empty.
@@ -239,19 +329,28 @@ def scan_docx_for_leaks(docx_path: str | Path, *, surface: str | None = None) ->
     BLOCKING personal-content scan — a board pack or advisor export carrying
     a personal-lane fingerprint raises here. Owner-facing docs (the brief)
     pass no surface and are unaffected.
+
+    `user_spans` (REVIEW_ONEPLATE1 F-1): the customer's OWN words inside
+    this document, declared by the composer that knows which they are
+    (`plate_view.user_authored_spans` -> `wrap_docx_section` ->
+    `brief_writer.make_brief`). The marketing vocabulary stops reading
+    them; every other family still reads the whole document.
     """
-    return _scan_docx(docx_path, raise_on_findings=True, surface=surface)
+    return _scan_docx(docx_path, raise_on_findings=True, surface=surface,
+                      user_spans=user_spans)
 
 
-def collect_docx_leaks(docx_path: str | Path, *, surface: str | None = None) -> List[dict]:
+def collect_docx_leaks(docx_path: str | Path, *, surface: str | None = None,
+                       user_spans=None) -> List[dict]:
     """Same as scan_docx_for_leaks but never raises — returns the findings
     list for callers that want to audit/report rather than block. Useful for
     audit tools, weekly-audit, and pre-ship gates."""
-    return _scan_docx(docx_path, raise_on_findings=False, surface=surface)
+    return _scan_docx(docx_path, raise_on_findings=False, surface=surface,
+                      user_spans=user_spans)
 
 
 def _scan_docx(docx_path: str | Path, raise_on_findings: bool,
-               surface: str | None = None) -> List[dict]:
+               surface: str | None = None, user_spans=None) -> List[dict]:
     docx_path = Path(docx_path)
     if not docx_path.exists():
         raise FileNotFoundError(f".docx not found: {docx_path}")
@@ -267,7 +366,11 @@ def _scan_docx(docx_path: str | Path, raise_on_findings: bool,
 
     # The full pattern set (incl. the surface-gated personal scan) lives in
     # scan_text_for_leaks — one implementation, every file format.
-    findings = scan_text_for_leaks(_normalize_for_scan(xml), surface=surface)
+    scanned = _normalize_for_scan(xml)
+    blanked = (blank_user_spans(scanned, user_spans)
+               if user_spans else None)
+    findings = scan_text_for_leaks(scanned, surface=surface,
+                                   user_text_blanked=blanked)
 
     if findings and raise_on_findings:
         # Build a compact summary for the exception message

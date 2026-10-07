@@ -139,9 +139,14 @@ def _clock_now(workspace_root=None):
 def _empty_signal_fields() -> dict:
     """The SENTMATCH observability block (review F-4), zeroed.
 
-    `n_fetched` is the denominator; the `*_field_present` counts say whether
-    the FETCH carried the field at all, and the `n_with_*` counts say how many
-    messages actually had one. The basis counters close the loop from field to
+    `n_fetched` is the denominator — every message the fetch handed over,
+    counted BEFORE any fence drops one, so it never shrinks when a fence
+    fires. `n_scored` is how many of those actually reached the matcher; the
+    `*_field_present` counts say whether the FETCH carried the field at all on
+    those, and the `n_with_*` counts say how many messages actually had one.
+    The customer-facing dead-rail caveat is measured over `n_scored`, because
+    a message a fence dropped never met the delivery checks and so says
+    nothing about whether they could run (SELFMAIL1 review F-1). The basis counters close the loop from field to
     outcome. Read together they answer the one question a healthy-looking zero
     cannot: did the delivery checks RUN, or was there nothing to find?
 
@@ -175,6 +180,12 @@ def _empty_signal_fields() -> dict:
     """
     return {
         "n_fetched": 0,
+        # SELFMAIL1 fix round 1 (review F-1) — how many of those messages were
+        # actually SCORED. The two differ by whatever the fences dropped, and
+        # the customer-facing dead-rail caveat hangs off THIS one: a caveat
+        # about what the delivery checks could see has to be measured over the
+        # messages they were allowed to see.
+        "n_scored": 0,
         "n_attachment_field_present": 0,
         "n_with_attachment": 0,
         "n_thread_field_present": 0,
@@ -188,6 +199,12 @@ def _empty_signal_fields() -> dict:
         "n_graded_close_refused": 0,
         "close_refusals": {},
         "n_stale_evidence_skipped": 0,
+        # SELFMAIL1 — messages addressed only to the user, dropped before
+        # scoring, and rows the send never went to, dropped after. Both are
+        # the fence working; both are counted because a fence that drops
+        # silently is how F-11 stayed invisible for a week.
+        "n_self_addressed_skipped": 0,
+        "n_not_addressed_skipped": 0,
     }
 
 
@@ -214,6 +231,7 @@ def reconcile_sent(
     provider=None,
     exclude_captured_since=None,
     workspace_root=None,
+    from_mail: bool = True,
 ):
     """Match a batch of outbound Sent messages to open commitments.
 
@@ -283,7 +301,34 @@ def reconcile_sent(
     only when a caller supplies it. `None` (the default) is byte-identically
     pre-F-28, so every existing caller and test is unaffected.
 
-    Pure: no I/O, no clock. The caller emits the events + persists the cursor.
+    No clock, and the caller still emits the events + persists the cursor.
+    NOT pure any more, and the docstring says so rather than letting a reader
+    find out: when `workspace_root` is passed, SELFMAIL1 asks the contact pass
+    for the user's own addresses and name tokens — two read-only reads of the
+    entity graph, once per run, wrapped so they can never raise into the loop.
+    `workspace_root=None` keeps the old contract exactly: no reads at all, and
+    the self-addressed test falls back to the resolved-id channel, which needs
+    nothing from disk.
+
+    `from_mail` (CLOSETRUTH1 fix round 2, review F-13) — WHAT KIND OF EVIDENCE
+    THIS BATCH IS, stated by the caller, not guessed from a field. M's
+    SENT-MAIL ruling puts a proof floor on the bare-title path: a mail whose
+    only claim is that its subject echoes a row has to carry a completion
+    signal or an attachment before it closes anything. The floor is the MAIL
+    rail's; a message a person typed in chat is that person's own word, which
+    the 2026-09-07 ruling already treats as evidence, and no ruling has put a
+    second bar on that door.
+
+    Round 1 derived the fact from `msg.get("subject") is not None`. That read
+    is WRONG AGAINST THIS MODULE'S OWN INPUT SHAPE above: `subject` is
+    `str|None`, so a mail is contractually allowed to arrive with a null
+    subject — and such a mail slipped the floor entirely and closed a weak
+    title match with no proof at all. The kind of evidence is a property of
+    the RAIL the batch came down, not of one optional field on one message, so
+    the rail says it: mail by default (every existing caller unchanged), and
+    `from_mail=False` from the chat seam, which is the one non-mail caller.
+    Both the matcher-level gate (`require_title_proof`) and the caller-level
+    FS-11 promotion read this one value, so the two can no longer disagree.
     """
     if not user_person_id:
         # Bug #102 — the pure matcher keeps its documented safe degrade (an
@@ -310,12 +355,57 @@ def reconcile_sent(
     # message's.
     _evorder_diag: dict = {}
 
+    # SELFMAIL1 — the contact pass's own-address rule, asked once per run.
+    # `contact_capture` OWNS this rule (bar 2's `own_address` refusal: "a
+    # message to yourself is not correspondence with anyone"); this rail
+    # simply asks it. No workspace on hand → both sets are empty and the
+    # address and name channels go inert, leaving the resolved-id channel to
+    # do the work — the same honest degrade `own_addresses` already makes.
+    # F-7 — through the one helper, so both legs of this rail resolve the
+    # user's identity the same way and neither can drift into doing it per
+    # message.
+    own_addrs, own_toks = (_own_identity(workspace_root)
+                           if workspace_root is not None else (set(), set()))
+    try:
+        from contact_capture import is_self_addressed as _is_self_addressed
+    except Exception:  # pragma: no cover
+        _is_self_addressed = None
+
     for msg in sent_messages or []:
         if not isinstance(msg, dict):
             continue
         ts = msg.get("ts")
         if isinstance(ts, str) and (cursor_ts is None or ts > cursor_ts):
             cursor_ts = ts
+        # SELFMAIL1 fix round 1 (review F-1) — `n_fetched` IS THE DENOMINATOR
+        # and it counts every message the fetch handed over, INCLUDING the ones
+        # a fence drops below. Counted here, at the top, exactly where the
+        # sibling inbound rail counts it: a message the rail refused is still a
+        # message the rail read, and a denominator that shrinks when a fence
+        # fires makes every ratio built on it lie. (Built the other way first,
+        # and the receipt then told the CEO his mail connector had stopped
+        # carrying attachment and conversation details on a night whose only
+        # message was a note he wrote to himself.)
+        signals["n_fetched"] += 1
+
+        # SELFMAIL1 layer 1 — a note the user mailed to themselves is never
+        # evidence of anything. Counted as READ (`n_fetched` above) and dropped
+        # before SCORING, so it is neither delivery evidence nor a title match
+        # nor a thread prior: the row is never created rather than
+        # created-then-suppressed, exactly like RECONFENCE layer 1 above. (Fix
+        # round 2, review R-3: this said "dropped BEFORE `n_fetched`", which was
+        # true of the first cut and became false the moment F-1 moved the
+        # denominator above this block — a comment contradicting the line it
+        # sits on is how the next reader puts the bug back.) The CURSOR still
+        # advances over it — the message was genuinely read, and re-reading it
+        # forever would be a different bug. (Regression: 2026-09-07, an
+        # empty-subject note to himself closed two real promises and queued
+        # four proposals.)
+        if _is_self_addressed is not None and _is_self_addressed(
+                msg, user_person_id=user_person_id,
+                own_addresses=own_addrs, own_name_tokens=own_toks):
+            signals["n_self_addressed_skipped"] += 1
+            continue
 
         # BUG-3719 self-closure guard: a commitment CAPTURED FROM this very
         # message (sent-promise capture) must never be closed BY this message —
@@ -348,7 +438,11 @@ def reconcile_sent(
         # Review F-4 — count the FETCH, not just the outcome. `in msg` is the
         # presence test on purpose: `has_attachment: False` is the connector
         # answering, an absent key is the connector never being asked.
-        signals["n_fetched"] += 1
+        # These stay BELOW the fences, unlike `n_fetched` above: they answer
+        # "could the delivery checks run on the messages we actually scored?",
+        # so they are measured over the scored set — the same split the inbound
+        # rail makes between `n_fetched` and `n_scored`.
+        signals["n_scored"] += 1
         if "has_attachment" in msg:
             signals["n_attachment_field_present"] += 1
         if msg.get("has_attachment"):
@@ -402,7 +496,33 @@ def reconcile_sent(
             # person written as an id AND that person's name is one
             # counterparty, not two. Absent → the raw union, pre-F-28.
             workspace_root=workspace_root,
+            # SELFMAIL1 layer 2 — the user's own name tokens, so the title
+            # route cannot read the SENDER's own name in a title as "this send
+            # went to the counterparty". Empty → the route behaves exactly as
+            # it did before, which is what every other caller gets.
+            sender_name_tokens=own_toks,
+            # CLOSETRUTH1 3.1 — the title-path proof floor is M's SENT-MAIL
+            # ruling, so it applies to mail and only to mail. The question
+            # half of the gate always applies, at every door.
+            #
+            # Fix round 2 (review F-13): the kind is the BATCH's, declared by
+            # the caller (`from_mail`), never inferred from this message's
+            # subject. A mail is allowed a null subject by this module's own
+            # INPUT SHAPE contract, and inferring from it let exactly that
+            # mail close a bare title echo with no proof.
+            require_title_proof=from_mail,
         )
+        # CLOSETRUTH1 3.1 — the matcher's own fulfillment finding for THIS
+        # message, computed once and carried onto every proposal it makes.
+        # It is what the `pending_review` writer stamps instead of the `None`
+        # it used to pass (see `has_completion_signal=` below): a confirm the
+        # bulk-accept fence can weigh needs to know whether the send said the
+        # work was done, and this rail can answer that.
+        from cru_match import (detect_completion_signal as _detect_completion,
+                               is_question_shaped as _is_question_shaped)
+        _msg_text = (msg.get("subject") or "") + " " + (msg.get("body") or "")
+        _msg_completion = bool(_detect_completion(_msg_text))
+        _msg_question = bool(_is_question_shaped(_msg_text))
         for r in results:
             rec = r.get("recommendation")
             if rec == "partial_received":
@@ -470,6 +590,23 @@ def reconcile_sent(
                 "ts": ts or "",
                 "recommendation": rec,
                 "close_basis": basis,
+                # CLOSETRUTH1 3.1 — the three message-level findings the
+                # proof gate below reads.
+                "has_completion_signal": _msg_completion,
+                "question_shaped": _msg_question,
+                "has_attachment": bool(msg.get("has_attachment")),
+                # CLOSETRUTH1 fix round 1 (review F-4) — the same "is this
+                # caller mail?" fact the matcher is handed as
+                # `require_title_proof`, carried onto the proposal so the
+                # FS-11 promotion below can read it too. Without it the
+                # scoping existed at one level and not the other, and the
+                # chat door ended up stricter on a WEAK match than on a
+                # strong one.
+                #
+                # Fix round 2 (review F-13): ONE derivation now, the batch's
+                # declared kind, shared with the `require_title_proof=` above.
+                # A subject-less mail is still a mail and still owes proof.
+                "from_mail": from_mail,
                 "evidence": (
                     lede
                     + (f" \"{msg.get('subject')}\"" if msg.get("subject") else "")
@@ -489,27 +626,101 @@ def reconcile_sent(
                 ):
                     best[cid] = proposal
 
-    auto_close = [p for p in best.values() if p["recommendation"] == "auto_resolve"]
     # A commitment with a partial receipt this run leaves pending — the
     # per-person receipt is the more precise record of the same evidence.
     partial = [p for p in partial_by_cid.values() if p["receipts"] or p["skipped_names"]]
     partial_cids = {p["commitment_id"] for p in partial if p["receipts"]}
+    # CLOSETRUTH1 3.1 — ONE SEND, ONE ITEM, ACROSS BOTH BANDS.
+    #
+    # THE TWO HOLES THIS CLOSES (measured 2026-09-13, HOLD driver 1). The
+    # 19:53 PT "Agreement" mail matched two open rows for the same
+    # counterparty and closed BOTH: (i) the 1:1 rule was applied to
+    # `pending_all` only, so two rows at or above the auto bar off ONE message
+    # both closed unchallenged; (ii) `_msg_counts` was counted over the
+    # pending band alone, so a row already sitting in `auto_close` did not
+    # count as a sibling and the moderate one beside it was promoted as
+    # "unambiguous" — the very ambiguity FS-11 exists to catch.
+    #
+    # THE RULE NOW, IN TWO PARTS, because the two holes are two decisions:
+    #
+    #   (i) A message that puts TWO ROWS AT CLOSE GRADE closes NEITHER. Both
+    #       reach the person as proposals (the skill's own doctrine —
+    #       `reconcile-sent/SKILL.md`: "which one did the send actually
+    #       fulfill?"). That is the measured defect: two rows at or above the
+    #       auto bar off one mail, both closed, neither kept.
+    #
+    #   (ii) The moderate promotion counts BOTH BANDS. A row already closing
+    #       off this message is a sibling, so the moderate one beside it is
+    #       not "unambiguous" and is not promoted.
+    #
+    # WHY THE FIRST TALLY IS NOT OVER EVERY PROPOSAL (found by the replay on
+    # the copy of the book, 2026-09-14). A real message to a real counterparty
+    # draws a dozen weak confirm proposals simply because it is addressed to
+    # someone a dozen rows are owed to. Counting those as siblings would stop
+    # every genuine delivery close on a busy book: the replay's delivery mail
+    # went from one close to none. A row that was never going to close is not
+    # a competing answer to "which one did this send fulfill" — it is noise,
+    # and the person already sees it as a confirm.
+    from collections import Counter as _Counter
+    _msg_key = lambda p: (p.get("message_id") or f"__nomid_{p['commitment_id']}")
+    _close_grade_counts = _Counter(
+        _msg_key(p) for p in best.values()
+        if p["recommendation"] == "auto_resolve")
+    _msg_counts = _Counter(_msg_key(p) for p in best.values())
+    auto_close = [p for p in best.values()
+                  if p["recommendation"] == "auto_resolve"
+                  and _close_grade_counts[_msg_key(p)] == 1]
+    # The auto-grade rows one message put on two open items. They become
+    # proposals rather than closes — named, so the receipt can say why.
+    _one_send_many = [
+        dict(p, recommendation="pending_review", one_send_many_items=True,
+             evidence=("one send, more than one open item — "
+                       + (p.get("evidence") or "matched an outbound send")))
+        for p in best.values()
+        if p["recommendation"] == "auto_resolve"
+        and _close_grade_counts[_msg_key(p)] > 1
+        and p["commitment_id"] not in partial_cids
+    ]
     pending_all = [
         p for p in best.values()
         if p["recommendation"] == "pending_review"
         and p["commitment_id"] not in partial_cids
-    ]
+    ] + _one_send_many
     # FS-11: promote UNAMBIGUOUS moderate matches to auto-close. Ambiguity = one
     # sent message that matched more than one open commitment at moderate grade
     # (which one did the send actually fulfill? — keep those for confirm). A
     # moderate match that is 1:1 with its send is closed, flagged `moderate` so
     # the feed narrates it honestly ("probably handled — undo if not").
-    from collections import Counter as _Counter
-    _msg_key = lambda p: (p.get("message_id") or f"__nomid_{p['commitment_id']}")
-    _msg_counts = _Counter(_msg_key(p) for p in pending_all)
+    #
+    # CLOSETRUTH1 3.1 — and the promotion obeys the SAME proof floor as the
+    # auto band. A moderate title match is the THINNEST evidence this rail
+    # has; promoting one on a message that reported nothing and carried
+    # nothing is the bare title echo M's ruling 2 names, one band lower. A
+    # row whose match already stands on real evidence (`close_basis` — a
+    # delivery or a reply on the thread) keeps its promotion.
+    def _proved(p) -> bool:
+        # `has_completion_signal` is THREE-STATE (True / False / not assessed),
+        # and a truthiness read of it is the bug G-completion-truthiness
+        # exists to stop: `None` means "nobody judged", which must never read
+        # as "no". So it is compared by identity, and the attachment — a plain
+        # boolean — is compared on its own.
+        # F-4: the floor is M's SENT-MAIL ruling, and it is scoped here to
+        # the same callers the matcher scopes it to. A message typed in chat
+        # is the customer's OWN word, which M's 2026-09-07 ruling treats as
+        # evidence in itself; demanding a completion signal on top of it
+        # would be a second bar for the one door that already has the
+        # person's say-so. Absent key = mail, so every existing caller is
+        # unchanged.
+        return (not p.get("from_mail", True)
+                or bool(p.get("close_basis"))
+                or p.get("has_completion_signal") is True
+                or bool(p.get("has_attachment")))
+
     pending = []
     for p in pending_all:
-        if AUTO_CLOSE_MODERATE and _msg_counts[_msg_key(p)] == 1:
+        if (AUTO_CLOSE_MODERATE and _msg_counts[_msg_key(p)] == 1
+                and not p.get("one_send_many_items")
+                and not p.get("question_shaped") and _proved(p)):
             promoted = dict(p)
             promoted["moderate"] = True
             promoted["evidence"] = "probably handled — " + (
@@ -540,6 +751,11 @@ def reconcile_sent(
     # their own evidence and were refused."
     signals["n_stale_evidence_skipped"] = int(
         _evorder_diag.get("stale_evidence_dropped", 0))
+    # SELFMAIL1 layer 2's count, folded the same way: rows the matcher graded
+    # and then refused because the send never went to the person the row is
+    # owed to. Non-zero is the fence working.
+    signals["n_not_addressed_skipped"] = int(
+        _evorder_diag.get("not_addressed_dropped", 0))
 
     return {"auto_close": auto_close, "pending": pending, "partial": partial,
             "cursor_ts": cursor_ts, "signal_fields": signals}
@@ -647,7 +863,8 @@ def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
 
 
 def _record_blocked_run(workspace_root, events_path, cursor_before, *,
-                        reason, source_skill, fired_via, provider=None) -> dict:
+                        reason, source_skill, fired_via, provider=None,
+                        triggered_by=None) -> dict:
     """MAILSEAM item 8 — the receipt for a fire whose Sent READ could not run.
 
     Writes a `sent_reconcile` audit event stamped `status: "blocked"` with the
@@ -689,6 +906,10 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
         audit_event["data"].update(machine_fields())
     except Exception:
         pass
+    # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 — which surface asked, only when
+    # one did (a run nobody named keeps the audit it always had).
+    if triggered_by:
+        audit_event["data"]["triggered_by"] = triggered_by
     _append(events_path, [audit_event])
 
     summary = (f"Sent-mail reconciliation did not run: {reason}. Nothing was "
@@ -806,6 +1027,45 @@ def _meeting_parties_index(workspace_root) -> dict:
     return index
 
 
+def _own_identity(workspace_root):
+    """SELFMAIL1 — the user's own addresses and own name tokens, resolved
+    ONCE. Both are full reads of the entity graph, so a caller resolves them
+    before its message loop and hands them down, exactly as `reconcile_sent`
+    does. Read-only; never raises into a caller. A workspace that cannot
+    answer returns two empty sets, which leaves the address and name channels
+    inert and the resolved-id channel doing the work."""
+    try:
+        from contact_capture import own_addresses, own_name_tokens
+    except Exception:  # pragma: no cover — the contact pass is optional
+        return set(), set()
+    try:
+        return (own_addresses(workspace_root) or set(),
+                own_name_tokens(workspace_root) or set())
+    except Exception:  # pragma: no cover
+        return set(), set()
+
+
+def _self_addressed(msg, user_person_id, workspace_root, own=None) -> bool:
+    """SELFMAIL1 — `contact_capture.is_self_addressed` with this rail's two
+    workspace reads done for it.
+
+    `own` is the `(addresses, name tokens)` pair from `_own_identity`, hoisted
+    out of the caller's loop. Review F-7: without it this resolved both sets
+    per MESSAGE — three `entities.json` parses and a connector-config read on
+    every message in the batch — where the sent rail correctly resolves them
+    once per run. Omitted, it still resolves them itself, so no caller is
+    broken by the added argument."""
+    if own is None:
+        own = _own_identity(workspace_root)
+    addrs, toks = own
+    try:
+        from contact_capture import is_self_addressed
+    except Exception:  # pragma: no cover — the contact pass is optional
+        return False
+    return is_self_addressed(msg, user_person_id=user_person_id,
+                             own_addresses=addrs, own_name_tokens=toks)
+
+
 def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
                              provider=None, source_skill="morning-briefing",
                              pending_rows=None, now_iso=None) -> dict:
@@ -865,6 +1125,19 @@ def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
 
     window = _dt.timedelta(hours=OWN_RECAP_WINDOW_HOURS)
     confirmed_ids: set = set()
+    # SELFMAIL1 fix round 1 (review F-3) — WHICH NAME IS THE CEO'S. This leg
+    # called the matcher without it, so layer 2's title route here could be
+    # satisfied by the CEO's own name: a row titled "<CEO> to send the pricing
+    # deck" and a note to himself whose recipient name is his own graded
+    # `auto_resolve` on this call shape and `no_action` on the sent rail's,
+    # from identical input. Row titles carrying the owner's own name are
+    # ordinary on extraction, and this leg has no layer 2 behind it. Resolved
+    # once, before the loop, exactly as `reconcile_sent` resolves it.
+    # F-7 — resolved ONCE, here, not once per message. Both halves are full
+    # reads of the entity graph and the loop below used to redo them for every
+    # message in the batch.
+    own_identity = _own_identity(workspace_root)
+    own_toks = own_identity[1]
     try:
         from confidence import match_score_auto_resolve
         auto_threshold = float(match_score_auto_resolve(workspace_root))
@@ -880,6 +1153,13 @@ def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
         recips = {r for r in (msg.get("recipient_person_ids") or [])
                   if isinstance(r, str) and r}
         if not recips:
+            continue
+        # SELFMAIL1 — the same door, on the same rail. The user sits in his own
+        # meetings, so `who & recips` is satisfied by a note he mailed to
+        # himself, and this leg would confirm a pending capture off it. A recap
+        # to yourself is not a recap to an attendee.
+        if _self_addressed(msg, user_person_id, workspace_root,
+                           own=own_identity):
             continue
         opens: list = []
         for ev, who, cap_ts in candidates:
@@ -908,6 +1188,9 @@ def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
             subject=msg.get("subject"),
             body=msg.get("body"),
             recipient_names=msg.get("recipient_names") or [],
+            # F-3 — the same argument the sent rail passes. Absent, the CEO's
+            # own name in a row's title stands in for the counterparty.
+            sender_name_tokens=own_toks,
             send_source_ref=own_key,
             send_ts=msg.get("ts"),
             workspace_root=workspace_root,
@@ -941,6 +1224,122 @@ def confirm_pending_captures(workspace_root, sent_messages, *, user_person_id,
     return out
 
 
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break (the
+    `chat_reconcile._effective_fired_via` shape).
+
+    SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 (review H-2; ruling R-RW-5). This
+    composer defaulted `fired_via="scheduled"`, so the reconcile-sent job a
+    typed brief runs on a merged seat recorded a scheduled fire nobody
+    claimed. Off a merged seat the resolver answers today's `scheduled`, so
+    the un-merged fleet is byte-identical; an explicit value always wins."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
+
+
+def _asked_by(explicit=None):
+    """The surface that asked for this run — the argument, else
+    `CR_TRIGGERED_BY` (log_receipt's own rule) — or None. Never raises."""
+    import os
+
+    raw = explicit if explicit else os.environ.get("CR_TRIGGERED_BY")
+    raw = str(raw or "").strip()
+    return raw or None
+
+
+#: MAINTJOBS1 MUST 2 - the fields a Sent message carries into the writer, in
+#: the order Step 2 of `skills/reconcile-sent/SKILL.md` names them. The plan
+#: hands them to the fire's connector step so the rows it builds are the rows
+#: this module scores.
+SENT_MESSAGE_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
+                       "recipient_person_ids", "recipient_names",
+                       "recipient_emails", "subject", "body")
+
+#: How far back a first run (no `sent_reconcile` audit yet) reads, and the
+#: overlap a normal run keeps behind its cursor (Step 1, Bug #101).
+FIRST_RUN_DAYS = 30
+CURSOR_OVERLAP_DAYS = 1
+
+
+def plan_sent_window(workspace_root, now=None) -> dict:
+    """The reconcile-sent job PLANNED beside the data - READ ONLY (MAINTJOBS1
+    MUST 2; on `workspace_access.RUN_HELPER_ALLOWLIST`).
+
+    Answers what the fire's connector step needs and nothing it has to guess:
+    the cursor it will be validated against, the Sent window (Step 1's three
+    branches collapse to two on a fire: a first run reads `FIRST_RUN_DAYS`,
+    a normal run reads from one day behind the cursor), the provider-neutral
+    fetch intent (`{"in_sent": true, "after": <date>}`, compiled per provider
+    by `connector_adapters/mail.py`), the declared provider, the host tool
+    searches that load the mail connector under its display name, the primary
+    user the owner gate needs, the message fields to build, and the fire
+    start the circularity fence is keyed on. `ready` is false - and
+    `blocked_reason` says why in plain words - when no primary user resolves:
+    the writer would refuse, so the fire does not fetch.
+
+    Writes nothing: no cursor, no audit, no sidecar."""
+    # CLOCK1 (MAINTJOBS1 review, v5.33.0 merge-fix): the corroborated clock,
+    # never the raw machine clock, decides the window.
+    now = now or _clock_now(workspace_root)
+    if isinstance(now, str):
+        now = _dt.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now.tzinfo is None:
+        now = now.astimezone()
+    try:
+        cursor, _raw = _read_cursor(workspace_root)
+    except Exception:  # noqa: BLE001 - an unreadable book plans a first run
+        cursor = None
+    try:
+        first_run = not validate_reconcile_ran(workspace_root).get("ran")
+    except Exception:  # noqa: BLE001
+        first_run = True
+    floor = now - _dt.timedelta(days=FIRST_RUN_DAYS)
+    if cursor and not first_run:
+        try:
+            cur = _dt.datetime.fromisoformat(str(cursor).replace("Z", "+00:00"))
+            if cur.tzinfo is None:
+                cur = cur.replace(tzinfo=_dt.timezone.utc)
+            floor = cur - _dt.timedelta(days=CURSOR_OVERLAP_DAYS)
+        except ValueError:
+            first_run = True
+    after = floor.date().isoformat()
+    try:
+        provider = resolve_mail_provider(workspace_root, None)
+    except Exception:  # noqa: BLE001
+        provider = None
+    try:
+        from primary_user import resolve_primary_user
+        user = resolve_primary_user(workspace_root)
+    except Exception:  # noqa: BLE001
+        user = None
+    try:
+        from inbox_helpers import connector_discovery_queries
+        queries = list(connector_discovery_queries(workspace_root))
+    except Exception:  # noqa: BLE001
+        queries = []
+    return {
+        "job_id": "reconcile-sent",
+        "cursor_before": cursor,
+        "first_run": bool(first_run),
+        "after": after,
+        "intent": {"in_sent": True, "after": after},
+        "provider": provider,
+        "connector_queries": queries,
+        "user_person_id": user,
+        "message_fields": list(SENT_MESSAGE_FIELDS),
+        "fire_start": now.astimezone(_dt.timezone.utc).isoformat(),
+        "ready": bool(user),
+        "blocked_reason": (None if user else
+                           "the workspace's own person is not recorded"),
+    }
+
+
 def reconcile_and_receipt(
     workspace_root,
     sent_messages,
@@ -948,12 +1347,13 @@ def reconcile_and_receipt(
     user_person_id,
     source_skill="morning-briefing",
     outcome_watch_summary=None,
-    fired_via="scheduled",
+    fired_via=None,
     sent_commitment_items=None,
     provider=None,
     exclude_captured_since=None,
     fetch_blocked=None,
     contact_capture_items=None,
+    triggered_by=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
@@ -1057,7 +1457,24 @@ def reconcile_and_receipt(
     not-having-happened, which is the truth. Before this, the same state wrote
     a clean `n_closed: 0` audit and advanced the cursor past mail it had never
     really matched.
+
+    `fired_via` omitted: the SEAT answers (`receipts.effective_fired_via`) —
+    `scheduled` on every un-merged seat, byte for byte; on a merged VM seat
+    the forwarded `CR_FIRED_VIA`, else `manual`. `triggered_by` names the
+    surface that asked (else `CR_TRIGGERED_BY`), written on the audit event
+    only when present (SPEC_NIGHTM3_LANES §5 P-2, fix pass 1).
     """
+    # MAINTJOBS1 MUST 2 - THE WRITER IS NAMED FIRST. This function closes
+    # commitments, captures promises, adds contacts and moves a cursor before
+    # its audit row is written, and the audit row's own stamp refuses nothing.
+    # On the write door the door asks this question too; a shell import on a
+    # merged seat with no forwarded identity now refuses HERE, in the one
+    # sentence, before any of those writes.
+    from receipts import require_writer_identity
+
+    require_writer_identity(workspace_root=workspace_root)
+    fired_via = _effective_fired_via(fired_via)
+    asked_by = _asked_by(triggered_by)
     if not user_person_id:
         msg = (
             "reconcile-sent ABORTED: the primary user is unresolved "
@@ -1089,7 +1506,7 @@ def reconcile_and_receipt(
         return _record_blocked_run(
             workspace_root, events_path, cursor_before,
             reason=blocked, source_skill=source_skill, fired_via=fired_via,
-            provider=provider,
+            provider=provider, triggered_by=asked_by,
         )
 
     # BUG-8330 item 15 — ONE lock session for the whole fire. This function
@@ -1330,13 +1747,19 @@ def reconcile_and_receipt(
                     # promise captured after it, and the fence checks exactly that
                     # at apply time — but only if the timestamp was persisted.
                     evidence_ts=p.get("ts") or None,
-                    # NOT ASSESSED, deliberately. `has_completion_signal` is the
-                    # matcher's own fulfillment finding, and the SENT matcher
-                    # computes none — its analogue is the close_basis, and deriving
-                    # a boolean from that here would re-grade every title-band
-                    # confirm on this rail. `None` means "the caller could not
-                    # judge" and weakens nothing, which is the honest report.
-                    has_completion_signal=None,
+                    # CLOSETRUTH1 3.1 — ASSESSED. This used to pass `None`
+                    # ("the caller could not judge"), which was true only
+                    # because nobody had asked: the sent matcher reads the
+                    # same completion phrases the transcript rail does, and
+                    # since 3.1 it reads them on every message it scores. The
+                    # bulk-accept fence weighs a confirm by what the evidence
+                    # actually said, and a question-shaped mail that reports
+                    # nothing must not screen as strong. `None` survives only
+                    # for a proposal minted before this field existed.
+                    has_completion_signal=(
+                        p["has_completion_signal"]
+                        if isinstance(p.get("has_completion_signal"), bool)
+                        else None),
                 )
                 ev["data"].update({
                     # FS-11: only genuinely ambiguous matches reach here now
@@ -1486,6 +1909,11 @@ def reconcile_and_receipt(
             audit_event["data"].update(machine_fields())
         except Exception:
             pass
+        # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 — which surface asked for this
+        # run, only when one did: a run nobody named keeps the audit it always
+        # had (the legacy control is byte-identical).
+        if asked_by:
+            audit_event["data"]["triggered_by"] = asked_by
         # B6: fold the outcome-watch counts (replies/no-reply/bounced) into the SAME
         # audit event so one fire leaves one verifiable trace. Free-form `data`, so
         # no schema change for the audit part. Co-locating two silent WRITES is fine
@@ -1532,9 +1960,29 @@ def reconcile_and_receipt(
                     contacts["cursor_reset"]
         _append(events_path, [audit_event])
 
+        # SELFMAIL1 fix round 1 (review F-1). `n_scored` is how many of the
+        # fetched messages actually reached the matcher; `n_fetched` still
+        # counts every message that was read. The two differ only when a fence
+        # dropped something, and both sentences below hang off the difference.
+        n_scored = int(signal_fields.get("n_scored", n_fetched))
+        n_self_skipped = int(signal_fields.get("n_self_addressed_skipped", 0))
         if n_fetched == 0:
             summary = (f"No new sent mail since {_short_date(cursor_before, workspace_root) or 'the last check'} "
                        f"— nothing to reconcile.")
+        elif n_auto == 0 and n_self_skipped and not n_scored:
+            # THE WHOLE BATCH WAS MAIL HE WROTE TO HIMSELF. Say that, instead
+            # of "nothing matched an open commitment" — which is true and
+            # useless, and reads as though the mail was examined and came up
+            # empty. Same one sentence, not one more: a fence that fired must
+            # not cost the surface a line. (The sibling inbound rail has said
+            # its version of this — "they were all from you" — since REPLYCLOSE.)
+            summary = (
+                f"Checked {n_fetched} sent message"
+                f"{'s' if n_fetched != 1 else ''} — "
+                + ("it went" if n_fetched == 1 else "they all went")
+                + " only to you, so there was nothing to check "
+                + ("it" if n_fetched == 1 else "them")
+                + " against. A note to yourself can't show a promise kept.")
         elif n_auto == 0:
             summary = (f"Checked {n_fetched} sent message{'s' if n_fetched != 1 else ''} "
                        f"— nothing matched an open commitment.")
@@ -1596,11 +2044,35 @@ def reconcile_and_receipt(
         # reads as "nothing was deliverable". Plain language, no field names
         # (Rule 4). A fetch that carried the fields and simply found no
         # attachments says nothing extra — that is a normal, honest zero.
-        if n_fetched and not (signal_fields["n_attachment_field_present"]
-                              or signal_fields["n_thread_field_present"]):
+        # SELFMAIL1 fix round 1 (review F-1) — MEASURED OVER WHAT WAS SCORED,
+        # not over what was fetched. A message the self-addressed fence dropped
+        # never reached the delivery checks, so it can neither prove nor
+        # disprove that they could run; counting it here is how a night whose
+        # only message was a note the CEO wrote to himself came out as "your
+        # mail is not carrying attachment or conversation details" — an alarm
+        # about a connector that was working perfectly, and the one sentence
+        # this whole lane ADDED to a customer surface. `n_scored` is the
+        # denominator; on a run that fenced nothing it equals `n_fetched` and
+        # this sentence is byte-identical to what it always was.
+        # SELFMAIL1 fix round 2 (review R-4) — ONE DENOMINATOR ON THE SURFACE.
+        # When a fence dropped nothing, `n_scored` IS the count the sentence
+        # above already gave and the caveat says it, word for word as it always
+        # has. When a fence DID drop something the two numbers differ, and
+        # printing the second one beside the first ("Checked 2 sent messages …
+        # none of the 1 message came through") makes the reader do arithmetic
+        # nobody explained: both numbers are true and the difference between
+        # them is a fence they were never told about. So the caveat drops its
+        # own count and names its set in words instead — the count on the
+        # surface stays the one the reader was given.
+        if n_scored and not (signal_fields["n_attachment_field_present"]
+                             or signal_fields["n_thread_field_present"]):
+            if n_scored == n_fetched:
+                scope = (f"none of the {n_scored} message"
+                         f"{'s' if n_scored != 1 else ''}")
+            else:
+                scope = "none of the mail we could check"
             summary += (
-                f" Heads up: none of the {n_fetched} message"
-                f"{'s' if n_fetched != 1 else ''} came through with attachment or"
+                f" Heads up: {scope} came through with attachment or"
                 " conversation details, so the checks that spot an already-sent"
                 " deliverable could not run — only the wording of each email was"
                 " compared."

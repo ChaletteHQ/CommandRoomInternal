@@ -75,9 +75,7 @@ three decisions are **show-then-tune (STT)** — the meeting is processed first,
 changes are offered. Read config through `get_config` — never the raw file.
 
 ```python
-# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
-# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -518,7 +516,55 @@ Commitments accumulate as "open" in events.jsonl forever unless something explic
 **Procedure (run BEFORE emitting new commitments in Step 5e, so a "delivered today" item isn't immediately re-opened):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from commitment_policy_pass import apply_meeting_closes
@@ -540,9 +586,83 @@ print(json.dumps(counts))
 - **Conservative by construction.** The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day; that is why the refusals exist and why the switch ships off.
 - **Silent.** Per CONTRACT Rule 24, do NOT narrate "auto-resolved N commitments" or "proposed N" in the meeting summary, and never print a count from `counts` in chat. The user sees a close on the next Commitments fire and a proposal under `needs your call`; the brief's CHANGED line narrates closes (with `undo`) and, while the switch is off, one line saying how many promises look kept.
 - **Dedup.** The pass seeds `already_proposed` from disk (one open proposal per commitment) and `close_commitment` is idempotent over the resolved-id set, so a same-turn race and a re-run are both no-ops.
-- **Re-run.** `process this meeting` on an already-processed meeting re-enters this step exactly as above (Step 9a3's `already_processed` gates capture dedup only, not this step); a whole-day re-run enters Phase 4.6 of the past-meetings orchestrator, which calls the same pass under the same switch.
+- **Re-run.** `process this meeting` on an already-processed meeting re-enters this step exactly as above — the CRU pass is a CLOSER, not a capture, and closing a row the call showed finished is right every time you notice it (CAPTUREONCE1 refuses new rows on a re-run, never closes and corrections). A whole-day re-run enters Phase 4.6 of the past-meetings orchestrator, which calls the same pass under the same switch.
 
 Same shape rules as follow-up-ritual's Step "Surface Open Commitments" — the two skills call the same entry.
+
+## Step 5e-ter: Close what the CEO said, IN THEIR OWN WORDS, that they finished (EXIT1 — REQUIRED)
+
+A DIFFERENT question from 5e-bis, a different rail and a different switch. 5e-bis asks "did this call show somebody's promise was kept" — that is the transcript closer, it is OFF, and nothing here turns it on. This step asks only: **in the CEO's own turns, did they report finishing something already on their list?** "I sent Quinn the deck." "Done with the quarterly deck." "Paid Stone Supply." It reads `Me:` turns and the CEO's own named turns and NOTHING ELSE; a sentence in anybody else's mouth is dropped before it is graded. It exists because 197 of the 317 open items on the operator's book have nobody on the other end: no message, reply, meeting or payment can ever show them done, and the CEO's own word is the only evidence they will ever have.
+
+Run it AFTER 5e-bis and BEFORE Step 5e, for the same reason 5e-bis runs first: an item the CEO said they finished must not be re-opened by this same fire's capture.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from exit_doors import apply_own_word_closes
+print(json.dumps(apply_own_word_closes(
+    '<WORKSPACE>',
+    transcript_text='<full transcript text for THIS meeting or dictation>',
+    source_ref='granola:<meeting_id>',      # the transcript this was read out of
+    user_names=['<the CEO\\'s own canonical name>'],   # so a NAMED transcript counts their turns too
+)))
+"
+```
+
+- **You never call `commitment_state.close_commitment` from here either.** The writer refuses the own-word door to every caller but this pass, by name, and refuses it entirely while the CEO has said `turn off closing when I say it is done`.
+- **A statement that matches nothing opens nothing.** "I sent Quinn the deck" with no matching item on the book is a REPORT, not a promise: it closes nothing and it captures nothing. Step 5e's own capture rules decide what gets opened, unchanged.
+- **Two items matching equally well closes neither and asks nothing** (M's ruling 6 — one question per item, and these items have none).
+- **Silent, like 5e-bis** (CONTRACT Rule 24): print no count in the meeting summary. The close narrates itself once in the CHANGED feed ("Closed N items you said you had finished — say `undo` to put them back").
+- **A dictated working session is exactly where this earns its keep.** Step 5e writes no open item from a dictation; this step still closes what the CEO said they finished in it. Those are not in tension: one is about opening, the other about closing.
 
 ---
 
@@ -760,6 +880,26 @@ After processing, ask the user 2-3 smart follow-up questions that pull context a
 
 ---
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Gotchas & Failure Patterns
 
 > For detailed analysis of 10 common failure patterns (risk, prevention, check), see references/meeting-notes-detail.md → "Gotchas Section"
@@ -810,7 +950,8 @@ After all extraction + persistence steps complete, produce the chat surface as a
 **Step 9a — Generate the .docx brief (v2.14.32+ — `brief_writer` flow).** Use `shared/scripts/brief_path.get_brief_path("past_meeting", slug, date)` to compute the absolute path under `_hq/meetings/`, then pipe structured section content as JSON to `shared/scripts/brief_writer.py` stdin (same flow as `orchestrator-past-meetings.md` Phase 4 step 7 — see that file for the canonical JSON shape and section list). `brief_writer` produces deterministic, polished output with a hard-coded `Command Room` footer; the pre-v2.14.32 docx-skill invocation pattern + `Forwardable: yes` footer line are dead. Brief content still follows the **Brief Authoring Rules** above — factual recap only, no internal asks, no follow-up drafts. Cache the absolute path.
 
 - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and the Brief Authoring Rules above are enforced at the render chokepoint, so a hand-rolled brief is one where none of them ran.
-- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the recap", "the decisions", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with the attendees", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the meeting notes in a Google Doc for the team" is a request this gate refuses, not an override. The brief is already forwardable by design — that is what the clean-output contract above buys; hand back its link and let the user forward the file itself.
+- **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the recap", "the decisions", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/meetings/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with the attendees", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the meeting notes in a Google Doc for the team" is a request this gate refuses, not an override. The brief is already forwardable by design — that is what the clean-output contract above buys; hand back its link and let the user forward the file itself.
+- **A Claude Doc produced anyway is exported into the folder (DOCS1 D-2, 2026-09-24).** When the host's built-in docs skill made a page despite the document-routing rule, the page is not the deliverable and is not left as the only copy: discover the docs seam with `tool_discovery.discover_docs_tool(<the tool ids visible in THIS session>, "export")` — never a remembered tool id; `None` means no docs tools in this chat, say so in one line and stop — then call the discovered tool for that doc's ONE tab with `format: "docx"` (a doc with several tabs: `read` the doc first and take the tab that holds the document). Put the payload — `{"doc_ref": "<the doc's link>", "kind": "past_meeting", "title": "<the doc's title>", "content_base64": "<what the export returned>", "format": "docx", "workspace_root": "<WS>"}` — as JSON into THIS SESSION'S OWN scratch (never under the workspace; a document does not survive a pasted command line — the same carrier the prep's payload uses) and land it through the WRITE door: `plan run_writer` naming `deliverables:export_claude_doc` with `args_file` pointing at that file. Its answer names the file by `rel` and carries `opener_line` — print that verbatim — and `receipt_row`, which you append through `plan append_jsonl` to `_hq/data/events.jsonl` (ONE `deliverable_landed` row; `null` means the same doc was exported inside the window and the file was refreshed in place — append nothing). The doc itself stays where it is: the product never deletes what it did not make. The gates above still bind — an exported doc is a copy of what the composer already said, landed where the workspace can see it, not a second render.
 
 **Step 9a1 — Append the canonical `meeting` event (BUG-8244, MANDATORY in both modes).** The Writer Contract has promised this event since v2.x; this is the step that writes it. Construct ONLY via the builder — never a hand-rolled dict (hand-rolled shapes are how a client workspace ended up with every meeting event unbound, and a weekly insight claiming weeks of no contact with people they meet daily):
 
@@ -839,7 +980,9 @@ ev = build_meeting_event(
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.meeting")
 ```
 
-Binding rules: resolve every attendee you can (`person_ids`), carry every invitee email you saw (`data.attendees`) even when unresolved — identity-reconcile corroborates merges from them and the backfill repairs history with them. An empty binding is legal only when the source truly listed nobody; `source_had_attendees=True` with nothing resolved stamps `data.binding_missing` so the claim audit surfaces it. Dedup: check `meeting_capture.already_processed` first — never a second `meeting` event for the same `source_ref` (idempotency contract, same as the scheduled writer).
+Binding rules: resolve every attendee you can (`person_ids`), carry every invitee email you saw (`data.attendees`) even when unresolved — identity-reconcile corroborates merges from them and the backfill repairs history with them. An empty binding is legal only when the source truly listed nobody; `source_had_attendees=True` with nothing resolved stamps `data.binding_missing` so the claim audit surfaces it.
+
+**Dedup is IN THE BUILDER now, not in your memory (CAPTUREONCE1, M's ruling R4).** Pass `workspace_root="<WORKSPACE>"` to `build_meeting_event` and it REFUSES to build a second `meeting` row for a source_ref that already carries a `meeting_processed` receipt — it raises rather than returning something appendable. The same argument arms the same refusal on `build_decision_event` and `build_meeting_commitment_event`, and the append chokepoint refuses the row anyway if a writer somehow gets past all three. This paragraph narrates the code; it is not the place the rule lives.
 
 **Step 9a2 — Write the `meeting_processed` receipt (v4.5.2, MANDATORY — F-46 P2a).** After the brief lands (so `brief_path` is known), append one `meeting_processed` event — the same receipt the scheduled past-meetings writer emits, and the canonical already-processed marker its Phase 3 dedup and the no-prep detectors read. F-50 proved the bare `meeting` event held off double-capture by accident, not contract; the receipt is the contract. This is a substrate event, NOT a `pack_run` run-receipt (that plumbing is owned elsewhere — do not touch it here).
 
@@ -857,13 +1000,45 @@ ev = build_meeting_processed_event(
     pending_review_count=<how many of those carry data.pending_review>,
     brief_path="<workspace-relative BRIEF_PATH from Step 9a>",
     capture_summary=routed,                      # the Step 5e route_meeting_captures return
+    appended=written,                            # what the Step 5e append ACTUALLY returned
 )
 append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.receipt")
 ```
 
-`capture_summary` is the ONLY place the admission gates' own numbers reach the substrate: it stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, n_deduped, n_fusion_inert, floor_reasons, skipped_reasons}`. Pass it every time. `n_floor_gated` is the share of `n_review` the capture floor routed (a SUBSET of it, never added to it), `n_deduped` counts twin captures of one act that FLOOR3's collapse pass folded into a surviving row (never written, so no other count moves), `n_fusion_inert` counts written rows the fusion guardrail could not check at all — a fire with no transcript stamps `data.fusion_inert` on every row it writes, in every lane, so that the absence of a refusal stops reading as a pass — and `floor_reasons` says which `FLOOR_*` condition did the gating — together they are how anyone finds out whether the floor is tuned right, which is a question the substrate previously could not answer at all. Counts and reason tallies only — never a title, never its evidence. Nothing here goes in the chat card: the gates' arithmetic is for the receipt, not for the user's morning.
+`capture_summary` is the ONLY place the admission gates' own numbers reach the substrate: it stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, n_deduped, n_deduped_on_disk, n_fusion_inert, floor_reasons, skipped_reasons}`. Pass it every time. `n_floor_gated` is the share of `n_review` the capture floor routed (a SUBSET of it, never added to it), `n_deduped` counts twin captures of one act that FLOOR3's collapse pass folded into a surviving row (never written, so no other count moves), `n_deduped_on_disk` counts something DIFFERENT and is never added to it — rows the append chokepoint refused because that `(source_ref, title)` pair was already on the ledger (you do not compute this one and you do not pass it — hand the receipt builder what the append returned and it derives the number from the chokepoint's own refusals for this meeting; one number standing for both facts is what made the 2026-09-07 receipt readable as a licence to delete twelve real rows), `n_fusion_inert` counts written rows the fusion guardrail could not check at all — a fire with no transcript stamps `data.fusion_inert` on every row it writes, in every lane, so that the absence of a refusal stops reading as a pass — and `floor_reasons` says which `FLOOR_*` condition did the gating — together they are how anyone finds out whether the floor is tuned right, which is a question the substrate previously could not answer at all. Counts and reason tallies only — never a title, never its evidence. Nothing here goes in the chat card: the gates' arithmetic is for the receipt, not for the user's morning.
 
-On a deliberate user re-process of an already-processed meeting, still write the receipt but add `data.rerun_note` (the extracted-event dedup in Step 5e prevents double-capture; the second receipt documents the re-run honestly). Check `meeting_capture.already_processed(workspace_root, source_ref)` BEFORE processing to know which case you're in.
+**THE RECEIPT MAY NEVER CLAIM A NUMBER THE LEDGER DOES NOT CARRY (INTAKE1, MANDATORY).** Capture the append's OWN return value and hand it to the receipt as `appended=`:
+
+```python
+written = append_event("<WORKSPACE>/_hq/data/events.jsonl",
+                       routed["book"] + routed["review"] + routed["observed"],
+                       holder="meeting-notes.capture")
+ev = build_meeting_processed_event(..., capture_summary=routed, appended=written)
+```
+
+`append_event` has always returned the stamped copies of the rows that really reached disk, and nothing read them. On 2026-09-07 a reprocess of one call wrote a receipt saying twelve rows had been deduplicated and none booked, while twelve rows landed in that receipt's own window; the twelve turned out to be distinct rows about different people, nothing had been deduplicated at all, and that false receipt was then used as the reason to hand-delete twelve real lines out of an append-only ledger. With `appended=` the tier counts are reconciled against what was written before the receipt is built, so the receipt cannot be wrong in that direction; if the route's claim and the ledger disagree, the LEDGER wins and the disagreement is recorded on the receipt as `counts_corrected`.
+
+**And say in chat exactly what the receipt says.** Your closing sentence to the CEO reads its numbers off `ev["data"]["capture_counts"]` — never off your own memory of what you extracted, and never off the pre-append routing. Chat, receipt and ledger are one number or the fire is a defect. If `counts_corrected` is present, something upstream miscounted: say the true number plainly, do not narrate the correction, and never propose editing the ledger to match anything. Duplicates are quarantined through the cleanup skill's own path; the ledger is never rewritten by hand.
+
+**A RE-RUN WRITES NO NEW ROWS, AND ITS RECEIPT SAYS SO (CAPTUREONCE1, M's ruling R4, 2026-09-14).** On a deliberate re-process of an already-processed meeting the ONLY event this fire may write is the receipt. Pass `workspace_root="<WORKSPACE>"` to `build_meeting_processed_event` and it stamps `data.rerun: true` and `data.n_written: 0` for you; `route_meeting_captures` returns empty lanes with `summary.rerun` set, so there is nothing to append, and the append chokepoint refuses any row that reaches it anyway. What a re-run IS for: binding an owner, fixing a date, moving a project, closing what the call showed finished — through the correction writers, which are untouched. Re-extraction is not a repair; `brain_undo.undo_after_reprocess` is the repair door.
+
+Check `meeting_capture.rerun_status(workspace_root, source_ref)` BEFORE processing to know which case you're in, and say it plainly: "I've processed this call before — nothing new was written. Here's what's on file." Never re-announce the original extraction's numbers as though this fire produced them.
+
+**Step 9a2-bis — `undo` after a re-run has ONE meaning (MANDATORY — CONTRACT Rule 31; ATTENDED_TEST_v5.29.0 B1.2).** The `meeting_processed` receipt you just wrote IS this run's batch id: its seq anchors the window of everything the run changed on this meeting's rows. If the very next thing the user says is `undo` / "undo that" / "reverse that", run exactly this and relay `line` VERBATIM:
+
+```python
+import sys, json; sys.path.insert(0, "shared/scripts")
+from brain_undo import undo_after_reprocess
+out = undo_after_reprocess("<WORKSPACE>", "granola:<meeting_id>",
+                           undone_by="<user person_id>",
+                           source_skill="meeting-notes")
+print(json.dumps(out))   # relay out["line"] verbatim
+```
+
+Two answers exist and there is no third. Either the run changed something and `undo_after_reprocess` puts it back through the registered reversers — additive, receipted, itself undoable — or it says *"Nothing to reverse — that re-run didn't change anything."* A re-run of an already-processed meeting usually changes nothing at all, and that is the honest answer, not a failure to be worked around.
+
+**Forbidden, all four of them, and all four happened on 2026-09-07:** do NOT drop a pending row through the queue's drop door to simulate an undo; do NOT mark a decision `decision_superseded` (a real decision then files as superseded by nothing); do NOT hand-edit session notes or any other file; do NOT regenerate a brief or any surface to make the reversal "look" done. And never delete or rewrite lines in `events.jsonl` — see the append-only rule below. Rows the run CAPTURED are not reversed by `undo` (a capture has no reverser); the returned `line` already names how many there are, and the user closes or drops them on the plate like any other row.
+
 
 **Step 9a3 — Claim audit (v4.5.2, MANDATORY — gate on this before ANY closing summary).** The closing chat surface may enumerate ONLY what verified on disk. Count the events after appending, then speak:
 
@@ -892,9 +1067,55 @@ Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N co
 **Renderer pre-flight (v2.10.9+):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from widget_transport import render_and_persist; print('OK')"
 ```
 
@@ -918,6 +1139,7 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
                                name_hint="meeting-notes")
 # Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
 # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 **Step 9c-bis — DOOR 1: the meeting card's questions (ATTRIB1-B D8, 2026-09-04).** After the card, render the questions this call left open — at most 3, lowest confidence first, each a pick-list of the meeting's other parties with the likely answer first and tagged. This is the FIRST door for a counterparty the ladder could not resolve; the needs-your-call queue is no longer where the user first meets it. Rendered ONLY through the transport (every gate runs inside it); nothing when the meeting asks nothing:
@@ -932,7 +1154,22 @@ questions = render_card_questions("<WORKSPACE>", "granola:<meeting_id>",
 # mcp__visualize__show_widget as widget_code, verbatim, as a SECOND widget under the card.
 ```
 
-A pick arrives through `apply-choices` as `{n: "<commitment id>:<person id>", action: "confirm", src: "meeting-notes"}` and lands through `attribution_doors.apply_counterparty_pick` (the `confirm_counterparty:<id>:<person_id>` verb) — the counterparty is confirmed, the flag clears with `confirmed_by: user_pick`, and one hint line teaches the extractor (D12). No answer inside the review window → a question that HAS a tagged likely answer is APPLIED on its own (`confirmed_by: default_applied`), reversible with `undo`; a question with NO likely answer (no option tagged) is **let go after two days**, and `undo` brings it back. **Say the one that is true for the card in front of you — the widget's header already does (`attribution_doors.card_header`), so repeat its sentence, never a blanket promise:** when every question carries a likely answer, "Leave them and the likely answer applies; `undo` reverses it."; when none does, "Pick who you meant — if nobody does, these are let go after two days (`undo` brings them back)."; when it is a mix, the header says both and so should you. Telling the customer the likely answer applies on a row that will be let go instead is the F-5 defect, and the row's own context line names its fate for exactly that reason.
+**CARD1 (night 11c, 2026-09-14) — every row says WHO OWES WHOM, and a one-liner is never a question.** Two changes, both in code, both rendered by the builder above; this paragraph narrates them and is not where either lives.
+
+*The row line.* A card row used to read `Who is "you" in "<title>"?` and nothing else, so three questions from one call all read the same and the fastest answer was to answer none. Each row now reads its title and the direction the row's own fields already carry — `send the migration checklist — you owe Bo Stone`, `… — Bo Stone owes you`, `… — owner unknown — likely Mira Stone`, or a plain `… — owner unknown` on the row the question is really about. `attribution_doors.row_direction` composes it, `card_questions` puts it on the row as `owed_line`, and the view renders it; every name goes through `narration_names.safe_name`, so a person the roster does not carry gets the honest label and never their id. **Without a "you" there is no direction** (fix round 1, reviewer F-1): on a workspace where `primary_user.resolve_primary_user` cannot answer, every row reads `owner unknown` — a name is never rendered as the counterparty while the user side is unresolved, because that is how a row the customer owns ends up telling him he owes himself. And a counterparty on record whose name the roster cannot give reads `you owe someone not on file`, in words.
+
+*The one-liner.* A bare one-line capture — one the capture floor held, with no likely answer, no date and nobody on the other end — is HELD, silently, with the rest of this call's unconfirmed items. It never becomes a card row, because the only thing the card could do with it is ask a question whose answer changes nothing and then let it go two days later. Held is not dropped: the row is still on the ledger, still `pending_review`, still inside the unconfirmed count My Plate already discloses, and the capture-card lapse still governs it exactly as before. `attribution_doors.card_held_questions` returns them, and the count is **rendered by the builder** on the card's one footer note, beside the expiry sentence — *"2 one-line notes from this call are held with the rest of your unconfirmed items — nothing to answer here."* You do not type that sentence and you do not need to: `render_card_questions` derives the number and `build_card_questions_view` prints it. A call that held nothing adds nothing. **A call that held EVERYTHING still says so** (fix round 1, reviewer F-2): when every row of a call is a bare one-liner there is no question to ask, and the card is the held sentence on its own — no rows to tap and no expiry line, because nothing on that card can expire. The count is never conditional on there being something to answer. It is a count, never a question and never a row to tap. A row with a date, a counterparty or a likely answer is NOT a one-liner in this sense and keeps its question exactly as before.
+
+A pick arrives through `apply-choices` as `{n: "<commitment id>:<person id>", action: "confirm", src: "meeting-notes"}` and lands through `attribution_doors.apply_counterparty_pick` (the `confirm_counterparty:<id>:<person_id>` verb) — the counterparty is confirmed, the flag clears with `confirmed_by: user_pick`, and one hint line teaches the extractor (D12). No answer inside the review window → a question that HAS a tagged likely answer is APPLIED on its own (`confirmed_by: default_applied`), reversible with `undo`; a question with NO likely answer (no option tagged) is **let go once the review window is up**, and `undo` brings it back. **Never type the number of days yourself** — the window is per-workspace, and the card's own line reads it (`attribution_doors.card_expiry_sentence`, below). **Say the one that is true for the card in front of you — the widget's header already does (`attribution_doors.card_header`), so repeat its sentence, never a blanket promise:** when every question carries a likely answer, "Leave them and the likely answer applies; `undo` reverses it."; when none does, the header's own let-go sentence — which already carries THIS workspace's window rather than a typed number; when it is a mix, the header says both and so should you. Telling the customer the likely answer applies on a row that will be let go instead is the F-5 defect, and the row's own context line names its fate for exactly that reason.
+
+**TTL1 (SPEC_FLOW1 Lane G, 2026-09-07) — the expiry sentence goes on EVERY card that asks anything, not only on door 1's own widget.** The v5.29.0 attended test read "no two-day sentence rendered" (B3.2) on a meeting card that was asking four questions. The sentence was not missing from the code: `card_header` composes it and the renderer renders it. It was missing from the SCREEN because it lives on door 1's SEPARATE widget, which appears only when this meeting left a `who_is_you` question — so a card whose questions came from anywhere else showed questions with no statement of what leaving them does. A promise about a question belongs to the question CLASS, not to one widget. So the sentence is RENDERED, not narrated: `build_card_questions_view` now carries it as the section's own `footer_note` on every card it builds (fix round 1, reviewer F-8 — a promise instructed in prose is a promise that goes missing the first time a model is in a hurry). **Whenever you post a card that asks the user anything about this call and the builder did NOT build it — the open-items widget, or a card you post beside them — print `attribution_doors.card_expiry_sentence("<WORKSPACE>")` verbatim beneath it.** Never type the number yourself: that helper reads the window THIS workspace actually uses (`question_ttl.class_lifetime_days('capture_card', workspace)`), so a seat configured to five days is never told "two days", which is the F-5 defect in its second spelling.
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")
+from attribution_doors import card_expiry_sentence
+
+print(card_expiry_sentence("<WORKSPACE>"))  # one line, verbatim, under the card
+```
 
 **Open-items surface — `show_widget` all-batch button widget (v2.10.9+).** Open items are M-only resolutions (a clarification needed, a decision M must make, an action with no resolved owner). They render as a `show_widget`-rendered card with per-item button rows; selections accumulate in widget local state, one "Apply all" button fires the consolidated `apply choices: [...]` payload that `apply-choices` skill catches and dispatches. See `shared/CHAT_ACTION_WIDGET.md` for the full widget spec. Probe results: `PROBE_RESULTS_past-meetings-open-items.md` (workspace root).
 

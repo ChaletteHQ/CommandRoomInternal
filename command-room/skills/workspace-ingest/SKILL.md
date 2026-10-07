@@ -49,7 +49,7 @@ You are the **one-time ingester + file migrator**. You write:
 **Critical rules:**
 - **Copy-first, never move.** Every file operation is a copy. The source folder is never mutated.
 - **Never delete.** Even after successful migration, the source stays pristine. The CEO decides when (if ever) to delete the source.
-- **Every write is logged** in `_ingest-undo.jsonl` so the CEO can ask "undo migration" and this skill can reverse the run: file copies reverse by deleting the destination (source is untouched), merges reverse by stripping the logged section, and substrate writes reverse from the Phase 3.9 snapshot + logged seq range. **Undo deletes ONLY what the undo log records as created by this run — never anything keyed on a file attribute like `last_writer`** (an AUGMENT merge stamps `last_writer` on the user's pre-existing substrate; deleting on that key destroys their data).
+- **Every write is logged** in `_ingest-undo.jsonl` so the CEO can ask "undo migration" and this skill can reverse the run: file copies reverse by deleting the destination (source is untouched), merges reverse by stripping the logged section, and substrate writes reverse from the Phase 3.9 snapshot of the records. The activity log is never rewritten by hand, so an undo never takes an entry back out of it (CONTRACT Rule 31); the logged `events_append` seq range is a record of what the run added, not a range to remove. **Undo deletes ONLY what the undo log records as created by this run — never anything keyed on a file attribute like `last_writer`** (an AUGMENT merge stamps `last_writer` on the user's pre-existing substrate; deleting on that key destroys their data).
 - **Content-hash guard.** If a destination file already exists with the same sha256 as the source, skip (idempotent re-run). If different sha256, append `.conflict-[ts].ext` and log — never silently overwrite.
 - You **do not** modify anything in `[Project]/` folders other than writing the migrated files. You **do not** write views — that's view-generation's job. You **do not** delete the source folder.
 
@@ -219,7 +219,7 @@ For each parsed entity / event collection, perform an additive merge against the
    - **Orgs:** match on `id` (canonical), then `domains[]` overlap (case-insensitive). New org → append. Existing → union `domains[]`, take latest `last_updated`.
    - **Projects (threads):** match on `id`, then `folder_name`, then `display_name` (case-insensitive). New project → append. Existing → union `stakeholder_person_ids[]`, take latest `last_activity`, preserve `status` and `stage` (don't overwrite from inferred lower-confidence values). (HYG1 note: this `last_activity` WRITE is legitimate and deliberately kept — ingest stamps the zero-event FLOOR for threads that have no event history yet, the DATA_CONTRACT carve-out. Ranking/display readers derive recency from events and use this stamp only as that floor.)
    - **Aliases:** key on `(raw, canonical_id)` tuple. Append new tuples; skip duplicates.
-3. **Append new events** to events.jsonl. Match against existing events by `data.source_ref` first (if both have it), then by `(type, ts, primary_thread_id, data.title)` fingerprint. Skip duplicates. Use `atomic_append_jsonl` for the new events. After the batch, log the appended seq range in `_ingest-undo.jsonl`: `{"action":"events_append","first_seq":N,"last_seq":M,"count":K}` — undo strips exactly this range.
+3. **Append new events** to events.jsonl. Match against existing events by `data.source_ref` first (if both have it), then by `(type, ts, primary_thread_id, data.title)` fingerprint. Skip duplicates. Use `atomic_append_jsonl` for the new events. After the batch, log the appended seq range in `_ingest-undo.jsonl`: `{"action":"events_append","first_seq":N,"last_seq":M,"count":K}` — a record of what this run added, never a licence to take it back out. Undo never removes entries from the activity log, whatever this range says (CONTRACT Rule 31); it restores the records from the Phase 3.9 snapshot and tells the CEO the imported entries stay.
 4. **Bump the entities.json `version` field** (monotonic) and set `last_writer: "workspace-ingest"`, `last_updated: <ingest_ts>`. (Note: `last_writer` on a merged file means "last touched by", NOT "created by" — undo must never key on it.)
 5. **Validate** the merged result against the schema before atomic-writing. On failure: roll back to pre-merge state (restore `_hq/data/` from the Phase 3.9 snapshot), abort.
 
@@ -423,7 +423,7 @@ On trigger: *"undo migration"*, *"undo ingest"*, *"roll back the migration"*, *"
 4. For each `merge` row, open the target file and strip exactly the section under the logged `merged_section_header` (the rest of the file predates this run — leave it).
 5. **Substrate, by mode (from the `run_start` header):**
    - **BOOTSTRAP** (header shows no pre-existing data files, `data_create` rows present): archive the created `_hq/data/` files to `_archive/ingest-undone-data_[ts]/`, then remove them from `_hq/data/`. Only files with a `data_create` row this run — nothing else.
-   - **AUGMENT:** restore `entities.json` and `aliases.json` from the `run_start` header's Phase 3.9 snapshot, and strip appended events from events.jsonl by the logged `events_append` seq range — but ONLY if no other writer has appended past the range since (check: current max seq == logged `last_seq`). If later events exist, do NOT rewrite events.jsonl (history is additive-only); instead restore entities.json/aliases.json from the snapshot and tell the user which N ingested events remain: *"I've restored your records to before the import. N imported history entries stay in the log because newer activity landed after them — they're deduped, so re-importing won't double them."*
+   - **AUGMENT:** restore `entities.json` and `aliases.json` from the `run_start` header's Phase 3.9 snapshot. The activity log is never rewritten by hand and no entry is ever taken out of it, whatever the logged `events_append` seq range says — CONTRACT Rule 31 binds this step like every other. The ingested events STAY; say so plainly: *"I've restored your records to before the import. N imported history entries stay in the log — they're deduped, so re-importing won't double them."* (Before LEDGERFENCE1 this step told you to strip the appended range back out when nothing had been written since. That was a direct edit of an append-only file and it is gone; the records are what the undo restores, and the log keeps its own history of what happened.)
 6. After all deletes, remove now-empty destination folders (project `meetings/`, `deliverables/`, `_misc/`, `_ingest-queue/` subfolders).
 7. Move `_hq/INGEST_REPORT.md` to `_archive/ingest-undone-data_[ts]/` and rename `_hq/_ingest-undo.jsonl` → `_hq/_ingest-undo-reverted-[ts].jsonl` (preserve for audit).
 8. Announce: *"All set — rolled everything back. Your original folder is untouched, and I kept a backup copy just in case. Whenever you want to try again, just say the word."*
@@ -515,8 +515,84 @@ A failure between Phase 2 and Phase 3.9 needs no data restore (nothing wrote yet
 
 **End of workspace-ingest skill.** Parser details in `references/`.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Underlying pipeline for two intents: extract context from a source + (optionally) copy source files into workspace project folders. Two thin alias skills route to focused subsets of this pipeline — use ingest-context if you want context only (no file copies), use file-documents if you want both context + file copies into projects. Use workspace-ingest directly only for ambiguous intent — when you say 'review ingest queue', 'ingest folder [path]' and want the skill to detect what makes sense from the source content. Both layers copy-only (never moves or deletes), back up source folder first, write an undo log. Direct triggers (intent-ambiguous): 'ingest folder [path]', 'ingest this folder'. Default mode AUGMENT (existing workspace preserved); BOOTSTRAP mode only when workspace is empty. DOES NOT fire on focused triggers 'ingest context from [path]' (routes to ingest-context), 'file documents from [path]' (routes to file-documents), single-URL intake (intel-intake), or new-customer setup (command-room-onboarding).
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

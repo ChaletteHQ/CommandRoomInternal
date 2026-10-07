@@ -68,6 +68,7 @@ if str(_HERE) not in sys.path:
 from capture_gate import (  # noqa: E402
     classify_capture,
     gate_commitment_data,
+    intake_kwargs,
     observed_from_commitment_event,
     workspace_capture_context,
 )
@@ -277,6 +278,35 @@ def _compose_narratives(
     return composed
 
 
+def _effective_fired_via(explicit) -> str:
+    """`receipts.effective_fired_via`, behind an import that cannot break.
+
+    SPEC_NIGHTM3_LANES §5 P-2 — the F3-6 family remainder (ruling R-RW-5).
+    This composer defaulted `fired_via="scheduled"`, so a merged seat that
+    ran it with nothing forwarded recorded a scheduled fire nobody claimed.
+    The resolver's floor off a merged seat is today's `scheduled`, so the
+    un-merged fleet is byte-identical; an explicit value always wins.
+    """
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 — a receipt never fails on a stamp
+        return explicit or "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit or "scheduled"
+
+
+def _asked_by(explicit=None) -> Optional[str]:
+    """The surface that asked for this run — the argument, else
+    `CR_TRIGGERED_BY` — or None. Never raises, never guesses."""
+    import os
+
+    raw = explicit if explicit else os.environ.get("CR_TRIGGERED_BY")
+    raw = str(raw or "").strip()
+    return raw or None
+
+
 def _sweep(
     workspace_root,
     items: Iterable[dict],
@@ -286,8 +316,9 @@ def _sweep(
     sessions_scanned: int,
     window_desc: str,
     extra_receipt: Optional[dict] = None,
-    fired_via: str = "scheduled",
+    fired_via: Optional[str] = None,
     sessions: Optional[Iterable[dict]] = None,
+    triggered_by: Optional[str] = None,
 ) -> dict:
     """Dedup + write + receipt. The one write path shared by the nightly sweep
     and the historical backfill. Returns a receipt dict the skill renders.
@@ -330,6 +361,22 @@ def _sweep(
                 user_names=ctx["user_names"],
                 team_ids=ctx["team_ids"],
                 known_ids=ctx["known_ids"],
+                # INTAKE1 — a session capture's home is the session's own
+                # project when it has one; the sweep carries it on the event
+                # it just built. And the OTHER SIDE is on the envelope here,
+                # not in the payload: `_normalize_item` lifts a recovered
+                # row's people to top-level `person_ids`, so the home rule is
+                # handed them explicitly or it reads a row that names somebody
+                # as naming nobody (fix round 1, review F-2).
+                # INTAKE1 rule 2 — a session is the user's OWN words, so a
+                # row that names nobody and is self-owed by kind takes the
+                # user as its owner instead of arriving ownerless. Since fix
+                # round 1 the door does that binding itself, BEFORE the
+                # caution rail (review F-6), so the order is the door's
+                # property and not this caller's to remember.
+                **intake_kwargs(
+                    ctx, primary_thread_id=event.get("primary_thread_id"),
+                    person_ids=event.get("person_ids"), own_words=True),
             )
             if verdict["tier"] == "observed":
                 event = observed_from_commitment_event(
@@ -356,7 +403,7 @@ def _sweep(
         "task_id": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
         "kind": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
         "status": "complete",
-        "fired_via": fired_via,
+        "fired_via": _effective_fired_via(fired_via),
         "sessions_scanned": int(sessions_scanned),
         "events_recovered": len(recovered),
         "skipped_dedup": skipped,
@@ -367,6 +414,12 @@ def _sweep(
         # to trust the field exists on every session_sweep_run row.
         "n_narratives_composed": narratives_composed,
     }
+    # SPEC_NIGHTM3_LANES §5 P-2 (ruling R-RW-5) — WHICH surface asked for this
+    # run, when one did: the argument, else `CR_TRIGGERED_BY`. Written only
+    # when present, so a run nobody named keeps the receipt it always had.
+    asked_by = _asked_by(triggered_by)
+    if asked_by:
+        receipt_data["triggered_by"] = asked_by
     try:
         # SCHED1 — the shared stamp helper, so the machine token and its
         # not-persisted flag land the same way here as on every other receipt.
@@ -393,6 +446,63 @@ def _sweep(
     }
 
 
+#: MAINTJOBS1 MUST 2 - the nightly window's floor when no sweep is on record
+#: or the last one is older (Step 1 of `skills/session-sweep/SKILL.md`).
+SWEEP_FLOOR_HOURS = 24
+
+#: The fields one extracted item carries into the writer (Step 3).
+SWEEP_ITEM_FIELDS = ("session_id", "type", "summary", "data", "person_ids")
+
+
+def plan_sweep(workspace_root, now=None) -> dict:
+    """The session-sweep job PLANNED beside the data - READ ONLY (MAINTJOBS1
+    MUST 2; on `workspace_access.RUN_HELPER_ALLOWLIST`).
+
+    Step 1 of the skill, answered where the ledger is: the cursor
+    (`validate_sweep_ran`'s `last_ts`, the newest `session_sweep_run`), the
+    floor the fire reads sessions after (the later of the cursor and
+    `SWEEP_FLOOR_HOURS` ago), the window label the receipt records, the
+    primary user an item's owner is, and the item fields. A fire with no
+    session-transcript tool still runs the writer with no items: the receipt
+    lands, which is the skill's own skip-not-fail posture. Writes nothing."""
+    import datetime as _dtm
+
+    now = now or _dtm.datetime.now(_dtm.timezone.utc)
+    if isinstance(now, str):
+        now = _dtm.datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now.tzinfo is None:
+        now = now.astimezone()
+    try:
+        cursor = validate_sweep_ran(workspace_root).get("last_ts")
+    except Exception:  # noqa: BLE001
+        cursor = None
+    floor = now - _dtm.timedelta(hours=SWEEP_FLOOR_HOURS)
+    after = floor.astimezone(_dtm.timezone.utc).isoformat()
+    if cursor:
+        try:
+            cur = _dtm.datetime.fromisoformat(str(cursor).replace("Z", "+00:00"))
+            if cur.tzinfo is None:
+                cur = cur.replace(tzinfo=_dtm.timezone.utc)
+            if cur > floor:
+                after = cur.astimezone(_dtm.timezone.utc).isoformat()
+        except ValueError:
+            pass
+    try:
+        from primary_user import resolve_primary_user
+        user = resolve_primary_user(workspace_root)
+    except Exception:  # noqa: BLE001
+        user = None
+    return {
+        "job_id": "session-sweep",
+        "cursor_before": cursor,
+        "after": after,
+        "window_desc": f"since-{after}",
+        "user_person_id": user,
+        "item_fields": list(SWEEP_ITEM_FIELDS),
+        "ready": True,
+    }
+
+
 def sweep_and_receipt(
     workspace_root,
     items: Iterable[dict],
@@ -401,8 +511,9 @@ def sweep_and_receipt(
     source_skill: str = "session-sweep",
     window_hours: int = 24,
     window_desc: Optional[str] = None,
-    fired_via: str = "scheduled",
+    fired_via: Optional[str] = None,
     sessions: Optional[Iterable[dict]] = None,
+    triggered_by: Optional[str] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt. `items` is the skill's extraction; every write
@@ -412,7 +523,11 @@ def sweep_and_receipt(
     default `last-Nh` label on a cursor-scoped run is the F-08 P2c / F-33
     receipt-metadata inaccuracy (record the real window, not a default).
     `fired_via`: "scheduled" on the nightly cron; "manual" on a chat-phrase
-    or Run Now fire (v4.5.2 receipt contract).
+    or Run Now fire (v4.5.2 receipt contract). Omitted, the SEAT answers
+    (`receipts.effective_fired_via`, SPEC_NIGHTM3_LANES §5 P-2): `scheduled`
+    on every un-merged seat, byte for byte; on a merged VM seat the forwarded
+    `CR_FIRED_VIA`, else `manual`. `triggered_by` names the surface that asked
+    (else `CR_TRIGGERED_BY`), written only when present.
 
     `sessions` (SESSSTORY1): optional list of
     `{session_id, thread_id, for_date, chapter_lines}` descriptors — one per
@@ -423,7 +538,14 @@ def sweep_and_receipt(
     `n_narratives_composed` counts how many were actually written. Omit (or
     pass an empty list) on a run with no session-transcript access — the
     receipt still lands with `n_narratives_composed: 0`, same skip-not-fail
-    posture as an empty `items`."""
+    posture as an empty `items`.
+
+    MAINTJOBS1 MUST 2: the writer is named FIRST. The items and the session
+    narratives are written before the receipt, so on a merged seat with no
+    forwarded identity the refusal comes here, before any of them."""
+    from receipts import require_writer_identity
+
+    require_writer_identity(workspace_root=workspace_root)
     return _sweep(
         workspace_root,
         items,
@@ -434,6 +556,7 @@ def sweep_and_receipt(
         extra_receipt={"window_hours": int(window_hours)},
         fired_via=fired_via,
         sessions=sessions,
+        triggered_by=triggered_by,
     )
 
 
@@ -534,6 +657,22 @@ def preview_items(workspace_root, items: Iterable[dict], *, source_skill: str = 
                 user_names=ctx["user_names"],
                 team_ids=ctx["team_ids"],
                 known_ids=ctx["known_ids"],
+                # INTAKE1 — a session capture's home is the session's own
+                # project when it has one; the sweep carries it on the event
+                # it just built. And the OTHER SIDE is on the envelope here,
+                # not in the payload: `_normalize_item` lifts a recovered
+                # row's people to top-level `person_ids`, so the home rule is
+                # handed them explicitly or it reads a row that names somebody
+                # as naming nobody (fix round 1, review F-2).
+                # INTAKE1 rule 2 — a session is the user's OWN words, so a
+                # row that names nobody and is self-owed by kind takes the
+                # user as its owner instead of arriving ownerless. Since fix
+                # round 1 the door does that binding itself, BEFORE the
+                # caution rail (review F-6), so the order is the door's
+                # property and not this caller's to remember.
+                **intake_kwargs(
+                    ctx, primary_thread_id=event.get("primary_thread_id"),
+                    person_ids=event.get("person_ids"), own_words=True),
             )
             if verdict["tier"] == "observed":
                 event = observed_from_commitment_event(

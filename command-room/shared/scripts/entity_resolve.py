@@ -64,6 +64,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -97,7 +98,16 @@ except Exception:  # pragma: no cover
 
 EntityType = Literal["person", "org", "project", "open_proposal"]
 MatchSignal = Literal["exact_alias", "exact_canonical", "fuzzy", "phonetic",
-                      "open_proposal"]
+                      "open_proposal", "first_name_token", "token_prefix"]
+
+# IDN-01 (PARALLEL-A lane B, 2026-09-24): the two token tiers sit between
+# fuzzy (>= 0.85) and phonetic (0.75); the numbers place the tiers in the
+# final confidence sort. A query of fewer than TOKEN_PREFIX_MIN_CHARS
+# characters never reaches the prefix tier.
+FIRST_NAME_CONFIDENCE = 0.9
+TOKEN_PREFIX_CONFIDENCE = 0.8
+TOKEN_PREFIX_MIN_CHARS = 2
+
 
 
 @dataclass
@@ -121,6 +131,10 @@ class ResolveResult:
     matched_string: str
     confidence: float
     reason: str = field(default="")
+    # IDN-01: within a token tier the order is fuller-record-first, then most
+    # recent activity, then shorter name; `rank` carries that order through
+    # the final confidence sort (0 for every other tier - unchanged).
+    rank: int = field(default=0)
 
     @property
     def entity_id(self) -> str:
@@ -371,6 +385,137 @@ def _iter_match_surfaces(entities: dict):
                 yield ("project", proj, v, "canonical")
 
 
+# ---------- IDN-01: the first-name-token and whole-token-prefix tiers ----------
+
+
+def _person_name_tokens(record: dict) -> list[str]:
+    """The normalized whole tokens of a person's canonical name."""
+    canon = record.get("canonical_name")
+    if not isinstance(canon, str):
+        return []
+    return [t for t in _normalize(canon).split() if t]
+
+
+def _is_one_word_person(record: dict) -> bool:
+    return len(_person_name_tokens(record)) == 1
+
+
+def _parse_ts(ts) -> "datetime | None":
+    """An event `ts` as an AWARE datetime: `Z` and any `+hh:mm`/`-hh:mm`
+    offset honoured, a naive stamp read as UTC. None when unparseable.
+    Recency compares instants, never strings (REVIEW_PARALLEL_A N-5: the
+    ledger mixes `+00:00`, `Z`, local offsets and naive stamps)."""
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    raw = ts.strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _person_recency(workspace_root: Path, person_ids: set[str]) -> dict[str, str]:
+    """The newest event `ts` that names each person id, read through
+    events_io (the full-history reader). A person no event names has no
+    entry. Defensive: an unreadable ledger returns {}.
+
+    An id is matched as a WHOLE id, never as a substring (`person_100` is not
+    named by a row naming `person_1000`; REVIEW_PARALLEL_A N-4), and "newest"
+    is the latest instant, not the largest string (N-5)."""
+    out: dict[str, str] = {}
+    newest: dict[str, datetime] = {}
+    ids = {i for i in person_ids if i}
+    if not ids:
+        return out
+    pats = {pid: re.compile(r"(?<![0-9A-Za-z_])" + re.escape(pid) + r"(?![0-9A-Za-z_])")
+            for pid in ids}
+    try:
+        from events_io import iter_events
+        for ev in iter_events(workspace_root):
+            if not isinstance(ev, dict):
+                continue
+            ts = ev.get("ts")
+            when = _parse_ts(ts)
+            if when is None:
+                continue
+            blob = json.dumps(ev, default=str)
+            for pid, pat in pats.items():
+                if pat.search(blob) and (pid not in newest or when > newest[pid]):
+                    newest[pid] = when
+                    out[pid] = ts
+    except Exception:
+        return out
+    return out
+
+
+def _newest_first(ts: str) -> tuple:
+    """A sort key that orders event timestamps newest-first by INSTANT (N-5)
+    and puts a missing or unparseable timestamp last."""
+    when = _parse_ts(ts)
+    if when is None:
+        return (1, 0.0)
+    return (0, -when.timestamp())
+
+
+def _rank_token_tier(results: list, workspace_root: Path) -> None:
+    """Order a token tier's candidates in place: a fuller record (two or more
+    name tokens) before a one-word stub; then the most recent activity; then
+    the shorter name. The order lands in `rank` so the final confidence sort
+    keeps it."""
+    recency = _person_recency(workspace_root, {r.entity_id for r in results})
+    results.sort(key=lambda r: (_is_one_word_person(r.record),
+                                _newest_first(recency.get(r.entity_id, "")),
+                                len(r.matched_string)))
+    for i, r in enumerate(results):
+        r.rank = i
+        if r.entity_id in recency:
+            when = _localize_date(recency[r.entity_id], workspace_root) or recency[r.entity_id][:10]
+            r.reason += f" (last named {when})"
+
+
+def _first_name_token_people(entities: dict, query_norm: str, seen_ids: set) -> list:
+    """Every person whose canonical name's FIRST token equals the query."""
+    out: list = []
+    e = _unwrap_entities(entities)
+    for p in e.get("people", []):
+        if p.get("id") in seen_ids:
+            continue
+        toks = _person_name_tokens(p)
+        if toks and toks[0] == query_norm:
+            out.append(ResolveResult(
+                entity_type="person", record=p, matched_via="first_name_token",
+                matched_string=p.get("canonical_name", ""), confidence=FIRST_NAME_CONFIDENCE,
+                reason=f"first name {query_norm!r} matches {p.get('canonical_name', '')!r}",
+            ))
+            seen_ids.add(p.get("id", ""))
+    return out
+
+
+def _token_prefix_people(entities: dict, query_norm: str, seen_ids: set) -> list:
+    """Every person one of whose WHOLE name tokens starts with the query (a
+    prefix of a token, never a substring inside one)."""
+    out: list = []
+    if len(query_norm) < TOKEN_PREFIX_MIN_CHARS:
+        return out
+    e = _unwrap_entities(entities)
+    for p in e.get("people", []):
+        if p.get("id") in seen_ids:
+            continue
+        toks = _person_name_tokens(p)
+        hit = next((t for t in toks if t.startswith(query_norm) and t != query_norm), None)
+        if hit is not None:
+            out.append(ResolveResult(
+                entity_type="person", record=p, matched_via="token_prefix",
+                matched_string=p.get("canonical_name", ""), confidence=TOKEN_PREFIX_CONFIDENCE,
+                reason=f"{query_norm!r} starts the name token {hit!r} in {p.get('canonical_name', '')!r}",
+            ))
+            seen_ids.add(p.get("id", ""))
+    return out
+
+
 # ---------- public API ----------
 
 
@@ -423,6 +568,11 @@ def resolve_all(
 
     query_norm = _normalize(query)
     query_soundex = _soundex(query)
+    # N-7 (REVIEW_PARALLEL_A): a single-token query's trailing .,;:!? is not
+    # part of the name ("Quinn." is "Quinn") for the exact rung and the token
+    # tiers; a multi-token query is untouched.
+    query_single_token = len(query.strip().split()) == 1
+    token_query = (query_norm.rstrip(".,;:!?") or query_norm) if query_single_token else query_norm
 
     entities = _load_entities(workspace_root)
     aliases = _load_aliases(workspace_root)
@@ -433,34 +583,41 @@ def resolve_all(
     # Tier 1a: exact match against aliases.json mappings (the canonical alias graph)
     # v3.13.6+ — uses _iter_alias_mappings to handle BOTH the canonical
     # dict-of-lists shape AND the legacy flat-list shape. See _iter_alias_mappings.
-    for mapping in _iter_alias_mappings(aliases):
-        raw = mapping.get("raw")
-        canonical_id = mapping.get("canonical_id")
-        if not isinstance(raw, str) or not isinstance(canonical_id, str):
-            continue
-        if _normalize(raw) != query_norm:
-            continue
-        if canonical_id in seen_ids:
-            continue
-        match = _find_entity_by_id(entities, canonical_id)
-        if match is None:
-            continue
-        entity_type, record = match
-        results.append(ResolveResult(
-            entity_type=entity_type,
-            record=record,
-            matched_via="exact_alias",
-            matched_string=raw,
-            confidence=1.0,
-            reason=f"matched alias {raw!r} → {record.get('canonical_name', canonical_id)}",
-        ))
-        seen_ids.add(canonical_id)
+    # N-2 (REVIEW_T2_RED1): the aliases.json rung strips a single-token
+    # query's trailing terminator exactly like tier 1b ("Q." hits "Q").
+    # N-4 (REVIEW_T3_SEAMS3): an exact RAW hit outranks a stripped one. The
+    # raw pass runs first and the exact rung returns in list order (no sort),
+    # so "Q." -> A comes before "Q" -> B on the query "Q.", whatever the file
+    # order. A query with nothing to strip runs one pass, as before.
+    for wanted in dict.fromkeys((query_norm, token_query)):
+        for mapping in _iter_alias_mappings(aliases):
+            raw = mapping.get("raw")
+            canonical_id = mapping.get("canonical_id")
+            if not isinstance(raw, str) or not isinstance(canonical_id, str):
+                continue
+            if _normalize(raw) != wanted:
+                continue
+            if canonical_id in seen_ids:
+                continue
+            match = _find_entity_by_id(entities, canonical_id)
+            if match is None:
+                continue
+            entity_type, record = match
+            results.append(ResolveResult(
+                entity_type=entity_type,
+                record=record,
+                matched_via="exact_alias",
+                matched_string=raw,
+                confidence=1.0,
+                reason=f"matched alias {raw!r} → {record.get('canonical_name', canonical_id)}",
+            ))
+            seen_ids.add(canonical_id)
 
     # Tier 1b: exact match against entity canonical_name / aliases / nicknames
     for entity_type, record, name, source in _iter_match_surfaces(entities):
         if record.get("id") in seen_ids:
             continue
-        if _normalize(name) != query_norm:
+        if _normalize(name) not in (query_norm, token_query):
             continue
         results.append(ResolveResult(
             entity_type=entity_type,
@@ -471,6 +628,30 @@ def resolve_all(
             reason=f"matched {source} {name!r} → {record.get('canonical_name', record.get('id', ''))}",
         ))
         seen_ids.add(record.get("id", ""))
+
+    # IDN-01 (PARALLEL-A lane B): an exact hit on a ONE-WORD person record (a
+    # stub such as a bare first name) does not close the ladder when a FULLER
+    # person shares that first-name token. The stub is re-tiered to
+    # `first_name_token` beside the fuller records and the tier's order
+    # decides (fuller first, then most recent activity). With no fuller record
+    # the stub wins exactly as before - byte-identical for every other query.
+    # A caller asking for exact-only matches (`min_confidence=1.0`, the
+    # counterparty-drop rail in `commitment_parties`) must never receive the
+    # 0.9 re-tiered set: the rule is gated on the tier's own confidence, and
+    # falls through to the exact-wins return below (REVIEW_PARALLEL_A N-1).
+    if (results and query_single_token
+            and FIRST_NAME_CONFIDENCE >= min_confidence
+            and all(r.entity_type == "person" and _is_one_word_person(r.record) for r in results)):
+        fuller = _first_name_token_people(entities, token_query, seen_ids)
+        if fuller:
+            retiered = [ResolveResult(
+                entity_type=r.entity_type, record=r.record, matched_via="first_name_token",
+                matched_string=r.matched_string, confidence=FIRST_NAME_CONFIDENCE,
+                reason=r.reason + " (a one-word record; a fuller record shares this first name)",
+            ) for r in results]
+            tier = fuller + retiered
+            _rank_token_tier(tier, workspace_root)
+            return tier[:max_candidates]
 
     # If we have any tier-1 (exact) matches, we're done — no need to fuzzy/phonetic.
     # Exact match always wins.
@@ -498,6 +679,19 @@ def resolve_all(
             ),
         ))
         seen_ids.add(record.get("id", ""))
+
+    # Tier 2b / 2c (IDN-01): the first-name-token tier and the whole-token
+    # prefix tier, people only, single-token queries only, ABOVE phonetic.
+    if query_single_token and FIRST_NAME_CONFIDENCE >= min_confidence:
+        tier = _first_name_token_people(entities, token_query, seen_ids)
+        if tier:
+            _rank_token_tier(tier, workspace_root)
+            results.extend(tier)
+    if query_single_token and TOKEN_PREFIX_CONFIDENCE >= min_confidence:
+        tier = _token_prefix_people(entities, token_query, seen_ids)
+        if tier:
+            _rank_token_tier(tier, workspace_root)
+            results.extend(tier)
 
     # Tier 3: phonetic (Soundex) match
     # Only meaningful for word-like strings; skip for empty Soundex or numeric queries.
@@ -545,7 +739,7 @@ def resolve_all(
 
     # Sort by confidence descending, then by length of matched string ascending
     # (shorter typically more specific).
-    results.sort(key=lambda r: (-r.confidence, len(r.matched_string)))
+    results.sort(key=lambda r: (-r.confidence, r.rank, len(r.matched_string)))
     out = results[:max_candidates]
     # WG1-B D-B5 — the opt-in proposal tier, ONLY on a total miss: an
     # entities.json hit at any tier above always wins, and the default-flag

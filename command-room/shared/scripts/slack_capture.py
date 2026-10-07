@@ -401,6 +401,20 @@ def already_captured(workspace_root, permalink: str, title: str) -> bool:
 
     ref = slack_source_ref(permalink)
     want_title = _title_key(title)
+    # CAPTUREONCE1 §2.2 — ask the index first; same contract as the two mail
+    # legs. A hit is final, a miss falls through to the scan. One difference
+    # worth stating: the index's `t:` namespace covers `commitment_observed`
+    # as well as `commitment`, and the scan below reads only `commitment`. The
+    # index's answer is the RIGHT one and the one the append chokepoint
+    # already enforces — a held row is a capture (INTAKE1), and re-capturing
+    # a Slack promise that is sitting in the held tier is the duplicate this
+    # lane exists to stop. The two mail legs already read both types.
+    try:
+        from source_ref_index import check as _idx_check
+        if _idx_check(workspace_root, source_ref=ref, title=title):
+            return True
+    except Exception:
+        pass
     for ev in iter_events(workspace_root):
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         ev_ref = str(data.get("source_ref") or "").strip()

@@ -274,7 +274,7 @@ def render_backfill_page(workspace_root, *, page: int = 1, persist_dir=None,
     propose report — `snapshot_max_seq` is what every row's wire id
     carries), `n_rows`, and `empty` (True with a one-line `line` when there
     is nothing to adjudicate — nothing is rendered then)."""
-    from needs_review_queue import paginate_groups
+    from needs_review_queue import resolve_page
     from widget_transport import render_and_persist
 
     ws = Path(workspace_root)
@@ -294,16 +294,16 @@ def render_backfill_page(workspace_root, *, page: int = 1, persist_dir=None,
         line += "."
         return {"empty": True, "line": line, "report": report, "n_rows": 0,
                 "refused": r}
-    page_view = paginate_groups(data_view, page=page, max_rows=max_rows)
-    gp = page_view.pop("group_pagination")
-    rows = max(1, gp["rows_on_page"])
+    # PLATENUM1 4.5 — same pattern, same fix: the caller's page reaches the
+    # transport, so a group the byte fit re-slices is still walkable.
+    paged = resolve_page(data_view, page=page, max_rows=max_rows)
+    gp = paged["group_pagination"]
     transport = render_and_persist(
-        data_view=page_view, wrapper="fragment",
+        data_view=paged["page_view"], wrapper="fragment",
         persist_dir=str(persist_dir or (ws / "_hq" / ".system" / "widgets")),
-        name_hint="binding-review", page=1, page_size=rows)
-    fitted = (transport.get("pagination") or {}).get("total_pages") or 1
-    if fitted > 1:
-        gp = dict(gp)
+        name_hint="binding-review", page=paged["sub_page"],
+        page_size=paged["page_size"])
+    if gp["sub_pages"] > 1:
         gp["group_split_by_budget"] = True
     transport["group_pagination"] = gp
     transport["report"] = report

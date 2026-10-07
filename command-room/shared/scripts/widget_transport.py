@@ -189,6 +189,119 @@ def _fit_page_size(data_view: dict, wrapper: str, requested: int) -> int:
     return size
 
 
+def truncate_rows(data_view: dict, n: int) -> dict:
+    """A shallow copy of `data_view` holding only its first `n` top-level
+    rows, in section order, with empty sections dropped.
+
+    Not `paginate_data_view`: that one is the PAGING slicer and stamps a
+    `pagination` block the renderer paints a position line from. An unpaged
+    surface that fits itself to the budget (R-N10-1's board) is not on page
+    1 of anything, and saying so would be the first plumbing word on a
+    customer surface.
+    """
+    n = max(0, int(n))
+    out_sections: list = []
+    left = n
+    for section in data_view.get("sections") or []:
+        if left <= 0:
+            break
+        items = (section.get("items") or [])[:left]
+        left -= len(items)
+        if items:
+            sec = dict(section)
+            sec["items"] = items
+            if "count" in sec:
+                sec["count"] = len(items)
+            out_sections.append(sec)
+    out = dict(data_view)
+    out["sections"] = out_sections
+    return out
+
+
+def page_row_budget(data_view: dict, *, wrapper: str = "fragment",
+                    requested: int | None = None) -> int:
+    """How many rows the transport will actually put on ONE page of this
+    view — the same measurement `render_and_persist` makes, exposed so a
+    caller can STATE a page count instead of guessing one.
+
+    REVIEW_ONEPLATE1 F-7: `plate_view` carried its own `WIDGET_PAGE_ROWS =
+    9` and computed the plate's page count from it, while the transport
+    asks for `DEFAULT_PAGE_SIZE` (15) and shrinks per view against the byte
+    budget down to `_MIN_PAGE_SIZE`. The two agreed by luck on one book.
+    One measurement, one number.
+    """
+    # Imported here, like every other use in this module: a module-level
+    # import of chat_output_renderer is circular.
+    from chat_output_renderer import DEFAULT_PAGE_SIZE
+    req = DEFAULT_PAGE_SIZE if requested is None else int(requested)
+    return _fit_page_size(data_view, wrapper, req)
+
+
+def fits_budget(data_view: dict, *, wrapper: str = "fragment",
+                budget: Optional[int] = None, read_only: bool = False) -> bool:
+    """Does THIS view, rendered whole and unpaged, fit the relay byte budget?
+
+    The companion to `fit_row_budget` for a caller whose trimmed view is not
+    the same shape as the probe the search measured — a board that regroups
+    its rows after the cut, say, and so carries a different number of group
+    headings than the probe did. Ask the question about the thing you are
+    actually going to relay.
+    """
+    from chat_output_renderer import render_chat_output_widget
+
+    cap = WIDGET_PAGE_BYTE_BUDGET if budget is None else int(budget)
+    return len(render_chat_output_widget(
+        data_view, wrapper=wrapper, read_only=read_only)) <= cap
+
+
+def fit_row_budget(data_view: dict, *, wrapper: str = "fragment",
+                   budget: Optional[int] = None, floor: int = 1,
+                   read_only: bool = False) -> int:
+    """The LARGEST number of top-level rows whose ONE unpaged render fits the
+    relay byte budget (R-N10-1: "as many rows as the widget's size budget
+    holds").
+
+    The paging path answers a different question — `_fit_page_size` finds a
+    rows-per-page that every page of a multi-page view survives. A surface
+    that renders once and names a door for the rest asks only how much fits
+    in the one render, so it gets its own search rather than a page size
+    reinterpreted as a row count.
+
+    Binary search, on the same monotonicity `_fit_page_size` relies on: a
+    board of N+1 rows is the board of N rows plus one more row, so rendered
+    bytes are non-decreasing in N. Returns at least `floor` even when the
+    floor itself overruns — a short surface is recoverable, a raise on a
+    read path is not; the caller can compare the answer against the row
+    count and say what it held back.
+    """
+    from chat_output_renderer import render_chat_output_widget
+
+    cap = WIDGET_PAGE_BYTE_BUDGET if budget is None else int(budget)
+    total = sum(len(s.get("items") or [])
+                for s in (data_view.get("sections") or []))
+    floor = max(0, int(floor))
+    if total <= floor:
+        return total
+
+    def _fits(n: int) -> bool:
+        probe = truncate_rows(data_view, n)
+        return len(render_chat_output_widget(
+            probe, wrapper=wrapper, read_only=read_only)) <= cap
+
+    if _fits(total):
+        return total
+    if not _fits(floor):
+        return floor
+    lo, hi = floor, total          # _fits(lo) True, _fits(hi) False
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if _fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def _first_over_budget_page(data_view: dict, wrapper: str, size: int):
     """The number of the first page that renders over the byte budget at
     `size` rows per page, or None when every page fits. Renders pages in
@@ -345,8 +458,16 @@ def render_and_persist(
     # monster rows. Flag it so skill text can pre-warn (deliver substance as
     # text) instead of eating a refused relay downstream.
     text_fallback = None
-    if pagination is not None and len(html) > WIDGET_PAGE_BYTE_BUDGET:
-        pagination["over_budget"] = True
+    # R-N10-1 — an UNPAGED surface (the board) fits itself to the budget
+    # before it reaches here, so an overrun on this path is the floor case:
+    # one row that on its own overruns the relay. It has no `pagination` to
+    # carry the flag, and without one it relayed over budget in silence.
+    # Same answer as the paged floor case — say so on the result, and
+    # compose the text form.
+    over_budget = len(html) > WIDGET_PAGE_BYTE_BUDGET
+    if over_budget:
+        if pagination is not None:
+            pagination["over_budget"] = True
         # CUT-C item 7 (ATTENDED_TEST_v5.28.0 B2.6) — the sanctioned text
         # form of THIS fitted page: numbered by the persisted page's own
         # display numbers, every row's verbs by display label including the
@@ -382,6 +503,9 @@ def render_and_persist(
     }
     if pagination is not None:
         result["pagination"] = pagination
+    elif over_budget:
+        # R-N10-1 — the unpaged floor case has nowhere else to say it.
+        result["over_budget"] = True
     if text_fallback is not None:
         result["text"] = text_fallback
     return result

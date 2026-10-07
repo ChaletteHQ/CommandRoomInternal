@@ -1,7 +1,7 @@
 ---
 name: end-of-day
 surfaces: both
-description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, reads the day in the plate's shape (opened, closed, slipped), and asks nothing — a stated tomorrow renders as fact. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
+description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, reads the day in the plate's shape (opened, closed, slipped), and asks at most two pre-picked confirms drawn from the Staff Meeting's own weekly five — a stated tomorrow renders as fact. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
 ---
 
 # End of Day — the evening bookend
@@ -22,6 +22,82 @@ this skill is the on-demand entry point and the source of truth for the render
 contract all paths share. The fire's receipt keeps the `past-meetings` task_id
 on both ids (`end_of_day.TASK_ID`) so the day-close series never splits.
 
+## Access — where the files are (CONTRACT Rule 22)
+
+Every step below that reads or writes the workspace goes through the access layer, by the rules in this block (the one `shared/WORKSPACE_ACCESS.md` defines). On a legacy or local seat the four shell lines at its foot are what run; on a merged seat every workspace step is a `workspace_access.py` verb line, run where the data is.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```
+
+## Phase 0 — Catch the upkeep up first (HEAL1 — on demand only, and silently)
+
+**Skip this whole phase on a scheduled fire.** A seat whose scheduler works already runs the background upkeep on its own cadence; a seat whose scheduler cannot reach the workspace never gets here at all. This phase exists for the one moment that is reliable on every seat: the customer opened their workspace and typed.
+
+**Never judge for yourself whether the upkeep is owed: ask, and do what comes back.** One verb, one call, on every seat, rendered by `workspace_access.py plan run_helper` exactly as the Access preamble describes and never hand-written (MIGRATE3-EOD: the in-process block this replaced opened the workspace in this session's own shell, which a merged seat does not have):
+
+```bash
+cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=end-of-day python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"surface": "end-of-day", "workspace_root": "<WS>"}, "name": "maintenance_dispatcher:catch_up_plan"}'
+```
+
+Its `result` is the plan, the same answer `surface_drivers.maintenance_catch_up(<WS>, "end-of-day")` gives, read where the data is; call it `plan`.
+
+**Run each job by its OWN leg, not by its name (FIX3 F3-6, ruling R-RW-5).** Every row in `plan["jobs"]` carries `leg` — the whole command, already ending `--fired-via manual --triggered-by <this surface>` — and `env`, the same two answers as variables. On a legacy or local seat, paste `job["leg"]` verbatim; where the job is a SKILL rather than a script `leg` is empty, and then export `job["env"]` before running it. On a merged seat the plan line is what crosses the door and the layer forwards the same two variables. This is not decoration: on 2026-09-21 four upkeep jobs ran inside a hand-typed morning brief and all four recorded themselves as a scheduled fire, because "execute each job's skill end to end" gives a flag nowhere to go.
+
+1. **`plan["catch_up"]` is false → do nothing, go to Close.** It is false whenever the last upkeep slot was served, whenever another surface caught up minutes ago, and whenever nothing is due. Write no receipt for a false plan: an empty one would make a stopped scheduler look alive.
+2. **True → run `plan["jobs"]` BEFORE the Close phase**, in the order they come back, one at a time, never in parallel. Execute each job's skill end to end, then score it with `maintenance_dispatcher.job_counts_as_complete(job_id, receipt_validated=…, run_reported_nothing_due=…)`. Never widen that predicate by hand. The weekday family only — the Sunday family is held back for `weekly recap` and `run maintenance`, and the plan has already done that filtering. This runs BEFORE Close for the same reason Close runs before Read: a close that reconciles an unreconciled substrate scores the day against the wrong book.
+3. **Then ONE receipt, and only because jobs ran:** `maintenance_dispatcher.maintenance_receipt(WORKSPACE_ROOT, jobs_due=…, jobs_completed=…, jobs_failed=…, fired_via="manual", triggered_by="end-of-day")`. On a merged seat that is one `plan append_jsonl` line. One per catch-up, and it lands before anything this surface writes for itself.
+4. **`plan["refused_container"]` is not empty → those jobs are not yours to run from here.** They write, and a write only happens where the files are. They stay owed and the next run from the right side of the bridge picks them up. `plan["refused_line"]` is the sentence for `run maintenance` and the health check — never for this surface.
+5. **SAY NOTHING ABOUT ANY OF IT.** Not a count, not "caught up first", not a mention. What the jobs DID to the customer's own rows reaches them the way it always has — credited by door, each batch with its one undo. The condition of the plumbing belongs to the health check and the weekly maintenance report and nowhere else.
+
 ## The four phases, in order. The order IS the contract.
 
 1. **Close** — reconcile what the day discharged, IN THIS FIRE. Same machinery
@@ -36,6 +112,24 @@ on both ids (`end_of_day.TASK_ID`) so the day-close series never splits.
    is last for a reason that is not tidiness: a capture written earlier in the
    fire would be scored by this same fire's reconcile and counted by this same
    fire's read. Capture last is the circularity fence.
+
+## ⛔ If the pack does not arrive (SPEC SURFACEFIX1 5.3 / amendment E-5)
+
+When the driver cannot build the day-close it prints **one sentence** —
+*"End of Day could not render tonight — say `end of day` to retry."* — in
+place of the `CR-EOD-PACK:` line, and writes the receipt that records the
+failure. **Post that sentence and stop.** No traceback, no exception text, no
+file path, no module or function name, no "here is what I found instead".
+
+**Never build the pack by hand.** Not from the ledger, not from the
+helpers, not "just the closes". On 2026-09-13
+this fire crashed on a serialisation bug; the chat rebuilt the day-close by
+hand, re-ran the capture leg while it was at it, and duplicated seven
+decisions, three meetings and three receipts that no sanctioned collapser can
+undo. A hand-built day-close is not a degraded day-close — it is a different
+product, with no receipt, no fences and no undo. **Do not re-run capture to
+"recover" either:** a meeting processed once writes no new rows (M's ruling
+R4, 2026-09-13), and the close reads what capture already wrote.
 
 ## What renders, and what is only computed (SPEC EODSYNTH1)
 
@@ -53,9 +147,15 @@ in the PLATE's shape).** `pack["screen"]` is `end_of_day.compose_screen(pack)`
 eod cut FIRST (*"Your plate today — N opened · N closed · N slipped"*, the
 rows in their blocks, one pointer), then `day_went`, `what_it_meant`,
 `worth_remembering`, `slipped_prose`, `echoes`, the coach's delta, a STATED
-tomorrow as fact, the sign-off, and the health lines LAST (the coverage strip
-when it has a disclosure, the substrate alarms, the dark-surface lines).
-Print `pack["screen"]["text"]` VERBATIM; it is the whole prose turn. The
+tomorrow as fact, and the sign-off. **The coverage strip prints nowhere on
+this surface any more either (M's ruling R3, 2026-09-13 — SPEC SURFACEFIX1
+5.1)**, and neither do the substrate alarms or the dark-surface lines
+(HEALTH1, 2026-09-07 — M's ruling supersedes CUT-PLATE's "health lines
+LAST"):** `compose_screen` never calls `add()` for `coverage`, `alarm_lines` or
+`dark_surface_lines`, and the driver stops calling `task_alarm.
+dark_surface_lines` at all (its render-once ledger would otherwise be
+consumed here before the weekly `cleanup` report — the surface that now owns
+both — ever saw it). Print `pack["screen"]["text"]` VERBATIM; it is the whole prose turn. The
 composer RAISES (`ScreenShapeError`) if a retired sentence — "survived N
 closes", "consecutive close", "did not move", "what is tomorrow about" — or an
 asking line reaches the composed text, so the v5.28.0 shape cannot come back
@@ -64,9 +164,9 @@ receipt's vocabulary); the screen is where the placement lives now.
 
 | Block | What it is | The rule that governs it |
 |---|---|---|
-| `alarm_lines` | `substrate_health.substrate_alarm_lines` | Verbatim, inside the health lines LAST on `pack["screen"]` (after the sign-off — CUT-PLATE), never suppressed |
-| `dark_surface_lines` | TASKALARM1 — the dead-surface alarm, task_alarm.dark_surface_lines | Verbatim, directly under `alarm_lines`, render-once per (task, dark-window). See below |
-| `coverage` | What this fire actually READ, per capability | Renders IFF `end_of_day.coverage_has_disclosure(pack)` (SPEC COVERQUIET1) — computed on every fire, but placed only when it has something to disclose. When it renders: first under the alarms, disclosure-first, **never suppressed and never softened underneath that gate**. See below |
+| `alarm_lines` | `substrate_health.substrate_alarm_lines` | **RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07).** Still computed on the pack (harmless, side-effect-free — other readers use it), never placed on `pack["screen"]`. Reported by the weekly `cleanup` maintenance run instead |
+| `dark_surface_lines` | TASKALARM1 — the dead-surface alarm, task_alarm.dark_surface_lines | **RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07).** The driver hard-codes `[]` and never calls `task_alarm.dark_surface_lines` here at all — not just unrendered, uncalled, so its render-once ledger stays available for `cleanup`'s weekly pass, the surface that reports it now. See below |
+| `coverage` | What this fire actually READ, per capability | **RETIRED FROM THIS SURFACE (M's ruling R3, 2026-09-13 — SPEC SURFACEFIX1 5.1).** Same class as the health lines above: a statement about plumbing, home = the `system health` check and the weekly `cleanup` maintenance report. Still computed on every fire and still receipted (a `COMPUTED_ONLY` member now), placed on `pack["screen"]` never. The ONE survivor is `end_of_day.coverage_number_caveat` — one clause, composed in code, appended INSIDE the plate block next to the figure it qualifies. See below |
 | `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended |
 | `what_it_meant` | THE ARC READ (SPEC EODARC1): which arcs moved today, which consequence-carrying arcs did not move, where the day's weight went | Composed in code by `eod_synthesis.compute_what_it_meant` over DECLARED arcs only. A sentence with no arc attached does not belong in the section (`eod_synthesis.drop_rows_only`); a genuinely empty day says so honestly in one grounded line; never an arc the model inferred |
 | `worth_remembering` | Decisions and notes logged today, 1–4 lines | Each line IS a row, not a summary of one |
@@ -126,20 +226,127 @@ coach's Layer 1 and push, and the arc read's "did not move" sentences.
   morning brief's needs-attention lane and on the `needs-your-call` / `my-plate`
   chats, where the operator is in triage mode; 5 PM is wind-down.
 
-**No widget, no question (CUT-PLATE — M's hold 2026-09-06).** The
+**No widget, and at most two pre-picked confirms (CUT-PLATE — M's hold
+2026-09-06 — WIDENED BY CITATION: R-N10-3, M's design rule 2026-09-06 — "I don't mind a couple of those questions appearing on end of day"; built FOLD1-A fix round 1).** The
 day-close posts `pack["screen"]["text"]` and nothing else: no tomorrow card,
 no Confirm / Edit, no Slipped section, no Needs-your-call section, no person
-candidates, no score. `pack["screen"]["asks"]` is 0 and `["widget"]` is None
-by construction. The tomorrow draft the pack still computes is data for the
+candidates, no score. `["widget"]` is None by construction, and
+`pack["screen"]["asks"]` is 0 or the count of the DECLARED `eod_questions`
+block — never more than `end_of_day.MAX_SCREEN_QUESTIONS`, never a new
+question class, and never the decisions block (`confirm` stays in
+`end_of_day.COMPUTED_ONLY`). Those rows are drawn from the Staff Meeting's
+existing weekly five through `quiet`'s one shared budget, so the evening
+spends from that allowance rather than adding to it; a seat with nothing to
+ask renders no block at all, which is the ordinary evening. The tomorrow draft the pack still computes is data for the
 receipt and the morning; the CEO states tomorrow with `tomorrow is about
 [X]` (workspace-manager, BK1), and that stated intent renders here as fact.
 
 **`confirm_ids` is EMPTY** (`end_of_day.NUMBERED_BLOCKS` is `()`): the evening
-renders no numbered rows, so it numbers none, and a `[n]` tap is refused in
-plain English. The tomorrow confirm resolves through
+renders no numbered ROW-LIST, so it numbers none, and a `[n]` tap against that
+map is refused in plain English. The tomorrow confirm resolves through
 `end_of_day.resolve_intent_confirm` off the same receipt and never used that
 map. Numbering a row that does not render is the defect, not a spare
 capability — it makes every tap past it resolve against something nobody saw.
+
+### Answering the evening's two questions (FOLD1A fix round 2, REVIEW_FOLD1A R-2)
+
+The `eod_questions` block is the one thing on this screen the CEO answers, and
+it has its OWN numbering, its own map and its own writer — `confirm_ids` and
+`NUMBERED_BLOCKS` are untouched, exactly as the tomorrow proposal has its own
+key and its own resolver.
+
+- **The card.** When the block rendered, the pack carries
+  `pack["eod_questions"]["transport"]` — a validated two-row page built by
+  `eod_question_budget.render_question_widget` through
+  `widget_transport.render_and_persist`. Relay `transport["html"]` VERBATIM as
+  `show_widget`'s `widget_code`, beside the composed text. Never re-render it,
+  never restyle it, never build a card of your own: the day-close still has no
+  card of its own and this is the one cited exception (R-N10-3). No transport
+  on the pack means no card — post the text and stop. **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
+- **Each row carries exactly ONE tap, the pre-picked `confirm`.** That is the
+  design rule (one tap each, the likely answer already picked, no three-way
+  menus). The other three queue verbs still exist and still work — on
+  `needs your call`, on demand.
+- **The typed answers are NUMBERED**: `yes 1`, `no 2`, `skip 1`. Resolve each
+  through the surface's ONE resolver, exactly as every other gesture here does,
+  read where the data is (`end_of_day.resolve_choice`, one verb per number):
+
+```bash
+cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=end-of-day python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"action": "<yes | no | skip>", "n": <the number typed>, "workspace_root": "<WS>"}, "name": "eod_helpers:resolve_choice"}'
+```
+
+  Its `result` is the target. `ok` false: say its `refusal` verbatim and write
+  NOTHING.
+
+- **Never a bare `yes`.** The block does not print one and neither do you: a
+  bare affirmative belongs to whatever turn the customer is in, and a product
+  that claims it hijacks every "yes" anyone ever types. The number is the
+  answer, the same rule `resolve_choice` already keeps for every other verb.
+- **The write is ONE call, and it is the queue's own writers underneath**,
+  through the WRITE door (`eod_helpers:answer_eod_questions` runs
+  `eod_question_budget.apply_eod_answers` beside the data). `answers` is the
+  rows `resolve_choice` returned ok for, each paired with the answer the
+  customer gave it; `individually_named` is ONLY the rows the customer
+  actually tapped or numbered (a gesture that names nothing passes an empty
+  list and a weak row is HELD and reported, exactly as it is on the queue;
+  never widen this on your own); `source_ref` is the first resolved row's own:
+
+```bash
+cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=end-of-day python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"answered_by": "<user person_id>", "answers": [<one {"id": <the resolved id>, "answer": "<yes | no | skip>"} per resolved row>], "individually_named": [<every resolved id>], "source_ref": "<the first resolved row source_ref>", "workspace_root": "<WS>"}, "name": "eod_helpers:answer_eod_questions"}'
+```
+
+  Inside it: `yes` → `needs_review_queue.confirm_items`, `no` →
+  `drop_items`, `skip` → nothing written. ONE batch id over the whole answer,
+  ONE `eod_question_answered` receipt, and a bare `undo` reverses all of it
+  through the reversers those two writers already have. NEVER call
+  `confirm_items` / `drop_items` directly from here and never append an event
+  beside them — the batch is what makes the undo one gesture.
+- **The ack is the answer's `ack`** (`answer_ack` on the writer's own result,
+  composed beside the data), one plain sentence: counts and words, never an
+  id, never a batch id, never an event type. Print it verbatim.
+
+### The self-scored question, on a seat that opened the coaching door (SPEC SURFACES2_11c Lane 3 item 3)
+
+A seat whose coaching shape is `named` or `coached` may also be asked ONE
+question about the behaviour it named for itself — *"How did {behaviour} go
+today, 1–10?"* — inside the same block, inside the same two, and never on top
+of them.
+
+- **The confirms take the slots first** (ruling R-9). A confirm is an act
+  waiting on the reader; this is a note to themselves. Two confirms due means
+  no coaching question at all. The arithmetic is
+  `eod_question_budget.coach_question_slots`, and the driver has already run
+  it — the block on the pack is the answer, never something to recompute here.
+- **An `observed` seat is never asked.** The coaching shape is the switch:
+  `turn off coaching` ends this with nothing else to unset.
+- **It is answered by number, with a number**: `score 1 7` is "row one, seven
+  out of ten". One resolver, the same positional resolution as every other
+  gesture on this surface, through the WRITE door (`eod_helpers:score_coach_answer`
+  runs `end_of_day.resolve_coach_score` beside the data; it records ONE
+  `coaching_answer` row):
+
+```bash
+cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=end-of-day python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"answered_by": "<user person_id>", "n": <the row number>, "score": <the number typed>, "workspace_root": "<WS>"}, "name": "eod_helpers:score_coach_answer"}'
+```
+
+  A `refusal` in its `result` is said verbatim and NOTHING was written: a
+  score on a confirm row, or a number outside one to ten, are both refused by
+  name.
+
+- **The ack is the answer's `ack`** (`coach_answer_ack` on the writer's own
+  result): print it verbatim. It says the number landed and nothing
+  else. No comparison with yesterday, no encouragement, no reading of what the
+  number means — the reading is the seat's, which is the whole point of asking.
+- **There is no undo, and the ack says so** (ruling R-5, default taken).
+  Nothing changed, so there is nothing to put back; never offer `undo` for this
+  answer and never imply one.
+- **Answered once a day.** A second fire on the same evening does not ask
+  again and spends nothing more out of the week — `coach_answered_on` reads
+  the answer already on the book.
+- **A row answered earlier the same day is not asked again tonight.** Nothing
+  bookkeeps that: answering a queue row through its one writer is what makes it
+  stop being an open row anywhere, so it is simply not a candidate. Do not add a
+  second "already asked" list.
 
 ### Grounding is the build, not a footnote
 
@@ -202,7 +409,8 @@ recent activity and a live thread IS an arc whether or not a deal row tracks
 it, a deal row with a stage can only ADD an arc, and nothing in the read
 raises when deal state is absent, stale, or malformed. No writes to deal
 state, ever. The section stays prose-only — zero new actions, buttons,
-proposals, or writes; the day-close asks nothing (CUT-PLATE) — a stated
+proposals, or writes; the day-close asks nothing of its own (CUT-PLATE; the
+only questions are the <= 2 pre-picked confirms, R-N10-3, M's design rule 2026-09-06 — "I don't mind a couple of those questions appearing on end of day"; built FOLD1-A fix round 1) — a stated
 tomorrow renders as fact, never as a question.
 
 ### The coach (SPEC EODCOACH2) — patterns across evenings, and the intent-vs-outcome delta
@@ -219,7 +427,7 @@ of a tuple pinned elsewhere by exact equality.
 
 **Prose only, ZERO new interactions** — the same fence EODARC1 keeps: a coach
 sentence carries `{text, refs, tier, kind}` and nothing else, no verb, no
-checkbox, no proposal. The day-close asks nothing (CUT-PLATE); a stated tomorrow renders as fact.
+checkbox, no proposal. The day-close asks nothing of its own (CUT-PLATE; the only questions are the <= 2 pre-picked confirms, R-N10-3, M's design rule 2026-09-06 — "I don't mind a couple of those questions appearing on end of day"; built FOLD1-A fix round 1); a stated tomorrow renders as fact.
 
 **Layer 1 — pattern memory — COMPUTED, NOT ON THE SCREEN (CUT-PLATE).**
 Reads the last 7 EOD packs off disk (the same
@@ -229,12 +437,20 @@ carrying a consequence; a commitment recurring in the meeting-gated slip on
 3+ of the days examined with no send between; and the survival count on the
 single oldest consequence-carrying overdue item. At most 2 are kept, dropped
 by strength — `eod_coach.compute_patterns` — and they ride the pack as
-`coach["patterns"]` and the deduped `coach["layer1"]`. **They no longer
-print**: the v5.28.0 attended test saw "has now survived 7 closes" and "7
-consecutive closes — 7 evenings the plan did not move" on the day-close, and
-M ruled for the plate shape with less on the card. `eod_coach.SCREEN_LAYERS`
-names what does print (the delta). **Honest absence:** fewer than 3 prior
-packs on disk and the layer computes NOTHING.
+`coach["patterns"]` and the deduped `coach["layer1"]`. **What PRINTS is
+layered by the seat's coaching shape** (CORRECTED 2026-09-15, REVIEW_NIGHT11C
+H-7 — this paragraph used to say flatly "they no longer print", which stopped
+being true when night 11c's coaching train landed).
+`eod_coach.SCREEN_LAYERS_BY_SHAPE` is the map: an **observed** seat gets the
+delta alone — the CUT-PLATE screen the v5.28.0 attended test earned, with
+"has now survived 7 closes" off it and M's ruling for less on the card
+intact; a **named** seat gets the delta plus ONE counted pattern line
+(`eod_coach.CAP_SCREEN_PATTERNS` = 1); a **coached** seat gets those plus at
+most one sourced reading, capped at `eod_coach.KNOWLEDGE_PER_WEEK` (2) per
+ISO week. `eod_coach.SCREEN_LAYERS` is now the observed tuple only. The full
+Layer 1 block and the push line still ride the pack un-printed on every
+shape. **Honest absence:** fewer than 3 prior packs on disk and the layer
+computes NOTHING.
 
 **Layer 2 — the delta and the push.** `eod_coach.compute_intent_delta` reads
 the day's own STATED `day_intent` (EODFIX1's id linkage) against today's
@@ -276,75 +492,78 @@ nothing to place.
 the surface: it renders by instruction, right after `echoes` and above
 `tomorrow`, and it is not in `RENDER_ORDER` either — see "The coach" above.
 
-### `coverage` — say what you read before you say what you found, and only when there is something to say
+### `coverage` — retired from this surface (M's ruling R3, 2026-09-13)
 
-The fire asks for email, calendar and chat per capability and receipts every
-gap under `connector_gaps`. EODLEDGER1's original cost measurement stands: a
-chat cursor sat five days behind while the surface reported the day's closes
-with no qualification at all, and a calendar outage rendered byte-identically
-to a genuinely empty tomorrow. The reader could not tell *nothing happened*
-from *I could not look*.
+The fire still asks for email, calendar and chat per capability and still
+receipts every gap under `connector_gaps`. What changed is where a reader
+meets that record.
 
-**SPEC COVERQUIET1 (2026-08-27) narrows WHEN this block renders, not what it
-says once it does.** M's live-walk intake named the strip "extra garbage" on
-days it had nothing to disclose — "5 meetings on record, 4 processed, all
-current" is boilerplate the briefs section already implies. `end_of_day.
-coverage_has_disclosure(pack)` is THE gate: a reduction clause (duplicate
-fold, already-processed exclusion, deliberate skip, a brief that failed to
-save), a deferral (`window_incomplete_before` set), a TASKALARM1 dark-surface
-line, a `connector_gaps` entry, or a rendering catch-up/degrade note. Any ONE
-is enough, and it is checked on every fire — the receipt keeps the full
-reconciled strip regardless (`log_end_of_day_receipt` moves `coverage` from
-`blocks_rendered` to `blocks_computed_only` on a quiet day rather than
-dropping it: presentation changed, bookkeeping did not).
+EODLEDGER1's original cost measurement was real: a chat cursor sat five days
+behind while the surface reported the day's closes with no qualification at
+all, and a calendar outage rendered byte-identically to a genuinely empty
+tomorrow. The reader could not tell *nothing happened* from *I could not
+look*. COVERQUIET1 then narrowed the strip to days that had something to
+disclose. Neither fixed the thing M objected to on 2026-09-13, reading his
+own day-close: *"a connector this fire needed was not read; chat 2 days
+behind"* is a sentence about PLUMBING, and he had already ruled that class
+off the morning brief on 2026-09-07.
 
-**When it renders,** `end_of_day.coverage_render_lines(pack)` — never
-`coverage["lines"]` directly — is composed in code and printed VERBATIM,
-first, under the alarms. Its FIRST line is the disclosure itself, count
-scoped to that one clause ("1 meeting deferred to tonight's pass", never "5
-meetings on record, 4 processed, 1 deferred" — §0 ruling 3), followed by
-every per-capability line unchanged: mail and chat through their own cursors
-— **naming the span when a cursor is behind** — calendar present or absent,
-and the capture leg's window with what is on record in it and what is still
-owed. A capability that was skipped says so in the plain English the leg
-already receipted. The last line, when present, is the data-quality note: the
-count of closes in this window citing no artifact anyone can open (not itself
-one of the five disclosures — it does not, alone, put the strip up).
+**The ruling (R3):** connector-reachability and coverage lines are off the
+brief and off End of Day, exactly as the health lines are. **Home = the
+`system health` check and the weekly `cleanup` maintenance report**, both of
+which read the same fields and are asked for by someone who wants them.
 
-**Never suppressed and never softened UNDERNEATH the gate**, the same posture
-as `alarm_lines` and for the same reason: a degraded read is exactly when the
-reader most needs to know what the aperture was, and the day-level on/off
-switch above is the only suppression this spec licenses. Do not re-word a
-line, do not drop the stale-cursor clause because the numbers look right, and
-do not add a reassuring sentence after it. `coverage["capabilities"]
-["calendar"]["read"]` and `tomorrow["calendar_available"]` are ONE boolean by
-construction; never write a sentence that puts them in conflict.
+**What that means mechanically.** `coverage` has left `RENDER_ORDER` and
+`BLOCK_ORDER` and joined `COMPUTED_ONLY`, alongside `score`, `wins`,
+`slipped` and `confirm`. It is computed on every fire, in full, and it lands
+on every receipt under `blocks_computed_only` — un-render, don't unbuild, the
+same move EODSYNTH1 made for the score. `compose_screen` never calls `add()`
+for it. `coverage_has_disclosure` and `coverage_render_lines` are unchanged
+and still exported: they are the health check's and the maintenance report's
+question now, not a render decision this surface makes.
 
-**A stale cursor alone is NOT a disclosure.** A mail or chat cursor a day or
-two behind is ordinary, ongoing detail — ordinary enough that it is not on
-the §0.1 list — and does not by itself put the strip up. It still renders (as
-detail, not as the lead) on any day the strip is already showing for one of
-the five reasons above.
+**You place no part of it.** No disclosure lead, no per-capability line, no
+reduction clause, no "read through Friday — 5 days behind", no `connector_
+gaps` sentence. **Do not call `coverage_render_lines` here, and do not
+compose a sentence of your own about what was or was not read.** If you are
+printing `pack["screen"]["text"]` as the contract says, this happens for you.
 
-### `dark_surface_lines` (TASKALARM1) — the dead-surface alarm, right under `alarm_lines`
+**THE ONE EXCEPTION — a gap that changes a rendered number.** COVERQUIET1's
+own intake design (`DESIGN_2026-08-26_coverage-lines-silent-unless-they-
+change-the-numbers`, folded into R3) carves out exactly one case: when a leg
+this fire could not read is a leg one of the RENDERED NUMBERS is counted
+from, that number carries ONE caveat, ADJACENT to it — *"Mail was not read
+today, so these counts may be short."*
 
-A tenth key not in `RENDER_ORDER`, for the same reason `catchup` and `coach`
-are not: it renders by instruction, directly under `alarm_lines` — same
-never-suppressed posture, timed inside the same `PHASE_ALARMS` phase rather
-than growing `end_of_day.PACK_PHASES`' pinned 16-name vocabulary for one
-more line shaped exactly like the alarms.
+`end_of_day.coverage_number_caveat(pack)` composes it and `compose_screen`
+appends it inside the plate block, so nothing can re-order the caveat away
+from the figure it qualifies. **One clause, never two** — a second caveat is
+the strip coming back a sentence at a time, which is why the function returns
+a single string and not a list. Only mail and chat can earn one
+(`NUMBER_BEARING_CAPABILITIES`): those are the legs the day's counts are
+drawn from. A calendar or meetings gap earns none — the calendar feeds a
+LIST, which speaks for itself, and a caveat on a list is a reachability
+sentence wearing a caveat's clothes.
 
-`task_alarm.dark_surface_lines` is the source (SPEC TASKALARM1) — the
-watchdog's own `late` / `receipt_gap` / `never_authorized` classes, zero new
-detection logic, capped at 3 worst-first with an "and N more" tail, and
-render-once per (task, dark-window) through the module's own ledger. A
-`never_authorized` task reads "was never set up on this machine"; a `late` or
-`receipt_gap` task reads "has stopped firing" / "hasn't recorded any work" —
-never the other sentence, never conflated. **The ledger is shared across
-every surface that calls it** (morning brief, end of day, and any future
-one): a dark spell that already alarmed on this morning's brief stays quiet
-here — one alarm per dead surface, not one per fire. Empty list → nothing
-renders, never a padded all-clear.
+**"Not read" and "nothing there" are still different claims.** Where a
+section would have been built from a leg that was not read, render **no
+section** rather than an empty one: silence about a leg is honest, "nothing
+on your calendar" when the calendar was never reached is not.
+`coverage["capabilities"]["calendar"]["read"]` and `tomorrow["calendar_
+available"]` are ONE boolean by construction; never write a sentence that
+puts them in conflict, and on this surface never write a sentence about
+either.
+
+
+### `dark_surface_lines` (TASKALARM1) — retired from this surface (HEALTH1, 2026-09-07)
+
+**This used to render by instruction, directly under `alarm_lines`. It no longer does, and the driver no longer even CALLS `task_alarm.dark_surface_lines` from this fire** (`with phases.phase(eod.PHASE_ALARMS)` in `surface_drivers.build_end_of_day_pack` hard-codes `dark_surface_lines = []`).
+
+Why the call itself moved, not only the print: `task_alarm.dark_surface_lines` is source (SPEC TASKALARM1) — the watchdog's own `late` / `receipt_gap` / `never_authorized` classes, capped at 3 worst-first with an "and N more" tail, render-once per (task, dark-window) through the module's own ledger. **The ledger is shared across every surface that calls it** — that sharing is exactly the mechanism M's ruling now uses: the weekly `cleanup` maintenance run is the only remaining caller, so it is the only surface that marks (and reports) a dark spell. If this fire kept calling the helper just to discard its return value, it would mark the same finding "seen" hours before `cleanup`'s Sunday pass ever ran, and the customer would never see it anywhere — the exact silent-loss failure mode M's ruling exists to prevent. This is also why `dark_surface_lines` no longer feeds `end_of_day.coverage_has_disclosure`'s dark-surface branch in practice: the pack always hands it an empty list, so that branch never fires from this driver (SPEC COVERQUIET1's OTHER four disclosure triggers are unaffected and untouched).
+
+Empty list, always, on this surface — never a padded all-clear, because there is nothing to pad: the finding, when real, now surfaces once a week in the Monday note.
+
+**Fix round 1 (review finding F-3, MED) — a circularity worth naming plainly.** The Monday `cleanup` run is now the ONLY scheduled caller of `task_alarm.dark_surface_lines`, and the maintenance task itself is one of the surfaces that helper can flag as dark. If the maintenance run is the thing that stopped firing, nothing on a schedule says so any more — the on-demand `health check` is the only remaining route, and it has to be asked for. This is a consequence of M's own ruling (all four health kinds off every customer surface), not a bug in this fire's code, and it is open as a ruling for M (R-2 in `REVIEW_HEALTH1_2026-09-07.md`) rather than decided here.
 
 ### `score.ledger` — what the day did to the open book
 
@@ -604,6 +823,35 @@ When the flip is off — which is every workspace today — `apply_held_routing`
 hands the routing back unchanged and the held lane is empty. Off is
 byte-identical to no flip at all, and that is asserted, not assumed.
 
+## The shape of the close is the same ten settings as the brief (CUSTOM2)
+
+The day-close does not have its own answer to "how should this be grouped".
+It reads the SAME ten settings the morning brief reads, out of its own store,
+which is why one sentence — "group my brief by workstream" — moves both
+surfaces and the weekly wrap in a single act, and why nobody has to be told
+twice.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"surface": "end-of-day", "view": <the view: number_line, rows, sections>, "workspace_root": "<WS>"}, "name": "eod_helpers:render_for_fire"}'
+```
+
+The answer is `brief_settings.render_for_fire(workspace_root, view, surface="end-of-day")` itself — call it `out`.
+
+`render_for_fire` reads and renders in the one legal order: settings first, the
+free-text notes folded in beneath them, and a note can never move something the
+reader has stated. Reading the halves yourself is `settings_for_fire` then
+`render_surface` — and `render_surface` REFUSES free text without the list of
+stated settings, so the ordering cannot be lost by leaving an argument off.
+Group the day's rows through it (or `group_rows` when you are composing the
+screen yourself) rather than deciding the grouping in prose — the composer runs
+`assert_number_leads` over what it built, so the plate's number still leads
+whatever the settings say, and `out["said"]` carries anything a filter did that
+the reader has to be told about.
+
+Changing them is `morning-briefing`'s door ("customize my morning brief",
+"reset my brief", or any single sentence naming one part). This skill reads;
+it does not ask.
+
 ## Mechanics
 
 - **The narration scan (CUT-C item 8, MANDATORY).** The pack builder
@@ -647,7 +895,8 @@ byte-identical to no flip at all, and that is asserted, not assumed.
   split rather than inside the artifact-backed number, and
   `end_of_day.unsourced_closes` still reports it as a close citing no artifact.
 - **Widgets.** None (CUT-PLATE — M's hold 2026-09-06). The day-close
-  renders no card and asks nothing; `pack["screen"]["text"]` is the turn.
+  renders no card and asks at most two pre-picked confirms;
+  `pack["screen"]["text"]` is the turn.
   A row-list that ever returns to this surface goes through
   `widget_transport.render_and_persist` byte-exact — but none does today.
 - **The fire introduces itself as End of Day.** The lateness banner, the
@@ -685,7 +934,7 @@ n, action=...)` against the fire's own receipt. A stale or missing map is
 refused in plain English — never clamped, never guessed.
 
 **NOT OFFERED BY THE DAY-CLOSE SINCE CUT-PLATE (2026-09-06).** The day-close renders no
-numbered rows (`NUMBERED_BLOCKS` is `()`), so no `[n]` tap reaches any row of this table
+numbered ROW-LIST (`NUMBERED_BLOCKS` is `()`), so no `[n]` tap reaches any row of this table — the evening's only numbered thing is the `eod_questions` block, which carries its own map (fix round 2, R-2)
 from that fire and one typed there is refused. The table is the verb contract for the
 surfaces that DO number rows (the plate, the held queue); read it there.
 

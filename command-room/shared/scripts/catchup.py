@@ -102,6 +102,7 @@ is stated at each call site; here it is only read.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -568,11 +569,18 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--cap-days", type=float, default=DEFAULT_CAP_DAYS)
     parser.add_argument("--now", default=None,
                         help="frozen machine-local ISO datetime (testing/simulation)")
+    parser.add_argument("--triggered-by", default=None,
+                        help="the surface that asked for this run")
     parser.add_argument("--fired-via", default=None,
                         help="scheduled | catchup | manual (this fire's run mode)")
     parser.add_argument("--scheduled-only", action="store_true",
                         help="apply catch-up on scheduled-context fires only")
     args = parser.parse_args(argv)
+    # FIX3 F3-6: export what this run was asked by, so every composer
+    # below reads it from one place instead of being threaded through
+    # a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
 
     now = None
     if args.now:

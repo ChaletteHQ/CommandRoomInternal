@@ -1,7 +1,7 @@
 ---
 name: scan-for-commitments
 surfaces: both
-description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate commitment events. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. Use when meetings/emails are on file but no commitment events exist. Idempotent — re-runs skip already-extracted commitments via (source_ref, title) dedup. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
+description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate commitment events. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. Use when meetings/emails are on file but no commitment events exist. Idempotent — a re-run skips anything it already picked up, so running it twice never doubles the list. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
 ---
 
 ## Skill Boundary (v2.1; Slack leg v4.6.0)
@@ -21,7 +21,7 @@ If the user's phrasing is ambiguous ("get my commitments going"), prefer this sk
 
 ## Why this exists
 
-The Workspace Map sidebar artifact + the daily Commitments scheduled chat both aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (Pre-v2.9.0 had a People Network + Commitments Tracker sidebar pair too; those were retired when the daily-chat surface absorbed their content. Workspace Map is the only surviving sidebar consumer.)
+The daily Commitments scheduled chat and `triage my commitments` aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (History: every sidebar dashboard is retired — the People Network + Commitments Tracker pair in v2.9.0, the Workspace Map in Night M3.)
 
 Earlier releases expected `meeting-notes` to write commitments but the contract was implicit (no schema doc, no explicit step). Many transcripts were processed without producing commitment events. `scan-for-commitments` is the one-shot fix.
 
@@ -156,7 +156,13 @@ override via `resolve_capture_mode(root, org_id=…, org_name=…)`):
 
 ### Step 4 — Dedup before writing
 
-Match on `(source_ref, title)`. If a `type: commitment` event already exists in events.jsonl with the same `data.source_ref` AND the same `data.title` (case-insensitive substring match — first 60 chars), skip it. This is the only safe way to make the scan idempotent across re-runs. The Slack leg uses the same key, codified — `slack_capture.already_captured(workspace_root, permalink, title)` — with the permalink as the per-message `source_ref` anchor. The Sent pass likewise — `sent_capture.already_captured(workspace_root, message_id, title)` — AND additionally runs each item through `capture_gate.matches_open_commitment()` against the open set (shared non-user party + content-token overlap): a sent restatement of a commitment already tracked from a meeting or a triaged thread MERGES into the existing item (skip the write; count it as merged in the summary) instead of double-tracking. Daily coverage of the same lane is `reconcile-sent`'s sent-promise capture — both writers share these exact dedup layers, so overlap between a backfill and the daily pass is safe by construction. Cross-SOURCE duplicates (the same real promise made in Slack and again in an email) are NOT this step's job: the capture-time semantic dedup layer (`commitment_dedup`, v4.6.0 C4) fires inside the append itself and flags suspects for the confirm flow.
+**The vocabulary in this step is yours, not the CEO's (SPEC FIXTRAIN 6.2).** Field names, the file the log lives in, and the counters below are how you do the work. On 09-13 a reprocess chat read this section out loud and the CEO got the log's file name, the matching key as a pair of field names, and a counter variable. None of that answers what they asked. Say the result with the composer in Step 5 and nothing else.
+
+The pair (where it came from, what it says) is what the write refuses on — see the next two paragraphs; you PREVIEW it so your counts are honest. A `type: commitment` event already on the log with the same `data.source_ref` AND the same `data.title` (case-insensitive substring match — first 60 chars) will not be written again, whatever you do. The Slack leg uses the same key, codified — `slack_capture.already_captured(workspace_root, permalink, title)` — with the permalink as the per-message `source_ref` anchor. The Sent pass likewise — `sent_capture.already_captured(workspace_root, message_id, title)` — AND additionally runs each item through `capture_gate.matches_open_commitment()` against the open set (shared non-user party + content-token overlap): a sent restatement of a commitment already tracked from a meeting or a triaged thread MERGES into the existing item (skip the write; count it as merged in the summary) instead of double-tracking. Daily coverage of the same lane is `reconcile-sent`'s sent-promise capture — both writers share these exact dedup layers, so overlap between a backfill and the daily pass is safe by construction. Cross-SOURCE duplicates (the same real promise made in Slack and again in an email) are NOT this step's job: the capture-time semantic dedup layer (`commitment_dedup`, v4.6.0 C4) fires inside the append itself and flags suspects for the confirm flow.
+
+**This is now enforced at the write, not asked of you (CAPTUREONCE1 §2.2, 2026-09-14).** `source_ref_index.check(workspace_root, source_ref=..., title=...)` answers the `(source_ref, title)` question in O(1) off the sidecar index, and the append chokepoint runs the same check over every capture row from every leg — meeting, inbound mail, Slack, sent — before anything lands. Until this build the sentence above was a promise in prose that no code on the meeting leg computed, which is how a re-processed call wrote 13 duplicate rows. Consult it yourself so your preview counts are honest; you cannot make the ledger wrong by forgetting to.
+
+**A meeting processed once writes no new rows at all (M's ruling R4).** A `source_ref` that already carries a `meeting_processed` receipt is refused in full — commitments, decisions and the meeting row — not deduped row by row. A backfill over history therefore re-writes nothing it has written before, and the count you report is the count that landed.
 
 Also skip commitments where the source is already covered by a `commitment_resolved` or `thread_resolved` event for the same `source_ref` — there's no point creating a commitment that's already known to be done.
 
@@ -193,12 +199,96 @@ Done — added 14 commitments to your tracker.
 3 were too vague to call either way — I set those aside for you to look at.
 1 was already closed — I left it alone.
 
-Open your Workspace Map or your daily Waiting On / My Plate chats to see them.
+Say `triage my commitments` or open your daily Waiting On / My Plate chats to see them.
 ```
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "Want me to show you what I'd add first before I commit anything? (Y/N)"
 - Good: "Want me to show you the list first before I add anything? (yes / no)"
+
+**The closing receipt is a composer, not a sentence you write (SPEC FIXTRAIN 6.2 — MANDATORY).** This is the line that leaked on 09-13. Print what comes back and nothing about how the counting was done:
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys
+sys.path.insert(0, 'shared/scripts')
+from surface_composers import reprocess_receipt
+print(reprocess_receipt(added=<n written>, already_had=<n skipped as duplicates>,
+                        scanned=<n items read>,
+                        source_label='your meetings and mail',
+                        workspace='$WORKSPACE'))
+"
+```
+
+It refuses rather than returning if a label you handed it carries an internal name. The same call closes a whole-day re-process; the counts change, the sentence does not.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. The counts are the answer; the mechanism that produced them is not, and it is the sentence after the receipt that has historically named it. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post
+# `composed_text` is `reprocess_receipt`'s return, in this same run -
+# relay it, never retype it. The door vouches a relay LINE FOR LINE
+# against what a composer here actually returned, so a sentence you
+# wrote yourself cannot ride in as one. Nothing here is the CEO's own
+# typed text, so no rows are named; where a section IS composed around
+# their words it passes `customer_rows` and the door reads the words
+# off those rows itself (see the undo receipt in workspace-manager).
+print(post(whole_reply, surface="scan-for-commitments", workspace=workspace_root,
+           relayed=composed_text))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
 ---
 
@@ -235,6 +325,26 @@ Does NOT fire on:
 - "process meeting" → meeting-notes (which now writes commitments per-meeting going forward)
 
 ---
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 

@@ -213,6 +213,15 @@ def aggregate_pack_run_telemetry(events: Iterable[dict]) -> dict:
         except ImportError:
             pass
         tel = data.get("telemetry") or {}
+        # HISTORY IS APPEND-ONLY, SO THE READER TOLERATES BOTH SHAPES (fix
+        # round 2). Until 2026-09-20 several callers passed this module's
+        # WRAPPER as the value of `data.telemetry`, so those rows read
+        # `{"telemetry": {...}}` — one level too deep. The writers are fixed;
+        # the rows that were already written are not rewritable, and before
+        # this they aggregated as a fire with zero words and zero lookups,
+        # which is a wrong number rather than a missing one.
+        if (set(tel) == {"telemetry"} and isinstance(tel.get("telemetry"), dict)):
+            tel = tel["telemetry"]
         if not tel:
             continue
         bucket = by_kind.setdefault(kind, {

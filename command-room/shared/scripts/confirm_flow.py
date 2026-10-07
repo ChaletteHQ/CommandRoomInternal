@@ -605,6 +605,26 @@ def build_person_proposal_resolved_event(
 # -----------------------------------------------------------------------------
 
 
+#: The spelling used when `plate_view` cannot be imported (a trimmed client
+#: tree). It is the SAME sentence the plate prints; the import is what keeps
+#: the two in step, and this is only so the pointer still answers.
+WAITING_PHRASE_FALLBACK = "show waiting"
+
+
+def _waiting_phrase() -> str:
+    """The phrase the plate PRINTS under its WAIT block — the one that routes
+    (`plate_view.PLATE_REPLY_SURFACES`, SURFACEFIX1 5.5). Read from the
+    constant that prints it so a relabel there cannot orphan this pointer."""
+    try:
+        from plate_view import BLOCK_WAIT, SHOW_MORE_PHRASES
+        phrase = str(SHOW_MORE_PHRASES.get(BLOCK_WAIT) or "").strip()
+        if phrase:
+            return phrase
+    except Exception:  # pragma: no cover — the fallback carries it
+        pass
+    return WAITING_PHRASE_FALLBACK
+
+
 def confirm_pointer_line(n_items: int) -> Optional[str]:
     """The ONE morning-brief pointer — None when the confirm section is
     empty (the line renders only when non-empty; never pad). `n_items` is
@@ -623,11 +643,17 @@ def confirm_pointer_line(n_items: int) -> Optional[str]:
     # a fire through the connector's list), so the fallback is DROPPED
     # rather than made mechanical: one sentence, one chat, the one that
     # owns the confirm tail.
-    if n_items == 1:
-        return ("1 item needs a 10-second confirm — "
-                "it's in your Waiting On chat.")
-    return (f"{n_items} items need a 10-second confirm — "
-            "they're in your Waiting On chat.")
+    #
+    # SPEC_SURFACES2_11c BRIEF2 2.2 item 6 — AND NOW IT NAMES NO CHAT AT ALL.
+    # HYGIENE9 replaced a retired chat's name with a live one, which left the
+    # same class of defect one rename away: a pointer that only answers if the
+    # reader happens to have that chat registered. Every other pointer the
+    # brief composes has been a PHRASE since SURFACEFIX1 5.5 ("say `show
+    # waiting`"), and the phrase routes on its own from anywhere — it is the
+    # label the plate already PRINTS under its WAIT block, read here off
+    # `plate_view.SHOW_MORE_PHRASES` so the two cannot drift apart.
+    return (f"{n_items} {'item needs' if n_items == 1 else 'items need'} a "
+            f"10-second confirm — say `{_waiting_phrase()}`.")
 
 
 __all__ = [
@@ -650,4 +676,5 @@ __all__ = [
     "build_person_proposal_resolved_event",
     "compute_proposal_fingerprint",
     "confirm_pointer_line",
+    "WAITING_PHRASE_FALLBACK",
 ]

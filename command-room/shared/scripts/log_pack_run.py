@@ -73,7 +73,12 @@ def log_pack_run(
     surfaced: int,
     duration_ms: int,
     source_skill: str,
-    fired_via: str = "scheduled",
+    # NOT `"scheduled"` (re-verify M-3). A literal default here is an
+    # EXPLICIT value by the time the resolver sees it, so it short-circuits
+    # the merged-seat branch and this composer records a slot nobody claimed.
+    # `effective_fired_via(None)` answers `"scheduled"` on every non-VM seat,
+    # so a legacy caller that omits the argument is byte-identical.
+    fired_via: str | None = None,
     extra_data: dict | None = None,
 ) -> dict:
     """Append a canonical pack_run event to events.jsonl.
@@ -89,6 +94,14 @@ def log_pack_run(
         raise ValueError(f"pack_run `duration_ms` must be a non-negative int; got {duration_ms!r}")
 
     canonical = normalize_task_id(kind)
+    # M-3: a merged seat reads the run mode off its environment rather than
+    # taking this parameter's `scheduled` default as a claim; every other seat
+    # is unchanged.
+    try:
+        from receipts import effective_fired_via
+        fired_via = effective_fired_via(fired_via)
+    except Exception:  # noqa: BLE001 - a receipt never fails over its run mode
+        pass
     via = normalize_fired_via(fired_via)
     if via not in FIRED_VIA:
         raise ValueError(f"fired_via must normalize to one of {sorted(FIRED_VIA)}; got {fired_via!r}")

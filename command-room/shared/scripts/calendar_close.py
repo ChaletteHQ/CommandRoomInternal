@@ -44,9 +44,22 @@ Every full-history read goes through `events_io`.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -55,6 +68,11 @@ if str(_HERE) not in sys.path:
 JOB_ID = "calendar-close"
 RECEIPT_TYPE = "pack_run"
 SOURCE_SKILL = "calendar-close"
+
+#: SPEC_FLOW1 Lane B route 1 — "a fact on file closed it". This closer is
+#: route 1's calendar leg (it sits behind `exit_doors.plan_fact_closes` and
+#: its own switch), so every close it writes carries route 1's name.
+EXIT_ROUTE = "fact"
 BATCH_PREFIX = "cal_"
 CALENDAR_WINDOW_DAYS = 45
 CALENDAR_CLOSE_CONFIRM_FIRST_RUNS = 3
@@ -108,6 +126,20 @@ def offers_so_far(workspace_root) -> dict:
     return out
 
 
+def _is_calendar_row(row) -> bool:
+    """EXIT1 — is a meeting with the other side what would show this row
+    done? `kind: scheduling` (the pre-EXIT1 rule, kept whole) OR the row's
+    own proof, so the widening can never narrow the shipped set. An
+    unreadable proof module leaves the old rule standing on its own."""
+    if str(((row or {}).get("data") or {}).get("kind") or "") == "scheduling":
+        return True
+    try:
+        from exit_doors import PROOF_CALENDAR, stored_proof
+        return stored_proof(row) == PROOF_CALENDAR
+    except Exception:  # noqa: BLE001 — the old rule is the floor
+        return False
+
+
 def plan(workspace_root, *, now_iso=None) -> dict:
     """The candidates, no writes: {book: [...], observed: [...], n_scheduling_open,
     n_scheduling_observed}. Each candidate: {commitment_id, title, meeting_seq,
@@ -121,7 +153,21 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     opens = [r for r in load_open_commitments(str(ep), events=events, workspace_root=workspace_root)
              if not _is_pending_review(r)]
     meetings = [e for e in events if isinstance(e, dict) and e.get("type") == "meeting"]
-    sched_book = [r for r in opens if str((r.get("data") or {}).get("kind") or "") == "scheduling"]
+    # EXIT1 — WIDENED, and the widening is cited rather than the set being
+    # quietly re-sized. Until tonight this closer looked at `kind:
+    # scheduling` rows only, so "get on a call with Quinn" captured as a
+    # promise could never be finished by the call actually happening. The
+    # set is now every row whose PROOF is a meeting with the other side
+    # (`exit_doors.stored_proof`), which is a strict SUPERSET: a scheduling
+    # row still qualifies on its kind alone, whatever its proof reads, so
+    # nothing this job used to see has left its view.
+    #
+    # The widened rows inherit everything else unchanged — the same
+    # predicate, the same per-(row, meeting) probation, the same batch and
+    # the same undo. Probation is per PAIR, so a row that arrives through
+    # the new door is offered three times before it closes exactly like one
+    # that arrived through the old one.
+    sched_book = [r for r in opens if _is_calendar_row(r)]
     book = policy.calendar_matches(sched_book, meetings, user_id=uid, now_iso=now_iso,
                                    window_days=CALENDAR_WINDOW_DAYS)
     for b in book:
@@ -131,7 +177,7 @@ def plan(workspace_root, *, now_iso=None) -> dict:
         from capture_gate import live_observed
         _now = policy._parse_ts(now_iso) if now_iso else None
         observed_rows = [r for r in live_observed(workspace_root, now=_now)
-                         if str((r.get("data") or {}).get("kind") or "") == "scheduling"]
+                         if _is_calendar_row(r)]
     except Exception:
         observed_rows = []
     observed = policy.calendar_matches(observed_rows, meetings, user_id=uid, now_iso=now_iso,
@@ -178,9 +224,19 @@ def _undone_pairs(events) -> set:
 
 
 def _evidence(c: dict) -> str:
+    """The evidence sentence STORED on a calendar close — customer text.
+
+    CLOSETRUTH1 3.4 (leak 13). This used to end "(seq 16036)". A stored
+    evidence string is read back out onto every surface that explains why a
+    row closed, so a raw event number rode the close everywhere the sentence
+    went. The anchor is not lost: the same number is stamped on the close's
+    own `data.meeting_seq`, where the readers that need it already look
+    (`_undone_pairs`, `_close_book_row`). One number, one home, and the home
+    is not the sentence a person reads.
+    """
     day = str(c.get("meeting_ts") or "")[:10]
     n = int(c.get("n_parties") or 0)
-    return f"meeting on {day} with {n} {'party' if n == 1 else 'parties'} (seq {c.get('meeting_seq')})"
+    return f"meeting on {day} with {n} {'party' if n == 1 else 'parties'}"
 
 
 def _close_book_row(workspace_root, c: dict, *, batch_id: str, now_iso=None) -> dict:
@@ -188,8 +244,14 @@ def _close_book_row(workspace_root, c: dict, *, batch_id: str, now_iso=None) -> 
     from commitment_state import (AmbiguousTargetError, CommitmentIdError,
                                   OpenSubitemsError, PendingReviewError,
                                   close_commitment)
+    # EXIT1 FIX ROUND 2 (review R-2) — this closer IS route 1's calendar
+    # leg, so its closes carry route 1's marker. Without it the counters that
+    # classify by route credited every calendar close to "other", and the
+    # counter-evidence set (`exit_doors.exit_closed_rows`) could not see the
+    # leg that closes the most rows on a real book.
     extra = {"brain_change_class": policy.CLOSE_CHANGE_CLASS,
-             "calendar_close": True, "meeting_seq": c.get("meeting_seq")}
+             "calendar_close": True, "exit_route": EXIT_ROUTE,
+             "meeting_seq": c.get("meeting_seq")}
     extra.update(policy.group_stamps(batch_id, f"meeting:{c.get('meeting_seq')}"))
     try:
         res = close_commitment(
@@ -226,7 +288,8 @@ def _close_observed_row(workspace_root, c: dict, *, batch_id: str, now_iso=None)
         return {"commitment_id": c["commitment_id"], "status": "refused",
                 "error": str(err.get("status") or "promote_failed")}
     extra = {"brain_change_class": OBSERVED_CLOSE_CHANGE_CLASS,
-             "calendar_close": True, "meeting_seq": c.get("meeting_seq"),
+             "calendar_close": True, "exit_route": EXIT_ROUTE,
+             "meeting_seq": c.get("meeting_seq"),
              "from_observed": True, "observed_id": c["commitment_id"]}
     extra.update(policy.group_stamps(batch_id, f"meeting:{c.get('meeting_seq')}"))
     try:
@@ -283,8 +346,11 @@ def offer_line(n_book: int, n_observed: int, n_prior: int = 0, *, min_remaining=
                closes_enabled: bool = True) -> str:
     """The offer for the pairs still on probation. `min_remaining` is how
     many more offers the NEAREST pair needs before it closes (F-5: per row).
-    CUT-A: with closing on evidence OFF the tail says what actually gates
-    the close — M's word — never a fire count that will not close it."""
+    With the CALENDAR leg switched off the tail says what actually gates the
+    close, never a fire count that will not close it. Since M's ruling of
+    2026-09-07 that leg is ON by default, so this branch is reached only on a
+    seat where somebody settled it off; there is no customer verb for it yet,
+    so the tail names the SETTING in plain words and no key."""
     n = n_book + n_observed
     if not n:
         return ""
@@ -293,7 +359,7 @@ def offer_line(n_book: int, n_observed: int, n_prior: int = 0, *, min_remaining=
     tail = (f"after {remaining} more fires" if remaining >= 2
             else "after one more fire" if remaining == 1 else "from the next fire")
     if closes_enabled is not True:
-        tail = "once you say `turn on closing on evidence`"
+        tail = "once closing items on a booked meeting is on again"
     return (f"{n} scheduling item{'' if n == 1 else 's'} look{'s' if n == 1 else ''} booked — "
             f"a meeting with the other side landed after {'it was' if n == 1 else 'they were'} "
             f"captured. I will close {'it' if n == 1 else 'them'} on my own {tail}; "
@@ -319,7 +385,85 @@ def receipt_line(out: dict) -> str:
     return line
 
 
+#: How long a NO-OP calendar-close run stands for (FIX3 F3-7). The 2026-09-21
+#: prep ran this job four times in eight minutes and wrote four identical
+#: receipts, all of them surfacing nothing. The receipt is not free: the
+#: closer's probation counts its own receipts, so four no-op rows spent a
+#: row's offers without a single offer being made.
+#:
+#: A run that CLOSED something always appends, whatever the window says.
+#: Probation must count real offers, and an identical-looking run that
+#: actually did work is not the same event at all.
+CALENDAR_CLOSE_RECEIPT_WINDOW = 10 * 60
+
+
+def _recent_noop_receipt(workspace_root, out: dict, fired_via: str,
+                         now=None) -> bool:
+    """True when an identical no-op receipt already landed inside the window.
+
+    Identical on the four things that make a no-op run what it is: how it was
+    fired, which mode it ran in, how many rows it planned, and how many it
+    held back. Anything else is a different run and gets its own row.
+    """
+    import datetime as _dt
+
+    # The module's OWN reader, not a second one. `_load_all` is owner-scoped
+    # (`load_events_owner_scoped`), which is the read every other leg of this
+    # job takes and the shape the personal-firewall sweep requires of a file
+    # that is not on its reviewed raw-read list.
+    key = (str(fired_via), str(out.get("mode") or ""),
+           int(out.get("n_planned") or 0),
+           int(out.get("n_close_withheld") or 0))
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    try:
+        rows = _load_all(workspace_root)
+    except Exception:  # noqa: BLE001 - a dedup that raises is worse than none
+        return False
+    for row in reversed(rows):
+        if row.get("type") != RECEIPT_TYPE:
+            continue
+        data = row.get("data") or {}
+        if data.get("task_id") != JOB_ID and data.get("kind") != JOB_ID:
+            continue
+        # A run that CLOSED something, or that OFFERED something, is not a
+        # no-op and never stands for a later one. The offer case is the
+        # narrowing this window needs and the spec's four-key rule does not
+        # have: the closer's probation is SERVED by repeated offers, so
+        # deduping an offer would stop a row ever reaching its close.
+        if int(data.get("n_closed") or 0) or int(data.get("n_offered") or 0):
+            continue
+        if int(data.get("n_planned") or 0):
+            continue
+        stamp = str(row.get("ts") or "")
+        try:
+            at = _dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=_dt.timezone.utc)
+        age = (now - at).total_seconds()
+        if age < 0 or age > CALENDAR_CLOSE_RECEIPT_WINDOW:
+            break
+        if (str(data.get("fired_via") or ""), str(data.get("mode") or ""),
+                int(data.get("n_planned") or 0),
+                int(data.get("n_close_withheld") or 0)) == key:
+            return True
+    return False
+
+
 def _log_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
+    # FIX3 F3-7. A run that closed nothing, fired the same way, in
+    # the same mode, over the same row counts, inside the window is
+    # the SAME no-op as the one already on the ledger. Appending it
+    # again says four things happened when one did, and spends the
+    # probation counter that these receipts ARE.
+    _noop = (not int(out.get("n_closed") or 0)
+             and not int(out.get("n_planned") or 0)
+             and not (out.get("offered") or []))
+    if _noop and _recent_noop_receipt(workspace_root, out, fired_via):
+        out["deduped"] = True
+        return
+    out["deduped"] = False
     try:
         from receipts import log_receipt
         log_receipt(
@@ -350,7 +494,7 @@ def _log_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
 
 
 def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
-                           fired_via: str = "scheduled", batch_id=None) -> dict:
+                           fired_via=None, batch_id=None) -> dict:
     """The job. `apply=False` plans only (no receipt). Confirm-first PER
     ROW (F-5): a (row, meeting) pair closes only after it has been offered on
     CALENDAR_CLOSE_CONFIRM_FIRST_RUNS proposing receipts; until then the
@@ -358,6 +502,12 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
     `offered`). Closes land on one run batch with a group per meeting. The
     receipt carries the honest YIELD: matched / open scheduling rows, on the
     book and on the observed tier."""
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
     import commitment_policy as policy
     p = plan(workspace_root, now_iso=now_iso)
     n_book, n_obs = len(p["book"]), len(p["observed"])
@@ -380,11 +530,21 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
         for c in p[tier]:
             n_off = offers.get((str(c["commitment_id"]), c.get("meeting_seq")), 0)
             (ready if n_off >= CALENDAR_CLOSE_CONFIRM_FIRST_RUNS else to_offer).append((tier, c, n_off))
-    # CUT-A (ruling R-A(ii), coordinator's call) — the calendar closer sits
-    # behind the SAME switch as the transcript pass: while OFF it keeps
-    # offering and never promotes a pair to a close. Read ONCE per fire.
-    from commitment_policy_pass import _closes_enabled
-    closes_on = _closes_enabled(workspace_root)
+    # M'S RULING 1 OF THE TEN (2026-09-07) — THE CALENDAR LEG IS ON.
+    #
+    # CUT-A put this closer behind the transcript pass's switch because both
+    # shipped the same week (ruling R-A(ii), the coordinator's call, not M's).
+    # M ruled them apart: a meeting with the other side, after the row was
+    # captured, is a FACT — nobody's words have to be read for it to be true —
+    # and a fact-proved kept promise closes wherever the product notices it,
+    # with a receipt and an `undo`, never as an offer. So this leg now reads
+    # its OWN key (`commitment_policy.calendar_closes_enabled`, default ON,
+    # fail-to-ON); the transcript leg is untouched and stays OFF.
+    #
+    # Everything else about the fire is unchanged: the per-row probation, the
+    # offers, the batch shape, the undo, the observed tier's own reverser.
+    from commitment_policy import calendar_closes_enabled
+    closes_on = calendar_closes_enabled(workspace_root)
     out["closes_enabled"] = closes_on
     out["n_close_withheld"] = 0
     if ready and not closes_on:  # CUT-A switch: the calendar closer never closes while OFF
@@ -431,14 +591,23 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--now", default=None)
-    parser.add_argument("--fired-via", default="scheduled")
+    parser.add_argument("--fired-via", default=None,
+                        help="the seat decides when nothing is said (receipts.effective_fired_via); a literal default here IS an explicit value by the time the resolver sees it")
+    parser.add_argument("--triggered-by", default=None,
+                        help="the surface that asked for this run")
     args = parser.parse_args(argv)
+    # FIX3 F3-6: export what this run was asked by, so every composer
+    # below reads it from one place instead of being threaded through
+    # a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
     print(_json.dumps(run_calendar_close_job(args.workspace, apply=args.apply, now_iso=args.now,
                                              fired_via=args.fired_via), indent=2, default=str))
     return 0
 
 
-__all__ = ["JOB_ID", "RECEIPT_TYPE", "SOURCE_SKILL", "CALENDAR_WINDOW_DAYS",
+__all__ = ["JOB_ID", "RECEIPT_TYPE", "SOURCE_SKILL", "EXIT_ROUTE",
+           "CALENDAR_WINDOW_DAYS",
            "CALENDAR_CLOSE_CONFIRM_FIRST_RUNS", "OBSERVED_CLOSE_CHANGE_CLASS",
            "plan", "prior_runs", "offers_so_far", "run_calendar_close_job", "offer_line",
            "receipt_line", "reverse_observed_close"]

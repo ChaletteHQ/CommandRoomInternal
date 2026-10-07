@@ -33,8 +33,7 @@ One place for every open deal: what stage it's in, how long it's sat there, whet
 Show-then-tune (STT), all three decisions. Read config through `get_config` — never the raw file.
 
 ```python
-# Rule 22 preamble first: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -95,8 +94,55 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + one-
 **Hard-gated bash — all math in code (Rule 22 preamble, run from $PLUGIN_ROOT):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, datetime
 sys.path.insert(0, 'shared/scripts')
@@ -130,14 +176,14 @@ Render as the OUT2 ranked report (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The 
 2. **Scored rows, in `rank_deals` order exactly:** `rank · deal (org) · $tag · stage, Nd in stage · next step or ⚠ no next step · why-now · action`. The $tag comes from `quantify.money_time_tag` (deal value leads the trace); absent value = no tag, never an estimate. Why-now cites the flag evidence ("quiet 12d in negotiating — their usual reply gap is 3d"). A deal with zero open commitments renders `⚠ no next step` and ranks up — the single strongest predictor of a deal dying.
 3. **Untracked rows** (pre-existing deal threads with no stage tracking) render at the bottom with one-tap `track deal` adoption — never a rot alarm, never a crash.
 3b. **Reconciliation line (Part 2, D9.1)** — when `gap` is non-empty, ONE line under the rows: *"N prospect orgs aren't in the pipeline yet — [names, comma-joined, cap 5 + 'and K more']. The Sunday scan proposes them when they show deal signal, or say `new deal [name] with [org]` now."* The count and names come verbatim from `pipeline_math.prospects_not_in_pipeline` (the SAME coverage predicate the detector and the confirm handler use — never re-derive membership in prose). Zero gap → no line, no "all reconciled" filler. This line is visibility for the two-"prospect"-systems seam (org tag vs deal object), not a nag: it renders on the report only, never chases.
-4. **Widget:** `widget_mode: "all_batch_widget"` via `render_chat_output_widget`, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport), `source_skill: "cr-pipeline"` (the renderer stamps `src`). Per-item actions (all in `CANONICAL_ACTIONS` via the verb taxonomy): `move to [stage]` · `set next step [text]` · `mark won` · `mark lost [reason]` (reason REQUIRED — F-17 hold-with-reason) · `draft re-engagement` · `snooze 14d` · `skip`. Untracked rows carry `track deal` + `skip` only. Dispatch lives in apply-choices' `cr-pipeline` source entry.
+4. **Widget:** `widget_mode: "all_batch_widget"` via `render_chat_output_widget`, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport), `source_skill: "cr-pipeline"` (the renderer stamps `src`). Per-item actions (all in `CANONICAL_ACTIONS` via the verb taxonomy): `move to [stage]` · `set next step [text]` · `mark won` · `mark lost [reason]` (reason REQUIRED — F-17 hold-with-reason) · `draft re-engagement` · `snooze 14d` · `skip`. Untracked rows carry `track deal` + `skip` only. Dispatch lives in apply-choices' `cr-pipeline` source entry. **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 5. **Docx on request** ("pipeline report as a doc") via `brief_writer.make_brief(brief_kind="ranked_report", ...)` — CONTRACT Rule 27: never a .md deliverable. The tile-band section additionally carries the **stage-mix donut** (SPEC OUT3): attach `charts: [{"kind": "donut", "data": {"slices": pipeline_math.stage_mix(opens)}, "title": "Pipeline by stage"}]` — slices come verbatim from `stage_mix` (counts per stage, zero stages dropped, reader-facing labels), NEVER hand-counted. Skip the key when `stage_mix` returns fewer than 2 slices. It renders best-effort inside `make_brief` (`charts.try_chart_png`): a refused shape or no rasterizer on this machine = the report renders exactly as before (selection rules: `shared/CHART_SELECTION.md`). Then the OUT2 §3 visual pass (`visual_gate.render_preview` → 7-item checklist → fix at most once → `log_visual_gate`). Surface the file as an H2 heading link LAST in the turn via `chat_output_renderer.doc_headline_link(label, brief_path.get_brief_artifact_url(absolute_path))` — never a plain-text path, never a hand-built URL (CONTRACT Rule 3).
 6. **Receipt** (Writer Contract above) + the skipped-lines banner when `n_skipped > 0`.
 
 **When the docx renders, `make_brief` is the only way it renders (DOCFENCE1):**
 
 - **NEVER hand-roll the report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking pipeline report (the v3.20.0 failure mode) — and deal values plus customer names are exactly the payload the leak scan exists for.
-- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("talking points", "a summary", "just the deal list") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the team can edit it", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the pipeline in a Google Sheet" is a request this gate refuses, not an override. Hand back the canonical file's link; the widget is the edit surface.
+- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("talking points", "a summary", "just the deal list") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so the team can edit it", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the pipeline in a Google Sheet" is a request this gate refuses, not an override. Hand back the canonical file's link; the widget is the edit surface.
 
 Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' to start one."* — no tile band, no empty frames.
 
@@ -148,8 +194,55 @@ Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' t
 3. **Hard gate — run the block, never hand-write entities.json:**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -180,6 +273,7 @@ Resolve the deal (disambiguate on 2+), then `deal_state.set_stage(ws, thread_id,
 ALL closes go through `deal_state.close_deal` — the single closure path. Idempotent: `already_closed` is acked honestly ("that one was already closed — nothing changed"), never re-appended.
 
 - **`mark [deal] won`** → `close_deal(ws, thread_id, 'won', source_skill='pipeline-tracker')`. **DEALNAG1 / M ruling 4 (2026-09-03): when the deal's org is still a prospect, the close PROMOTES it — `close_deal` runs `org_promotion.promote_org` itself, with an `org_promoted` receipt and a standing undo.** The return carries `promoted: True`; the ack says so in one line and offers the reversal: *"✓ Won. Acme Co is a client now — say `undo` if that's wrong."* Do not ask; a question about a fact just written down was the defect this ruling removes. When `promoted` is False the return still carries `conversion_suggestion` (the promotion was skipped — most often no primary-focus org is set); render it verbatim as before: *"✓ Won. Acme Co is still marked a prospect — say `Acme Co is now a client` and I'll convert them."* Never flip the org by hand from this verb — the writer path does it or nothing does.
+  - **One rule for reversing a win (CLOSETRUTH1 3.2 / M's ruling 5, 2026-09-13): undo reverses all of it.** Whether the win rode a promotion or stood alone, and whether the deal was already on the books or `mark [org] won` opened it, a single `undo` puts the deal back at the stage it was at, the project back to the status it had, the org back to prospect, and the win out of the closed-deals list and the 90-day rate. There is no half reversal and never was a “the deal stays won” case — the 2026-09-13 walk left a closed-won deal with nothing paid or signed standing on the book after the person reversed the act that made it, and that is the defect this rule closes. Never tell a person a win cannot be reversed; `undo`, or the batch the act advertised, is the whole answer.
   - **`mark [org] won` when `[name]` resolves to an ORG with NO open deal thread (CUTB item 3, 2026-09-06 — the v5.28.0 attended test saw the chat invent a deal from a detector proposal and close it in the same breath, with no receipt, no CHANGED line and no undo).** Do NOT build a deal by hand and do NOT hand the turn to `[Name] is now a client`. Run `deal_state.win_org_without_deal(ws, <org_id>, source_skill='pipeline-tracker')` — it opens the deal openly (stage lead, its `source` names this path), closes it won and promotes the org through the SAME receipted path (`org_promoted` carries `deal_manufactured`, the thread id and the won event's seq). Render the return's `ack` VERBATIM — it is the receipt: *"No deal was on file for Acme Co, so I opened one and closed it won. Acme Co is a client now — say `undo` to put it all back."* `undo` reverses ALL of it: the org back to prospect, the engagement edge, the manufactured thread archived, and the won event marked reversed for the closed-deals list, the won-rate tile and this report (CUTB item 4). Honest no-ops, nothing written: `has_open_deal` (the org DOES have an open deal — close THAT one with the ordinary `mark [deal] won`, naming it; two or more → ask which), `already_closed` (*"Acme Co was already marked won — closed Aug 18. Nothing changed."*), `already_client` (a client with no deal on file: *"Acme Co is already a client — nothing to mark. Say `new deal [name] with Acme Co` if you want the deal on the books."*), `no_primary_focus` (no primary-focus org is set — checked BEFORE anything is written, so no deal is ever manufactured that the promotion then cannot follow; render the return's `ack` verbatim: *"Nothing on file for Acme Co and no primary-focus org is set, so I did not open a deal — tell me which of your orgs this client is for first."*). `mark [org] won` is the person's own word, so it runs `convert_prospect=True` like `[Name] signed`: a prior `undo` of an AUTOMATIC promotion never blocks it, and the promotion it makes has its own batch and `undo`. Never a second manufactured deal.
 - **`[Name] signed` / `closed the deal with [Name]` / `we won the [deal]`** — the user-explicit win declaration (D6): resolve the org's open deal thread (2+ → disambiguate; the org-level phrasing usually means the furthest-along deal — confirm, don't guess), then `close_deal(ws, thread_id, 'won', convert_prospect=True, ...)`. On a prospect org this closes the deal AND converts it — **since CUTB item 3 (2026-09-06) the explicit conversion runs through the SAME receipted, undoable path as the automatic one** (`org_promotion.promote_org` with `explicit=True`: an `org_promoted` receipt, a batch id, the brief's one CHANGED line "Promoted 1 prospect to client … say `undo`"; the person's own word overrides a standing undo of an earlier automatic promotion). One utterance, one result, acked as one line WITH the reversal: *"✓ Acme pilot won — and Acme Co is a client now. Say `undo` if that's wrong."* If the org resolves but NO open deal thread exists, this is the `mark [org] won`-with-no-deal case above: `deal_state.win_org_without_deal(...)`, ack verbatim — never a hand-built deal, never a silent conversion.
 - **`mark [deal] lost` / `we lost the [deal]`** → a loss reason is REQUIRED. If not stated, ask once with the fixed list (no decision · price · competitor · did it themselves · timing · bad fit · other) — `no_decision` first; most losses are indecision, not a rival. Then `close_deal(ws, thread_id, 'lost', loss_reason='<enum>', loss_note='<their words>')`. Thread archives; the loss shows up in board-pack concerns and the loss-pattern readout.
@@ -208,6 +302,26 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. The chat lead is the quantified 
 **Output guard:** no internal tokens, paths, event names, entity ids, or version numbers in anything the CEO sees (`shared/VOICE_CALIBRATION.md` § Plain-language glossary).
 - Bad: "deal_stage_changed appended for project_017."
 - Good: "✓ Acme pilot moved to negotiating — day 1 of the clock."
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 

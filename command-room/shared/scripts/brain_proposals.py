@@ -131,6 +131,25 @@ MIGRATED_KINDS: dict[str, str] = {
 # Change classes legal on the auto tier (D2 — a class table, not a
 # confidence score; each also requires brain_undo.has_reverser()).
 AUTO_ALLOWED: dict[str, str] = {
+    # SPEC_LEARN1 A14 — the three learning classes, and only these three. Each
+    # is bounded (at most three phrases per writing skill, three sections per
+    # meeting type, three document kinds per run), each is on a 60-day
+    # cooldown plus a permanent applied-fingerprint exclusion, each is
+    # narrated once in the morning brief and reverses on one word. The classes
+    # the amendments moved OUT of this tier stay out: a never-track rule
+    # (`noise_rule`) is read by prose with no code reader to test a reverser
+    # against, and loosening what auto-closes (`confidence_threshold`) or
+    # muting a sender (`surface_suppression`) spends a grant nobody gave.
+    "voice_block_update": "a phrase the customer has rewritten out of their "
+        "drafts three or more times stops being written — archived prior "
+        "block, one-word undo, at most three phrases per skill per run",
+    "prep_section_weight": "a prep section empty in most of the last six "
+        "graded meetings of a type renders shorter for that type — the prior "
+        "weight is on the event, one-word undo",
+    "exemplar_promotion": "three same-direction structural edits on one "
+        "document kind promote the corrected document to that kind's "
+        "exemplar — prior text archived, one-word undo, and any residual "
+        "name refuses the promotion outright",
     "commitment_close": "HIGH sent-mail evidence — the shipped reconcile-sent "
                         "precedent",
     # R1 (M ruling 2026-07-14): structured-connector-fact identity creation
@@ -416,14 +435,45 @@ def _validate_action_tuples(action_tuples: list) -> None:
 
 def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None) -> list[dict]:
     """brain_proposal events minus resolution/expiry tombstones minus
-    computed-TTL expiry. Returns normalized dicts (see load_open_proposals)."""
+    computed-TTL expiry. Returns normalized dicts (see load_open_proposals).
+
+    TTL1 — `brain_proposal_reopened` is the additive mirror the
+    `brain_proposal_expiry` reverser appends, and it is folded HERE in
+    APPEND ORDER, last writer wins (the `person_proposal_reopened`
+    precedent). Without this fold the reverser would write a marker no
+    reader honours, and `undo` after a question expiry would report a
+    reversal that changed nothing on screen.
+
+    TTL1 FIX ROUND 1 (reviewer F-1) — the normalized row now carries
+    `last_activity_at`: the reopen when there was one, the row's own
+    opening otherwise. `opened_at` is a BIRTHDAY and never moves, so any
+    reader that ages a row from it re-expires whatever the customer just
+    put back on the very next daily run — an `undo` that lasts a day. The
+    neighbouring rail already measures from last activity
+    (`commitment_backlog_sweep.last_activity_map`, whose own prose is "a
+    row the user put back stays put back"); this is that baseline for the
+    brain family, which has no commitment id and so cannot use it.
+
+    TTL1 FIX ROUND 1 (reviewer F-6) — `due` and the money fields are
+    carried through when the SOURCE EVENT has them. The importance rule
+    reads the row it is handed, so a date or an amount the writer put on
+    the proposal was being dropped by this normalization and two of the
+    rule's four legs could never fire on the only two classes whose
+    default is a drop. Additive and drop-empty: a proposal with none of
+    them normalizes byte-identically to before."""
     tombstoned: set[str] = set()
+    reopened_at: dict[str, str] = {}
     for ev in events:
-        if ev.get("type") in ("brain_proposal_resolved", "brain_proposal_expired"):
-            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-            pid = data.get("proposal_id")
+        etype = ev.get("type")
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        pid = data.get("proposal_id")
+        if etype in ("brain_proposal_resolved", "brain_proposal_expired"):
             if pid:
                 tombstoned.add(pid)
+        elif etype == "brain_proposal_reopened":
+            if pid:
+                tombstoned.discard(pid)
+                reopened_at[pid] = ev.get("ts") or ""
     out: list[dict] = []
     for ev in events:
         if ev.get("type") != "brain_proposal":
@@ -435,7 +485,12 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
         opened = _parse_ts(ev.get("ts"))
         ttl = data.get("ttl_days")
         ttl = int(ttl) if isinstance(ttl, (int, float)) else DEFAULT_TTL_DAYS
-        expires = (opened + timedelta(days=ttl)) if opened else None
+        # TTL1 — a proposal a person put back with `undo` starts its clock
+        # again from the REOPEN. Without this the computed-TTL screen below
+        # would drop it on the very next read and the undo would be a
+        # sentence about nothing.
+        anchor = _parse_ts(reopened_at.get(pid) or "") or opened
+        expires = (anchor + timedelta(days=ttl)) if anchor else None
         if now is not None and expires is not None and expires < now:
             continue  # stale — excluded from render even before the sweep
         kind = data.get("kind") or "unknown"
@@ -450,6 +505,11 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             "action_tuples": data.get("action_tuples") or [],
             "render_line": data.get("render_line") or "",
             "opened_at": ev.get("ts") or "",
+            # TTL1 F-1 — the clock a LIFETIME is measured from. Never
+            # `opened_at`: a row put back by `undo` has moved, and a
+            # lifetime measured from its birthday lets it go again the
+            # next morning.
+            "last_activity_at": (reopened_at.get(pid) or ev.get("ts") or ""),
             "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ") if expires else "",
             "detector": data.get("detector") or "unknown",
             "seq": ev.get("seq"),
@@ -476,6 +536,14 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
                                     "keep_id", "duplicate_id", "alias_name",
                                     "matched_name", "parent_thread_id",
                                     "clusters") if data.get(k)},
+            # TTL1 F-1/F-6 — the fields the importance rule reads, carried
+            # through drop-empty when the source event has them. A queue
+            # row is the only thing `question_ttl.importance_hold` is
+            # handed, so a date or an amount dropped here is a leg of the
+            # safety rail that can never fire.
+            **{k: data[k] for k in ("due", "due_date", "amount",
+                                    "deal_value", "value", "invoice_amount",
+                                    "note") if data.get(k)},
         })
     return out
 
@@ -2132,6 +2200,51 @@ def _drop_settled_money_rows(workspace_root, items: List[dict]) -> List[dict]:
     return [i for i in items if not _settled(i)]
 
 
+def screen_past_lifetime(items: List[dict], workspace_root, *,
+                         now_iso: Optional[str] = None,
+                         stats: Optional[dict] = None) -> List[dict]:
+    """The rows a surface may still OFFER — FOLD1-B 1.2 item 1.
+
+    One call to `question_ttl.within_lifetime` per row, and nothing else:
+    the rule, the classes and the importance hold all live in that module,
+    beside the engine that applies the defaults, so the read gate and the
+    write gate can never drift onto two answers.
+
+    DEGRADES TO SHOWING EVERYTHING. A screen that cannot run must not empty
+    a customer's card — an unreadable gate is a missing gate, never a
+    silent queue.
+
+    `stats`, when a caller passes a dict, is filled with
+    `{"n_hidden": <rows this screen held back>}` — FIX ROUND 1 (reviewer
+    F-2). THE HIDE IS IMMEDIATE AND THE DEFAULT IS NOT: the row is settled
+    later, by its own weekly rail, and that rail marked itself FAILED in 7
+    of 9 runs in the attended window. Before this gate a failing rail was
+    loud (the questions kept showing); after it, the same failure is
+    silent unless the number is written down. A screen that could not run
+    reports 0 held back, which is the truth: it held nothing back.
+    """
+    if stats is not None:
+        stats["n_hidden"] = 0
+    try:
+        from question_ttl import within_lifetime
+    except Exception as exc:  # pragma: no cover — the module ships beside us
+        sys.stderr.write(f"[brain_proposals] lifetime screen skipped: {exc}\n")
+        return list(items or [])
+    out = []
+    for it in items or []:
+        try:
+            keep = within_lifetime(it, workspace_root, now_iso=now_iso)
+        except Exception as exc:  # pragma: no cover
+            sys.stderr.write(f"[brain_proposals] lifetime screen degraded on "
+                             f"{(it or {}).get('id')!r}: {exc}\n")
+            keep = True
+        if keep:
+            out.append(it)
+    if stats is not None:
+        stats["n_hidden"] = len(items or []) - len(out)
+    return out
+
+
 def load_open_proposals(
     workspace_root,
     surface: Optional[str] = None,
@@ -2140,6 +2253,7 @@ def load_open_proposals(
     registered_task_ids=None,
     include_legacy: bool = True,
     include_auto: bool = False,
+    screen_stats: Optional[dict] = None,
 ) -> List[dict]:
     """THE projector (D1): one normalized open-proposal queue — generic
     brain_proposal events (minus tombstones/TTL) PLUS adapter reads over the
@@ -2157,7 +2271,13 @@ def load_open_proposals(
     `surface` drives the R2 cross-surface dedup: on a DAILY_DEDUP_SURFACES
     surface, items already shown TODAY on a DIFFERENT surface are dropped.
     staff-meeting / system-health / None see the full set (deliberate
-    exemption — the full-queue surfaces and explicit asks)."""
+    exemption — the full-queue surfaces and explicit asks).
+
+    `screen_stats` (FIX ROUND 1, reviewer F-2) is an optional dict the
+    lifetime gate fills with `n_hidden` — what this read held back because
+    it was past its class lifetime. A surface that RECORDS that number
+    cannot hide questions silently when the rail that settles them fails.
+    """
     now_iso = now_iso or _now_iso()
     now = _parse_ts(now_iso)
     events = _load_events(workspace_root)
@@ -2212,6 +2332,33 @@ def load_open_proposals(
     # is pinned with the withhold switched off (run_cutb_test [1b]).
     if surface is not None:
         items = _drop_settled_money_rows(workspace_root, items)
+    # FOLD1-B 1.2 item 1 — THE LIFETIME GATE, at the same chokepoint and with
+    # the same `surface is not None` posture as the four filters above it.
+    #
+    # TTL1 gave every question class a lifetime and an engine that applies its
+    # default. Nothing ever asked the age at RENDER time, so a question past
+    # its lifetime kept being offered until the next expiry run happened to
+    # take it — and `rank_proposals` puts the oldest row first, so the rows
+    # furthest past the bar are the ones that FRONT the card. That is how the
+    # operator's Staff Meeting opened, on 2026-09-07, with identity questions
+    # first asked on June 30.
+    #
+    # The screen belongs here rather than in `select_confirm_card` alone
+    # because the Staff Meeting does not go through that selector: it reads
+    # this projector directly. One filter at the chokepoint is what makes
+    # "no question past its window is offered anywhere" true of every named
+    # surface, this one and the next one.
+    #
+    # `surface is None` KEEPS SEEING THE AGED ROWS, and that is load-bearing,
+    # not lenient: the un-named read is the diagnostic one, and one of its
+    # callers is `question_ttl._queue_rows` — the expiry engine's own read of
+    # what is past its lifetime. Screening there would blind the engine to
+    # exactly the rows it exists to retire, and the questions would then be
+    # hidden from the customer AND never defaulted. Same reason the demotion,
+    # the retirement and the withhold all exempt it.
+    if surface is not None:
+        items = screen_past_lifetime(items, workspace_root, now_iso=now_iso,
+                                     stats=screen_stats)
     # Uniform snooze/decline gate (review F1): a chat_dismissal whose
     # target_id is a projector item id retires that item for the
     # dismissal's TTL — this is what `snooze proposal 7d` and the
@@ -2368,6 +2515,118 @@ _SHAPE_NAME_FALLBACK = {"money": "Deal signal", "identity": "Needs confirming",
                         "objective": "Objective proposal"}
 
 
+# PLATENUM1 fix round 1 (REVIEW F-9) — NAMED FOR ITS SURFACE.
+# This shipped as a bare `card_header`, which is also the name of
+# `attribution_doors.card_header(questions, workspace_root=None)` — a
+# different function, with a different signature, exported from a
+# different module and referenced bare in prose. Two `card_header`s in
+# one tree makes every sentence about either one ambiguous, so this
+# one carries what it is about.
+#: The surface NAME, per surface. The header is this and nothing else
+#: (FOLD1-B 1.2 item 3, ruling R-4).
+SURFACE_LABELS = {"staff-meeting": "Staff Meeting"}
+DEFAULT_SURFACE_LABEL = "Needs your eyes"
+
+#: The wording a header may never carry again, and the reason each one is
+#: listed. `assert_no_debt_header` scans for these.
+DEBT_HEADER_PHRASES = ("waiting on you", "waiting for you", "open items",
+                       "needs your call", "outstanding")
+
+#: THE FOOTER THE HEADER'S COUNT BECAME — FOLD1-B 1.2 item 3, built in fix
+#: round 1 (reviewer F-3). The top line names the surface; what the page
+#: held back is said at the BOTTOM, where it reads as a door rather than as
+#: a debt, and it teaches the verb that opens it.
+CARD_MORE_FOOTER = "{n} more — say `show more`"
+
+
+def card_more_footer(n_more) -> str:
+    """The card's trailing "N more" line, or `""` when the page shows
+    everything — FOLD1-B 1.2 item 3.
+
+    Same empty-string contract as `end_of_day.resting_line` and the same
+    posture as `OVERFLOW_LINE`: a line reporting zero is noise, and this
+    surface has a rule about that. The sentence is composed HERE and run
+    through `chat_output_validator.validate_chat_output` before it is
+    returned, because it is a composed customer sentence and the standing
+    fence says every one of those goes through the validator. A line the
+    validator refuses is dropped rather than shipped — the page loses a
+    pointer, never gains a violation.
+    """
+    try:
+        n = int(n_more)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    line = CARD_MORE_FOOTER.format(n=n)
+    try:
+        from chat_output_validator import validate_chat_output
+        if not validate_chat_output(line).ok:  # pragma: no cover — a fence
+            sys.stderr.write("[brain_proposals] footer refused by the chat "
+                             "output validator; dropped\n")
+            return ""
+    except Exception as exc:  # pragma: no cover — never cost the page
+        sys.stderr.write(f"[brain_proposals] footer validation skipped: "
+                         f"{exc}\n")
+    return line
+
+
+def surface_card_header(surface: str, n_rows: int = 0, *,
+                        shape_totals: Optional[dict] = None) -> str:
+    """The card's header line — FOLD1-B 1.2 item 3 (ruling R-4): THE HEADER
+    NAMES THE SURFACE, NOT A DEBT.
+
+    It used to say "Staff Meeting — 6 of 109 waiting on you". PLATENUM1
+    built that sentence to fix a real defect (B2.7: a header of 6 above
+    tiles reading 109 and 24, with no way to tell which population either
+    belonged to) and it fixed it — by stating the debt more precisely.
+    M's design rule of 2026-09-06 says the Staff Meeting carries no
+    "N waiting on you" header at all: a customer who opens a surface to
+    answer two questions should not be met with a number that reads as an
+    accusation, and 109 of anything is why people stopped opening it.
+
+    NEITHER NUMBER IS LOST, and this is the part worth reading before
+    changing it back. The TILES carry the honest per-shape totals
+    (LIFECYCLE1 §7b) and they sum to the whole queue; the section titles
+    carry what the page bound held back, in words ("showing the front 5 of
+    17 — the rest stay queued and lead the next one", `proposal_digests.
+    section_notes`); the daily card's own `overflow_line` says the same. So
+    the arithmetic B2.7 asked for is on the page in two places — attached to
+    the rows it describes, which is where a number means something — and the
+    top line says where you are.
+
+    `n_rows` and `shape_totals` stay in the signature: every caller passes
+    them, they are what `assert_no_debt_header` is checked against, and a
+    surface that ever wants a count again should have to change this one
+    function rather than re-derive it.
+    """
+    return SURFACE_LABELS.get(surface, DEFAULT_SURFACE_LABEL)
+
+
+def assert_no_debt_header(header) -> None:
+    """THE NAG SCAN (FOLD1-B 1.2 item 3). Raises when a composed card header
+    carries a debt count instead of naming its surface.
+
+    Accepts the header string or a whole built view. This is a fence and not
+    a preference: the header is one line that every fire of the surface
+    puts in front of the customer, and "N waiting on you" is the single
+    sentence M named when he said people had stopped opening it.
+    """
+    text = header.get("header") if isinstance(header, dict) else header
+    text = str(text or "")
+    low = text.lower()
+    for phrase in DEBT_HEADER_PHRASES:
+        if phrase in low:
+            raise BrainProposalError(
+                f"the card header says {phrase!r} — the header names its "
+                f"surface and the counts ride the tiles and the section "
+                f"titles (design rule 2026-09-06 §2, ruling R-4): {text!r}")
+    if any(ch.isdigit() for ch in text):
+        raise BrainProposalError(
+            "the card header carries a count — the honest totals ride the "
+            f"tiles and the section titles, never the top line: {text!r}")
+
+
 def _row_actions(item: dict) -> list:
     """Registered wire verbs for a row — the action ids from the proposal's
     own action_tuples (validated at propose() time via D10). NEVER an invented
@@ -2378,6 +2637,120 @@ def _row_actions(item: dict) -> list:
         if act:
             out.append(act)
     return out
+
+
+#: The registered verbs that MEAN "let this one go", in the order a row is
+#: searched for one. Every entry is a canonical action id; the list is an
+#: ordering, not a new vocabulary.
+LET_GO_VERBS = ("proposal not relevant", "not relevant", "dismiss proposal",
+                "never track this", "drop", "archive")
+#: The plain-words answer each pre-pick is announced with. The row says the
+#: ANSWER, never the verb id: "likely: let it go" is a sentence a CEO reads;
+#: "likely: proposal_not_relevant" is a log line.
+PREPICK_PHRASE = "likely: {answer}"
+LET_GO_ANSWER = "let it go"
+#: At most this many verbs render on a card row. The rest of a row's
+#: registered verbs stay answerable from the on-demand queue and from chat —
+#: they are not removed from the row, they are not put on the card.
+MAX_RENDERED_VERBS = 2
+
+
+def _is_digest_row(item: dict) -> bool:
+    """A grouped row standing for several underlying ones (STAFFCUT)."""
+    return bool(item.get("digest_members") or item.get("digest_class")
+                or item.get("digest_count"))
+
+
+def row_prepick(item: dict) -> Optional[dict]:
+    """The likely answer for ONE card row, or None — FOLD1-B 1.2 item 2.
+
+    Returns `{"action", "answer"}`: the registered verb that would be tapped
+    and the plain-words answer the row announces.
+
+    IDENTITY rows pre-pick the resolved candidate — the one the wire already
+    carries as a populated `same as [existing]` verb. THE SAME-NAME ROW
+    PRE-PICKS NOTHING, and that fence is IDM1's, not this lane's: with two or
+    more plausible records the adapter deliberately ships that verb
+    UNPOPULATED so the handler forces the CEO to say which record is meant.
+    A default here would silently pick a winner among genuine duplicates,
+    which is the one thing the identity rail refuses to do.
+
+    HOUSEKEEPING and MONEY rows pre-pick their CLASS DEFAULT — what the
+    expiry engine would do anyway if nobody answered (`question_ttl.CLASSES`)
+    — so the pre-pick and the timeout can never disagree about what "no
+    answer" means. A row carrying no verb for that default gets no pre-pick
+    rather than an invented one.
+    """
+    if not isinstance(item, dict):
+        return None
+    if _is_digest_row(item):
+        return None
+    verbs = _row_actions(item)
+    shape = str(item.get("shape") or "hygiene")
+    if shape == "identity":
+        for t in item.get("action_tuples") or []:
+            if not isinstance(t, dict) or t.get("action") != "same as [existing]":
+                continue
+            name = str(t.get("value") or "").strip()
+            if name and t.get("person_id"):
+                return {"action": "same as [existing]",
+                        "answer": f"same as {name}"}
+            return None     # IDM1 collision — the wire carries no winner
+        return None
+    if shape != "hygiene":
+        # MONEY PRE-PICKS NOTHING, deliberately. The deal-signal class's
+        # default IS a let-go at seven days, and announcing "likely: let it
+        # go" on a live deal signal is the product taking the one side M
+        # named as the expensive one to get wrong ("a deal signal that goes
+        # silent for a day is the one failure with a price tag", FB-20). The
+        # class default still applies if nobody ever answers — that is the
+        # timeout's business, and a timeout nobody watched is not the same
+        # act as a suggestion put in front of the customer. The row keeps
+        # its own verb order, so the affirmative leads.
+        return None
+    try:
+        from question_ttl import CLASSES, DEFAULT_LET_GO, SHAPE_CLASSES
+        klass = SHAPE_CLASSES.get(shape)
+        default = CLASSES[klass]["default"] if klass in CLASSES else None
+    except Exception:  # pragma: no cover — the module ships beside this one
+        return None
+    if default != DEFAULT_LET_GO:
+        return None
+    for verb in LET_GO_VERBS:
+        if verb in verbs:
+            return {"action": verb, "answer": LET_GO_ANSWER}
+    return None
+
+
+def rendered_verbs(item: dict, prepick: Optional[dict] = None) -> list:
+    """The verbs a CARD row shows — FOLD1-B 1.2 item 2: one tap, and one way
+    to say "not that". At most `MAX_RENDERED_VERBS`.
+
+    M's rule of 2026-09-06: "We want to show less options to clients — they
+    are overwhelmed." A five-verb dropdown on a row whose likely answer is
+    already known is four decisions asked to collect one. The pre-picked verb
+    leads; the row's next own registered verb is the way to disagree; the
+    rest are still registered, still dispatchable from the on-demand queue
+    and from chat, and simply not on this card.
+
+    Order is otherwise the row's own — never re-sorted, so a reader who knows
+    a family's verbs still meets them in the order that family declares.
+    """
+    verbs = _row_actions(item)
+    if _is_digest_row(item):
+        # A DIGEST ROW KEEPS ITS THREE. It is one row standing for several,
+        # and its affirmative EXPANDS (`show these` re-renders the members as
+        # their own rows, each with its own close — BUG-8330 item 9). Hiding
+        # the expand behind a cap would turn a group into a thing you can
+        # only dismiss, and pre-picking a group dismiss is a bulk act with a
+        # default attached. Neither is "one tap with the likely answer": the
+        # likely answer to a group is to look at it.
+        return verbs
+    lead = (prepick or {}).get("action")
+    if lead and lead in verbs:
+        rest = [v for v in verbs if v != lead]
+        return ([lead] + rest)[:MAX_RENDERED_VERBS]
+    return verbs[:MAX_RENDERED_VERBS]
 
 
 def _row_name(item: dict) -> str:
@@ -2485,6 +2858,7 @@ def build_card_view(
     extra_sections: Optional[list] = None,
     section_notes: Optional[dict] = None,
     shape_totals: Optional[dict] = None,
+    extra_dropped: int = 0,
 ) -> dict:
     """Build the ready-to-render widget data view for the Living Brain card /
     Staff Meeting queue from a RANKED proposal list (FS-09 / FS-10).
@@ -2541,6 +2915,20 @@ def build_card_view(
                 "data": _row_target_ids(it),
                 "actions": _row_actions(it),
             }
+            # FOLD1-B 1.2 item 2 — ONE TAP, THE LIKELY ANSWER PRE-PICKED.
+            # The row says the answer in words and leads with the verb that
+            # applies it; the rest of its registered verbs stay answerable on
+            # the on-demand queue and in chat. A row with no computable
+            # default says nothing about one and keeps the first two verbs it
+            # declares — a `likely:` the product cannot stand behind is worse
+            # than no suggestion at all.
+            prepick = row_prepick(it)
+            if prepick:
+                row["default"] = prepick["action"]
+                tag = row["context_tag"]
+                phrase = PREPICK_PHRASE.format(answer=prepick["answer"])
+                row["context_tag"] = f"{tag} · {phrase}" if tag else phrase
+            row["actions"] = rendered_verbs(it, prepick)
             rows.append(row)
         title = f"{_SHAPE_SECTION_LABEL[shape]} ({len(rows_in)})"
         note = str((section_notes or {}).get(shape) or "").strip()
@@ -2558,26 +2946,47 @@ def build_card_view(
     # reader cannot tell which number is the truth without knowing which
     # mechanism produced it.
     #
-    # Ruling: the tiles adopt the titles' convention — the honest total per
-    # shape, with the page bound continuing to govern only what RENDERS.
-    # `shape_totals` is that total (open ITEMS per shape, digest-expanded),
-    # supplied by the caller that still holds the full queue. Omitted → the
-    # page counts, byte-identical to the pre-LIFECYCLE1 output, because a
-    # caller that has no full queue must not invent one.
+    # §7b's ruling was: the tiles adopt the titles' convention — the honest
+    # total per shape, with the page bound governing only what RENDERS. That
+    # reasoning is preserved above deliberately; it is not deleted, because
+    # the problem it names is real and the fix it chose was one of two.
     #
-    # The HEADER count is deliberately NOT touched: RV-4 binds it to the rows
-    # the widget shows, and that off-by-one had its own live bug.
+    # WRAPSTAFF1 4.5 — M RULED THE OTHER WAY (R-19b, 2026-09-17), REVERSING
+    # §7b. On 2026-09-15 the card tiled 28 / 7 over a body of 27 / 6
+    # (ATTENDED_TEST_v5.31.0 B2.7). His rule: **the tiles equal the body** —
+    # a number on a card is something the reader should be able to count on
+    # screen, and a tile that cannot be counted teaches the reader to stop
+    # trusting the numbers rather than to look somewhere else for them.
+    #
+    # The honest full totals are NOT lost and were never only here: for a
+    # shape that renders AT LEAST ONE row they ride the section title, which
+    # `proposal_digests.section_notes` writes ("showing the front 8 of 24 —
+    # the rest stay queued and lead the next one"). That is where the
+    # arithmetic belongs, next to the rows it is about. `shape_totals` stays
+    # in the signature and still reaches `surface_card_header` and
+    # `card_more_footer`; the TILES no longer read it.
+    #
+    # The HEADER count is deliberately NOT touched: since FOLD1-B it carries
+    # no digit at all and `assert_no_debt_header` raises on one.
     totals = shape_totals or {}
     tiles = [
-        {"label": _SHAPE_TILE_LABEL[s],
-         "value": int(totals.get(s, len(by_shape.get(s) or [])))}
+        {"label": _SHAPE_TILE_LABEL[s], "value": len(by_shape.get(s) or [])}
         for s in ("money", "identity", "hygiene", "objective")
         # Drop-empty BEFORE rendering — the tile component refuses a 0-value
         # tile (an empty frame is never data). A shape the page bound cut
-        # ENTIRELY still tiles when the queue holds rows for it: that is the
-        # whole point of the honest total, and `section_notes` already reports
-        # the vanished lane in prose.
-        if by_shape.get(s) or totals.get(s)
+        # ENTIRELY now tiles NOTHING rather than tiling a number with no rows
+        # under it.
+        #
+        # CORRECTED (review F-2, 2026-09-17): such a lane has no section
+        # either, so `section_notes` does not reach it — the earlier claim
+        # that the section title is the reader's door was false for exactly
+        # this case. The rows ARE still counted, in `card_more_footer`'s
+        # "N more — say `show more`" below, which names a number but not the
+        # lane. Whether a fully-cut lane should be NAMED on the card is open:
+        # R-19b closed the tile question and did not rule on this one, and
+        # LIFECYCLE1 §7b raised the hazard ("indistinguishable from having
+        # lost it"). Behaviour unchanged pending M.
+        if by_shape.get(s)
     ]
 
     # RV-4 off-by-one: the header count must equal the ROWS THE WIDGET SHOWS —
@@ -2603,15 +3012,49 @@ def build_card_view(
                 it["display_n"] = display_n + n_extra
     total = len(items) + n_extra
     if header is None:
-        header = (f"Staff Meeting — {total} waiting on you"
-                  if surface == "staff-meeting"
-                  else f"Needs your eyes — {total} open")
+        header = surface_card_header(surface, total, shape_totals=totals)
+    # FOLD1-B 1.2 item 3 — the fence runs on EVERY composed card, including
+    # a header a caller supplied itself. A surface that wants its own top
+    # line may have one; it may not put the debt back.
+    assert_no_debt_header(header)
     view = {
         "source_skill": "cr-brain",
         "header": header,
         "tiles": tiles,
         "sections": sections + extras,
     }
+    # FOLD1-B 1.2 item 3, built in FIX ROUND 1 (reviewer F-3) — THE FOOTER
+    # THE HEADER'S COUNT BECAME. The queue's honest total is what the tiles
+    # carry; this says how many of it this fire did not put on screen, at
+    # the bottom, with the verb that shows the rest. Only derivable when the
+    # caller supplied the honest totals — a builder with no full queue must
+    # not invent one — and DROP-EMPTY, so a page that shows everything is
+    # byte-identical to the one before this existed. Relayed verbatim, the
+    # same contract `select_confirm_card`'s `overflow_line` already has.
+    if totals:
+        # REVIEW_NIGHT11C M-6 (2026-09-15) — AND THE ROWS THE CEILING CUT
+        # FROM THE EXTRA SECTIONS ARE IN THE NUMBER. This counted the queue
+        # remainder only, so on a page where `bound_extra_sections` dropped
+        # the overdue / held / meeting-fold rows the footer said a smaller
+        # number than the truth — and the design rule made this footer the
+        # replacement for the header's count, so undercounting here is the
+        # count going quiet rather than moving. `extra_dropped` is that
+        # bound's own `extra_stats["dropped"]`, handed in by the builder.
+        footer = card_more_footer(sum(int(v) for v in totals.values())
+                                  - len(items) + max(0, int(extra_dropped or 0)))
+        if footer:
+            view["footer_line"] = footer
+            # AND IT RENDERS. The widget contract has no card-level footer
+            # field, and `chat_output_renderer.py` has no owner on this
+            # train — but a section's `footer_note` is rendered by that same
+            # widget path (BUG-8330 item 5), and the LAST section is the
+            # bottom of the card body, which is where a footer goes. So the
+            # line reaches the screen through a shipped key rather than
+            # sitting on a view nothing reads: `footer_line` is the same
+            # string for any caller that relays it as text.
+            all_sections = view["sections"]
+            if all_sections:
+                all_sections[-1]["footer_note"] = footer
     return view
 
 
@@ -2797,6 +3240,7 @@ __all__ = [
     "RETIRED_KINDS",
     "WITHHELD_KINDS",
     "OVERFLOW_LINE",
+    "CARD_MORE_FOOTER", "card_more_footer",
     "BrainProposalError",
     "kind_shape",
     "person_proposal_is_low_context",
@@ -2805,11 +3249,15 @@ __all__ = [
     "MIGRATED_KINDS",
     "propose",
     "open_brain_proposals",
-    "load_open_proposals",
+    "load_open_proposals", "screen_past_lifetime",
+    "assert_no_debt_header", "SURFACE_LABELS", "DEBT_HEADER_PHRASES",
+    "row_prepick", "rendered_verbs", "LET_GO_VERBS",
+    "MAX_RENDERED_VERBS", "PREPICK_PHRASE", "LET_GO_ANSWER",
     "resting_auto_proposals",
     "rank_proposals",
     "select_confirm_card",
     "build_card_view",
+    "surface_card_header",
     "resolve_proposal",
     "expire_stale",
     "card_health_counts",

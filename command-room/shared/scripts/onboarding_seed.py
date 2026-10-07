@@ -43,6 +43,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from atomic_write import atomic_append_jsonl, atomic_write_json  # noqa: E402
+from delete_grant import SUFFIX_ARCHIVED, remove_or_move_aside  # noqa: E402
 import skill_custom_writer as scw  # noqa: E402
 
 SEED_FILENAME = "ONBOARDING_SEED.json"
@@ -216,14 +217,20 @@ def _emit_ingested(workspace_root: Path, seed: dict[str, Any], summary: dict[str
 
 def archive_seed(workspace_root: str | Path, seed_path: str | Path, seed: dict[str, Any]) -> Path:
     """Relocate the pack to _hq/data/onboarding-seed.json (atomic) and remove the
-    root copy. Additive doctrine: content is moved, never lost. Returns the dest."""
+    root copy. Additive doctrine: content is moved, never lost. Returns the dest.
+
+    DEL1: the root copy used to be removed inside a bare `except OSError: pass`,
+    so on a mount that refuses deletes the pack stayed sitting at the top of
+    the customer's workspace — the one folder they actually look at — and
+    `find_seed` kept finding it, which is the whole condition "archive" claims
+    to have ended. A refused delete now RENAMES the copy into `_hq/data/`
+    beside its archive (`.archived.<epoch>`), so the workspace root is left
+    clean either way and the audit trail keeps both files."""
     workspace_root = Path(workspace_root)
     dest = workspace_root.joinpath(*ARCHIVE_SUBPATH)
     atomic_write_json(dest, seed)
-    try:
-        Path(seed_path).unlink()
-    except OSError:
-        pass
+    remove_or_move_aside(seed_path, "onboarding seed archive",
+                         suffix=SUFFIX_ARCHIVED, aside_dir=dest.parent)
     return dest
 
 

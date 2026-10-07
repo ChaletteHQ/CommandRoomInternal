@@ -26,6 +26,7 @@
 - IMPORTANT: Every Command Room widget — commitments, staff meeting, any row-list or action card — is produced by `widget_transport.render_and_persist` and its returned `html` passed to show_widget **byte-exact**; never hand-compose, restyle, or re-derive widget HTML — hand-built widgets skip the validators and have shipped stale rows and broken wire formats.
 - IMPORTANT: After a successful render, the show_widget call with `transport["html"]` is not optional — relay the render_and_persist page before any prose (summarizing as text strips my one-tap actions); text-instead-of-widget only when the transport itself failed or `pagination["over_budget"]` is set, and then say so explicitly.
 - IMPORTANT: Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill; the built-in one can't see my workspace and its findings evaporate. The reply names which source tier actually ran, in one line.
+- IMPORTANT: Anything about my work that comes out as a document — a prep, brief, memo, one-pager, recap, or notes — is produced by the Command Room skill that owns it and saved in the Command Room folder, never as a Claude Doc, page, or artifact, even when the composer's Output is set to Docs or Slides; the built-in docs skill can't see my workspace and nothing it makes lands on my files.
 
 ## Preferences
 {{MEETING_PREFS}}

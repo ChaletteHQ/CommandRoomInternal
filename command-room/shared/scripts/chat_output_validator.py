@@ -98,6 +98,34 @@ class ValidationResult:
 
 
 # Pattern definitions — each tuple is (category, regex, description)
+#: The target half of a markdown link — `](…)`. Used to blank an href before
+#: the DIAGNOSIS family reads a line; the label half, which a customer reads,
+#: is left exactly as written.
+LINK_TARGET_RE = re.compile(r"\]\(([^)\n]*)\)")
+
+
+def _family_patterns(name: str):
+    """One pattern family from `surface_leak_patterns`, by function name.
+
+    Degrades rather than raises: this validator is the gate every composed
+    customer sentence passes, and a missing sibling must not stop a surface
+    rendering. An empty family is a narrower gate, never a broken one.
+    """
+    try:
+        import surface_leak_patterns as _slp
+    except Exception:  # noqa: BLE001 — additive coverage, never load-bearing
+        return []
+    try:
+        return list(getattr(_slp, name)())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _diagnosis_patterns():
+    """The DIAGNOSIS family, or nothing when the module cannot be imported."""
+    return _family_patterns("diagnosis_leak_patterns")
+
+
 PATTERNS: list[tuple[str, str, str]] = [
     # Entity ID leaks (the most common class)
     ("entity_id_leak", r"\borg_\d{3,}\b", "org_NNN canonical-id leak"),
@@ -169,6 +197,44 @@ PATTERNS: list[tuple[str, str, str]] = [
     *(
         ("internal_vocab_leak", _rx, f"{_tid} internal-vocabulary leak")
         for _tid, _rx in _internal_vocab_patterns()
+    ),
+    # The DIAGNOSIS class (LEAK4, 2026-09-20 gate walk): the chat explaining
+    # the product to the customer after a surface that was already right.
+    # Registered as its OWN category so a finding names the class rather than
+    # saying "a leak"; the patterns live in `surface_leak_patterns`, which is
+    # the one place this build keeps a pattern family.
+    *(
+        ("diagnosis_leak", _rx.pattern, _label)
+        for _rx, _label in _diagnosis_patterns()
+    ),
+    # The DEVICE MARKER class (FIX3 F3-3, 2026-09-21 re-walk). The harness's
+    # inventory of the reader's own computer — a `Computer:` label, the device
+    # in quotes, an operating system beside it, what was shared to the task —
+    # on a surface that was asked about mail accounts. Its own category, for
+    # the same reason the diagnosis family has one: a finding should name the
+    # class rather than say "a leak".
+    *(
+        ("device_marker_leak", _rx.pattern, _label)
+        for _rx, _label in _family_patterns("device_marker_leak_patterns")
+    ),
+    # The DEAD POINTER class (FIX3 F3-4). A line that points at a document and
+    # names no place to find it - the prep that landed correctly on 2026-09-21
+    # and was announced as an arrow, a title and nothing else.
+    *(
+        ("dead_pointer_leak", _rx.pattern, _label)
+        for _rx, _label in _family_patterns("dead_pointer_leak_patterns")
+    ),
+    # The FIRE NARRATION class (IDENT1 I-4, ruling R-RW2-6). A scheduled
+    # fire's own working notes on the customer surface - above the widget,
+    # after it, or in the push text.
+    *(
+        ("fire_narration", _rx.pattern, _label)
+        for _rx, _label in _family_patterns("fire_narration_leak_patterns")
+    ),
+    # The TOOL ID class (IDENT1 I-12). A tool's own id on a customer line.
+    *(
+        ("tool_id", _rx.pattern, _label)
+        for _rx, _label in _family_patterns("tool_id_leak_patterns")
     ),
 ]
 
@@ -343,7 +409,7 @@ def _check_item_separators(
             )
 
 
-def validate_chat_output(text: str) -> ValidationResult:
+def validate_chat_output(text: str, *, fired_via=None) -> ValidationResult:
     """Run all validation patterns against the rendered chat text. Returns
     a ValidationResult with violations + warnings.
 
@@ -358,8 +424,18 @@ def validate_chat_output(text: str) -> ValidationResult:
 
     # Pattern-based violations (negative — flag presence of)
     for line_num, line in enumerate(lines, start=1):
+        # A markdown link TARGET is not prose (fix round 2). The DIAGNOSIS
+        # family refuses a chat that NAMES the internal link scheme in a
+        # sentence; the opener CONTRACT Rule 3 mandates is that same scheme
+        # inside an href, which is a correct surface and must not refuse.
+        # Same carve-out the renderer's scanner already makes for its own
+        # vocabulary half (REVIEW_LEAK2 F-5, where a Sources link naming a
+        # script file refused the whole line). Blanked only for this family:
+        # every other category has always scanned the raw line.
+        prose_line = LINK_TARGET_RE.sub(lambda m: "](" + "x" * (len(m.group(1))) + ")", line)
         for category, pattern, _description in PATTERNS:
-            for match in re.finditer(pattern, line, re.IGNORECASE if category != "phase_label_leak" else 0):
+            scan = prose_line if category == "diagnosis_leak" else line
+            for match in re.finditer(pattern, scan, re.IGNORECASE if category != "phase_label_leak" else 0):
                 result.violations.append(
                     Violation(
                         category=category,
@@ -403,7 +479,62 @@ def validate_chat_output(text: str) -> ValidationResult:
     # validators cannot drift on what a workspace-relative doc pointer is.
     _check_dead_doc_links(text, lines, result)
 
+    # IDENT1 I-16 - the UNATTENDED ASK class, on a fire's turn only. The
+    # caller says the turn is a fire's (`fired_via`); an interactive surface
+    # passes nothing and is never read by this family.
+    if str(fired_via or "").strip().lower() in _unattended_modes():
+        exempt = set(_unattended_exempt())
+        for line_num, line in enumerate(lines, start=1):
+            if not line.strip() or line.strip() in exempt:
+                continue
+            for _rx, _label in _family_patterns("unattended_ask_leak_patterns"):
+                match = _rx.search(line)
+                if match:
+                    result.violations.append(Violation(
+                        category="unattended_ask", pattern=_rx.pattern,
+                        matched=match.group(0), line_number=line_num,
+                        context=line))
+            # DOCS1 D-3 - the UNATTENDED DOC class: a fire never produces a
+            # document anywhere but the folder. The republished page line
+            # (`fire_delivery.ARTIFACT_LINE` with a URL) is exempt by identity.
+            if _artifact_line_exempt(line):
+                continue
+            for _rx, _label in _family_patterns("unattended_doc_leak_patterns"):
+                match = _rx.search(line)
+                if match:
+                    result.violations.append(Violation(
+                        category="unattended_doc", pattern=_rx.pattern,
+                        matched=match.group(0), line_number=line_num,
+                        context=line))
+
     return result
+
+
+def _artifact_line_exempt(line: str) -> bool:
+    try:
+        import surface_leak_patterns as _slp
+
+        return bool(_slp.artifact_line_exempt(line))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _unattended_modes():
+    try:
+        import surface_leak_patterns as _slp
+
+        return tuple(_slp.UNATTENDED_FIRED_VIA)
+    except Exception:  # noqa: BLE001
+        return ("scheduled", "catchup")
+
+
+def _unattended_exempt():
+    try:
+        import surface_leak_patterns as _slp
+
+        return _slp.unattended_ask_exempt_lines()
+    except Exception:  # noqa: BLE001
+        return frozenset()
 
 
 def _check_dead_doc_links(text: str, lines: list, result: "ValidationResult") -> None:

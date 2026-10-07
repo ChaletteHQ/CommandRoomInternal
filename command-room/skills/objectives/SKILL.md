@@ -34,8 +34,7 @@ Keeps the CEO's short list of standing objectives — the priorities too big for
 Show-then-tune (STT), all three decisions. Read config through `get_config` — never the raw file.
 
 ```python
-# Rule 22 preamble first: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -76,8 +75,55 @@ cfg = get_config(workspace_root, "objectives", DEFAULTS)
 **Hard-gated bash — all math in code (Rule 22 preamble, run from $PLUGIN_ROOT):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, datetime
 sys.path.insert(0, 'shared/scripts')
@@ -119,8 +165,55 @@ Zero open objectives + `cold_start_proposals` on → the cold start (below). Zer
 6. **Hard gate — run the block, never hand-write entities.json:**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -136,9 +229,13 @@ print('OBJECTIVE_CREATED ' + t['id'])
 
 7. **Ack in plain English:** *"✓ On the board: Land three enterprise pilots — tracked through your Monday Sales Sync, yours, aiming for end of Q3."* Past the `active_cap`: *"That's 8 in focus — more than the seven that keeps focus honest. Want me to park the quietest one (Ops handbook, silent 5 weeks)?"* — parking = archive with reason "parked", one tap, fully reversible by recreating.
 
-### The weekly touch (rides the Friday Wrap — never its own ping)
+### The weekly touch — ON DEMAND, in this skill (WRAP2 4.2 item 1, ruling R-6, 2026-09-14)
 
-All self-report asks AND pending relevance proposals batch into ONE section of weekly-recap's chat surface (weekly-recap owns the render; this skill owns the reply). The section lists due objectives numbered, and its render logs the numbering: an `objectives` receipt whose `data.due_thread_ids` carries the thread ids in the exact render order (weekly-recap §8c's ordinal contract). **The reply — "objectives: 1 on track, 2 at risk — hiring is the bottleneck" — fires THIS skill:** parse per-objective statuses + trailing note, map ordinals against the MOST RECENT objectives receipt's `due_thread_ids` (read via the receipts reader — NEVER a fresh `due_self_reports` recompute, which could silently re-order and land a status on the wrong objective), then one `record_report` per objective (hard-gated, per the Writer Contract). If no such receipt exists, it is older than 8 days, or an ordinal is out of range: ask ONE clarifying question listing the due objectives by name — never guess the mapping. Ack as one line, never re-render the full readout. A directional word is required per item — "1 fine" maps to on_track, but an unparseable item gets ONE clarifying question, never a guessed status.
+**The Friday wrap no longer asks for it.** M's design rule of 2026-09-06 is that the brief and the wrap never ask; the wrap carried this ask anyway on every fire, on a surface with no reply path and, on the scheduled fire, with nobody in the room. `quiet.wrap_post` now refuses it there in code, over the whole post — the fence is not this section's to remember (REVIEW_NIGHT11C H-6, 2026-09-15). So the status BLOCK still rides the wrap (weekly-recap §8c renders `recap_rows`, read-only, and asks nothing), and **the self-report touch is this skill's, on demand**: a reader who says `objectives` gets the readout, and any objectives due for a check-in are numbered in it with the reply taught inline — *"20 seconds: how do these stand? Reply like `objectives: 1 on track, 2 at risk — hiring is the bottleneck`."* An objective past its graceful-death threshold gets the different ask, verbatim: *"[name] — still an objective, or has it run its course? (keep / archive)"* — never another status ask.
+
+**The ordinal receipt is written by WHOEVER RENDERS THE LIST, which is now always this skill.** At render time: `log_receipt(WORKSPACE_ROOT, "objectives", fired_via=<manual|scheduled>, surfaced=<n due>, extra_data={"due_thread_ids": [<thread ids in the exact render order>]})`. The reply parser maps "1"/"2" against THAT list and never against a fresh `due_self_reports` recompute — a substrate write between render and reply would silently re-order a recompute and land a status on the wrong objective. The wrap writes no `objectives` receipt and numbers nothing, so there is exactly one producer of the ordinals and one consumer of them. Still no new scheduled task: the readout is on demand, and nothing pings per objective.
+
+**CORRECTION, 2026-09-14 (WRAP2 4.2 item 1, ruling R-6).** Until this date this paragraph read *"All self-report asks AND pending relevance proposals batch into ONE section of weekly-recap's chat surface (weekly-recap owns the render; this skill owns the reply). The section lists due objectives numbered, and its render logs the numbering…"* — which is the arrangement the rehome above replaced, and it contradicts it line for line. **The wrap renders nothing numbered, asks nothing and writes no `objectives` receipt.** The readout, the numbering, the ordinal receipt and the reply are all THIS skill's, on demand. Pending relevance proposals ride the same on-demand readout. **The reply — "objectives: 1 on track, 2 at risk — hiring is the bottleneck" — fires THIS skill:** parse per-objective statuses + trailing note, map ordinals against the MOST RECENT objectives receipt's `due_thread_ids` (read via the receipts reader — NEVER a fresh `due_self_reports` recompute, which could silently re-order and land a status on the wrong objective), then one `record_report` per objective (hard-gated, per the Writer Contract). If no such receipt exists, it is older than 8 days, or an ordinal is out of range: ask ONE clarifying question listing the due objectives by name — never guess the mapping. Ack as one line, never re-render the full readout. A directional word is required per item — "1 fine" maps to on_track, but an unparseable item gets ONE clarifying question, never a guessed status.
 
 **Graceful death:** a self-bound objective past `death_self_cycles` missed check-ins is NOT asked for status again — the touch asks instead: *"Still an objective, or has it run its course? (keep / archive)"*. Archive keeps the record and the reason. No stale morning-brief line fires forever — drift lines stop once the death ask is pending.
 
@@ -165,6 +262,26 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. The chat lead is the count line,
 **Output guard:** no internal tokens, paths, event names, entity ids, or version numbers in anything the CEO sees (`shared/VOICE_CALIBRATION.md` § Plain-language glossary).
 - Bad: "objective_review appended for project_021 (confidence 0.85)."
 - Good: "✓ Heard it in Monday's sales sync — pilots are at risk; two stuck at security review."
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 

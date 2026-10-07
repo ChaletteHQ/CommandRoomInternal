@@ -74,9 +74,55 @@ Resolve the workspace per `shared/CONTRACT.md` Rule 22, then call the helper.
 This is the only place numbers come from:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "..."
 ```
 
@@ -139,6 +185,35 @@ A representative chat surface:
 The monthly CHAT surface may name one or two decisions if it helps the CEO (the
 operator-report precedent) — but the forwardable Word doc below must not.
 
+### Step 3b — "What you are working on", only through the door (SPEC_SURFACES2_11c COACH2 5.2 item 3)
+
+`receipt["sections"]` carries one extra section — **What you are working on** — for a seat whose
+coaching shape is not `observed`. On an observed seat it is not there at all, and that is the
+default every seat starts on: render what you were handed and do not go looking for it. There is
+nothing to add, nothing to apologise for, and no "turn coaching on to see more" line — the receipt
+is complete without it.
+
+When it IS there, it carries four measures and they are already composed. Relay them; do not
+recompute, summarise or average any of them.
+
+1. **What ended by the customer's own word or on evidence, out of the rows that were eligible.**
+   The eligible base leaves OUT everything that left because nobody came back to it — the review
+   expiry, the rest and let-go doors, the age-out. Those are named on their own line, as rows
+   that sat outside the count in both directions. That split is the honest one: counting a
+   forgotten row as a failure makes the number a verdict on the customer's memory, and counting
+   it as a close makes the product look good for losing things.
+2. **What the customer said about their own days**, as the list of their own answers, in order.
+   **Never a mean, never an arrow, never a trend word.** Those numbers are the customer's own
+   report about themselves; turning them into one figure turns a self-report into a grade, and
+   this product does not grade people.
+3. **The quarterly stakeholder read**, which says it has not been asked yet and will keep saying
+   so until the first coaching quarter closes. An honest "not yet" beats an empty section.
+4. **The behaviour they named, week by week** — the count of closes that carried it, as a list.
+
+None of these is a score of the person and none is a comparison to anybody else. If you find
+yourself about to write either, stop: the composer would have refused it and so should the
+render.
+
 ### Step 4 — Write the forwardable .docx
 
 Write to `_hq/operator-reports/Value_Receipt_<YYYY-MM>.docx` for a month, or
@@ -175,7 +250,7 @@ sent onward, which is exactly the pressure that produces a connector copy — so
 the render path is fenced harder, not softer:
 
 - **NEVER hand-roll the receipt** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass the privacy gate this doc's entire counts-and-hours-only posture depends on (the v3.20.0 failure mode) — an ungated receipt is a receipt whose leak scan never ran.
-- **NEVER create, render, copy, upload, or update the receipt — or any part, derivative, or restatement of it ("the headline numbers", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the receipt in a Google Doc so I can send it" is a request this gate refuses, not an override. The `.docx` is already forwardable by design — hand back its link and let the user forward the file itself.
+- **NEVER create, render, copy, upload, or update the receipt — or any part, derivative, or restatement of it ("the headline numbers", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can share it with my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the receipt in a Google Doc so I can send it" is a request this gate refuses, not an override. The `.docx` is already forwardable by design — hand back its link and let the user forward the file itself.
 
 **Format selection (SPEC OUT5).** Before rendering, resolve the backend:
 `output_profile.resolve_format_for_kind("value_receipt", workspace_root,
@@ -283,6 +358,26 @@ the numbers are first-party.
 - Does not read any connector — it reads only local workspace activity, so there
   is zero connector exposure.
 - Does not recompute numbers in prose — every figure comes from the helper.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 

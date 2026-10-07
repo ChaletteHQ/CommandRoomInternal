@@ -121,6 +121,12 @@ The empty-state widget data view shape (`widget_mode: "all_clear_summary"`) alre
 
 
 
+## The unattended rule (IDENT1 I-16, M 2026-09-23 — the app's own template rule)
+
+A scheduled fire runs with nobody there. It never asks the customer a question, never proposes connecting, reconnecting or re-pairing anything, and never offers a choice; what it cannot do it records as a flag (`connector_detected`, the R13 shape below) for the next interactive chat, and says, at most, one composed sentence about what was skipped. `validate_chat_output(text, fired_via=<the fire's run mode>)` enforces it on every line a fire composes (the `unattended_ask` family — a trailing question mark, "would you like", "do you want", "shall I", "let me know", "reply with", "say yes", "connect your", "reconnect", "re-pair", "re-pin", "authorize", "grant access"); an interactive chat passes no run mode and is never read by it. The one fixed draft affordance on the no-widget text surface (`inbox_helpers.DRAFT_HINT_LINE`) is exempt by identity, never by wording.
+
+**Documents (DOCS1 D-3, 2026-09-24).** A fire never produces a document anywhere but the folder — no Claude Doc, no page, no slide deck; the `.docx` a fire owes lands in the workspace through the owning skill's render path and the write door, and the chat names it only by the landed file's own sentence. An Artifact is only ever the gated COPY of a page already landed in the folder (R-RW2-9: `fire_delivery` republishes a stored address; a fire never publishes a new page). Mechanically, the `unattended_ask` family has a sibling, `unattended_doc`, applied by the same `validate_chat_output(text, fired_via=<the fire's run mode>)` call: a customer line that offers or names a Claude Doc, a page or a deck made outside the folder (`I created a doc`, `open the doc`, `Claude Doc`, `docs.claude`, a `/artifact/` link) is RED on a fire; the one page line a fire may post, `fire_delivery.ARTIFACT_LINE` rendered with its URL, is exempt by identity, never by wording. `run_log_audit.py` lists the offenders under `docs`. The scheduled orchestrators that land documents — End of Day (`orchestrator-past-meetings.md`), Friday Wrap, and the morning brief's prep leg — reference this paragraph. An interactive chat that finds a Claude Doc was made anyway exports it into the folder through `deliverables.export_claude_doc` (the owning skill's prose says how); a fire never does — it has no page to export and asks nobody.
+
 ## Connector drift during a scheduled fire (R13, connector-agnostic-v1 closeout)
 
 Applies to EVERY scheduled orchestrator that resolves a connector through the seam (`discover_for_category` / the `discover_*` helpers). Server UUIDs rotate on reconnect (CONTRACT Rule 22), so a fire WILL eventually find its declared backend missing.
@@ -130,6 +136,10 @@ When seam resolution reports the declared backend NOT PRESENT (the drift reason,
 1. **Skip that connector's leg** for this fire, with the existing one-line plain-English note in the output (same shape as the connector-not-connected degradation). Never hard-fail the whole fire over one drifted connector.
 2. **Append ONE deduped `connector_detected` flag** via `event_gate.append_event` — `{"type": "connector_detected", "data": {"server_id": <the new/unmatched server id if visible>, "provider": <fingerprint match if any>, "fingerprint_matched": <bool>, "triggered_by": "scheduled_fire_drift"}}` — deduped against an already-open flag (an unresolved `connector_detected` with no later `connector_backend_changed` for the same category = open; don't append a second). This is what surfaces the re-pin confirm in the NEXT interactive session (workspace-manager's drift-detect prose).
 3. **NEVER prompt, never ask, never ingest from an unconfirmed server** in a silent fire. The ask happens interactively.
+
+**Load before you look, and the push is composed (IDENT1 I-14, Probes C / C2).** On the merged seat's scheduled shape the connectors are deferred stubs until the host's tool search loads them, so a fire runs its connector discovery step (`inbox_helpers.connector_discovery_step` — the declared connectors' own labels, one tool-list refresh if nothing loads) BEFORE the seams, and passes `discovery_ran: true`; an empty tool list is reported as "never loaded", never as "no mail backend". Every push notification a fire sends is ONE sentence from `inbox_helpers.PUSH_LINES`, validated like any customer line (a fire's push text reaches the customer's phone), counts only, best-effort and never load-bearing — the delivered list and the saved page are the surface.
+
+**The hybrid (IDENT1 I-1, ruling R-RW2-1, 2026-09-22).** One connector can carry two names: the interactive seat lists Superhuman by its display name, the older scheduled sandbox by a UUID. So on a silent fire whose declared server AND every recorded alias are absent, the seam (`inbox_helpers.mail_seams`) fingerprints the visible servers against the DECLARED PROVIDER: exactly ONE match → the leg runs against it this fire, and the composed `connector_detected` flag carries `recorded_alias: true` + `candidate_server_id`, which the declaration reader folds into `server_ids` so the next fire matches exactly and never guesses again; zero or several → steps 1–2 above unchanged (the flag carries `recorded_alias: false` and the candidate COUNT only). The match is per declared provider, never "any mailbox" — several mailboxes per customer is the normal case, and two candidates is an ambiguity a fire never resolves. The seam composes the flag; the fire appends it through `plan append_jsonl` (never `event_gate` from a fire). A later `connector_backend_changed` for the category drops the recorded aliases.
 
 Interactive sessions follow workspace-manager's drift-detect flow instead (confirm + re-pin via the setter).
 
@@ -153,9 +163,7 @@ data_view = {
     "bulk_actions": ["send all", ...],
 }
 
-# 2. Renderer produces the chat string (deterministic Python)
-# (Wrap in CONTRACT.md Rule 22 preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-#  PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT")
+#  2. Renderer produces the chat string (deterministic Python) (Wrap in CONTRACT.md Rule 22 preamble: ; ; ; ). Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import render_chat_output
@@ -475,3 +483,59 @@ When a rule changes, this doc is the only file edited. All orchestrators inherit
 The previous orchestrator prompts had inline rule restatements that conflicted with each other. v2.10.2 strips those inline restatements and replaces them with the reference line above. If you find an orchestrator restating a rule (e.g., "no entity IDs in chat"), drop the restatement — the SHARED protocol owns it.
 
 EMAIL_DRAFT_PROTOCOL.md's §0 ("Plain-English chat output") was a half-step toward this doc. v2.10.2 promotes it: §0 in EMAIL_DRAFT_PROTOCOL.md now points here for the universal rules; EMAIL_DRAFT_PROTOCOL.md retains only the email-draft-specific mechanics.
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

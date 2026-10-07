@@ -129,26 +129,27 @@ def _comm_profile_mechanics(ws: Path) -> Dict[str, Any]:
 def _shortening_ratio(ws: Path) -> Optional[float]:
     """Fraction of length-classified voice corrections that SHORTENED the
     draft, across all per-skill correction logs. None below the evidence
-    floor."""
-    vdir = ws / "_hq" / "voice"
-    if not vdir.is_dir():
+    floor.
+
+    LEARNFIX1 1.1 — read through `voice_corrections.load_corrections`, the
+    one chokepoint, so a correction the customer has since taken back stops
+    weighing on the inferred style. This used to glob the logs itself."""
+    if not (ws / "_hq" / "voice").is_dir():
+        return None
+    try:
+        from voice_corrections import load_corrections
+        rows = load_corrections(ws)
+    except Exception:
         return None
     shorten = lengthen = 0
-    for p in sorted(vdir.glob("corrections-*.jsonl")):
-        try:
-            lines = p.read_text(encoding="utf-8").splitlines()
-        except OSError:
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-        for line in lines:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            cls = str(row.get("classification") or row.get("class") or "")
-            if "shorten" in cls or cls == "cut":
-                shorten += 1
-            elif "lengthen" in cls or "expand" in cls:
-                lengthen += 1
+        cls = str(row.get("classification") or row.get("class") or "")
+        if "shorten" in cls or cls == "cut":
+            shorten += 1
+        elif "lengthen" in cls or "expand" in cls:
+            lengthen += 1
     total = shorten + lengthen
     if total < _CORRECTIONS_MIN:
         return None

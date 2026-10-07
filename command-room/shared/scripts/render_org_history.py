@@ -320,13 +320,18 @@ def compile_org_history(workspace_root: str | Path, org_id: str) -> dict[str, An
     people = _org_people(view, org_id)
 
     moves = []
+    # REVIEW_LEAK2 round-2 R-4 — the honest label is the ONE constant,
+    # not a second copy of the string here. Both copies used to say the
+    # opposite of the fact, and only one of them was reachable from the
+    # constant. Imported at the use site, like `humanize` above.
+    from narration_names import UNRESOLVED_LABEL
     for ev in events:
         if ev.get("type") != MOVE_TYPE:
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         date = _event_date(ev, ws_str) or "(undated)"
         who = _humanize(data.get("canonical_name") or "", name_idx) or \
-            name_idx.get(data.get("person_id") or "", "(name on file)")
+            name_idx.get(data.get("person_id") or "", UNRESOLVED_LABEL)
         if data.get("to_org_id") == org_id:
             other = name_idx.get(data.get("from_org_id") or "", "")
             line = f"{date} — {who} joined" + (f" (from {other})" if other else "")

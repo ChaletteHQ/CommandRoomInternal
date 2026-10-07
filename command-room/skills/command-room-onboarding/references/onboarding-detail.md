@@ -45,10 +45,10 @@ This file was written against the pre-v2 8-step structure (Steps 0-7). Onboardin
 | Step 4a (build files) | **Step 4a** | preserved |
 | Step 4b (show tracker) | **Step 4b** | preserved |
 | Step 4c (voice draft) | MERGED into Step 3d's three-way contrast |
-| Step 4d (sidebar-dashboards no-op disclaimer) | REMOVED — dashboards install via operator-opened parallel chats |
+| Step 4d (sidebar-dashboards no-op disclaimer) | REMOVED — dashboards install via operator-opened parallel chats (RETIRED Night M3: nothing installs a dashboard; they live in chat) |
 | New Step 2c2 (operator notify — schedules) | NEW v3.4.1+ | cue to open Chat A (`set up command room schedules`) at the start of the scan, in parallel with Step 2's connector reads |
-| New Step 4c (operator notify — workspace map) | NEW v2 / SLIMMED v3.4.1+ | cue to open Chat B (`install workspace map`) in parallel. Pre-v3.4.1 this beat ALSO mentioned Chat A schedules — that moved to Step 2c2. |
-| New Step 4d (Quick Commands install) | NEW v2 | silent install — moved from previously-planned end-of-Step-2 because person_001 isn't in entities.json until Step 4a |
+| New Step 4c (operator notify — workspace map) | NEW v2 / SLIMMED v3.4.1+ | cue to open Chat B in parallel (RETIRED Night M3: Chat 3 is now `list active projects`, in chat). Pre-v3.4.1 this beat ALSO mentioned Chat A schedules — that moved to Step 2c2. |
+| New Step 4d (Quick Commands install) | NEW v2 | silent install — moved from previously-planned end-of-Step-2 because person_001 isn't in entities.json until Step 4a (RETIRED Night M3 with the sidebar) |
 | Step 5 (Live briefing) — overall | CUT — moves to operator-opened Chat 3a (`weekly recap`) for substantive output |
 | Step 5a (commitment backfill) | RELOCATED — runs automatically as side-effect of weekly-recap skill (Chat 3a) |
 | Step 5b (run briefing) | CUT — Chat 3a does this with 7d of context, not today's |
@@ -125,7 +125,7 @@ If this succeeds, you have HIGH confidence on contacts and communication style (
 #### Calendar Scan (if connected)
 
 Try to:
-1. Pull 14 days back + 14 days forward (resolve the calendar tool via `discover_calendar_tool()` / `discover_for_category("calendar","find_events",…)`; the neutral start/end window is mapped to the provider's fields by `connector_adapters/calendar.py` — never a hardcoded field name)
+1. Pull 14 days back + 14 days forward (resolve the calendar tool via `discover_calendar_tool(tools, operation="find_events", declared=connector_config.declared_backend("calendar"))` — always pass `declared=`, which also covers the case where the mail connector fronts the calendar too; the neutral start/end window is mapped to the provider's fields by `connector_adapters/calendar.py` — never a hardcoded field name)
 2. Extract and group:
    - Recurring meetings (these are ongoing workstreams — watch for the pattern)
    - Unique attendees (who's on their calendar? which names appear most?)

@@ -219,14 +219,18 @@ Where each of its jobs went — none of them was deleted:
 
 ### Scheduling timezone rule (R8 — settled empirically 2026-07-01)
 
-**Cowork cron and `fireAt` evaluate in MACHINE-local time — the computer's clock, not the workspace timezone.** Confirmed live: a machine in Mountain time with a Pacific workspace fired on Mountain wall-clock, and a scheduled session stamped its output in workspace time while firing on machine time. The split is real and permanent:
+**R8 AS SETTLED IN 2026-07 IS A LEGACY-SEAT RULE, AND IT STILL HOLDS THERE (amended by TZ1, 2026-09-20).** On a desktop Cowork seat, cron and `fireAt` evaluate in MACHINE-local time — the computer's clock, not the workspace timezone. Confirmed live: a machine in Mountain time with a Pacific workspace fired on Mountain wall-clock, and a scheduled session stamped its output in workspace time while firing on machine time.
 
-- **Scheduling math is machine-local.** Cron expressions in `DEFAULT_SCHEDULES` / `schedule_config`, lateness computation (`late_fire.py`), and fired-recency math (`task_watchdog.py`) all use the machine clock. Never "correct" a fire time against the workspace TZ.
+**On a merged/cloud seat there is no machine.** A scheduled fire is a container (whose clock read PDT on 2026-09-19) talking to a sandbox VM (UTC) about a cron the platform evaluates in UTC, for a customer who may be in none of those zones. So on those seats the customer's own workspace zone is the user-local clock, and ONE module decides which of the two answers applies: `shared/scripts/clock_policy.py`. It reads the environment and the workspace's own `triggers` map; a seat it cannot place positively as cloud keeps the machine clock, because an absence of evidence is not evidence of the cloud.
+
+The split is real and permanent:
+
+- **Scheduling math runs on ONE clock, and `clock_policy` says which.** Cron expressions in `DEFAULT_SCHEDULES` / `schedule_config` are the customer's own wall clock; lateness computation (`late_fire.py`) and fired-recency math (`task_watchdog.py`) read `clock_policy.user_local_now()` — the machine clock on a legacy seat, the workspace zone on a cloud one. Never "correct" an already-converted fire time a second time; that is the LATETZ defect and it is a different thing from choosing the clock once.
 - **Workspace TZ is presentation-only** (`shared/scripts/tz.py` `to_local()`): timestamps the CEO reads are rendered in `workspace.user_timezone`; nothing about when tasks fire changes with it.
-- **Conversion happens once, at registration/change time.** When the user asks for a time ("set inbox to 8am"), they mean THEIR timezone — change-schedule converts via `schedule_config.workspace_time_to_machine()` before building the cron, and says so in the confirm diff when the two clocks differ. (The conversion uses the current offset; a fixed cron can't track DST transitions, so a machine/workspace TZ pair that shifts on different dates drifts by the DST hour until the schedule is touched again.)
+- **Conversion happens once, at registration/change time.** When the user asks for a time ("set inbox to 8am"), they mean THEIR timezone. On a legacy seat change-schedule converts via `schedule_config.workspace_time_to_machine()` before building the cron, and says so in the confirm diff when the two clocks differ. On a cloud seat that helper returns the time unchanged and `schedule_backend.plan_create` / `plan_update` do the single projection onto UTC instead — converting in both places would move the customer's 8 AM twice. A fixed cron can't track DST transitions on either seat: a legacy pair whose zones shift on different dates drifts by the DST hour until the schedule is touched again, and a cloud seat's stored `utc_offset_minutes` is re-projected by the quiet `schedule-realign` job (`schedule_backend.plan_realign`) when the workspace offset changes.
 - Most installs run machine == workspace timezone and none of this is visible; the rule exists for the ones that don't (travel, remote-desktop machines, VMs).
 
-**A wrong clock is not a timezone problem (CLOCK1, 2026-08-04).** The rule above was written for the zone split; it never contemplated a clock that is simply WRONG. A scheduled fire on a sandbox machine whose clock had not synced at boot read two days behind, and computed an entire surface — and its permanent `ts` stamps — from it. `shared/scripts/trusted_now.py` cross-checks the machine clock against the newest timestamp already recorded in the workspace, and against the session date where a surface can supply one. It corrects **which instant it is**; it never corrects **which zone that instant is expressed in**. Every rule above is unchanged: cron still evaluates machine-local, lateness math is still machine-local naive, the workspace timezone is still presentation-only, conversion still happens once at registration. A builder who reaches for `to_local` while working on clock trust has confused the two problems.
+**A wrong clock is not a timezone problem (CLOCK1, 2026-08-04).** The rule above was written for the zone split; it never contemplated a clock that is simply WRONG. A scheduled fire on a sandbox machine whose clock had not synced at boot read two days behind, and computed an entire surface — and its permanent `ts` stamps — from it. `shared/scripts/trusted_now.py` cross-checks the machine clock against the newest timestamp already recorded in the workspace, and against the session date where a surface can supply one. It corrects **which instant it is**; it never corrects **which zone that instant is expressed in**. Every rule above is unchanged: the seat's own clock is still the clock cron evaluates in, lateness math is still naive on that clock, the workspace timezone is still presentation-only for connector timestamps, conversion still happens once at registration. TZ1 (2026-09-20) changed only WHICH clock a cloud seat calls its own, and it changed it in `clock_policy`, not here. A builder who reaches for `to_local` while working on clock trust has confused the two problems.
 
 ### 7. friday-wrap (cron 1 PM Fridays — Phase 3/R4 default for new installs; earlier installs registered at 4 PM keep their time) — NEW v3.11.0
 
@@ -310,11 +314,9 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 |---|---|---|
 | `workspace-manager` | `let's work`, `what's going on`, `new project`, `archive`, named-entity references with no specialist match | Catch-all router + project/session manager. |
 | `command-room-onboarding` | First install (auto), `set up command room`, `restart onboarding` | 6-phase M1 onboarding (~40 min) distributed across 13 chats. |
-| `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Reconciles missing dashboards + applies workspace migrations + plays release manifests (v3.4.5+). |
+| `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Applies workspace migrations + plays release manifests (v3.4.5+); says the one dashboards sentence (nothing is installed — Night M3). |
 | `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the 7 scheduled chats (6 daily + 1 weekly Friday Wrap, v3.11.0+). |
-| `level-up-command-room` (Mode: Workspace Map — formerly `enable-workspace-map`, folded in SKILLMERGE1) | `install workspace map`, `enable workspace map`, `rebuild workspace map` | Installs / refreshes the Workspace Map sidebar artifact (id `orgs-map`). |
-| `level-up-command-room` (Mode: Quick Commands — formerly `enable-quick-commands`, folded in SKILLMERGE1) | `install quick commands`, `rebuild quick commands` | Installs / rebuilds the Quick Commands cheat-sheet sidebar artifact (id `quick-commands`). |
-| `level-up-command-room` (menu + Mode: My Open Commitments) | `level up command room`, `show me dashboards`, `install my commitments` | The one sidebar-dashboards skill: the menu of the three artifacts, plus the My Open Commitments dashboard (id `my-commitments`, read-only, grouped by person and org). |
+| `level-up-command-room` | `level up command room`, `install workspace map`, `rebuild quick commands`, `show me dashboards` | Answers the one dashboards sentence. The sidebar dashboards (Workspace Map, Quick Commands, My Open Commitments) are retired on every seat (Night M3); the Workspace Map is `list active projects` in chat. |
 
 ### "Pull in / file existing context"
 
@@ -351,7 +353,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 `command-room-onboarding` fires automatically on first install when `CLAUDE.md` doesn't exist in the workspace. M1 (2026-05-23+; scheduled-task generation stripped 2026-06) ships a 6-phase ~30-min flow distributed across several chats. **Onboarding registers no scheduled tasks** — the daily/weekly scheduled chats are an opt-in the customer sets up after the call by running `set up command room schedules` in a fresh chat (registration only works reliably from its own chat, which is why onboarding no longer attempts it):
 
 0. **Setup widget** — workspace shape, email exclusions, timezone, AI name (progressive-reveal widget; AI name defaults to "Penelope").
-1. **Scan + workspace build + Workspace Map** — Chat 1 runs the 60-day metadata scan + builds the workspace; Chat 3 (customer-opened) installs the Workspace Map. No backfill task, no schedules chat.
+1. **Scan + workspace build + Workspace Map** — Chat 1 runs the 60-day metadata scan + builds the workspace; Chat 3 (customer-opened) shows the Workspace Map in chat (`list active projects`). No backfill task, no schedules chat.
 2. **Mirror + Voice contrast + Insights in Chat 4** — Mirror v1 + Voice contrast immediately on Opus; Insights fire user-triggered when the customer types `show me what's next`, computed from the 60-day scan (no deep-read wait). The deeper last-7-days read is pointed to via on-demand `weekly-recap`.
 3. **Compounding loop** — Chat 4 frames how the substrate compounds (every meeting / decision / follow-up / `weekly-recap` builds on the 60-day baseline).
 4. **(removed)** — the old Run Now ritual for 5 scheduled chats is gone; onboarding registers nothing to authorize.
@@ -365,7 +367,7 @@ Day-1 customers register **no** scheduled tasks during onboarding. When ready, t
 Updates happen via Cowork's UI (Customize → Personal Plugins → Check for updates → Update). Plugin code refreshes on disk; restart Cowork to pick up new code.
 
 After restart, the customer can run `update command room` to fire `command-room-update-bridge`, which:
-1. Detects missing default sidebar dashboards (Workspace Map, Quick Commands) and installs them.
+1. Says the one dashboards sentence — dashboards live in chat now; nothing is installed (Night M3).
 2. Detects pending workspace-file migrations (CLAUDE.md preference additions, BUSINESS_CONTEXT additions) and applies them after user confirm.
 3. **v3.4.5+**: plays per-version release manifests at `shared/releases/v*.json`. Each manifest's items have detectors that check workspace state; only items whose detectors return truthy get surfaced. Example: the v3.4.4 manifest's `count_dropped_open_commitments` detector counts non-canonical commitments in your workspace; if you have any, you see a re-fire prompt with the actual count.
 
@@ -474,10 +476,7 @@ command-room/
 │       ├── cru_match.py               # Commitment match scoring + load_open_commitments
 │       ├── decision_match.py          # Decision auto-resolve / supersede
 │       ├── confidence.py              # (v3.5.0+) Shared threshold constants
-│       ├── build_workspace_map_input.py
-│       ├── build_dcc_input.py
 │       ├── chat_output_renderer.py    # The renderer pipeline + validators
-│       ├── render_artifact.py         # Sidebar artifact renderer
 │       ├── brief_writer.py            # .docx brief generator (deterministic format)
 │       ├── people_writer.py           # Canonical entities.json writer for people
 │       ├── atomic_write.py            # Atomic append/write helpers
@@ -550,7 +549,7 @@ Examples: Sam 2026-05-17 dual-shape commitments (consumer side only handled 2 of
 
 ### 2. Canonical-path improvisation
 
-The agent freelances around a canonical path when the canonical UX feels suboptimal. Examples: writing widget HTML to disk "for reopening later," narrating widget contents after `show_widget`, swapping to markdown when the widget feels too big, hand-rolling an artifact when `create_artifact` fails.
+The agent freelances around a canonical path when the canonical UX feels suboptimal. Examples: writing widget HTML to disk "for reopening later," narrating widget contents after `show_widget`, swapping to markdown when the widget feels too big, hand-rolling a substitute when a canonical install fails.
 
 **Mitigation**: validators + leak-scanner + ZERO-MANIPULATION CONTRACT (v3.5.0+ extracted to `shared/STOP_CONTRACT.md`). Each release closes one bypass; agent finds the next one. Pattern, not point fixes.
 
@@ -645,7 +644,7 @@ The inbound triage skill (`process-bug-report`) was moved to the chalette intern
 | List projects | `list projects` / `roster` |
 | See what you snoozed | `show muted` |
 | Update the plugin | (UI: Personal Plugins → Update → restart Cowork) then `update command room` |
-| Install missing dashboards | `install workspace map` / `install quick commands` |
+| See your Workspace Map | `list active projects` (dashboards live in chat) |
 | Set up scheduled chats | `set up command room schedules` |
 | Change scheduled-chat timing | `change my schedule` / `move morning brief to 8 AM` |
 | Report a bug to the maintainer | `report bug` / `something's wrong` |

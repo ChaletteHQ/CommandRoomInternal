@@ -507,7 +507,13 @@ VERB_TAXONOMY = (
     # --- Review / proposal confirmations -------------------------------------
     _row("confirm", "Confirm", None,
          "Apply the proposed change to the person record.",
-         ("dont-forget", "commitments", "cr-brain", "meeting-notes"),
+         # FOLD1A fix round 2 (REVIEW_FOLD1A R-2) — `end-of-day` ADDED. The
+         # day-close's <= 2 pre-picked confirms render this verb as each row's
+         # ONE tap (R-N10-3). Nothing validates a verb against this list (see
+         # the STAFFCUT note below), so this is a truthfulness edit, not a
+         # gate: the table's whole job is to say where a verb renders.
+         ("dont-forget", "commitments", "cr-brain", "meeting-notes",
+          "end-of-day"),
          family="review",
          notes="ATTRIB1-B door 1: on the meeting card's who-is-you question "
                "the SUB-ITEM id is `<commitment id>:<person id>` and this verb "

@@ -1,0 +1,20 @@
+{
+  "version": "5.33.0",
+  "headline": "Your scheduled chats now run beside your own files on your own computer, under your own account, and nothing internal reaches you. Everything the product writes goes through one door, a late chat serves the slot it missed, documents land in your folder by their path on your computer, and every time is shown in your workspace's zone.",
+  "items": [
+    {
+      "id": "v5330_announce_merged_app",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "What changed. (1) Each scheduled chat now finds your folder on its own, checks the copy of the product installed beside your files, reads how you like to be spoken to, and only then does its work; a chat whose work is not yet moved over says so in one sentence and writes nothing. (2) Everything written to your workspace is logged under your own account, never under a session. (3) A chat that fires late reads which slot it is serving and never serves the same slot twice. (4) Briefs, pages and packs land in your folder and are named by their path on your computer. (5) Every time you see is in your workspace's zone. (6) The old sidebar dashboards are no longer installed; the update declares the computer it runs on as the one that runs your scheduled chats.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5330_instruct_schedule_setup",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Command Room can now set up your scheduled chats for this computer itself. Say \"set up command room schedules\" once: it registers each chat for this computer and brings any already set up current, keeping the times you chose.",
+      "action": "instruct_user"
+    }
+  ]
+}

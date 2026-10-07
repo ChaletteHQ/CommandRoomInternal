@@ -1,132 +1,161 @@
 ---
 name: command-room-update-bridge
 surfaces: cowork
-slack_fallback: "Updates apply on desktop — open Cowork and run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace: default dashboards, release notes, and pending workspace-file migrations — additively, archive-never-delete. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Idempotent — re-runs are safe; detects which defaults are already installed and which release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room — opt-in add-ons menu), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
+slack_fallback: "Updates apply from a chat with your Command Room folder attached — run the update there; Slack picks up the new version automatically."
+description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest'. Release notes and pending workspace-file migrations, additively, archive-never-delete. Dashboards live in chat now: the old dashboard-install phrases hear that one sentence and nothing is installed. Idempotent — re-runs are safe; detects which workspace migrations and release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
 
 ## What this skill does
 
-This skill is the **canonical install path for the two Layer 1 default sidebar dashboards** (Orgs Map, Quick Commands). It serves two user populations with one flow:
+This skill is the **update ritual**: it brings a workspace current after the plugin updates — release notes, workspace-file migrations, release-manifest remediations, the runtime cache and the scheduled chats. **It installs no dashboards.** The pinned sidebar dashboards are retired on every seat (Night M3, RETIRE1 — ruling R-M3-4): Phase 4 says the one dashboards sentence, and nothing in this skill installs, lists, refreshes or verifies a sidebar artifact. It serves two user populations with one flow:
 
-1. **Fresh post-onboarding users.** `command-room-onboarding` M1 (2026-05-23+) installs the Workspace Map directly in Phase 1b (customer types `install workspace map` in Chat 3) and Quick Commands silently in Phase 1a. This skill is the fallback for any default the customer didn't end up installing during M1 — and it remains the canonical `install my dashboards` re-install / repair path any time post-onboarding.
-2. **Upgrade users.** Their `command-room-onboarding` checkpoint is `status: "complete"` from a prior version, so the existing-workspace guard at Phase 0a stops onboarding from re-running. This skill detects which subset of the current defaults are already installed and installs only the missing ones, surfacing what changed in the version diff. Users coming from pre-v2.9.0 versions may have retired artifacts (Daily Command Center, People Network, Commitments Tracker, Process Meetings, Daily Today) pinned — those keep working but are no longer auto-refreshed; surface a one-line nudge to unpin them.
+1. **Fresh post-onboarding users.** Onboarding installs nothing into a sidebar — the Workspace Map is `list active projects`, in chat. This skill brings a new workspace current like any other.
+2. **Upgrade users.** Their `command-room-onboarding` checkpoint is `status: "complete"` from a prior version, so the existing-workspace guard at Phase 0a stops onboarding from re-running. This skill surfaces what changed in the version diff and applies what is pending. Users coming from older versions may still have dashboards pinned — those are no longer refreshed, and Phase 4 adds one sentence saying they can unpin them.
 
 Similarly, **workspace-level migrations** (e.g., the v2.7.9 prompt-restructuring Preferences entry in CLAUDE.md) won't apply automatically — those edits live in the user's workspace folder, not in the plugin source, so a plugin update on its own can't reach them.
 
-This skill is the bridge for both. It:
+This skill is the bridge for those. It:
 
-1. **Detects which current default artifacts are missing** by reading `_hq/data/events.jsonl` for `artifact_installed` events
-2. **Detects which workspace-level migrations are pending** (CLAUDE.md preference additions, BUSINESS_CONTEXT additions, etc.) via marker checks against the user's actual workspace files
-3. **Surfaces what's new** in plain language ("here's what your version is missing")
-4. **Applies missing defaults + workspace migrations** with a single user confirmation (calibration question per migration where applicable)
+1. **Detects which workspace-level migrations are pending** (CLAUDE.md preference additions, BUSINESS_CONTEXT additions, etc.) via marker checks against the user's actual workspace files
+2. **Surfaces what's new** in plain language ("here's what's pending")
+3. **Applies workspace migrations** with a single user confirmation (calibration question per migration where applicable)
+4. **Says the one dashboards sentence** (Phase 4) — nothing is installed
 5. **Logs a `plugin_update` event** so this skill is idempotent on re-runs
 
 It is **conservative by design.** It does not modify existing data, does not run schema migrations (no schema changed in v2.7.9), and does not force install or force apply. The user always sees the list of what will change before committing, and workspace-migration items that need calibration always ask the calibration question rather than guessing. The automatic, non-confirmation exceptions are the substrate-corruption self-heal (Phase 4.4) and the dual-project-key repair (Phase 4.4b, SPEC DUALKEY1) — both are purely protective (quarantine, never delete), idempotent, and surface a friendly note only when they actually repaired something.
 
-**Skill behavioral updates** (e.g., the entity-aware intel-intake in v2.7.9) are NOT handled by this skill — those apply automatically when the plugin SKILL.md files update through Anthropic's standard plugin distribution. This skill only handles the gaps that distribution can't bridge: artifact installations and workspace-folder file edits.
+**Skill behavioral updates** (e.g., the entity-aware intel-intake in v2.7.9) are NOT handled by this skill — those apply automatically when the plugin SKILL.md files update through Anthropic's standard plugin distribution. This skill only handles the gaps that distribution can't bridge: workspace-folder file edits.
 
 ---
 
 ## Critical Behavioral Rules
 
-1. **Show before do.** Never auto-install. Always list what's missing first, get one confirmation, then install.
-2. **Don't deprecate user choice.** If the user has Command Atlas, Commitment Cockpit, or Pay Attention To pinned (artifacts retired in v2.7.9 / v3.11.0 from the defaults), do NOT auto-uninstall them. They're harmless. Optionally surface them as "from an older version and no longer updated — say 'unpin [name]' if you don't want them."
+1. **Show before do.** Never auto-apply a migration that needs a yes. Always list what's pending first, get one confirmation, then apply.
+2. **Don't deprecate user choice.** If the user has Command Atlas, Commitment Cockpit, or Pay Attention To pinned (artifacts retired in v2.7.9 / v3.11.0 from the defaults), do NOT auto-uninstall them. They're harmless. Optionally surface them with the one unpin sentence (`level_up_lines.UNPIN_NOTE`, Phase 4) and nothing else — never invite a phrase: nothing in Command Room answers "unpin".
 3. **Idempotent.** Re-running this skill after a successful update detects the prior `plugin_update` event and either says "you're up to date" or surfaces the next pending update. Migrations the user explicitly declined are NOT re-prompted on subsequent runs (a `workspace_migration_skipped` event prevents the loop — enforced mechanically by the `shared/scripts/migration_adjudication.py` gate in Phase 1 detection, keyed on the migration id, never on marker phrases or log prose; FB-5).
-4. **Single confirmation for the install batch, calibration questions for migrations.** The artifact install + migration list goes through one parent confirmation. Migrations that need calibration (Yes/Sometimes/No questions) ask their own question after the parent confirmation — not a duplicate "are you sure?" prompt, but the actual calibration content.
-5. **Cowork-only for the artifact installs.** Mirror the same graceful degradation as `command-room-onboarding` Phase 1a's silent Quick Commands install: if `mcp__cowork__create_artifact` is unavailable, surface the chat-based fallback and skip artifact installs. Workspace migrations work fine without Cowork — keep applying them.
+4. **Single confirmation for the migration batch, calibration questions for migrations.** The pending-migration list goes through one parent confirmation. Migrations that need calibration (Yes/Sometimes/No questions) ask their own question after the parent confirmation — not a duplicate "are you sure?" prompt, but the actual calibration content.
+5. **Dashboards: one sentence, nothing installed (Night M3, RETIRE1 — ruling R-M3-4).** Phase 4 says `level_up_lines.DASHBOARDS_IN_CHAT` on every seat; this skill installs, lists, refreshes and verifies no sidebar artifact, whatever tools the session can see. Workspace migrations keep applying.
 6. **Surgical edits only on workspace files.** Phase 4.5 migrations append to existing sections; never regenerate, never reorder, never touch unrelated sections. If the target structure is missing (e.g., no `## Preferences` heading in CLAUDE.md), skip with a clear message — don't try to recover. (One sanctioned exception: `claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, and `claude_md_research_rule_v1` may append a whole NEW `## Session Rules` section at end of file when the heading is missing — appending a new section can't mangle existing structure, so it stays surgical/additive. See those migrations' Phase 4.5 entries.)
-7. **NEVER improvise an artifact. (Added v2.7.10 — hotfix.)** The canonical templates shipped WITH this plugin at `skills/level-up-command-room/references/orgs-map-artifact.html` and `skills/level-up-command-room/references/quick-commands-artifact.html` are the **only** source. If `mcp__cowork__create_artifact` fails for any reason — payload size limit, tool unavailable, tool error, truncated return, encoding mismatch — DO NOT generate a substitute. DO NOT hand-roll a "compact equivalent." DO NOT inline a different HTML page. DO NOT compress, summarize, or simplify the template on the fly. Surface the failure verbatim to the user, log `artifact_install_failed` with the exact error, and STOP. Hand-rolled substitutes shipped three independent bugs to a real client install on 2026-04-26 (see references/HISTORY.md). Improvising is now a forbidden behavior, not a fallback. If the canonical template is genuinely too large for the tool, that is a packaging problem to fix upstream in the plugin source repo, not a problem to route around in this skill.
-8. **Verify every artifact install before logging success. (Added v2.7.10 — hotfix.)** After `create_artifact` returns, sanity-check the install before writing the `artifact_installed` event:
-   - **Size check:** Read back the installed artifact byte length. It must be ≥ 80% of the source template's byte length on disk. (Orgs Map source ≈ 30 KB → installed ≥ 24 KB. Quick Commands source size varies → installed ≥ 80% of source.) Anything smaller is a stub or truncation.
-   - **Marker check:** Confirm the installed artifact contains a known marker string from the source template — for Orgs Map, the literal `data-artifact="orgs-map"`; for Quick Commands, the literal `data-artifact="quick-commands"`. (If a template doesn't yet have a marker, add one in the plugin source repo first; do not skip the check.)
-   - **Encoding check:** Confirm the installed artifact does NOT contain the byte sequence `â€` (the UTF-8-as-Latin-1 mojibake signature). If it does, the encoding round-tripped wrong — treat as a failed install.
-   - If any check fails: log `artifact_install_failed` with `{artifact, reason: "verification_failed:<which>", error_text}`, surface to user, STOP. Do NOT log `artifact_installed`. Do NOT continue to the next artifact in the batch — the same failure mode likely affects it.
+7. **Never compose a dashboard.** No dashboard page is installed, rendered or hand-rolled by this skill — not as a fallback and not as a "compact equivalent". (History: the v2.7.10 improvise ban and its install verification retired with the sidebar path in Night M3; see references/HISTORY.md.)
+8. **(Retired, Night M3.)** The install-verification rule went with the sidebar path — nothing is installed, so there is nothing to verify.
 9. **Output guard — internal tokens, paths, and event names only (re-scoped v4.6.1 S3, F-06/F-07):** no file paths, no event-type names, no internal tokens (Rule numbers, schema fields, skill mechanics) in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. Version numbers are NOT internal tokens — the version diff and per-version recap lines are explicitly allowed (Rule 10 owns that surface; pre-4.6.1 this rule also banned version numbers, which contradicted Rule 10's mandated one-liner — F-06. Rule 10 wins).
-   - BAD: "Artifact installed. Rule 8 verified the renderer output (source bytes) — the bridge cannot read the installed file directly to auto-verify."
-   - GOOD: "✓ Installed. Pin it in your sidebar, then open it once and confirm it looks right — I can't see the installed copy from here, so you're the final check."
-10. **What-changed content comes from the release manifests, NEVER from CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction). **Render that line with `bridge_versions.version_sentence(<the Phase 1 struct>)` — never compose it (WALKFIX1 Item I).** It is the same struct the receipts carry, so the sentence cannot contradict the record beside it, and on an unshipped-tip install it says so explicitly ("the tree at v5.11.0-unreleased — plugin.json still stamps v5.10.0, because the version stamp is written at ship") rather than picking one member and asserting it as the whole truth. Followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the artifact + migration lists and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
+   - BAD: "Applied claude_md_email_rule_v1 (Rule 6) — marker check passed in CLAUDE.md."
+   - GOOD: "✓ Added the email rule to your preferences."
+10. **What-changed content comes from the release manifests, NEVER from CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction). **Render that line with `bridge_versions.version_sentence(<the Phase 1 struct>)` — never compose it (WALKFIX1 Item I).** It is the same struct the receipts carry, so the sentence cannot contradict the record beside it, and on an unshipped-tip install it says so explicitly ("the tree at v5.11.0-unreleased — plugin.json still stamps v5.10.0, because the version stamp is written at ship") rather than picking one member and asserting it as the whole truth. Followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the pending-migration list and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
 
 ---
 
-## Phase 1: Detect plugin version + installed artifacts
+## Phase 1: Detect plugin version + pending work
+
+**Dispatch on intent — FIRST, before Step 0 (Night M3, RETIRE1).** Before anything below runs — before the root guard, before any preamble, before any file is read — take the intent from the phrase that fired this skill: `level_up_lines.bridge_intent(<that phrase>)`. The plan for it is `level_up_lines.bridge_plan(intent=<that intent>)`; the rule lives there, and `run_retire1_test` drives it. The old dashboard phrases — `install my dashboards`, `install dashboards`, `install missing dashboards`, `set up my dashboards`, `add my dashboards`, `i'm missing dashboards` — are the artifact-only intent. Its plan's `run_phases` is empty, so say its `say` — Phase 4's one sentence, verbatim — as the whole turn, and STOP:
+
+> *"Dashboards live in chat now. Say `list active projects` for your Workspace Map, `triage my commitments` for your open commitments, and the quick commands work just by saying them."*
+
+Nothing else runs for those phrases: no Step 0, no version check, no migration, no Phase 4.4 to 4.8, no event, and no workspace file is read. Every other phrase that reaches this skill is the full-update intent and continues with Step 0 below.
 
 **Step 0 — Fire-time root guard (SPEC PATHREPAIR1 v2, ruling 3: "once at bridge update").** Before ANY workspace file is read (including the version-triple resolve directly below), confirm this workspace's own registration record still agrees with where it's actually running. Resolve `$PLUGIN_ROOT` / `$WORKSPACE` per the CONTRACT.md Rule 22 preamble (below), then in the SAME bash invocation:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
-ROOT_REPAIR=$(python3 -c '
-import sys, json
-sys.path.insert(0, "shared/scripts")
-try:
-    import path_repair as pr
-except Exception:
-    raise SystemExit(0)
-result = pr.fire_time_guard(sys.argv[1])
-print(json.dumps(result, default=str))
-' "$WORKSPACE" 2>/dev/null)
-BLOCKED=$(printf '%s' "$ROOT_REPAIR" | python3 -c "import sys, json
-d = sys.stdin.read().strip()
-print('1' if d and json.loads(d).get('blocked') else '0')" 2>/dev/null)
-echo "ROOT_REPAIR=$ROOT_REPAIR"
-echo "BLOCKED=$BLOCKED"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+# The root guard REPAIRS as well as checks (a fingerprint backfill, a
+# re-point), so it runs through the WRITE door, beside the data, under the
+# customer's writer id. Render it here and paste what it prints: into the
+# device shell on a merged seat (<WS> = discover's ws), in this shell on a
+# legacy or local seat (<WS> = "$WORKSPACE").
+python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "path_repair:fire_time_guard"}'
 ```
 
-Same fall-through discipline as the scheduled-task bootloader's Step 1.4 (`references/scheduled-task-bootloader.md`) — this is the SAME `path_repair.fire_time_guard` function, the one place this decision is ever made: if `path_repair` can't be imported or `ROOT_REPAIR` comes back empty, `BLOCKED` stays `0` and the update proceeds unchecked (an infra hiccup in the guard itself must never silence the whole update flow). A self-heal (`repaired: true`) or an `"UNKNOWN"` state (a session-mount vantage, or a registration belonging to a different machine's `machines` entry — ruling 1/2/3) are BOTH silent by design: continue straight to the version-triple resolve below, say nothing.
+The envelope's `result` is the guard's answer. Same fall-through discipline as the scheduled-task bootloader's Step 1.4 (`references/scheduled-task-bootloader.md`) — this is the SAME `path_repair.fire_time_guard` function, the one place this decision is ever made: an envelope with `ok: false` (a runtime that predates this door answers `not_allowed_writer`; a seat that cannot name its writer answers `writer_identity_required`) means the guard could not run, and the update proceeds unchecked (an infra hiccup in the guard itself must never silence the whole update flow). Never import `path_repair` in a shell to try again. A self-heal (`result.repaired: true`) or an `"UNKNOWN"` state (a session-mount vantage, or a registration belonging to a different machine's `machines` entry — ruling 1/2/3) are BOTH silent by design: continue straight to the version-triple resolve below, say nothing.
 
-If `BLOCKED=1`, post EXACTLY this message and STOP the whole bridge run (no artifact detection, no migrations, nothing further this fire):
+If `result.blocked` is `true`, post EXACTLY this message and STOP the whole bridge run (no artifact detection, no migrations, nothing further this fire):
 
-> ⚠️ Command Room's update check can't confirm this workspace's registration. Your workspace folder doesn't match what's on record — it may have moved or been renamed, and I found more than one folder (or none) that could be it, so I won't guess. Please open Command Room and say "set up command room schedules" to reconnect it, then try the update again.
+> ⚠️ Command Room's update check can't confirm this workspace's registration. Your workspace folder doesn't match what's on record — it may have moved or been renamed, and I found more than one folder (or none) that could be it, so I won't guess. Please reconnect it in the desktop app with your Command Room folder attached, then try the update again.
 
 **MANDATORY — resolve the version triple ONCE per run (WALKFIX1 Item I).** Before anything else in this phase, run this and keep the result for the WHOLE run — every later pass, every receipt, and the chat sentence read from this one struct, never from a fresh disk read:
 
+The triple has two halves, one on each side (HYGIENE3, coordinator decision D-3): the plugin's own two members live beside the PLUGIN, and the workspace stamp lives beside the DATA. Neither side opens the other's files. First the plugin half, in this shell, from the plugin root — it reads `plugin.json` and the release manifests and nothing else:
+
 ```bash
-CR_WORKSPACE="$WORKSPACE" python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from bridge_versions import resolve_install_versions
-print(json.dumps(resolve_install_versions('$PLUGIN_ROOT', '$WORKSPACE')))
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/bridge_versions.py plugin-facts
 ```
 
-It returns `{plugin_json_version, newest_manifest_version, workspace_stamp, from_version, to_version, unshipped_tip}`. **`to_version` is `newest_manifest_version`** — what this tree IS, which is the question an install record is actually asked later.
+It prints `{"newest_manifest_version": ..., "plugin_json_version": ...}`. Then the workspace half, through the READ door, with those two values handed in as arguments — render it and paste what it prints:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"newest_manifest_version": "<from plugin-facts>", "plugin_json_version": "<from plugin-facts>", "workspace_root": "<WS>"}, "name": "bridge_versions:install_versions"}'
+```
+
+Its `result` is `{plugin_json_version, newest_manifest_version, workspace_stamp, from_version, to_version, unshipped_tip}` — the stamp read across every year of the activity log. Never import `bridge_versions` in a shell against the workspace: the read door is the one place the stamp is read. **`to_version` is `newest_manifest_version`** — what this tree IS, which is the question an install record is actually asked later.
 
 Why the mandate. Version-at-ship means an installed unshipped tip legitimately carries plugin.json at the last shipped version, a CHANGELOG Unreleased block, and a newest manifest one version ahead. That state is documented and correct. What was missing was a vocabulary for it, so different code paths picked different members of the triple: on 2026-08-10 one bridge run emitted `to_version 5.10.0` on its first pass and `to_version 5.11.0` on its second for the same install, the first reading as a downgrade, while the chat asserted "the plugin still reads v5.11.0" over a plugin.json that read 5.10.0. Re-reading the disk per pass is the defect; resolving once is the fix.
 
 Read three things:
 
-1. **Current plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field (e.g., `"2.7.8"`). Resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 discovery preamble at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"`.
+1. **Current plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` → `version` field (e.g., `"2.7.8"`). Resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 discovery preamble at the start of every multi-step bash invocation: the Access preamble (CONTRACT Rule 22 v6 — `shared/WORKSPACE_ACCESS.md`).
 
-2. **Last installed version** from the most recent `plugin_update` event in `_hq/data/events.jsonl`. If none exists, infer from the most recent `onboarding_checkpoint` event with `status: "complete"` — its `last_writer` carries the version that ran onboarding (e.g., `"command-room-onboarding"` from v2.7.4 ran a pre-checkpoint version of the build phase). If neither exists, treat installed version as "unknown legacy" and assume all v2.7.9 defaults are missing.
+2. **Last installed version** from the most recent `plugin_update` event in `_hq/data/events.jsonl`. If none exists, infer from the most recent `onboarding_checkpoint` event with `status: "complete"` — its `last_writer` carries the version that ran onboarding (e.g., `"command-room-onboarding"` from v2.7.4 ran a pre-checkpoint version of the build phase). If neither exists, treat installed version as "unknown legacy".
 
-3. **Installed artifact set.** Scan `events.jsonl` for `artifact_installed` events and collect their `artifact` field values. Build a Set. Current-version installs will have `{orgs-map, quick-commands}`. Legacy installs may have any of the RETIRED ids listed below — those keep working if pinned but are no longer auto-refreshed by this bridge.
+3. **Installed-dashboard history — read for ONE sentence only.** Scan `events.jsonl` for `artifact_installed` events and collect their `artifact` values: the ids this workspace installed at some point in the past (nothing writes that event any more). The set has exactly one use — Phase 4's unpin sentence (`level_up_lines.answer(<those ids>)`). No sidebar tool is called to check it and nothing is installed from it.
 
-   **Liveness re-verification (v3.18.4+, Bug #88 — verify LIVE, don't trust the event marker alone).** An `artifact_installed` event is a *hint*, not proof the artifact is currently live in the sidebar — a user can remove an artifact, or an install can log its event but not persist (the v3.18.1 incident — see references/HISTORY.md § Bug #88). So, before treating anything as installed, **reconcile the event-derived set against the live sidebar via `mcp__cowork__list_artifacts`** (the same tool Phase 4 uses to decide create-vs-update — we can't read artifact *bytes* without `read_artifact_bytes`, but we CAN confirm *presence* by id). An artifact counts as installed ONLY if its id appears in `list_artifacts`. **Drop from `installed_artifact_set` any id that has an `artifact_installed` event but is absent from the live list** — that stale marker falls into `missing_defaults` and gets reinstalled (idempotent + Rule 8-verified, so a redundant reinstall is harmless). If `list_artifacts` is unavailable (non-Cowork session or tool error), fall back to the event-derived set but say so plainly — *"couldn't confirm your live sidebar state"* — rather than asserting "already installed." Never report "already installed" from the event log alone.
-
-The **current Layer 1 default artifact set** (v2.9.0 architectural reset) is:
+The **default dashboard set** the bridge installs is empty (Night M3, RETIRE1 — the sidebar dashboards are retired on every seat):
 
 ```
-CURRENT_DEFAULTS = {
-  orgs-map,                 // level-up-command-room, Mode: Workspace Map (simplified nav tree + Refresh + Run cleanup buttons; artifact id preserved across the v3.5.0 rename and the SKILLMERGE1 fold)
-  quick-commands            // level-up-command-room, Mode: Quick Commands (curated cheat sheet, 3 tabs)
-}
+CURRENT_DEFAULTS = {}      // level_up_lines.CURRENT_DEFAULTS — nothing is installed
 ```
 
-Just two artifacts. v2.9.0 retired Daily Today, Process Meetings, People Network, and Commitments Tracker — their content moved into 6 persistent scheduled chats (Meetings Today, Inbox Pulse, Commitments You Owe, Commitments Owed To You, Cracks Watch, Meetings Processed). The chat-first architecture replaces dashboard-browsing with action delivery on a topic-by-topic basis. Memory substrate (entities.json / events.jsonl / aliases.json / voice samples) unchanged — those are the moat, not the dashboards.
+With nothing to install, nothing is ever missing, so Phase 2's up-to-date exit is reachable whenever nothing else is pending — `level_up_lines.bridge_plan` is the rule (driven by `run_retire1_test`); the prose here narrates it. Phase 4.7 fires `enable-command-room-schedules` to register the M1 first-install scheduled-task set (Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap — 5 tasks; the remaining 2 defaults Commitments and Pulse stay deferred to a follow-up session).
 
-These two are what the bridge installs in Phase 4. After artifact install, Phase 4.7 fires `enable-command-room-schedules` to register the M1 first-install scheduled-task set (Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap — 5 tasks; the remaining 2 defaults Commitments and Pulse stay deferred to a follow-up session).
-
-The current optional add-on set (NOT installed by this skill — surfaced as "available" via `level up command room`):
-
-```
-ADDONS = {
-  // empty as of v3.11.0 — commitment_cockpit retired (moved to RETIRED below)
-  //                       and folded into the daily Commitments scheduled chat
-}
-```
-
-**Retired Layer 1 ids** — older versions installed these. They keep working if pinned (the bridge does NOT auto-uninstall) but are subsumed by the two `CURRENT_DEFAULTS` above:
+**Retired dashboard ids** — older versions installed these (and, until Night M3, the two Layer 1 defaults). Any of them in the history set gets Phase 4's one unpin sentence; the bridge never uninstalls:
 
 ```
 RETIRED = {
@@ -144,14 +173,6 @@ RETIRED = {
   commitment_cockpit        // v2.x-v3.10.x — content folded into the daily `commitments` scheduled chat in v3.11.0
 }
 ```
-
-After successful install of the two `CURRENT_DEFAULTS`, surface the architectural-shift nudge if any `RETIRED` ids are present in `installed_artifact_set`. **Render the chat names and count from the registry at fire time** — list what is actually registered for THIS workspace (`mcp__scheduled-tasks__list_scheduled_tasks` reconciled against `ORCHESTRATOR_MAP`, display names via `task_display_name()`), never a hardcoded list. No version numbers, no release history. Shape (the chat names below are illustrative only):
-
-> *"Your old dashboards were replaced by scheduled chats — one per topic (for example: Morning Brief, Upcoming Meetings, Inbox, Past Meetings, Friday Wrap), each building context on its topic over time. You can unpin the old dashboards from your sidebar; they'll keep working but won't stay current.*
->
-> *Your new scheduled chats now show in Cowork's Scheduled section, each waiting on a one-time permission. Click each one's Run Now button to authorize it — about 30 seconds each.*
-
-Compute `missing_defaults = CURRENT_DEFAULTS - installed_artifact_set`. For a v2.8.x → v2.10.x upgrade user, missing typically = `{quick-commands}` (they already have orgs-map). For fresh install, missing = both. The Orgs Map content rebuilds with v2.10.3's tier-grouped layout even if id matches — `update_artifact` reuses the id with new bytes.
 
 4. **Workspace-level migrations.** Check the user's workspace files for markers indicating which migrations have already been applied. Compute `pending_workspace_migrations` as a list of items that need to be applied.
 
@@ -301,6 +322,14 @@ WORKSPACE_MIGRATIONS = [
     apply_once: true                                           // a deliberate deletion is respected, never re-added
   },
   {
+    id: "claude_md_docs_rule_v1",                              // DOCSFENCE1 → DOCS1 D-1 (document routing loss to the built-in Claude Docs skill after the 2026-09-16 one-Claude merge — additive, never blocking). Read the id from `release_actions.claude_md_docs_rule_v1.MIGRATION_ID` and the appended line from its `DOCS_RULE_LINE`; the applied row the module writes carries that same constant, so the id the registry gates on and the id in the customer's record can never drift
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: "never as a Claude Doc",                           // the DOCSFENCE1 idempotency phrase (`release_actions.claude_md_docs_rule_v1.MARKER`; lives in the appended bullet)
+    type: "silent_append",                                     // no calibration question — product-integrity default (mirror of claude_md_research_rule_v1); APPLIED BY THE MODULE through `plan run_writer`, never by a hand edit (DOCS1 D-1)
+    blocking: false,
+    apply_once: true                                           // a deliberate deletion is respected, never re-added
+  },
+  {
     id: "claude_md_diet_v1",                                   // SPEC STYLE1 step 3b (D9 ruling 2026-08-25 — the hot-cache diet)
     target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
     marker: "IMPORTANT: Every email",                          // the compressed-form sentinel — present means the diet already applied (fresh installs get it from the template)
@@ -331,6 +360,22 @@ WORKSPACE_MIGRATIONS = [
     type: "auto_apply",                                        // APPLIED, then NARRATED — the one migration type that acts on live schedule config without asking. M's ruling is the authority; §0 rationale lives in the class block above `schedule_config.RETIRED_TASKS`. NEVER downgrade this to calibration_question: "I will NOT manually pause" is the ruling, and a per-task question here rebuilds the register-then-nag pattern the retirement removes
     blocking: false,
     apply_once: true                                           // one application, ever
+  },
+  {
+    id: "fold1a_fire_fold_v1",                                 // SPEC_FLOW1 Lane H / FOLD1A (M's ruling 2026-09-07, "lets do this then the fold builds"). Read the id from `release_actions.fold_scheduled_fires.ITEM_ID`'s sibling constant is the RECEIPT marker (`v5300_fold_scheduled_fires`); this migration id is the BRIDGE's own adjudication key, kept distinct on purpose (see the prose below)
+    target_file: null,                                         // NOT a file migration — the target is the LIVE scheduler, read via the FS-16 registered-set readback, same as readiness_retirement_v1
+    marker: null,                                              // live schedule state — the adjudication gate + the module's own `already_ran` receipt check are the gates
+    type: "auto_apply",                                        // APPLIED, then NARRATED — same class of act as readiness_retirement_v1, but REVERSIBLE: `schedule_config.FOLDED_FIRES`, never `RETIRED_TASKS`. NEVER offer this as a question — the whole point of an auto_apply here is that the fold ships with its own undo, so there is no tap to ask for
+    blocking: false,
+    apply_once: true                                           // one application, ever — an `undo` reverses the SUBSTRATE half; it does not re-arm this migration to fold again
+  },
+  {
+    id: "connector_display_name_repin_v1",                     // DISC1 (gap analysis §6.7, ruling §0.29). Read the id from `release_actions.connector_display_name_repin_v1.MIGRATION_ID` — the events this migration writes carry that same constant, so the id the registry gates on and the id in the customer's record can never drift into two strings
+    target_file: null,                                         // NOT a file migration — the target is the workspace's declared-connector block, written only through `connector_config.set_declared_backend`, never by a raw edit
+    marker: null,                                              // no marker to look for: the gate is THIS SESSION'S TOOL LIST. A category whose declared connection is visible is already migrated, which is exactly what a second run sees
+    type: "auto_apply",                                        // APPLIED, then NARRATED — additive and reversible (the old connection id is kept on the account binding as history, never dropped). NEVER a calibration_question: "which of these connection ids is yours" is not a question a customer can answer
+    blocking: false,
+    apply_once: false                                          // NOT once-ever, unlike the two above: connection ids change again whenever a connector is removed and re-added, and the module's own `nothing_to_do` status IS the idempotency gate — a re-run on a settled workspace writes nothing and says nothing
   }
 ]
 ```
@@ -346,14 +391,16 @@ import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rul
 from schedule_proposals import plan_readiness_retirements, log_readiness_retirement
 from schedule_config import readiness_retirement_summary
 plan = plan_readiness_retirements(registered_ids=<the quoted readback>,
-                                  task_records=<the RAW list_scheduled_tasks records>)
+                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>)
 ```
+
+Both arguments come from the ONE readback taken in Step 4.8a and composed by `schedule_proposals.readback_context` — the same dict handed to this item as its detector context. Do not re-read the scheduler here, and do not reach this block with neither argument: an item that was handed nothing plans nothing, and the trace it leaves says so (`outcome: "no_readback"`, one sentence on the receipt, item still armed) rather than leaving nothing at all.
 
 **`plan == []` is the answer on the overwhelming majority of workspaces, and it means SAY NOTHING.** All three of these were later-adds, so most installs never registered any of them; a line about a chat the customer never had is noise about a feature they never saw. No summary, no "nothing to do" note, no mention in the recap.
 
 On a non-empty plan, for EACH entry, in order:
 
-1. Call `mcp__scheduled-tasks__update_scheduled_task(taskId=<entry["task"]>, enabled=False)`. **Never pass `prompt`** — the registered bootloader is registration's property, and a retired task's prompt still needs to resolve its stub for any fire that beats this migration to the customer.
+1. Execute the plan `schedule_backend.plan_update(task_id=<entry["task"]>, enabled=False)` returns, then its `after` call. The seam picks the backend from this session's tool list, so one instruction serves a desktop seat and a merged one; a `Refusal` instead of a plan means this seat cannot move the task, so print nothing and skip the migration. **Never pass `prompt`** — the registered bootloader is registration's property, and a retired task's prompt still needs to resolve its stub for any fire that beats this migration to the customer.
 2. Only after that call SUCCEEDED, write the substrate record: `log_readiness_retirement(WORKSPACE_ROOT, entry["task"])`. It is a thin wrapper over `schedule_config.log_schedule_config_change` — THE one config-event writer (SPEC SCHED1 §0-4) — so this pause lands in exactly the shape every other pause lands in, annotated with the migration id. **Never hand-roll the event here and never call the writer directly instead:** the wrapper is what keeps the annotation and the adjudication gate reading one constant. Order matters: an event claiming a task is off while it still fires is worse than no event, and `late_fire` reads these records to refuse scoring slots older than the change — which is exactly right here, since the slots this task will now never fire were minted by this migration (F-51).
 
 Then surface **exactly ONE line**, built by the registry, never composed here:
@@ -368,17 +415,39 @@ That line is the whole difference between this class and the silent `SUPERSEDED_
 
 **Do NOT touch anything else.** No `schedule_config` override key is deleted (an override for a retired id is expected history, and the customer's chosen hour is theirs to keep if the surface ever returns), no on-demand skill is disabled, and no other retirement class is applied — eliminations and renames still go through the propose blocks above. If you are about to disable a task that `schedule_config.is_readiness_retirement` does not return True for, stop: that is the add-without-asking violation with the sign flipped.
 
+**`fold1a_fire_fold_v1` — the FOLD (SPEC_FLOW1 Lane H / FOLD1A, M's ruling 2026-09-07).** Same two-step shape as `readiness_retirement_v1` immediately above — read that block first, this one only names the differences. This is NOT a `RETIRED_TASKS` readiness retirement: `schedule_config.FOLDED_FIRES` is the membership test, `waiting-on` and `my-plate` are the two ids, and the whole point of this class is that the customer gets an `undo`, which readiness never offers.
+
+Run it on the same full-update intent path, right after the readiness block above (either order between the two is fine — they touch disjoint ids). Nothing here reads or writes a workspace file either:
+
+```python
+import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+from release_actions.fold_scheduled_fires import plan, fold_scheduled_fires
+planned = plan(WORKSPACE_ROOT, task_records=<the NORMALISED `schedule_backend.plan_list` records>)
+```
+
+**`planned["status"] != "would_fold"` (`not_a_workspace`, `already_ran`, `nothing_to_fold`) is the answer on the overwhelming majority of runs, and it means SAY NOTHING** — same posture as the readiness block: most seats either already took their one-shot or never registered either chat.
+
+On `would_fold`, there are exactly TWO steps and ONE call shape. **Do not also call `apply_plan` by hand** — `fold_scheduled_fires` calls it itself, and a hand-rolled step before it writes a SECOND `schedule_config_changed` under a SECOND `brain_batch_id` that no receipt names and no `undo` narration points at (fix round 1, REVIEW_FOLD1A F-5: the earlier three-step wording produced exactly that when followed literally).
+
+1. For EACH task id in `planned["tasks_to_disable"]`, in order, execute the plan `schedule_backend.plan_update(task_id=<id>, enabled=False)` returns, then its `after` call; a `Refusal` stops the loop rather than half-applying it. Never pass `prompt` — the Step 0 fold gate already ships in the orchestrator file itself (`orchestrator-commitments.md` / `orchestrator-my-plate.md`), so a fire that beats the rest of this migration stubs itself; the registered bootloader is registration's property.
+2. Only after EVERY call in the loop SUCCEEDED, make the ONE call that writes everything: `result = fold_scheduled_fires(events_path, WORKSPACE_ROOT, {"task_records": <the same raw records>, "now_iso": <now>})`. It re-plans, writes the store and the audit event through `schedule_config.apply_fold_state` — which is the ONE caller of `schedule_config.log_schedule_config_change` for this class (SPEC SCHED1 §0-4; never hand-roll a second event beside it) and also the one thing that moves `workspace.schedule_config`, the container the orchestrators' Step 0 gate reads — under ONE `brain_batch_id` (which is what makes `undo` reverse both ids together), and writes the ONE receipt that is also this seat's one-shot marker. Same ordering rule as the readiness block: an event claiming a task is off while it still fires is worse than no event. Read the line to post off `result["context"]["summary_line"]`.
+
+Then surface **exactly ONE line**, built by the module, never composed here: `result["context"]["summary_line"]` (from `schedule_config.folded_fire_summary`). It names what folded, where the headline lives now, and — the clause `readiness_retirement_v1`'s line never carries — that `undo` puts it back. **Do not drop the `undo` mention.** A fold the customer cannot reverse would be a retirement wearing this class's better manners.
+
+**Do NOT touch anything else.** No `schedule_config` override key for a THIRD id is ever touched by this migration (`FOLDED_TASK_IDS` is exactly two, read from the module, never retyped), the on-demand `show waiting` / `what's on my plate` skills are untouched, and the Inbox chat is untouched — FOLD1A does not touch it (M: "I am not planning on retiring inbox"). If you are about to disable a task that `schedule_config.is_folded_fire` does not return True for, stop.
+
 **`email_exclusion_rules_to_sender_scope_v1` — the structured-scope migration** (PASSIVE_CAPTURE § Privacy Surface): if the workspace CLAUDE.md carries an `email_exclusion_rules` prose list, convert each SENDER-shaped rule (an address or domain-address) to `connector_config.set_sender_scope_override(root, <business-primary account — or the sole account>, <sender>, write_to_business=False, reason="migrated from email_exclusion_rules")`. Append a one-line `<!-- migrated to sender scope YYYY-MM-DD -->` note next to the prose section — NEVER delete the user's prose (readers honor both during the transition; conservative wins). Pattern-shaped rules (subject regexes) stay prose and are skipped with a note in the summary. Skip the whole migration silently when the account map is empty (nothing to key overrides to yet — re-checked on the next bridge run after classification).
 
 Detection logic per migration:
 - **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
-python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <migration_id_2> ...
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"root_or_file": "<WS>", "migration_ids": ["<migration_id_1>", "<migration_id_2>"]}, "name": "migration_adjudication:adjudication_status"}'
 ```
 
-  It prints one JSON record per id carrying its adjudication verdict — `applied`, `skipped`, or `unadjudicated` — plus the logged reason and the boolean `suppressed` flag. Any id whose record has `suppressed` true is REMOVED from the candidate list before its marker/validator check even runs — a logged adjudication (`workspace_migration_applied` OR `workspace_migration_skipped`) is durable, and marker absence can never resurrect it. The helper folds both events from events.jsonl (latest event per id wins; reads both the top-level and `data`-nested `migration_id` shapes) and treats only the documented deliberately-re-surface skip reasons (`user_deferred`, `awaiting_manual_apply`, `structural_mismatch`, `structural_mismatch_manual_fallback`) as non-suppressing — every other skip reason, including operator-authored free-form ones, suppresses. Do NOT decide "already adjudicated?" by grepping log lines, matching prose, or re-deriving it per migration — the FB-5 live bug re-proposed a skipped migration on every run forever because the gate consulted marker phrases instead of the event record. Two behaviors stay with their owning per-type logic, unchanged: `stale_marker_pending` migrations still re-surface after a `user_deferred`/`awaiting_manual_apply` skip via the live marker check (the helper already reports those reasons non-suppressing), and the "partially applied" edge case (applied event + marker later removed → confirm before re-adding) applies only to NON-apply-once migrations per the Edge cases section. The `redo workspace migrations` trigger re-runs this same lookup with `--ignore-skips` — which un-suppresses skipped (never applied) ids — that is how a customer opts back in; skip events are never deleted from the append-only log.
+  Render that line with `workspace_access.py plan run_helper --json '…'` and paste what it prints, verbatim (BRIDGE2, R-WALK-5: `migration_adjudication:adjudication_status` is on the read door's list; the plugin script is never run by hand, and on a merged seat there is no local workspace path to hand it). `ok: false` is a STOP for this phase: no migration is proposed or applied on this run, and nothing is re-derived from the log by hand.
+
+  `result` is one JSON record per id carrying its adjudication verdict — `applied`, `skipped`, or `unadjudicated` — plus the logged reason and the boolean `suppressed` flag. Any id whose record has `suppressed` true is REMOVED from the candidate list before its marker/validator check even runs — a logged adjudication (`workspace_migration_applied` OR `workspace_migration_skipped`) is durable, and marker absence can never resurrect it. The helper folds both events from events.jsonl (latest event per id wins; reads both the top-level and `data`-nested `migration_id` shapes) and treats only the documented deliberately-re-surface skip reasons (`user_deferred`, `awaiting_manual_apply`, `structural_mismatch`, `structural_mismatch_manual_fallback`) as non-suppressing — every other skip reason, including operator-authored free-form ones, suppresses. Do NOT decide "already adjudicated?" by grepping log lines, matching prose, or re-deriving it per migration — the FB-5 live bug re-proposed a skipped migration on every run forever because the gate consulted marker phrases instead of the event record. Two behaviors stay with their owning per-type logic, unchanged: `stale_marker_pending` migrations still re-surface after a `user_deferred`/`awaiting_manual_apply` skip via the live marker check (the helper already reports those reasons non-suppressing), and the "partially applied" edge case (applied event + marker later removed → confirm before re-adding) applies only to NON-apply-once migrations per the Edge cases section. The `redo workspace migrations` trigger re-runs this same lookup with `"honor_skips": false` in its `args` (the CLI's `--ignore-skips`) — which un-suppresses skipped (never applied) ids — that is how a customer opts back in; skip events are never deleted from the append-only log.
 - Read the `target_file`. If it doesn't exist, skip the migration silently (workspace is incomplete — not this skill's problem). EXCEPTION: for `voice_corpus_check`, file-not-found IS the trigger (the migration fires when the file is missing).
 - For string-marker migrations (DEFAULT semantics): search for the `marker` string. If found, migration is already applied — skip.
 - For string-marker migrations with `marker_semantics: "stale_marker_pending"` (INVERTED — canonical-edit-surface migrations): search for EACH string in `markers` (a list; a single `marker` string is treated as a one-item list). If ALL are ABSENT, the migration is done or never needed — skip. If a marker is FOUND, classify EACH hit line before acting (v4.8.1, F-04 — a keyword hit alone is NOT actionable):
@@ -397,11 +466,59 @@ python3 shared/scripts/migration_adjudication.py "$WORKSPACE" <migration_id_1> <
 - For `only_if` gated migrations: check the user's last `plugin_update` event's `from_version` against the gate. Skip if version is at or above the threshold. **Compare versions numerically via `release_remediation_selector.version_lt(from_version, threshold)` — NOT a string compare (v3.18.9+).** A lexical compare wrongly skips a `2.9.0` client for a `< 2.10.3` gate (`"2.9.0" > "2.10.3"` as strings) and a `2.14.2` client for a `< 2.14.12` gate — the exact "solid for all clients" hole the manifest selector closes, same fix here:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "import sys; sys.path.insert(0,'shared/scripts'); from release_remediation_selector import version_lt; print(version_lt('<from_version>', '<threshold>'))"
 # prints True  -> from_version is below the threshold -> the only_if gate PASSES (migration applies)
 ```
-- For `apply_once: true` migrations with a non-null `marker` (`claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, `claude_md_research_rule_v1`, `draft_posture_queue_on_click_v1`): the marker check alone is NOT sufficient. The migration is pending ONLY when the marker string is absent from the target file AND the adjudication gate above reports the id `unadjudicated` — i.e. events.jsonl has NO `workspace_migration_applied` event AND NO suppressing `workspace_migration_skipped` event for this `migration_id`. A prior applied event with the marker now absent means the customer deliberately deleted the appended text — respect that; the bridge never re-adds. A prior skipped event means the operator declined the append — equally durable; never re-propose (the FB-5 live bug: `draft_posture_queue_on_click_v1` was skipped, but this gate only enumerated the applied event, so the skip was invisible and the migration re-proposed on every run). (Contrast with the `stale_marker_pending` migrations above, which deliberately re-surface until fixed.)
+- For `apply_once: true` migrations with a non-null `marker` (`claude_md_email_rule_v1`, `claude_md_widget_rule_v1`, `claude_md_research_rule_v1`, `claude_md_docs_rule_v1`, `draft_posture_queue_on_click_v1`): the marker check alone is NOT sufficient. The migration is pending ONLY when the marker string is absent from the target file AND the adjudication gate above reports the id `unadjudicated` — i.e. events.jsonl has NO `workspace_migration_applied` event AND NO suppressing `workspace_migration_skipped` event for this `migration_id`. A prior applied event with the marker now absent means the customer deliberately deleted the appended text — respect that; the bridge never re-adds. A prior skipped event means the operator declined the append — equally durable; never re-propose (the FB-5 live bug: `draft_posture_queue_on_click_v1` was skipped, but this gate only enumerated the applied event, so the skip was invisible and the migration re-proposed on every run). (Contrast with the `stale_marker_pending` migrations above, which deliberately re-surface until fixed.)
 - For `apply_once: true` migrations with `marker: null` (`staff_meeting_cadence_mwf_v1`, `rm_supersede_v1`): there is no text to grep for — the target is live config the customer may legitimately have set to ANY value, so a "does it look applied?" check cannot distinguish "already on Mon/Wed/Fri because we asked" from "on Mon/Wed/Fri because they chose it themselves" from "we asked and they said no." **The adjudication gate is the ONLY gate:** pending iff `migration_adjudication` reports the id `unadjudicated`. Never infer pending-ness from the config's current value — that is precisely how a declined proposal gets re-asked forever (the FB-5 class, and worse here, because re-asking about someone's calendar reads as nagging).
 - If marker check indicates "pending" AND any `only_if` gate passes, add to `pending_workspace_migrations`.
 
@@ -413,149 +530,65 @@ Future migrations append to this list. The skill is forward-compatible: each mig
 
 **FS-01 — run the idempotent Phase 4.7 state-gated blocks BEFORE any up-to-date early-exit.** On **full-update intent** (`update command room` / `check for updates` / `install latest` — see the Phase 4.7 intent table), the version-keyed manifest work may short-circuit when `current version == last installed version`, but Phase 4.7's *state-gated* idempotent blocks MUST still run first: the Staff Meeting later-add PROPOSAL (Phase 4.7 §, gated on not-registered + past-M1 + no-prior-proposal), the `SILENT_TASKS` registration assertion (Phase 5.9), the unconditional prompt hash-refresh, **and the post-4.7 orchestrator-rebind heads-up line (v3.14.3+ — surfaced unconditionally at the end of every full-update fire, same-version included; the T2 re-verify found it still missing because this enumeration didn't name it — FS-01 residual)**. These are gated on WORKSPACE STATE, not version, so a same-version re-fire (a stack that shipped without a bump, like a staging re-install) still owes them. The live dogfood took this early-exit and skipped Phase 4.7 entirely — the staff-meeting proposal and the rebind heads-up never surfaced. Only after those state-gated blocks run (surfacing nothing when their gates are already satisfied) may the up-to-date verdict below fire. Clients are unaffected in practice (a promote always bumps the version, so their bridge runs the full path); this bites same-version staging re-fires.
 
-If `missing_defaults` is empty AND `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version AND the full-update Phase 4.7 state-gated blocks surfaced nothing → tell the user they're up to date:
+If `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version AND the full-update Phase 4.7 state-gated blocks surfaced nothing → tell the user they're up to date, verbatim (`level_up_lines.UP_TO_DATE`; `level_up_lines.bridge_plan` is the rule — there are no default dashboards to be missing, so this exit is reachable):
 
-> *"You're all set. Both default dashboards are installed (Workspace Map, Quick Commands), your workspace is current, and there's nothing pending. Nothing to update.*
->
-> *No optional add-ons currently available — say `level up command room` if you want to check."*
+> *"You're all set. Your workspace is current, and there's nothing pending. Nothing to update."*
 
-Stop here. (Per v2.10.5+: this skill ALWAYS RE-CHECKS state and surfaces what's missing — there's no "already ran today" gate. If the user re-fires `update command room` after a successful update, they get the "you're up to date" message because the state check returns clean, NOT because of a prior-run idempotency gate. Per v3.4.5+: the release-manifest layer is also checked; if a per-version manifest in `shared/releases/v*.json` declares a remediation whose detector matches the user's workspace state, it surfaces alongside dashboards + migrations.)
+Stop here. (Per v2.10.5+: this skill ALWAYS RE-CHECKS state and surfaces what's pending — there's no "already ran today" gate. If the user re-fires `update command room` after a successful update, they get the "you're up to date" message because the state check returns clean, NOT because of a prior-run idempotency gate. Per v3.4.5+: the release-manifest layer is also checked; if a per-version manifest in `shared/releases/v*.json` declares a remediation whose detector matches the user's workspace state, it surfaces alongside migrations.)
 
-If either `missing_defaults` or `pending_workspace_migrations` is non-empty, deliver the change summary. The framing depends on whether the user is fresh-post-onboarding (no `artifact_installed` events yet → both missing) or upgrading from a prior version (subset missing).
+Otherwise deliver the change summary.
 
-**Fresh post-onboarding user (no `artifact_installed` events at all, recent `onboarding_checkpoint` with `status: "complete"`):**
+**Fresh post-onboarding user (no prior `plugin_update`, recent `onboarding_checkpoint` with `status: "complete"`):** skip the "what changed" block — there's no prior version to compare against — and go straight to the pending list below.
 
-> *"Your workspace is set up — now let's land the sidebar dashboards. Setup skipped these to keep your first session fast; this is the install. About 60 seconds."*
+**Upgrading user (a prior `plugin_update`):**
 
-Then jump straight to the missing-dashboards list (skip the "what changed" block — there's no prior version to compare against).
-
-**Upgrading user (some `artifact_installed` events from a prior version):**
-
-> *"There's a newer version of Command Room available. Here's what you're missing."*
+> *"There's a newer version of Command Room available. Here's what's pending."*
 
 Use this structured list pattern (chat-formatted):
 
 ```
-**You're missing these default dashboards:**
-
-  ◌ Workspace Map — your companies and projects in one sidebar explorer, with Refresh and cleanup buttons
-  ◌ Quick Commands — a cheat sheet of things you can say, organized by category
-
-(Only the missing ones from your install show here. Skip the line if already installed.
- If `installed_artifact_set` contains any RETIRED ids (workspace_map, workspace-map-v2,
- daily-command-center, people-network, commitments-tracker, daily-today, process-meetings,
- commitment_cockpit),
- mention them once: "You have older dashboards from earlier versions
- (Daily Today, People Network, Commitments Tracker, Process Meetings, Daily Command Center, Commitment Cockpit).
- Their content moved into your scheduled chats — feel free to unpin them." Render any
- chat names from the live registry, never a hardcoded list or count.)
-
 **Pending workspace preference updates:**
 
   ◌ Prompt restructuring (CLAUDE.md) — one quick question, ~10 sec
 
 (Only the pending ones show here. Skip if already applied.)
 
-**Install all missing defaults + apply preference updates now? (yes / no / pick which)**
+**Apply these updates now? (yes / no / pick which)**
 ```
+
+When no workspace migration is pending there is nothing to confirm: ask nothing and go straight on to Phase 4 (`bridge_plan`'s `ask` is False).
 
 ---
 
 ## Phase 3: Handle the response
 
-**If "y" / "yes" / "sure" / "go" / "install":**
-Proceed to Phase 4 — install all missing defaults in order.
+**If "y" / "yes" / "sure" / "go" / "apply":**
+Proceed to Phase 4 (the dashboards sentence), then Phase 4.4 onward — the pending migrations apply in Phase 4.5.
 
 **If "no" / "skip" / "later":**
-Acknowledge and stop. Log a `plugin_update_deferred` event with `from_version`, `to_version`, `missing_defaults`. The user can re-run the skill anytime.
+Acknowledge and stop. Nothing is logged (`bridge_plan`'s `log_on_decline` is None); the same pending items surface on the next run.
 
 **If "pick which" / a specific subset:**
-Re-list the missing defaults numbered 1-N. Ask: *"Which numbers? (e.g., '1, 3' or 'all')"* Take their pick. Install only those.
+Re-list the pending migrations numbered 1-N. Ask: *"Which numbers? (e.g., '1, 3' or 'all')"* Take their pick. Apply only those.
 
 **If the user introduces something else** (a question, a tangent):
 Apply the same Detour-Return Protocol from `command-room-onboarding`. Answer briefly, name the return, ask for the go-ahead, then resume.
 
 ---
 
-## Phase 4: Install missing defaults (Cowork-detection gate first)
+## Phase 4: Dashboards — the one sentence (the sidebar path is retired on every seat)
 
-**Cowork detection.** If `mcp__cowork__create_artifact` is unavailable:
+**Night M3 (RETIRE1, ruling R-M3-4).** The pinned sidebar dashboards are retired on EVERY seat — the merged app has no sidebar, and the older desktop app's sidebar is no longer a second install path. This phase installs, refreshes, rebuilds and verifies nothing, calls no dashboard skill, and logs nothing: no install event, no failure event, no deferral event. It runs the same way whatever tools this session can see.
 
-> *"These are Cowork-only — they live in Cowork's sidebar. Everything they show is still available right here in chat (say `morning briefing` or `list active`). Install Cowork to get the dashboards."*
+Say this sentence once, verbatim (`level_up_lines.DASHBOARDS_IN_CHAT` — the one sentence every surface says about dashboards):
 
-Stop. Log `plugin_update_deferred` with reason `"cowork-not-available"`.
+> *"Dashboards live in chat now. Say `list active projects` for your Workspace Map, `triage my commitments` for your open commitments, and the quick commands work just by saying them."*
 
-If Cowork is available, install in this order. **Use the renderer pipeline. Do NOT generate the HTML inline. Rule 7 enforcement lives in the architecture: the model never writes the artifact bytes.**
+**Legacy artifacts.** When this workspace's own history shows a dashboard was installed at some point (Phase 1's installed set from the `artifact_installed` history — read, never written), add ONE sentence after it, verbatim (`level_up_lines.UNPIN_NOTE`; `level_up_lines.answer(<those ids>)` composes the two):
 
-**v2.9.0 architectural reset:** the four prior dashboards (Daily Command Center, People Network, Commitments Tracker, Process Meetings, Daily Today) were retired — their content moved into the 5 daily scheduled chats (Upcoming Meetings, Inbox, Commitments, Pulse, Past Meetings, with the two commitment chats merged in v2.10.2). The two remaining always-installed artifacts are Orgs Map (visual entity tree) and Quick Commands (trigger-phrase cheat sheet). Both are Modes of `level-up-command-room` (formerly the enable-workspace-map / enable-quick-commands skills, folded in SKILLMERGE1); the bridge delegates to that skill in silent mode, one Mode per artifact.
+> *"Dashboards pinned from an earlier version no longer refresh; you can remove them whenever you like."*
 
-1. **Workspace Map** — invoke `level-up-command-room` (Mode: Workspace Map) in silent mode. The mode runs the renderer pipeline against `level-up-command-room/references/orgs-map-artifact.html`, calls `create_artifact` with `id: "orgs-map"` (artifact id preserved across the v3.5.0 skill rename for back-compat), runs Rule 8 verification, logs.
-2. **Quick Commands** — invoke `level-up-command-room` (Mode: Quick Commands) in silent mode. The mode runs the renderer pipeline against `level-up-command-room/references/quick-commands-artifact.html`, calls `create_artifact` with `id: "quick-commands"`, runs Rule 8 verification, logs.
-
-After each enable skill returns, run the **Rule 8 verification block** at the bridge level too — defence-in-depth, since level-up-command-room is the canonical owner but a verification failure here is still a bridge-install failure.
-
-**Verbatim artifact ids — non-negotiable.** The two canonical ids are:
-
-- `orgs-map`
-- `quick-commands`
-
-Do NOT invent variants (`orgs-map-v2`, `quick-commands-canonical`, etc.) — the v2.7.13 id confabulation is the memorialized case (see references/HISTORY.md). **Do not let it reopen via id improvisation**. If the existing artifact id already exists in `mcp__cowork__list_artifacts`, use `update_artifact` not `create_artifact`. If you find yourself typing a hyphenated suffix on an artifact id, stop — that's confabulation.
-
-**Legacy artifacts.** Users on prior versions may have retired artifacts pinned in their sidebar (`workspace-map`, `workspace-map-v2`, `daily-command-center`, `daily-today`, `people-network`, `commitments-tracker`, `process-meetings`, `commitment_cockpit`). Bridge does NOT delete these automatically (preserve user data). After successful install of the two current defaults, if the `installed_artifact_set` contains any retired ids, surface a one-line cleanup note:
-
-> *"You may have older dashboards in your sidebar from earlier versions — feel free to unpin them. Their content now lives in the scheduled chats (including the new Friday Wrap weekly recap)."*
-
-**Path resolution.** `$PLUGIN_ROOT` is the absolute install path of this plugin on the user's machine — the directory containing `skills/`, `shared/`, etc. `$WORKSPACE` is the user's workspace folder (the directory containing `_hq/data/`). Both are resolved deterministically per CONTRACT.md Rule 22 at the start of every multi-step bash invocation: `SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')`. Never improvise a placeholder. Never hardcode a folder name. If discovery returns empty for either path, that's a hard fail — surface it, log `artifact_install_failed` with reason `"plugin_root_unresolvable"` or `"workspace_unresolvable"`, and STOP. Do NOT fall back to writing HTML inline.
-
-Both level-up-command-room Modes have built-in idempotency: if their artifact is already installed (existing `artifact_installed` event), they skip silently. So calling on a partial-install state is safe.
-
-**Failure handling per artifact (Rule 7 + Rule 8 enforcement, architectural in v2.7.12+):**
-
-The model no longer writes artifact HTML — the renderer pipeline does. Rule 7 (no improvising substitutes) is now enforced by architecture: there is no codepath where the model authors HTML for the artifact. If a failure occurs, the failure modes are bounded:
-
-- **Renderer script fails.** The bash invocation of `build_*_input.py` or `render_artifact.py` returns non-zero. Surface stderr verbatim, log `artifact_install_failed` with `{artifact, reason: "renderer_failed", stderr_text}`, STOP.
-- **`create_artifact` errors or rejects the payload.** Surface the exact error verbatim, log `artifact_install_failed` with `{artifact, reason: "create_artifact_failed", error_text}`, STOP. Do NOT regenerate the HTML by hand. Do NOT call `update_artifact` with a hand-written substitute. The renderer-output file at `/tmp/cr-wm.html` (or DCC equivalent) is the only legitimate payload.
-- **Rule 8 verification fails.** Log `artifact_install_failed` with `{artifact, reason: "verification_failed:<which-check>", details}`, surface, STOP.
-
-Recovery is the user's call: re-run `update command room` after the underlying issue is fixed (renderer bug, Cowork restart, plugin update). This skill never "tries something else" on its own. There is no `rule_7_override` path. The phrase does not exist in this skill, has never been a sanctioned event class, and any logged event with that name is confabulation — flag it and surface to the user.
-
-**Pre-emptive refusal is NOT a sanctioned failure mode (added v2.7.13).** If you find yourself reasoning *"the relay might fail because the artifact is large / payload looks risky / I'm not confident I can transmit byte-for-byte,"* that is reasoning about a hypothetical failure. **Stop. Attempt the relay anyway.** Rule 8 verification (size + marker + encoding check) is the empirical gate that catches actual drift. The architectural defense is: renderer produces canonical bytes → you relay them → Rule 8 verifies the installed result. If you log a failure event without first attempting `create_artifact`, you have invented a failure mode. Specific event reasons that are NOT sanctioned and must NOT be logged:
-
-- `relay_capacity_constraint` (the v2.7.10 confabulation pattern, recurred in v2.7.12 on M's and Sam's first-attempt installs)
-- `create_artifact_no_file_path_param` (Cowork's API surface gap is not a per-install failure)
-- Any reason invoking "payload too large" / "tool budget" / "transmission risk" without a real `create_artifact` error or Rule 8 fail
-
-The legitimate failure events are listed above (`renderer_failed`, `create_artifact_failed`, `verification_failed:<check>`, `plugin_root_unresolvable`). Anything else is invention. If `create_artifact` actually returns an error or Rule 8 actually fails on the installed bytes, log it. Otherwise: try.
-
-**Subagent delegation for the relay step is FORBIDDEN (added v2.7.14).** Subagent context lacks the canonical bytes and confabulates — the v2.7.13 relay delegation confabulated both the artifact id and the data (see references/HISTORY.md § v2.7.13). Same Rule 7 confabulation pattern, deeper architectural layer.
-
-**v2.7.14 closes this path:**
-
-- Do NOT spawn a subagent (`Task` tool / equivalent) to "handle the relay" or "read and pass through the bytes." Subagent context lacks the canonical bytes and confabulates.
-- If the rendered output truly does not fit your output context budget, log `packaging_problem` with `{artifact, reason: "context_budget_exceeded", renderer_output_path, renderer_output_size}` and stop work on **this artifact only** — then **continue the install loop with the next artifact**. Each artifact has an independent rendered size (~30 KB orgs-map, ~26 KB commitments-tracker, ~33 KB minified people-network, ~52 KB raw DCC against M's data). One artifact hitting the budget tells you nothing about whether the others will fit. Surface the partial-install state to the user once the loop completes. Do NOT improvise a workaround for the failed artifact.
-- **Pre-emptively skipping subsequent artifacts after one `packaging_problem` is forbidden (added v2.7.19).** Reasoning *"that one was 56 KB and over the cap, so the next one which is 52 KB will fail too"* is itself a Rule 7 violation — originating a failure mode without evidence. Each artifact gets its own attempt. The skip events `subsequent_skip_after_packaging_problem`, `extrapolated_size_failure`, or any "would render even larger / same issue would recur" framing without an actual `create_artifact` call are confabulation. Attempt every artifact; report the resulting partial state honestly.
-- The architectural fix for `packaging_problem` is upstream in the plugin source repo: minify the template, split into smaller artifacts (which is what v2.7.14 already did for Workspace Map and v2.7.19 did for people-network), or wait for Anthropic to ship `create_artifact_from_path`. **NOT** delegating to subagents.
-
-**Rule 8 verification scope — honest correction (added v2.7.14).** The Cowork sandbox cannot read the artifact destination path (`Documents/Claude/Artifacts/<id>/index.html`) — that path is outside every mounted folder — so Rule 8 verifies the **renderer's output bytes** (source side), not what actually got installed (destination side). (Earlier versions over-claimed this scope — see references/HISTORY.md § v2.7.14.)
-
-**v2.7.14 honest scope:**
-
-- Rule 8 source-side check (size + marker + encoding on `/tmp/cr-*.html`) — **enforceable**, runs as documented.
-- Rule 8 destination-side check (verify what's actually installed in Cowork's artifact path) — **structurally not enforceable** until Anthropic ships `read_artifact_bytes` MCP tool. Not your job to fake it.
-- After a successful `create_artifact` call + a clean source-side Rule 8 pass: log `artifact_installed` and **explicitly tell the user** (plain English — never mention rule numbers, bytes, or renderers): *"✓ Installed. Pin it in your sidebar, then open it once and confirm it looks right — I can't see the installed copy from here, so you're the final check."* This is the honest hand-off.
-
-**Payload size sanity:** The current canonical templates are well under any documented Cowork payload limit — Orgs Map is ~30 KB raw, Quick Commands is similar. If a future template grows past the limit, the fix lives upstream in the plugin source repo (minify the template, split into chunks via `update_artifact` append if supported, or restructure). It is NEVER fixed by improvising a smaller version inside this skill.
-
-Narrate each install as it completes (only after Rule 8 source-side verification passes):
-
-> *"✓ Workspace Map installed.*
-> *✓ Quick Commands installed.*
->
-> *Pin them in your sidebar — they'll stay there across sessions. Open each one once and confirm it looks right — I can't see the installed copy from here, so you're the final check."*
-
-If either install fails, surface the failure, note which succeeded, and let the user retry manually:
-
-> *"1 of 2 installed. Quick Commands hit an error: [details]. Say `update command room` to retry once the underlying issue is fixed."*
+Nothing is deleted from the sidebar and nothing is asked. Then continue to Phase 4.4.
 
 ---
 
@@ -567,27 +600,68 @@ It is **safe and idempotent by design.** `run_recovery_if_needed` quarantines ma
 
 **MUST pass `recurring=True`.** The default one-time mode short-circuits permanently after the *first* recovery at the helper's `RECOVERY_VERSION` — and most existing workspaces already ran that recovery (e.g. during a prior update or the v3.13.8.1 rollout), so the one-time call would be a **permanent no-op that never heals new corruption**. `recurring=True` skips the "already ran" gate and heals whatever malformed lines exist *right now*, which is exactly the on-update behavior this phase exists to deliver (heal immediately, don't wait for the Sunday `cleanup`). This is the same mode the weekly cleanup uses; the difference is only *when* it runs, not *how*. (Discovery story: references/HISTORY.md § 2026-05-31.)
 
-Run it automatically whenever the update proceeds (independent of which dashboards/migrations were selected — this is data safety, not a preference):
+Run it automatically whenever the update proceeds (independent of which migrations were selected — this is data safety, not a preference):
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
-cd "$PLUGIN_ROOT" && python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-from recover_corruption import run_recovery_if_needed
-summary = run_recovery_if_needed('$WORKSPACE', source_skill='command-room-update-bridge', recurring=True)
-print('HEAL_RAN=' + str(summary.get('ran', False)))
-print(summary.get('customer_message') or '')
-"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+# The heal is a writer (it sets bad lines aside and records its own
+# receipt), so it runs through the WRITE door. Render it here and paste what it prints.
+python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"recurring": true, "source_skill": "command-room-update-bridge", "workspace_root": "<WS>"}, "name": "recover_corruption:run_recovery_if_needed"}'
 ```
 
-**Surface only if it actually healed something.** If `HEAL_RAN=True` and a `customer_message` is present, show that friendly line **verbatim** (the helper's v3.13.8.1 Bug #64 template is already contract-safe — it never names internal mechanisms). Example of what the helper's message looks like: "I noticed your activity log looked a little off and tidied it up — nothing was lost."
+**Surface only if it actually healed something.** If the envelope's `result.ran` is `true` and `result.customer_message` is present, show that friendly line **verbatim** (the helper's v3.13.8.1 Bug #64 template is already contract-safe — it never names internal mechanisms). Example of what the helper's message looks like: "I noticed your activity log looked a little off and tidied it up — nothing was lost."
 
 > *"[customer message]"*
 
-If `HEAL_RAN=False` (the log was already clean — nothing to heal), **say nothing** — no news is good news. Never surface file paths, quarantine filenames, raw line counts, or the words corruption/malformed/`events.jsonl` to the customer (CONTRACT Rule 4). Use the helper's `customer_message` as-is; do not paraphrase technical detail back in. The `corruption_recovery` event the helper appends is the audit trail — do not log a duplicate.
+If `result.ran` is `false` (the log was already clean — nothing to heal), or the envelope is `ok: false`, **say nothing** — no news is good news. Never surface file paths, quarantine filenames, raw line counts, or the words corruption/malformed/`events.jsonl` to the customer (CONTRACT Rule 4). Use the helper's `customer_message` as-is; do not paraphrase technical detail back in. The `corruption_recovery` event the helper appends is the audit trail — do not log a duplicate.
 
 ---
 
@@ -598,31 +672,79 @@ Same automatic, non-confirmation posture as Phase 4.4 immediately above, for a d
 It is **safe and idempotent by design**, via `thread_writer.repair_dual_project_key`: non-empty `projects` records merge into `threads` deduped by id (an id already in `threads` keeps the `threads` copy; the `projects` duplicate is quarantined under `_recovery`, never dropped), then the `projects` key is deleted. A workspace with no `projects` key at all is a true no-op — zero writes, zero events.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
-cd "$PLUGIN_ROOT" && python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-from thread_writer import repair_dual_project_key
-counts = repair_dual_project_key('$WORKSPACE', source_skill='command-room-update-bridge')
-print('DUALKEY1_RAN=' + str(counts.get('n_deleted_keys', 0) > 0))
-print('DUALKEY1_MERGED=' + str(counts.get('n_merged', 0)))
-print('DUALKEY1_QUARANTINED=' + str(counts.get('n_quarantined', 0)))
-"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+# The repair is a writer (it folds the vestigial key away when one exists),
+# so it runs through the WRITE door. Render it here and paste what it prints.
+python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"source_skill": "command-room-update-bridge", "workspace_root": "<WS>"}, "name": "thread_writer:repair_dual_project_key"}'
 ```
 
-**Surface only if it actually merged or quarantined something.** If `DUALKEY1_MERGED` or `DUALKEY1_QUARANTINED` is greater than 0, show one friendly line — never name the internal key, never surface a count or a record id (CONTRACT Rule 4):
+**Surface only if it actually merged or quarantined something.** If the envelope's `result.n_merged` or `result.n_quarantined` is greater than 0, show one friendly line — never name the internal key, never surface a count or a record id (CONTRACT Rule 4):
 
 > *"I found a couple of project records filed under an old internal spelling and folded them back into your live list — nothing was lost."*
 
-If `DUALKEY1_RAN=False`, or it ran but merged/quarantined nothing (an empty vestigial key was simply deleted), **say nothing** — no news is good news. The repair's own counts are the audit trail; do not log a duplicate event.
+If `result.n_deleted_keys` is 0, or it ran but merged/quarantined nothing (an empty vestigial key was simply deleted), or the envelope is `ok: false`, **say nothing** — no news is good news. The repair's own counts are the audit trail; do not log a duplicate event.
 
 ---
 
 ## Phase 4.5: Apply workspace-level migrations (CLAUDE.md, BUSINESS_CONTEXT, etc.)
 
-Run after artifact installs. For each migration in `pending_workspace_migrations`:
+Run after Phase 4's sentence. For each migration in `pending_workspace_migrations`:
+
+**How every migration event in this phase is written (HYGIENE3).** A `workspace_migration_applied` or `workspace_migration_skipped` row goes through the door's `append_jsonl` verb and nothing else — render the form below in the container and paste what it prints. The keys are `holder`, `rel` and `rows` (the walk's update tried `path` and `record` first and was refused twice). The row carries `type`, `source_skill` and `data`; OMIT `id`, `seq` and `ts` — the door stamps `seq` and `ts` inside the writer lock:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "from_version": "<from_version>", "migration_id": "<the migration id>", "target_file": "<the file it edited>", "to_version": "<to_version>"}, "source_skill": "command-room-update-bridge", "type": "workspace_migration_applied"}]}'
+```
+
+A skipped migration is the same form with `"type": "workspace_migration_skipped"` and a `"reason"` inside `data` (`"user_declined"`, `"structural_mismatch"`, `"user_deferred"`, …). Every "log `workspace_migration_applied`" / "log `workspace_migration_skipped`" below means THIS form, with that migration's own fields in `data`.
 
 **Customer-facing copy contract for EVERY migration in this phase (EW2+T, F-02):**
 
@@ -653,10 +775,15 @@ Use surgical edit only. Do NOT regenerate the whole CLAUDE.md. Do NOT touch any 
 
 > *"Your CLAUDE.md is missing the Preferences section — that's a bigger change than I can safely make on my own. Say `restart onboarding` if you want a clean rebuild, or skip this for now."*
 
-Log the migration:
-- On success → append a `workspace_migration_applied` event with `migration_id`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
-- On user-declined → append `workspace_migration_skipped` with same fields plus `reason: "user_declined"`.
-- On structural-skip → append `workspace_migration_skipped` with `reason: "structural_mismatch"`.
+Log the migration through the door (the form at the top of this phase; render, paste):
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "from_version": "<from_version>", "migration_id": "prompt_restructuring_preference", "target_file": "CLAUDE.md", "to_version": "<to_version>"}, "source_skill": "command-room-update-bridge", "type": "workspace_migration_applied"}]}'
+```
+
+- On success → the row above.
+- On user-declined → the same form with `"type": "workspace_migration_skipped"` and `"reason": "user_declined"` in `data`.
+- On structural-skip → the same form with `"type": "workspace_migration_skipped"` and `"reason": "structural_mismatch"` in `data`.
 
 Narrate completion in one line:
 
@@ -676,8 +803,14 @@ Narrate completion in one line:
 
 **Handle the answer:**
 
-- **"yes"** / *"go"* / *"sure"* / *"run it"* → invoke `scan-for-commitments` silently with the full historic window (last 12 months default, or whatever's in `_hq/data/events.jsonl`). The scan-for-commitments skill handles its own progress + logging. After it completes, append a `workspace_migration_applied` event with `migration_id: "scan_for_commitments_retro"` + the count of commitments extracted.
-- **"not now"** / *"later"* / *"skip"* / *"no"* → log `workspace_migration_skipped` with `reason: "user_declined"`. The migration won't re-prompt unless explicitly invoked via `redo workspace migrations`. The user can run `scan-for-commitments` manually anytime if they change their mind.
+- **"yes"** / *"go"* / *"sure"* / *"run it"* → invoke `scan-for-commitments` silently with the full historic window (last 12 months default, or whatever's in `_hq/data/events.jsonl`). The scan-for-commitments skill handles its own progress + logging. After it completes, log it through the door (render, paste):
+
+  ```bash
+  cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "commitments_extracted": 0, "migration_id": "scan_for_commitments_retro"}, "source_skill": "command-room-update-bridge", "type": "workspace_migration_applied"}]}'
+  ```
+
+  with `commitments_extracted` set to the count the scan reported.
+- **"not now"** / *"later"* / *"skip"* / *"no"* → log `workspace_migration_skipped` through the same form (`"type": "workspace_migration_skipped"`, `"migration_id": "scan_for_commitments_retro"`, `"reason": "user_declined"` in `data`). The migration won't re-prompt unless explicitly invoked via `redo workspace migrations`. The user can run `scan-for-commitments` manually anytime if they change their mind.
 
 **Narrate completion in one line:**
 
@@ -804,7 +937,13 @@ Narrate completion in one line:
 ```bash
 cd "$PLUGIN_ROOT" && python3 -c "import sys; sys.path.insert(0,'shared/scripts'); import render_master_tracker as r; print(r.regenerate('$WORKSPACE'))"
 ```
-This dual-writes `_hq/views/MASTER_TRACKER.md` + the back-compat `_hq/MASTER_TRACKER.md` and is idempotent. On success → append a `workspace_migration_applied` event with `migration_id: "master_tracker_view_regenerate_v4_2_0"`. Narrate in one line:
+This dual-writes `_hq/views/MASTER_TRACKER.md` + the back-compat `_hq/MASTER_TRACKER.md` and is idempotent. On success → log it through the door (render, paste):
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "migration_id": "master_tracker_view_regenerate_v4_2_0"}, "source_skill": "command-room-update-bridge", "type": "workspace_migration_applied"}]}'
+```
+
+Narrate in one line:
 
 > *"✓ Refreshed your Master Tracker from current data — it had stopped auto-updating, now fixed."*
 
@@ -911,12 +1050,69 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 > *"New: research requests now always run through your workspace-aware research flow — framed against your own projects and people, saved where your meeting prep can reuse them, and always telling you which search sources actually ran."*
 
+### Migration: `claude_md_docs_rule_v1` (DOCSFENCE1 / DOCS1 D-1 — the document-routing session rule, silent append through the write door)
+
+**Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `never as a Claude Doc` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rule is respected — the bridge never re-adds it; a logged skip is equally durable. The module's own `plan` answers the same three states (`pending` / `already_present` / `adjudicated`) and is the gate the run itself re-asks before writing.
+
+**Why this migration exists:** since the host platform's 2026-09-16 "one Claude" merge, every seat carries a built-in `docs` skill (Claude Docs — a living page saved to the Claude account, edited on claude.ai) whose instructions tell the model to create the page FIRST, before any file read or plan, whenever a request sounds like a document and names no file format; the built-in `docx` skill was rewritten to defer to it the same way, and the composer gained an Output toggle (Docs / Slides / Design) that pre-selects it. That preempts this plugin's routing: on "process my call" + "prep me for the call" (field report 2026-09-18) neither meeting-notes nor call-prep fired, the prep existed only on claude.ai, and the workspace, the ledger and the `gate_ran` audit trail had nothing from the turn — no brief, no commitments, no receipt, no leak scan. Every existing defense (the deliverable gate stack — contract, voice, leak scan — the connector-delivery ban, the bypass join) engages only AFTER a Command Room skill has fired, and the host runs no hooks, so there is no pre-tool block. We cannot edit or remove the built-in skill in client installs; the workspace CLAUDE.md is the one surface unconditionally in context that reliably wins routing ambiguity (the Bug #104 / EW1 precedent, re-proven by T2.2's widget rules and RSR1). Fresh onboardings get the rule from `references/claude-md-template.md`; this migration back-fills existing installs.
+
+**Approach (silent append — no calibration question, per the Phase 4.7 silent-add precedent and CONTRACT Rule 28's auto_apply default): the module does the edit, through the WRITE door (IDENT1 I-7; Access preamble rule 8).** It is a writer — one line into the customer's CLAUDE.md and one ledger row — so it runs beside the data under the customer's writer id, never as a hand edit in this chat and never imported into a shell. Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"detector_context": {"from_version": "<from_version>", "to_version": "<to_version>"}, "events_jsonl_path": "<WS>/_hq/data/events.jsonl", "workspace_root": "<WS>"}, "name": "release_actions.claude_md_docs_rule_v1:claude_md_docs_rule_v1"}'
+```
+
+What the ONE call does, and which the prose must not restate loosely:
+
+1. It locates the `## Session Rules` heading in `[WORKSPACE_ROOT]/CLAUDE.md` and appends this bullet — the module's `DOCS_RULE_LINE`, byte-identical to the template's — at the end of that section's bullet list, preserving every existing bullet exactly:
+
+```markdown
+- IMPORTANT: Anything about my work that comes out as a document — a prep, brief, memo, one-pager, recap, or notes — is produced by the Command Room skill that owns it and saved in the Command Room folder, never as a Claude Doc, page, or artifact, even when the composer's Output is set to Docs or Slides; the built-in docs skill can't see my workspace and nothing it makes lands on my files.
+```
+
+2. If the `## Session Rules` heading is missing (older or hand-edited installs): it appends a NEW `## Session Rules` section containing only this bullet at the end of the file — the same sanctioned Rule-6 exception `claude_md_email_rule_v1`, `claude_md_widget_rule_v1` and `claude_md_research_rule_v1` use (appending a whole new section can't mangle existing structure — still surgical, still additive). It never creates the section anywhere but end-of-file and never rebuilds any other missing section.
+3. It re-checks the marker phrase is present in the written file, then logs `workspace_migration_applied` with `migration_id: "claude_md_docs_rule_v1"` (the module's constant), `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`. A `ran: false` answer with `context.status` `already_present` or `adjudicated` means nothing was written and nothing is said — the idempotency shape.
+
+**Do not edit CLAUDE.md by hand beside it and do not compose the applied row yourself:** one writer, one line, one row. `result["ok"]` false with `reason: writer_identity_required` is the door's refusal — say its `line` and stop; the rule is not applied on a seat that cannot name its writer.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm), only when `ran` is true:**
+
+> *"New: when you ask me for a prep, memo, recap or notes, it always comes out of the Command Room skill that owns it and lands in your workspace folder — never as a Claude Doc on claude.ai, which can't see your files. For the same reason, leave Output off before you give me a command."*
+
+<!-- SCHEDULER DISCOVERY >>> -->
+```text
+SCHEDULER DISCOVERY (SCHEDDISCOVER1) - rendered by schedule_backend.discovery_step(); never edit by hand.
+A scheduler tool you cannot see yet may only be waiting to be loaded. Load first, look second, then decide.
+1. LOAD FIRST, every time. Claude Code and the Claude app: run the host's tool search once per query,
+   exactly as written, asking for up to 10 results each:
+       +claude-code-remote create trigger list triggers
+       +scheduled-tasks create scheduled task list tasks
+   The older desktop app, which has no tool search: read its full connector tool listing, end to end.
+2. LOOK SECOND. Hand ONLY the names that loaded, as plain strings, to this skill's availability guard
+   and to schedule_backend.select_backend below. A scheduler name still waiting to be loaded is not a
+   scheduler: it goes only into step 3's TOOLS, as {"name": <id>, "deferred": true}.
+3. THE OPENING LINE. Render this one call with `workspace_access.py plan run_helper --json '<it>'` and
+   paste what it prints (the older app, or Code on this computer: `workspace_access.py run_helper` here):
+     {"name":"schedule_backend:opening_lines","args":{"tools":<TOOLS>,"env_mode":"<CR_ENV>","availability":<AVAIL>,"folder_attached":<FOLDER>,"reloaded":<RELOADED>,"error_text":<ERROR>}}
+   TOOLS = the loaded names and any waiting one; AVAIL = the guard's answer, as it came back;
+   FOLDER = is a workspace folder attached to this chat (true/false); RELOADED = false; ERROR = null,
+   or the scheduler's own error text when one of its calls failed (then call again). Say each line of
+   `result` verbatim, once, as the first thing this skill says about schedules, before any listing or
+   registration; it replaces the no-scheduler sentence. An empty result adds nothing: the guard's own
+   refusal stands alone, and a step that says nothing about schedules still says nothing. Add nothing
+   of your own about where the chats run or why.
+   Refused because this chat has no workspace folder: say "This chat has no workspace folder attached, so it cannot see your scheduled chats; open a chat with your Command Room folder attached." instead.
+4. If that line said the tools are loading: refresh the host's connector tools once, run step 1
+   again, then steps 2 and 3 with RELOADED = true. The answer after that reload is final.
+```
+<!-- <<< SCHEDULER DISCOVERY -->
+
 ### Migration: `staff_meeting_cadence_mwf_v1` (SPEC FB-20 — Staff Meeting moves Mon-only → Mon/Wed/Fri, PROPOSED never imposed)
 
 **Why this is a question and not a silent write.** FB-20 made the morning brief read-only, which makes the Staff Meeting the ONLY surface where anything gets confirmed. Once a week is too slow to be the only door — so the shipped default for NEW installs moved to Mon/Wed/Fri 9:00. But an existing customer's schedule is **theirs**: they may have moved it, may guard their calendar, may want it Monday. A schedule is live config, not product text — **never rewrite it silently, and never treat "they're already on our new default" as consent.** Propose, then honor the answer, forever.
 
 **Gate (the ONLY gate — this migration has no marker; see the `marker: null` rule in the detection logic):** pending iff `migration_adjudication` reports `staff_meeting_cadence_mwf_v1` `unadjudicated`. Do NOT read the current cron to decide whether to ask. Additional pre-checks before proposing — if any fails, skip SILENTLY with no event (nothing to propose; asking would be noise):
-1. `staff-meeting` is actually REGISTERED on this workspace (a `list_scheduled_tasks` record exists). An unregistered task has no schedule to change — the new default applies whenever they register it, no migration needed.
+1. `staff-meeting` is actually REGISTERED on this workspace (a `schedule_backend.plan_list` record exists). An unregistered task has no schedule to change — the new default applies whenever they register it, no migration needed.
 2. Its live cron still parses as the old Mon-only shape (`0 9 * * 1`). **If the customer has ANY other custom cron, skip silently and log nothing** — they have already expressed a preference about this task's timing, and overwriting a considered choice with our new default is exactly the imposition this migration exists to avoid.
 
 **The ask (one question, plain English, their answer is final):**
@@ -929,7 +1125,7 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 **Applying (the "yes" path only):**
 
-Hand off to `change-schedule`'s canonical path — write `workspace.schedule_config["staff-meeting"]` in entities.json AND re-anchor the live task's cron. Convert 9:00 from the workspace timezone to machine-local first via `schedule_config.workspace_time_to_machine(9, 0, WORKSPACE_ROOT)` (R8 — cron evaluates in machine time; an unconverted "9am" fires an hour off on a machine whose clock differs). The stored `label` stays the user's time ("9 AM Mon, Wed, Fri"); the stored `cron` carries the converted machine-local time. When the two differ, say so once.
+Hand off to `change-schedule`'s canonical path — write `workspace.schedule_config["staff-meeting"]` in entities.json AND re-anchor the live task's cron. **Do not convert the time here.** Build the cron from 9:00 in the workspace timezone — the time the customer means — and hand THAT to the seam (`backend.plan_update(cron_local=…, tz_name=<workspace timezone>)`), exactly as `change-schedule` Step 7 does. The seam owns the one conversion the live backend needs: on the merged Claude app it projects the workspace-local cron onto world time; on the older desktop app cron evaluates in the machine's own clock (R8) and the seam converts to it. Converting here as well moves the customer's 9 AM twice and stores a cron no later check can match. **If you ever need the machine-clock value yourself,** the one call is `schedule_config.workspace_time_to_machine(9, 0, WORKSPACE_ROOT, backend_id=backend.id)` — `backend` being the one `schedule_backend.select_backend(<this session's tool names>)` returns, the same selection the Phase 4.7 guard makes. Never call it without `backend_id`: on the merged app the bare call shifts the time by this container's offset and the seam then shifts it again to world time. The stored `label` stays the customer's time ("9 AM Mon, Wed, Fri"); the stored `cron` stays their workspace-local time. When the live backend is the older app and the two clocks differ, say so once.
 
 **⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK (v4.5.2 R2 / F-51 — the change-schedule doctrine, binding here too).** Re-anchoring moves the NEXT occurrence. It does not create a missed slot, and today's newly-added Wednesday slot did not exist when Wednesday 9:00 passed. Do NOT run the staff meeting "to catch up", do NOT invoke its orchestrator, do NOT compute or write lateness for any slot the change itself created, and do NOT narrate one ("you missed today's" is false). A customer who says yes to a cadence change gets a config write and a confirmation line — never a surprise staff meeting in the same turn.
 
@@ -966,11 +1162,11 @@ A `null` plan (no standalone relationship-moves registration) → skip SILENTLY 
 
 **Applying (the "yes" path only, per the planner's plan):**
 
-1. If `staff_meeting_registered` is false → register the staff meeting via the EXISTING add path (change-schedule / registration Phase 6 add — this bridge registers nothing directly). Cron: the plan's `carry_cron` when non-null (the customer had customized the RM chat's time — carry their choice), else the staff-meeting default from `load_schedule_config()`. Convert workspace time via `schedule_config.workspace_time_to_machine` exactly as the cadence migration does.
-2. Remove the relationship-moves registration (`update_scheduled_task(enabled: false)` or delete per the scheduler MCP's canonical removal path).
+1. If `staff_meeting_registered` is false → register the staff meeting via the EXISTING add path (change-schedule / registration Phase 6 add — this bridge registers nothing directly). Cron: the plan's `carry_cron` when non-null (the customer had customized the RM chat's time — carry their choice), else the staff-meeting default from `load_schedule_config()`. The cron is workspace-local and the seam converts it, exactly as the cadence migration above says — this phase converts nothing itself.
+2. Remove the relationship-moves registration (`schedule_backend.plan_update(enabled=False)`, executed by this skill, or delete per the seam's `plan_delete`).
 3. Receipt BOTH steps in the confirmation line; the RM skill itself, its orchestrator, and Pulse are untouched — only the registration moves.
 
-**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment a `schedule_backend.plan_update(enabled=...)` call lands (on a legacy seat the shim spells the old verb), call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
 
 **⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK** (v4.5.2 R2 / F-51 — binding here exactly as in the cadence migration): no catch-up staff meeting, no lateness math, no "you missed one" narration.
 
@@ -980,15 +1176,81 @@ Narrate completion in one line:
 
 (Or, for declined): *"Kept them separate. Say `change my schedule` any time."*
 
+### Migration: `connector_display_name_repin_v1` (DISC1 — point the declared connectors at the connections this session can see)
+
+**Why it runs without asking.** A workspace that declared a mail backend before the connector ids changed is pinned to an id that no longer exists in the tool list. Discovery reads that correctly as drift, and on a SILENT scheduled fire the rule is skip-the-leg-and-flag — so every mail leg of every scheduled chat runs dark until the customer happens to open a chat and confirm. A workspace that declared NOTHING is worse off: undeclared, some connectors expose no send path at all. The write here is one row per category plus its audit events, and the old connection id is kept on the account binding as history, never dropped.
+
+Run it on the full-update intent path, with the fire-time tool list in hand, through the WRITE door (IDENT1 I-7; Access preamble rule 8) — it is a writer, so it runs beside the data under the customer's writer id, never imported into a shell. Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"detector_context": {"tools": ["<each tool id visible in THIS session>"]}, "events_jsonl_path": "<WS>/_hq/data/events.jsonl", "workspace_root": "<WS>"}, "name": "release_actions.connector_display_name_repin_v1:connector_display_name_repin_v1"}'
+```
+
+The ONE call plans and, only when there is something to write, writes: each category through `connector_config.set_declared_backend` (the declared delegate path — never a raw `entities.json` edit) and the audit pair per category. **Do not call `apply_plan` by hand beside it** and do not compose a second event: one writer, one pair of events per category. `result["context"]["status"]` other than a write (`no_tools`, `nothing_to_do`) means SAY NOTHING — on a seat whose declared connections are all visible (a recorded alias counts, IDENT1 I-1), which is every seat that has already taken this migration, there is nothing to report. An envelope that comes back `writer_identity_required` is a stop: say its `line`, verbatim, and nothing else.
+
+**A category the migration cannot re-pin says the module's own line and NOTHING else** — the matching entry of `result["context"]["report"]`, verbatim. Never tell the customer to go and run this again somewhere else, in another chat or on another computer: the 2026-09-22 update did exactly that, and the chat it pointed at was the one the customer was already in.
+
+The rules the module enforces, and which the prose must not restate loosely:
+
+- A category is re-pinned only when the declared connection is ABSENT from this session AND exactly ONE visible connection matches it by capability fingerprint AND that connection's id is a stable one. Two matches, or none, means no write and one line in `result["context"]["report"]`.
+- An UNDECLARED category is declared only when exactly ONE visible connection fingerprints for it. **Two mail connectors and nobody has said which is the business one is the customer's question, not the machine's** — it stays undeclared.
+- Identity is the capability fingerprint (which operations a connection exposes), never the spelling of its display name.
+
+Then surface **at most ONE line**, built by the module, never composed here: `result["context"]["nudge_line"]` (empty string = say nothing). It names the products now being read, in the customer's words, and how to point them somewhere else. A re-pin of an already-declared category is silent by design: nothing changed from the customer's point of view except that it works again.
+
 ### Future migrations
 
 Each new migration in `WORKSPACE_MIGRATIONS` follows the same shape: detect → calibration question (if needed) → surgical edit OR skill invocation → log event. The pattern is intentionally repeatable so future versions can add migrations without touching this skill's structure.
 
 ---
 
+## Phase 4.6: Install the runtime cache
+
+**Runs ONLY on the merged app.** Read `CR_ENV` (the environment name `env_detect` reports). If it is not `merged_cloud`, SKIP this whole phase silently — on every other seat the helpers and the workspace are already on one machine and there is nothing to install. Do not announce a skip.
+
+**Why it exists.** On the merged app the helper scripts run in a cloud container and the workspace is mounted only on the customer's own computer. Neither can open the other's files. So Command Room installs a copy of its own runtime into the workspace and runs every substrate operation there, beside the data. `shared/WORKSPACE_ACCESS.md` is the contract; this phase is the install step.
+
+### Step 1 — compare what is shipped with what is installed
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:?}/shared/scripts/workspace_access.py" expect
+```
+
+That prints `{plugin_version, manifest_sha, file_count}` for the plugin you are running. Then run the `discover` block in the device shell (Phase 1 already resolved the workspace) and read `runtime_present`, `runtime_version` and `manifest_sha` from its JSON.
+
+- `runtime_present` is true AND `manifest_sha` matches `expect` → **nothing to do.** Say nothing; move on.
+- Anything else → Step 2.
+
+### Step 2 — build, commit, verify
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:?}/shared/scripts/workspace_access.py" install --out <scratch dir> --ws "<WS from discover>"
+```
+
+That builds ONE zip (every shared script, the data schemas, the plugin documents those scripts open, `plugin.json`, and a `manifest.json` carrying a sha256 per file) and prints the commit plan. Skill files are never shipped.
+
+1. Commit the zip with `mcp__remote-devices__device_commit_files`, using the `stagedPath` and `devicePath` the plan printed.
+2. Run what `workspace_access.py verify` prints, in the device shell. It unzips into `<version>/`, recomputes every sha in the manifest, and writes the `current.json` pointer **only on a full match**.
+
+**No approval card.** The folder grant the customer already gave is the permission; a second card per version is friction without a boundary gain. The install writes plugin code and nothing else into one directory, and the manifest is what proves it.
+
+### Step 3 — say one line, and record it
+
+On success, one line, nothing more:
+
+> *"Command Room's runtime [version] is installed in your workspace."*
+
+On a verification mismatch, do NOT run any data verb afterwards — the runtime is not trusted, so nothing that reads or writes the workspace may run in this update. Say one line:
+
+> *"Command Room couldn't confirm its runtime in your workspace, so it stopped there. Say `what's new in command room` again and it will retry."*
+
+Either way, carry the outcome on the `plugin_update` event this update already writes (Phase 5), in its notes: `runtime: installed <version>` or `runtime: verify failed`. Never a second event, never a separate receipt.
+
+---
+
 ## Phase 4.7: Set up scheduled tasks (CONDITIONAL — gated by intent in v2.9.1+)
 
-**v2.9.1 split:** this phase now runs ONLY when the user's intent matches a "full update" trigger. It is SKIPPED for "artifact-only" intents.
+**v2.9.1 split:** this phase runs ONLY when the user's intent matches a "full update" trigger.
 
 ### Intent-detection table
 
@@ -997,24 +1259,84 @@ Determine intent from the trigger phrase that fired this skill:
 | Triggering phrase | Intent | Phase 4.7 behavior |
 |---|---|---|
 | `update my command room`, `update command room`, `what's new`, `whats new`, `whats new in command room`, `check for updates`, `install latest`, `install the latest` | **full-update** | Run Phase 4.7 — register the M1 first-install set (5 scheduled tasks) |
-| `install my dashboards`, `install dashboards`, `install missing dashboards`, `install command room artifacts`, `install artifacts`, `set up my dashboards`, `add my dashboards`, `i'm missing dashboards` | **artifact-only** | Skip Phase 4.7. Surface a one-line nudge at end. |
-| `set up command room schedules`, `set up my daily chats`, `configure my schedules`, `enable schedules` | **schedule-only** | This skill is NOT invoked — Cowork's trigger router routes those phrases directly to `enable-command-room-schedules`, bypassing the bridge. |
+| `set up command room schedules`, `set up my daily chats`, `enable schedules` | **schedule-only** | This skill is NOT invoked — the app's trigger router routes those phrases directly to `enable-command-room-schedules`, bypassing the bridge. |
+| `configure my schedules`, `change my schedule`, `show my scheduled chats`, `list my schedules` | **schedule change / read** | This skill is NOT invoked — those phrases belong to `change-schedule` (the corpus row in `tests/triggers.yaml` agrees). `show my schedule` is the calendar's and no skill answers it. |
+
+**The old dashboard phrases** (`install my dashboards`, `install dashboards`, `install missing dashboards`, `set up my dashboards`, `add my dashboards`, `i'm missing dashboards`) never reach this phase. The dispatch at the top of Phase 1 answers them first, with Phase 4's one sentence as the whole turn, and stops there: `bridge_plan(intent="artifact_only")` plans `run_phases: []` (Night M3, RETIRE1).
+
+### The guard runs first (SPEC_NIGHTM1_LANES §7, COPY1)
+
+**Before the intent table's full-update branch does anything at all:**
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
+from schedule_config import scheduler_availability, write_schedule_skipped
+avail = scheduler_availability(<this session's tool names>, workspace_root=WORKSPACE_ROOT)
+```
+
+`available: True` → the whole phase below runs exactly as written.
+
+`available: False` → this phase is a no-op with a record, and nothing else:
+
+- Do NOT invoke `enable-command-room-schedules`, silently or otherwise; do not register, refresh, disable, propose or compare a single task.
+- Call `write_schedule_skipped(WORKSPACE_ROOT, avail["reason"])` — once per workspace-local day, not once per update.
+- Carry the fact into this run's `plugin_update` notes as `schedules: skipped (scheduler unavailable)` for `scheduler_unavailable`, or `schedules: skipped (registration blocked)` for `registration_blocked`. That note is how a seat's own record says why its chats stopped moving, and it is the only place this phase says anything at all — the update's customer-facing summary does not mention schedules on such a seat, because the update did not change them.
+- Say nothing to the customer about schedules here. The one paragraph that explains it belongs to `set up command room schedules`, which is the surface they will type when they want it; an update announcement is not the place to deliver a refusal they did not ask for.
+
+### The registered set is read once (FS-16 readback, BIND3: before the declaration)
+
+On the full-update intent path, when the guard above said `available: True`, read the registered set NOW, once, through the seam: execute the plan `schedule_backend.plan_list()` returns and keep its NORMALISED records as `RECORDS`. This is the one FS-16 readback of the run: the declaration below hands it in, and every later reader on this run (the Phase 4.7 proposal blocks, the stale-prompt check, and Step 4.8a's detector context) uses these same records instead of taking a second one.
+
+- When the guard said `available: False`, the scheduler cannot be read: take no readback here and keep no `RECORDS`.
+- When the readback itself fails (the tool errors), keep no `RECORDS` either. **Never substitute an empty list for a failed readback:** `[]` means "I looked, and nothing is registered", which licenses the declaration to move.
+- **A record that carries a `path` and no `prompt` (the scheduled-tasks listing: it returns a `path` to the task's SKILL.md, never the prompt text): Read the file at that `path` and set the record's `prompt` to its text, then drop `path` from the record.** Do this for every such record before writing `args_file`. The writer places a chat on a computer by the folder its own body names, and the door refuses a path argument, so a record left with only its `path` cannot be placed and the writer refuses to move the declaration.
+
+### The scheduled writer is declared (SAFETY0 — RETIRE1, Night M3; BIND3; full-update intent, whatever the guard answered)
+
+A workspace has exactly ONE computer that runs its scheduled chats. On the full-update intent path, AFTER the guard and the readback above and **whatever the guard answered** — this is the one step that also runs when the guard says `available: False`, because declaring registers nothing, and a seat whose registration is refused is exactly the seat that needs the declaration (its chats were made by hand) — render and paste, once:
+
+`workspace_access.py plan run_writer --json '{"name": "schedule_config:declare_scheduled_writer", "args": {"workspace_root": "<WS>", "declared_by": "command-room-update-bridge", "device_name": "<the name get_device_info reports>"}, "args_file": "<your scratch>/cr_declare_registered.json"}'`
+
+**`registered` is the listing, and it travels by `args_file` (BIND3, D-T2-1).** Every record carries its whole bootloader (tens of KB each, with apostrophes), so the listing never rides inside the pasted `--json` argument. Write `{"registered": RECORDS}` as one JSON object into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace), and name that file as `args_file`, the door's route for a payload too large or too quote-laden for a pasted command line. Each record keeps its plain keys (`taskId`, `enabled`, `prompt`, `trigger_id`, `name`), whole (the `prompt` filled from `path` as the readback above says), and never its `folders` or `path`: the door refuses a path argument, and a registered chat's own body names the folder it lives in. Never trim a prompt to make it fit: a record the writer cannot place on a computer makes it refuse. When there is no `RECORDS` (the guard said the scheduler is unavailable, or the readback failed), write no file and drop the `args_file` key: the form passes no `registered`, and the writer then refuses to move a declaration that names another computer (D-T3-1: the declared computer stays the writer).
+
+**Per computer (HYGIENE3, ruling R-RW3-2).** `device_name` is this computer's name exactly as `get_device_info` reports it (drop the key when this session has no device tool). The folder's path on this computer travels on the rendered line itself as `CR_DEVICE_WORKSPACE` — export it before rendering, as the Access preamble says — and the writer stores a digest of it beside the name, so a second computer of the same account and folder name is told apart by where its folder lives. Never pass the path as an argument (the door refuses a path outside the workspace).
+
+- `result.changed: true` → say `result.line` ONCE in the update summary, verbatim, and nothing else about it; when `result.invite` is not empty, say it right after, verbatim. **When the declaration moved here from another computer,** that can only happen with no chat registered there (the writer refuses otherwise), so `result.line` is the plain declared sentence for this computer and the row carries `previous_device`: the move is on the book, and nothing on the other computer has to stop.
+- `result.reason: "bound_elsewhere"` (BIND3, D-T2-1) → another computer holds this workspace's scheduled chats, and nothing was declared. Say `result.line` (it names that computer) and then `result.invite`, once each, verbatim, and nothing else about schedules. The declaration stays where it is; the phrase in the invite is how the customer moves it, after deleting the chats there.
+- `result.changed: false` with no `reason` (already declared), `result.error: "no_writer_id"` (a seat that cannot name itself — every older desktop seat and every local session — declares nothing, which is right), `ok: false`, or any other error → say nothing and carry on. The declaration never blocks the update.
+
+Once a writer is declared, a chat registered from another computer stops itself with one sentence and writes nothing, and `health check` names how many chats another computer is still writing. **Honest limit:** that stop reaches the other computer only after its own Command Room updates; until then its chats have to be deleted there by hand.
 
 ### Full-update intent (Phase 4.7 runs)
 
-Check whether Cowork scheduled tasks for Command Room are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
+**The registered set rides with the plan (FS-16 readback, BRIDGE3, F-T2-5).** Use the `RECORDS` read once above (The registered set is read once). Write `{"registered": RECORDS}` as one JSON object into THIS SESSION'S OWN scratch and name that file as the form's `args_file`. When there is no `RECORDS`, write no file and drop the `args_file` key.
+
+**On the merged app the bridge REFRESHES and never first-registers (SCHEDREG1 MUST 8, coordinator decision D-8; v5.33.0 merge-fix MF-3).** Before any add path below, and only when the scheduler discovery step above resolved the cloud backend: render ONE read through the door and paste what it prints —
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"tools": [<the tool ids visible in THIS session>], "workspace_root": "<WS>", "plugin_version": "<the installed version from the triple>", "tz_name": "<the workspace zone>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "args_file": "<your scratch>/cr_bridge_registered.json", "name": "schedule_backend:bridge_plan"}'
+```
+
+**The pair and the folder (BRIDGE2, F-OFF-3).** `writer_pair` is the pair this run's rendered lines already carry in front of `python3` (the declaration's line above carries it): pass it explicitly, as the two-item list shown. When no rendered line carries one, pass `null`: the planner then takes the pair the door forwards on this very line (`CR_WRITER_ID` / `CR_WRITER_DERIVATION`) before it ever answers `no_account`. The folder's path is NOT an argument: it crosses on the line as `CR_DEVICE_WORKSPACE`, exported before rendering as the Access preamble says, and the planner reads it there. When `ok` is false (`no_account` when neither a pair nor a forwarded pair exists), say `result["line"]` once and nothing else about schedules: never compose a schedule sentence of your own, and never read the scheduler's list to make one.
+
+Read `result`: when `first_registration_needed` is true, say `result["line"]` ONCE — the one sentence the invite producer composed for this seat (the phrase only where this seat can register; the honest alternative otherwise) — and SKIP every add, supersede and proposal path in this section: nothing is registered by the bridge, ever (first registration is `set up command room schedules`, and only there). Otherwise `result["updates"]` are the mapped chats whose registered body drifted: execute each through the scheduler tool's update call exactly as `change-schedule` does, then record each through `plan run_writer` naming `schedule_backend:record_trigger_map`; `result["current"]` need nothing; `result["creates"]` is always empty on this path. The legacy desktop backend keeps the paragraphs below byte for byte.
+
+**Name the chats (BRIDGE3, F-T2-5).** When `ok` is true and `first_registration_needed` is false, say `result["chats_line"]` ONCE in the update summary, verbatim, when it is not empty: it names the scheduled chats this computer holds, counted from the listing (`result["named"]`), composed by `schedule_backend.bridge_chats_line`. Never count or name the chats yourself: the sentence is the plan's, never one composed from the listing in this chat. A chat whose body could not be compared where the door runs is `current` with `compared: false`, and the plan carries a `note`: that note is a code, never spoken, and nothing about comparing is said.
+
+Check whether Command Room's scheduled tasks are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
 
 **Render the chat names from what actually registers** (display names from the registration set via `task_display_name()`), never a hardcoded list. Shape (names illustrative only):
 
-> *"Setting up your daily action chats — for example: Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap. (A couple more get added later in a follow-up session.) You'll need to grant permission to each one in Cowork's Scheduled section after registration — a one-time step."*
+> *"Setting up your daily action chats — for example: Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap. (A couple more get added later in a follow-up session.) They run without stopping to ask you for approvals."*
 
 For upgrade flow (existing workspace with a prior task set already registered, adding what's missing on top), the surfaced text names only what was added:
 
-> *"Adding [Display Name(s)] to your scheduled chats (you already have the others). One Run Now tap on each to authorize."*
+> *"Adding [Display Name(s)] to your scheduled chats (you already have the others)."*
 
 **Friday Wrap generic-add path (v3.14.4+ — operator-call follow-up, replaces the v3.14.3 manifest item):** also check if `friday-wrap` is in the registered set. If missing AND the workspace is past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register friday-wrap with the current default cadence from `load_schedule_config()` (Fridays 1 PM as of Phase 3/R4). Surface (render the time from the config label):
 
-> *"Adding Friday Wrap to your scheduled chats — it runs Fridays at [config label time] and wraps the week into a recap. One Run Now tap to authorize."*
+> *"Adding Friday Wrap to your scheduled chats — it runs Fridays at [config label time] and wraps the week into a recap."*
 
 Same shape as the Inbox-add precedent. No question; the customer sees a notice about what was added. The v3.14.3 manifest item `v3143_friday_wrap_missing` (instruct_user) is REMOVED in v3.14.4 in favor of this Phase 4.7 silent-add path — per CONTRACT.md Rule 28 (don't ask the customer about default-chat registration).
 
@@ -1022,11 +1344,11 @@ Detection logic (extracted to a helper so future "add missing canonical task" ca
 
 **Silent-task generic-add loop (Phase 3 / SPEC-2.3 — replaces the per-task Cleanup / Reconcile-Sent / Weekly-Insights add paths):** the silent background tasks are NOT among the chat taskIds enumerated above; they register separately via `enable-command-room-schedules` **Step 1.D**, so the chat-completeness check is structurally blind to them (Bug #82's class — see references/HISTORY.md § Bug #82 silent-task registration miss). As of Phase 3 the check is one loop over the **`SILENT_TASKS` registry** in `shared/scripts/schedule_config.py` (currently one task, `maintenance` — MAINT1): for EVERY registry task missing from the registered set on a workspace past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register it with its default cadence, then surface one plain-English line built from the registry's `description` + `reason`.
 
-**Supersede step (MAINT1, D5 — this loop is the auto-migration vehicle for existing installs):** after registering a registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py` and disable every listed taskId still registered+enabled via `update_scheduled_task(enabled: false)`. Idempotent and never deletes — re-running the bridge converges on the same end state (the five old silent tasks off, one `maintenance` task on). A custom cron override the customer had on the old `reconcile-sent` task migrates onto the `maintenance` task cron (the one 1:1 cadence mapping); overrides on the other four can't map onto a single task cron — leave them in place (parity ignores superseded ids) and note the old time couldn't carry over in the same line. Surface exactly ONE plain-English migration line:
+**Supersede step (MAINT1, D5 — this loop is the auto-migration vehicle for existing installs):** after registering a registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py` and disable every listed taskId still registered+enabled via `schedule_backend.plan_update(enabled=False)`, executed by this skill. Idempotent and never deletes — re-running the bridge converges on the same end state (the five old silent tasks off, one `maintenance` task on). A custom cron override the customer had on the old `reconcile-sent` task migrates onto the `maintenance` task cron (the one 1:1 cadence mapping); overrides on the other four can't map onto a single task cron — leave them in place (parity ignores superseded ids) and note the old time couldn't carry over in the same line. Surface exactly ONE plain-English migration line:
 
-**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment an `update_scheduled_task(enabled: ...)` call lands, call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
+**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment a `schedule_backend.plan_update(enabled=...)` call lands (on a legacy seat the shim spells the old verb), call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
 
-> *"Your background upkeep now runs as one 'Maintenance' entry in the Scheduled section — authorize it once with Run Now there. The old background entries are switched off."*
+> *"Your background upkeep now runs as one 'Maintenance' entry. The old background entries are switched off."*
 
 No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent JOB ships inside the already-authorized `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`) with no registration change at all, and a future silent TASK added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers for pre-MAINT1 workspaces; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** the maintenance task's first fire runs every job the dispatcher reports due, so the reconcile backlog clears from the stored cursor forward and stale analytical views recompute (once the workspace has ≥14 days of events) without any extra step.
 
@@ -1047,7 +1369,7 @@ import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rul
 from schedule_proposals import propose_task_retirements, log_retire_proposal
 offers = propose_task_retirements(WORKSPACE_ROOT,
                                   registered_ids=<the quoted readback>,
-                                  task_records=<the RAW list_scheduled_tasks records>)
+                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>)
 ```
 
 **Pass `task_records`, not just the ids (EOD2 / REVIEW F-2).** Neither accept path removes a task — there is no delete API, so both `pause` and the rename switch DISABLE, and the id stays in the registered set forever. Ids alone therefore cannot tell "hasn't acted" from "already acted", and the offer repeats every six weeks for the life of the workspace. The raw records carry `enabled`, which is the difference. Without them the helper still catches the renamed case (successor registered), but the disabled signal is simply unavailable — so pass them whenever the readback is in hand, which on this path it always is.
@@ -1063,44 +1385,31 @@ For each returned offer, surface its `line` VERBATIM (one line, built from the r
 
 **Do not confuse this with a missing chat.** `end-of-day` is a first-install id, so the "is this workspace's schedule complete?" reflex will want to register it. It is already served — `schedule_config.is_task_served("end-of-day", registered_ids)` is the check — and registration's `registration_target_set()` fences it out of the silent-invoke path above for exactly this reason. Never register `end-of-day` from this skill.
 
-**Unconditional prompt COMPARE, conditional refresh (Phase 3 / W4; BRIDGESIL1, 2026-08-27):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1.C compare against every registered prompt — never skip it because "the tasks look registered." But the compare itself is `schedule_refresh.prompts_equivalent`, not a raw hash: it normalizes the diagnostic plugin-version stamp (Phase 1.B `<PLUGIN_VERSION>` substitution) out of both sides first, so a version-only bump — the ONLY thing that changed on most releases — compares equal and writes nothing (Ruling §0.2, the fix for BUG_2026-08-16 / BUG_2026-08-19: the prior raw-hash compare rewrote every registered prompt on every version bump for zero behavioral gain — proof on file is a `git diff` across a real release showing the pinned bootloader template byte-identical while seven prompts were rewritten anyway). A prompt whose content genuinely changed still refreshes exactly as before, silently, no confirmation — bootloader text has no customer customization surface. Step 1.C2, same invocation, ALSO silently re-anchors an uncustomized cron to core's current shipped default when core changed it (Ruling §0.1/§0.3), receipted via `schedule_refreshed` and narrated once on the next morning brief — never here, never as a prompt. (`label` needs no separate re-anchor: it has no live Cowork-side field and is derived fresh from cron whenever uncustomized, so a cron re-anchor already carries it forward.) The watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`, which reads the UNNORMALIZED registered prompt) is still the detector for a prompt this refresh hasn't reached yet (its own stamp read is unaffected by the write-side normalization above). This replaces hoping Rule 16 was obeyed.
+**Unconditional prompt COMPARE, conditional refresh (Phase 3 / W4; BRIDGESIL1, 2026-08-27):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1.C compare against every registered prompt — never skip it because "the tasks look registered." But the compare itself is `schedule_refresh.prompts_equivalent`, not a raw hash: it normalizes the diagnostic plugin-version stamp (Phase 1.B `<PLUGIN_VERSION>` substitution) out of both sides first, so a version-only bump — the ONLY thing that changed on most releases — compares equal and writes nothing (Ruling §0.2, the fix for BUG_2026-08-16 / BUG_2026-08-19: the prior raw-hash compare rewrote every registered prompt on every version bump for zero behavioral gain — proof on file is a `git diff` across a real release showing the pinned bootloader template byte-identical while seven prompts were rewritten anyway). A prompt whose content genuinely changed still refreshes exactly as before, silently, no confirmation — bootloader text has no customer customization surface. Step 1.C2, same invocation, ALSO silently re-anchors an uncustomized cron to core's current shipped default when core changed it (Ruling §0.1/§0.3), receipted via `schedule_refreshed` and narrated once on the next morning brief — never here, never as a prompt. (`label` needs no separate re-anchor: it has no live scheduler-side field and is derived fresh from cron whenever uncustomized, so a cron re-anchor already carries it forward.) The watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`, which reads the UNNORMALIZED registered prompt) is still the detector for a prompt this refresh hasn't reached yet (its own stamp read is unaffected by the write-side normalization above). This replaces hoping Rule 16 was obeyed.
 
 The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, work hours 8 AM–6 PM weekdays, per-chat times read from `schedule_config.DEFAULT_SCHEDULES` (never a time typed here). Users who want different cadences fire `change my schedule cadence` later for per-task customization.
 
-If `enable-command-room-schedules` fails or is unavailable, log a warning and continue — the user can run it manually later via `set up command room schedules`.
+If the legacy-backend registration fails or is unavailable, log a warning and continue, and say ONCE what `schedule_backend:bridge_schedules_line` returns (rendered through `plan run_helper` with this session's tool ids, `workspace_root` and `abs_path`): it names the phrase only on a seat that can act on it and the honest alternative elsewhere (D-5) — never type the phrase here.
 
 ### Post-update orchestrator-rebind heads-up (v3.14.3+)
 
-After Phase 4.7 completes on the full-update intent path, surface this one-line note ONCE at the end of the bridge flow, plain-English chat:
+After Phase 4.7 completes on the full-update intent path **and only when the guard said this seat has a working scheduler**, surface this one-line note ONCE at the end of the bridge flow, plain-English chat. On a seat where schedules are not running there is nothing to rebind and nothing to reopen — say none of it:
 
-> *"Heads-up — the next time your scheduled chats run, they're reading from the just-updated Command Room. If tomorrow's morning brief (or any scheduled chat) shows an error about not being able to load, fully quit and reopen Cowork — not just close the window, end every Cowork process in Task Manager / Activity Monitor — then say `set up command room schedules` to reconnect them. That's the normal recovery after an update — it's not a real failure of your chats."*
+> *"Heads-up — the next time your scheduled chats run, they're reading from the just-updated Command Room. If tomorrow's morning brief (or any scheduled chat) shows an error about not being able to load, fully quit and reopen the desktop app — not just close the window, end every one of its processes in Task Manager / Activity Monitor — then say `set up command room schedules` to reconnect them. That's the normal recovery after an update — it's not a real failure of your chats."*
 
-Why this is unconditional, not detected: Cowork's VHD-cache refresh timing is opaque to the bridge — some workspaces remount cleanly on the next fire, some serve the stale snapshot for hours. We can't reliably detect from inside this skill whether the next scheduled fire will hit a stale mount. Cheap, plain English, harmless if not needed.
+Why this is unconditional on that path, not detected: the desktop app's cache refresh timing is opaque to the bridge — some workspaces remount cleanly on the next fire, some serve the stale snapshot for hours. We can't reliably detect from inside this skill whether the next scheduled fire will hit a stale mount. Cheap, plain English, harmless if not needed.
 
 ### Post-update stale-prompt check — ONE sentence, only when the refresh did not reach the chats (CUT-PLATE, 2026-09-06)
 
-**What the registered prompt is, so nobody re-registers for the wrong reason.** Each scheduled chat's registered prompt is a thin BOOTLOADER that `cat`s the plugin's orchestrator file at fire time (`references/scheduled-task-bootloader.md`, Step 3). The CONTENT a fire runs is therefore always the installed plugin's — the morning brief's lead, the day-close's plate screen, the wrap's Parked review all reach a fire the moment the plugin is updated, with no re-register. What CAN go stale is the bootloader's own body (its workspace-discovery snippet, its diagnostic version stamp), and Step 1.C above refreshes that in place through `update_scheduled_task(taskId, prompt=…)` — never a re-register, never a new chat.
+**What the registered prompt is, so nobody re-registers for the wrong reason.** Each scheduled chat's registered prompt is a thin BOOTLOADER that `cat`s the plugin's orchestrator file at fire time (`references/scheduled-task-bootloader.md`, Step 3). The CONTENT a fire runs is therefore always the installed plugin's — the morning brief's lead, the day-close's plate screen, the wrap's Parked review all reach a fire the moment the plugin is updated, with no re-register. What CAN go stale is the bootloader's own body (its workspace-discovery snippet, its diagnostic version stamp), and Step 1.C above refreshes that in place through the seam (`schedule_backend.plan_update(task_id, prompt=…)`, executed by this skill; on a legacy seat the shim spells the old verb) — never a re-register, never a new chat.
 
-**The check, on the full-update intent path, after Phase 4.7 and after the readback:** read the registered tasks back (`list_scheduled_tasks`) and compute the BODY drift — `drift = schedule_refresh.prompt_body_drift(records, plugin_version=<installed version>)`: the task ids whose registered bootloader body still differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the same `prompts_equivalent` compare Step 1.C writes on, so a non-empty `drift` after the readback IS "the refresh did not reach the chats"). Then post what `schedule_refresh.stale_prompt_notice(drift)` returns — the ONE pinned sentence, verbatim, or nothing. `task_watchdog.check_prompt_versions(records, <installed version>)` — the stamp read — is INFORMATIONAL here and never earns the sentence: a stamp-only difference is not drift (CUT-PLATE fix round 1, REVIEW F-1 — Step 1.C deliberately leaves the stamp alone, BRIDGESIL1 Ruling §0.2, so a sentence keyed to the stamp would print on every run of every release whose bootloader body did not change, and the phrase it names could never clear it). Post:
+**The check, on the full-update intent path, after Phase 4.7 and after the readback:** read the registered tasks back through the seam (`schedule_backend.plan_list`, executed and normalised) and compute the BODY drift — `drift = schedule_refresh.prompt_body_drift(records, plugin_version=<installed version>)`: the task ids whose registered bootloader body still differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the same `prompts_equivalent` compare Step 1.C writes on, so a non-empty `drift` after the readback IS "the refresh did not reach the chats"). Then post what `schedule_refresh.stale_prompt_notice(drift)` returns — the ONE pinned sentence, verbatim, or nothing. `task_watchdog.check_prompt_versions(records, <installed version>)` — the stamp read — is INFORMATIONAL here and never earns the sentence: a stamp-only difference is not drift (CUT-PLATE fix round 1, REVIEW F-1 — Step 1.C deliberately leaves the stamp alone, BRIDGESIL1 Ruling §0.2, so a sentence keyed to the stamp would print on every run of every release whose bootloader body did not change, and the phrase it names could never clear it). Post:
 
 > *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."*
 
-It renders ONCE per run, only when a body drift survives the refresh — which happens when this session cannot see the scheduler store the chats live in (a Code / cloud session reads an empty store; the v5.28.0 attended test's Step 0 saw all seven bootloaders still stamped v5.20.0 after two updates for exactly this reason) or when the `update_scheduled_task` call failed. Never a per-task list, never a diagnosis, never a second phrasing — the health check and the Monday cleanup note say this same sentence from the same constant. When the readback shows every stamp current, say nothing.
+That is the sentence on a seat where registration is open. `stale_prompt_notice` composes through the one invite producer (SCHEDREG1 MUST 7, D-5), so on a seat that cannot register it returns the alternative sentence — post whatever it returns, never the quoted form by hand.
 
-### Artifact-only intent (Phase 4.7 skipped)
-
-Skip the schedule registration entirely. After Phase 4 completes, surface this nudge once at the end of the bridge flow:
-
-> *"Note — your scheduled chats aren't set up yet. They need their own setup step: say `set up command room schedules` when you're ready. Useful pattern: install the dashboards now to see what Command Room looks like, then set up the scheduled chats once you want them running on their own."*
-
-This separation lets you:
-- Demo the artifacts to a client without committing them to scheduled tasks
-- Install the artifacts in a paranoid-mode workspace where autonomous chat fires aren't desired
-- Stage installs across sessions
-
-**Don't auto-fire `enable-command-room-schedules` from the artifact-only path** — that defeats the whole point of the split.
-
----
+It renders ONCE per run, only when a body drift survives the refresh — which happens when this session cannot see the scheduler store the chats live in (a Code / cloud session reads an empty store; the v5.28.0 attended test's Step 0 saw all seven bootloaders still stamped v5.20.0 after two updates for exactly this reason) or when the `schedule_backend.plan_update` call failed. Never a per-task list, never a diagnosis, never a second phrasing — the health check and the Monday cleanup note say this same sentence from the same constant. When the readback shows every stamp current, say nothing.
 
 ### Migration: `workspace_shape_question` (v2.10.5)
 
@@ -1164,9 +1473,11 @@ If `orgs_retiered == 0` (every org's current state matched inferred): surface a 
 
 ## Phase 4.8: Play release-manifest remediations (v3.4.5+)
 
-After dashboards install, workspace migrations apply, and scheduled tasks are registered, read per-version release manifests at `$PLUGIN_ROOT/shared/releases/v<X.Y.Z>.json` and play any whose detectors match the user's workspace state. This is where per-version remediations live — bug fixes that recover existing state, new-skill announcements, etc. Full schema and contract in `references/RELEASE_MANIFEST.md`.
+After workspace migrations apply and scheduled tasks are registered, read per-version release manifests at `$PLUGIN_ROOT/shared/releases/v<X.Y.Z>.json` and play any whose detectors match the user's workspace state. This is where per-version remediations live — bug fixes that recover existing state, new-skill announcements, etc. Full schema and contract in `references/RELEASE_MANIFEST.md`.
 
 **Why a manifest-driven layer:** plugin code updates fix forward but don't reach existing workspace state. A user upgrading v3.4.1 → v3.4.5 gets the new code (filter handles all commitment shapes, etc.) but: their previously-dropped commitments still need to be SURFACED on a re-fire; new skills like `process bug report` won't auto-discover themselves; future workspace-data backfills need a hook. Each release that introduces such a follow-up ships a manifest item describing it.
+
+**One gated item (v5.33.0, R-V533-7; coordinator decision D-C2).** The manifest item `v5330_instruct_schedule_setup` names the setup phrase. Surface it ONLY when `schedule_backend:bridge_schedules_line` (rendered through `plan run_helper`, above) returned its invitation on this seat; on a seat where it returned the alternative sentence, say that sentence once instead and never the item's text (D-5: the phrase is only ever offered where it can be acted on).
 
 ### Step 4.8a — Compute pending remediations
 
@@ -1175,7 +1486,55 @@ Determine `last_applied_version` from the most recent `plugin_update` event in e
 **Select the pending manifests via the deterministic helper — do NOT compare versions by hand (v3.18.9+, "solid for all clients" hardening).** The selection is "every manifest with version `> last_applied AND <= current`, ascending". You MUST get this from `shared/scripts/release_remediation_selector.py`, NOT by string-filtering or string-sorting the filenames yourself. Version strings are NOT lexically ordered: `"3.10.0" < "3.9.1"` as strings, so a hand-rolled filter `v > "3.9.1"` silently drops every 3.10–3.18 manifest — a client on an old single-digit-minor version (the retired `commandroom2122–2177` installs) would miss every remediation across that range. The helper parses each version into a tuple of ints and compares tuples, which also handles 4-part versions (`3.13.8.1`) and any future double-digit minor/patch. Call it:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 shared/scripts/release_remediation_selector.py shared/releases "<last_applied_version>" "<current_plugin_version>"
 ```
 
@@ -1184,7 +1543,55 @@ It prints a JSON array `[{"version", "path", "headline", "n_items"}, ...]` alrea
 For each manifest, for each item, run the detector via bash:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')
@@ -1200,8 +1607,127 @@ Skip items whose detector returns `{"applies": False}`. For items returning `{"a
 - **action: `announce_only` or `instruct_user`** — format the `prompt_template` with `.format(**detector_context)` and add to `pending_release_remediations` list.
 - **action: `auto_apply` (v3.14.4+)** — invoke the action module's function via bash python (same plugin-root resolution as the detector), passing `(events_jsonl_path, workspace_root, detector_context)`. Handle the result per the auto_apply contract in Step 4.8b. See `references/RELEASE_MANIFEST.md` "Action contract" for the full schema.
 
+**THE SCHEDULE READBACK RIDES IN THE DETECTOR CONTEXT — ON EVERY PATH, INCLUDING THIS ONE (SCHEDVIEW1 5.3, MANDATORY).** Several actions read LIVE schedule state and can only be handed it: nothing under `shared/scripts/` may call a scheduler tool, so an action with no readback in its context plans nothing, by design. On the operator's own seat the readiness item was handed neither `registered_ids` nor `task_records` — it planned nothing, left no trace, and read in the ledger exactly like an item that had never run (`ATTENDED_TEST_v5.31.0_2026-09-14.md`, Step 0 b), while the same item on a workspace that WAS handed one wrote its marker correctly. The difference was this call site.
+
+So: use the readback taken at the top of Phase 4.7 (`RECORDS`, "The registered set is read once") — the NORMALISED records, which carry the five keys every reader here expects whichever scheduler answered. On a path that did not reach Phase 4.7, read the registered set ONCE here instead, through the seam: execute the plan `schedule_backend.plan_list()` returns. It is the same FS-16 readback the proposal blocks quote, and one readback serves every reader — and build the context from its RAW records through the one composer, never by hand:
+
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from schedule_proposals import readback_context
+print(json.dumps(readback_context(task_records=<the NORMALISED `schedule_backend.plan_list` records>)))
+"
+```
+
+Merge what it returns into `$DETECTOR_CONTEXT_JSON` for every `auto_apply` item on this run. Pass the RAW records, not just the ids: the records carry `enabled`, which is the fence that stops a workspace whose adjudication record was lost from re-writing a config event on every update forever. If the readback genuinely cannot be taken (the tool errors, or the seat has no scheduler), pass the context WITHOUT those keys — `readback_context()` returns `{}` and the actions then say "could not look" in their own receipts. **Never substitute an empty list for a failed readback:** an empty registered set means "I looked, and nothing is registered", which is a different fact and licenses different acts.
+
+**THE VISIBLE TOOL IDS RIDE IN THE SAME CONTEXT (DISC1, MANDATORY).** The same rule, one fact over. A detector is handed one argument — the path to the events file (`references/RELEASE_MANIFEST.md`, "Item": `def fn(events_jsonl_path: str) -> dict`) — so a detector CANNOT see which connectors this session has. Nothing under `shared/scripts/` may enumerate them either. An action that resolves connectors therefore has exactly one supplier, this call site, and an action handed no tool list plans nothing by design. So merge the ids of every tool visible in THIS session into `$DETECTOR_CONTEXT_JSON` for every `auto_apply` item on this run, under the key `"tools"`, exactly as the readback above is merged:
+
+```
+DETECTOR_CONTEXT_JSON = {**detector_context, **readback_context, "tools": [<every tool id visible in this session>]}
+```
+
+Plain ids are enough (`mcp__<connection>__<operation>`); the actions accept objects carrying `tool_id` as well. If you genuinely cannot enumerate them, pass the context WITHOUT the key — never `[]`: an empty list reads as "I looked, and this seat has no connectors at all", which would be a licence to conclude things. With the key absent, `connector_display_name_repin_v1` returns `status: "no_tools"`, writes nothing, and says why in its own report.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json, importlib
 sys.path.insert(0, 'shared/scripts')
@@ -1215,7 +1741,55 @@ print(json.dumps(result))
 - **action: `apply_workspace_migration` (MIGRATE2, 2026-09-02 — DORMANT: no shipped manifest carries it yet; this block executes only once a deliberate manifest item lands with the operator's go)** — a versioned migration of files the customer READS (the first behind it: the memory-section seed into every safe PROJECT_BRAIN.md). Run it through the runner, never by importing the migration directly — the runner IS the safety posture: it refuses a decoy root (`_archive` / `_demo-framework` in the path, or no `_hq/data/entities.json`), refuses when two workspace candidates tie at the shallowest depth (pass the full discovery list as `candidates` so it can see the tie — never pick one yourself), runs the migration's dry-run first, applies ONLY when the dry-run plans cleanly with zero blocking rows, and otherwise returns the blocking rows as a disclosure having seeded nothing. Contract: `references/RELEASE_MANIFEST.md` "Action types".
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -1231,7 +1805,55 @@ print(json.dumps(result))
   - `needs_answer` — the migration needs the customer's ONE decision before it seeds (today: whether the judgment section of the memory notes may hold candid notes about people, or process observations only — the operator's 2026-08-31 ruling made this a per-workspace onboarding question; a workspace that already carries the setting, such as the operator's own, is never asked). Ask `result["question"]["prompt"]` verbatim, as a plain chat question, then record the reply and re-invoke:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -1318,11 +1940,25 @@ The "I [did the thing]" framing is the canonical voice for auto_apply notices �
 
 ### Step 4.8c — Log per-item events
 
-For each item that surfaced (applies=True and not previously seen), append a `plugin_update_remediation` event to events.jsonl (OMIT `seq`/`ts` — the append gate auto-stamps both inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4.)
+**One receipt per act.** If an `auto_apply` action returned `context.receipt_written: true`, it has already written its own `plugin_update_remediation` for this item — carrying what it actually did (the batch id, the counts, the bar) and the `receipt_role` that makes it that item's one-shot marker. SKIP this step for that item: writing a second row of the same type and the same `item_id` puts the same act in the operator's log twice and gives the idempotency read two rows to choose between (CONTRACT Rule 36). Every other item still gets its row here.
 
-```jsonl
-{"type":"plugin_update_remediation","source_skill":"command-room-update-bridge","data":{"manifest_version":"3.4.4","item_id":"v344_refire_commitments","action":"instruct_user","detector_context":{"count":47,"by_shape":{...}}}}
+**A run that COULD NOT LOOK leaves its own marker too (SCHEDVIEW1 5.3).** An action that reads live schedule state and was handed no readback returns `ran: false` with `receipt_written: true` and an `outcome` of `no_readback`. Treat it exactly like the zero-result case below — surface nothing — with one difference that matters later: the marker is written as a NOTE, so the item stays ARMED and the next update that carries a readback re-evaluates it. Three states, three receipts, three sentences: a run that looked and acted, a run that looked and found nothing, and a run that could not look. Before this, the third wrote nothing at all and was indistinguishable in the ledger from an item that never ran.
+
+**A zero-result run still leaves its marker (DOORS1 1.5).** `context.receipt_written: true` now arrives from runs that DID NOTHING as well as from runs that acted — a one-shot whose bar found no rows, a switch-off on a seat where the job was already off. Treat those identically: skip this step, surface nothing (the action returns `ran: false`), and let the marker be what `applied_remediation_ids` carries. The v5.30.0 update-day cleanup parked zero rows on the operator's seat and wrote nothing at all, so the ledger could not tell a truthful zero from a run that never happened; that is the hole this closes, and it closes only if the marker is not duplicated here.
+
+**A retired maintenance job refreshes its prompt through the COMPARE, not through a re-registration (DOORS1 1.1, fix round 1).** The `v5310_retire_age_out_job` item switches the job off in the workspace's own config and returns `context.prompt_stanza_retired: true`. It deliberately does NOT re-register the maintenance task's prompt, and the spec step that asked for one is traded for the unconditional prompt COMPARE above (Phase 5.9 / FS-01): nothing under `shared/scripts/` may reach a scheduled task, by battery guard, so an action cannot re-register anything. The trade is safe because the stanza the old prompt types — the `age-out ... --apply` command line — has been DELETED from the CLI, so a seat whose prompt has not been refreshed yet gets an argparse error and never a fire. Two things follow and both are load-bearing: the compare must not be skipped on this release (it is the only thing that rewrites the stanza out), and the re-test reads the registered prompt back afterwards to confirm it is gone.
+
+> **Re-test line (v5.30.0 script, HOLD 2 / Part E):** after the update, read the registered set through the seam, find the row whose `task_id` is `maintenance`, and look at what it carries. The listing is `schedule_backend.plan_list`'s normalised records; a legacy listing returns a `path` to the task's SKILL.md, never the prompt text — read the file at that `path`. Confirm the string `age-out` does not appear in it (on a backend whose listing carries the prompt itself, read that instead; a record whose prompt is `None` is unknown, never clean). If it does, the prompt compare did not run and the seat still types a command that no longer exists. Without the Read step there is nothing to check: a scorekeeper who stops at the listing sees no prompt field and marks the step unverifiable.
+
+**Items that ask you to call the scheduler (DOORS1 1.5).** An `auto_apply` action can never reach a live scheduled task — nothing under `shared/scripts/` may, by battery guard. An action that needs one returns `context.pause_task_ids`, a list of task ids. For each id in that list, in order: disable it through `schedule_backend.plan_update(task_id=<id>, enabled=False)`, handed to the scheduler this session can see — **never pass `prompt`** — and only after that call SUCCEEDED write the substrate record with `schedule_proposals.log_readiness_retirement(WORKSPACE_ROOT, <id>)` — a thin wrapper that routes `schedule_config.log_schedule_config_change`, THE one config-event writer (SPEC SCHED1 §0-4), so this pause lands in the same shape every other pause lands in; never hand-roll the event here and never call the writer directly instead, because the wrapper is what keeps the annotation and the adjudication gate reading one constant. That order is not a preference: an event claiming a task is off while it still fires is worse than no event, and `late_fire` reads these records to refuse scoring the slots the change itself minted. Then surface the ONE line the action handed you in `context.summary`, built by the registry — do not paraphrase it and do not drop its comes-back clauses. This is the same two-step as `readiness_retirement_v1` above; the manifest item exists because that block only runs on one branch of the update path, and on the operator's seat it never did — Commitment Triage and Pipeline Digest were still firing weeks after both were retired.
+
+For each remaining item that surfaced (applies=True and not previously seen), append ONE `plugin_update_remediation` row through the door — every item's row in the one call, rendered in the container and pasted (OMIT `id`/`seq`/`ts` — the door auto-stamps `seq` and `ts` inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4):
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"action": "instruct_user", "detector_context": {"count": 47}, "item_id": "v344_refire_commitments", "manifest_version": "3.4.4"}, "source_skill": "command-room-update-bridge", "type": "plugin_update_remediation"}]}'
 ```
+
+The row's shape: `type`, `source_skill`, and `data` = `{manifest_version, item_id, action, detector_context}` (the detector's own context, as it came back).
 
 The item_id is what makes future re-runs idempotent **for `announce_only` items** — the next time `update command room` fires, `announce_only` items with matching `(manifest_version, item_id)` in events.jsonl are filtered out at Step 4.8a. **`instruct_user` items do NOT use prior-seen idempotency** (v3.13.8.3+, Bug #73 fix); they re-surface as long as their detector still returns `applies: True`. The `plugin_update_remediation` event is still written for `instruct_user` items so audit trails capture every surfacing, but it does not gate future surfacings — only the detector + permanent-decline check do.
 
@@ -1342,15 +1978,15 @@ The goal: a broken manifest, detector, or action never blocks the rest of the up
 
 ## Phase 5: Log the update event
 
-After installs, workspace migrations, scheduled-task registration, and release-manifest remediations complete (full or partial), append a single event to `_hq/data/events.jsonl`:
+After installs, workspace migrations, scheduled-task registration, and release-manifest remediations complete (full or partial), append a single `plugin_update` row through the door — rendered in the container, pasted. The row is `type`, `source_skill` and `data`; OMIT `id`, `seq` and `ts` (the door stamps them — a hand-typed id or timestamp is the F-15 class):
 
-```jsonl
-{"id":"evt_NNN","timestamp":"<ISO>","type":"plugin_update","from_version":"<INSTALLED>","to_version":"<CURRENT>","plugin_json_version":"<PJ>","newest_manifest_version":"<NM>","workspace_stamp":"<WS>","unshipped_tip":false,"installed_artifacts":["orgs-map","quick-commands"],"failed_artifacts":[],"applied_migrations":["prompt_restructuring_preference"],"skipped_migrations":[],"applied_remediation_ids":["v344_refire_commitments","v345_announce_manifest_system"],"actor":"command-room-update-bridge"}
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "applied_migrations": ["prompt_restructuring_preference"], "applied_remediation_ids": ["v344_refire_commitments"], "failed_artifacts": [], "from_version": "<INSTALLED>", "installed_artifacts": [], "newest_manifest_version": "<NM>", "notes": "<runtime / schedules notes>", "plugin_json_version": "<PJ>", "skipped_migrations": [], "to_version": "<CURRENT>", "unshipped_tip": false, "workspace_stamp": "<the workspace stamp>"}, "source_skill": "command-room-update-bridge", "type": "plugin_update"}]}'
 ```
 
-**MANDATORY — the version fields come from the Phase 1 struct, verbatim (WALKFIX1 Item I).** Build them with `bridge_versions.receipt_version_fields(<the Phase 1 struct>)` and merge the result into the event's data. Every `plugin_update` receipt this run writes carries the SAME three named members, so a reader never has to infer which member a bare number came from — the ambiguity that made one run's two receipts read first as a downgrade and then as a no-op. This applies to `plugin_update_deferred` too.
+**MANDATORY — the version fields come from the Phase 1 struct, verbatim (WALKFIX1 Item I).** Build them with `bridge_versions.receipt_version_fields(<the Phase 1 struct>)` and merge the result into the event's data. Every `plugin_update` receipt this run writes carries the SAME three named members, so a reader never has to infer which member a bare number came from — the ambiguity that made one run's two receipts read first as a downgrade and then as a no-op.
 
-If failures occurred, list them in `failed_artifacts`. If migrations were skipped (user-declined or structural mismatch), list them in `skipped_migrations` with a brief reason inline. The `applied_remediation_ids` list carries every release-manifest item the user saw in Phase 4.8 (v3.4.5+). The next run of this skill detects the partial update and offers to retry the failed ones — but does NOT re-prompt for migrations the user explicitly declined (unless they say `redo workspace migrations`).
+`installed_artifacts` and `failed_artifacts` are always `[]` since Night M3 (nothing is installed); they stay so a reader of older rows sees one shape. If migrations were skipped (user-declined or structural mismatch), list them in `skipped_migrations` with a brief reason inline. The `applied_remediation_ids` list carries every release-manifest item the user saw in Phase 4.8 (v3.4.5+). The next run of this skill does NOT re-prompt for migrations the user explicitly declined (unless they say `redo workspace migrations`).
 
 **Release-manifest idempotency is type-aware (v3.13.8.3+, Bug #73 fix):**
 - `announce_only` items in `applied_remediation_ids` → fire-once, not re-surfaced.
@@ -1359,31 +1995,23 @@ If failures occurred, list them in `failed_artifacts`. If migrations were skippe
 
 ---
 
-## Phase 6: Surface the optional add-ons (one line, no pitch)
+## Phase 6: Close (one line, no pitch)
 
-After successful install, end with one line. Render it from the ADDONS set — never a hardcoded count:
+After a successful update, end with one line:
 
-- If ADDONS is empty (current state as of v3.11.0):
+> *"You're up to date. You're done."*
 
-> *"You're up to date with both default dashboards installed. You're done."*
-
-- If ADDONS is non-empty at your version:
-
-> *"You're up to date with both default dashboards installed. Optional add-ons are available — say `level up command room` to see them. Otherwise, you're done."*
-
-Don't list the add-ons inline. The user can discover them at their pace.
+Nothing else is offered — the add-ons menu retired with the sidebar path (`level up command room` now says the dashboards sentence).
 
 ---
 
 ## What this skill does NOT do
 
 - Does not run schema migrations. v2.7.9 doesn't introduce schema changes; if a future version does, that's a separate skill (`command-room-migrate`).
-- Does not auto-uninstall deprecated artifacts. Command Atlas / Commitment Cockpit / Pay Attention To stay if the user has them pinned. They're harmless.
+- Does not install, refresh or uninstall any dashboard. Older pinned ones (Command Atlas / Commitment Cockpit / Pay Attention To, the Workspace Map, Quick Commands) stay until the customer unpins them; Phase 4 says so once.
 - Does not modify `entities.json`, `aliases.json`, or any user data file (people-crm and workspace-manager remain canonical owners).
-- Does not modify skill files. Skill behavior updates flow automatically through Anthropic's plugin distribution — this skill only fills the gap for things distribution can't reach (artifact installs and workspace-folder file edits).
+- Does not modify skill files. Skill behavior updates flow automatically through Anthropic's plugin distribution — this skill only fills the gap for things distribution can't reach (workspace-folder file edits).
 - Does not re-run onboarding. If the user wants a full reset, they say `restart onboarding` (different skill).
-- Does not install opt-in add-ons (Commitment Cockpit, Pay Attention To, Meeting Processor) — those go through `level up command room` or their direct `enable-*` triggers.
-- Does not retry failed installs automatically. Surfaces the failure once; user retries manually.
 - Does not re-prompt for migrations the user explicitly declined. If they said "No" to prompt restructuring on first run, subsequent runs respect that choice unless they say `redo workspace migrations`.
 - Does not run on every session start. Only fires on explicit user trigger.
 
@@ -1393,11 +2021,7 @@ Don't list the add-ons inline. The user can discover them at their pace.
 
 **No `events.jsonl` exists.** User is on a very old install that pre-dates the JSON substrate. Route them to `restart onboarding` instead — update-bridge can't help; they need a full re-run.
 
-**Plugin version JSON is unreadable.** Treat `from_version` as `"unknown"` and assume all v2.7.9 defaults are missing. Proceed with full install.
-
-**User has more recent artifacts installed than the v2.7.9 set knows about.** They're on a newer version than this skill expects. Tell them: *"Your version is ahead of what this skill knows about. No action needed."*
-
-**`enable-*` skill not present in plugin.** Skip that one in the install loop, mark it as failed in `plugin_update.failed_artifacts`. User probably has a partial plugin; no clean recovery path from this skill.
+**Plugin version JSON is unreadable.** Treat `from_version` as `"unknown"` and proceed with the full update.
 
 **CLAUDE.md exists but `## Preferences` heading is missing.** Pre-v2.4 workspaces may have a different structure. Skip the workspace-migration with `reason: "structural_mismatch"`. Tell the user: *"Your CLAUDE.md is missing the Preferences section — that's a bigger change than I can safely make on my own. Say `restart onboarding` if you want a clean rebuild, or skip this for now."* Don't try to recover automatically.
 
@@ -1405,16 +2029,32 @@ Don't list the add-ons inline. The user can discover them at their pace.
 
 **Workspace migration partially applied.** If a prior run logged `workspace_migration_applied` but the marker check fails (user manually edited or removed the line afterward), the adjudication gate keeps the id suppressed on normal runs — never silently re-apply; the user clearly modified something on purpose. The re-add path is `redo workspace migrations`: on that flow, an applied-event id whose marker is now absent re-prompts with an explicit confirm before re-adding (apply-once migrations stay excluded — a deliberate deletion there is final unless the user asks on the redo flow).
 
-**`create_artifact` returns success but Rule 8 verification fails. (Added v2.7.10.)** This means the tool accepted the call but what landed in Cowork doesn't match the canonical template — possible causes: tool truncation, encoding mishandling on the wire, payload limit silently clipped the input. Mark the install failed via `artifact_install_failed` with `reason: "verification_failed:<which>"`. Surface to user: *"Workspace Map installed but didn't pass my check — what landed doesn't match the original. Don't pin it yet. Restart Cowork and say `update command room` to retry, or report the problem if it keeps happening."* Do NOT pin, do NOT log `artifact_installed`, do NOT continue to the next artifact in the batch.
-
-**Prior install of a non-canonical "compact equivalent" exists from pre-v2.7.10. (Added v2.7.10.)** Some users (e.g., Dustin Sample's install on 2026-04-26) received a hand-rolled improvised artifact from the v2.7.9 bridge before the Rule 7 + Rule 8 enforcement was in place. Detection: an `artifact_installed` event exists for `workspace_map` or `daily_command_center` but the live artifact fails the Rule 8 verification block (size ≪ 80% of source, or missing the marker string, or contains `â€` mojibake). Action: append an `artifact_install_failed` event with `reason: "non_canonical_predecessor"`, surface to user: *"You have a Workspace Map installed, but it's not the right one — an earlier version installed a broken copy. I'd like to remove it and install the real one. OK to proceed? (yes / no)"* On yes, uninstall the non-canonical artifact (call `mcp__cowork__delete_artifact` with the installed artifact id if the tool exists in this session; otherwise tell the user: *"Right-click the Workspace Map in your Cowork sidebar and choose Remove, then say 'update command room' and I'll install the real one."*) and re-run the install. On no, leave it alone but flag in the next `cleanup`.
-
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Routing (full trigger corpus)
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Installs the two Layer 1 default sidebar dashboards (Orgs Map, Quick Commands) and applies any pending workspace-level migrations (CLAUDE.md preference additions, BUSINESS_CONTEXT additions). Serves both fresh-onboarded users (onboarding defers dashboard installs to this skill so the demo stays fast) and existing-version upgrade users (detects which of the defaults are already installed; only installs the missing ones). Idempotent — re-runs are safe. Triggers on 'install my dashboards', 'install dashboards', 'install missing dashboards', 'i'm missing dashboards', 'set up my dashboards', 'add my dashboards', 'update command room', 'update my command room', 'whats new in command room', "what's new in command room", 'install latest', 'install the latest', 'check for updates', 'redo workspace migrations' (clears prior skip events and re-runs the migration pass). DOES NOT fire on a bare what's-new greeting with no Command Room in the sentence (small talk — answer conversationally, never run a version check). DOES NOT fire on 'level up command room' (umbrella for opt-in add-ons), 'rebuild [artifact]' (refresh, not install), 'restart onboarding' (full re-run, separate skill).
+> The update ritual: applies any pending workspace-level migrations (CLAUDE.md preference additions, BUSINESS_CONTEXT additions) and release-manifest remediations. Dashboards live in chat now: the old dashboard-install phrases below still route here and hear that one sentence (the same answer `level up command room` gives); nothing is installed. Idempotent — re-runs are safe. Triggers on 'install my dashboards', 'install dashboards', 'install missing dashboards', 'i'm missing dashboards', 'set up my dashboards', 'add my dashboards', 'update command room', 'update my command room', 'whats new in command room', "what's new in command room", 'install latest', 'install the latest', 'check for updates', 'redo workspace migrations' (clears prior skip events and re-runs the migration pass). DOES NOT fire on a bare what's-new greeting with no Command Room in the sentence (small talk — answer conversationally, never run a version check). DOES NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (refresh, not install), 'restart onboarding' (full re-run, separate skill).

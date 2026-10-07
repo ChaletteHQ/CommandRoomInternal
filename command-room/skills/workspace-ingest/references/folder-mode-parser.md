@@ -139,6 +139,7 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
                                name_hint="workspace-ingest")
 # Pass transport["html"] to mcp__visualize__show_widget as widget_code (persisted page bytes, verbatim) (EW2+T, F-15 —
 # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 **Action semantics:**

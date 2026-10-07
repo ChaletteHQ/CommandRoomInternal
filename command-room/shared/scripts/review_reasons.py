@@ -220,6 +220,19 @@ REASON_SENTENCES = (
                 r"promise$", re.I),
      "it's a promise with nobody named on the other side"),
     (re.compile(r"^observed tier$", re.I), "heard, not promised"),
+    # INTAKE1 — the four reasons the door itself holds a row back. They are
+    # already plain English (`capture_gate.HOME_RULE_REASONS`), and they are
+    # listed here anyway so the mapping is EXPLICIT: a rendered reason that
+    # arrives by falling through the table is one refactor away from reading
+    # like a machine, and these four are the sentences most customers will
+    # see most often once the gate is on.
+    (re.compile(r"^nobody owns this yet$", re.I), "nobody owns this yet"),
+    (re.compile(r"^no date, no project and nobody else on it$", re.I),
+     "no date, no project and nobody else on it"),
+    (re.compile(r"^a guess with no second source yet$", re.I),
+     "heard once, and nothing since has confirmed it"),
+    (re.compile(r"^the same ask is already on your plate$", re.I),
+     "the same ask is already on your plate"),
     (re.compile(r"^substrate seq\s*#?\s*\d+$", re.I), "from an earlier record"),
     (re.compile(r"^same-name collision on an auto contact capture$", re.I),
      "two contacts share this name, so it couldn't be filed automatically"),

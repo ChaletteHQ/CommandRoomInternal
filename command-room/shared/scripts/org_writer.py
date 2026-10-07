@@ -510,6 +510,8 @@ def _log_event(
     record: dict,
     source_skill: str,
     before: dict | None = None,
+    brain_batch_id: str | None = None,
+    brain_change_class: str | None = None,
 ) -> None:
     """Append a canonical-shape event to events.jsonl.
 
@@ -525,6 +527,12 @@ def _log_event(
     }
     if before is not None:
         data["before"] = before
+    if brain_batch_id is not None and brain_change_class is not None:
+        # The undo anchor. `brain_undo` finds a batch by scanning for these
+        # two keys, so an org created without them is a record no `undo`
+        # can reach.
+        data["brain_batch_id"] = brain_batch_id
+        data["brain_change_class"] = brain_change_class
     event: dict[str, Any] = {
         # FS-03: OMIT ts — the append gate stamps it UTC-aware. A hand-stamped
         # `datetime.now()` was naive local (the F-15 naive-local-clock bug).
@@ -604,6 +612,8 @@ def create_org(
     provenance: dict | None = None,
     source_ref: str | None = None,
     account_address: str | None = None,
+    brain_batch_id: str | None = None,
+    brain_change_class: str | None = None,
 ) -> dict:
     """Create a new org record. Dedups by domain → alias → canonical_name
     before creating; raises DuplicateOrgError if a match is found (unless
@@ -620,9 +630,27 @@ def create_org(
     account raises AccountScopeError before the write. Manual adds pass.
     Scope inputs only; never stored on the record.
 
+    `brain_batch_id` + `brain_change_class` (they travel together or not at
+    all) stamp the `org_created` event so `brain_undo` can list and reverse
+    the create. The ONLY class accepted is
+    `person_org_creation_structured_fact` — R1's ruling, whose registered
+    reverser archives the org and never deletes it. Absent (every caller
+    before IDENT1) the event is byte-identical to what it always was.
+
     Returns the created record.
     """
     workspace_root = Path(workspace_root)
+    if (brain_batch_id is None) != (brain_change_class is None):
+        raise ValueError(
+            "brain_batch_id and brain_change_class travel together — an "
+            "org created with a batch and no class is unreachable by undo, "
+            "and a class with no batch is a promise nothing keeps")
+    if brain_change_class is not None and brain_change_class != (
+            "person_org_creation_structured_fact"):
+        raise ValueError(
+            f"unknown brain_change_class {brain_change_class!r} for an org "
+            "create — the only registered reverser for a created org is "
+            "person_org_creation_structured_fact")
     _enforce_record_scope(workspace_root, provenance=provenance,
                           source_ref=source_ref,
                           account_address=account_address,
@@ -679,7 +707,9 @@ def create_org(
     _validate_org(record)
     orgs.append(record)
     _save_entities(workspace_root, data, source_skill=source_skill)
-    _log_event(workspace_root, "org_created", record, source_skill)
+    _log_event(workspace_root, "org_created", record, source_skill,
+               brain_batch_id=brain_batch_id,
+               brain_change_class=brain_change_class)
     return record
 
 

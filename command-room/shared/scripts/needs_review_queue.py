@@ -453,7 +453,8 @@ def source_count_phrase(groups) -> str:
 
 def build_queue_view(workspace_root, now_iso: str | None = None,
                      *, group_by: str = GROUP_COUNTERPARTY,
-                     scope: str = SCOPE_ALL) -> dict:
+                     scope: str = SCOPE_ALL,
+                     screen_lifetime: bool = False) -> dict:
     """The needs-your-call queue, grouped by counterparty. PURE READ.
 
     Returns:
@@ -500,6 +501,15 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
                     says so, and says which weeks the rows span, because a
                     review of "what would be hidden" that does not say over
                     what period is a number without a denominator.
+
+    `screen_lifetime` (FIX ROUND 1, reviewer F-1) drops every row carrying a
+    CARD QUESTION past its class lifetime, through the one predicate every
+    other surface asks (`card_questions_within_lifetime` → `question_ttl.
+    within_lifetime`, importance hold and all). It is OFF by default so that
+    every existing caller — the End of Day's own two reads included, which
+    belong to another lane — is byte-identical; the QUEUE PAGE turns it on.
+    It runs before the numbering, so `display_n`, `total`, `n_weak`, the
+    clusters and the header all count the same population the page shows.
     """
     from cru_match import _commitment_field, load_needs_review
 
@@ -517,6 +527,11 @@ def build_queue_view(workspace_root, now_iso: str | None = None,
         # ONE filter, at ONE place, keyed on the routing side's own predicate.
         from held_tier import is_floor_gated
         items = [ev for ev in items if is_floor_gated(ev)]
+    # FIX ROUND 1 (reviewer F-1) — THE LIFETIME GATE, at the row list, so the
+    # page's every number is about the rows the page shows. Opt-in; see the
+    # docstring.
+    if screen_lifetime:
+        items = card_questions_within_lifetime(ws, items, now_iso=now_iso)
     people = _people_by_id(ws)
     rr_cache: dict = {}
 
@@ -758,6 +773,29 @@ def _overlay_view_clusters(out: dict, clusters: list) -> None:
     out["n_lines"] = int(out.get("total") or 0) - n_folded
 
 
+def _held_reason_line(d: dict) -> str:
+    """INTAKE1 — the sentence a HELD row shows on `show me what you'd hide`.
+
+    The door's own reason first (that is why the row is here), then what the
+    extractor was unsure about when there was something, then a plain note
+    when the row folded onto another. Everything goes through
+    `review_reasons.render_clause`, the one composer, so no score and no wire
+    id can reach the page — the fold's note names no id for exactly that
+    reason: the customer does not need the other row's identifier to
+    understand that the ask is already on their plate."""
+    from review_reasons import render_clause
+
+    bits = [render_clause(d.get("observed_reason") or "other")]
+    held_reason = str(d.get("held_review_reason") or "").strip()
+    if held_reason:
+        rendered = render_clause(held_reason)
+        if rendered and rendered not in bits:
+            bits.append(rendered)
+    if d.get("duplicate_of"):
+        bits.append("kept beside the row it repeats")
+    return "set aside at capture — " + "; ".join(b for b in bits if b)
+
+
 def _observed_view_groups(ws: Path, *, now_iso: str, group_by: str,
                           people: dict, index: dict,
                           start_n: int) -> tuple[list, int]:
@@ -797,8 +835,14 @@ def _observed_view_groups(ws: Path, *, now_iso: str, group_by: str,
                 "age_days": _age_days(ev.get("ts") or "", now_iso),
                 # Not a review_reason clause (no RRF1 overlay applies): the
                 # gate's own record of why this was kept without opening.
-                "review_reason": ("set aside at capture — "
-                                  f"{d.get('observed_reason') or 'other'}"),
+                # INTAKE1 — when the door held a row it also kept what the
+                # EXTRACTOR was unsure about (`held_review_reason`), which on
+                # this tier is now most often the only sentence there is, and
+                # the id of the row a folded duplicate folded onto. Both are
+                # rendered through the same plain-words composer as every
+                # other reason, so neither can put a score or a wire id on
+                # the page.
+                "review_reason": _held_reason_line(d),
                 "source_skill": ev.get("source_skill") or "",
                 "due": None,   # the caution rail refuses dated items observed
                 "evidence": _evidence_text(ev),
@@ -1457,8 +1501,18 @@ def _drop_observed_row(workspace_root, obs_ev: dict, *, resolved_by: str,
 
 
 def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
-                  confirm_weak_ids=()) -> dict:
+                  confirm_weak_ids=(), brain_batch_id: Optional[str] = None,
+                  brain_change_class: Optional[str] = None) -> dict:
     """Confirm unconfirmed extractions: they become ordinary open commitments.
+
+    FOLD1A fix round 2 (REVIEW_FOLD1A R-2) - `brain_batch_id` /
+    `brain_change_class` are passed straight through to `clear_review_flags`,
+    both None by default so every existing caller writes a BYTE-IDENTICAL
+    event. The shape and the reason are `confirm_satisfied_reasons`'s, below:
+    an AUTOMATIC or a SURFACE caller that owns an undo batch supplies them so
+    a bare `undo` reverses what its own gesture wrote, through the registered
+    `commitment_confirm` reverser. A manual queue answer supplies neither and
+    is unchanged.
 
     One `commitment_updated` per id through `commitment_state.clear_review_flags`
     (`data.review_flags_cleared: true`), which the loader folds to clear
@@ -1570,6 +1624,11 @@ def confirm_items(workspace_root, ids, *, source_skill: str = SOURCE_SKILL,
                 # for the whole batch above, so N confirms in one answer carry
                 # ONE pointer rather than N a second apart.
                 mint_now_iso=_gesture_iso,
+                # FOLD1A fix round 2 — None on every manual answer (the event
+                # is byte-identical); a batch-owning caller stamps both so
+                # `undo` reverses this confirm.
+                brain_batch_id=brain_batch_id,
+                brain_change_class=brain_change_class,
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -2039,8 +2098,18 @@ def not_mine_items(workspace_root, ids, *, resolved_by: str,
 def drop_items(workspace_root, ids, *, resolved_by: str,
                evidence: str = DROP_EVIDENCE,
                source_skill: str = SOURCE_SKILL,
-               source_ref=None) -> dict:
+               source_ref=None, brain_batch_id: Optional[str] = None,
+               brain_change_class: Optional[str] = None) -> dict:
     """Drop unconfirmed extractions: closed with `resolution="dropped"`.
+
+    FOLD1A fix round 2 (REVIEW_FOLD1A R-2) - `brain_batch_id` /
+    `brain_change_class` ride through to `close_commitment`, both None by
+    default so every existing caller writes a BYTE-IDENTICAL event (the same
+    passthrough `confirm_items` above and `confirm_satisfied_reasons` already
+    carry). A surface that owns an undo batch stamps them so a bare `undo`
+    reopens what its own gesture closed, through the registered
+    `commitment_close` reverser; a reopened pending_review row comes back to
+    this queue because the drop never cleared its review flags.
 
     Through `commitment_state.close_commitment` — THE closure path — with
     `user_confirmed=True`, because the user naming a row IS the explicit
@@ -2141,6 +2210,16 @@ def drop_items(workspace_root, ids, *, resolved_by: str,
                 evidence=evidence, source_skill=source_skill,
                 resolution="dropped", user_confirmed=True,
                 source_ref=source_ref, mint_now_iso=drop_mint_iso,
+                # FOLD1A fix round 2 — the batch rides `extra_data`, which is
+                # how a close has always carried one (`reconcile_inbound_
+                # commitments`'s auto-close is the shipped precedent, same two
+                # keys, same reason). ABSENT entirely when the caller supplied
+                # none, so every existing caller's event is byte-identical:
+                # `close_commitment` writes `dict(extra_data or {})` as the
+                # event's data, and an empty dict adds no keys.
+                extra_data=({"brain_batch_id": brain_batch_id,
+                             "brain_change_class": brain_change_class}
+                            if brain_batch_id and brain_change_class else None),
             )
         except CommitmentIdError as exc:
             results.append({"commitment_id": cid, "status": "not_found",
@@ -3040,6 +3119,101 @@ def paginate_groups(data_view: dict, *, page: int = 1,
     return out
 
 
+def group_sub_pages(page_view: dict, *, wrapper: str = "fragment") -> tuple:
+    """How many pages the TRANSPORT will split ONE group page into, and the
+    page size it will use (PLATENUM1 4.5).
+
+    Pure measurement — the same `_fit_page_size` search `render_and_persist`
+    runs, asked before the render instead of discovered after it. Nothing is
+    persisted, so asking costs no widget file.
+    """
+    from widget_transport import page_row_budget
+
+    rows = sum(len(s.get("items") or [])
+               for s in (page_view.get("sections") or []))
+    rows = max(1, rows)
+    try:
+        size = max(1, int(page_row_budget(page_view, wrapper=wrapper,
+                                          requested=rows)))
+    except Exception:  # noqa: BLE001 — a measurement never fails a read
+        return 1, rows
+    return max(1, (rows + size - 1) // size), size
+
+
+def resolve_page(data_view: dict, *, page: int = 1,
+                 max_rows: int | None = None,
+                 wrapper: str = "fragment") -> dict:
+    """THE PAGER (PLATENUM1 4.5). `page` is a FLAT index over every page a
+    reader can reach, and this returns the one they asked for.
+
+    The defect (ATTENDED_TEST_v5.30.0 A2, rows 14–15): group paging packed
+    whole groups onto a page and then handed that page to the transport with
+    a hard-coded `page=1`. When the 40KB byte fit re-sliced the page — which
+    a single 15-row call does on its own — only the FIRST slice ever
+    rendered. `show more` asked for the next GROUP page, so rows 14 and 15
+    were not one page away, they were unreachable: the widget said the call
+    held 15 rows and no sequence of words would show two of them.
+
+    Group paging still never cuts a group (`paginate_groups`, pinned). The
+    byte-fit split inside a group page is simply counted as pages too, so
+    advancing `page` walks the whole view: group page 1 slice 1, slice 2, …
+    then group page 2.
+
+    Returns `{"page_view", "sub_page", "page_size", "group_pagination"}`.
+    `group_pagination` keeps `page`/`total_pages` as the FLAT dimension the
+    caller advances, and carries `group_page`/`group_total_pages` and
+    `sub_page`/`sub_pages` beside them. `rows_on_page` stays the GROUP
+    page's row count — the pager's own news, unchanged (the byte fit reports
+    itself through `group_split_by_budget`) — and `rows_rendered` is what
+    this flat page actually puts on screen.
+    """
+    requested = int(page)
+    first = paginate_groups(data_view, page=1, max_rows=max_rows)
+    total_groups_pages = int(first["group_pagination"]["total_pages"])
+
+    flat = 0
+    chosen = None
+    subs_by_group: list = []
+    for g in range(1, total_groups_pages + 1):
+        pv = first if g == 1 else paginate_groups(data_view, page=g,
+                                                  max_rows=max_rows)
+        n_sub, size = group_sub_pages(pv, wrapper=wrapper)
+        subs_by_group.append(n_sub)
+        if chosen is None and flat + n_sub >= requested and requested >= 1:
+            chosen = (g, pv, max(1, requested - flat), n_sub, size)
+        flat += n_sub
+    flat_total = max(1, flat)
+    if chosen is None:
+        # Below 1 or past the end — clamp to the nearest real page, the way
+        # `paginate_groups` already clamps its own.
+        g = 1 if requested < 1 else total_groups_pages
+        pv = first if g == 1 else paginate_groups(data_view, page=g,
+                                                  max_rows=max_rows)
+        n_sub, size = group_sub_pages(pv, wrapper=wrapper)
+        chosen = (g, pv, 1 if requested < 1 else n_sub, n_sub, size)
+
+    g, page_view, sub_page, n_sub, size = chosen
+    gp = dict(page_view.pop("group_pagination"))
+    flat_page = sum(subs_by_group[:g - 1]) + sub_page if subs_by_group else 1
+    gp["group_page"] = gp["page"]
+    gp["group_total_pages"] = gp["total_pages"]
+    gp["sub_page"] = sub_page
+    gp["sub_pages"] = n_sub
+    gp["page"] = flat_page
+    gp["total_pages"] = flat_total
+    gp["has_more"] = flat_page < flat_total
+    rows_on_page = gp["rows_on_page"]
+    gp["rows_rendered"] = min(size, max(0, rows_on_page - (sub_page - 1) * size))
+    if requested != flat_page:
+        gp["clamped"] = True
+        gp["requested_page"] = requested
+    else:
+        gp.pop("clamped", None)
+        gp.pop("requested_page", None)
+    return {"page_view": page_view, "sub_page": sub_page, "page_size": size,
+            "group_pagination": gp}
+
+
 def render_queue_page(workspace_root, *, page: int = 1,
                       persist_dir=None, now_iso: str | None = None,
                       max_rows: int | None = None) -> dict:
@@ -3059,7 +3233,12 @@ def render_queue_page(workspace_root, *, page: int = 1,
     from widget_transport import render_and_persist
 
     ws = Path(workspace_root)
-    view = build_queue_view(ws, now_iso=now_iso, group_by=GROUP_MEETING)
+    # FIX ROUND 1 (reviewer F-1) — the queue page screens questions past
+    # their class lifetime, the same as the card and the fold do. "Not
+    # offered anywhere" is one sentence, and this page was the `anywhere`
+    # it was not true of.
+    view = build_queue_view(ws, now_iso=now_iso, group_by=GROUP_MEETING,
+                            screen_lifetime=True)
     # PERSONLOOP1 — the header offer. Derived here (the widget path) rather
     # than inside `build_queue_view`, so every existing caller of the pure
     # read keeps its cost and its output unchanged.
@@ -3068,20 +3247,241 @@ def render_queue_page(workspace_root, *, page: int = 1,
         view["person_candidate_offer"] = offer_line
     data_view = build_queue_data_view(view,
                                       candidate_section=offer_section)
-    page_view = paginate_groups(data_view, page=page, max_rows=max_rows)
-    gp = page_view.pop("group_pagination")
-    rows = max(1, gp["rows_on_page"])
+    # PLATENUM1 4.5 — the CALLER'S page reaches the transport. `page=1`
+    # hard-coded here is what made rows 14–15 unreachable (A2).
+    paged = resolve_page(data_view, page=page, max_rows=max_rows)
+    gp = paged["group_pagination"]
     transport = render_and_persist(
-        data_view=page_view, wrapper="fragment",
+        data_view=paged["page_view"], wrapper="fragment",
         persist_dir=str(persist_dir or (ws / "_hq" / ".system" / "widgets")),
-        page=1, page_size=rows)
-    fitted = (transport.get("pagination") or {}).get("total_pages") or 1
-    if fitted > 1:
-        gp = dict(gp)
+        page=paged["sub_page"], page_size=paged["page_size"])
+    if gp["sub_pages"] > 1:
         gp["group_split_by_budget"] = True
     transport["group_pagination"] = gp
     transport["view"] = view
     return transport
+
+
+#: The registered question class a CARD QUESTION belongs to — TTL1's
+#: "questions on a meeting card".
+_FOLD_QUESTION_CLASS = "capture_card"
+
+
+def _card_question_ages(ws, *, now_iso: str | None = None,
+                        rows: list | None = None) -> dict:
+    """{commitment_id: (age_days, has_default, ledger_event)} for every
+    needs-review row that actually CARRIES a card question — FOLD1-B 1.2
+    item 1.
+
+    THE EVENT TRAVELS WITH THE AGE, and that third member is the whole point
+    of FIX ROUND 2. The importance rule reads `owner_id` / `org_id` /
+    `counterparty_id` / `person_ids` off the row it is handed. The queue
+    page and the expiry engine hand it the LEDGER EVENT, which carries them;
+    the meeting fold used to hand it the queue VIEW row, which carries
+    `due`, `title`, `evidence` and nothing else. So a card question owned by
+    a client, past its window and with no likely answer, was HELD by the
+    engine (it never expires) and HIDDEN by the fold (the fold could not see
+    the owner) — invisible and unanswered forever, the exact failure
+    `within_lifetime`'s safety property exists to prevent, on the one
+    surface it was not wired to. Returning the event here is what makes all
+    three sites ask ONE question of ONE object: this map is the single
+    producer of the thing the predicate is asked about.
+
+    `rows` is the ALREADY-LOADED needs-review list when the caller holds one
+    (fix round 1: the queue-page screen runs inside `build_queue_view`, which
+    has just read them). Omitted, this reads them itself, exactly as before.
+
+    THE POPULATION IS NARROW ON PURPOSE, and this is the one decision in
+    this helper worth reading. `question_ttl`'s capture-card class governs
+    "questions on a meeting card" — a row whose `attribution.question`
+    carries options — and that is the population `_capture_card_questions`
+    reads and `_apply_capture_card` defaults. An ordinary unconfirmed
+    extraction is NOT that: its lifetime belongs to the review-expiry drain
+    in `commitment_backlog_sweep`, which has its own holds and its own
+    receipts. Screening the whole fold on the card-question class would hide
+    rows whose retirement another rail has deliberately held — hidden from
+    the customer and never defaulted, which is the exact failure the read
+    gate exists to prevent, inverted.
+
+    THE CLOCK IS THE SAME ONE THE ENGINE USES (F-1). The queue view's
+    `age_days` counts from the capture stamp; the capture-card class counts
+    from LAST ACTIVITY, so a row the customer put back with `undo` is young
+    again. Reading the view's number here would hide a row the engine would
+    never take. One extra map read per fold render, and the two rails agree.
+    """
+    from attribution_doors import question_default, question_of
+    from cru_match import _commitment_id, load_needs_review
+    out: dict = {}
+    path = str(_events_path(Path(ws)))
+    if rows is None:
+        try:
+            rows = load_needs_review(path, workspace_root=str(ws))
+        except Exception as exc:  # pragma: no cover
+            sys.stderr.write(f"[needs_review_queue] card-question read "
+                             f"degraded: {exc}\n")
+            return out
+    try:
+        from commitment_backlog_sweep import last_activity_map
+        from question_ttl import card_movement_types
+        activity = last_activity_map(path, movement_types=card_movement_types())
+    except Exception as exc:  # pragma: no cover — degrade to the capture ts
+        sys.stderr.write(f"[needs_review_queue] activity map degraded: {exc}\n")
+        activity = {}
+    for ev in rows or []:
+        q = question_of(ev)
+        if not q or not q.get("options"):
+            continue
+        cid = _commitment_id(ev)
+        seen = activity.get(cid)
+        stamp = (seen.isoformat() if hasattr(seen, "isoformat")
+                 else (ev.get("ts") or ""))
+        out[cid] = (_age_days(stamp, now_iso or _now_iso()),
+                    bool(question_default(ev)), ev)
+    return out
+
+
+def _lifetime_ask(ev, age, has_default) -> dict:
+    """The ONE object every site hands `question_ttl.within_lifetime` —
+    FIX ROUND 2.
+
+    The ledger event, plus the three facts this module derives that the
+    event does not carry: which registered class the question belongs to,
+    how old it is on the ENGINE's last-activity clock (not the view's
+    capture stamp), and whether it has a likely answer. Composed in one
+    place so the fold, the queue page and the engine cannot drift into
+    asking the importance rule about different rows.
+    """
+    return dict(ev, question_class=_FOLD_QUESTION_CLASS,
+                age_days=age, has_default=has_default)
+
+
+def card_questions_within_lifetime(ws, events: list, *,
+                                   now_iso: str | None = None) -> list:
+    """The needs-review EVENTS the on-demand queue page may still offer —
+    FIX ROUND 1 (reviewer F-1).
+
+    Spec 1.2 item 1 says a question past its class lifetime "is not offered
+    ANYWHERE". The card and the meeting fold were screened; the on-demand
+    `needs your call` page was not, so a 40-day capture-card question was
+    gone from the Staff Meeting and still leading the queue page. M ruled it
+    screened. This is that screen, and it is ONE call at the page's own
+    chokepoint (`build_queue_view(..., screen_lifetime=True)`) rather than a
+    filter over the built view: the view's numbering, its totals, its header
+    and its pager all derive from the row list, so screening the LIST is
+    what keeps every number on the page about the same population.
+
+    THE IMPORTANCE-HOLD ESCAPE APPLIES HERE TOO, and it is why this passes
+    the LEDGER EVENT to the predicate rather than the view row: the row the
+    expiry engine asks the importance rule about is `ev` itself
+    (`question_ttl._capture_card_questions` carries `"row": ev`), so a
+    question owned by a client, carrying money, overdue or due this week is
+    held by the engine and stays on this page. Asking the rule with a
+    thinner row than the engine uses would hide a row no expiry will ever
+    take — hidden AND unanswered, the one failure this gate exists to
+    prevent.
+
+    Only rows that CARRY a card question are in scope (`_card_question_ages`
+    — the same narrow population the fold screens). Degrades to returning
+    everything: a screen that cannot run must not empty a customer's queue.
+
+    THE NAME AVOIDS THE SCREENING PREFIX, on purpose, and the reason is a
+    fence rather than taste: `run_done1_test` [5] reads this file's SOURCE
+    and requires that it declares no screening function of its own, because
+    the ONE screen this queue may have is the bulk-accept fence it imports
+    from `watch_gate` — a second function wearing that word is how a reader
+    comes to believe there are two. (The pin counts the literal token, so
+    this sentence names it in words, the same convention G17 forces on
+    GUARDS.md prose.) This is a lifetime read, not an accept screen.
+    """
+    try:
+        from question_ttl import within_lifetime
+    except Exception as exc:  # pragma: no cover — the module ships beside us
+        sys.stderr.write(f"[needs_review_queue] queue lifetime screen "
+                         f"skipped: {exc}\n")
+        return list(events or [])
+    ages = _card_question_ages(ws, now_iso=now_iso, rows=events)
+    if not ages:
+        return list(events or [])
+    from cru_match import _commitment_id
+    out: list = []
+    for ev in events or []:
+        got = ages.get(str(_commitment_id(ev) or ""))
+        if got is None:
+            out.append(ev)
+            continue
+        age, has_default, event = got
+        try:
+            keep = within_lifetime(_lifetime_ask(event, age, has_default),
+                                   ws, now_iso=now_iso)
+        except Exception as exc:  # pragma: no cover
+            sys.stderr.write(f"[needs_review_queue] queue lifetime screen "
+                             f"degraded: {exc}\n")
+            keep = True
+        if keep:
+            out.append(ev)
+    return out
+
+
+def _within_lifetime_groups(ws, groups: list, *,
+                            now_iso: str | None = None) -> list:
+    """The meeting-fold groups with every CARD QUESTION past its lifetime
+    removed — FOLD1-B 1.2 item 1, the Staff Meeting half.
+
+    The same predicate the proposal queue screens on
+    (`question_ttl.within_lifetime`), asked of the same class the
+    capture-card expiry already defaults these rows under, so the section
+    stops offering a question the engine has already decided. A row the
+    importance rule holds — overdue, due this week, a client, money — is
+    INSIDE the window by that predicate's own rule and stays on the page:
+    the expiry never takes it, so hiding it would hide it forever.
+
+    AND IT ASKS WITH THE LEDGER EVENT (fix round 2). Until this round the
+    fold asked the predicate with the queue VIEW row, which carries no
+    owner, org or counterparty id — so the client half of the importance
+    rule could not bite here while it bit on the queue page and in the
+    engine. The `due` / money halves always did (they are readable off the
+    view row), which is why the gap was one hold wide and easy to miss.
+
+    Rows that carry no card question are untouched (see
+    `_card_question_ages`). Drop-empty groups go with their rows, and the
+    whole screen degrades to the unfiltered groups: a screen that cannot run
+    must not empty the section.
+    """
+    try:
+        from question_ttl import within_lifetime
+    except Exception as exc:  # pragma: no cover — the module ships beside us
+        sys.stderr.write(f"[needs_review_queue] lifetime screen skipped: "
+                         f"{exc}\n")
+        return list(groups or [])
+    ages = _card_question_ages(ws, now_iso=now_iso)
+    if not ages:
+        return list(groups or [])
+    out: list = []
+    for group in groups or []:
+        kept = []
+        for row in group.get("items") or []:
+            got = ages.get(str(row.get("commitment_id") or ""))
+            if got is None:
+                kept.append(row)
+                continue
+            age, has_default, event = got
+            try:
+                # FIX ROUND 2 — THE LEDGER EVENT, not this view row. The
+                # view row has no `owner_id` / `org_id` / `person_ids`, so
+                # asking the importance rule with it made the fold hide a
+                # client's question the expiry engine would hold forever.
+                # One question, one object, three sites (`_lifetime_ask`).
+                keep = within_lifetime(_lifetime_ask(event, age, has_default),
+                                       ws, now_iso=now_iso)
+            except Exception as exc:  # pragma: no cover
+                sys.stderr.write(f"[needs_review_queue] lifetime screen "
+                                 f"degraded: {exc}\n")
+                keep = True
+            if keep:
+                kept.append(row)
+        if kept:
+            out.append(dict(group, items=kept, count=len(kept)))
+    return out
 
 
 def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
@@ -3117,8 +3517,11 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
     groups = [g for g in (view.get("groups") or []) if g.get("items")]
     if not groups:
         return None
+    groups = _within_lifetime_groups(ws, groups, now_iso=now_iso)
+    if not groups:
+        return None
 
-    total_rows = view.get("total") or sum(len(g["items"]) for g in groups)
+    total_rows = sum(len(g["items"]) for g in groups)
 
     shown: list[dict] = []
     n_rows = 0
@@ -3168,13 +3571,19 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
     # SPEC CLUSTER1 §0-4 — the fold's headline number is the INFORMATION
     # count when the view clustered; the true row count stays in the title.
     # Byte-identical when nothing clustered.
-    total_info = total_rows - int(view.get("n_folded") or 0)
+    # FOLD1-B — counted over the rows that SURVIVED the lifetime screen, not
+    # over the view's own `n_folded`. A view-level count subtracted from a
+    # screened total is two populations in one sum, and it would under-report
+    # the section the moment the screen took a folded row.
+    n_folded_kept = sum(1 for g in groups for r in g["items"]
+                        if r.get("folded_into"))
+    total_info = total_rows - n_folded_kept
     item_noun = "item" if total_rows == 1 else "items"
     # RIDERS1 item 4 — the same phrase the on-demand header uses. This title
     # used to count `total_groups`, which includes the not-from-a-meeting
     # bucket, so the fold said "47 calls" beside a header saying "46" for the
     # same queue — and the bucket is not a call in either sentence.
-    if view.get("n_folded"):
+    if n_folded_kept:
         info_noun = "item" if total_info == 1 else "items"
         title = (f"{STAFF_SECTION_TITLE} ({total_info} {info_noun} covering "
                  f"{total_rows} captures, {source_count_phrase(groups)})")
@@ -3184,7 +3593,375 @@ def staff_meeting_group_section(workspace_root, *, now_iso: str | None = None,
     if len(items) < total_info:
         title += (f" — showing {len(items)}; say `needs your call` for the "
                   f"rest")
-    return {"title": title, "count": len(items), "items": items}
+    # TTL1 fix round 2 (reviewer R-1) — the section's OWN honest total, so a
+    # later bound that trims these rows further can recompose the title's
+    # "showing N of M" against what this section STARTED with rather than
+    # against the six rows it happened to hand on. Additive: the renderer
+    # looks this key up nowhere, and every existing caller reads the same
+    # `title` / `count` / `items` it always did.
+    return {"title": title, "count": len(items), "items": items,
+            "total": total_info}
+
+
+# ---------------------------------------------------------------------------
+# FOLD1-B 1.2 item 4 — THE OVERDUE FORK COMES HOME
+# ---------------------------------------------------------------------------
+#
+# "{title} — {n} days overdue. Done, new date, or drop?" has been riding the
+# MORNING BRIEF since EODSYNTH1 R-3 moved it off the evening. M ruled the
+# brief's pinned ask off on 2026-09-07 and read it on both 09-13 renders
+# anyway, because the switch that turns it off (`ask=False`) also stops the
+# ask-once MARKER being written — and with no marker nothing ever rests, so
+# the fatigue rule dies quietly (SURFACEFIX1 5.4, measured and reverted).
+#
+# The question needed a HOME, not a switch, and the design rule of
+# 2026-09-06 says where: the Staff Meeting is the one place to answer. This
+# section is that home. Same rows, same verdict function
+# (`end_of_day.apply_overdue_ask`), same weekly budget (`quiet.ASKER_OVERDUE`,
+# so it comes OUT of the five rather than on top of them), and the same
+# ask-once marker — written by this surface, under this surface's own id,
+# which is what lets the next morning rest the rows it asked about.
+#
+# (The title is defined BELOW the verb lists, from FIX ROUND 2 on, because
+# it is now composed from them — see `OVERDUE_SECTION_TITLE`.)
+#: The three answers the question has always carried, in the order it says
+#: them. `push to [date]` is the registered verb for "new date".
+#: FIX ROUND 1 (reviewer F-5) — PARITY WITH THE SURFACE THIS ROW CAME FROM.
+#: The rehomed row shipped as `["mark done", "push to [date]", "drop"]`,
+#: which silently dropped `draft` — a verb the SAME question carried on the
+#: brief before the rehome, and one End of Day's slipped rows still carry
+#: for an overlapping population (`end_of_day.SLIPPED_VERBS`). One row, two
+#: surfaces, two answer sets is how a customer learns that where they answer
+#: changes what they can say. These are now the same three verbs, in the same
+#: order, and a pin asserts the two lists stay equal.
+OVERDUE_ASK_ACTIONS = ["push to [date]", "draft", "drop"]
+#: THE PRE-PICK. "New date" is the fatigue rule's own default: a row that has
+#: been overdue for nine days and unanswered is far likelier to need a date
+#: than to be finished or abandoned, and it is the only one of the three that
+#: changes nothing about the row's truth if it is wrong. Leaving the page
+#: therefore does the safe thing.
+OVERDUE_ASK_DEFAULT = "push to [date]"
+#: WHAT THE ROW RENDERS — one verb, the pre-picked answer (MF-11c-6b: this
+#: comment used to say two, with `draft` following; see the MF-11c-6 note
+#: on `OVERDUE_ASK_RENDERED` for why `draft` cannot be a button here). The
+#: design rule of 2026-09-06 says the Staff Meeting has no three-way menus
+#: and one tap each. `drop` is registered on the row and answerable from the
+#: plate and in chat, it is simply not a button here. That is the same
+#: trade every queue row on this card already makes (`rendered_verbs`):
+#: fewer buttons, nothing taken away.
+# MF-11c-6 (night 11c trial merge, FOLD1-B re-verification B-1) — ONE
+# rendered verb, the pre-picked answer. Fix round 1 rendered `draft` beside
+# it; `draft` is a SEND-CLASS verb, and the renderer's Bug #44 hard stop
+# refuses any item carrying one without a `To:` in its metadata — which
+# this item shape never carries (renderable keys only). The Staff Meeting
+# fire therefore raised inside `render_and_persist`, marked no row asked,
+# and the next morning re-grew its forks. `draft` and `drop` stay
+# REGISTERED (`OVERDUE_ASK_ACTIONS`, byte-equal End of Day's); neither is
+# a button here. Typing `drop` still answers (driven by the reader);
+# `draft` has no drivable path on this row — it would meet the same
+# missing-recipient wall (MF-11c-6b). Ruling R-15 (M) decides
+# whether a second button returns and which.
+OVERDUE_ASK_RENDERED = [OVERDUE_ASK_DEFAULT]
+#: The customer's word for each registered verb on this row. `push to
+#: [date]` is a verb id with a slot in it; "new date" is what a person
+#: reads. Named once so the title below and the row's own `likely:` line
+#: cannot spell the same answer two ways.
+OVERDUE_ASK_VERB_WORDS = {"push to [date]": "new date", "draft": "draft",
+                          "drop": "drop"}
+#: THE TITLE, AND IT NAMES THE VERBS THE ROW ACTUALLY RENDERS — fix round 2.
+#:
+#: It read "OVERDUE — done, new date, or drop?" — End of Day's own
+#: `OVERDUE_ASK_LABEL` words, inherited whole when the question was rehomed.
+#: By then the row rendered TWO buttons, "new date" and "draft", so the
+#: title offered an answer that is not on the row ("done"), named a third
+#: that is registered but deliberately not a button ("drop"), and omitted
+#: the one button it does have. A heading that lists options the row does
+#: not show is the three-way menu the design rule forbids, put back in
+#: words.
+#:
+#: IT IS COMPOSED FROM `OVERDUE_ASK_RENDERED`, never typed beside it, so a
+#: later change to what the row renders cannot leave the heading behind —
+#: which is the drift that produced this defect in the first place.
+#:
+#: AND IT IS NOT A QUESTION. The design rule's Staff Meeting is "one tap,
+#: the likely answer pre-picked": the row already says `likely: new date`
+#: and the answer is already selected, so a question mark over it asks
+#: something that has been answered. The heading's job here is to say what
+#: this block is and what its button is, which is what it now does.
+OVERDUE_SECTION_TITLE = "OVERDUE — " + " or ".join(
+    OVERDUE_ASK_VERB_WORDS[v] for v in OVERDUE_ASK_RENDERED)
+#: The surface id the marker is stamped with, so a later audit can read back
+#: WHICH surface asked.
+OVERDUE_ASK_SURFACE = "staff-meeting"
+
+
+def _overdue_lane_rows(ws, *, now_iso: str) -> list:
+    """The you-owe rows with a due date and the live ask-once mark on each.
+
+    The shape `end_of_day.apply_overdue_ask` reads: `commitment_id`, `title`,
+    `due`, and `asked` (the mark, when one is live). Nothing here decides
+    whether a row is overdue — that is `overdue_ask_state`'s job, and it is
+    the same function the morning lane calls.
+    """
+    from commitment_state import asked_mark_of
+    from cru_match import _commitment_field, _commitment_id, \
+        load_open_commitments
+    out: list = []
+    try:
+        rows = load_open_commitments(str(_events_path(Path(ws))),
+                                     workspace_root=str(ws))
+    except Exception as exc:  # pragma: no cover
+        sys.stderr.write(f"[needs_review_queue] overdue read degraded: "
+                         f"{exc}\n")
+        return out
+    for ev in rows or []:
+        # `data["due"]` off the OPEN-SET projection — the one place the
+        # capture's date, every later deferral and any clear have already
+        # been folded together, and the same expression
+        # `commitment_state.effective_due` reads. A row pushed to a new date
+        # must arrive here carrying the NEW one, or the fatigue rule re-asks
+        # about a deadline the customer already moved.
+        due = (ev.get("data") or {}).get("due")
+        if not due:
+            continue
+        row = {"commitment_id": _commitment_id(ev),
+               "title": _commitment_field(ev, "title") or "(untitled)",
+               "due": str(due)[:10]}
+        mark = asked_mark_of(ev)
+        if mark is not None:
+            row["asked"] = mark
+        out.append(row)
+    return out
+
+
+def overdue_ask_section(workspace_root, *, now_iso: str | None = None,
+                        rows: list | None = None, cap: int = 3) -> dict | None:
+    """The overdue fork, as ONE pre-picked Staff Meeting section — FOLD1-B
+    1.2 item 4(a). Returns a `build_card_view(extra_sections=[...])`-shaped
+    section, or None when nothing is being asked.
+
+    ONE ROW PER QUESTION, ONE TAP, THE LIKELY ANSWER PRE-PICKED. The row
+    reads `<title> — <n> days overdue · likely: new date`, renders ONE verb
+    — the pre-picked `push to [date]` — and registers the other two
+    (`draft`, `drop`) without putting a button on them. That is the whole shape the
+    design rule asks for, and it is why this is a rehome and not a second
+    asker: the brief loses a daily fork, the Staff Meeting gains a row you
+    only see when you go looking.
+
+    IT COMES OUT OF THE WEEKLY FIVE, not on top of them — but NOT HERE, and
+    the docstring used to say the opposite (CORRECTED 2026-09-15,
+    REVIEW_NIGHT11C M-3). This builder calls `apply_overdue_ask` with
+    `workspace_root=None`, which is what makes it PURE: it spends nothing,
+    because the Staff Meeting's own ceiling reads the same weekly budget and
+    bounds the page afterwards, and a charge here would have shrunk the
+    ceiling that then cut the rows it charged for. The spend happens in
+    `mark_overdue_asked`, after the post, for exactly the rows that reached
+    the screen.
+
+    THE CALLER MUST WRITE THE MARKER AFTER THE POST, never before: the mark
+    means the customer has been asked, and writing it before the question
+    reaches the screen rests a row nobody saw. `mark_overdue_asked` is that
+    write, and `asked_ids` on the returned section is its input.
+    """
+    now_iso = now_iso or _now_iso()
+    # THE READER'S OWN DAY, not UTC's. "N days overdue" is a calendar claim,
+    # and the morning lane resolves it through `tz.localize_date` before
+    # handing the clock to this same verdict function (`surface_drivers`
+    # :2878). Two surfaces asking one question must not disagree about what
+    # day it is — that is a one-day difference in a number the customer
+    # reads, on a question that then marks itself asked.
+    try:
+        from tz import localize_date
+        clock = localize_date(now_iso, workspace_path=workspace_root) or now_iso
+    except Exception:  # pragma: no cover
+        clock = now_iso
+    try:
+        import end_of_day as _eod
+        lane = rows if rows is not None else _overdue_lane_rows(
+            Path(workspace_root), now_iso=clock)
+        asked = _eod.apply_overdue_ask(
+            lane, now_iso=clock,
+            ask_after_days=_eod.overdue_ask_after_days(workspace_root),
+            # PURE HERE, AND THE BUDGET IS SPENT AFTER THE POST.
+            # `apply_overdue_ask` submits to `quiet` whenever it is handed a
+            # workspace root, which is right for the brief — the brief renders
+            # what it is handed. This surface does not: the Staff Meeting's
+            # own ceiling (`question_ttl.staff_meeting_question_ceiling`, read
+            # from the SAME weekly budget) bounds the page afterwards, so
+            # spending here charged rows the bound then cut, and the ceiling
+            # it read had already been reduced by that charge. One budget,
+            # charged twice, and the page shrank to 2 of 3 for no reason a
+            # customer could see. So this call is pure, the ceiling does the
+            # bounding, and `mark_overdue_asked` spends for exactly the rows
+            # that reached the screen — the same instant it marks them asked.
+            ask=True, workspace_root=None)
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[needs_review_queue] overdue section skipped: "
+                         f"{exc}\n")
+        return None
+    picked = [r for r in asked["rows"] if r.get("ask_now")][:max(1, int(cap))]
+    if not picked:
+        return None
+    items: list = []
+    for i, row in enumerate(picked, start=1):
+        days = row.get("days_over")
+        bits = [f"{days} day{'' if days == 1 else 's'} overdue"
+                if isinstance(days, int) else "overdue"]
+        bits.append("likely: new date")
+        items.append({
+            "n": row["commitment_id"], "display_n": i,
+            "name": row.get("title") or "(untitled)",
+            "context_tag": " · ".join(bits),
+            "data": {"id": row["commitment_id"], "due": row.get("due")},
+            "actions": list(OVERDUE_ASK_RENDERED),
+            "default": OVERDUE_ASK_DEFAULT,
+        })
+    # RENDERABLE KEYS ONLY. The section is frozen into the page-set and
+    # travels into the widget payload, and a payload is a trust window kept
+    # exactly as wide as it needs to be. The marker write below re-derives
+    # its ids and its due dates from the rows that actually RENDERED, which
+    # is also the honest population: a row the page bound cut was never
+    # asked, so it must not be marked.
+    # THE HEADING GOES THROUGH THE VALIDATOR, like every composed customer
+    # sentence on this train — and a heading it refuses takes the whole
+    # section with it rather than shipping. Dropping the heading alone is
+    # not an option here: `surface_drivers` matches the rendered section by
+    # this exact prefix to know which rows to mark asked, so a section
+    # wearing some other heading would be asked and never marked, and the
+    # rest-until-answered fold would die exactly the way SURFACEFIX1 found
+    # it. No section, no question, no marker, nothing lost.
+    try:
+        from chat_output_validator import validate_chat_output
+        if not validate_chat_output(OVERDUE_SECTION_TITLE).ok:  # pragma: no cover
+            sys.stderr.write("[needs_review_queue] overdue heading refused "
+                             "by the chat output validator; section dropped"
+                             + chr(10))
+            return None
+    except Exception as exc:  # pragma: no cover — never cost the section
+        sys.stderr.write(f"[needs_review_queue] overdue heading validation "
+                         f"skipped: {exc}" + chr(10))
+    return {"title": OVERDUE_SECTION_TITLE, "count": len(items),
+            "items": items}
+
+
+def mark_overdue_asked(workspace_root, section: dict, *,
+                       now_iso: str | None = None) -> dict:
+    """Write the ask-once marker for the rows this section put on screen —
+    FOLD1-B 1.2 item 4(a), the half that keeps the fold alive.
+
+    THE SAME WRITER BOTH BOOKENDS USE (`end_of_day.mark_lane_asked`), with
+    the Staff Meeting's own surface id, so "which surface asked" stays a
+    fact the next morning's rest can read back. Without this call the brief
+    goes quiet and NOTHING ever rests — which is exactly what happened when
+    the ask was switched off instead of rehomed.
+
+    THE ORDER IS THE CONTRACT: the weekly budget is spent FIRST and only the
+    rows the shared door approved are marked. A row the budget deferred is
+    recorded as deferred and left un-marked, so the receipt and the marker
+    say the same thing about it.
+    """
+    empty = {"n_marked": 0, "n_already": 0, "n_closed": 0, "n_failed": 0,
+             "results": []}
+    if not isinstance(section, dict):
+        return empty
+    rows = [{"commitment_id": str(it.get("n") or ""),
+             "due": (it.get("data") or {}).get("due")}
+            for it in (section.get("items") or [])
+            if isinstance(it, dict) and it.get("n")]
+    if not rows:
+        return empty
+    # THE BUDGET IS SPENT FIRST, AND WHAT IT APPROVES IS WHAT GETS MARKED
+    # (REVIEW_NIGHT11C M-3, 2026-09-15). This used to mark every row and
+    # then submit, which got the arithmetic backwards in a way the customer
+    # pays for: `bound_extra_sections` keeps a floor of one row, so a row
+    # can render with the weekly five already spent. The shared door then
+    # DEFERRED it — "N took their default" — while the marker beside it said
+    # the customer had been asked. One row, two records, disagreeing: rested
+    # until answered, and recorded as never asked.
+    #
+    # `submit_questions` ranks and cuts; `render` is what it approved. Only
+    # those are marked. A deferred row keeps its mark-free state and comes
+    # back on the next page, which is what "not asked" is supposed to mean.
+    marked = rows
+    try:
+        import quiet
+        sub = quiet.submit_questions(
+            workspace_root, quiet.ASKER_OVERDUE,
+            [{"commitment_id": r["commitment_id"], "has_counterparty": False,
+              "has_date": True, "due": r.get("due")} for r in rows],
+            now_iso=now_iso)
+        approved = {str(r.get("commitment_id") or "")
+                    for r in (sub.get("render") or [])}
+        marked = [r for r in rows if r["commitment_id"] in approved]
+    except Exception as exc:  # pragma: no cover — never cost the marker
+        sys.stderr.write(f"[needs_review_queue] overdue budget spend "
+                         f"skipped: {exc}" + chr(10))
+    if not marked:
+        return empty
+    import end_of_day as _eod
+    return _eod.mark_lane_asked(
+        workspace_root,
+        {"asked_ids": [r["commitment_id"] for r in marked],
+         "needs_attention": marked},
+        source_skill=OVERDUE_ASK_SURFACE, surface=OVERDUE_ASK_SURFACE,
+        now_iso=now_iso)
+
+
+# INTAKE1 rule 6 — the ONE question a held row may ever become.
+HELD_ASK_SECTION_TITLE = "HELD, AND WORTH A LOOK"
+HELD_ASK_ACTIONS = ["confirm", "drop"]
+HELD_ASK_DEFAULT = "confirm"
+HELD_ASK_CAP = 2
+
+
+def held_important_section(workspace_root, *, now_iso: str | None = None,
+                           cap: int = HELD_ASK_CAP) -> dict | None:
+    """SPEC_FLOW1 rule 6 — a held row carrying money or a CLIENT, with no
+    second source after a week, becomes ONE pre-picked Staff Meeting question
+    instead of lapsing where nobody ever saw it.
+
+    Drop-empty, capped hard, oldest first, and the answer is pre-picked:
+    `confirm` means "track it", which is the default M ruled, so leaving the
+    page does the safe thing and the row is one tap from the plate. This is
+    the ONLY question the intake door is allowed to produce, and the design
+    rule is why: a question is a defect to be justified, and the justification
+    here is that the alternative — a client-facing promise ageing out of a
+    tier nobody reads — is worse than one geared ask on the surface that
+    exists for asks.
+
+    The row keeps the tier's own verbs, answered through the tier's own
+    writers (`promote_observed` behind `confirm_items`, the same drop), so
+    this section adds a place to answer and never a second way to answer."""
+    try:
+        from capture_gate import held_important_asks
+        rows = held_important_asks(Path(workspace_root),
+                                   now=_aware_now(now_iso or _now_iso()),
+                                   limit=max(1, int(cap)))
+    except Exception:
+        return None
+    if not rows:
+        return None
+    from cru_match import _commitment_field
+
+    items: list[dict] = []
+    for i, ev in enumerate(rows, start=1):
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        cid = _commitment_id(ev)
+        age = _age_days(ev.get("ts") or "", now_iso or _now_iso())
+        bits = ["heard once, and nothing since has confirmed it"]
+        if age is not None:
+            bits.append(f"{age} days ago")
+        items.append({
+            "n": cid, "display_n": i,
+            "name": (_commitment_field(ev, "title") or d.get("summary")
+                     or "(untitled)"),
+            "context_tag": " · ".join(bits),
+            "data": {"id": cid},
+            "actions": list(HELD_ASK_ACTIONS),
+            "default": HELD_ASK_DEFAULT,
+        })
+    return {"title": HELD_ASK_SECTION_TITLE, "count": len(items),
+            "items": items}
 
 
 # ---------------------------------------------------------------------------
@@ -3207,8 +3984,12 @@ def main(argv=None) -> int:
     ap.add_argument("--group-by", default=GROUP_MEETING, choices=list(GROUP_MODES))
     args = ap.parse_args(argv)
 
+    # FIX ROUND 1 (reviewer F-1) — the CLI prints the same queue page the
+    # widget renders (the skill's Step 1), so it screens the same way. Two
+    # renders of one page that disagree about which questions are live is
+    # the drift the single predicate exists to stop.
     view = build_queue_view(args.workspace, now_iso=args.now,
-                            group_by=args.group_by)
+                            group_by=args.group_by, screen_lifetime=True)
     if args.command == "view-json":
         print(json.dumps(view, ensure_ascii=False))
     else:
@@ -3235,6 +4016,7 @@ __all__ = [
     "person_candidate_offer",
     "paginate_groups",
     "render_queue_page",
+    "card_questions_within_lifetime",
     "staff_meeting_group_section",
     "source_count_phrase",
     "NOT_FROM_A_MEETING_PHRASE",

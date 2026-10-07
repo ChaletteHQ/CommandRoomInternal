@@ -50,10 +50,23 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
+
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break."""
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 - a resolver that raises is worse
+        return explicit if explicit is not None else "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return explicit if explicit is not None else "scheduled"
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -74,8 +87,14 @@ except ImportError:
 
 # §0-3 caps. Overflow spills to the review pile and is COUNTED in the receipt
 # (no-silent-caps rule) — never silently dropped.
-STEADY_CAPS = {"auto_add": 10, "merge_propose": 10}
-BACKFILL_CAPS = {"auto_add": 15, "merge_propose": 10}
+STEADY_CAPS = {"auto_add": 10, "merge_propose": 10, "aged_default": 200}
+BACKFILL_CAPS = {"auto_add": 15, "merge_propose": 10, "aged_default": 200}
+# IDENT1 rule 3's cap is an order of magnitude above the other two ON PURPOSE.
+# The add and propose caps exist to stop a bad run FLOODING a customer with
+# new rows; the aged-default pass only ever REMOVES rows, under one batch id
+# and one `undo`. A cap of ten there would leave a book of 85 aged questions
+# needing nine quiet weeks to drain, which is the leak, not the fix. It is
+# capped at all so a corrupted queue cannot write unbounded events in one go.
 
 # §0-2 role-address guard: local parts that mark a SHARED inbox — an exact
 # email match on one of these must NOT silently link (it stays a
@@ -154,6 +173,20 @@ ROLE_ADDRESS_LOCAL_PARTS = frozenset({
     # -- generic catchalls -------------------------------------------------
     "general", "main", "office365", "staff", "everyone", "all", "group",
     "distribution", "list", "listserv",
+    # -- rooms, calendars and scheduling bots ------------------------------
+    # IDENT1 fix round 1, review F-4, and CITED rather than quietly re-sized.
+    # The set was built for the CONTACT1 mail rail, where a room mailbox
+    # rarely appears. IDENT1's invite rail reads whole ATTENDEE LISTS, and a
+    # corporate invite routinely carries the room and the scheduling bot as
+    # participants — with two-token display names ("Northstar Calendar",
+    # "Acme Scheduling Bot"), which is precisely the shape that passes the
+    # rest of the bar. Measured by the reviewer: `calendar@`, `meetings@`,
+    # `bot@` and `webinar@` at a company domain were ELIGIBLE, i.e. filed as
+    # people. The whole point of this fence is that a shared inbox stored as a
+    # person's address poisons Tier-1 email resolution permanently.
+    "calendar", "calendars", "meeting", "meetings", "invite", "invites",
+    "scheduler", "schedules", "scheduling", "room", "rooms", "conf",
+    "conference", "boardroom", "bot", "bots", "webinar", "webinars",
 })
 
 # Second-eyes F4 (2026-07-19, live-proven): a canonical name is letters plus
@@ -501,6 +534,53 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                 "why": "name carries annotation/guess markers — a captured "
                        "note is not a canonical name, never auto"}
 
+    # IDENT1 rule 2 — a SPELLING VARIANT of exactly one record on file is a
+    # link question, not an add question. It never reached the link lane
+    # before, because every branch here keys on a name the record already
+    # holds: `person_name_on_file` says no for a misspelling, the observed
+    # address is usually absent on these captures, and the row then fell
+    # through to the same-name-collision confirm below and sat there. Note
+    # what this branch does NOT do: it routes the row, it does not link it.
+    # `auto_link_eligible`'s (a′)-(d) gate still has to find a substrate
+    # fact — the same org or a shared work domain — before anything is
+    # written, and refuses on two candidates exactly as it always has.
+    try:
+        variants = variant_candidates(workspace_root, name)
+    except Exception:
+        variants = []
+    if len(variants) == 1:
+        return {"tier": "merge_propose", "email": email,
+                "matched_person": variants[0], "silent_link_ok": False,
+                "why": f"{name!r} is a spelling of "
+                       f"{(variants[0].get('canonical_name') or variants[0].get('id'))!r} "
+                       "— a link question, never a second record (IDENT1 "
+                       "rule 2)"}
+
+    # IDENT1 rule 2, second half — a name that is a RELATION of exactly one
+    # record on file ("Bo" against "Bo Sample") is also a link question, and
+    # was also never routed to the link lane. The two branches below sent it
+    # to `confirm` first: "lone first name" for a one-token capture, and
+    # "same-name collision" for a multi-token one. Both of those reasons are
+    # about ADDING A SECOND RECORD, which is what Bug #19 forbids forever
+    # and what this branch does not do. Linking a spelling to the single
+    # on-file person who carries it, when the substrate corroborates it, is
+    # what UXR1 D3 licensed and `_name_related` was written for; the row
+    # simply never got there. `auto_link_eligible` still has to say yes, and
+    # it still refuses on two candidates, a conflicting address, a
+    # contradicting org or a duplicate-suspect record.
+    try:
+        token_candidates = list_same_name_people(workspace_root, name)
+    except Exception:
+        token_candidates = None
+    if token_candidates is not None and len(token_candidates) == 1 and \
+            _name_related(name, token_candidates[0].get("canonical_name") or ""):
+        return {"tier": "merge_propose", "email": email,
+                "matched_person": token_candidates[0], "silent_link_ok": False,
+                "why": f"{name!r} names the one "
+                       f"{(token_candidates[0].get('canonical_name') or token_candidates[0].get('id'))!r} "
+                       "on file — a link question, never a second record "
+                       "(IDENT1 rule 2)"}
+
     if len(_norm_name(name).split()) < 2:
         # Bug #19 pin: a lone first name is a permanent human decision — even
         # with role AND org AND an observed email.
@@ -525,6 +605,15 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                        "collision is Bug #19's exact shape"}
 
     n_families = len(cluster.get("source_families") or [])
+    # SPEC_FLOW1 `identity.auto_create` — the workspace switch on the two
+    # branches below, and ONLY on them: these are the two that put a new
+    # record on file without asking. Off means the row asks, which is what
+    # the final branch returns anyway, so a seat that turns it off gets the
+    # pre-IDENT1 behaviour and nothing else changes.
+    if (email or n_families >= 2) and not auto_create_enabled(workspace_root):
+        return {"tier": "confirm", "email": email, "matched_person": None,
+                "why": "adding people automatically is turned off for this "
+                       "workspace — the row asks instead"}
     if email:
         # Covers the calendar-attendee route too: a calendar invitee's
         # display-name+address reaches the proposal as observed evidence text
@@ -848,6 +937,121 @@ def _name_related(name: str, matched_name: str) -> bool:
     return a <= b or b <= a
 
 
+def auto_create_enabled(workspace_root) -> bool:
+    """SPEC_FLOW1 `identity.auto_create` — may this workspace put a person
+    on file on its own? Default ON, off by word, fail-to-default."""
+    try:
+        import commitment_policy as _policy
+
+        return _policy.flow_switch_enabled(workspace_root,
+                                           _policy.IDENTITY_AUTO_CREATE_KEY)
+    except Exception:
+        return True
+
+
+def auto_merge_enabled(workspace_root) -> bool:
+    """SPEC_FLOW1 `identity.auto_merge` — may this workspace fold a spelling
+    into a record on its own? Default ON, off by word, fail-to-default."""
+    try:
+        import commitment_policy as _policy
+
+        return _policy.flow_switch_enabled(workspace_root,
+                                           _policy.IDENTITY_AUTO_MERGE_KEY)
+    except Exception:
+        return True
+
+
+def _edit_distance(a: str, b: str, *, cap: int = 3) -> int:
+    """Plain Levenshtein, bounded. Returns `cap + 1` for anything further
+    apart than `cap` — the callers only ever ask "is this within two?"."""
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+SURNAME_VARIANT_MAX_DISTANCE = 2
+SURNAME_VARIANT_MIN_LENGTH = 4
+
+
+def surname_variant(name: str, other: str) -> bool:
+    """Is `name` the SAME full name as `other`, spelled differently in the
+    surname? (SPEC_FLOW1 Lane F rule 2, M 2026-09-07.)
+
+    `_name_related` above deliberately refuses this case, and says why: "a
+    typo ('Skylar' against 'Skyler') shares no token and keeps asking,
+    because a misspelling plus a shared office is exactly the pair a human
+    should look at." That was the right default when the alternative was a
+    silent write nobody could see. It is the wrong default now: the write is
+    receipted and undoable, and the pairs it kept asking about sat on M's
+    Staff Meeting from June to September without a single answer.
+
+    The relation is deliberately NARROW, and every clause below is there to
+    keep two DIFFERENT people apart rather than to catch more spellings:
+
+      * both names carry at least two tokens — a lone first name is Bug
+        #19's permanent human decision and never reaches here;
+      * every token but the last matches EXACTLY after normalization, so a
+        different given name is a different person no matter how close the
+        surnames run;
+      * the surnames differ (an exact match is `_name_related`'s job) by at
+        most `SURNAME_VARIANT_MAX_DISTANCE` characters;
+      * the shorter surname is at least `SURNAME_VARIANT_MIN_LENGTH`
+        characters — at two characters of slack, three-letter surnames are
+        nearly all "variants" of each other, which is a coincidence
+        generator, not a relation.
+
+    Like `_name_related`, this is a NECESSARY condition and never a
+    sufficient one: the caller still has to find a substrate fact that says
+    the two are the same person. Name similarity alone never auto-links, and
+    that invariant is untouched here."""
+    a = _norm_name(name or "").split()
+    b = _norm_name(other or "").split()
+    if len(a) < 2 or len(b) < 2:
+        return False
+    if a[:-1] != b[:-1]:
+        return False
+    sa, sb = a[-1], b[-1]
+    if sa == sb:
+        return False
+    if min(len(sa), len(sb)) < SURNAME_VARIANT_MIN_LENGTH:
+        return False
+    return _edit_distance(sa, sb) <= SURNAME_VARIANT_MAX_DISTANCE
+
+
+def variant_candidates(workspace_root, name: str) -> list[dict]:
+    """Every non-archived person record whose canonical name (or any
+    display spelling) is a `surname_variant` of `name`. The variant
+    clause's own candidate set — bar (b)'s "exactly one on-file candidate"
+    is checked against THIS list for a variant, because
+    `list_same_name_people` is a TOKEN match and a misspelled surname
+    shares no token with the record it belongs to (which is the whole
+    reason these rows never resolved)."""
+    from entities_io import entities_collection
+    from people_writer import get_person_display_names
+
+    try:
+        doc = json.loads((Path(workspace_root) / "_hq" / "data"
+                          / "entities.json").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out: list[dict] = []
+    for rec in entities_collection(doc, "people") or []:
+        if not isinstance(rec, dict) or rec.get("status") == "archived":
+            continue
+        for surface in get_person_display_names(rec):
+            if surname_variant(name, surface):
+                out.append(rec)
+                break
+    return out
+
+
 def link_corroboration(workspace_root, cluster: dict, matched: dict):
     """(kind, detail) when the mention is contextually corroborated against the
     matched record, else None — STAFFCUT §3.4 / M ruling 1 (2026-08-02):
@@ -870,7 +1074,20 @@ def link_corroboration(workspace_root, cluster: dict, matched: dict):
     caller turns into a confirm row."""
     name = (cluster.get("name") or "").strip()
     matched_name = ((matched or {}).get("canonical_name") or "").strip()
-    if not name or not matched_name or not _name_related(name, matched_name):
+    if not name or not matched_name:
+        return None
+    related = _name_related(name, matched_name)
+    # IDENT1 — the SPELLING-VARIANT relation (rule 2) is admitted here, and
+    # on a SHORTER list of clauses than the token relation. A token relation
+    # ("Bo" against "Bo Sample") is an abbreviation of a name the record
+    # already holds; co-occurrence in one meeting is enough to say they are
+    # the same person. A variant is a name the record does NOT hold, so the
+    # corroboration has to be an identifying fact about the person —
+    # their org or their mail domain — not merely "both were in a room".
+    # Two different people in one meeting is the ordinary case; two people
+    # with near-identical surnames at the same company is not.
+    variant = False if related else surname_variant(name, matched_name)
+    if not related and not variant:
         return None
 
     inferred_org = (cluster.get("inferred_org") or "").strip()
@@ -884,6 +1101,8 @@ def link_corroboration(workspace_root, cluster: dict, matched: dict):
     if shared:
         return CORROBORATION_EMAIL_DOMAIN, sorted(shared)[0]
 
+    if variant:
+        return None
     title = _meeting_co_occurrence(workspace_root, cluster, matched)
     if title:
         return CORROBORATION_MEETING, title
@@ -913,6 +1132,287 @@ def link_auto_predicate(why: str) -> str:
         if marker in text:
             return predicate
     return "exact_name:unique_clean"
+
+
+# ---------------------------------------------------------------------------
+# IDENT1 rule 3 (SPEC_FLOW1 Lane F) — an identity question older than 14 days
+# resolves to its DEFAULT, reversibly, and the queue drains.
+#
+# The queue is the reason this rule exists. On the 2026-09-07 book copy 109
+# identity questions were open and 85 of them had been open longer than
+# fourteen days — the oldest since June. A question nobody answers in two
+# months is not a question, it is a leak, and the customer pays for it twice:
+# once on the Staff Meeting, where the rows crowd out the ones that matter,
+# and once at the exit door, which cannot prove a close against a
+# counterparty who is still "maybe someone".
+#
+# The default is deliberately one of THREE outcomes, not two:
+#   * LINK    — there is a likeliest match and nothing in the substrate
+#               argues against it. The row resolves onto that record on the
+#               same rail an eligible auto-link uses, with the same receipt
+#               and the same `undo`.
+#   * LET GO  — there is no likeliest match, or the substrate positively
+#               CONTRADICTS the one on offer. Nothing is asserted about who
+#               this is; the QUESTION is dropped, reversibly. This is the
+#               spec's "not a person" default read honestly: the product is
+#               not claiming the mention was never a person, it is saying it
+#               will stop asking.
+#   * KEEP OPEN — the substrate could not be read, or the customer turned
+#               the merging switch off. An unreadable file is not an answer,
+#               and a customer who said "ask me" is not aged out of it.
+# ---------------------------------------------------------------------------
+
+IDENTITY_QUESTION_TTL_DAYS = 14
+IDENTITY_DEFAULT_LINK = "link"
+IDENTITY_DEFAULT_LET_GO = "let_go"
+IDENTITY_DEFAULT_KEEP_OPEN = "keep_open"
+
+# Refusal reasons from `auto_link_eligible` that are the substrate saying NO,
+# as distinct from the substrate saying NOT YET. Keyed on stable fragments of
+# the gate's own sentences, the same technique `_PREDICATE_MARKERS` uses, so
+# the gate and this table cannot drift apart into two policies.
+_CONTRADICTION_MARKERS = (
+    "conflicting signal",          # an observed address that is not the record's
+    "role-shaped",                 # a shared inbox is not a person
+    "contradicts the",             # the mention's org against the record's
+    "IDM1 class",                  # two candidates — there is no likeliest
+    "duplicate-suspect set",       # the record itself is under question
+)
+# Refusals that mean the check could not RUN. Never a default: a file that
+# would not open is not a customer's answer.
+_UNAVAILABLE_MARKER = "unavailable"
+_SWITCH_OFF_MARKER = "is turned off for this workspace"
+
+
+def link_refusal_is_contradiction(why: str) -> bool:
+    """Does this `auto_link_eligible` refusal mean the substrate argues the
+    two are DIFFERENT people, rather than merely that it cannot vouch they
+    are the same?"""
+    text = str(why or "")
+    return any(m in text for m in _CONTRADICTION_MARKERS)
+
+
+def identity_question_age_days(cluster: dict, now) -> Optional[int]:
+    """How long this identity question has been asked, in days, measured
+    from its OLDEST member capture. None when no member carries a readable
+    timestamp — an undated row never ages out."""
+    from event_time import parse_ts
+
+    if now is None or not isinstance(cluster, dict):
+        return None
+    stamps = []
+    for row in cluster.get("rows") or []:
+        ts = parse_ts(row.get("captured_ts"))
+        if ts is not None:
+            stamps.append(ts)
+    if not stamps:
+        return None
+    try:
+        return (now - min(stamps)).days
+    except Exception:
+        return None
+
+
+def identity_aged_default(workspace_root, cluster: dict, matched, *,
+                          age_days: Optional[int],
+                          ttl_days: int = IDENTITY_QUESTION_TTL_DAYS,
+                          email: str | None = None) -> Optional[dict]:
+    """The default for ONE aged identity question, or None when the question
+    has not aged out yet (SPEC_FLOW1 Lane F rule 3).
+
+    Returns `{"default", "why", "matched", "age_days"}`. THIS is the function
+    TTL1's generic expiry engine registers for the identity class — the
+    lifetime (`IDENTITY_QUESTION_TTL_DAYS`) and the default live here, next
+    to the gate whose refusals they read, and the engine owns the schedule.
+
+    Pure: it decides, it never writes. `run_identity_reconcile` applies the
+    decision on the existing rails, so the receipts and the reversers are
+    the ones already registered."""
+    if age_days is None or age_days <= int(ttl_days):
+        return None
+    out = {"cluster": cluster, "matched": matched, "age_days": age_days}
+    if matched is None:
+        # Nothing on file is a likelier answer than anything else. The
+        # question stops being asked; no record is created, none is touched.
+        # Review F-18 — this sentence is written into the tombstone `note` on
+        # every aged let-go (71 of them on the operator's copy), so it has to
+        # read like English. It used to interpolate `age_days // 30 or 1`
+        # followed by a literal "th" and say "asked a 1th month".
+        return dict(out, default=IDENTITY_DEFAULT_LET_GO,
+                    why=f"asked for {age_days} days with no match on file — "
+                        f"let go rather than asked for another month (window "
+                        f"{ttl_days}d)")
+    eligible, gate_why = auto_link_eligible(workspace_root, cluster, matched,
+                                            email)
+    if eligible:
+        # The ordinary auto-link rail already claimed this one in the same
+        # run; the aged pass never double-applies.
+        return dict(out, default=IDENTITY_DEFAULT_LINK,
+                    why=f"asked for {age_days} days; {gate_why}")
+    if _SWITCH_OFF_MARKER in str(gate_why):
+        return dict(out, default=IDENTITY_DEFAULT_KEEP_OPEN,
+                    why="merging duplicate people is turned off for this "
+                        "workspace — an aged question is still the "
+                        "customer's to answer")
+    if _UNAVAILABLE_MARKER in str(gate_why):
+        return dict(out, default=IDENTITY_DEFAULT_KEEP_OPEN,
+                    why=f"{gate_why} — a check that could not run is not an "
+                        "answer, and age does not make it one")
+    if link_refusal_is_contradiction(gate_why):
+        return dict(out, default=IDENTITY_DEFAULT_LET_GO,
+                    why=f"asked for {age_days} days and the record on offer "
+                        f"is contradicted ({gate_why}) — the question is let "
+                        "go, nobody is linked (window "
+                        f"{ttl_days}d)")
+    # Not enough to vouch for it on day one; after two weeks unanswered the
+    # likeliest match IS the default, and it comes back with one `undo`.
+    return dict(out, default=IDENTITY_DEFAULT_LINK,
+                why=f"asked for {age_days} days and unanswered — resolved to "
+                    f"the likeliest match on file (window {ttl_days}d; it "
+                    "was not auto-linked on day one because the spelling "
+                    "differs and nothing corroborated it)")
+
+
+# ---------------------------------------------------------------------------
+# IDENT1 rule 4 — a nickname that names two people is dropped BY RULE
+#
+# A saved alias is a PERMANENT resolution shortcut: every future capture of
+# that spelling resolves, silently and forever, to the record it was saved
+# on. That is exactly what makes it valuable and exactly what makes an
+# ambiguous one dangerous — a short first name saved onto one record quietly
+# swallows every mention of the OTHER person who answers to it, and nothing
+# on any surface ever says so. On the 2026-09-07 book copy this had already
+# happened, and the only repair available was a hand edit of a data file,
+# which is the thing SPEC_FLOW1 exists to end.
+#
+# The rule is narrow on purpose. A spelling is dropped only when it names a
+# DIFFERENT record on file as a whole name — the same `_name_related`
+# relation the link gate uses, so "Bo" saved on the one record that answers
+# to it stays, and "Bo" saved on one of two people who both do goes. The
+# record's own canonical name is never touchable (`remove_person_alias`
+# refuses it): a record must always have something to be called by.
+# ---------------------------------------------------------------------------
+
+ALIAS_COLLISION_CHANGE_CLASS = "person_alias_dropped"
+ALIAS_DROPPED_EVENT = "person_alias_dropped"
+
+
+def _unresolved_label() -> str:
+    """The base-era label, read live from LEAK2's `narration_names` when that
+    module is on the path so this branch alone and the LEAK2-merged tree read
+    ONE shared label instead of two hard-coded copies drifting apart (LEAK2
+    @ 39f858ab renamed the constant's value from "(name on file)" to
+    "(no name on file)"). Falls back to the base-era literal when the module
+    is absent, so pre-merge behaviour is unchanged."""
+    try:
+        from narration_names import UNRESOLVED_LABEL
+
+        return UNRESOLVED_LABEL
+    except Exception:
+        return "(name on file)"
+
+
+def _display_name(candidate, *, fallback: str = None) -> str:
+    """The name a receipt or a card may print. Delegates to LEAK2's
+    `narration_names.safe_name` when that module is present, and keeps its
+    contract when it is not: an internal id is NEVER printed as a name, and
+    a record with no name reads as an honest label instead of a blank."""
+    if fallback is None:
+        fallback = _unresolved_label()
+    try:
+        from narration_names import safe_name
+
+        return safe_name(candidate, fallback=fallback)
+    except Exception:
+        text = str(candidate or "").strip()
+        if not text:
+            return fallback
+        return fallback if re.match(
+            r"^(person|project|org|event|matter|engagement)_\d{3,}$",
+            text, re.IGNORECASE) else text
+
+
+def colliding_aliases(workspace_root) -> list[dict]:
+    """Every saved alias that names more than one person on file.
+
+    `[{person_id, person_name, alias, collides_with, collides_with_name}]`,
+    stable order. Pure — it finds, it never writes."""
+    from entities_io import entities_collection
+    from people_writer import get_person_display_names
+
+    try:
+        doc = json.loads((Path(workspace_root) / "_hq" / "data"
+                          / "entities.json").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    people = [p for p in (entities_collection(doc, "people") or [])
+              if isinstance(p, dict) and p.get("status") != "archived"]
+    out: list[dict] = []
+    for rec in people:
+        canon = (rec.get("canonical_name") or "").strip()
+        canon_norm = _norm_name(canon)
+        seen: set = set()
+        for surface in get_person_display_names(rec)[1:]:
+            alias = str(surface or "").strip()
+            alias_norm = _norm_name(alias)
+            if not alias_norm or alias_norm == canon_norm or alias_norm in seen:
+                continue
+            seen.add(alias_norm)
+            for other in people:
+                if other.get("id") == rec.get("id"):
+                    continue
+                other_name = (other.get("canonical_name") or "").strip()
+                if not other_name:
+                    continue
+                if _name_related(alias, other_name):
+                    out.append({
+                        "person_id": rec.get("id"),
+                        "person_name": _display_name(canon),
+                        "alias": alias,
+                        "collides_with": other.get("id"),
+                        "collides_with_name": _display_name(other_name),
+                    })
+                    break
+    return out
+
+
+def apply_alias_collisions(workspace_root, *, batch_id: str,
+                           source_skill: str = "identity-reconcile",
+                           limit: int = 25) -> list[dict]:
+    """Drop every colliding alias found above, one receipted, reversible act
+    each. Returns what was ACTUALLY dropped (the honesty rule).
+
+    Each drop appends a `person_alias_dropped` event carrying the person and
+    the spelling, batch-stamped with the `person_alias_dropped` change class
+    — which is the whole reason `undo` can put the nickname back."""
+    from event_gate import append_event
+    from people_writer import remove_person_alias
+
+    dropped: list[dict] = []
+    for hit in colliding_aliases(workspace_root)[:max(0, int(limit))]:
+        try:
+            res = remove_person_alias(workspace_root, hit["person_id"],
+                                      hit["alias"], source_skill=source_skill)
+        except Exception:
+            continue
+        if res.get("status") != "removed":
+            continue
+        append_event(
+            _events_path(Path(workspace_root)),
+            [{"type": ALIAS_DROPPED_EVENT, "source_skill": source_skill,
+              "data": {"person_id": hit["person_id"],
+                       "alias": hit["alias"],
+                       "collides_with": hit["collides_with"],
+                       "brain_batch_id": batch_id,
+                       "brain_change_class": ALIAS_COLLISION_CHANGE_CLASS,
+                       "note": (f"{hit['alias']!r} named both "
+                                f"{hit['person_name']} and "
+                                f"{hit['collides_with_name']} — a nickname "
+                                "that names two people resolves neither")}}],
+            holder=source_skill)
+        dropped.append(dict(hit, **{k: res[k] for k in
+                                    ("mapping_removed", "record_written")}))
+    return dropped
 
 
 def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
@@ -965,6 +1465,12 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
     renders as a confirm ask — a human decision is the safe floor)."""
     name = (cluster.get("name") or "").strip()
     matched_name = (matched or {}).get("canonical_name") or ""
+    # SPEC_FLOW1 — the workspace switch. Off means the row asks, which is
+    # exactly what the whole gate below returns anyway, so a seat that turns
+    # it off gets the pre-IDENT1 behaviour with no other change.
+    if not auto_merge_enabled(workspace_root):
+        return False, ("merging duplicate people is turned off for this "
+                       "workspace — the row asks instead")
     if _NAME_ANNOTATION_RE.search(name):
         return False, "name carries annotation/guess markers — never auto"
     # (c) observed-address scan — hoisted above (a′) because the email clause
@@ -1026,6 +1532,27 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
     except Exception:
         return False, "same-name candidate check unavailable — never auto"
     ids = {c.get("id") for c in (candidates or []) if c.get("id")}
+    # IDENT1 — a misspelled surname shares NO token with the record it
+    # belongs to, so the token-level candidate set is empty for exactly the
+    # rows the variant clause exists to resolve. Bar (b) is not relaxed: it
+    # is asked of the candidate set the relation itself defines, and the
+    # answer must still be exactly one record, and that record must be the
+    # match. A spelling within two characters of TWO people on file is the
+    # IDM1 class and keeps asking, same as before.
+    if corroboration is not None and surname_variant(name, matched_name):
+        try:
+            variants = variant_candidates(workspace_root, name)
+        except Exception:
+            return False, "variant candidate check unavailable — never auto"
+        vids = {c.get("id") for c in (variants or []) if c.get("id")}
+        if vids != {matched.get("id")}:
+            return False, (f"{len(vids)} on-file spellings within reach of "
+                           f"{name!r} — two candidates are the IDM1 class, "
+                           "never auto")
+        # A variant that ALSO token-collides with other records (a shared
+        # first name) is still only ever linked to the one variant match;
+        # the token set is allowed to be wider here and is not a veto.
+        ids = vids
     if ids != {matched.get("id")}:
         return False, (f"{len(ids)} on-file candidates for {name!r} — "
                        "two same-name records are the IDM1 class, never auto")
@@ -1213,6 +1740,12 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
 
     plan: dict = {"auto": [], "confirm": [], "merge_propose": [],
                   "annotations": [], "expire": [], "keep_open": [],
+                  # IDENT1 rule 3 — questions past their fourteen days, with
+                  # the default each one resolves to. ADDITIVE: an aged row
+                  # still sits in the bucket its tier put it in, so every
+                  # reader of `confirm` / `merge_propose` sees exactly what
+                  # it saw before. `run_identity_reconcile` is what drains.
+                  "aged_default": [],
                   "updates": view["updates"], "now_iso": now_iso}
 
     for row in view["nameless"]:
@@ -1236,6 +1769,18 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
                                              "a snoozed identity"})
             continue
         cls = classify_cluster(ws, cluster)
+        # IDENT1 rule 3 — decide the aged default BEFORE the tier routing
+        # below, and record it beside the row rather than instead of it.
+        if cls["tier"] in ("confirm", "merge_propose"):
+            aged = identity_aged_default(
+                ws, cluster, cls.get("matched_person"),
+                age_days=identity_question_age_days(cluster, now),
+                email=cls.get("email"))
+            if aged is not None:
+                aged["row_id"] = cluster["row_id"]
+                aged["tier"] = cls["tier"]
+                aged["email"] = cls.get("email")
+                plan["aged_default"].append(aged)
         if cls["tier"] == "merge_propose":
             email = cls["email"]
             matched = cls["matched_person"]
@@ -1290,7 +1835,8 @@ def run_identity_reconcile(
     caps: Optional[dict] = None,
     now_iso: Optional[str] = None,
     exact_email_autolink: bool = True,
-    fired_via: str = "scheduled",
+    fired_via=None,
+    triggered_by: Optional[str] = None,
     source_skill: str = "identity-reconcile",
 ) -> dict:
     """Plan and (with apply=True) execute the reconcile pass:
@@ -1319,6 +1865,12 @@ def run_identity_reconcile(
     signal and the D6 CHANGED-narration source). Honesty rule: every receipt
     count comes from what was ACTUALLY written, never from the plan.
     """
+    # FIX3 F3-6: a literal default IS an explicit value by the time the
+    # resolver sees it (the FIX2 M-3 lesson), so this signature says
+    # nothing and the seat answers. A legacy or local seat still reads
+    # `scheduled`, byte for byte; a merged seat with nothing forwarded
+    # reads `manual`, which is what a typed brief actually is.
+    fired_via = _effective_fired_via(fired_via)
     ws = Path(workspace_root)
     caps = dict(caps or STEADY_CAPS)
     now_iso = now_iso or _now_iso()
@@ -1340,7 +1892,12 @@ def run_identity_reconcile(
                      "auto_linked": [], "already_on_file": [],
                      "merge_rows_proposed": 0, "annotations": [],
                      "annotations_resolved": [], "expired": [], "errors": [],
-                     "spilled": {"auto_add": 0, "merge_propose": 0}}
+                     # IDENT1 rule 3 — the two aged outcomes counted apart,
+                     # because "we linked 25 for you" and "we stopped asking
+                     # about 60" are different sentences to a customer.
+                     "aged_linked": [], "aged_let_go": [], "aliases_dropped": [],
+                     "spilled": {"auto_add": 0, "merge_propose": 0,
+                                 "aged_default": 0}}
 
     def _tombstone(cluster_or_row, *, resolution, person_id=None, alias=None,
                    note="", change_class="person_proposal_tombstone",
@@ -1514,10 +2071,84 @@ def run_identity_reconcile(
             results["errors"].append({"row_id": cluster["row_id"],
                                       "error": f"{type(exc).__name__}: {exc}"})
 
+    # ---- IDENT1 rule 4: nicknames that name two people ---------------------
+    # Runs before the aged defaults on purpose: an ambiguous spelling is a
+    # resolution shortcut, and a default that resolves a name THROUGH one
+    # would inherit its ambiguity.
+    try:
+        results["aliases_dropped"] = apply_alias_collisions(
+            ws, batch_id=batch_id, source_skill=source_skill)
+    except Exception as exc:  # loud, contained
+        results["errors"].append({"row_id": "alias_collisions",
+                                  "error": f"{type(exc).__name__}: {exc}"})
+
+    # ---- IDENT1 rule 3: the aged defaults ----------------------------------
+    # Runs AFTER the auto-link rail (an eligible link belongs to its own lane,
+    # with its own predicate on the event) and BEFORE the confirm rows are
+    # minted below — otherwise the pass would mint an ask for a question it is
+    # about to answer, which is the exact orphan the §4a sweep exists to stop.
+    aged_done: set = set()
+    for entry in plan["aged_default"]:
+        cluster = entry["cluster"]
+        row_id = cluster["row_id"]
+        if row_id in swept or row_id in aged_done:
+            continue
+        if entry["default"] == IDENTITY_DEFAULT_KEEP_OPEN:
+            plan["keep_open"].append({"cluster": cluster, "why": entry["why"]})
+            continue
+        if (len(results["aged_linked"]) + len(results["aged_let_go"])
+                >= int(caps.get("aged_default", 0))):
+            results["spilled"]["aged_default"] += 1
+            plan["keep_open"].append({
+                "cluster": cluster,
+                "why": "aged-default cap reached — the rest drain on the "
+                       "next run (§0-3, narrated never silent)"})
+            continue
+        matched = entry.get("matched")
+        if entry["default"] == IDENTITY_DEFAULT_LINK and matched is not None:
+            # The SAME rail an eligible auto-link uses: propose(tier="auto")
+            # + apply + resolve, `person_link` change class, so the
+            # registered reverser reopens the mention AND hands the decision
+            # back as a confirm row. A default that could not be taken back
+            # would not be a default, it would be a verdict.
+            if _auto_apply_person_link(ws, cluster, matched, entry,
+                                       entry["why"], batch_id, _tombstone,
+                                       results, source_skill):
+                aged_done.add(row_id)
+                results["aged_linked"].append({
+                    "row_id": row_id, "name": cluster.get("name"),
+                    "person_id": matched.get("id"),
+                    "age_days": entry.get("age_days"), "why": entry["why"]})
+                if matched.get("id"):
+                    auto_linked_records[matched["id"]] = matched
+                continue
+            # The link would not apply (a standing human answer, a decline
+            # cooldown). Falling through to LET GO would drop a row the
+            # customer has already spoken about, so it keeps its question.
+            plan["keep_open"].append({
+                "cluster": cluster,
+                "why": "an aged default tried the likeliest match and the "
+                       "link rail declined — a standing human answer is "
+                       "never steamrolled by a clock"})
+            continue
+        try:
+            _tombstone(cluster, resolution="not_relevant",
+                       note=f"identity reconcile {batch_id} — aged default: "
+                            f"{entry['why']}",
+                       change_class="person_proposal_tombstone")
+        except Exception as exc:  # loud per-item, contained per-batch
+            results["errors"].append({"row_id": row_id,
+                                      "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        aged_done.add(row_id)
+        results["aged_let_go"].append({
+            "row_id": row_id, "name": cluster.get("name"),
+            "age_days": entry.get("age_days"), "why": entry["why"]})
+
     # ---- deferred confirm rows for everything the sweep left open ----------
     for entry in pending_links:
         cluster, matched = entry["cluster"], entry["matched"]
-        if cluster["row_id"] in swept:
+        if cluster["row_id"] in swept or cluster["row_id"] in aged_done:
             continue
         if results["merge_rows_proposed"] >= merge_cap:
             results["spilled"]["merge_propose"] += 1
@@ -1605,6 +2236,11 @@ def run_identity_reconcile(
         ws, "identity-reconcile",
         receipt_type="identity_reconcile_run",
         fired_via=fired_via,
+        # FIX3 F3-6, fix pass 2 (review N-1). WHICH surface asked. The
+        # argument wins; `log_receipt` falls back to `CR_TRIGGERED_BY`, so a
+        # merged seat that forwarded the variable is covered either way, and
+        # a run nobody asked for writes no key at all.
+        triggered_by=triggered_by,
         extra_data={
             "batch_id": batch_id,
             "n_auto_added": len(results["added"]),
@@ -1621,6 +2257,13 @@ def run_identity_reconcile(
             "n_annotations": len(results["annotations"]),
             "n_annotations_resolved": len(results["annotations_resolved"]),
             "n_expired": len(results["expired"]),
+            # IDENT1 rule 3 — what the fourteen-day default did, counted from
+            # what was WRITTEN (the honesty rule), never from the plan.
+            "n_aged_linked": len(results["aged_linked"]),
+            "n_aged_let_go": len(results["aged_let_go"]),
+            # IDENT1 rule 4 — nicknames the collision rule took back.
+            "n_aliases_dropped": len(results.get("aliases_dropped") or []),
+            "identity_question_ttl_days": IDENTITY_QUESTION_TTL_DAYS,
             "n_kept_open": len(plan["keep_open"]),
             "n_errors": len(results["errors"]),
             "caps": caps,
@@ -1922,6 +2565,16 @@ def _narrate(plan: dict) -> str:
     lines.append(f"  duplicate suspects: {len(plan.get('merge_suspects') or [])}")
     lines.append(f"  annotations (no name): {len(plan['annotations'])}")
     lines.append(f"  expire (aged, name-only): {len(plan['expire'])}")
+    aged = plan.get("aged_default") or []
+    if aged:
+        counts: dict = {}
+        for e in aged:
+            counts[e["default"]] = counts.get(e["default"], 0) + 1
+        lines.append(
+            f"  aged past {IDENTITY_QUESTION_TTL_DAYS}d (rule 3): "
+            f"{counts.get(IDENTITY_DEFAULT_LINK, 0)} to the likeliest match, "
+            f"{counts.get(IDENTITY_DEFAULT_LET_GO, 0)} let go, "
+            f"{counts.get(IDENTITY_DEFAULT_KEEP_OPEN, 0)} still asked")
     lines.append(f"  left open: {len(plan['keep_open'])}")
     if plan.get("applied"):
         r = plan["results"]
@@ -1932,11 +2585,17 @@ def _narrate(plan: dict) -> str:
             f"{len(r['annotations'])} annotations, {len(r['expired'])} "
             f"expired, {len(r['needs_confirm'])} held for a same-name "
             f"confirm, {len(r['errors'])} errors")
+        if r.get("aged_linked") or r.get("aged_let_go"):
+            lines.append(
+                f"  aged default applied: {len(r['aged_linked'])} linked to "
+                f"the likeliest match, {len(r['aged_let_go'])} questions let "
+                f"go — all under batch id {plan['batch_id']}")
         sp = r["spilled"]
-        if sp["auto_add"] or sp["merge_propose"]:
+        if sp["auto_add"] or sp["merge_propose"] or sp.get("aged_default"):
             lines.append(f"  cap spill (narrated, never silent): "
                          f"{sp['auto_add']} auto, {sp['merge_propose']} "
-                         f"merge-propose — they stay in the review pile")
+                         f"merge-propose, {sp.get('aged_default', 0)} aged "
+                         f"— they stay in the review pile")
         lines.append(f"  undo: the adds and tombstones reverse with batch id "
                      f"{plan['batch_id']} (adds archive, expiries reopen)")
     return "\n".join(lines)
@@ -1958,12 +2617,32 @@ def main() -> int:
     ap.add_argument("--now", default=None, help="ISO now override (tests)")
     ap.add_argument("--json", action="store_true",
                     help="emit the machine-readable plan as well")
+    # FIX3 F3-6, fix pass 2 (review N-1). The rendered leg ends in these two
+    # flags and this command used to exit 2 on them, so the Sunday family's
+    # identity leg died with a usage error whenever a typed surface ran the
+    # catch-up.
+    ap.add_argument("--fired-via", default=None,
+                    choices=("scheduled", "manual", "catchup"),
+                    help="how this run was started; the seat decides when "
+                         "nothing is said (receipts.effective_fired_via)")
+    ap.add_argument("--triggered-by", default=None,
+                    help="the surface that asked for this run")
     args = ap.parse_args()
+    # The same export the other job CLIs make, so every composer below reads
+    # who asked from one place instead of a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
     plan = run_identity_reconcile(
         args.workspace, apply=args.apply,
         caps=BACKFILL_CAPS if args.backfill else STEADY_CAPS,
         now_iso=args.now,
-        fired_via="manual" if args.backfill else "scheduled")
+        # The flag wins. Absent it, a backfill is still the one-time run a
+        # person asked for; anything else says NOTHING and lets
+        # `_effective_fired_via` decide, so a legacy seat reads `scheduled`
+        # byte for byte and a merged seat with nothing forwarded reads
+        # `manual` — the M-3 rule this round exists to apply.
+        fired_via=args.fired_via or ("manual" if args.backfill else None),
+        triggered_by=args.triggered_by)
     print(_narrate(plan))
     if args.json:
         print(json.dumps(plan, default=str))

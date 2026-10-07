@@ -165,14 +165,19 @@ def doc_headline_link(label: str, url: str) -> str:
     # Implementation: support an optional `level` kwarg via signature update.
     # Kept positional for back-compat with the common single-doc case.
     #
-    # SPEC_SLACK1 C-4 — surface-aware: on the slack surface there is no
-    # Cowork chat renderer and `computer://` URLs are dead, so the headline
-    # degrades to a plain bold line WITHOUT the URL; the file itself is
-    # delivered into the thread via the listener's `files.upload` (heavy-docs
-    # posture: Slack triggers the build, reading happens at a desk). The
-    # cowork return is byte-identical to pre-SLACK1.
+    # NO TARGET, NO LINE (HYGIENE3, ruling R-RW2-4 second half). A headline
+    # with no URL is an arrow and a title pointing at nothing - the 2026-09-23
+    # prep closed on exactly that, `→ Call Prep — <Name>` in plain text, a
+    # dead pointer by shape. So an empty URL answers "" and the caller prints
+    # nothing; the landing's own `opener_line` is the pointer. The Slack form
+    # (SPEC_SLACK1 C-4) never carried a URL - `computer://` is dead there and
+    # the listener uploads the file into the thread - so it is RETIRED the
+    # same way: on the slack surface this answers "" too. The cowork return
+    # WITH a URL is byte-identical to pre-SLACK1.
     if _current_surface() == "slack":
         return _slack_doc_headline(label)
+    if not str(url or "").strip():
+        return ""
     return _doc_headline_link_impl(label, url, level=2)
 
 
@@ -188,9 +193,12 @@ def _current_surface() -> str:
 
 
 def _slack_doc_headline(label: str) -> str:
-    """C-4: the slack form of a generated-deliverable headline — plain bold
-    mrkdwn, NO URL (the listener uploads the file into the thread)."""
-    return f"→ *{label}*"
+    """C-4, RETIRED (HYGIENE3, R-RW2-4): the slack form was `→ *label*` — an
+    arrow and a title with no target, the dead-pointer shape. The listener
+    uploads the file into the thread, and that upload IS the pointer, so the
+    headline is nothing at all. Kept as a function so a caller that still
+    reaches for it prints an empty string rather than a dead arrow."""
+    return ""
 
 
 def _doc_headline_link_impl(label: str, url: str, level: int = 2) -> str:
@@ -209,6 +217,8 @@ def doc_headline_link_h3(label: str, url: str) -> str:
     """
     if _current_surface() == "slack":
         return _slack_doc_headline(label)
+    if not str(url or "").strip():
+        return ""
     return _doc_headline_link_impl(label, url, level=3)
 
 
@@ -284,8 +294,16 @@ def absolutize_doc_links(text: str, workspace_root, *, drive_web_url=None) -> st
     tool_discovery.infer_workspace_drive_platform(root))` — BUG-8538);
     `brief_path.get_brief_opener_url` prefers it there and ignores
     it on a host-native root. Pass a callable to resolve per-path, a string to
-    apply one link to every doc in the payload, or None for the `computer://`
-    form.
+    apply one link to every doc in the payload, or None.
+
+    NONE IS NOT A FALLBACK (MF-M2-9, night M2). On a host-native root it
+    still means the `computer://` form, which is the ordinary case and is
+    unchanged. On a cloud-mounted or sandbox-VM root with nothing to map the
+    path against, `get_brief_opener_url` now answers with an EMPTY STRING
+    rather than a dead link carrying this run's own session id, and this
+    function leaves the relative target exactly as it found it — so the
+    surface says where the document went in words, with no href, instead of
+    handing a customer a link that cannot open.
 
     >>> absolutize_doc_links("[Prep](_hq/meetings/x.docx)", "/ws")
     '[Prep](computer:///ws/_hq/meetings/x.docx)'
@@ -610,6 +628,10 @@ __all__ = [
     "USER_TEXT_BLANKED_LABELS",
     "USER_AUTHORED_FIELDS",
     "COMPOSED_FIELDS_KEY",
+    "ORIGIN_STAMPED_FIELDS",
+    "REASON_ORIGIN_KEY",
+    "REASON_ORIGIN_CUSTOMER",
+    "customer_typed",
     "UserTextProvenanceError",
     "CANONICAL_ACTIONS",
     "is_canonical_action",
@@ -1386,9 +1408,67 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
 
 import re as _leak_re
 
+# LEAK3 6.1 — imported early (ahead of the `surface_leak_patterns` import
+# block below, which extends `_LEAK_PATTERNS` after it is built) because the
+# `cmt_` pattern literal inside the list needs the constant at CONSTRUCTION
+# time, not after.
+try:
+    from surface_leak_patterns import CMT_ID_MIN_LEN as _CMT_ID_MIN_LEN
+    from surface_leak_patterns import NUMERIC_TAILED_ID_SRC as _NUM_TAIL_SRC
+    from surface_leak_patterns import NUMERIC_TAILED_ID_PREFIXES as _NUM_TAIL_PREFIXES
+    from surface_leak_patterns import SUBSTRATE_PATH_SOURCES as _SUBSTRATE_SRC
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_cml
+    from pathlib import Path as _Path_cml
+    _sys_cml.path.insert(0, str(_Path_cml(__file__).resolve().parent))
+    from surface_leak_patterns import CMT_ID_MIN_LEN as _CMT_ID_MIN_LEN
+    from surface_leak_patterns import NUMERIC_TAILED_ID_SRC as _NUM_TAIL_SRC
+    from surface_leak_patterns import NUMERIC_TAILED_ID_PREFIXES as _NUM_TAIL_PREFIXES
+    from surface_leak_patterns import SUBSTRATE_PATH_SOURCES as _SUBSTRATE_SRC
+
+# FIXTRAIN v5.31.0 6.3 — built once, registered in `_LEAK_PATTERNS` below and
+# remembered here by IDENTITY. A compiled pattern is hashable and unique, so
+# "which rows are exempt inside a link target" can be asked without giving the
+# row a second label a reader would then see in a refusal.
+_MEETINGS_LINK_ROW = (_leak_re.compile(
+    _SUBSTRATE_SRC["substrate_path_hq_meetings"], _leak_re.IGNORECASE),
+    "internal _hq path")
+_LINK_TARGET_EXEMPT_PATTERNS = frozenset({_MEETINGS_LINK_ROW[0]})
+
+# A LINK TARGET MAY CONTAIN A SPACE, and the workspaces that matter most do.
+# `_URL_SPAN_RE` (the LEAK2 family's carve-out) stops a markdown target at
+# the first whitespace, which is right for a BARE url in prose and wrong for
+# a `](…)` target: a cloud-mounted workspace folder is routinely two words,
+# so `[9:00](computer:///sessions/abc/mnt/My Workspace/_hq/meetings/x.docx)`
+# is not recognised as a span at all. That is the exact link the brief posts
+# on a cloud seat, and refusing it would be a worse defect than the one 6.3
+# closes. This span is used ONLY by the rows in
+# `_LINK_TARGET_EXEMPT_PATTERNS`, so no other pattern class sees a wider
+# carve-out than it had; the bracket and the quote are the delimiters, and
+# a `](…)` or an `href="…"` really is a link wherever it appears.
+_LINK_TARGET_SPAN_RE = _leak_re.compile(
+    r"""(?:href|src)\s*=\s*["'][^"']*["']"""
+    r"""|\]\([^)]*\)""",
+    _leak_re.IGNORECASE)
+
+
+# Merged-tree review F-5: the entity-id alternation is BUILT from the shared
+# prefix constant (minus `cmt`/`seq`, which have their own patterns below), so
+# a prefix added in surface_leak_patterns reaches this gate and
+# `carries_surface_id()` together - never a hand-typed prefix list here.
+_ENTITY_ID_PREFIXES = tuple(p for p in _NUM_TAIL_PREFIXES if p not in ("cmt", "seq"))
+_ENTITY_ID_SRC = (r"\b(?:(?:" + "|".join(_ENTITY_ID_PREFIXES) + r")_\d+"
+                  r"|(?:event|matter|engagement)_\d{3,})\b")
+
 _LEAK_PATTERNS = [
     # Internal entity / event IDs
-    (_leak_re.compile(r"\b(person|project|org|event|matter|engagement)_\d{3,}\b", _leak_re.IGNORECASE),
+    # REVIEW_LEAK3 F-6 — `person_`, `project_`, `org_` and `deal_` drop
+    # their three-digit floor: `org_7` is as much a wire id as `org_007`,
+    # and the floor was never protecting anything (ordinary words that carry
+    # digits — "Q3", "v5.31.0", "2pm", "A-Z" — have no `<word>_<digits>`
+    # shape at all). The three rarer prefixes keep the floor they shipped
+    # with. One compiled alternation, so a long id is still exactly one hit.
+    (_leak_re.compile(_ENTITY_ID_SRC, _leak_re.IGNORECASE),
      "internal entity ID"),
     # T3.1 (FB-13) — commitment / brain-proposal id shapes. These live in
     # data-* wire attributes (blanked before the widget scan) and action
@@ -1397,7 +1477,20 @@ _LEAK_PATTERNS = [
     # IGNORECASE (T3.1 review F-2): display paths re-case text — section
     # titles are .upper()'d, labels get first-letter capitalization — and
     # `CMT_…` on screen is the same leak as `cmt_…`.
-    (_leak_re.compile(r"\b(?:cmt_[0-9A-Za-z]{10,}|commitment_seq_\d+|bp_[0-9a-f]{6,})\b",
+    # LEAK3 6.1 — the length floor is ONE constant now
+    # (`surface_leak_patterns.CMT_ID_MIN_LEN`), imported below rather than
+    # hand-typed here: this pattern used to say `{10,}` while
+    # `surface_leak_patterns._WIRE_ID_RE` said `{6,}` for the identical
+    # shape, so a `cmt_` id 6-9 characters long read clean through this gate
+    # while `carries_surface_id()` already called it an id.
+    # REVIEW_LEAK3 F-6 — `cmt_016` (a three-digit tail) sat under the floor
+    # and read clean. A `cmt_` followed by digits alone is a wire id at any
+    # length, so it joins THIS alternation rather than becoming a second
+    # pattern — two patterns matching one `cmt_016123` would double-count
+    # the hit, which is the fault F-1 records.
+    (_leak_re.compile(r"\b(?:cmt_[0-9A-Za-z]{" + str(_CMT_ID_MIN_LEN) + r",}"
+                      r"|cmt_\d+"
+                      r"|commitment_seq_\d+|bp_[0-9a-f]{6,})\b",
                       _leak_re.IGNORECASE),
      "internal commitment/proposal ID"),
     # Routing / synthesis metadata
@@ -1406,11 +1499,36 @@ _LEAK_PATTERNS = [
     (_leak_re.compile(r"\bconfidence\s*[:=]\s*\d", _leak_re.IGNORECASE), "confidence-score leak"),
     (_leak_re.compile(r"\b(?:low|high|medium)\s+confidence\b", _leak_re.IGNORECASE), "confidence-score leak"),
     # Internal file paths (v2.12.4+; v2.12.6 — `meetings` is user-facing, allowed)
-    # Forbids _hq/{staging|data|views|deliverables|tmp}/. Allows _hq/meetings/ since
-    # that's where briefs save (v2.12.6+) and the user opens them via the artifact_link
-    # in the widget. Path appears in href URL but not as visible label text — fine.
-    (_leak_re.compile(r"_hq/(?:staging|data|views|deliverables|tmp|scheduled_outputs|insights)/?", _leak_re.IGNORECASE),
+    # LEAK3 6.1 — was an enumerated allow-by-omission list
+    # (staging|data|views|deliverables|tmp|scheduled_outputs|insights), which
+    # missed every folder added since: `_hq/` root files (e.g. a bare
+    # `_hq/POSITIONING_TOOLBOX.md` citation, leak instance 12), `inbox/`
+    # (leak instance 9, `known-billing-domains.txt`), `operator-reports/`,
+    # `custom/`, `.system/`. Forbids EVERY `_hq/…` path now — the allow-list
+    # inverted to a single deliberate EXCEPTION (`_hq/meetings/`, where
+    # briefs save and the user opens them via the artifact link) via a
+    # negative lookahead, so a folder added tomorrow is covered without a
+    # third edit here. A bare `_hq/meetings` with no trailing slash is
+    # NOT the exception — v2.12.6's intent was the folder, and a build
+    # surface can still narrate an internal thing living directly inside
+    # `_hq/meetings` (unlikely, but the exception should stay as narrow as
+    # the thing it was carved out for).
+    # REVIEW_LEAK3 F-3 — the source of this row now lives in
+    # `surface_leak_patterns.SUBSTRATE_PATH_PATTERNS`, so the document
+    # scanner reads the SAME shape. The row stays here, in place, because
+    # this list's order is the order a reader sees findings in.
+    (_leak_re.compile(_SUBSTRATE_SRC["substrate_path_hq"],
+                      _leak_re.IGNORECASE),
      "internal _hq path"),
+    # FIXTRAIN v5.31.0 6.3 — the `_hq/meetings/` carve-out, narrowed to
+    # a LINK TARGET. Same label as the row above on purpose: one kind of
+    # path, one finding name. What differs is the HAYSTACK — this row
+    # (and only this row) reads the link-blanked copy, so
+    # `[9:00](_hq/meetings/Call_Prep_x.docx)` passes and the bare path in
+    # visible text refuses. Registered by IDENTITY in
+    # `_LINK_TARGET_EXEMPT_PATTERNS` below, because the label is shared
+    # and the label is what every other haystack rule keys on.
+    _MEETINGS_LINK_ROW,
     # v2.14.14+ — agent-freelancing patterns observed in real fires.
     # Catches "Saved the full standalone HTML at...", "Files saved to _hq/...",
     # "saved to disk", and similar narrations of disk writes the orchestrator
@@ -1432,7 +1550,34 @@ _LEAK_PATTERNS = [
     (_leak_re.compile(r"\b\d+\s+(?:actionable|surfaced|flagged|pending|stuck)\s+items?\b\s+(?:in\s+)?(?:the\s+widget|above)\b",
                       _leak_re.IGNORECASE),
      "widget-narration leak"),
-    (_leak_re.compile(r"\b(events|entities|aliases|staging_emissions|known-newsletters)\.(?:jsonl?|txt)\b", _leak_re.IGNORECASE),
+    # LEAK3 6.1 — the `.jsonl` half of this tuple is the broader pattern
+    # just below, and letting both match the same string double-counts the
+    # hit (two "internal data file" entries for one `events.jsonl`), which
+    # broke an exact-equality pin elsewhere
+    # (`run_guard_user_text_provenance_test.py` [F]) that expects one hit
+    # per leak.
+    #
+    # REVIEW_LEAK3 F-1 — the first cut avoided that double-count by
+    # narrowing this row all the way to `.txt`, which DROPPED `.json`
+    # coverage that base had: a bare `entities.json` raised before and
+    # passed after. `.json` is back and the two rows are still disjoint,
+    # because the trailing `\b` cannot match inside `.jsonl`. Source shared
+    # with the document scanner (F-3).
+    (_leak_re.compile(_SUBSTRATE_SRC["substrate_data_file_named"],
+                      _leak_re.IGNORECASE),
+     "internal data file"),
+    # LEAK3 6.1 — ANY `*.jsonl` filename, not the five names above (now
+    # folded into this one pattern; see the narrowing note just above). The
+    # record's leak instances repeat `events.jsonl` across five different
+    # surfaces (router misses, reprocess chat, undo receipts, decision log,
+    # End of Day, age-out undo), and the five-name list already needed a
+    # sixth entry (`staging_emissions.jsonl`) added by hand once before —
+    # the shape is what leaks, not a maintained enumeration of every ledger
+    # file this product ships. `.jsonl` alone (unlike bare `.json`, which a
+    # customer's own export or a third-party tool name could legitimately
+    # carry) is this product's own append-only-ledger extension.
+    (_leak_re.compile(_SUBSTRATE_SRC["substrate_data_file_jsonl"],
+                      _leak_re.IGNORECASE),
      "internal data file"),
     (_leak_re.compile(r"\bSESSION_NOTES(?:_[A-Z_]+)?\.md\b"), "internal session-notes file"),
     (_leak_re.compile(r"\bevents\.schema\.json\b", _leak_re.IGNORECASE), "internal schema file"),
@@ -1453,8 +1598,11 @@ _LEAK_PATTERNS = [
     (_leak_re.compile(r"primary_thread_id|classification_confidence|source_event_seq|last_interaction(?:_date)?(?:\s+proposed)?",
                       _leak_re.IGNORECASE),
      "schema-field leak"),
-    # Event seq numbers
-    (_leak_re.compile(r"\bseq\s+\d+\b", _leak_re.IGNORECASE), "event seq leak"),
+    # Event seq numbers. REVIEW_LEAK3 F-6 — the separator was whitespace
+    # only, so `seq_86` (the shape a composer writes when it builds an id
+    # rather than a sentence) read clean. An underscore counts too.
+    (_leak_re.compile(r"\bseq[\s_]\d+\b", _leak_re.IGNORECASE),
+     "event seq leak"),
     # Plugin protocol / version internals (e.g. "post-widget chat-links section per v2.12.0+ protocol")
     (_leak_re.compile(r"\bv\d+\.\d+(?:\.\d+)?\+?\s+(?:protocol|spec|format)\b", _leak_re.IGNORECASE),
      "plugin-version protocol leak"),
@@ -1515,6 +1663,41 @@ except ImportError:  # pragma: no cover — direct-path fallback
     from connector_id_patterns import connector_id_leak_patterns
 _LEAK_PATTERNS.extend(connector_id_leak_patterns())
 
+# LEAK2 (ATTENDED_TEST_v5.29.0 B1.3 / B3.5 / D4) — the shapes that reached
+# narration, group headers and cards while every widget row scanned clean:
+# a PREFIXLESS opaque id (a bare hex mail id, a bare UUID), and the build's
+# own words (script names, tree paths, spec and lane codes, battery talk).
+# Both halves live in shared/scripts/surface_leak_patterns.py — add or
+# remove a pattern THERE, never here. The vocabulary half stops reading
+# user-authored spans (USER_TEXT_BLANKED_LABELS below folds its labels in);
+# the opaque-id half is always-scanned, like every other id class.
+try:
+    from surface_leak_patterns import (plumbing_vocab_leak_patterns,
+                                       surface_id_leak_patterns)
+except ImportError:  # pragma: no cover — direct-path fallback
+    import sys as _sys_slp
+    from pathlib import Path as _Path_slp
+    _sys_slp.path.insert(0, str(_Path_slp(__file__).resolve().parent))
+    from surface_leak_patterns import (plumbing_vocab_leak_patterns,
+                                       surface_id_leak_patterns)
+_LEAK_PATTERNS.extend(surface_id_leak_patterns())
+_LEAK_PATTERNS.extend(plumbing_vocab_leak_patterns())
+# The DEVICE MARKER family (FIX3 F3-3) is registered on the BLOCKING gate as
+# well as on the composed-sentence validator, which the DIAGNOSIS family
+# deliberately is not. The difference is what a family costs when it fires: the
+# diagnosis class is broad and several shipped surfaces would have to be swept
+# before it could refuse a whole render, while this one matches only the
+# harness's own inventory shapes, which no surface this product composes has
+# ever contained. It is registered here so an accounts answer with the reader's
+# computer in it is refused AT THE DOOR rather than only when a composer
+# happens to have been used.
+try:
+    from surface_leak_patterns import device_marker_leak_patterns as _dmlp
+except ImportError:  # pragma: no cover — direct-path fallback
+    _dmlp = None
+if _dmlp is not None:
+    _LEAK_PATTERNS.extend(_dmlp())
+
 
 # ============================================================================
 # PROVENANCE MARKING — user-authored text, and what it is still scanned for.
@@ -1570,6 +1753,9 @@ _USER_TEXT_SPAN_RE = _leak_re.compile(
 # work, not that a mechanic leaked. Labels absent from this set scan user text
 # in full; a new pattern is therefore always-scanned until somebody argues it
 # onto this list, which is the safe default direction.
+from surface_leak_patterns import PLUMBING_VOCAB_LABELS as _LEAK2_VOCAB_LABELS  # noqa: E402
+from surface_leak_patterns import LEAK2_LABELS as _LEAK2_LABELS  # noqa: E402
+
 USER_TEXT_BLANKED_LABELS = frozenset({
     # storage + schema vocabulary
     "internal data file",
@@ -1605,6 +1791,13 @@ USER_TEXT_BLANKED_LABELS = frozenset({
     "widget-improvisation leak (payload limit/size)",
     "widget-improvisation leak (too large)",
     "widget-improvisation leak (render validated but...)",
+    # LEAK2 — the build's own vocabulary (script names, tree paths, spec and
+    # lane codes, guard ids, battery talk). Same operator-vocabulary basis as
+    # `schema-field leak` directly above: a person repairing their own
+    # workspace writes titles naming the files and lanes they are working on.
+    # The OPAQUE-ID half of that family is deliberately absent — a bare mail
+    # id or UUID identifies nobody no matter who typed it.
+    *sorted(_LEAK2_VOCAB_LABELS),
 })
 
 
@@ -1625,12 +1818,70 @@ USER_TEXT_BLANKED_LABELS = frozenset({
 # field the registry does not declare RAISES rather than quietly proceeding.
 # Adding a field here is a deliberate act with a guard pinning the contents.
 USER_AUTHORED_FIELDS: dict[str, tuple[str, ...]] = {
-    # The interactive widget: the row's title and the quoted subject line.
-    "widget": ("name", "subject"),
-    # The artifact board: the row title only (its tags, notes and headings are
-    # all driver-composed).
-    "board": ("name",),
+    # The interactive widget: the row's title, the quoted subject line, and
+    # the why-line when (and only when) the customer typed it — see
+    # ORIGIN_STAMPED_FIELDS directly below.
+    "widget": ("name", "subject", "reason"),
+    # The artifact board: the row title (its tags, notes and headings are all
+    # driver-composed) plus the same origin-stamped why-line.
+    "board": ("name", "reason"),
 }
+
+# ---------------------------------------------------------------------------
+# ORIGIN-STAMPED FIELDS — "stored" is not "typed".
+#
+# THE BUG THIS CLOSES (SPEC FIXTRAIN 6.1, last bullet). A row's why-line was
+# treated as the customer's own words whenever it had been STORED — the plate
+# renderer's test was `reason_stored`, a flag that means only "this sentence
+# came off the record rather than being recomposed now". The product writes
+# stored reasons too: a scoring rationale, a quiet-clock clause, an exit
+# receipt. Every one of those got the user-text exemption, so the five
+# internal-vocabulary classes the exemption blanks — `event seq leak`,
+# `internal data file`, `internal _hq path`, `plugin tree path`,
+# `internal lane code` — stopped scanning text THIS PRODUCT WROTE. That is
+# the exemption pointing at exactly the text it was built to keep scanning.
+#
+# THE RULE. Only text the customer TYPED is user text: what they dictated,
+# what they typed into chat, the own-word reason they gave at an exit door.
+# Storage is not provenance. Authorship is, and authorship has to be STAMPED
+# by the writer that took the words down — it cannot be recovered later from
+# a row that has already forgotten where its sentence came from.
+#
+# So a field listed here is marked user-authored ONLY when the item carries
+# `reason_origin: "customer"`. A row without the stamp is machine text and
+# faces the whole scan, which is the safe direction for every row written
+# before the stamp existed: an un-stamped legacy reason is scanned, not
+# exempted. The stamp is written by the own-word and dictation capture paths
+# (see this module's docstring note and BUILD_LEAK3's Seams).
+# ---------------------------------------------------------------------------
+
+REASON_ORIGIN_KEY = "reason_origin"
+REASON_ORIGIN_CUSTOMER = "customer"
+
+# field -> the item key whose value must equal REASON_ORIGIN_CUSTOMER before
+# the field may be marked. A field absent from this map is marked on the
+# registry alone, as before.
+ORIGIN_STAMPED_FIELDS: dict[str, str] = {"reason": REASON_ORIGIN_KEY}
+
+
+def customer_typed(item: dict, field: str = "reason") -> bool:
+    """True when `item`'s `field` carries the customer's OWN TYPED words.
+
+    The one predicate every surface asks. Exported because the plate renderer
+    (`plate_view`) has its own marking pass and must ask the SAME question
+    this module's `mark_field` asks — two places deciding "is this the user's
+    words" by two different tests is how `reason_stored` became a provenance
+    claim in the first place.
+
+    A missing stamp is False. Nothing infers the stamp from storage, from the
+    row's age, or from the shape of the sentence.
+    """
+    if not isinstance(item, dict):
+        return False
+    key = ORIGIN_STAMPED_FIELDS.get(field)
+    if key is None:
+        return True
+    return item.get(key) == REASON_ORIGIN_CUSTOMER
 
 # The per-item escape hatch, for the case the registry alone cannot see: a
 # field that is USUALLY the user's words but which THIS caller composed
@@ -1674,6 +1925,15 @@ def mark_field(item: dict, field: str, rendered: str, *, surface: str) -> str:
             f"driver-composed field marked by mistake is a silent hole in "
             f"Gate 2. Either justify {field!r} into USER_AUTHORED_FIELDS, or "
             f"do not mark it.")
+    if not customer_typed(item, field):
+        # An origin-stamped field with no `reason_origin: customer` stamp is
+        # the PRODUCT's sentence sitting in a field that sometimes carries the
+        # customer's. Return it unmarked: it faces the full vocabulary scan,
+        # which is what a product-written sentence has always been supposed to
+        # face. No raise — an un-stamped reason is the normal shape of every
+        # row written before the stamp, and refusing them would take the plate
+        # down over provenance the writer never recorded.
+        return rendered
     composed = item.get(COMPOSED_FIELDS_KEY) or ()
     _warn_unknown_composed_fields(item, composed, surface=surface)
     if field in composed:
@@ -1761,6 +2021,36 @@ def blank_user_text(html: str) -> str:
     return _USER_TEXT_SPAN_RE.sub(USER_TEXT_OPEN + USER_TEXT_CLOSE, html)
 
 
+_HTML_COMMENT_RE = _leak_re.compile(r"<!--.*?-->", _leak_re.DOTALL)
+
+# LEAK2 fix round 1 (REVIEW_LEAK2 F-5 / F-7) — A LINK IS PROVENANCE, BY SPAN.
+# The family's id patterns used to carve URLs out with a lookbehind character
+# class, which was wrong in both directions: it protected the id half only
+# (so `Sources: https://…/tests/run_all.py` refused the whole line on the
+# VOCABULARY half), and because the class had to exclude `.` and `-`, a
+# prose-adjacent id escaped (`ref-18f3a9c7d2e14b60` posted clean). Blanking
+# the whole link SPAN fixes both: everything inside a link target is exempt,
+# everything outside it — including the label a reader actually sees — is
+# scanned in full. Four link shapes: an HTML target, a markdown target, a
+# bare URL, a bare `www.` host. Applies to the LEAK2 family only; every
+# pre-existing class reads the text exactly as it always did.
+_URL_SPAN_RE = _leak_re.compile(
+    r"""(?:href|src)\s*=\s*["'][^"']*["']"""
+    r"""|\]\([^)\s]*\)"""
+    # REVIEW_LEAK2 round-2 R-3 — a bare URL ends where the URL ends.
+    # `\S+` ran to the next space, so an id GLUED to a link with no
+    # whitespace (`https://x.com/a,18f3a9c7d2e14b60`) was swallowed by
+    # the span and posted clean. A comma or a semicolon is where prose
+    # rejoins a link far more often than it is part of one; the span
+    # stops there and everything after it is read as prose again. Cost:
+    # a URL that genuinely carries a comma has its TAIL scanned — which
+    # only matters if that tail is itself a leak shape.
+    r"""|\b(?:https?|ftp)://[^\s<>"',;]+"""
+    r"""|\bmailto:[^\s<>"',;]+"""
+    r"""|\bwww\.[^\s<>"',;]+""",
+    _leak_re.IGNORECASE)
+
+
 def scan_for_id_leaks(text, *, user_text_blanked=None):
     """Return a list of (pattern_label, matched_substring) for every forbidden
     pattern found in the input text. Empty list = clean.
@@ -1779,11 +2069,52 @@ def scan_for_id_leaks(text, *, user_text_blanked=None):
     if not text:
         return []
     findings = []
-    for pat, label in _LEAK_PATTERNS:
-        haystack = text
+    # LEAK2 — the plumbing-vocabulary classes do not read HTML COMMENTS. A
+    # generated view's banner ("AUTO-GENERATED by <script> — do not edit by
+    # hand") is a machine marker addressed to whoever opens the file, never a
+    # sentence a reader is shown; `run_no_jargon_in_rendered_views_test`
+    # already exempts comments on exactly that reasoning, and the two history
+    # renderers and the routing view each carry one. The exemption is narrow
+    # on purpose: it covers ONLY the vocabulary half, so an id hidden in a
+    # comment still refuses, and every pre-existing pattern class reads the
+    # text exactly as it always did.
+    _decommented: dict = {}
+    _delinked: dict = {}
+
+    def _delink(base):
+        key = id(base)
+        if key not in _delinked:
+            _delinked[key] = _URL_SPAN_RE.sub(" ", base)
+        return _delinked[key]
+
+    def _haystack_for(pat, label):
+        base = text
         if user_text_blanked is not None and label in USER_TEXT_BLANKED_LABELS:
-            haystack = user_text_blanked
-        for m in pat.finditer(haystack):
+            base = user_text_blanked
+        # FIXTRAIN v5.31.0 6.3 — the `_hq/meetings/` row, and only that row,
+        # reads the link-blanked copy. It shares its label with the general
+        # `_hq/` row (one finding name for one kind of path), so the question
+        # is asked of the PATTERN and not of the label. Everything else about
+        # this function is unchanged: a label outside the LEAK2 family still
+        # reads the text exactly as it always did.
+        if pat in _LINK_TARGET_EXEMPT_PATTERNS:
+            key = ("lt", id(base))
+            if key not in _delinked:
+                _delinked[key] = _LINK_TARGET_SPAN_RE.sub(" ", base)
+            return _delinked[key]
+        if label not in _LEAK2_LABELS:
+            return base
+        # Both halves of the family: a link target is provenance (F-5/F-7).
+        base = _delink(base)
+        if label not in _LEAK2_VOCAB_LABELS:
+            return base
+        key = id(base)
+        if key not in _decommented:
+            _decommented[key] = _HTML_COMMENT_RE.sub(" ", base)
+        return _decommented[key]
+
+    for pat, label in _LEAK_PATTERNS:
+        for m in pat.finditer(_haystack_for(pat, label)):
             findings.append((label, m.group(0)))
     return findings
 
@@ -1963,6 +2294,39 @@ def _resolve_workspace_prefix():
     return None
 
 
+#: Where the merged claude.ai + Cowork container syncs the plugin bundle
+#: (`<org>_<account>/cr/`). A constant so a fixture can point it at a planted
+#: tree — the real path exists only inside the container.
+SYNCED_PLUGIN_REGISTRY = "/root/.claude/plugins/synced"
+
+
+def _resolve_synced_plugin_root():
+    """Rule 22 stage 2 — the synced registry, content-addressed.
+
+    A scheduled fire in the merged container has no `$CLAUDE_PLUGIN_ROOT` and
+    no Cowork `mnt/` shape; the bundle is synced to
+    `/root/.claude/plugins/synced/<org>_<account>/cr/`. The candidate must
+    carry `shared/scripts/chat_output_renderer.py`, so a bucket holding some
+    other pack can never win a positional first-match.
+    """
+    try:
+        registry = _Path_mod(SYNCED_PLUGIN_REGISTRY)
+        if not registry.is_dir():
+            return None
+        for bucket in sorted(registry.iterdir()):
+            if not bucket.is_dir():
+                continue
+            for candidate in sorted(bucket.iterdir()):
+                if not candidate.is_dir():
+                    continue
+                marker = candidate / "shared" / "scripts" / "chat_output_renderer.py"
+                if marker.is_file():
+                    return str(candidate)
+    except (OSError, PermissionError):
+        return None
+    return None
+
+
 def _resolve_plugin_root():
     """Resolve the installed plugin's absolute path per CONTRACT.md Rule 22
     (SPEC_SLACK1 C-5 — headless-aware, content-addressed).
@@ -1971,14 +2335,19 @@ def _resolve_plugin_root():
       1. `$CLAUDE_PLUGIN_ROOT` — Claude Code provides it natively; on the
          headless VM the Cowork sandbox shape below does not exist at all
          (this was a silent contributor to the VM doc-render failures).
-      2. Cowork sandbox shape: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` →
+      2. The merged environment's SYNCED registry:
+         `/root/.claude/plugins/synced/<org>_<account>/cr/` — where the
+         container installs the bundle, and the only place a scheduled fire
+         can find it, since `$CLAUDE_PLUGIN_ROOT` is empty there (ENV1,
+         Rule 22 stage 2, 2026-09-19). CONTENT-ADDRESSED on the same marker.
+      3. Cowork sandbox shape: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` →
          `<session>/mnt/.remote-plugins/plugin_*/` — CONTENT-ADDRESSED: the
          match must contain `shared/scripts/chat_output_renderer.py`, so a
          second installed plugin (a client add-on pack) can never win the
          positional coin flip the old `head -1`-style first-match had
          (the multi-plugin plugin-root gotcha, 2026-07-24).
 
-    Returns None when neither resolves.
+    Returns None when none of the three resolves.
     """
     env_root = _os_mod.environ.get("CLAUDE_PLUGIN_ROOT")
     if env_root:
@@ -1987,6 +2356,9 @@ def _resolve_plugin_root():
                 return env_root
         except OSError:
             pass
+    synced = _resolve_synced_plugin_root()
+    if synced:
+        return synced
     tmpdir = _os_mod.environ.get("CLAUDE_CODE_TMPDIR")
     if not tmpdir:
         return None
@@ -3962,7 +4334,7 @@ def _render_widget_item(item: dict) -> str:
     #
     # The `artifact_link` field stays in the data shape so orchestrators can
     # still collect paths for the post-widget Briefs section + the
-    # `mcp__cowork__present_files` fallback. The renderer just doesn't paint
+    # file-card fallback the old desktop app painted. The renderer just doesn't paint
     # them inside the widget body anymore.
 
     # Per-item verb DROPDOWN (T2.2 row diet — replaces the per-row button
@@ -4919,7 +5291,8 @@ function crUpdateCounter() {
 }
 
 // WIDGETSEND1 — THE SHARED DISPATCHER. LOOK THE STAGE UP, THEN CALL IT ONCE.
-// Three stages (window.cowork, window, window.parent). Reading the holder can
+// Two stages (window, window.parent) — the sidebar runtime that held the
+// third is gone from every merged seat (night M1, D-2). Reading the holder can
 // throw — a cross-origin `window.parent` read raises SecurityError — so the
 // READ is in its own try and a throw there skips to the next stage. The CALL
 // is separate: a stage is used only when its `sendPrompt` is actually a
@@ -4936,9 +5309,9 @@ function crUpdateCounter() {
 // (REVIEW_WIDGETSEND1 F2). No console-only path (that silence is
 // BUG-2026-09-18 / F-17).
 //
-// TWO SENTENCES, NOT ONE (REVIEW_WIDGETSEND1 RE-VERIFY N2). `CRSF` is the
+// TWO SENTENCES, NOT ONE (REVIEW_WIDGETSEND1 RE-VERIFY N2). `crSf0` is the
 // honest line for a click that reached NOTHING. A click that DID reach a
-// stage and then tripped on a later line inside that host gets `CRSF2`
+// stage and then tripped on a later line inside that host gets `crSf1`
 // instead: it says the choices went and asks the customer to check the chat
 // before pasting. Telling that customer "could not reach the chat" is how a
 // card that already delivered gets hand-applied a second time — the same
@@ -4954,8 +5327,8 @@ function crUpdateCounter() {
 // is written already-tightened (a fixed point of _minify_js) and at column 0
 // so the two texts cannot drift apart on whitespace. Every byte here is paid
 // for out of the widget-diet budget, which is why the two node ids are short.
-const CRSF='This card could not reach the chat. Copy the line below and paste it.';
-const CRSF2='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+const crSf0='This card could not reach the chat. Copy the line below and paste it.';
+const crSf1='Sent. If nothing shows up in the chat in a moment, paste the line below.';
 function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
 function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
 const l=crSEl(h,'cr-sf','div');l.textContent=c;
@@ -4964,10 +5337,10 @@ const b=d.getElementById('cr-apply');if(b)b.disabled=false;
 const m=()=>{l.textContent=c+' Copied.';};
 try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
 try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
-function crSendPrompt(t,p){let c=CRSF;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
-for(const g of[()=>window.cowork,()=>window,()=>window.parent]){
+function crSendPrompt(t,p){let c=crSf0;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+for(const g of[()=>window,()=>window.parent]){
 let o;try{o=g();}catch(e){continue;}
-if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=CRSF2;break;}}}
+if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=crSf1;break;}}}
 crSendFailed(p,c);}
 
 // WIDGETSEND1 F2 — THE LINE THE CARD HANDS YOU TO PASTE (REVIEW_WIDGETSEND1
@@ -4999,7 +5372,13 @@ crSendFailed(p,c);}
 //     and still carries as the orphan-note carrier — handing it back would
 //     offer a move that no longer exists. A carrier with no button behind it
 //     passes no label and emits the note alone.
-//   * the row's note, when it typed one.
+//   * the row's note, when it typed one — IN QUOTES if the note itself
+//     contains a `;` (RE-VERIFY 2 R3). N5 moved the collision off the
+//     common character onto the rarer one; it did not remove it, and a
+//     note reading `call Sam; then Stone` still made `then Stone` look
+//     like a row of its own. Quoted, the row boundary survives a note
+//     that contains the separator, and it costs two bytes on the one
+//     note in a hundred that needs them.
 // Joined with "; " (RE-VERIFY N5 — a note may itself contain ", ", and a
 // comma-joined line then hides where one row ends) it is the form a reader
 // can type back: `1 draft; 2 draft`.
@@ -5013,8 +5392,9 @@ const crTypedOne = (c, el, lb) => {
   let v = String(lb || '').toLowerCase().split('…')[0];
   const inp = (typeof c.input === 'string') ? c.input.trim() : '';
   if (inp) v += ' ' + inp;
+  const x = String(c.context || '');
   return ((n && v ? n + ' ' : n) + v
-          + (c.context ? ' \u2014 ' + c.context : '')).trim();
+          + (x ? ' \u2014 ' + (x.indexOf(';') < 0 ? x : '"' + x + '"') : '')).trim();
 };
 
 function crNoteFor(n) {

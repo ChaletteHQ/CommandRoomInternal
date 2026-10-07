@@ -80,17 +80,33 @@ and the old Gmail connector). Shape (lives in `entities.json` →
   "overrides": { "senders": {}, "threads": {} },   // optional per-sender/thread scope
   "voice_register": null,                          // optional (N7 — deferred)
   "bindings": [
-    { "server_id": "ec5e0bd5-...", "provider": "superhuman",
-      "capabilities_ref": "superhuman", "binding_verified": "user_asserted" }
+    { "server_id": "Superhuman_Mail", "provider": "superhuman",
+      "capabilities_ref": "superhuman", "binding_verified": "connector_asserted",
+      "retired_server_id": "ec5e0bd5-..." }
   ]
 }
 ```
 
-Read-scope keys on the **account**; tool routing keys on the **binding**. Some
-connectors expose no whoami/profile tool (Gmail in-env has only search/get/draft/
-label — H-A), so the address↔server binding may be `user_asserted` (unverified);
-a fail-closed send from an unverified binding **degrades to paste-text** rather
-than risk sending from the wrong account (§5).
+Read-scope keys on the **account**; tool routing keys on the **binding**.
+
+`binding_verified` has exactly two values, and `connector_config.py` refuses
+any other:
+
+- `user_asserted` — the customer said so, or it was implied. Some connectors
+  expose no whoami/profile tool (Gmail in-env has only search/get/draft/label —
+  H-A), so the address↔server binding cannot be confirmed. A fail-closed send
+  from an unverified binding **degrades to paste-text** rather than risk sending
+  from the wrong account (§5).
+- `connector_asserted` — the address came back from the connector itself
+  (Superhuman `list_accounts`, Granola `get_account_info`). That is the
+  connector's own answer about which mailbox it fronts, not an assumption, so
+  outbound addressing through it does not degrade.
+
+`retired_server_id` is set when a binding is re-pinned from a rotating id onto
+a stable display-name one; the old id is kept for reading history, never for
+routing. `connector_config.set_declared_backend` does the move, so a re-pin
+can never leave two bindings for one connector (the binding list merges by
+`server_id`, and outbound routing takes the first one it finds).
 
 ---
 
@@ -201,8 +217,9 @@ type — nothing new to register (R14 unaffected).
 ### 4b. Provenance shape carries a stable `account_id` (R3)
 
 Provenance becomes `{connector: <server_id>, provider, native_id, account_id}`.
-`server_id` rotates on reconnect (CONTRACT Rule 22), so historical rows would
-dangle for scope checks and reply-routing if keyed on it. `account_id` is
+UUID-shaped server ids rotate on reconnect; display-name server ids
+(`Superhuman_Mail`) do not — so historical rows would dangle for scope checks
+and reply-routing if keyed on the id. `account_id` is
 **address-keyed and stable** — the normalizer resolves it at read time from the
 account map. Legacy rows (`gmail:<id>`, `gcal:<id>`, `slack:<permalink>`, bare
 ids) carry no `account_id`; readers treat a missing `account_id` as

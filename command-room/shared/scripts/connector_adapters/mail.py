@@ -166,6 +166,36 @@ def _compile_ops(intent: Dict[str, Any], ops: Dict[str, str],
     return joiner.join(parts)
 
 
+def account_param(provider: Optional[str]) -> Optional[str]:
+    """The name of the parameter that routes a call to ONE of the accounts a
+    connector fronts — `acting_email` on Superhuman — read from the capability
+    manifest's `account_param`, never hard-coded here (DISC1, ruling §0.31).
+
+    None when the provider fronts one account, declares no such parameter, or
+    is unknown; the caller then makes the call unaddressed, exactly as today.
+    This exposes the name; it changes no behaviour on its own, and it is what
+    makes ACCOUNT_SCOPE's `routing.draftable_from` / `sendable_from` something
+    a caller can actually act on rather than a record of intent."""
+    try:
+        from connector_adapters import capabilities as _caps
+    except ImportError:          # pragma: no cover - path-insert fallback
+        try:
+            import sys as _sys
+            from pathlib import Path as _P
+            _sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+            from connector_adapters import capabilities as _caps
+        except Exception:
+            return None
+    except Exception:            # pragma: no cover
+        return None
+    try:
+        row = _caps.provider_row(provider) or {}
+    except Exception:            # pragma: no cover
+        return None
+    val = row.get("account_param")
+    return val if isinstance(val, str) and val.strip() else None
+
+
 def threading_field(provider: Optional[str]) -> Optional[str]:
     """The field name that carries a thread/conversation id for reply-in-thread
     (A4). None for an unknown provider (caller degrades)."""
@@ -186,5 +216,5 @@ def deep_link(provider: Optional[str], native_id: Optional[str],
     return None
 
 
-__all__ = ["compile_search", "threading_field", "deep_link",
+__all__ = ["compile_search", "threading_field", "account_param", "deep_link",
            "SEARCH_INTENTS", "is_search_intent"]

@@ -111,6 +111,52 @@ def render_due_phrase(due, anchor) -> str:
     return f"due {label}"
 
 
+def _local_day(raw: str, workspace_path=None) -> Optional[_dt.date]:
+    """The calendar day a FULL timestamp falls on, in the WORKSPACE timezone
+    when one resolves, else the day AS GIVEN in its own offset — never a bare
+    UTC re-slice.
+
+    DATE1 fix round 1 (REVIEW_DATE1 F-5). `render_moved_phrase` and
+    `render_today_header` carried byte-for-byte copies of exactly this
+    parse/localize/fallback dance (the same `_dt.datetime.fromisoformat` +
+    `tz.to_local` + except-swallow shape twice in one module whose whole
+    doctrine is "ONE composer, called every time"). The reviewer's mutation
+    aimed at one landed in the other undetected because `str.replace` could
+    not tell the two copies apart — this extraction is what makes that
+    impossible: there is now exactly one place that answers "which day is
+    this instant."
+
+    A bare `YYYY-MM-DD` is the CALLER's job to short-circuit before calling
+    this — a value that never carried a time must not be shifted by one.
+    Returns `None` on an empty or unparseable `raw`; the caller decides what
+    "no day" renders as.
+    """
+    if not raw:
+        return None
+    try:
+        dt = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if workspace_path:
+        try:
+            from tz import to_local
+            local = to_local(dt, workspace_path=workspace_path)
+            if local is not None:
+                return local.date()
+        except Exception:
+            pass
+    # REVIEW_DATE1 ruling R1 (M, fix round 1): no workspace timezone
+    # resolved — read the calendar day IN THE OFFSET THE INPUT CARRIED,
+    # never a bare UTC re-slice. This is a DELIBERATE quiet guess, not a
+    # refusal: `tz.localize_date` (the door `_due_phrase` uses) degrades the
+    # identical way with no workspace path, so a workspace with no timezone
+    # set gets a header that agrees with its own due-phrases on the SAME
+    # wrong day, rather than the header and the due-phrases guessing two
+    # DIFFERENT wrong days independently. The real remedy is making the
+    # timezone question un-skippable at onboarding, not a raise mid-render.
+    return dt.date()
+
+
 def render_moved_phrase(when_iso, workspace_path=None) -> str:
     """THE "moved to …" phrase (CUT-C item 5, ATTENDED_TEST_v5.28.0 B2.5):
     weekday + date, in the WORKSPACE timezone — "Sunday, Sep 13". The Later…
@@ -128,34 +174,53 @@ def render_moved_phrase(when_iso, workspace_path=None) -> str:
       - a timestamp when the workspace tz cannot resolve (no path, tz
         unconfigured): the calendar day IN THE OFFSET THE INPUT CARRIED — the
         same rule `commitment_state._later_when` uses for `new_due` — never a
-        UTC re-slice.
+        UTC re-slice (see `_local_day`, shared with `render_today_header`
+        since REVIEW_DATE1 F-5).
     Empty / unparseable → "" (an ack composes around it; never a crash).
     """
     raw = str(when_iso or "").strip()
     if not raw:
         return ""
-    d = None
     if len(raw) == 10 and raw.count("-") == 2:
         d = parse_date(raw)
     else:
-        try:
-            dt = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            dt = None
-        if dt is not None:
-            if workspace_path:
-                try:
-                    from tz import to_local
-                    local = to_local(dt, workspace_path=workspace_path)
-                    d = local.date() if local is not None else None
-                except Exception:
-                    d = None
-            if d is None:
-                # the day AS GIVEN, in its own offset (never re-sliced to UTC)
-                d = dt.date()
+        d = _local_day(raw, workspace_path)
     if d is None:
         return ""
     return f"{d.strftime('%A')}, {d.strftime('%b')} {d.day}"
+
+
+def render_today_header(now_iso, workspace_path=None) -> str:
+    """THE brief's date header (DATE1, 2026-09-07 — ATTENDED_TEST_v5.29.0
+    B2.1): weekday + full date, in the WORKSPACE timezone —
+    "Monday, September 7, 2026". Before this composer existed the morning
+    brief's SKILL prose filled in `[Day, Month DD, YYYY]` itself; the
+    v5.29.0 attended test caught a 13:xx PT render that said "Sunday,
+    September 7" on a Monday while the SAME workspace's 12:30 and 14:xx
+    renders that day said Monday — a free-text weekday is one the model can
+    get wrong on any single render, deterministic or not, and the fix is
+    the same one CUT-C already proved for "moved to Sunday, Sep 13": ONE
+    composer, called every time, never derived in prose.
+
+    `now_iso` is the fire's own instant (a full timestamp; a bare
+    `YYYY-MM-DD` names its own day with no timezone involved — a value
+    that never carried a time must not be shifted). Anchored through
+    `tz.to_local` when a workspace path resolves; when it cannot (no path,
+    tz unconfigured, unparseable input) the calendar day is read IN THE
+    OFFSET THE INPUT CARRIED — the same fallback `render_moved_phrase` uses
+    (see `_local_day`, shared since REVIEW_DATE1 F-5) — never a bare UTC
+    re-slice. Empty / unparseable → "" (the caller prints nothing rather
+    than a header with a blank date)."""
+    raw = str(now_iso or "").strip()
+    if not raw:
+        return ""
+    if len(raw) == 10 and raw.count("-") == 2:
+        d = parse_date(raw)
+    else:
+        d = _local_day(raw, workspace_path)
+    if d is None:
+        return ""
+    return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.year}"
 
 
 def render_due_clause(due, anchor) -> str:
@@ -250,4 +315,5 @@ __all__ = [
     "render_due_clause",
     "render_due_phrase",
     "render_moved_phrase",
+    "render_today_header",
 ]

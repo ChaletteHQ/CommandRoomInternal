@@ -471,6 +471,54 @@ def propose_task_retirements(workspace_root, registered_ids=None,
     return out
 
 
+def readback_context(task_records=None, registered_ids=None) -> dict:
+    """The FS-16 schedule readback, as the detector-context dict every
+    release action that reads live schedule state expects (SCHEDVIEW1 5.3).
+
+    ONE composer, so the bridge cannot hand the readback to one item and
+    forget it for another. On the operator's seat
+    (`ATTENDED_TEST_v5.31.0_2026-09-14.md`, Step 0 b) the readiness item was
+    handed NEITHER key: it planned nothing and left no trace, while the same
+    item on a workspace that WAS handed one wrote its marker correctly. The
+    difference was the call site, so the call site now has a function.
+
+    `task_records` is the RAW listing `schedule_backend.plan_list` normalises
+    list. The raw records matter and are not interchangeable with the ids:
+    they carry `enabled`, which is the fence that stops a workspace whose
+    adjudication record was lost from re-writing a config event on every
+    update forever. `registered_ids` is derived from them when it is not
+    given, and given on its own it still composes — a caller that can only
+    see the ids is worse off than one with the records, and better off than
+    one with nothing.
+
+    Returns `{}` for no readback at all, which is what every reader treats as
+    "could not look" — deliberately NOT an empty registered set, which would
+    read as "looked, and nothing is registered".
+
+    AN EMPTY READBACK IS A READBACK (fix round 1, F-3). Those are two
+    different facts and the three-state design turns on the difference, so
+    the distinction is drawn on whether the CALLER PASSED ANYTHING, not on
+    whether what they passed had rows in it. `readback_context()` is "I could
+    not look"; `readback_context(task_records=[])` is "I looked and there is
+    nothing registered", and it returns `{"registered_ids": []}` so the
+    reader sees a readback whose answer happens to be empty. Before this, a
+    machine with zero scheduled tasks — a fresh install, the commonest shape
+    this planner's own docstring names — collapsed into "could not look": the
+    item stayed armed forever and appended a fresh note on every update.
+    """
+    if task_records is None and registered_ids is None:
+        return {}
+    recs = [r for r in (task_records or []) if isinstance(r, dict)]
+    ids = [str(i).strip() for i in (registered_ids or []) if str(i).strip()]
+    if not ids and recs:
+        ids = [str(r.get("taskId") or "").strip() for r in recs]
+        ids = [i for i in ids if i]
+    out: dict = {"registered_ids": ids}
+    if recs:
+        out["task_records"] = recs
+    return out
+
+
 def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
     """The READINESS direction (SPEC TASKRET1) — the third sibling of
     `propose_later_add_tasks` (add) and `propose_task_retirements` (remove by
@@ -621,5 +669,6 @@ __all__ = [
     "propose_task_retirements",
     "log_retire_proposal",
     "plan_readiness_retirements",
+    "readback_context",
     "log_readiness_retirement",
 ]

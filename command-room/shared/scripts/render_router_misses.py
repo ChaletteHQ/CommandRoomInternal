@@ -207,6 +207,104 @@ def monday_note_line(workspace_root, now=None) -> Optional[str]:
     return line
 
 
+# ---------------------------------------------------------------------------
+# THE PHRASE IS A ROUTE, IN CODE (SPEC FIXTRAIN v5.31.0 6.2)
+#
+# The composer below existed, was clean, and was recorded UNUSED twice —
+# 09-13 and again 09-16, the same instance both times. The skill's own prose
+# already said "answer from the composer, never from the view" and "never
+# open the view file to answer this"; the model opened the view file and
+# paraphrased it anyway, and the paraphrase carried a ledger filename, a
+# views path, three script names, a spec code, an event name and a counter
+# name — none of which the view itself prints.
+#
+# Prose that has been ignored twice is not a fence. So the phrase is
+# registered here the way `show waiting` and `show scheduling` are registered
+# in `plate_view.PLATE_REPLY_SURFACES`: ONE table, read by the skill's
+# section, by the suite and by anything else that has to ask "is this the
+# router-miss question". A phrase that resolves has exactly one answer — the
+# composer's return — and `surface_composers.post` catches whatever a turn
+# tries to add after it.
+#
+# WHAT THE VIEW IS. `_hq/views/ROUTER_MISSES.md` is a REGENERATED ARTIFACT,
+# written by `regenerate()` below from the same rows `chat_answer` reads. It
+# is not an answer source and it is not a record: deleting it costs nothing,
+# and reading it to answer a question costs the reader the paraphrase above.
+# ---------------------------------------------------------------------------
+
+CHAT_SURFACE = "router-misses"
+
+CHAT_PHRASES = frozenset({
+    "show me the router misses",
+    "show the router misses",
+    "show router misses",
+    "router misses",
+    "what have i had to redirect",
+    "what have i had to redirect you to",
+    "where have you been routing wrong",
+    "where have you been routing me wrong",
+})
+
+_PHRASE_TRIM_RE = re.compile(r"[^a-z ]+")
+
+
+def chat_route(text) -> Optional[str]:
+    """`CHAT_SURFACE` when these words are the router-miss question, else None.
+
+    Backticks, punctuation and case are the reader's, not the router's — the
+    same normalisation `plate_view.reply_surface` applies, for the same
+    reason.
+    """
+    key = _PHRASE_TRIM_RE.sub("", str(text or "").lower()).strip()
+    key = " ".join(key.split())
+    return CHAT_SURFACE if key in CHAT_PHRASES else None
+
+
+EMPTY_ANSWER = "the router-miss log has never fired — nothing to show"
+
+MAX_CHAT_ROWS = 10
+
+
+def chat_answer(workspace_root, now=None, *, limit: int = MAX_CHAT_ROWS) -> str:
+    """THE CHAT SURFACE for "show me the router misses" (SPEC FIXTRAIN 6.2).
+
+    There was no chat surface at all. Asked for this, the model opened the
+    VIEW this module writes and paraphrased it, and the paraphrase carried
+    four workspace paths, five build codes and the name of an event type
+    (attended test, HOLD driver 4, leak instance 1) — none of which the view
+    itself prints, and none of which any scanner ever saw, because a
+    free-read-and-paraphrase never reaches the gate.
+
+    So: the answer is composed HERE, from the same rows the view is built
+    from, and it goes through `surface_composers.say` before it is returned.
+    Three columns of the customer's own record — what they said they meant,
+    the day, and which skill it went to instead — and nothing else. Skill
+    folders are shown in words by `skill_words`, exactly as the view does.
+
+    An empty log returns `EMPTY_ANSWER`, which is the truth on every
+    workspace today and is a real answer rather than an apology.
+    """
+    from surface_composers import say
+
+    rows = load_misses(workspace_root)
+    if not rows:
+        return say(EMPTY_ANSWER, workspace=workspace_root)
+
+    recent = _in_window(rows, now=now)
+    head = (f"You have redirected me {_times(len(rows)).lower()} in all, "
+            f"{len(recent)} of them in the last {WINDOW_DAYS} days.")
+    lines = [head, ""]
+    for r in rows[:limit]:
+        meant = _clean(r["meant"])
+        day = _local_date(r["ts"], workspace_root)
+        went = skill_words(r["resolved_to"])
+        lines.append(f"- {day} — you meant “{meant}”; it went to {went}.")
+    if len(rows) > limit:
+        lines.append("")
+        lines.append(f"…and {len(rows) - limit} older ones.")
+    return say("\n".join(lines), workspace=workspace_root)
+
+
 def _build_content(workspace_root) -> tuple[str, dict[str, Any]]:
     workspace_root = Path(workspace_root)
     rows = load_misses(workspace_root)

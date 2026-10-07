@@ -70,6 +70,7 @@ import argparse
 import datetime as _dt
 import json
 import re
+import os
 import sys
 from pathlib import Path
 
@@ -148,6 +149,14 @@ COUNT_SHAPES = (
         rf"batch(?:es)?|questions?|older items?|entries)", re.I)),
     ("inventory-line", re.compile(
         rf"{_NUM}\s+you owe\s*·", re.I)),
+    # FOLD1A fix round 1 (REVIEW_FOLD1A F-4) — the fold's own new count.
+    # `assert_number_leads` was still being invoked over `lead_lines +
+    # fold_lines + health_lines` with no shape matching "N owed to you", so
+    # moving that line ABOVE the plate's number raised nothing: the fence
+    # was live for every count except the one this lane added. A future
+    # driver that re-orders `fold_lines` above `lead_lines` now reds.
+    ("owed-to-you", re.compile(
+        rf"^\W*{_NUM}\s+owed to you", re.I)),
 )
 
 
@@ -194,6 +203,1312 @@ def assert_number_leads(text: str, *, where: str = "morning-brief",
         raise BriefOrderError(
             f"{where}: the plate's number must be the first count in the "
             f"brief (CUT-PLATE, PLATE1-N2 R-1); found {hits!r} above it")
+
+
+# ---------------------------------------------------------------------------
+# SPEC SURFACEFIX1 5.4 / amendment B-1 — ONE OPEN COUNT ON THE BRIEF
+# ---------------------------------------------------------------------------
+#
+# `assert_number_leads` fences the ORDER of counts and says nothing about
+# their AGREEMENT. The v5.30.0 attended test (A4, B2.5) read a brief whose
+# line one said 60 while the plate behind it held 334: both numbers were
+# rendered, both were count-shaped, neither was above the other, and the
+# fence was green. A reader cannot act on two answers to one question.
+#
+# THE RULE. Every integer of the OPEN class on the brief — open / owed /
+# parked / waiting — either EQUALS line one, or is part of a breakdown that
+# SUMS to line one. Nothing else about the brief's numbers is policed here:
+# a duration, a date, a count of meetings, a money figure are all different
+# questions and none of them is this fence's business.
+#
+# The class is deliberately narrow and named, for the same reason
+# `COUNT_SHAPES` is: a red has to say WHICH sentence broke the rule.
+
+#: Sentences that answer THE SAME QUESTION AS LINE ONE — "how many are on my
+#: plate / open / waiting on me today". These are the figures that must
+#: reconcile: A4's "60" beside "58" beside a plate of 334 were three answers
+#: to this one question on one morning. `[N]`/`[X]`/`[Y]` are the SKILL.md
+#: templates' placeholders, accepted so one scanner reads a template and a
+#: live render alike (a placeholder states no number and is never a
+#: disagreement).
+OPEN_COUNT_SHAPES = (
+    ("on-your-plate", re.compile(rf"({_NUM})\s+on your plate", re.I)),
+    ("open", re.compile(rf"({_NUM})\s+open\b", re.I)),
+    ("you-owe", re.compile(rf"({_NUM})\s+you owe", re.I)),
+    ("waiting-on-you", re.compile(rf"({_NUM})\s+waiting on you", re.I)),
+)
+
+#: Figures that answer a DIFFERENT question and are allowed to stand beside
+#: line one — what OTHERS owe, what is resting, what is parked. They are not
+#: breakdowns of the attention number (the plate's WAIT, RESTING and PARKED
+#: blocks sit outside it by construction, `plate_view.render_plate`), so
+#: demanding that they sum to it would delete honest, ruled lines: "N owed to
+#: you — say `show waiting`" is M's own wording, folded in by FOLD1A.
+#:
+#: What they may NOT do is appear TWICE. The other half of A4 was the brief
+#: stating the owed-to-you figure once as a count and again as a pointer at
+#: the retired Waiting On chat — one question, two sentences, and on 09-13
+#: two different numbers. Each of these may say its figure ONCE.
+DISTINCT_QUESTION_SHAPES = (
+    ("owed-to-you", re.compile(rf"({_NUM})\s+owed to you", re.I)),
+    ("resting", re.compile(rf"({_NUM})\s+(?:overdue items?\s+are\s+)?resting",
+                           re.I)),
+    ("parked", re.compile(rf"({_NUM})\s+parked\b", re.I)),
+)
+
+
+class BriefCountError(RuntimeError):
+    """Two figures of the open class disagree on one brief. Loud, in code,
+    before the pack reaches a chat turn."""
+
+
+def headline_number_in(line) -> Optional[int]:
+    """The plate's own leading figure, read off its lead line.
+
+    `None` when the plate led with a refusal or an apology rather than a
+    number (D8's no-owner sentence, the unreadable-plate line) — a brief with
+    no headline figure has nothing for a second figure to disagree WITH, and
+    `assert_single_open_count` skips it rather than inventing a whole.
+    """
+    m = re.search(r"\b(\d+)\b", str(line or ""))
+    return int(m.group(1)) if m else None
+
+
+def _figures_in(text: str, shapes) -> list:
+    """Every figure of `shapes` in `text`, as `(shape, n, line)`. Placeholder
+    figures (`[N]`) are skipped — a template states no number."""
+    out = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        for name, rx in shapes:
+            m = rx.search(line)
+            if not m:
+                continue
+            raw = m.group(1)
+            if not raw.isdigit():
+                break          # a template placeholder: no claim, no check
+            out.append((name, int(raw), line.strip()))
+            break
+    return out
+
+
+def open_counts_in(text: str) -> list:
+    """Every figure that answers line one's question, as `(shape, n, line)`."""
+    return _figures_in(text, OPEN_COUNT_SHAPES)
+
+
+def distinct_question_counts_in(text: str) -> list:
+    """Every figure that answers a DIFFERENT question (owed to you, resting,
+    parked), as `(shape, n, line)`."""
+    return _figures_in(text, DISTINCT_QUESTION_SHAPES)
+
+
+def assert_single_open_count(text: str, *, where: str = "morning-brief",
+                             headline: int | None = None) -> None:
+    """SPEC SURFACEFIX1 5.4 / B-1 — the brief gives ONE answer per question.
+
+    Two rules, and they are different because the questions are:
+
+      1. Every figure that answers LINE ONE'S question ("how many are on my
+         plate today") either equals line one or is part of a set that SUMS
+         to it. "60 on your plate" beside "58" beside a plate of 334 — A4's
+         reading, on one morning — raises.
+      2. Every figure that answers a DIFFERENT question (owed to you,
+         resting, parked) may be stated AT MOST ONCE. Those figures are not
+         breakdowns of line one and are not required to reconcile with it;
+         what they may not do is be answered twice, which is how the brief
+         carried the owed-to-you count as a number AND as a pointer at a
+         retired chat, with two different values on 09-13.
+
+    A brief with no headline number (a refused plate, a workspace with no
+    primary user) skips rule 1 — there is nothing to disagree with. Rule 2
+    holds either way.
+    """
+    for name, figures in _group_by_shape(distinct_question_counts_in(text)):
+        values = sorted({n for n, _line in figures})
+        if len(figures) > 1:
+            raise BriefCountError(
+                f"{where}: the brief answers {name!r} more than once "
+                f"({[l for _n, l in figures]!r})"
+                + (f" — and with different figures {values!r}"
+                   if len(values) > 1 else "")
+                + ". One question, one sentence (B-1).")
+    found = open_counts_in(text)
+    if headline is None or not found:
+        return
+    others = [f for f in found if f[1] != headline]
+    if not others:
+        return
+    # A breakdown: the parts sum to the whole. Checked over the figures that
+    # are NOT the headline, because the headline itself is the whole.
+    if sum(n for _name, n, _line in others) == headline:
+        return
+    raise BriefCountError(
+        f"{where}: the brief states more than one figure for what is on the "
+        f"plate today and they do not reconcile with line one ({headline}); "
+        f"found {[(n, line) for _name, n, line in others]!r}. One number "
+        f"leads and every other figure of that question is a breakdown of "
+        f"it (B-1).")
+
+
+def _group_by_shape(figures) -> list:
+    """`[(shape, [(n, line), ...]), ...]`, in first-seen order."""
+    order: list = []
+    groups: dict = {}
+    for name, n, line in figures:
+        if name not in groups:
+            groups[name] = []
+            order.append(name)
+        groups[name].append((n, line))
+    return [(name, groups[name]) for name in order]
+
+
+# ---------------------------------------------------------------------------
+# SPEC SURFACEFIX1 5.1 / R3 — NO REACHABILITY SENTENCE ON A CUSTOMER SURFACE
+# ---------------------------------------------------------------------------
+#
+# M, 2026-09-13 (ruling R3): "Connector-reachability / coverage lines OFF the
+# brief and End of Day, same class as the 09-07 health lines; home = health
+# check + maintenance report."
+#
+# The End of Day half is mechanical — the coverage block left `RENDER_ORDER`
+# and `compose_screen` (see `end_of_day`). The BRIEF half had no code behind
+# it at all: the sentences M read on 09-13 ("I haven't been able to check your
+# sent mail in the last day", "your personal and family calendars aren't
+# reachable") were composed by the model from instructions in prose, so there
+# was nothing to remove and nothing to pin. This is that missing half: the
+# shapes, in code, with a checker the brief's own composed text runs through
+# and the suites run over the prose that instructs it.
+#
+# WHAT IS AND IS NOT ONE. A reachability sentence says something about a
+# SOURCE — reached, read, checked, current, behind. It is not:
+#   * a hedge with no reason ("you may have already handled this") — that is
+#     the Bug #98 soften floor and it stays;
+#   * a caveat on ONE rendered number (COVERQUIET1's carve-out) — that one
+#     lives in `end_of_day.coverage_number_caveat` and is placed adjacent to
+#     the figure it qualifies, never as a line of its own;
+#   * an item's own text that happens to mention mail.
+
+#: The sources a reachability sentence can be ABOUT. Every shape below is
+#: bound to one of these within a short span, because the negation on its own
+#: ("do NOT read session notes") is ordinary instruction prose and the fence
+#: has to leave it alone.
+_SOURCE_WORD = (r"(?:sent\s+)?(?:e-?mails?|mail|inbox|calendars?|chats?|"
+                r"slack|connectors?|sources?|granola|drive|transcripts?)")
+_NOT = r"n(?:['’]?t|ot)"
+
+#: The named shapes. Each is `(name, regex)` so a red says WHICH sentence.
+#: Every one is NEGATIVE and SOURCE-BOUND by construction — "the calendar is
+#: reachable" and "do NOT read session notes" are honest text and trip none
+#: of them. The roster was derived from the four sentences the attended test
+#: actually recorded (B1.5, Part E 09-11, leak 10), not invented.
+REACHABILITY_SHAPES = (
+    ("could-not-reach", re.compile(
+        rf"(?:(?:could|can|do|did|was|were|am|is|are|have|has)\s*{_NOT}|"
+        rf"cannot|unable\s+to)\s+(?:been\s+able\s+to\s+)?"
+        rf"(?:reach|read|check|see)\b[^.\n]{{0,40}}"
+        rf"\b{_SOURCE_WORD}\b", re.I)),
+    ("not-reachable", re.compile(
+        rf"\b{_SOURCE_WORD}\b[^.\n]{{0,30}}(?:{_NOT}|never)\s+reachable\b|"
+        rf"\b{_SOURCE_WORD}\b[^.\n]{{0,20}}\bunreachable\b", re.I)),
+    ("have-not-been-able", re.compile(
+        rf"h(?:ave|as|a)\s*{_NOT}\s+been\s+able\s+to\s+\w+"
+        rf"[^.\n]{{0,40}}\b{_SOURCE_WORD}\b", re.I)),
+    ("source-behind", re.compile(
+        rf"\b(?:{_SOURCE_WORD}|cursor)\b[^.\n]{{0,40}}\bbehind\b", re.I)),
+    ("connector-not-read", re.compile(
+        rf"\bconnectors?\b[^.\n]{{0,60}}\b(?:was|were|is|are)\s+not\s+read\b|"
+        rf"\bconnectors?\b[^.\n]{{0,40}}\b(?:is|was|are|were)\s+"
+        rf"(?:down|unavailable|failing)\b", re.I)),
+    ("check-connection", re.compile(r"check\s+(?:your\s+)?connection", re.I)),
+)
+
+#: THE ONE SANCTIONED SENTENCE. COVERQUIET1's carve-out (R3's only exception)
+#: qualifies ONE rendered number and is composed in code by
+#: `end_of_day.coverage_number_caveat`. Its two templates both end in this
+#: tail, which is what makes a line a caveat rather than a coverage strip: it
+#: says what the gap does to a FIGURE, never what the connector did. Carried
+#: as a literal, not read off the constant, so a rename of the template shows
+#: up as a red here rather than silently widening the exemption — and
+#: `run_health1_test.py` pins the literal against both templates.
+COVERAGE_CAVEAT_TAIL = "so these counts may be short."
+
+#: A prose line that RETIRES one of these shapes has to quote it to say what
+#: it retires. The lane marker is the one token that licenses a quote, and it
+#: only licenses it alongside a word that says the sentence is gone — so a
+#: future edit cannot re-instate a render instruction by pasting the marker
+#: onto it. Both halves are required.
+REACHABILITY_EXEMPT_MARKER = "SURFACEFIX1 5.1"
+REACHABILITY_EXEMPT_NEGATIONS = (
+    "never", "no longer", "used to", "retired", "off this surface",
+    "off the brief", "says nothing", "say nothing", "reds on",
+    "has left this surface", "rendered nowhere",
+)
+
+
+#: HEAL1 — THE CATCH-UP'S OWN VOCABULARY, ON NO CUSTOMER SURFACE.
+#:
+#: NUMBER1 3.9 took "Completed 4 background maintenance jobs on schedule."
+#: off the brief by dropping a FEED CATEGORY (`brief_plumbing_categories`).
+#: HEAL1 creates a second way for the same sentence to arrive: the surface
+#: now RUNS those jobs itself, moments before it composes, and the natural
+#: thing for a model holding that fact is to mention it — "caught up on
+#: maintenance first", "ran 6 background jobs before this". A category
+#: filter cannot see a sentence nobody put in the feed.
+#:
+#: So the catch-up's vocabulary joins the R3 fence, which is the one gate
+#: that reads the brief's FINAL composed text rather than its ingredients.
+#: Same `(name, regex)` shape as the reachability roster, same marker
+#: exemption for prose that names what it removed, and the same rule: the
+#: home for the plumbing's own condition is the health check and the weekly
+#: maintenance report, never a surface the reader typed.
+CATCHUP_PLUMBING_SHAPES = (
+    ("catchup-ran-maintenance", re.compile(
+        r"\b(?:ran|run|running|completed|finished|performed|executed|did)\b"
+        r"[^.\n]{0,30}\b(?:background\s+)?"
+        r"(?:maintenance|upkeep|housekeeping)\b", re.I)),
+    ("catchup-maintenance-state", re.compile(
+        r"\b(?:maintenance|upkeep|housekeeping)\b[^.\n]{0,30}"
+        r"\b(?:caught\s+up|up\s+to\s+date|out\s+of\s+date|behind|overdue|"
+        r"stale|had\s+n(?:ot|ever))\b", re.I)),
+    ("catchup-caught-up", re.compile(
+        r"\b(?:caught|catching)\s+up\b[^.\n]{0,30}"
+        r"\b(?:maintenance|upkeep|housekeeping|background\s+jobs?)\b", re.I)),
+    ("catchup-job-count", re.compile(
+        r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+        r"(?:background\s+|maintenance\s+|overdue\s+)+jobs?\b", re.I)),
+    ("catchup-before-this-surface", re.compile(
+        r"\bbefore\s+(?:this|the|your)\s+"
+        r"(?:brief(?:ing)?|close|day.?close|recap|wrap)\b[^.\n]{0,30}"
+        r"\b(?:ran|i\s+ran|caught|catch)\b", re.I)),
+)
+
+#: THE PRODUCT'S OWN TYPED PHRASE IS NOT A CLAIM ABOUT THE PLUMBING.
+#:
+#: `run maintenance` is a command a reader types. It is offered on the health
+#: check, in the weekly report, and in the one sentence a read surface says
+#: when the upkeep is behind — and it is written, verbatim, all over the
+#: instruction layer that tells the fire what to do. Every one of those is the
+#: PHRASE, not a sentence saying the machinery ran, and a fence that cannot
+#: tell them apart would forbid the product from naming its own remedy.
+#:
+#: So the phrase is blanked out of a line before the catch-up shapes read it.
+#: The reachability family is unaffected: it never matched on this word and
+#: scans the raw line exactly as it always has.
+CATCHUP_TYPED_PHRASE_RE = re.compile(
+    r"`?\b(?:run|running)\s+(?:my\s+|the\s+)?maintenance(?:\s+now)?\b`?",
+    re.I)
+
+
+def blank_typed_phrase(line: str) -> str:
+    """`line` with the offered `run maintenance` phrase blanked to spaces.
+
+    Same length, so any offset a caller kept still points at the same place.
+    """
+    return CATCHUP_TYPED_PHRASE_RE.sub(lambda m: " " * len(m.group(0)),
+                                       line or "")
+
+
+#: The two rosters the surface fence reads, in one place, so a caller that
+#: wants "everything a customer surface may not say about the plumbing"
+#: cannot get half of it. The reachability family stays first, so a line
+#: matching both is still reported under the name the R3 record uses.
+SURFACE_FORBIDDEN_SHAPES = REACHABILITY_SHAPES + CATCHUP_PLUMBING_SHAPES
+
+
+class ReachabilityLineError(RuntimeError):
+    """A customer surface states something about a connector. R3 forbids it."""
+
+
+def catchup_plumbing_lines_in(text: str) -> list:
+    """Every catch-up-plumbing line in `text`, as `(shape, line)`.
+
+    The HEAL1 half of the surface fence on its own, for the suites and for
+    any caller that wants to say WHICH family a sentence tripped.
+    """
+    return [hit for hit in reachability_lines_in(text)
+            if hit[0].startswith("catchup-")]
+
+
+def reachability_lines_in(text: str, *, allow_marked: bool = False) -> list:
+    """Every reachability OR catch-up-plumbing line in `text`, as
+    `(shape, line)`.
+
+    `allow_marked=True` skips lines that both carry the lane marker AND say
+    the sentence is retired — the shape a SKILL.md needs to name what it is
+    removing. Off by default: a RENDERED brief gets no exemptions at all.
+    """
+    out = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        if line.rstrip().endswith(COVERAGE_CAVEAT_TAIL):
+            continue           # COVERQUIET1's one caveat — the exception
+        if allow_marked and REACHABILITY_EXEMPT_MARKER in line \
+                and any(w in line.lower()
+                        for w in REACHABILITY_EXEMPT_NEGATIONS):
+            continue
+        scrubbed = blank_typed_phrase(line)
+        for name, rx in SURFACE_FORBIDDEN_SHAPES:
+            # The catch-up family reads the line with the product's own typed
+            # phrase blanked; the reachability family reads the raw line.
+            target = scrubbed if name.startswith("catchup-") else line
+            if rx.search(target):
+                out.append((name, line.strip()))
+                break
+    return out
+
+
+def assert_no_reachability_line(text: str, *, where: str = "morning-brief",
+                                allow_marked: bool = False) -> None:
+    """SPEC SURFACEFIX1 5.1 / R3 — raise if `text` says anything about a
+    source being unreachable, behind, stale or unchecked, or (HEAL1) anything
+    about the maintenance this surface just caught up on."""
+    hits = reachability_lines_in(text, allow_marked=allow_marked)
+    if hits:
+        raise ReachabilityLineError(
+            f"{where}: a connector-reachability or plumbing sentence reached "
+            f"a customer surface (M's ruling R3, 2026-09-13; HEAL1 behaviour "
+            f"2); found {hits!r}. The home "
+            f"for these conditions is the health check and the weekly "
+            f"maintenance report, never the brief or the day-close.")
+
+
+class CatchUpPlumbingLineError(RuntimeError):
+    """A customer surface states something about the upkeep it just ran."""
+
+
+def assert_no_catchup_line(text: str, *, where: str) -> None:
+    """FIX ROUND 1, REVIEW M-2 — the HEAL1 half of the surface fence, for a
+    surface that does not take the whole R3 family.
+
+    The catch-up now runs from three surfaces and only the morning brief
+    called `assert_no_reachability_line` on its composed text, so behaviour 2
+    was code-enforced on one surface and prose-enforced on the other two. The
+    day close cannot take the WHOLE fence — its coverage block exists to say
+    what this fire could and could not read, which is the R3 family's own
+    shape and is right there by design — so it takes the half this lane
+    added: nothing about the maintenance the surface just caught up on.
+    """
+    hits = catchup_plumbing_lines_in(text)
+    if hits:
+        raise CatchUpPlumbingLineError(
+            f"{where}: a sentence about the catch-up's own plumbing reached a "
+            f"customer surface (HEAL1 behaviour 2); found {hits!r}. What the "
+            f"catch-up DID to the reader's rows belongs in the CHANGED strip; "
+            f"how the machinery is feeling belongs on the health check.")
+
+
+#: THE CUSTOMER'S-OWN-WORDS MARKS (review F-5). `plate_view` has fenced its
+#: own text this way since PLATE1-N2: a span the customer wrote is wrapped in
+#: two control characters, and `scan_no_pending_question` BLANKS those spans
+#: before it looks for the product's vocabulary. That is the whole mechanism
+#: that lets a row whose title the reader typed sit inside a fenced text
+#: without the reader's words being judged as the product's.
+#:
+#: Line two is exactly that class of text and had been getting the crude
+#: version of the same treatment — left out of the fenced text altogether,
+#: which also took it out of the INTERROGATIVE half, which is not user-text
+#: business at all (a stated intent is a statement; a question put to the
+#: reader is a question whoever typed it). So it joins the fenced text
+#: MARKED: blanked for the vocabulary scan, read in full by the ask scan.
+#:
+#: The marks are read from `plate_view` so the two cannot drift, with a named
+#: fallback for a trimmed tree — the `_waiting_phrase` pattern. They never
+#: reach the reader: only the fence's own text carries them.
+#:
+#: NAMED "reader words", NOT "user text", DELIBERATELY. `chat_output_renderer`
+#: owns a DIFFERENT marking mechanism with a reserved vocabulary of its own
+#: (`mark_field` / `mark_user_text` / `USER_TEXT_OPEN`), and
+#: `run_guard_user_text_provenance_test`'s bypass scan reads every `.py` under
+#: `shared/scripts/` for those names — the first spelling of this helper was
+#: called `mark_user_text` and tripped that guard, correctly: two marking
+#: mechanisms must not share a name. This one is `plate_view`'s in-text fence
+#: instrument and never travels to a widget, a board or a document.
+READER_SPAN_OPEN_FALLBACK = ""
+READER_SPAN_CLOSE_FALLBACK = ""
+
+
+def reader_span_marks() -> tuple:
+    """`(open, close)` — `plate_view`'s own user-span marks, or the fallback."""
+    try:
+        from plate_view import _USER_CLOSE, _USER_OPEN
+        if _USER_OPEN and _USER_CLOSE:
+            return str(_USER_OPEN), str(_USER_CLOSE)
+    except Exception:  # pragma: no cover — the fallback carries it
+        pass
+    return READER_SPAN_OPEN_FALLBACK, READER_SPAN_CLOSE_FALLBACK
+
+
+def as_reader_words(text: str) -> str:
+    """Wrap `text` as the CUSTOMER'S OWN WORDS for the fences below."""
+    if not text:
+        return ""
+    o, c = reader_span_marks()
+    return f"{o}{text}{c}"
+
+
+def strip_reader_marks(text: str) -> str:
+    """`text` with the marks removed and the words kept — what a scan that
+    judges SHAPE rather than vocabulary must read."""
+    if not text:
+        return ""
+    o, c = reader_span_marks()
+    return text.replace(o, "").replace(c, "")
+
+
+class BriefAsksError(RuntimeError):
+    """The brief asked a question. M's design rule of 2026-09-06: the brief
+    and the wrap never ask; the Staff Meeting is where questions live, and
+    End of Day may carry two."""
+
+
+#: An interrogative sentence, by its OPENER. A question mark alone is not the
+#: test: a row title the customer wrote can end in one ("Ask Quinn whether the
+#: date still works?") and reddening the whole fire over the reader's own
+#: words would be the fence doing harm. The openers below are what a QUESTION
+#: PUT TO THE READER starts with, and the recorded defect — "Done, new date,
+#: or drop?" riding a plate row, and "did I get that right?" — is caught by
+#: the trailing-clause shape rather than by an opener.
+_ASK_OPENERS = (
+    "did", "do", "does", "is", "are", "was", "were", "can", "could",
+    "should", "would", "will", "shall", "have", "has", "who", "what",
+    "when", "where", "why", "which", "how", "want", "ready", "anything",
+)
+_ASK_TAIL_SHAPES = tuple(re.compile(p, re.I) for p in (
+    r"\bor\s+drop\?",                     # "Done, new date, or drop?"
+    r"\bdid\s+i\s+get\s+(?:that|this|it)\s+right\?",
+    r"\bwhose\s+is\s+this\?",
+    r"\b(?:yes|no)\s+or\s+\w+\?",
+))
+
+
+def interrogatives_in(text: str) -> list:
+    """Every sentence in `text` that asks the reader something."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        for rx in _ASK_TAIL_SHAPES:
+            if rx.search(line):
+                out.append(line)
+                break
+        else:
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                s = sentence.strip()
+                if not s.endswith("?"):
+                    continue
+                first = re.sub(r"^\W+", "", s).split(" ", 1)[0].lower()
+                if first in _ASK_OPENERS:
+                    out.append(line)
+                    break
+    return out
+
+
+def assert_brief_never_asks(text: str, *, where: str = "morning-brief") -> None:
+    """SPEC SURFACEFIX1 5.4 / amendment B-2 — THE BRIEF NEVER ASKS.
+
+    The 09-13 renders both carried a pinned question riding in from the
+    plate's ask rows. The plate's own ask fence (`plate_view.
+    scan_no_pending_question`) has policed the PLATE's text since PLATE1-N2;
+    this runs the SAME fence over the WHOLE composed brief, which is the half
+    that was never covered — a question composed by any other block reached
+    the reader untouched.
+
+    TWO HALVES, and only one of them existed.
+
+    The PROPOSAL half is `plate_view.scan_no_pending_question` — "a proposal
+    is waiting on you", in its several phrasings. That fence has policed the
+    PLATE's own text since PLATE1-N2 and it is called here over the WHOLE
+    composed brief, which is the scope that was missing: a claim composed by
+    any other block reached the reader untouched. It is called, never copied,
+    so the shapes have one home and cannot drift. (Its own patterns live in
+    `plate_view.py`, which this lane does not own.)
+
+    The INTERROGATIVE half is B-2's and is new: a question PUT TO THE READER,
+    anywhere in the brief. That is what the 09-13 renders carried and what no
+    existing fence could see.
+    """
+    # THE TWO HALVES READ DIFFERENT TEXTS, and that is the point (review
+    # F-5). The interrogative half judges SHAPE — is a question being put to
+    # the reader — which is true or false whoever typed the sentence, so it
+    # reads the marks OUT and the words IN. The proposal-vocabulary half
+    # judges the PRODUCT'S WORDS and must not judge the customer's, so it
+    # reads the marks IN and `scan_no_pending_question` blanks those spans
+    # itself (`plate_view._blank_user_spans`).
+    asks = interrogatives_in(strip_reader_marks(text))
+    if asks:
+        raise BriefAsksError(
+            f"{where}: the brief asks the reader a question "
+            f"({asks[:3]!r}). M's design rule of 2026-09-06: the brief and "
+            f"the wrap never ask — the Staff Meeting is where questions "
+            f"live, and End of Day may carry two (B-2).")
+    try:
+        from plate_view import scan_no_pending_question
+    except Exception:  # pragma: no cover — the fence's home must be importable
+        return
+    scan_no_pending_question(text or "")
+
+
+# ---------------------------------------------------------------------------
+# SPEC_SURFACES2_11c BRIEF2 2.2 item 1 — THE CAP NEVER HIDES A MACHINE BATCH
+# ---------------------------------------------------------------------------
+#
+# The brief asked `change_feed.changes_since(..., max_lines=3)` for its
+# CHANGED strip, and `changes_since` ranks by CATEGORY in one fixed order.
+# On 2026-09-13 that cap ate the two lines that mattered most on the book: a
+# 48-row review-door lapse and a 51-row rest batch, both acts the machine
+# took on the reader's OWN rows while they were away, both reversible by one
+# word — cut so that three ordinary housekeeping lines could print.
+#
+# M's design rule of 2026-09-06, item 4: "Importance first, not recency.
+# Whatever a cap or a fold hides, it never hides an overdue item or one due
+# this week." A door that moved the reader's rows without them is the same
+# class: it is the one thing on the strip they may need to reverse, and a
+# line they never see is a line they cannot reverse.
+#
+# So the cap moves off the batch lines and onto the REST. The batch lines
+# print in full; the ordinary lines keep the cap they always had. Nothing
+# here re-classifies and nothing here re-ranks inside either group:
+# `change_feed` stays the one place that decides what a category means and
+# what order categories come in (it is FROZEN this night), and this is a
+# PARTITION of its output, which is the smallest thing that can fix this.
+#
+# A REVERSED batch is not this function's business either, and that is
+# deliberate: `changes_since` already folds every act an undo reversed out of
+# its counts (`closure_index.reversed_act_positions`, the ATTRIB2 / POLICY1-B
+# folds) and narrates it once as "Undid N changes you reversed". So a batch
+# undone before the render arrives here as the undo line, never as a standing
+# batch line, and the brief inherits that fold rather than repeating it. The
+# suite pins the inheritance ON THE BRIEF, because an inherited property that
+# nothing checks at the surface is a property one refactor away from gone.
+
+#: The brief's cap on ORDINARY feed lines. Unchanged in value from the
+#: `max_lines=3` this surface has passed since LB1 — what changed is what it
+#: is a cap ON.
+BRIEF_CHANGED_ORDINARY_CAP = 3
+
+#: The feed categories that are a JOB'S BATCH ON THE READER'S OWN ROWS — a
+#: door the product walked through on their behalf, narrated as a count with
+#: an undo phrase. These are what the cap may never hide.
+#:
+#: The test is not "did the machine do it" (it did all of these) — it is "did
+#: it MOVE ONE OF THEIR ROWS". `people_added`, `facts_noted` and the learning
+#: job's lines are the machine's work too and they are ordinary here on
+#: purpose: nothing left the plate. `closed_from_your_word`, `put_back` and
+#: `unrested` are the CUSTOMER'S own acts and are likewise ordinary — a
+#: reader does not need protecting from the news that they themselves closed
+#: something.
+#:
+#: TWO ENTRIES ARE HERE FOR A REASON THE SENTENCE ABOVE DOES NOT COVER, AND
+#: SAYING SO IS THE FIX (review F-2, F-4; M's ruling, defaults taken).
+#:
+#:   `changes_undone` — "Undid N changes you reversed." It IS the customer's
+#:   own act, so the rule above would make it ordinary; it was, and on a
+#:   crowded morning the cap ate it. It is the ONE ordinary line that
+#:   narrates the reversal of a line this tuple protects: a reader who undid
+#:   a 48-row batch last night and reads a brief that says nothing about it
+#:   gets exactly the silence this partition exists to remove, one category
+#:   over. The tuple's own test is true of it on the rows — they moved BACK.
+#:
+#:   `proposals_retracted` / `proposals_expired` — measured against the
+#:   ledger, NOT reversible in the way the other batch lines are, and their
+#:   sentences say so themselves ("(nothing was changed)"): no row left the
+#:   plate, the question did. A retract (`commitment_review_dismissed`,
+#:   reason `commitment_policy.RETRACT_REASON`) carries a `brain_batch_id`
+#:   and NO `brain_change_class`, so `brain_undo.REVERSERS` has nothing to
+#:   dispatch on — there is no undo to offer and the parenthetical is
+#:   honest. `brain_proposal_expired` has TWO writers and only one of them
+#:   is reversible (`question_ttl.PROPOSAL_EXPIRY_CHANGE_CLASS`, which IS a
+#:   registered reverser; `brain_proposals.expire_stale` stamps no class at
+#:   all), so its one sentence cannot carry an undo phrase truthfully for
+#:   both. They stay protected because a question the product withdrew on
+#:   the reader's behalf is still a door it walked through on their behalf,
+#:   and it is the line they will never otherwise learn existed — not
+#:   because a row moved. The suite pins both halves of that reading off
+#:   `brain_undo.REVERSERS` so this comment cannot drift from the code.
+#:   Wording the feed's two sentences to match (drop the parenthetical, or
+#:   split the expiry line by writer) is a `change_feed.py` change and that
+#:   file is frozen this night — it is in this lane's Seams.
+#:
+#: Every name below is a `change_feed.changes_since` counts key; the suite
+#: pins that, so a rename in the feed reds here instead of silently emptying
+#: this tuple.
+#: NUMBER1 3.8 (night 11d) ADDS `learned`, and the reason is the same one
+#: the two paragraphs above give for `proposals_retracted`: the rule "did it
+#: move one of their rows" is not the whole test. The learning pass changes
+#: how the product WRITES for them, on its own, with one undo -- a door it
+#: walked through on their behalf -- and on 2026-09-15 four such changes
+#: landed and the brief narrated one, because four ordinary lines met an
+#: ordinary cap of three (B6.3). NUMBER1 3.8 collapses the pass to ONE line
+#: naming every skill it touched, so the cost of protecting it is one line
+#: on a crowded morning and the alternative was three real changes reaching
+#: no surface at all.
+#: FIX ROUND 1 (REVIEW F-3, coordinator ruling): the collapse is ONE LINE PER
+#: WINDOW, not per batch. Per batch, a catch-up window covering several
+#: passes cost N uncapped lines here -- four batches of one measured as four
+#: protected lines, where at base at most three reached the strip at all. The
+#: cost of protecting `learned` is therefore exactly ONE line on a crowded
+#: morning, at any number of passes. THE EXPOSURE THAT REMAINS, stated: on a
+#: multi-pass window that one line's `undo` reverses the LATEST pass only;
+#: the earlier passes are named in the sentence, stay applied, and are
+#: reviewed and reversed one at a time behind `what have you learned`.
+CHANGED_MACHINE_BATCH_CATEGORIES = (
+    "learned",
+    "closed_from_sent",
+    "closed_from_meetings",
+    "closed_from_calendar",
+    "closed_from_deal",
+    "rested_quiet",
+    "let_go_quiet",
+    "parked_quiet",
+    "unconfirmed_expired",
+    "proposals_retracted",
+    "proposals_expired",
+    "changes_undone",
+)
+
+
+#: NUMBER1 3.9 -- THE PLUMBING NEVER COMPOSES INTO A CUSTOMER SURFACE.
+#: `cleanup_runs` ("Ran the weekly cleanup pass.") and `maintenance_jobs`
+#: ("Completed 4 background maintenance jobs on schedule.", read on the
+#: 2026-09-16 19:16 brief) are the condition of the machinery, not the
+#: reader's work. M's 2026-09-07 ruling took the health block off this
+#: surface; its extension the same day covers every line of that kind
+#: however honestly worded. Read from `change_feed` so the surface that
+#: drops them and the maintenance report that claims them name the same
+#: set. `run_health1_test` reds by name if either sentence comes back.
+def brief_plumbing_categories() -> tuple:
+    """The feed categories the brief refuses, from their one home."""
+    try:
+        from change_feed import PLUMBING_CATEGORIES
+        return tuple(PLUMBING_CATEGORIES)
+    except Exception:  # pragma: no cover -- never widen what the brief says
+        return ("cleanup_runs", "maintenance_jobs")
+
+
+def split_machine_batch_lines(lines) -> tuple:
+    """`(batch, ordinary)` — the feed's lines partitioned by the tuple above,
+    each group in the feed's own order. Pure; a non-dict line is ordinary."""
+    batch, ordinary = [], []
+    for line in (lines or []):
+        cat = (line.get("category") if isinstance(line, dict) else None)
+        (batch if cat in CHANGED_MACHINE_BATCH_CATEGORIES
+         else ordinary).append(line)
+    return batch, ordinary
+
+
+def brief_changed_lines(feed: dict, *,
+                        cap: int = BRIEF_CHANGED_ORDINARY_CAP) -> list:
+    """The CHANGED strip for the morning brief: every machine-batch line the
+    window holds, then the top ordinary lines to `cap`.
+
+    Takes the FULL feed (`changes_since` with no `max_lines`) — a cap applied
+    upstream has already thrown away the lines this function exists to keep.
+    """
+    plumbing = brief_plumbing_categories()
+    rows = [l for l in (feed.get("lines") or [])
+            if not (isinstance(l, dict) and l.get("category") in plumbing)]
+    batch, ordinary = split_machine_batch_lines(rows)
+    kept = batch + (ordinary[:cap] if cap is not None else ordinary)
+    return [str(l.get("text") or "") for l in kept if l.get("text")]
+
+
+# ---------------------------------------------------------------------------
+# HEAL1 — the on-demand surfaces carry the upkeep (SPEC_MERGEFIX1 §4 HEAL1,
+# amended by SPEC_NIGHTM2_LANES §4)
+# ---------------------------------------------------------------------------
+#
+# The decision lives in `maintenance_dispatcher` (which surfaces, which
+# family, has the book fallen behind, the min-gap guard, the container
+# refusal). These two functions are the surfaces' door onto it: the three
+# on-demand drivers call `maintenance_catch_up` before they gather, and the
+# two READ surfaces call `maintenance_truth_line` and print nothing else.
+#
+# The driver never EXECUTES a job. This module has never run a skill and does
+# not start here: a job's leg is the orchestrator's (or, on a merged seat,
+# the model's `plan run_helper` line), and the driver takes it as `runner`.
+# With no runner the call is a plan — the pack carries it and the surface's
+# own prose runs it, exactly as `cleanup/SKILL.md` Step 0 does.
+
+#: The one fallback sentence for the READ surfaces, used only on a tree that
+#: does not carry TRUTH1 (SPEC_NIGHTM2 §4 amendment c — the line is TRUTH1's
+#: and this lane imports it behind an ImportError).
+#:
+#: FIX ROUND 1, REVIEW B-1 — IT IS TRUTH1'S OWN SENTENCE, BYTE FOR BYTE.
+#: It was this lane's own plainer sentence, which meant the two lanes said
+#: different words about the same fact depending on whether TRUTH1 happened
+#: to be on the tree. The text below is `task_watchdog.truth_line(when=None)`
+#: at TRUTH1's `c534e5bd` — the composer's own output with the "the last one
+#: ran <when>" clause dropped, which is the form that goes to a reader when
+#: there is no run to name. `run_heal1_test` pins it by string equality
+#: against TRUTH1's constant on a grafted tree, so the two cannot drift.
+MAINTENANCE_TRUTH_FALLBACK = (
+    "Your scheduled chats and background maintenance stopped running after "
+    "the Claude app update. Everything still works when you ask: say "
+    "`morning briefing`, `end of day`, `weekly recap` on Fridays, "
+    "`staff meeting`, and `run maintenance` once a day. Command Room will "
+    "tell you when schedules are back.")
+
+#: A hole a template left behind — `<when>`, `{days}`. The read surfaces'
+#: sentence is composed elsewhere (TRUTH1's `truth_line`), so this module's
+#: last act before handing a line to a reader is to check that nothing
+#: template-shaped survived the composition. B-1 was exactly this: HEAL1
+#: imported TRUTH1's raw CONSTANT instead of its composer and a literal
+#: `<when>` went to the customer.
+MAINTENANCE_TRUTH_HOLE_RE = re.compile(
+    r"<[^<>\n]{1,40}>|\{[^{}\n]{0,40}\}")
+
+
+def maintenance_truth_has_hole(text) -> bool:
+    """True when `text` still carries an unfilled template hole."""
+    return bool(MAINTENANCE_TRUTH_HOLE_RE.search(str(text or "")))
+
+
+#: More than ONE weekday stale is the floor (HEAL1 behaviour 4). A Friday
+#: receipt read on a Monday is one weekday old and says nothing; the same
+#: receipt read on Tuesday is two and does.
+MAINTENANCE_TRUTH_WEEKDAYS = 1
+
+#: The surfaces that carry the sentence and run no job. Read off the
+#: dispatcher's own set so the two cannot disagree about which surfaces are
+#: read surfaces, with the literal as the fallback for a trimmed tree.
+def _read_surface_truth_line() -> frozenset:
+    try:
+        from maintenance_dispatcher import CATCH_UP_READ_SURFACES
+        return frozenset(CATCH_UP_READ_SURFACES) & frozenset(
+            {"staff-meeting", "my-plate", "plate", "plate-page"})
+    except Exception:  # pragma: no cover — never widen what a surface says
+        return frozenset({"staff-meeting", "my-plate", "plate"})
+
+
+_READ_SURFACE_TRUTH_LINE = _read_surface_truth_line()
+
+
+def maintenance_truth_line(workspace_root, now_iso: str | None = None) -> str:
+    """The one sentence a READ surface says when this book's upkeep has
+    fallen more than one weekday behind — `""` when it has not.
+
+    READ/COMPUTE ONLY (it is on the access layer's helper allow-list). It
+    runs no job, writes no receipt and returns no count: a read surface is a
+    glance at the reader's own rows, and the plumbing gets one sentence
+    there or nothing.
+
+    The sentence itself is TRUTH1's, COMPOSED BY TRUTH1 (`truth_line`), never
+    re-typed and never assembled from its raw constant here. Until that lane
+    lands the import fails and `MAINTENANCE_TRUTH_FALLBACK` is used, which is
+    the same words — the seam is named, not guessed at (SPEC_NIGHTM2 §4 (c)).
+    """
+    import maintenance_dispatcher as md
+
+    state = md.maintenance_staleness(workspace_root, now=now_iso)
+    if not state.get("stale"):
+        return ""
+    weekdays = state.get("weekdays_stale")
+    # A BOOK WITH NO UPKEEP ON RECORD AT ALL SAYS NOTHING HERE, deliberately.
+    # `weekdays_stale` is None exactly when there has never been a
+    # `maintenance_run` receipt, which is every brand-new workspace and every
+    # test fixture. "Your upkeep has not run for a few days" is false there,
+    # and the sentence that IS true on such a seat — that schedules were never
+    # set up — is TRUTH1's, on the health check, with its own phrase. Stated
+    # so the narrow gate reads as a decision rather than an oversight; the
+    # never-ran branch is in this lane's Seams.
+    if weekdays is None or weekdays <= MAINTENANCE_TRUTH_WEEKDAYS:
+        return ""
+    # FIX ROUND 1, REVIEW B-1 — CALL TRUTH1'S COMPOSER, NEVER ITS CONSTANT.
+    # `TRUTH_LINE` is a template with one hole spelled `<when>`, and the whole
+    # job of `truth_line()` is to fill that clause or drop it. Importing the
+    # constant put a literal `<when>` in front of a reader the moment the two
+    # lanes met. `when=None` is the deliberate argument: this module has no
+    # humanised time to hand over — `last_receipt` is a machine ISO string —
+    # and TRUTH1's composer drops the clause rather than inventing a date,
+    # which is R3's posture and the default the reviewer recommended.
+    try:
+        from task_watchdog import truth_line as _compose   # TRUTH1, Night M2
+        text = str(_compose(when=None) or "")
+    except ImportError:
+        text = MAINTENANCE_TRUTH_FALLBACK
+    except Exception:  # noqa: BLE001 — a sentence never fails on an import
+        text = MAINTENANCE_TRUTH_FALLBACK
+    if not text.strip():
+        text = MAINTENANCE_TRUTH_FALLBACK
+    if "{" in text:
+        # BELT: a composer that hands back a brace template. Fill what this
+        # lane can answer rather than printing a brace at a reader.
+        try:
+            text = text.format(weekdays=weekdays,
+                               days=weekdays,
+                               last=state.get("last_receipt") or "")
+        except (KeyError, IndexError, ValueError):
+            text = MAINTENANCE_TRUTH_FALLBACK
+    # THE LAST ACT BEFORE A READER SEES IT. Whatever composed the sentence,
+    # a hole that survived composition is never shown: the fallback says the
+    # same words with no clause to fill (it IS `truth_line(when=None)`), so
+    # degrading here costs the reader nothing.
+    if maintenance_truth_has_hole(text):
+        text = MAINTENANCE_TRUTH_FALLBACK
+    return "" if maintenance_truth_has_hole(text) else text
+
+
+#: FIX ROUND 1, REVIEW H-1 — THE HOST MODE A SURFACE DID NOT NAME.
+#:
+#: The dispatcher takes a `mode` and refuses write-class jobs in `container`.
+#: Nothing passed one: the three surfaces declared `host_mode` and every
+#: production call left it None, so the refusal was pinned dead code. The
+#: mode is now RESOLVED here, from the access layer's own resolver
+#: (`workspace_access.detect_host_mode`), asked about THE FOLDER THIS CALL
+#: WAS HANDED rather than about the process's cwd — which is the difference
+#: between "is there a workspace anywhere near me" and "is the book I was
+#: asked to tidy on this machine".
+#:
+#: ONE FACT OUTRANKS A CONSERVATIVE ANSWER, exactly as it does inside the
+#: layer. `detect_host_mode` answers `container` for `unknown`, which is the
+#: right posture for a WRITE VERB and the wrong one for this question: a
+#: legacy seat whose signals nobody recognises still has the folder right
+#: here, and refusing half its upkeep there would break a working seat to
+#: fence a host it is not on. So when the layer says `container` and the
+#: book is demonstrably on this host, the answer is "no opinion" — today's
+#: behaviour, byte for byte.
+
+
+def resolved_host_mode(workspace_root=None, env=None) -> str | None:
+    """The access layer's host mode for the book this call was handed.
+
+    None when the layer is not on the tree, when it cannot answer, or when
+    its conservative `container` answer is contradicted by the folder being
+    here. Never raises: a mode nobody could resolve must not cost a reader
+    the surface they asked for.
+    """
+    try:
+        import workspace_access as wa
+    except Exception:  # noqa: BLE001 — a trimmed tree has no layer
+        return None
+    try:
+        start = Path(workspace_root) if workspace_root else None
+        mode = wa.detect_host_mode(env, start)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(mode, str) or not mode:
+        return None
+    if mode == getattr(wa, "CONTAINER", "container") and workspace_root:
+        try:
+            # MF-M2-22. The question is "is THIS book on this host", and the
+            # answer has to be about this book. `find_root_up` walks
+            # ANCESTORS, so a container that happens to sit under an anchored
+            # directory answered yes for a root that does not exist at all,
+            # and the layer's conservative `container` was overturned by a
+            # folder nobody asked about. `_is_root` asks about the directory
+            # it was handed and nothing above it.
+            if wa._is_root(Path(workspace_root)):
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+    return mode
+
+
+#: The word the morning brief hands `maintenance_catch_up` for its upkeep
+#: (SPEC_NIGHTM3_LANES §5 P-2, ruling R-RW-5 as M ruled it on 2026-09-22:
+#: upkeep receipts inside a hand-typed brief are `fired_via: manual`,
+#: `triggered_by: morning-brief`). It is the dispatcher's canonical task id, so
+#: it is ALSO the literal every rendered leg ends in and every job receipt and
+#: the one `maintenance_run` carry under `triggered_by`. One home: the driver
+#: below reads it, and `morning-briefing/SKILL.md` Step 0's rendered call names
+#: this value (`run_phrase1_test` executes that block and compares).
+MORNING_BRIEF_SURFACE = "morning-brief"
+
+
+def maintenance_catch_up(workspace_root, surface, *,
+                         now_iso: str | None = None,
+                         mode: str | None = None,
+                         runner=None) -> dict:
+    """The upkeep a typed surface owes before it gathers.
+
+    With `runner=None` (every production driver call today) this PLANS: it
+    returns the dispatcher's catch-up plan and writes nothing at all. The
+    pack carries it under `catch_up` and the surface's own prose executes it
+    — one job at a time, in the plan's order, then ONE receipt — exactly the
+    engine `cleanup/SKILL.md` Step 0 already drives.
+
+    With a `runner` the whole thing runs here: the jobs in order, scored
+    through the one predicate, then the single `maintenance_run` receipt
+    carrying `fired_via: manual` and `triggered_by: <surface>`. That is the
+    path the suite drives end to end, and the path a caller that already
+    holds an executor (a test, a local operator script) takes.
+
+    Never raises. A catch-up that cannot be planned must not cost the reader
+    the surface they asked for, so every failure degrades to "no catch-up"
+    with the reason on the return.
+    """
+    try:
+        import maintenance_dispatcher as md
+
+        # H-1: a caller that names a mode is obeyed; a caller that names none
+        # gets the layer's answer about this book, not a blank.
+        host = mode if mode is not None else resolved_host_mode(workspace_root)
+        if runner is None:
+            return md.catch_up_plan(workspace_root, surface, now=now_iso,
+                                    mode=host)
+        return md.run_catch_up(workspace_root, surface, runner=runner,
+                               now=now_iso, mode=host)
+    except Exception as exc:  # noqa: BLE001 — the surface outranks the upkeep
+        return {"surface": surface, "triggered_by": None, "catch_up": False,
+                "jobs": [], "held_sunday": [], "refused_container": [],
+                "refused_line": "", "refused_reason": "", "refused_next": "",
+                "host_mode": None, "reason": "error", "error": str(exc),
+                "ran": [], "completed": [], "failed": [], "receipt": None}
+
+
+# ---------------------------------------------------------------------------
+# SPEC_SURFACES2_11c BRIEF2 2.2 items 2 and 3 — LINE TWO, AND THE ONE LINE
+# ---------------------------------------------------------------------------
+#
+# Line two says what today is about, in the reader's own words. `day_intent`
+# has stored it since BK1 ("tomorrow is about closing the Stone renewal",
+# typed at the day-close) and `shared/EVENT_TYPES.md` has claimed since then
+# that the morning surface reads it. Nothing read it. This is the read.
+#
+# STATED ORIGINS ONLY. `load_day_intent`'s default (`include_proposed=False`)
+# is BK1's own fence: a `proposed` row is a guess the product made about the
+# reader's day, and a guess rendered as fact on line two of the morning is
+# exactly the thing the fence exists to stop. The default is taken here
+# EXPLICITLY rather than inherited, so a future reader of this call can see
+# which way it goes without opening the other module.
+#
+# Nothing when nothing is stated. Never "nothing on file" — an empty line
+# two costs the reader nothing and a padded one costs them a line every day.
+#
+# WHY IT IS USER TEXT, AND WHAT THAT COSTS. The items are the customer's own
+# sentence. `assert_number_leads` sees the line (it sits inside `lead_lines`,
+# below the number, so the order fence reads the real composed order), but
+# `assert_single_open_count` does NOT: a stated item may legitimately contain
+# a digit — "close the 3 open Stone items" — and that digit answers the
+# reader's question, not the plate's. Letting the count fence read it would
+# let the customer's own sentence raise on their own brief. The pack marks
+# the line as user text carrying a digit when it does, so a reviewer reading
+# a receipt never has to guess why a figure on the brief was not reconciled.
+
+#: Line two, in the voice `end_of_day.TOMORROW_STATED_LINE` uses at the other
+#: bookend. Same shape, same separator, the other end of the same day.
+BRIEF_DAY_INTENT_LINE = "Today is about {what}."
+
+#: The template ends in a full stop, so a stated item that already ends in
+#: its own terminal punctuation double-punctuates: "Today is about should we
+#: renew Stone?." (review F-5, measured). The reader's own mark WINS — it is
+#: their sentence and the shape of it is information — so the template's stop
+#: is dropped instead of theirs. Only these three count as terminal; a stated
+#: item ending in "..." or a quote keeps the stop it needs.
+DAY_INTENT_TERMINALS = (".", "?", "!")
+
+#: What the stated items are joined with — `end_of_day`'s own separator, so
+#: the evening's "Tomorrow is about A · B" and the morning's "Today is about
+#: A · B" are the same sentence about the same day.
+DAY_INTENT_JOIN = " · "
+
+_DIGIT_RE = re.compile(r"\d")
+
+
+def brief_day_intent_line(workspace_root, *, today: str) -> dict:
+    """`{"line", "items", "contains_digit"}` for line two, or an empty line.
+
+    `today` is the workspace-local `YYYY-MM-DD` the brief already resolved
+    (`tz.localize_date`) — passed in rather than re-derived, so line two can
+    never be about a different day than the rest of the brief.
+
+    NEVER RAISES (2.2 item 5). A store this cannot read degrades to LINE
+    ABSENT — one line missing from an otherwise true brief, never a
+    `surface_failed` and never a brief built by hand.
+    """
+    out = {"line": "", "items": [], "contains_digit": False}
+    try:
+        import day_intent as _day_intent
+        record = _day_intent.load_day_intent(workspace_root, today,
+                                             include_proposed=False)
+    except Exception:  # noqa: BLE001 — line absent, never a failed surface
+        return out
+    if not record:
+        return out
+    # The stored item is `{text, rank}` (`day_intent.normalize_items`). The
+    # TEXT is the sentence the reader said and the only thing that renders;
+    # the rank is their ordering and the list already arrives in it. Read
+    # exactly as the day-close reads it (`end_of_day.compose_screen`), so the
+    # two bookends cannot disagree about one record.
+    items = [str(i.get("text") or "").strip()
+             for i in (record.get("items") or []) if isinstance(i, dict)]
+    items = [t for t in items if t]
+    if not items:
+        return out
+    out["items"] = items
+    what = DAY_INTENT_JOIN.join(items)
+    line = BRIEF_DAY_INTENT_LINE.format(what=what)
+    # The reader's own terminal mark wins over the template's full stop —
+    # otherwise a day that is about "should we renew Stone?" reads "Today is
+    # about should we renew Stone?." (review F-5). Their mark is kept, not
+    # stripped: a question mark the reader typed is theirs, and the ask fence
+    # below reads the composed line either way (see `build_morning_brief_pack`
+    # — line two joins the fenced text as USER TEXT).
+    if what.endswith(DAY_INTENT_TERMINALS) and line.endswith(what + "."):
+        line = line[:-1]           # the template's stop, never the reader's
+    out["line"] = line
+    out["contains_digit"] = bool(_DIGIT_RE.search(out["line"]))
+    return out
+
+
+#: The one coaching line. A STATEMENT of what the reader themselves said,
+#: in the brief's own voice — never a question, never a score, never a
+#: comparison, and never a second character's voice.
+BRIEF_COACHING_LINE = ("If {behaviour} comes up today, you said you would do "
+                       "it rather than defer it.")
+
+
+def brief_coaching_line(workspace_root) -> str:
+    """The one coaching line, or "".
+
+    THREE gates, and the ORDER is the point:
+
+      1. the SHAPE (`coaching_doors.coaching_shape`) — an `observed` seat has
+         not opened the coaching door and never gets this line WHATEVER the
+         render switch says. The switch is a preference; the shape is
+         consent, and a preference may not buy consent;
+      2. the render SWITCH (`brief_settings` `coaching_line`) — the seat that
+         opened the door still gets to say "not on my brief". COACH2's
+         `_apply` flips it on with the chosen door and back off with `turn
+         off coaching`; this lane only READS it;
+      3. a BEHAVIOUR on the coaching object — the line is about a named
+         thing or it is not a line. No behaviour, no sentence; there is
+         nothing honest to put in the slot.
+
+    NEVER RAISES (2.2 item 5): every read degrades to line absent.
+    """
+    try:
+        import coaching_doors as _doors
+        if _doors.coaching_shape(workspace_root) == _doors.SHAPE_OBSERVED:
+            return ""
+        from brief_settings import SURFACE_BRIEF, settings_for_fire
+        settings, _notes = settings_for_fire(workspace_root, SURFACE_BRIEF)
+        if str((settings or {}).get("coaching_line") or "") != "on":
+            return ""
+        behaviour = str((_doors.relationship(workspace_root) or {}).get(
+            "behaviour") or "").strip()
+    except Exception:  # noqa: BLE001 — line absent, never a failed surface
+        return ""
+    if not behaviour:
+        return ""
+    return BRIEF_COACHING_LINE.format(behaviour=behaviour)
+
+
+class BriefCoachingLeakError(RuntimeError):
+    """A coaching-tier fingerprint reached the morning brief on a fire that
+    did not declare itself a coaching surface."""
+
+
+#: What the brief calls itself to the coaching leak scan on an ordinary fire.
+#: It is deliberately a name `coaching_confidential.NON_COACHING_SURFACES_NAMED`
+#: already lists: the scan fails CLOSED, so this tag buys nothing and is only
+#: here so the declaration is a value a reader can see rather than a `None`.
+BRIEF_SURFACE_TAG = "morning-brief"
+
+#: What the brief calls itself on the ONE fire that renders the coaching line.
+#: Its home is `coaching_confidential.COACHING_SURFACES`; the suite pins that
+#: this spelling is in that set, so deleting it there reds here.
+BRIEF_COACHING_SURFACE_TAG = "morning-brief-coaching-line"
+
+
+def brief_surface_tag(coaching_line: str) -> str:
+    """The surface this fire declares to the coaching leak scan.
+
+    THE DECLARATION IS PER FIRE, NOT PER SURFACE, and that is the whole
+    point (review F-3, ruling R-10). A brief that renders no coaching line is
+    an ordinary non-coaching surface and the fail-closed scan applies to it
+    in full. A brief that renders the one stated line — which only happens
+    behind `brief_coaching_line`'s three gates, i.e. for a seat that walked
+    the chosen door and left the switch on — declares the coaching tag for
+    that fire, because that seat asked for that sentence on that surface.
+
+    WHAT THE DECLARATION BUYS, AND WHAT IT DOES NOT (review R1, fix round 2):
+    it is read by `brief_coaching_scan_target` and it exempts ONE SENTENCE.
+    It is no longer handed to the scan as the surface, because a coaching
+    surface returns early and that switched the scan off for the whole page.
+    """
+    return BRIEF_COACHING_SURFACE_TAG if coaching_line else BRIEF_SURFACE_TAG
+
+
+def brief_coaching_scan_target(text: str, coaching_line: str) -> tuple:
+    """`(text_to_scan, surface)` for the coaching leak scan — the declaration
+    covers ONE SENTENCE, never the page.
+
+    REVIEW R1, FIX ROUND 2, AND THE MEASUREMENT BEHIND IT. Fix round 1
+    declared the coaching tag for the whole fire and handed that tag to
+    `assert_no_coaching_leak`, which returns early on a coaching surface. So
+    on exactly the mornings that carry coaching content the scan was off for
+    the WHOLE brief: the re-verifier planted a MARKED coaching note in
+    another slot of a coached seat's fire and it reached the reader. The
+    declaration was granted for one stated sentence and it now covers one
+    stated sentence.
+
+    So the brief always scans as the ordinary, non-coaching surface it is,
+    and the ONE declared line is BLANKED out of the text first — the same
+    move the ask fence makes over the reader's own spans
+    (`plate_view._blank_user_spans`): take the declared span out, hold every
+    word that is left to the ordinary rule. The line is composed into this
+    text twice (`lead_lines` and `_composed`), so every occurrence goes.
+
+    `brief_surface_tag` is still the declaration of record and still
+    load-bearing — it is what decides whether there IS a declared line to
+    blank. Stub it and the coached seat's own line is scanned and refused.
+    """
+    if not text:
+        return "", BRIEF_SURFACE_TAG
+    if (coaching_line
+            and brief_surface_tag(coaching_line)
+            == BRIEF_COACHING_SURFACE_TAG):
+        text = text.replace(coaching_line, "")
+    return text, BRIEF_SURFACE_TAG
+
+
+def assert_no_coaching_leak(text: str, *, surface: str,
+                            where: str = "morning-brief") -> None:
+    """PROFILE1's fail-closed coaching scan, run over the composed brief.
+
+    WHY THIS EXISTS. PROFILE1 shipped the promise — "whatever you say in a
+    coaching conversation stays in its own tier: not in a shared document,
+    not on your brief" — and a scan that fails closed to keep it. The scan
+    had exactly ONE caller in the tree (`docx_leak_scanner.py`, i.e.
+    document artifacts). The chat path ran none, so the brief's coaching
+    line passed by the ABSENCE of a gate rather than by a rule, and a future
+    writer pasting a MARKED coaching note into any brief slot would have
+    reached the reader untouched.
+
+    Called exactly as `docx_leak_scanner` calls it — the same two names, the
+    same `if not is_coaching_surface(surface)` direction, the same
+    ImportError tolerance — so there is one reading of the tier and not two.
+    """
+    try:
+        from coaching_confidential import (is_coaching_surface,
+                                           scan_for_coaching_leak)
+    except ImportError:  # pragma: no cover — partial-update tolerance
+        sys.stderr.write(
+            "[surface_drivers] WARN: coaching_confidential module missing — "
+            "the coaching-tier scan did NOT run on the morning brief.\n")
+        return
+    if is_coaching_surface(surface):
+        return
+    findings = scan_for_coaching_leak(text or "")
+    if findings:
+        names = sorted({str(f.get("name")) for f in findings})
+        raise BriefCoachingLeakError(
+            f"{where}: coaching-tier content reached a brief that did not "
+            f"declare itself a coaching surface (found {names!r}). PROFILE1's "
+            f"promise: what is said in a coaching conversation is not on the "
+            f"brief. The one declared exception is the stated line behind "
+            f"`brief_coaching_line`'s three gates.")
+
+
+def brief_explain_once_line(workspace_root) -> str:
+    """The first-week explain-once line, consumed INSIDE the pack (2.2 item
+    4) so it lands above the three fences instead of below them.
+
+    It was prose-wired: `morning-briefing/SKILL.md` told the model to call
+    `explain_once.consume` after the pack, which put the one sentence the
+    product says about itself outside every fence the pack runs. Code at the
+    write — the pack consumes it, the pack fences it, the prose narrates it.
+
+    `consume` is idempotent by construction (it writes `explain_once_shown`
+    in the same call), so calling it here keeps "once" true and moves nothing
+    else. NEVER RAISES: an unreadable ledger is one line absent.
+    """
+    try:
+        from explain_once import consume
+        return str(consume(workspace_root, "morning-briefing") or "")
+    except Exception:  # noqa: BLE001 — line absent, never a failed surface
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# SPEC SURFACEFIX1 5.3 / amendment E-5 — A FIRE THAT CANNOT RENDER SAYS SO
+# ---------------------------------------------------------------------------
+#
+# On 2026-09-13 the day-close driver raised inside `json.dumps` and the fire
+# printed the traceback: the module's own filename, the pack's key path, a
+# helper's dotted name and two absolute Windows paths, on the customer's
+# screen (attended test, leak 10). Then the chat rebuilt the day-close by
+# hand from the ledger — the "canonical path fails, freelance substitutes"
+# class that has cost this product more than any single bug.
+#
+# The cause is fixed at the write (the transport `str()` and `default=str` on
+# both dumps). This is the FLOOR under that fix, and it is deliberately not
+# specific to serialisation: any exception on the way to a surface becomes
+# ONE plain sentence the reader can act on, plus a receipt nobody has to read.
+#
+# WHAT THE SENTENCE MAY NOT CONTAIN: a path, a module, a function, an
+# exception class, a seq, a wire id, the word "traceback". The reader is told
+# what happened in their own terms and what to say next; everything else is
+# on the receipt, where the health check and the operator report read it.
+
+#: Surface keys for the failure path. One per fire that has a retry phrase.
+SURFACE_FAILED_EOD = "end-of-day"
+SURFACE_FAILED_BRIEF = "morning-brief"
+#: The Friday wrap (REVIEW_NIGHT11C H-4, 2026-09-15). It had no failure
+#: vocabulary at all: a wrap that died left a receipt-less silence the
+#: watchdog reads as a job that never fired.
+SURFACE_FAILED_WRAP = "friday-wrap"
+
+#: The sentence, per surface. Plain words, a retry phrase, nothing else.
+SURFACE_FAILED_LINES = {
+    SURFACE_FAILED_EOD:
+        "End of Day could not render tonight — say `end of day` to retry.",
+    SURFACE_FAILED_BRIEF:
+        "The morning brief could not render — say `brief me` to retry.",
+    SURFACE_FAILED_WRAP:
+        "The weekly wrap could not render — say `weekly recap` to retry.",
+}
+
+#: The receipt's status word, kept for ONE RELEASE beside the type. Every
+#: failure receipt already on disk is a `pack_run` carrying this status and
+#: both spellings are pinned (`tests/run_eod2_test.py [5]`), so no reader has
+#: to change on the day the writer does. EOD2 registered `surface_failed` in
+#: `receipts.RECEIPT_TYPES` on the two tasks that have a failure path and on
+#: the day-close's counting bucket, so the type is real vocabulary.
+#: (MF-11c-2, night 11c trial merge: the writer now spells the type.)
+SURFACE_FAILED_STATUS = "surface_failed"
+
+#: Which canonical task each surface's receipt is written under.
+_SURFACE_FAILED_TASKS = {
+    SURFACE_FAILED_EOD: "past-meetings",
+    SURFACE_FAILED_BRIEF: "morning-brief",
+    SURFACE_FAILED_WRAP: "friday-wrap",
+}
+
+
+def log_surface_failed(workspace_root, surface: str, exc: BaseException, *,
+                       mode: str = "scheduled", now_iso=None) -> Optional[dict]:
+    """Record that a fire could not render, and return the receipt.
+
+    The exception's CLASS NAME goes on the receipt (it is the one datum that
+    tells a maintainer where to look and it never reaches a screen); the
+    message does not — an exception message routinely carries the path, id or
+    payload that made it fail, and a receipt is read back by the operator
+    report and the health check, both of which render.
+
+    Never raises. A fire that failed must not fail again on the way to saying
+    so — that is how a traceback reached the screen in the first place.
+    """
+    try:
+        from receipts import log_receipt
+        return log_receipt(
+            workspace_root, _SURFACE_FAILED_TASKS.get(surface, "past-meetings"),
+            # MF-11c-2 (night 11c trial merge) — the receipt names what
+            # happened: a failed surface, not a pack run with a sad status.
+            receipt_type="surface_failed",
+            status=SURFACE_FAILED_STATUS,
+            fired_via=("manual" if mode == "manual" else "scheduled"),
+            surfaced=0,
+            extra_data={"surface": surface,
+                        "failure_class": type(exc).__name__},
+            now=now_iso)
+    except Exception:  # noqa: BLE001 — the sentence still gets printed
+        return None
 
 
 def _clock_now(workspace_root=None):
@@ -412,16 +1727,41 @@ def _age_days(ts: str, now_iso: str) -> int | None:
     return max(0, int((b - a).total_seconds() // 86400))
 
 
-def _due_phrase(due, now_iso: str) -> str:
+def _due_phrase(due, now_iso: str, ws) -> str:
     """The queue row's due phrase (SPEC TOMFILT1 §2, golden-pinned) —
     delegates to `due_reanchor.render_due_phrase`, the ONE renderer the
     slipped line and the tomorrow block also call. Re-anchored to `now_iso`
     on every call: past-due always carries its age ("due Aug 6 — 19 days
     ago"), never a bare "overdue since Aug 6" that goes stale the moment it
-    sits on screen."""
-    from due_reanchor import render_due_phrase
+    sits on screen.
 
-    return render_due_phrase(due, now_iso)
+    DATE1 (ATTENDED_TEST_v5.29.0 B2.1 class; REVIEW_HYGIENE9 R4). `anchor`
+    is the WORKSPACE's calendar day (`tz.localize_date`), never a raw slice
+    of `now_iso`'s own ISO string. `due_reanchor.render_due_phrase` treats
+    its `anchor` argument as "today" verbatim — TOMFILT1's own docstring
+    says both `render_due_phrase` callers must already resolve it
+    workspace-local — and these seven call sites were the ones that never
+    did: `render_due_phrase(due, now_iso)` sliced a UTC `now_iso`'s own
+    first 10 characters, so at 18:00 Pacific (01:00 UTC the next day) a row
+    due TOMORROW read "due today" and a row due TODAY read "due — 1 day
+    ago", on the same machine where `plate_view`'s own copy of this phrase
+    (fixed at HYGIENE9 the same way) read the right day.
+
+    DATE1 fix round 1 (REVIEW_DATE1 F-4) — `ws` is now REQUIRED, not
+    `ws=None`. The additive default silently restored the pre-DATE1
+    UTC-slice behaviour for any caller who forgot it, and the structural
+    "exactly seven call sites" pin (`run_cutplate_test.py` [10]) could only
+    ever count calls that DO pass `ws` — an eighth, unanchored site left
+    the count at seven and shipped green. A caller with no real workspace
+    (`run_tomfilt1_test`'s golden) now passes `ws=None` EXPLICITLY, which is
+    byte-identical behaviour (`tz.localize_date` degrades the same way with
+    an explicit `None` as with an absent kwarg) but makes the omission a
+    conscious choice at every call site rather than a name nobody typed."""
+    from due_reanchor import render_due_phrase
+    from tz import localize_date
+
+    anchor = localize_date(now_iso, workspace_path=ws) or now_iso
+    return render_due_phrase(due, anchor)
 
 
 def _people_by_id(ws: Path) -> dict:
@@ -576,6 +1916,19 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
 
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
+    # DATE1 fix round 1 (REVIEW_DATE1 F-2) — resolve the workspace-local
+    # calendar day ONCE per render, not once per row. `_due_phrase` used to
+    # call `tz.localize_date` (which `json.load`s entities.json on every
+    # miss) inside this view's per-row loops — 309 calls on one triage
+    # render. `anchor` is a date-only string ("YYYY-MM-DD"); handed back
+    # into `_due_phrase` as its `now_iso` it hits `localize_date`'s own
+    # date-only passthrough (no second tz load), so behavior is unchanged.
+    # Also closes REVIEW_DATE1 F-1's class for `count_commitments`'s own
+    # `overdue` headline (commitment_state.py:1318) — dead for display on
+    # this view today (see BUILD record) but no longer independently wrong.
+    # seam round (DATE1 x ONEPLATE1 merge finding, F-16) — one resolve for
+    # both `anchor` and the headline's instant; see `_hoisted_anchor_and_instant`.
+    anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
     try:
@@ -584,7 +1937,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         user_id = None
     movement = derive_commitment_movement(events_path)
     counts = count_commitments(opens, user_person_id=user_id,
-                               now_iso=now_iso, movement=movement)
+                               now_iso=anchor, movement=movement)
     stale_ids = {row.get("commitment_id") or row.get("id")
                  for row in stale_tasks(opens, now_iso, movement=movement)}
     esc = select_unconfirmed_escalation(opens, now_iso)
@@ -748,7 +2101,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         parts = []
         if age >= 0:
             parts.append(f"{age} days old" if age != 1 else "1 day old")
-        parts.append(_due_phrase(d.get("due"), now_iso))
+        parts.append(_due_phrase(d.get("due"), anchor, ws))
         parts.append("task (yours)" if kind == "task" else kind)
         if cid in stale_ids:
             parts.append("still on your plate?")
@@ -792,7 +2145,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
                 k_kind = commitment_kind(k)
                 summary = kd.get("title") or "(untitled)"
                 if kd.get("due"):
-                    summary += f" — {_due_phrase(kd.get('due'), now_iso)}"
+                    summary += f" — {_due_phrase(kd.get('due'), anchor, ws)}"
                 row["sub_items"].append({
                     "id": _cid(k),
                     "summary": summary,
@@ -835,7 +2188,7 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         parts = []
         if age >= 0:
             parts.append(f"{age} days old" if age != 1 else "1 day old")
-        parts.append(_due_phrase(d.get("due"), now_iso))
+        parts.append(_due_phrase(d.get("due"), anchor, ws))
         parts.append("no owner on record — whose is this?")
         cand_names = []
         for cand in (d.get("attribution_candidates") or [])[:3]:
@@ -869,7 +2222,16 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         sections.append({"title": "The rest", "count": len(new_rows),
                          "items": new_rows})
 
-    h = counts["headline"]
+    # ONEPLATE1 / REVIEW_ONEPLATE1 F-5 — THE NUMBERS COME FROM THE PLATE.
+    # This surface counted its own way: `count_commitments` over its own
+    # input, WITHOUT the plate's observed-tier drop. It feeds the
+    # `commitments` chat surface AND the BOARD1 artifact page, both of which
+    # state an open count to the reader, so on a book carrying one observed
+    # row it and the plate say two different totals for one book on one day
+    # (ATTENDED_TEST_v5.29.0 Part A). Its ROWS and its tiles' meanings are
+    # unchanged; this is the header and the five counters.
+    h = _plate_headline(ws, now_iso=now_iso, fallback=counts["headline"],
+                        local_instant=_lnow_hoist)
     counters = [
         {"label": "Open", "value": h["total"]},
         {"label": "You owe", "value": h["you_owe"]},
@@ -950,8 +2312,11 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
         # CLUSTER1 — folded rows are still rendered work (they ride their
         # survivor's expand), so the identity adds them back rather than
         # reading a fold as a vanished row.
-        "residual": (rendered_rows + n_cluster_folded
-                     - (h["total"] + pin_escalated)),
+        # MF-1 (trial merge 2026-09-14): PLATENUM1 repointed h["total"] to the
+        # sum of the rendered blocks, so the pinned unconfirmed rows are
+        # already inside it; subtracting `pin_escalated` again double-counted
+        # (residual read -pin_escalated on the walkfix1 fixture).
+        "residual": (rendered_rows + n_cluster_folded - h["total"]),
     }
     if n_cluster_folded:
         view["count_reconciliation"]["n_cluster_folded"] = n_cluster_folded
@@ -1121,11 +2486,21 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
     via `view["receipt_extra"]`, which `run_surface` pops before rendering."""
     from brain_proposals import (build_card_view, load_open_proposals,
                                  rank_proposals)
-    from proposal_digests import (bound_page, group_into_digests,
-                                  section_notes)
+    from proposal_digests import (bound_extra_sections, bound_page,
+                                  group_into_digests, section_notes)
 
+    # FOLD1-B FIX ROUND 1 (reviewer F-2) — SCOPE NOTE, deliberately loud:
+    # the lane's ownership of this file is one kwarg plus the two blocks
+    # marked below, and this is the receipt half of F-2. The lifetime gate
+    # hides questions IMMEDIATELY while their defaults are applied LATER by
+    # a weekly rail that marked itself failed in 7 of 9 runs in the attended
+    # window. Nothing on the page or in the ledger said how many rows were
+    # held back, so a failing rail would now fail silently. This dict is
+    # filled by the gate and the one integer lands on the fire receipt below.
+    _screen_stats: dict = {}
     open_items = load_open_proposals(workspace_root, "staff-meeting",
-                                     now_iso=now_iso)
+                                     now_iso=now_iso,
+                                     screen_stats=_screen_stats)
     queue = rank_proposals(open_items)
     extra: list[dict] = []
     if watch_rows:
@@ -1150,6 +2525,46 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
             extra.append(fold)
     except Exception as exc:  # pragma: no cover — the fire must survive
         sys.stderr.write(f"[surface_drivers] meeting fold skipped: {exc}\n")
+    # INTAKE1 rule 6 — the ONE question the intake door may produce: a held
+    # row carrying money or a client, with no second source after a week.
+    # It sits BEFORE the meeting fold's siblings in nothing and after the
+    # fold deliberately — the fold is the week's captures and this is the
+    # handful of them that are important enough to be worth a tap. Capped at
+    # two rows by its own builder and counted into the page bound like every
+    # other appended section, so it takes from the weekly budget rather than
+    # adding to it. Drop-empty; any failure degrades to no section rather
+    # than a dead fire, the same posture as the fold above.
+    try:
+        from needs_review_queue import held_important_section
+        held_ask = held_important_section(workspace_root, now_iso=now_iso)
+        if held_ask:
+            extra.append(held_ask)
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write("[surface_drivers] held asks skipped: "
+                         + str(exc) + chr(10))
+    # FOLD1-B 1.2 item 4(a) — THE OVERDUE FORK'S HOME.
+    #
+    # SCOPE NOTE, and it is deliberately loud: FOLD1-B's file ownership gives
+    # this lane ONE kwarg in this file (the brief's `ask=` below). The spec
+    # then asks the Staff Meeting to GAIN a section, which nothing but this
+    # function can append — so this block is six lines outside that scope,
+    # in the exact shape of the three sections above it, and it is written
+    # up as a scope exception at the top of the lane's record. Deleting it
+    # reverts the rehome whole; nothing else depends on it.
+    #
+    # "{title} — {n} days overdue. Done, new date, or drop?" used to ride the
+    # morning brief. It is one pre-picked row here now, drawn from the SAME
+    # weekly budget (`quiet.ASKER_OVERDUE`) it drew from there, so this adds
+    # no touch. `run_surface` writes the ask-once marker AFTER the post,
+    # through `needs_review_queue.mark_overdue_asked` — before the post would
+    # rest a row nobody saw.
+    try:
+        from needs_review_queue import overdue_ask_section
+        overdue = overdue_ask_section(workspace_root, now_iso=now_iso)
+        if overdue:
+            extra.append(overdue)
+    except Exception as exc:  # pragma: no cover — the fire must survive
+        sys.stderr.write(f"[surface_drivers] overdue asks skipped: {exc}\n")
     # PERSONLOOP1 §0-3 — the person-candidate offer, one capped section from
     # the SAME builder the on-demand queue and the End of Day read
     # (`person_candidates.candidate_section`). It sits after the meeting fold
@@ -1172,7 +2587,42 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
     digested, digest_stats = group_into_digests(queue)
     digested = rank_proposals(digested)
     n_extra_rows = sum(len(sec.get("items") or []) for sec in extra)
-    shown, bound_stats = bound_page(digested, n_extra_rows=n_extra_rows)
+    # TTL1 (SPEC_FLOW1 Lane G) — THE CEILING IS THE BUDGET, not the page.
+    #
+    # The page bound (21 rows) decided what one screen held; nothing decided
+    # how many questions a week the person had agreed to answer. That is why
+    # the 2026-09-07 fire opened "21 waiting on you" over a queue whose
+    # oldest rows had been asked since June. QUIET1 already holds the answer
+    # — five a week under `light` — so the Staff Meeting reads it instead of
+    # inventing a second number, and never renders more than that in one
+    # fire. Extra sections (the meeting fold, INTAKE1's day-7 held-with-
+    # client question, this week's moves) come out of the SAME ceiling, so a
+    # new asker lands inside the budget rather than on top of it.
+    #
+    # FIX ROUND 1 (reviewer F-5) — THE CEILING BOUNDS THE PAGE, NOT ONE LANE.
+    # Passing it to `bound_page` alone bounded the QUEUE and let the appended
+    # sections render whole on top: the meeting fold's own caps (3 calls / 8
+    # rows) are both larger than a `light` seat's five, so three calls with
+    # two unconfirmed captures each — an ordinary week — put the header back
+    # to "6 waiting on you", the exact string this lane exists to fix. The
+    # extras are now bounded FIRST, keeping one row for the queue whenever
+    # the queue has any, and `bound_page` then fills what is left. Queue plus
+    # extras never exceeds the ceiling, so the header can't either.
+    try:
+        from question_ttl import staff_meeting_question_ceiling
+        page_cap = staff_meeting_question_ceiling(workspace_root,
+                                                  now_iso=now_iso)
+    except Exception as exc:  # pragma: no cover — a ceiling that cannot read
+        sys.stderr.write(f"[surface_drivers] question ceiling skipped: {exc}\n")
+        page_cap = None      # falls back to `bound_page`'s shipped default
+    extra_stats: dict = {}
+    if page_cap is not None:
+        extra, extra_stats = bound_extra_sections(
+            extra, cap=page_cap, queue_rows=len(digested))
+        n_extra_rows = sum(len(sec.get("items") or []) for sec in extra)
+    shown, bound_stats = bound_page(
+        digested, n_extra_rows=n_extra_rows,
+        **({} if page_cap is None else {"page_cap": page_cap}))
     # LIFECYCLE1 §7b — the tiles show the HONEST per-shape total, the same
     # convention the section titles already use, computed from the FULL open
     # queue (pre-digest, pre-bound) rather than from the page. Grouping and
@@ -1184,13 +2634,35 @@ def build_staff_meeting_view(workspace_root, *, now_iso: str | None = None,
     view = build_card_view(shown, surface="staff-meeting",
                            extra_sections=extra or None,
                            section_notes=section_notes(shown, bound_stats),
-                           shape_totals=shape_totals)
+                           shape_totals=shape_totals,
+                           # M-6 — the rows the ceiling cut from the appended
+                           # sections belong in the footer's number too.
+                           extra_dropped=int(extra_stats.get("dropped", 0)))
     # D2 — the per-kind + digest arithmetic the fire receipt records. Popped by
     # `run_surface` before the view reaches the renderer, so nothing new travels
     # into the widget contract.
     view["receipt_extra"] = _staff_receipt_extra(open_items, shown,
                                                  digest_stats, bound_stats,
-                                                 n_extra_rows)
+                                                 n_extra_rows,
+                                                 extra_stats=extra_stats)
+    # FOLD1-B FIX ROUND 1 (reviewer F-2) — ONE INTEGER, and it is the second
+    # half of the scope note above. `n_hidden_past_lifetime` is what the
+    # lifetime gate held back from THIS fire. It counts the projector's
+    # screen (the identity / hygiene / money question classes, whose
+    # defaults ride the weekly `question-expiry` and Sunday
+    # `identity-reconcile` rails); the meeting fold's capture-card rows are
+    # settled by a different rail and are not in this number. Always
+    # written, 0 included: a field that appears only when it is non-zero
+    # cannot tell "nothing was hidden" from "nobody recorded it".
+    view["receipt_extra"]["n_hidden_past_lifetime"] = int(
+        _screen_stats.get("n_hidden", 0))
+    # M-6 — and its sibling: the rows the page ceiling cut from the APPENDED
+    # sections (overdue, held, the meeting fold). It rode the receipt only
+    # inside `page_bound`; it sits beside the hidden count now, because the
+    # two answer the same question about the same page and a reader
+    # comparing the footer against the receipt should find both.
+    view["receipt_extra"]["n_extra_held_back"] = int(
+        extra_stats.get("dropped", 0))
     return view
 
 
@@ -1206,7 +2678,7 @@ def _kind_counts(items) -> dict:
 
 
 def _staff_receipt_extra(open_items, shown, digest_stats, bound_stats,
-                         n_extra_rows: int) -> dict:
+                         n_extra_rows: int, extra_stats=None) -> dict:
     """STAFFCUT D2 — the staff-meeting receipt's per-kind counts.
 
     `surface_drivers._log_fire_receipt` wrote only the scalar `surfaced`, so
@@ -1231,9 +2703,249 @@ def _staff_receipt_extra(open_items, shown, digest_stats, bound_stats,
         "page_bound": {"cap": bound_stats.get("cap"),
                        "queue_budget": bound_stats.get("budget"),
                        "extra_section_rows": n_extra_rows,
-                       "held_back": bound_stats.get("dropped", 0)},
+                       "held_back": bound_stats.get("dropped", 0),
+                       # TTL1 fix round 1 (F-5) — what the CEILING took off
+                       # the appended sections, so a receipt can answer "why
+                       # did the fold show four of nine" without guessing.
+                       "extra_rows_before": (extra_stats or {}).get(
+                           "rows_before", n_extra_rows),
+                       "extra_held_back": (extra_stats or {}).get("dropped", 0)},
+        # RV-4's arithmetic, recorded: the header count is exactly this.
+        "page_rows_rendered": len(shown) + n_extra_rows,
     }
 
+
+def _hoisted_anchor_and_instant(ws, now_iso: str):
+    """ONE resolve for both the row-level date anchor (`tz.localize_date`'s
+    own shape — the DATE1 F-2 hoist) and `_plate_headline`'s workspace-local
+    INSTANT (the ONEPLATE1 merge-seam finding, F-16) — never two. A bare
+    `YYYY-MM-DD` `now_iso` never resolves at all (the same guard
+    `plate_view._local_today` uses); a resolvable full timestamp resolves
+    ONCE via `plate_view._local_instant` and the anchor date is sliced off
+    that SAME instant, so `build_commitment_triage_view` /
+    `build_waiting_on_view` / `build_my_plate_view` each pay one resolve
+    for the whole render, not two (one for `anchor`, a second inside
+    `build_plate` for `_plate_headline`'s numbers)."""
+    if isinstance(now_iso, str) and len(now_iso) == 10 and now_iso.count("-") == 2:
+        return now_iso, None
+    from plate_view import _local_instant
+    instant = _local_instant(ws, now_iso)
+    if instant is not None:
+        return instant.date().isoformat(), instant
+    # Genuinely unresolvable (no workspace timezone, or an unparseable
+    # clock) — `_local_instant` already made the one resolve attempt and
+    # failed; do NOT retry via `tz.localize_date` (it would attempt
+    # `to_local` a second time for the same answer). Take `localize_date`'s
+    # own documented fallback (the UTC-spelling date slice) directly.
+    anchor = now_iso[:10] if isinstance(now_iso, str) and len(now_iso) >= 10 else (now_iso or "")
+    from plate_view import INSTANT_UNRESOLVABLE
+    return anchor, INSTANT_UNRESOLVABLE
+
+
+#: SPEC SURFACEFIX1 5.4 — the name the degrade is recorded under, on the
+#: pack and in the fire's persisted audit copy. A DIFFERENT NUMBER IS NEVER
+#: RENDERED: the caller drops the line instead of printing the fallback.
+PLATE_HEADLINE_DEGRADED = "plate_headline_degraded"
+
+
+def _plate_headline(ws, *, now_iso: str, fallback: dict,
+                    folded: int = 0, folded_key: str | None = None,
+                    local_instant=None, degraded_out: list | None = None) -> dict:
+    """ONE projection's numbers for a surface that renders its own rows
+    (SPEC_FLOW1 Lane C item 1): `plate_view.surface_numbers`, in the
+    headline shape the chat surfaces already read.
+
+    NEVER raises into a fire. A refused plate (no primary user) or a
+    loader error falls back to the caller's own count — a degraded number
+    is better than a chat that does not render — and the fallback is the
+    number that shipped, so the failure mode is exactly today's behaviour.
+
+    `folded` / `folded_key` — THE SURFACE'S OWN DUPLICATE FOLD, subtracted
+    (BUG-8330 FX-3, `run_dup_render_fold_test`). Waiting On and My Plate
+    fold rows that point at each other with `duplicate_of` before they
+    render, because a fold is IDENTITY — two records of one promise are one
+    promise — not visibility. The plate's own cluster fold is a different
+    fold and does not see those pointers, so handing the plate's number
+    straight to a folded surface put "2 owed to you" over one row. One
+    projection is about where the number comes FROM; a header still has to
+    reconcile with the rows under it. The subtraction is named, bounded by
+    the surface's own receipt count, and never goes below zero.
+
+    `local_instant` (seam round, DATE1 x ONEPLATE1 merge finding, F-16) —
+    passed straight through to `surface_numbers` / `build_plate`. The
+    caller already resolved this once for its own row-level date anchor
+    (`_hoisted_anchor_and_instant`); handing it here keeps the WHOLE
+    render's timezone resolve count at one instead of `build_plate`
+    resolving a second time on top of the caller's own hoist.
+    """
+    # SPEC SURFACEFIX1 5.4 — THE FALLBACK IS NO LONGER SILENT. "A degraded
+    # number is better than a chat that does not render" was the shipped
+    # doctrine and it is the wrong trade on a COUNT: the fallback is a
+    # DIFFERENT projection's figure, so a degraded read renders a number that
+    # disagrees with the one number the surface promises (A4's "60" beside a
+    # plate of 334). The degrade is now recorded by name — `degraded_out`
+    # collects it for the pack and for the fire's persisted audit copy — and
+    # the caller drops the line rather than printing a second answer.
+    def _degrade(reason: str) -> dict:
+        if degraded_out is not None:
+            degraded_out.append(reason)
+        out = dict(fallback)
+        out["degraded"] = True
+        out["degrade_reason"] = reason
+        return out
+
+    try:
+        from plate_view import surface_numbers
+        n = surface_numbers(ws, now_iso=now_iso, local_instant=local_instant)
+        if not n.get("ok"):
+            return _degrade(str(n.get("error") or "the plate refused to build"))
+        out = dict(fallback)
+        for k in ("total", "you_owe", "owed_to_you", "unowned", "unconfirmed",
+                  "overdue"):
+            src = "open" if k == "total" else k
+            if src in n:
+                out[k] = n[src]
+        if folded:
+            for k in ("total", folded_key):
+                if k and isinstance(out.get(k), int):
+                    out[k] = max(0, out[k] - int(folded))
+        return out
+    except Exception as exc:  # noqa: BLE001 — the fire must not crash on a number
+        return _degrade(type(exc).__name__)
+
+
+#: SPEC SURFACEFIX1 5.5 — the schedule view's own header, one sentence.
+SCHEDULE_VIEW_HEADER = "To schedule — {n} {items}"
+SCHEDULE_VIEW_EMPTY = "Nothing to schedule."
+
+
+def build_schedule_view(workspace_root, *, now_iso: str | None = None) -> dict:
+    """The `show scheduling` door (SPEC SURFACEFIX1 5.5).
+
+    `show scheduling` was a LABEL — `plate_view.SHOW_MORE_PHRASES` printed it
+    under the plate's SCHEDULE block as the way to see the rest, and no
+    handler claimed it, exactly as `show waiting` was a label with no route
+    (B2.9). This is its route.
+
+    Deliberately thin, and deliberately NOT in `plate_view`: this lane owns
+    two lines of that file and nothing else, so the view is composed here
+    from the SAME primitives the Waiting On view uses — the canonical loader
+    and `surface_split.effective_kind_of` — rather than a second projection
+    or a renderer of its own. It is a reading surface: rows, one line each,
+    no verbs, no numbers to tap.
+    """
+    from cru_match import load_open_commitments
+    from primary_user import resolve_primary_user
+    from surface_split import effective_kind_of
+
+    ws = Path(workspace_root)
+    now_iso = now_iso or _now_iso()
+    anchor, _ = _hoisted_anchor_and_instant(ws, now_iso)
+    user_id = resolve_primary_user(ws)
+    rows = []
+    for ev in load_open_commitments(_events_path(ws), workspace_root=ws):
+        if effective_kind_of(ev) != "scheduling":
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        title = str(data.get("title") or "").strip()
+        if not title:
+            continue
+        rows.append({"id": str(data.get("id") or ""), "title": title,
+                     "due": data.get("due"),
+                     "tag": _schedule_row_tag(data, anchor, ws),
+                     "line": _schedule_row_line(title, data, anchor, ws)})
+    rows.sort(key=lambda r: (r["due"] is None, str(r["due"] or ""),
+                             r["title"].lower()))
+    n = len(rows)
+    header = (SCHEDULE_VIEW_EMPTY if not n else SCHEDULE_VIEW_HEADER.format(
+        n=n, items=("item" if n == 1 else "items")))
+    # SCHEDVIEW1 5.1 — THE SECTION CARRIES `items`, NOT `rows`.
+    #
+    # This builder shipped returning its section as
+    # `{"title", "count", "rows": [<line strings>]}` while every other
+    # plate-bearing view in this module returns `items` with row DICTS
+    # (`build_waiting_on_view`'s three sections). `widget_transport`
+    # paginates on `section["items"]` and `_stamp_map_numbers` reads
+    # `sec.get("items")`, so the transport saw a section with nothing in it:
+    # the `show scheduling` card rendered EMPTY over a real book (attended
+    # test v5.31.0, B2.9), the chat then hand-printed the rows, and it
+    # numbered them BY POSITION — the exact class PLATENUM1 exists to
+    # prevent, because a typed verb resolves a number through
+    # `plate_view.resolve_display_number` and a positional number lands it
+    # on a different item.
+    #
+    # The row dicts are the renderer's own shape (`n` = the commitment id,
+    # `name` = the title, `context_tag` = the date phrase), and
+    # `_stamp_map_numbers` below stamps each one with THE number that
+    # belongs to the item, off PLATENUM1's persisted map — the same number
+    # the board shows for the same row. A row with no commitment id gets no
+    # number rather than a positional one (that helper's own rule).
+    sections = ([{"title": "To schedule", "count": n,
+                  "items": [{"n": r["id"], "name": r["title"],
+                             "context_tag": r["tag"]} for r in rows]}]
+                if n else [])
+    _stamp_map_numbers(ws, sections)
+    return {
+        "source_skill": "commitment-triage",
+        "surface": "schedule",
+        "header": header,
+        "user_id": user_id,
+        "sections": sections,
+        "rows": rows,
+        "counters": [{"label": "To schedule", "value": n}],
+    }
+
+
+def _schedule_row_tag(data: dict, anchor, ws) -> str:
+    """The row's date phrase on its own — the `context_tag` half of
+    `_schedule_row_line`, for the section's row dicts (SCHEDVIEW1 5.1).
+    Empty when the row carries no date: this surface never invents one."""
+    due = data.get("due")
+    if not due:
+        return ""
+    try:
+        return _due_phrase(due, anchor, ws)
+    except Exception:  # pragma: no cover — a date read never breaks a list
+        return ""
+
+
+def _schedule_row_line(title: str, data: dict, anchor, ws) -> str:
+    """One scheduling row, read-only: the title, and its date when it has one.
+    Never a verb and never a number — this surface is a list, not a queue."""
+    due = data.get("due")
+    if not due:
+        return title
+    try:
+        return f"{title} — {_due_phrase(due, anchor, ws)}"
+    except Exception:  # pragma: no cover — a date read never breaks a list
+        return title
+
+
+
+def _stamp_map_numbers(workspace_root, sections: list) -> None:
+    """Night 11b trial merge (merged-tree review, DOORS1×SURFACEFIX1 reader
+    F-1): a row on a standalone plate-bearing view carries THE number that
+    belongs to the item — read off PLATENUM1's persisted map — never its
+    position in this render. `apply-choices` and commitment-triage resolve a
+    typed number through `plate_view.resolve_display_number`, so a positional
+    number here would land a typed verb on a different item (the B2.5 class).
+    A row with no commitment id (an orchestrator-supplied draft) renders
+    unnumbered rather than with a number that could collide with a real one."""
+    try:
+        from plate_view import mint_display_numbers
+    except Exception:  # pragma: no cover
+        return
+    rows = [r for sec in (sections or []) for r in (sec.get("items") or [])
+            if isinstance(r, dict)]
+    ids = [str(r.get("n")) for r in rows if r.get("n")]
+    nums = {}
+    if ids:
+        try:
+            nums = mint_display_numbers(workspace_root, ids) or {}
+        except Exception:  # pragma: no cover — a refused lock mints nothing
+            nums = {}
+    for r in rows:
+        r["display_n"] = nums.get(str(r.get("n"))) if r.get("n") else None
 
 def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
                           chase_rows: list | None = None) -> dict:
@@ -1262,6 +2974,12 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
 
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
+    # DATE1 fix round 1 (REVIEW_DATE1 F-2 / F-1) — see the identical comment
+    # in build_commitment_triage_view: one workspace-day resolve per render,
+    # reused by `_due_phrase` and `count_commitments` below.
+    # seam round (DATE1 x ONEPLATE1 merge finding, F-16) — one resolve for
+    # both `anchor` and the headline's instant; see `_hoisted_anchor_and_instant`.
+    anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
     # BUG-8330 item 14 (fix round FX-3) — collapse suspected-duplicate
@@ -1286,7 +3004,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
         user_id = None
     movement = derive_commitment_movement(events_path)
     counts = count_commitments(opens, user_person_id=user_id,
-                               now_iso=now_iso, movement=movement)
+                               now_iso=anchor, movement=movement)
     part = partition_surfaces(surfaced, user_id)
 
     def _cid(ev) -> str:
@@ -1324,7 +3042,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
             bits = []
             if age is not None and age >= 0:
                 bits.append("1 day old" if age == 1 else f"{age} days old")
-            bits.append(_due_phrase(d.get("due"), now_iso))
+            bits.append(_due_phrase(d.get("due"), anchor, ws))
             # A delegated row is owner != M by definition — name who we're
             # waiting on (FIX A); fall back to bare "delegated" only if no name
             # resolves.
@@ -1387,7 +3105,19 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
         sections.append({"title": "Needs a quick confirm", "count": len(rows),
                          "items": rows})
 
-    h = counts["headline"]
+    # ONEPLATE1 (SPEC_FLOW1 Lane C item 1) — THE NUMBERS COME FROM THE
+    # PLATE. This surface used to count its own way: `count_commitments`
+    # over its own input, AFTER `_fold_dups` and WITHOUT the plate's
+    # observed-tier drop. On a book where those two disagree the same book
+    # states two "owed to you" numbers on two surfaces in one morning
+    # (ATTENDED_TEST_v5.29.0 Part E: 94 + 8 here against the brief's 119).
+    # The rows below are unchanged — this is the header and the counters.
+    # `folded`: this surface's own duplicate fold comes off the projection's
+    # number, or the header states two for one promise it renders once
+    # (BUG-8330 FX-3 — see `_plate_headline`).
+    h = _plate_headline(ws, now_iso=now_iso, fallback=counts["headline"],
+                        folded=n_dup_folded, folded_key="owed_to_you",
+                        local_instant=_lnow_hoist)
     counters = [
         {"label": "Owed to you", "value": h["owed_to_you"]},
         {"label": "Unowned", "value": h["unowned"]},
@@ -1398,6 +3128,7 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
         # Item 6's honesty rule: the headline stays the full-set truth, so
         # any gap between it and the rows below must say WHY, on-surface.
         header += f" ({n_conf_filtered} low-confidence not shown)"
+    _stamp_map_numbers(ws, sections)
     return {
         "source_skill": "commitments",
         "header": header,
@@ -1441,6 +3172,12 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
 
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
+    # DATE1 fix round 1 (REVIEW_DATE1 F-2 / F-1) — see the identical comment
+    # in build_commitment_triage_view: one workspace-day resolve per render,
+    # reused by `_due_phrase` and `count_commitments` below.
+    # seam round (DATE1 x ONEPLATE1 merge finding, F-16) — one resolve for
+    # both `anchor` and the headline's instant; see `_hoisted_anchor_and_instant`.
+    anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
     # BUG-8330 item 14 (fix round FX-3) — same identity-before-counts fold as
@@ -1456,7 +3193,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         user_id = None
     movement = derive_commitment_movement(events_path)
     counts = count_commitments(opens, user_person_id=user_id,
-                               now_iso=now_iso, movement=movement)
+                               now_iso=anchor, movement=movement)
     part = partition_surfaces(surfaced, user_id)
     promised = part[SURFACE_PROMISED]
     personal = part[SURFACE_PERSONAL]
@@ -1493,7 +3230,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         bits = []
         if age is not None and age >= 0:
             bits.append("1 day old" if age == 1 else f"{age} days old")
-        bits.append(_due_phrase(d.get("due"), now_iso))
+        bits.append(_due_phrase(d.get("due"), anchor, ws))
         _dfn = _dup_fold_note(d)
         if _dfn:
             bits.append(_dfn)
@@ -1523,7 +3260,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         bits = []
         if age is not None and age >= 0:
             bits.append("1 day old" if age == 1 else f"{age} days old")
-        bits.append(_due_phrase(d.get("due"), now_iso))
+        bits.append(_due_phrase(d.get("due"), anchor, ws))
         _dfn = _dup_fold_note(d)
         if _dfn:
             bits.append(_dfn)
@@ -1579,7 +3316,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         bits = []
         if age is not None and age >= 0:
             bits.append("1 day old" if age == 1 else f"{age} days old")
-        bits.append(_due_phrase(d.get("due"), now_iso))
+        bits.append(_due_phrase(d.get("due"), anchor, ws))
         _dfn = _dup_fold_note(d)
         if _dfn:
             bits.append(_dfn)
@@ -1597,7 +3334,14 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
                                   "for everything")
         sections.append(sec)
 
-    h = counts["headline"]
+    # ONEPLATE1 (SPEC_FLOW1 Lane C item 1) — THE NUMBERS COME FROM THE
+    # PLATE (see the same note in `build_waiting_on_view`). Part A of the
+    # v5.29.0 attended test found four totals for one book on one day; My
+    # Plate's 158 was one of them. The group sizes below are this surface's
+    # own rows and stay its own.
+    h = _plate_headline(ws, now_iso=now_iso, fallback=counts["headline"],
+                        folded=n_dup_folded, folded_key="you_owe",
+                        local_instant=_lnow_hoist)
     counters = [
         {"label": "On your plate", "value": h["you_owe"]},
         {"label": "Promised", "value": len(promised)},
@@ -1610,6 +3354,7 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
         # Same on-surface honesty as Waiting On: the headline is full-set,
         # the groups are row-level — the gap must name itself.
         header += f" · {n_conf_filtered} low-confidence not shown"
+    _stamp_map_numbers(ws, sections)
     return {
         "source_skill": "commitments",
         "header": header,
@@ -1885,7 +3630,7 @@ def _brief_thread_activity(workspace_root) -> dict:
 
 
 def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
-                       ask: dict) -> dict:
+                       ask: dict, view: dict | None = None) -> dict:
     """PLATE1 night 2 — `build_plate` -> `render_plate("brief")` for the
     morning pack, with the brief's gates applied at the cut (see the call
     site). Never raises into the fire: a render the jargon gate refuses or a
@@ -1895,6 +3640,7 @@ def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
     from plate_view import build_plate, render_plate
 
     refusal = {"refused": True, "line": PRIMARY_USER_REFUSAL_LINE,
+               "breakdown": "",
                "attention": 0, "rows": [], "pointer": "", "text": "",
                "excluded_ids": [], "block_totals": {}}
     if not user_id:
@@ -1905,7 +3651,11 @@ def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
             for r in (ask.get("rows") or [])
             if isinstance(r, dict) and r.get("ask_line")}
     try:
-        view = build_plate(ws, user_person_id=user_id, now_iso=now_iso)
+        # NUMBER1 3.4 — ONE BUILD for the fire. The audit row and this
+        # render now state the same integer because they read the same view,
+        # not because two builds happened to agree.
+        if view is None:
+            view = build_plate(ws, user_person_id=user_id, now_iso=now_iso)
         if not view.get("ok"):
             out = dict(refusal)
             out["line"] = view.get("error") or PRIMARY_USER_REFUSAL_LINE
@@ -1919,9 +3669,23 @@ def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
         out["error"] = f"{type(exc).__name__}: {exc}"
         return out
     lines = rendered["text"].split("\n")
+    # NUMBER1 3.1 (R-26) -- line two is the breakdown of line one, composed
+    # by `plate_view.render_plate` and carried out here so the pack (and the
+    # brief's own fences) see it. `lead_lines` below prints it directly
+    # under the number, which is the only place it means anything.
+    #
+    # FIX ROUND 1 (REVIEW F-6) -- READ THE KEY, NOT THE TEXT BY INDEX. This
+    # used to recover the line as `lines[1]` when it did not start with
+    # "- ", i.e. by re-parsing the string the composer had just built out of
+    # a variable it still held. `render_plate("brief")` now returns
+    # `breakdown` itself, so one function composes the sentence and one key
+    # carries it; a row line that ever failed the "- " test can no longer
+    # be printed where the breakdown belongs.
+    breakdown = rendered.get("breakdown") or ""
     return {
         "refused": False,
         "line": lines[0],
+        "breakdown": breakdown,
         "attention": rendered["attention"],
         "rows": rendered["rows"],
         "pointer": rendered.get("pointer") or "",
@@ -1932,7 +3696,9 @@ def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
 
 
 def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
-                             now_iso: str | None = None) -> dict:
+                             now_iso: str | None = None,
+                             catch_up_runner=None,
+                             host_mode: str | None = None) -> dict:
     """t3 FB-9 — the morning brief's mandatory substrate blocks, assembled,
     validated, and persisted in ONE call (the t2.2 skip-proofing pattern
     that fixed commitments/staff-meeting). A live post-update fire skipped
@@ -2037,13 +3803,61 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     from cru_match import load_open_commitments
     from primary_user import resolve_primary_user
     from substrate_health import substrate_alarm_lines
-    from task_watchdog import brief_watchdog_line
 
     if mode not in ("scheduled", "manual"):
         raise ValueError(f"mode must be scheduled|manual; got {mode!r}")
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
 
+    # HEAL1 — THE UPKEEP RUNS FIRST, AND THE READER NEVER HEARS ABOUT IT.
+    #
+    # On demand only (`mode == "manual"`): a scheduled fire on a seat whose
+    # scheduler works already has the maintenance task, and one on a seat
+    # whose scheduler does not never reaches this line at all. So the catch-up
+    # rides exactly the moment a person opened the workspace and typed.
+    #
+    # BEFORE the gather, deliberately: the whole point is that the brief reads
+    # an already-reconciled substrate (Bug #98-v3's reason for the 6:45 anchor,
+    # one runtime over). With no runner this PLANS and the orchestrator runs
+    # it; `catch_up_runner` is what the suite and a local operator pass.
+    #
+    # Nothing composed from it reaches the reader — behaviour 2 — and
+    # `assert_no_reachability_line` below now reds by name if it does.
+    catch_up = None
+    if mode == "manual":
+        catch_up = maintenance_catch_up(ws, MORNING_BRIEF_SURFACE,
+                                        now_iso=now_iso,
+                                        mode=host_mode,
+                                        runner=catch_up_runner)
+
+    # DATE1 (ATTENDED_TEST_v5.29.0 B2.1) — the header's weekday, ONE
+    # composer, workspace-anchored, never prose. `Step 5` prints this
+    # verbatim in the "Morning briefing — …" header; it must never derive
+    # the day name itself the way the B2.1 regression did.
+    from due_reanchor import render_today_header
+    date_header = render_today_header(now_iso, workspace_path=ws)
+
+    # DATE1 fix round 1 (REVIEW_DATE1 F-1) — `commitment_state.is_overdue` /
+    # `overdue_days` slice `now_iso` the same raw-UTC way `_due_phrase` used
+    # to: at 18:00 Pacific (01:00 UTC the next day) a row due exactly today
+    # read `overdue: True` and the brief's "Done, new date, or drop?" ask
+    # line counted one day too many ("18 days overdue" beside the SAME row's
+    # own due-phrase, now correctly "17 days ago" two lines away). Anchored
+    # ONCE here, through the identical `tz.localize_date` door, and handed
+    # to every call below that reaches `is_overdue` / `overdue_days`
+    # (`compute_and_log_brief_state` → `compute_brief_state` →
+    # `count_commitments` + the needs_attention row stamp; `apply_overdue_ask`
+    # → `overdue_ask_state`).
+    from tz import localize_date
+    _local_today = localize_date(now_iso, workspace_path=ws) or now_iso
+
+    # `alarm_lines` stays a live read (HEALTH1 does not stop this call: unlike
+    # the dark-surface / schedule-refresh lines below, `substrate_alarm_lines`
+    # is not a render-once ledger — every caller sees the same finding, so the
+    # brief calling it too costs the weekly maintenance report nothing, and
+    # it is what keeps `alarm_artifacts.sweep_alerts` (its first step)
+    # self-clearing a resolved regression alert daily instead of weekly). The
+    # brief just never PRINTS it any more — see `health_lines` below.
     alarm_lines = list(substrate_alarm_lines(ws) or [])
 
     since_ts = _last_brief_ts(ws, now_iso)
@@ -2056,9 +3870,14 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # window and the lines are byte-identical to before.
     import quiet as _quiet
     since_ts, return_meta = _quiet.brief_window(ws, since_ts, now_iso)
-    feed = changes_since(ws, since_ts, now_iso=now_iso, max_lines=3)
-    changed_lines = [l.get("text", "") for l in (feed.get("lines") or [])
-                     if l.get("text")]
+    # SPEC_SURFACES2_11c BRIEF2 2.2 item 1 — the feed is asked for EVERYTHING
+    # in the window and the cap is applied HERE, on the ordinary lines only.
+    # Passing `max_lines=3` upstream threw away the machine's batch lines
+    # before this surface could see them (the 09-13 brief: a 48-row lapse and
+    # a 51-row rest batch, both cut, both reversible by one word). See
+    # `brief_changed_lines` for what counts as a batch and why.
+    feed = changes_since(ws, since_ts, now_iso=now_iso)
+    changed_lines = brief_changed_lines(feed)
     return_summary = _quiet.return_summary(ws, now_iso) if return_meta else None
     # QUIET1 D3 — the one line that says the product stopped asking. Written
     # into the ledger as narrated the moment it is handed out, so a re-run
@@ -2074,8 +3893,28 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         user_id = resolve_primary_user(ws)
     except Exception:
         user_id = None
+    # NUMBER1 3.4 — the plate is built ONCE, here, and its `open` is
+    # what the audit row records and what the brief renders. Before this the
+    # event carried `count_commitments`' confirmed-only total (342 / 305 on
+    # 2026-09-16) while the plate rendered 354, and nothing on the ledger
+    # said which of the three the reader had seen.
+    brief_view = None
+    brief_plate_open = None
+    if user_id:
+        try:
+            from plate_view import build_plate as _build_plate
+            from plate_view import plate_numbers as _plate_numbers
+            brief_view = _build_plate(ws, user_person_id=user_id,
+                                      now_iso=now_iso)
+            if brief_view.get("ok"):
+                brief_plate_open = _plate_numbers(brief_view)["open"]
+            else:
+                brief_view = None
+        except Exception:  # noqa: BLE001 — the fire must not crash
+            brief_view, brief_plate_open = None, None
     state = compute_and_log_brief_state(
-        ws, open_commitments=opens, user_person_id=user_id, now_iso=now_iso,
+        ws, open_commitments=opens, user_person_id=user_id, now_iso=_local_today,
+        plate_open=brief_plate_open,
         # BRIEFSTATE1 — the substrate-derivable brief-state inputs, passed.
         # This call used to pass NONE of them, and two things followed
         # deterministically on every scheduled fire: the cursor defaulted to
@@ -2137,9 +3976,44 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # QUIET1 D4 — the workspace root hands the morning's asks to the weekly
     # question budget (the `overdue_ask` asker); a row the budget cuts
     # stays on the lane unasked and unmarked.
+    #
+    # SPEC SURFACEFIX1 5.4 / amendment B-2 — READ THIS BEFORE CHANGING THE
+    # `ask=` ARGUMENT BELOW. M ruled the brief's "pinned ask" off on
+    # 2026-09-07 and read it on both 09-13 renders anyway (A4). The ask is
+    # THIS call: the fatigue rule's "Done, new date, or drop?" riding a plate
+    # row as its label, which R-3 moved off the evening and onto the morning.
+    #
+    # `ask=False` LOOKS like the fix and is not. The rest-until-answered fold
+    # keys on the ask-once MARKER this call writes, so a morning that never
+    # asks is a morning that never marks, and a row that is never marked
+    # never rests: `resting_line` goes empty forever and the fatigue rule
+    # dies quietly with it. Measured, not reasoned — `run_overdue1_test`
+    # night 4 and `run_eodsynth1_test`'s morning lane both go red on exactly
+    # that, and they are right to.
+    #
+    # So the ask stays here and the question needs a HOME, not a switch: the
+    # Staff Meeting, which is where M's design rule of 2026-09-06 puts every
+    # question.
+    #
+    # FOLD1-B 1.2 item 4(b), 2026-09-14 — THE HOME NOW EXISTS, so the switch
+    # is finally safe to throw. `needs_review_queue.overdue_ask_section`
+    # renders the question on the Staff Meeting, draws it from the SAME
+    # weekly budget (`quiet.ASKER_OVERDUE`), and `run_surface` writes the
+    # ask-once marker after that post through `mark_overdue_asked`. So the
+    # marker still gets written every week the question is asked, and the
+    # rest-until-answered fold holds.
+    #
+    # VERIFIED BEFORE THE FLIP, not assumed (the SURFACEFIX1 note above was
+    # half right): `ask=False` never skipped the marker READ. `overdue_ask_
+    # state` returns REST off the row's own live mark whatever `ask` says,
+    # so `resting_ids` and `resting_line` are byte-identical either way.
+    # What `ask=False` alone lost was the WRITE — `asked_ids` came back
+    # empty, so `mark_lane_asked` wrote nothing and no row was ever marked.
+    # Nothing inside this function needed decoupling; what was missing was a
+    # surface that asks. Now one does.
     _ask = _eod.apply_overdue_ask(
-        lane["shown"], now_iso=now_iso,
-        ask_after_days=_eod.overdue_ask_after_days(ws), ask=True,
+        lane["shown"], now_iso=_local_today,
+        ask_after_days=_eod.overdue_ask_after_days(ws), ask=False,
         workspace_root=ws)
     brief_state = {
         "headline": (state.get("counts") or {}).get("headline") or {},
@@ -2179,39 +4053,36 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # An unresolvable primary user refuses with the one plain line and no
     # rows — the packs no longer degrade quietly (D8).
     plate = _brief_plate_block(ws, now_iso=now_iso, user_id=user_id,
+                               view=brief_view,
                                state=state, ask=_ask)
     brief_state["asked_ids"] = [i for i in _ask["asked_ids"]
                                 if i in {r["id"] for r in plate["rows"]}]
 
-    try:
-        watchdog = brief_watchdog_line(ws)
-    except Exception:
-        watchdog = None
-
-    # TASKALARM1 — the render-once dead-surface alarm. `brief_watchdog_line`
-    # above is the S3 LIGHT pass (a count + "say health check"); this is the
-    # per-task line the spec calls for ("meeting capture has not run in 2
-    # days"), sourced from the SAME watchdog classes through task_alarm's
-    # render-once ledger so the same dark spell never repeats across fires.
-    # Best-effort — a read failure here must never break the morning brief.
-    try:
-        from task_alarm import dark_surface_lines as _dark_surface_lines
-
-        dark_surface_lines = _dark_surface_lines(ws)
-    except Exception:  # noqa: BLE001
-        dark_surface_lines = []
-
-    # BRIDGESIL1 — the render-once announce line for a silently-applied
-    # semantic schedule change (Ruling §0.3: "announce, don't ask"). Same
-    # ledger shape and same best-effort posture as TASKALARM1 above; a
-    # `prompt`-field refresh never reaches this list (schedule_refresh.
-    # announce_lines only surfaces cron/label rows).
-    try:
-        from schedule_refresh import announce_lines as _schedule_refresh_announce_lines
-
-        schedule_refresh_announce_lines = _schedule_refresh_announce_lines(ws)
-    except Exception:  # noqa: BLE001
-        schedule_refresh_announce_lines = []
+    # HEALTH1 (2026-09-07) — M: reading the substrate alarm on his own brief,
+    # "this should not be shown"; ruled in full for all four health/plumbing
+    # kinds (substrate alarms, the watchdog line, the dark-surface line, the
+    # schedule-refresh line). They no longer render on the morning brief AT
+    # ALL — not last, not softened, not anywhere — and the lane does NOT
+    # merely stop PRINTING them here: `dark_surface_lines` and
+    # `schedule_refresh.announce_lines` each mark their own render-once
+    # ledger the instant they are CALLED (not the instant they are shown), so
+    # a brief that kept calling them unrendered would silently consume the
+    # only copy of the finding before the maintenance run (`cleanup`, the
+    # weekly job M's ruling names as the sole place these are reported AND
+    # the only surface where a cleanup pass can actually be offered and run)
+    # ever got a turn to see it. So the calls themselves move, not just the
+    # print statements — `cleanup`'s Monday-note pass is now the only reader
+    # of `task_alarm.dark_surface_lines` / `schedule_refresh.announce_lines`.
+    # `watchdog` (`task_watchdog.brief_watchdog_line`, the S3 light daily
+    # pass) has no such ledger — it is a pure read of `health_verdict` — but
+    # it is retired from this surface anyway: never pad an all-clear, and a
+    # line nobody prints is not worth a receipts scan every morning.
+    # `pack["watchdog_line"]` / `pack["dark_surface_lines"]` /
+    # `pack["schedule_refresh_announce_lines"]` stay on the pack (empty) so
+    # an existing reader of the persisted JSON never hits a missing key.
+    watchdog = None
+    dark_surface_lines = []
+    schedule_refresh_announce_lines = []
 
     # MORNCAP1 — "captured since your last close": meetings the background/
     # catch-up passes briefed after the last day-close receipt, narrated
@@ -2261,19 +4132,201 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # CUT-PLATE — THE NUMBER LEADS (see the module constants). The lead is
     # the plate's own cut verbatim: the number line, the rows, the ONE
     # pointer. The count lines that used to compete with it sit below the
-    # fold, and every health line — the duplicate-entry warning included —
-    # goes to the END. The fence runs over the composed order here, so a
-    # driver that ever re-orders these lists reds before the pack is handed
-    # out rather than on a customer's screen.
-    lead_lines = ([plate["line"]] + [r["line"] for r in plate["rows"]]
+    # fold. The fence runs over the composed order here, so a driver that
+    # ever re-orders these lists reds before the pack is handed out rather
+    # than on a customer's screen.
+    #
+    # HEALTH1 (2026-09-07) — `health_lines` is EMPTY, always, on this
+    # surface. M's ruling supersedes CUT-PLATE's "every health line goes to
+    # the END": the substrate alarms (the duplicate-entry warning included),
+    # the watchdog line, the dark-surface line and the schedule-refresh line
+    # do not render on the morning brief AT ALL any more — not last, not
+    # softened, nowhere. They are not lost: the maintenance run (`cleanup`'s
+    # weekly Monday note) is the one place that now composes and reports
+    # them, and the only place a cleanup pass can actually be offered and
+    # run. The key stays on the pack, empty, so an existing reader of the
+    # persisted JSON (`_hq/.system/briefs/morning-pack-*.json`) never hits a
+    # missing key — see the golden citation at `tests/golden/
+    # cutplate_brief_order.golden.txt` and `tests/run_health1_test.py`,
+    # which reds by name if this list is ever composed from `alarm_lines` /
+    # `watchdog` / `dark_surface_lines` / `schedule_refresh_announce_lines`
+    # again without the composition also moving to the maintenance report.
+    # SPEC_SURFACES2_11c BRIEF2 2.2 items 2 and 3 — LINE TWO, THEN THE ONE
+    # LINE, THEN THE ROWS. Both reads are best-effort by construction (item
+    # 5): each returns an empty line rather than raising, so a brief with an
+    # unreadable day-intent store is a brief missing one line, not a
+    # `surface_failed`. `_local_today` is the same workspace-local date every
+    # other read in this fire uses — line two cannot be about another day.
+    _intent = brief_day_intent_line(ws, today=_local_today)
+    day_intent_line = _intent["line"]
+    coaching_line = brief_coaching_line(ws)
+    # 2.2 item 4 — consumed INSIDE the pack so it lands above the fences.
+    explain_once_line = brief_explain_once_line(ws)
+    lead_lines = ([plate["line"]]
+                  + ([plate["breakdown"]] if plate.get("breakdown") else [])
+                  + ([day_intent_line] if day_intent_line else [])
+                  + ([coaching_line] if coaching_line else [])
+                  + [r["line"] for r in plate["rows"]]
                   + ([plate["pointer"]] if plate.get("pointer") else []))
-    fold_lines = [l for l in (brief_state.get("resting_line"),
+    # FOLD1A (SPEC_FLOW1 Lane H) — Waiting On's headline folds in HERE, below
+    # the fold, beside the resting line and the queue pointer it already
+    # joins. This is deliberately a SECOND number, not a replacement of the
+    # plate's: CUT-PLATE / NUMBERS1 R-1 says the plate's number is the ONLY
+    # one that may LEAD (`assert_number_leads` only refuses a count ABOVE
+    # the plate's line); nothing in that rule forbids a second count below
+    # it, and this is the exact line M's ruling named ("N owed to you, M
+    # chases drafted" / "the plate line the brief already carries" — the
+    # second clause is what PLATE1 night 2 / ONEPLATE1 already ship; this is
+    # the first). Read straight off `brief_state["headline"]` — already
+    # computed by `count_commitments`, never re-derived by hand (Bug #99).
+    # Empty when there is nothing owed, same "never pad" rule every other
+    # fold line follows.
+    #
+    # Honesty note (left open, see BUILD_FOLD1A "what this leaves open"):
+    # M's own phrasing pairs this with "M chases drafted" — the live count
+    # of chase drafts the (now-folded) Waiting On chat used to pre-stage
+    # each morning inside its own fire (CRU phases 2.5-2.7). Moving that
+    # drafting itself into the brief's own generation (a BRIEFMERGE-style
+    # leg) is a build this lane did not do — folding the DRAFTING logic in
+    # is a materially bigger change than folding the HEADLINE, and this
+    # line says only what is true today: the count, and where to see them.
+    # AT MERGE (night 10, REVIEW_FOLD1A F-9 x ONEPLATE1): the count comes
+    # from the ONE projection like every other header, with the brief's
+    # own count as the fallback. The brief renders no waiting rows of its
+    # own, so there is no duplicate fold to subtract here (folded=0); the
+    # `show waiting` page subtracts its own fold when it renders the rows.
+    #
+    # SPEC SURFACEFIX1 5.4 / amendment B-1 — AND THE DEGRADE IS LOUD NOW. If
+    # the one projection could not answer, this used to fall back silently to
+    # the brief's own figure — a DIFFERENT count, printed beside the plate's,
+    # which is how the 09-13 brief said 60 over a plate of 334 (A4, B2.5).
+    # The degrade is collected by name and the line is DROPPED: a reader who
+    # is not told how many are owed is missing one line; a reader told two
+    # different numbers cannot trust either.
+    _headline_degraded: list = []
+    _owed_h = _plate_headline(ws, now_iso=now_iso,
+                              fallback=(brief_state.get("headline") or {}),
+                              folded=0, folded_key="owed_to_you",
+                              degraded_out=_headline_degraded)
+    n_owed_to_you = int(_owed_h.get("owed_to_you") or 0)
+    owed_to_you_line = (
+        f"{n_owed_to_you} owed to you — say `show waiting` for the list."
+        if n_owed_to_you and not _headline_degraded else "")
+    fold_lines = [l for l in (owed_to_you_line, brief_state.get("resting_line"),
                               queue_pointer["line"]) if l]
-    health_lines = (list(alarm_lines) + ([watchdog] if watchdog else [])
-                    + list(dark_surface_lines)
-                    + list(schedule_refresh_announce_lines))
-    assert_number_leads("\n".join(lead_lines + fold_lines + health_lines),
-                        number_line=plate["line"])
+    health_lines: list[str] = []
+    _brief_text = "\n".join(lead_lines + fold_lines + health_lines)
+    assert_number_leads(_brief_text, number_line=plate["line"])
+    # SPEC SURFACEFIX1 5.4 — WHAT THE BRIEF COMPOSES ITSELF. The plate's ROW
+    # lines are excluded from the ask fence and from nothing else: they carry
+    # the customer's own titles (a row the reader wrote may legitimately end
+    # in a question mark) and they carry the one ruled ask this lane could not
+    # rehome (see the `apply_overdue_ask` note above). Everything the brief
+    # writes in its own voice — the plate's lead line, the fold lines, the
+    # pointer, the health slot — is fenced, so the next question to reach this
+    # surface has to get past a red suite first.
+    #
+    # SPEC_SURFACES2_11c BRIEF2 — FOUR LINES JOIN THIS TEXT, AND ONE OF
+    # THEM JOINS IT MARKED. The coaching line (2.2 item 3) and the explain-once line (item 4)
+    # are the brief's OWN sentences and are fenced like every other one: the
+    # explain-once line is the whole reason item 4 exists — prose had it
+    # rendered AFTER the pack, which is below every fence here, so a planted
+    # interrogative in `EXPLAIN_ONCE_LINES` would have reached the reader
+    # untouched.
+    #
+    # LINE TWO (item 2) — fix round 1, review F-5. It is the CUSTOMER'S own
+    # words, the same class as a plate row's title, and the build left it out
+    # of this text entirely for that reason. That was one fence too many: it
+    # also took line two out of the INTERROGATIVE half, which is not
+    # user-text business — a stated intent is a statement, and "done, new
+    # date, or drop?" is a question put to the reader whoever typed it. So it
+    # joins MARKED (`as_reader_words`): `scan_no_pending_question` blanks the
+    # span before it looks for the product's proposal vocabulary, and
+    # `interrogatives_in` reads the words with the marks taken out. The marks
+    # live only in this text; nothing the reader ever sees carries them.
+    #
+    # WHAT IS STILL EXCLUDED, AND ONLY HERE: the plate's ROW lines, which
+    # carry the customer's own titles.
+    #
+    # THE ROW'S ASK IS NOT EXCLUDED ANY MORE (REVIEW_NIGHT11C M-13,
+    # 2026-09-15). FOLD1-B rehomed the overdue fork to the Staff Meeting and
+    # built this pack with `ask=False`, and the only thing pinning that
+    # kwarg was a golden file: flipping it back to `True` left
+    # `run_brief2_test`, `run_fold1b_test` and `run_surfacefix1_test` green
+    # while the composed lead read "— 9 days overdue. Done, new date, or
+    # drop?" three times. The fence could not see it because the row lines
+    # were out of this text altogether.
+    #
+    # So the row's `ask_line` — which the PRODUCT composes, and which no row
+    # carries at all while `ask` is false — joins the text, with the
+    # customer's own title inside it MARKED, exactly as line two is. The row
+    # line itself stays out: its title is the customer's and this fence has
+    # no business judging it.
+    _ask_lines = []
+    for _row in (plate.get("rows") or []):
+        _ask = str(_row.get("ask_line") or "")
+        if not _ask:
+            continue
+        _title = str(_row.get("title") or "")
+        _ask_lines.append(_ask.replace(_title, as_reader_words(_title))
+                          if _title and _title in _ask else _ask)
+    _composed = "\n".join(
+        [plate.get("line") or ""]
+        + ([as_reader_words(day_intent_line)] if day_intent_line else [])
+        + ([coaching_line] if coaching_line else [])
+        + _ask_lines
+        + ([plate["pointer"]] if plate.get("pointer") else [])
+        + fold_lines + health_lines
+        + ([explain_once_line] if explain_once_line else []))
+    # SPEC SURFACEFIX1 5.4 — the three fences the brief never had. All three
+    # are loud, in code, BEFORE the pack reaches a chat turn:
+    #   B-1  one open figure, or figures that sum to it (A4's four competing
+    #        counts);
+    #   B-2  the brief never asks (the pinned question on both 09-13 renders);
+    #   R3   no sentence about a source being unreachable (B1.5).
+    # SPEC_SURFACES2_11c BRIEF2 2.2 item 2 — THE COUNT FENCE READS THE
+    # PRODUCT'S FIGURES, NOT THE CUSTOMER'S. Line two is the one line on this
+    # surface the customer wrote end to end, and a stated item may contain a
+    # digit — "close the 3 open Stone items" is a perfectly good answer to
+    # "what is today about" and no answer at all to "how many are on my
+    # plate". Reconciling it against line one would let the reader's own
+    # sentence raise on the reader's own brief. It is excluded here and
+    # nowhere else: the order fence above reads the real composed order, the
+    # leak scan below reads every word of it, and the pack marks it (see
+    # `day_intent.contains_digit`) so a receipt says why it was not counted.
+    _counted_lead = list(lead_lines)
+    if day_intent_line and day_intent_line in _counted_lead:
+        _counted_lead.remove(day_intent_line)   # the one line, once
+    _count_text = "\n".join(
+        _counted_lead + fold_lines + health_lines
+        + ([explain_once_line] if explain_once_line else []))
+    assert_single_open_count(_count_text,
+                             headline=headline_number_in(plate.get("line")))
+    assert_brief_never_asks(_composed)
+    assert_no_reachability_line(_brief_text)
+    # SPEC_SURFACES2_11c BRIEF2 2.2 item 3 — fix round 1, review F-3 (ruling
+    # R-10). THE BRIEF DECLARES, AND THE SCAN RUNS. PROFILE1's coaching tier
+    # fails closed: a surface that does not name itself coaching does not get
+    # the note. The brief never named itself anything, and nothing on the chat
+    # path ran the scan — so the one coaching line passed by the absence of a
+    # gate. Now the fire declares (the coaching tag only when it actually
+    # renders the line), and the scan runs over everything the pack composed.
+    # The marks come off first: they are the ask fence's instrument and no
+    # part of the reader's text.
+    #
+    # FIX ROUND 2, REVIEW R1 — THE DECLARATION EXEMPTS ONE SENTENCE, NOT THE
+    # PAGE. Handing the coaching tag to the scan as the SURFACE exempted the
+    # whole brief on exactly the mornings that carry coaching content: a
+    # marked note planted in any other slot reached the reader. The brief now
+    # always scans as the ordinary surface, with the one declared line
+    # blanked out of the text first (`brief_coaching_scan_target`).
+    _coaching_scan_text, _coaching_scan_surface = brief_coaching_scan_target(
+        strip_reader_marks("\n".join(
+            [_brief_text, _composed]
+            + ([explain_once_line] if explain_once_line else []))),
+        coaching_line)
+    assert_no_coaching_leak(_coaching_scan_text,
+                            surface=_coaching_scan_surface)
 
     # Leak-scan every text line the pack hands the orchestrator. Loud by
     # design — there is no widget validator behind this one any more.
@@ -2290,7 +4343,9 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # absolutizing every doc link in it, which is where these lines get
     # their real leak scan — not skipped, just scanned at the right layer.
     scannable = "\n".join(
-        alarm_lines + changed_lines + ([watchdog] if watchdog else [])
+        # DATE1 — the header line is printed verbatim; scanned like the rest.
+        ([date_header] if date_header else [])
+        + alarm_lines + changed_lines + ([watchdog] if watchdog else [])
         # QUIET1 — the return header and the step-down line are printed
         # verbatim by the orchestrator, so they are scanned like the rest.
         + ([return_summary["header"]] if return_summary else [])
@@ -2305,6 +4360,14 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
            if brief_state.get("needs_attention_more_line") else [])
         # PLATE1 night 2 — the renderer's own two lines of the plate cut.
         + [plate["line"]] + ([plate["pointer"]] if plate.get("pointer") else [])
+        # SPEC_SURFACES2_11c BRIEF2 — the three lines this lane composes are
+        # scanned like every other one. Line two carries the customer's own
+        # words, which is exactly why it is scanned: the leak gate blanks a
+        # declared user span, it does not refuse the reader for quoting a
+        # file name at their own day-close.
+        + ([day_intent_line] if day_intent_line else [])
+        + ([coaching_line] if coaching_line else [])
+        + ([explain_once_line] if explain_once_line else [])
     )
     if scannable.strip():
         validate_chat_output(scannable)
@@ -2313,6 +4376,13 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "surface": "morning-brief",
         "mode": mode,
         "now": now_iso,
+        # HEAL1 — the catch-up's own record: the plan (and, when a runner ran
+        # it, what ran and the one receipt). None on a scheduled fire. It is
+        # a machine's note to a machine and never composes into a sentence.
+        "catch_up": catch_up,
+        # DATE1 — "Monday, September 7, 2026", workspace-anchored, printed
+        # verbatim in the "Morning briefing — …" header (never re-derived).
+        "date_header": date_header,
         "alarm_lines": alarm_lines,
         "changed": {"since_ts": since_ts, "lines": changed_lines,
                     # QUIET1 D7 — present only when the person has been
@@ -2334,6 +4404,27 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         # below the fold, in order; `health_lines` print LAST. The fields
         # they are composed from stay on the pack for their existing readers.
         "lead": {"lines": lead_lines, "text": "\n".join(lead_lines)},
+        # SPEC_SURFACES2_11c BRIEF2 2.2 item 2 — LINE TWO, and the mark.
+        # `line` is already inside `lead` (second, below the number); this
+        # key exists so a reader of the persisted pack can tell the
+        # customer's sentence from the product's without re-deriving it, and
+        # `contains_digit` is the mark: a figure on the brief that the count
+        # fence deliberately did not reconcile, because it is user text.
+        "day_intent": {"line": day_intent_line, "items": _intent["items"],
+                       "user_text": True,
+                       "contains_digit": _intent["contains_digit"]},
+        # 2.2 item 3 — "" on an observed seat, on a seat with the render
+        # switch off, and on a seat whose coaching object names no
+        # behaviour. Already inside `lead`, after line two, before the rows;
+        # the orchestrator renders the lead verbatim and passes NO
+        # `coaching_line` into `brief_settings.render_surface` (that would
+        # print it twice).
+        "coaching_line": coaching_line,
+        # 2.2 item 4 — the first-week line, consumed HERE (inside the fences)
+        # rather than by the prose after the pack. "" on every fire after the
+        # first and on a workspace onboarding never armed. The orchestrator
+        # renders it verbatim as the last line and calls `consume` NEVER.
+        "explain_once_line": explain_once_line,
         "fold_lines": fold_lines,
         "health_lines": health_lines,
         "watchdog_line": watchdog,
@@ -2343,6 +4434,12 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "n_prior_captures_narrated": n_prior_captures_narrated,
         "money_lines": money_lines,
         "queue_pointer": queue_pointer,
+        # SPEC SURFACEFIX1 5.4 — THE DEGRADE, BY NAME. Empty on an ordinary
+        # morning. Non-empty means the one projection could not answer and
+        # the owed-to-you line was DROPPED rather than filled with a second
+        # count; the reason rides here so the health check and the operator
+        # report can say so, and nobody has to infer it from a missing line.
+        PLATE_HEADLINE_DEGRADED: list(_headline_degraded),
     }
 
     # Persist the pack (audit trail, parallel to the widget audit files).
@@ -2402,7 +4499,9 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                           connector_gaps=None,
                           held_ids=None,
                           lateness=None,
-                          phase_ledger=None) -> dict:
+                          phase_ledger=None,
+                          catch_up_runner=None,
+                          host_mode: str | None = None) -> dict:
     """SPEC EOD1 — the End of Day fire's seven blocks, assembled in ONE call.
 
     The t3 FB-9 pattern the morning brief already runs on: one fetch per fire,
@@ -2500,6 +4599,33 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         raise ValueError(f"mode must be scheduled|manual; got {mode!r}")
     ws = Path(workspace_root)
     now_iso = now_iso or _now_iso()
+
+    # HEAL1 — the upkeep runs first, on demand only, and silently. See the
+    # identical block in `build_morning_brief_pack` for why it sits here and
+    # why nothing composed from it reaches the reader. Same weekday family:
+    # the Sunday family belongs to `weekly recap` and `run maintenance`
+    # (R-M2), and a day-close that opened with a cleanup pass would be the
+    # same wrong surface as a Monday brief that did.
+    catch_up = None
+    if mode == "manual":
+        catch_up = maintenance_catch_up(ws, "end-of-day", now_iso=now_iso,
+                                        mode=host_mode,
+                                        runner=catch_up_runner)
+
+    # DATE1 fix round 1 (REVIEW_DATE1 F-1) — see the identical comment in
+    # build_morning_brief_pack. Handed to `compute_brief_state` (the
+    # PHASE_BRIEF_STATE call below) and `compute_slipped` (which forwards it
+    # into `overdue_ask_state` for the "overdue" sort key), the same two
+    # readers of `is_overdue` / `overdue_days` the evening reaches.
+    # `compute_confirm`'s own `now_iso` is left alone: it never reaches
+    # `is_overdue` / `overdue_days` (its only date consumer,
+    # `confirm_flow.select_confirm_items`, needs full timestamp precision
+    # via `event_time.parse_ts`, not a bare calendar day) — anchoring it to
+    # a date-only string would change nothing this finding is about and
+    # risks changing hour-level recency reasoning that IS in this finding's
+    # blast radius only by accident of sharing a parameter name.
+    from tz import localize_date
+    _local_today = localize_date(now_iso, workspace_path=ws) or now_iso
     if calendar_available is None:
         # A caller that handed over no fetch AT ALL had no calendar capability;
         # a caller that handed over an EMPTY fetch had one and tomorrow is
@@ -2521,20 +4647,32 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     phases = phase_ledger if phase_ledger is not None else eod.PhaseLedger()
 
     with phases.phase(eod.PHASE_ALARMS) as _p:
+        # `alarm_lines` stays a live read (HEALTH1 — see the identical note
+        # in `build_morning_brief_pack`): `substrate_alarm_lines` is not a
+        # render-once ledger, so every caller sees the same finding and the
+        # weekly maintenance report loses nothing by this surface also
+        # calling it. It is simply never PLACED on the composed screen any
+        # more (`end_of_day.compose_screen` no longer adds it — CUT-PLATE's
+        # "health lines LAST" is superseded by M's 2026-09-07 ruling: off
+        # this surface entirely).
         alarm_lines = list(substrate_alarm_lines(ws) or [])
-        # TASKALARM1 — the render-once dead-surface alarm, same never-
-        # suppressed posture as alarm_lines and timed inside the SAME phase
-        # rather than growing PACK_PHASES' pinned 16-name vocabulary
-        # (EODPHASE1) for one more line that shares alarm_lines' shape
-        # exactly: verbatim, never softened, source is task_watchdog's own
-        # classes read through task_alarm's render-once ledger. Best-effort
-        # — a read failure here must never break the evening close.
-        try:
-            from task_alarm import dark_surface_lines as _dark_surface_lines
-
-            dark_surface_lines = _dark_surface_lines(ws)
-        except Exception:  # noqa: BLE001
-            dark_surface_lines = []
+        # HEALTH1 (2026-09-07) — `dark_surface_lines` is DIFFERENT from
+        # `alarm_lines`: `task_alarm.dark_surface_lines` marks its own
+        # render-once ledger the instant it is CALLED, so if this fire kept
+        # calling it just to leave it unrendered, it would silently consume
+        # the only copy of the finding before the weekly maintenance run
+        # (`cleanup`) — the surface M's ruling names as the sole reporter —
+        # ever got a turn to see it. So the call itself is retired from this
+        # driver, not only its rendering. This ALSO closes the day-close's
+        # other route a dark-surface line could reach the customer: an empty
+        # `pack["dark_surface_lines"]` can never trip
+        # `end_of_day.coverage_has_disclosure`'s dark-surface branch, so the
+        # coverage strip cannot borrow it as a lead sentence either (SPEC
+        # COVERQUIET1 — untouched, out of HEALTH1's scope; its other four
+        # disclosure triggers are unaffected). `pack["dark_surface_lines"]`
+        # stays on the pack, empty, for existing readers of the persisted
+        # JSON.
+        dark_surface_lines = []
         _p.count(out=len(alarm_lines) + len(dark_surface_lines))
 
     soften = eod.soften_floor(close_result)
@@ -2548,7 +4686,7 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             user_id = None
         state = compute_brief_state(
             open_commitments=opens, user_person_id=user_id,
-            now_iso=now_iso, workspace_root=str(ws),
+            now_iso=_local_today, workspace_root=str(ws),
             # EODSTATE1 — the declared same-class sibling of the morning fix
             # in `build_morning_brief_pack`. This call used to pass NEITHER
             # substrate-derivable input, and two things followed on every
@@ -2611,14 +4749,36 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     with phases.phase(eod.PHASE_MORNING_READ):
         morning = eod.morning_fire(ws, for_date, now_iso=now_iso)
         digest = eod.read_morning_digest(ws, morning)
-    # `since_ts` is None on a day whose morning brief never fired, and that is
-    # the correct answer from `morning_fire`. Both readers below floor it to
-    # workspace-local midnight themselves (SPEC WINSFLOOR1) and report which
-    # window they used — the floor is IN the helpers, deliberately, so nothing
-    # here has to remember to apply it.
-    since_ts = morning.get("ts")
+        # SPEC SURFACES2_11c Lane 3 item 2 — ONE WINDOW, RESOLVED ONCE, FOR
+        # THE WHOLE EVENING (REVIEW_SURFACEFIX1 R-1, the blocking finding).
+        #
+        # `anchor_ts` is None on a day whose morning brief never fired, and
+        # that is the correct answer from `morning_fire`. Every reader below
+        # used to floor it for itself (SPEC WINSFLOOR1), which was right until
+        # SURFACEFIX1 fix round 1 lowered ONE of those floors to the day: from
+        # that moment the machine-acts block read the day while the ledger,
+        # the score and the wins block read the morning, and on 2026-09-11 the
+        # same screen printed `0 closed` in its header, ten named closes three
+        # lines below it, and "Nothing closed today that I can see" between
+        # them.
+        #
+        # So the instant is resolved HERE, once, by `end_of_day.evening_window`
+        # (the earlier of the morning anchor and the day floor — the
+        # derivation `compute_machine_acts` used to carry inline), and handed
+        # to every reader together with the NAME of the window it is. The
+        # helpers still floor for themselves when called from anywhere else;
+        # what this removes is five readers each deciding privately what
+        # "today" means. Timed inside the morning read because that is what it
+        # reads — the anchor this phase just resolved, against the workspace's
+        # own midnight (EODPHASE1: an un-phased call is work the instrument
+        # cannot see).
+        anchor_ts = morning.get("ts")
+        _evening_since, window_source = eod.evening_window(ws, anchor_ts,
+                                                           now_iso=now_iso)
+        since_ts = _evening_since.isoformat()
     with phases.phase(eod.PHASE_CLOSURES) as _p:
-        closures = eod.closures_since(ws, since_ts, now_iso=now_iso)
+        closures = eod.closures_since(ws, since_ts, now_iso=now_iso,
+                                      window_source=window_source)
         # `ClosureWindow` IS a list (with the window fields hung off it), so
         # its length is the closure count.
         _p.count(out=len(closures))
@@ -2632,7 +4792,9 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
     # are measured over one span.
     with phases.phase(eod.PHASE_LEDGER) as _p:
         opening = eod.opening_book(ws, morning, now_iso=now_iso)
-        opened = eod.opens_since(ws, since_ts, now_iso=now_iso)
+        opened = eod.opens_since(ws, since_ts, now_iso=now_iso,
+                                 window_source=window_source)
+        opened_window_source = opened.get("window_source")
         ledger = eod.compute_ledger(opening=opening, n_opened=opened["n"],
                                     closures=closures, brief_state=brief_state)
         _p.count(out=opened["n"])
@@ -2648,14 +4810,40 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
                                   close_legs=soften.get("legs"),
                                   ledger=ledger)
     with phases.phase(eod.PHASE_WINS) as _p:
-        wins = eod.compute_wins(ws, since_ts, now_iso=now_iso)
-        _p.count(out=len(wins.get("rows") or []))
+        wins = eod.compute_wins(ws, since_ts, now_iso=now_iso,
+                                window_source=window_source)
+        # SPEC SURFACEFIX1 5.2 / amendment E-3 — THE DAY'S JOB RECEIPTS,
+        # through the ONE reader that classifies them (`change_feed`, via
+        # `end_of_day.compute_machine_acts`).
+        #
+        # AND IT IS THE SAME WINDOW AGAIN (11c item 2). SURFACEFIX1 fix round
+        # 2 had to correct this comment because F-1b had split the two: the
+        # block floored to the day while `compute_wins` kept the morning
+        # anchor. The split is closed — `since_ts` above IS the one instant
+        # every reader on this fire was handed, and `window_since` on the
+        # return is that same instant, so the plate block below reads what
+        # this block read rather than a second window that usually matches.
+        # Timed INSIDE the wins phase deliberately: it is the other half of
+        # "what moved today", and a second phase name for one read would be a
+        # dialect. (`run_eodphase1_test` pins that every ledger read is inside
+        # some phase — an un-phased call is work the instrument cannot see, so
+        # a slow fire would point at the wrong leg.) Never fatal — the helper
+        # swallows its own read failures and an evening with no machine line
+        # still closes.
+        machine_acts = eod.compute_machine_acts(ws, since_ts, now_iso=now_iso,
+                                                window_source=window_source)
+        # Read INSIDE the phase (EODPHASE1 pins that a call outside one is
+        # work the instrument cannot see) and carried to the receipt below.
+        machine_window_source = machine_acts.get("window_source")
+        machine_window_since = machine_acts.get("window_since")
+        _p.count(out=len(wins.get("rows") or [])
+                 + len(machine_acts.get("rows") or []))
     with phases.phase(eod.PHASE_SLIPPED) as _p:
         slipped = eod.compute_slipped(
             brief_state=brief_state, morning=morning,
             todays_meetings=todays_meetings,
             processed_meeting_ids=processed_meeting_ids,
-            now_iso=now_iso, softened=softened,
+            now_iso=_local_today, softened=softened,
             # THE HONEST DENOMINATOR (EODLEDGER1). The lane handed over above
             # was ALREADY bounded by `cap_needs_attention`; without this the
             # slipped block would print "3 of 5" over a lane holding 41.
@@ -2723,8 +4911,17 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         # the morning can read one shape. Timed inside this phase rather
         # than growing EODPHASE1's pinned vocabulary. Best-effort: a plate
         # that cannot build comes back as the refusal shape, never a crash.
-        plate = _eod_plate_block(ws, now_iso=now_iso,
-                                 since_iso=closures.since)
+        #
+        # AND THE WINDOW IS THE FIRE'S ONE WINDOW (11c item 2). The header
+        # this block prints says "Your plate today", and so does the block
+        # four lines below it: on 2026-09-11 the header counted from the
+        # morning brief and printed `0 closed` directly above three lines
+        # naming ten closes. SURFACEFIX1 fix round 2 patched that by having
+        # this block borrow the machine-acts block's own instant; now there
+        # is only one instant on the fire and every reader — this one
+        # included — is handed it. Taken, never re-derived: re-deriving a
+        # window is exactly how these came apart.
+        plate = _eod_plate_block(ws, now_iso=now_iso, since_iso=since_ts)
     with phases.phase(eod.PHASE_TOMORROW) as _p:
         tomorrow = eod.compute_tomorrow(ws, for_date=tomorrow_date,
                                         calendar_events=calendar_events,
@@ -2773,6 +4970,24 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         decisions = eod.todays_decisions(ws, since_ts, now_iso=now_iso)
         notes = eod.todays_notes(ws, since_ts, now_iso=now_iso)
         arcs = eod.declared_arcs(ws, for_date=for_date, now_iso=now_iso)
+        # SPEC SURFACES2_11c Lane 3 item 5 — THE BEHAVIOUR THE SEAT NAMED,
+        # handed in as one more declared arc. `coaching_doors.surface_deltas`
+        # has promised this sentence to every seat that opens the coaching
+        # door ("the pattern line you already have, plus one sentence tying
+        # the day to what you are working on") and nothing produced it (11a
+        # N-13). It joins, ranks and renders through the arc read's own
+        # machinery — no second code path, no second template — and
+        # `eod_synthesis.behaviour_arc` returns None on an observed seat, so
+        # an ordinary evening is byte-identical to before.
+        #
+        # FIRST in the list, deliberately. The arc read names at most two arcs
+        # and spells the first one "The day went into {arc} — {what}."; on a
+        # seat that opened the door, the behaviour is the thing the seat asked
+        # to have the day read against, so it leads and a declared arc can be
+        # the one the cap drops. On every other seat this list is untouched.
+        _behaviour_arc = syn.behaviour_arc(ws)
+        if _behaviour_arc:
+            arcs = [_behaviour_arc] + list(arcs)
         # Tier 3 is ABSENT BY DEFAULT and this driver supplies no candidates:
         # a precedent echo needs a recorded precedent with an outcome, and
         # nothing in this fire's inputs carries one. The seam is here, wired
@@ -2803,6 +5018,11 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             slipped_rows=slipped.get("rows") or [],
             echo_candidates=(),
             held_ids=held_ids,
+            # SPEC SURFACEFIX1 5.2 / FIX ROUND 1 (F-3) — the day's machine
+            # acts, so the synthesis can say the machine's share of the drops
+            # by DOOR and skip any door the machine-acts block already
+            # narrated. One act, one sentence.
+            machine_acts=machine_acts,
             workspace_root=ws,
             # SPEC TOMFILT1 §2 — re-anchors the slipped line's due clause to
             # THIS fire's own clock, the same `now_iso` every other phase
@@ -2859,6 +5079,8 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "task_id": eod.TASK_ID,
         "mode": mode,
         "now": now_iso,
+        # HEAL1 — the catch-up's own record; see the morning pack's key.
+        "catch_up": catch_up,
         "for_date": for_date,
         "branch": branch,
         "alarm_lines": alarm_lines,
@@ -2874,6 +5096,12 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         "soften": soften,
         "score": score,
         "wins": wins,
+        # SPEC SURFACEFIX1 5.2 / E-3 — one line per machine batch, by door,
+        # with its undo phrase. A SCREEN block (`end_of_day.SCREEN_ORDER`),
+        # never a member of `render_order` / `BLOCK_ORDER` / `COMPUTED_ONLY`
+        # — those three are byte-pinned receipt vocabulary and this build
+        # changes exactly one of them (`coverage`, per R3) and no other.
+        "machine_acts": machine_acts,
         "slipped": slipped,
         "confirm": confirm,
         # PLATE1 night 2 — the day's delta in the plate shape (see the
@@ -2915,11 +5143,24 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         # no block of its own — says the same thing. Read STRICTLY off the
         # object each helper returned: a defaulted read would report the wrong
         # window rather than fail.
+        # WHICH WINDOW THE EVENING READ — ONE INSTANT, REPORTED ONCE (11c
+        # item 2). `since` is what every reader on this fire was handed and
+        # `source` is what that window IS; `anchor_ts` is the morning receipt
+        # the day floor was compared against, kept so a reader can still see
+        # whether a brief fired at all. The per-reader fields stay because
+        # receipts already on disk carry them and a reader joining on them
+        # must keep parsing — they now all say the same thing, which is the
+        # point, and `run_eod2_test` pins that they do.
         "window": {
-            "anchor_ts": since_ts,
+            "anchor_ts": anchor_ts,
+            "since": since_ts,
+            "source": window_source,
             "wins": wins["window_source"],
             "closures": closures.window_source,
             "closures_since": closures.since,
+            "machine_acts": machine_window_source,
+            "machine_acts_since": machine_window_since,
+            "opened": opened_window_source,
         },
     }
     if branch == "monday":
@@ -2933,6 +5174,74 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
     with phases.phase(eod.PHASE_RENDER) as _p:
         pack["confirm_ids"] = eod.confirm_ids_from_pack(pack)
+        # FOLD1A fix round 1 — the evening's ≤2 pre-picked confirms (R-N10-3,
+        # M's design rule 2026-09-06: "I don't mind a couple of those
+        # questions appearing on end of day"). Drawn from the Staff Meeting's
+        # OWN weekly five through `quiet`'s one shared budget — never a
+        # second allowance — so a `light` seat that answers two here has
+        # three left, and the Staff Meeting's page ceiling now reads that
+        # REMAINDER rather than the week's limit (fix round 2, REVIEW_FOLD1A
+        # R-1: `quiet.staff_meeting_question_ceiling`, which TTL1's copy of
+        # that function yields to at the merge). The Staff Meeting still does
+        # not DEBIT the budget — that half is FOLD1B's — so the arithmetic is
+        # enforced on one side only, and the honest worst case is 5 + 1, not
+        # 2 + 5. Drop-empty:
+        # an evening with nothing to ask renders nothing, which is the
+        # ordinary evening. THIS is the render, so `apply=True` — the budget
+        # is spent exactly when the question is shown, never on a compute.
+        # It never raises: `eod_confirm_candidates` degrades to no rows on an
+        # unreadable substrate, and the day must still close.
+        try:
+            import eod_question_budget as _eodq
+            _eodq_rows = _eodq.eod_confirm_candidates(ws, now_iso=now_iso,
+                                                      apply=True)["rows"]
+            # SPEC SURFACES2_11c Lane 3 item 3 — THE SELF-SCORED QUESTION,
+            # INSIDE THE TWO AND BEHIND THE CONFIRMS (ruling R-9). The
+            # confirms are computed and spent FIRST, and what the coach may
+            # ask is whatever the evening's two have left: an evening with
+            # two confirms due asks no coaching question at all, which is the
+            # whole of the ruling. An observed seat gets no slot, so this call
+            # returns nothing and the block is byte-identical to yesterday's.
+            _coach_q = _eodq.eod_coach_candidates(
+                ws, for_date=for_date, n_confirms=len(_eodq_rows),
+                now_iso=now_iso, apply=True)
+            pack["eod_coach_questions"] = {
+                "slots": _coach_q["slots"], "shape": _coach_q["shape"],
+                "n": len(_coach_q["rows"]),
+                "behaviour": _coach_q["behaviour"]}
+            pack["eod_questions"] = _eodq.render_eod_questions(
+                list(_eodq_rows) + list(_coach_q["rows"]))
+            # FIX ROUND 2 (REVIEW_FOLD1A R-2) — THE ANSWER PATH. The block is
+            # also posted as a two-row tap card, so the pre-picked answer is
+            # ONE TAP (DESIGN_RULE §2) rather than a sentence naming a phrase
+            # nothing claimed. Through the canonical transport, which runs
+            # every gate; drop-empty and never fatal — an evening whose card
+            # cannot render still posts the text block, whose own footer names
+            # the numbered typed answers and `needs your call`.
+            if pack["eod_questions"].get("rows"):
+                _q_transport = _eodq.render_question_widget(ws, _eodq_rows)
+                # SPEC SURFACEFIX1 5.3 / amendment E-5 — SERIALISE AT THE
+                # WRITE. `widget_transport.render_and_persist` returns a real
+                # `Path` under `transport["path"]`, and this pack is handed to
+                # `json.dumps` twice: once for the audit copy (swallowed —
+                # which is why nobody saw it) and once for the CR-EOD-PACK
+                # line the orchestrator reads. On 2026-09-13 the second one
+                # raised `TypeError: Object of type PosixPath is not JSON
+                # serializable` and the fire printed a traceback instead of a
+                # day-close. The board branch has always done exactly this
+                # `str()` at ITS write; this is the same fix at the other one.
+                # `default=str` on both dumps is the belt below; this is the
+                # braces, and it is the one that keeps the pack's own shape
+                # honest (a string is what every reader of this field wants).
+                if isinstance(_q_transport, dict) and "path" in _q_transport:
+                    _q_transport = dict(_q_transport)
+                    _q_transport["path"] = str(_q_transport["path"])
+                pack["eod_questions"]["transport"] = _q_transport
+        except Exception:  # noqa: BLE001 — the day closes either way
+            pack["eod_questions"] = {"lines": [], "questions": [], "n": 0,
+                                     "rows": []}
+            pack["eod_coach_questions"] = {"slots": 0, "shape": "observed",
+                                           "n": 0, "behaviour": ""}
         # CUT-PLATE — THE SCREEN, composed in code (`end_of_day.SCREEN_ORDER`):
         # the plate's eod cut leads, the synthesis follows, the coach's delta,
         # a STATED tomorrow as fact (never the proposal), the sign-off, and
@@ -3005,6 +5314,10 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         )
         if scannable.strip():
             validate_chat_output(scannable)
+            # FIX ROUND 1, REVIEW M-2 — the day close composes text too, and
+            # it now runs the catch-up moments before it does. Same fence as
+            # the brief's, on the same composed string the leak scan reads.
+            assert_no_catchup_line(scannable, where="end-of-day")
         _p.count(out=len(pack["confirm_ids"]))
 
     # EODPHASE1 — the timings ride the pack so the receipt writer can lift
@@ -3023,7 +5336,8 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = now_iso[:19].replace(":", "-")
         atomic_write_text(out_dir / f"end-of-day-pack-{stamp}.json",
-                          json.dumps(pack, indent=2, ensure_ascii=False))
+                          json.dumps(pack, indent=2, ensure_ascii=False,
+                                     default=str))
     except Exception:
         pass  # the pack in hand is what matters; the audit copy is best-effort
 
@@ -3037,8 +5351,14 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 # surface -> the canonical receipts.py task its fire receipts belong to.
 _SURFACE_TASKS = {"commitments": "commitment-triage",
                   "plate": "commitment-triage",       # PLATE1 — My Plate IS the triage widget
+                  "plate-page": "commitment-triage",  # R-N10-1 — the same surface's working page
+                  "show-parked": "commitment-triage",  # the door to what the page held back
                   "staff-meeting": "staff-meeting",
                   "waiting-on": "waiting-on",   # FB-15 (CTS1 taskId)
+                  # SPEC SURFACEFIX1 5.5 — `show scheduling`'s route.
+                  # A reading surface off the plate's own SCHEDULE block,
+                  # so its fire receipts belong to the same task.
+                  "schedule": "commitment-triage",
                   "my-plate": "my-plate"}       # FB-plumbing item 6 (CTS1 Surface 2)
 
 # RV-3 guard: a NON-MANUAL driver re-run this close to an already-written
@@ -3047,6 +5367,116 @@ _SURFACE_TASKS = {"commitments": "commitment-triage",
 # Manual fires never dedup: two back-to-back manual sweeps are two real
 # runs (F-08).
 _REFIRE_RECEIPT_GUARD = _dt.timedelta(minutes=15)
+
+
+#: WRAPSTAFF1 4.4 — the Staff Meeting's fallback window, in days. Seven, the
+#: number the orchestrator's bash snippet already used; named here so the
+#: label and the marker can never come from two different places again.
+STAFF_MEETING_FALLBACK_DAYS = 7
+
+#: The TWO sentences this surface may say about its window, and there are
+#: only two. Never both, never neither (ATTENDED_TEST_v5.31.0 B2.7: the block
+#: said "since the last staff meeting" over counts taken from a seven-day
+#: window — 17 / 12 / 42 where the ledger held 6 / 2 / 5 since Monday's fire,
+#: and 42 is exactly the seven-day figure).
+STAFF_MEETING_WINDOW_LABELS = {
+    "prior_receipt": "since your last staff meeting on {date}",
+    "fallback": "over the last seven days",
+}
+
+
+def staff_meeting_window(workspace_root, now_iso: str | None = None) -> dict:
+    """WRAPSTAFF1 4.4 — the window the Staff Meeting reports, and the words
+    it says about it, from ONE read.
+
+    Returns `{"since_ts", "label", "source"}`:
+
+      since_ts  the marker every count under the label is taken from — the
+                last `staff-meeting` receipt's own timestamp, or
+                `STAFF_MEETING_FALLBACK_DAYS` back when there is none.
+      label     one of `STAFF_MEETING_WINDOW_LABELS`, already filled in.
+      source    `"prior_receipt"` or `"fallback"` — which of the two it is,
+                so a caller never has to infer it from the words.
+
+    The computation used to be a bash snippet inside prose
+    (`orchestrator-staff-meeting.md`), and the label beside it was an
+    unconditional sentence naming the last meeting. Two writers, one claim:
+    the label described one window and the numbers came from the other. In
+    code there is one.
+
+    Read-only. Never raises into a fire: an unreadable receipt log falls back
+    to the seven-day window and says so in `source`.
+    """
+    from receipts import iter_receipts
+
+    now = _clock_now(workspace_root)
+    if now_iso:
+        try:
+            from event_time import parse_ts
+            parsed = parse_ts(now_iso)
+            if parsed is not None:
+                now = parsed
+        except Exception:  # pragma: no cover — a bad instant never blocks a fire
+            pass
+    prior = None
+    try:
+        for r in iter_receipts(workspace_root, task_ids=["staff-meeting"]):
+            if r.get("dt") is not None and r["dt"] < now:
+                prior = r
+    except Exception:  # pragma: no cover — the window must survive
+        prior = None
+    if prior is not None:
+        since = prior["dt"]
+        try:
+            from change_feed import _act_date
+            when = _act_date(workspace_root, since.isoformat())
+        except Exception:  # pragma: no cover
+            when = since.date().isoformat()
+        return {"since_ts": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "label": STAFF_MEETING_WINDOW_LABELS["prior_receipt"]
+                .format(date=when),
+                "source": "prior_receipt"}
+    since = now - _dt.timedelta(days=STAFF_MEETING_FALLBACK_DAYS)
+    return {"since_ts": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "label": STAFF_MEETING_WINDOW_LABELS["fallback"],
+            "source": "fallback"}
+
+
+def _view_fingerprint(view: dict) -> str:
+    """WRAPSTAFF1 4.6 — the identity of ONE rendered page-set.
+
+    Two receipts for one surface inside the re-fire guard are the same fire
+    re-rendering exactly when they stood over the same rows in the same
+    order. So the fingerprint is the section titles and the wire ids the view
+    carries, and nothing else: not the clock, not the header (which since
+    FOLD1-B is a constant), not the verbs or the copy on a row, which a
+    re-render may legitimately recompose without the page having changed.
+
+    A digest of the ids rather than the ids themselves, because this goes on
+    the permanent record and a receipt is not a place to copy a page-set to.
+
+    AN ID-LESS VIEW IS UN-DEDUPABLE, NEVER EQUAL (review F-4, 2026-09-17).
+    A row with no `n` used to contribute the empty string, so the fingerprint
+    degenerated to "section titles + row count" and two genuinely different
+    page-sets of the same size collided — which would dedup a real second
+    fire, the exact failure this guard exists to prevent, inverted. Every
+    shipped view carries `n` today, so this is latent; it is closed anyway,
+    because the next view is the one that will not. When ANY rendered row
+    lacks an id this returns `""`, and `_log_fire_receipt` reads an empty
+    fingerprint as "cannot tell these apart" and WRITES the receipt.
+    """
+    import hashlib
+
+    parts: list = []
+    for sec in view.get("sections") or []:
+        parts.append(str(sec.get("title") or ""))
+        for it in sec.get("items") or []:
+            key = (it or {}).get("n")
+            if key is None or str(key) == "":
+                return ""
+            parts.append(str(key))
+    joined = "|".join(parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 
 def _log_fire_receipt(workspace_root, surface: str, view: dict,
@@ -3070,13 +5500,43 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
     via = normalize_fired_via(fired_via)
     surfaced = sum(len(sec.get("items") or [])
                    for sec in view.get("sections") or [])
+    now = _clock_now(workspace_root)
+    # ONE ledger read and ONE digest per fire (review F-5): both branches
+    # need the recent receipts, and the manual branch used to compute the
+    # fingerprint twice — once to compare, once to stamp.
+    recent = iter_receipts(workspace_root, task_ids=[task_id],
+                           since=now - _REFIRE_RECEIPT_GUARD)
+    fp = _view_fingerprint(view)
     if via != "manual":
-        now = _clock_now(workspace_root)
-        recent = iter_receipts(workspace_root, task_ids=[task_id],
-                               since=now - _REFIRE_RECEIPT_GUARD)
         if any(r["fired_via"] != "manual" for r in recent):
             return {"task_id": task_id, "fired_via": via,
                     "surfaced": surfaced, "status": "deduped_refire"}
+    else:
+        # WRAPSTAFF1 4.6 — ONE RECEIPT PER FIRE, INCLUDING A MANUAL ONE.
+        #
+        # A manual fire is deliberately never deduped on the clock alone
+        # (F-08: two back-to-back manual sweeps are two real runs, and the
+        # second is often the point). The 09-15 on-demand Staff Meeting
+        # nevertheless wrote two identical receipts, 17609 and 17610
+        # (ATTENDED_TEST_v5.31.0 B2.7), because ONE fire re-rendered.
+        #
+        # So the dedup keys on the VIEW'S IDENTITY rather than on the clock:
+        # a second receipt for the same surface over the same page-set inside
+        # the guard is that fire rendering twice, and writes nothing. Two
+        # manual sweeps over a book that CHANGED have different fingerprints
+        # and still write two receipts — F-08 survives, by construction.
+        # An empty fingerprint means the page-set carries a row with no id
+        # and cannot be told from another (F-4): the dedup is OFF and the
+        # receipt is written, which is the safe direction.
+        for r in recent if fp else ():
+            if r["fired_via"] != "manual":
+                continue
+            if str((r["raw"].get("data") or {}).get("view_fingerprint") or "") == fp:
+                return {"task_id": task_id, "fired_via": via,
+                        "surfaced": surfaced, "status": "deduped_rerender"}
+    extra_data = dict(extra_data or {})
+    if fp:
+        extra_data["view_fingerprint"] = fp
     log_receipt(workspace_root, task_id, fired_via=via, surfaced=surfaced,
                 extra_data=extra_data or None)
     out = {"task_id": task_id, "fired_via": via, "surfaced": surfaced,
@@ -3088,9 +5548,36 @@ def _log_fire_receipt(workspace_root, surface: str, view: dict,
 
 _SURFACE_NAME_HINTS = {"commitments": "commitment-triage",
                        "plate": "commitment-triage",
+                       "plate-page": "commitment-triage",
+                       "show-parked": "commitment-triage",
                        "staff-meeting": "staff-meeting",
                        "waiting-on": "waiting-on",
+                       "schedule": "commitment-triage",
                        "my-plate": "my-plate"}
+
+#: R-N10-1 — surfaces that render ONCE and name a door for the rest, instead
+#: of paging. The board fits itself to the widget's size budget inside its own
+#: build, so `run_surface` hands it to the transport unpaged: a position line
+#: ("page 1 of 4") on a surface that has no page 2 is a lie the reader has to
+#: work out.
+_UNPAGED_SURFACES = frozenset({"plate"})
+
+
+def surface_for_reply(text):
+    """THE ROUTE for an in-chat reply on an open plate (REVIEW_ONEPLATE1
+    F-3; the scope round's open item 1).
+
+    `work my plate` -> the nine-row working page; `show parked` -> exactly
+    what that page held back. Both used to be answered by a paragraph of
+    the skill, and one of those paragraphs named a mechanism
+    (`preset="engaged"`) that rebuilt a different plate. A phrase that
+    opens a surface belongs in a table the driver reads, so the words and
+    the surface cannot drift apart.
+
+    Returns the surface name, or None when the reply is not a door.
+    """
+    from plate_view import reply_surface
+    return reply_surface(text)
 
 
 def run_watch_expiry_pass(workspace_root, *, now_iso=None) -> dict:
@@ -3164,12 +5651,32 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
     if surface == "commitments":
         return build_commitment_triage_view(ws, now_iso=now_iso)
     if surface == "plate":
+        # R-N10-1 (M, 2026-09-07) — THE DEFAULT PLATE RENDER IS THE BOARD:
+        # grouped by project (or by person where this workspace's brief is
+        # organised that way), one line per row, one tap, as many rows as
+        # the widget's size budget holds. The nine-row page with the full
+        # button set did not go away — it is `plate-page` below, behind
+        # `work my plate`.
+        from plate_view import plate_board_view
+        return plate_board_view(ws, now_iso=now_iso)
+    if surface == "plate-page":
         # PLATE1 — the triage widget renders THE plate (action block ->
         # project -> horizon, four verbs) through the one grouping +
         # renderer. `build_commitment_triage_view` stays only as the
         # BOARD1 artifact's data source until night 2 adopts the board.
+        # R-N10-1 moved this off the default and behind `work my plate`;
+        # nothing about the page itself changed.
         from plate_view import plate_data_view
         return plate_data_view(ws, now_iso=now_iso)
+    if surface == "show-parked":
+        # REVIEW_ONEPLATE1 F-3 — `show parked` is a ROUTE, not a paragraph.
+        # It renders exactly the rows the working page held back, off the
+        # same build of the same plate, with the same row numbers. The
+        # prose it replaces told the reader to rebuild the plate at
+        # `engaged`, which is a different plate with different counts and
+        # no cap at all.
+        from plate_view import parked_data_view
+        return parked_data_view(ws, now_iso=now_iso)
     if surface == "staff-meeting":
         return build_staff_meeting_view(ws, now_iso=now_iso,
                                         moves_rows=moves_rows,
@@ -3177,6 +5684,11 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
     if surface == "waiting-on":
         return build_waiting_on_view(ws, now_iso=now_iso,
                                      chase_rows=chase_rows)
+    if surface == "schedule":
+        # SPEC SURFACEFIX1 5.5 — `show scheduling`'s route. Gated like every
+        # other surface here: it goes out through `run_surface`, so the leak
+        # gate and the transport see it.
+        return build_schedule_view(ws, now_iso=now_iso)
     if surface == "my-plate":
         return build_my_plate_view(ws, now_iso=now_iso,
                                    status_rows=status_rows,
@@ -3184,7 +5696,8 @@ def _build_surface_view(surface: str, ws, *, now_iso, moves_rows,
                                    promised_cap=promised_cap)
     raise SystemExit(
         f"unknown surface {surface!r} "
-        "(supported: commitments, plate, staff-meeting, waiting-on, my-plate)")
+        "(supported: commitments, plate, staff-meeting, waiting-on, "
+        "schedule, my-plate)")
 
 
 def run_board(workspace_root, *, now_iso: str | None = None,
@@ -3295,7 +5808,8 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
                 promised_cap: int = _MP_PROMISED_CAP,
                 fired_via: str | None = None,
                 rerun_of: str | None = None,
-                pageset_ttl_minutes: int | None = None) -> dict:
+                pageset_ttl_minutes: int | None = None,
+                extra_receipt_data: dict | None = None) -> dict:
     """Build the view + render_and_persist ONE page. Returns the transport
     dict (html / pagination / path). The CLI wraps this; tests call it
     directly.
@@ -3344,7 +5858,18 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     producer on the path they actually take (RUNNOW1 F-1). A receipt carrying
     the field is excluded from the
     served-slot marker, which is what lets the next press render (DD-5).
-    Ignored when no receipt is written (pages 2+, or no `fired_via`)."""
+    Ignored when no receipt is written (pages 2+, or no `fired_via`).
+
+    `extra_receipt_data` (S-13, PARALLEL-B lane A, 2026-09-24): ADDITIVE keys
+    a driver hands in for the receipt's `extra_data` — the delivery flags
+    (`receipt_flags`: widget_posted / text_fallback) a run with no widget
+    tool records. When given, the receipt ALSO carries `page_sha256` and
+    `page_bytes` of the page AS LANDED (read back from disk after the persist,
+    before the receipt), which is what makes "the receipt is written after
+    the page" observable; and the built view rides back on
+    `transport["view"]` so the driver can compose the text form from the SAME
+    rows the widget shows. None (every existing caller) changes nothing:
+    receipt, transport and page-set are byte-identical to before."""
     from page_snapshot import (DEFAULT_TTL_MINUTES, applied_ids_since,
                                load_pageset, save_pageset)
     from widget_transport import render_and_persist
@@ -3360,7 +5885,8 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     if surface not in _SURFACE_NAME_HINTS:
         raise SystemExit(
             f"unknown surface {surface!r} "
-            "(supported: commitments, plate, staff-meeting, waiting-on, my-plate)")
+            "(supported: commitments, plate, staff-meeting, waiting-on, "
+        "schedule, my-plate)")
     # MOUNT-FRESHNESS PREFLIGHT — the widget path's half of the same gate
     # `run_board` runs. This entry point is write-chained (a page-1 fire with
     # `fired_via` appends the surface's receipt), so a stale view here is the
@@ -3375,7 +5901,7 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
     suppress_ids: set = set()
     snap_note: dict = {}
 
-    if page > 1:
+    if page > 1 and surface not in _UNPAGED_SURFACES:
         view, meta = load_pageset(ws, surface, ttl_minutes=ttl,
                                   now_iso=now_iso)
         if view is not None:
@@ -3458,12 +5984,79 @@ def run_surface(surface: str, workspace_root, *, page: int = 1,
         wrapper="fragment",
         persist_dir=ws / "_hq" / ".system" / "widgets",
         name_hint=name_hint,
-        page=page,
+        # R-N10-1 — the board renders once; it already fit itself to the
+        # widget's size budget and named the doors to what did not fit.
+        page=None if surface in _UNPAGED_SURFACES else page,
         page_size=page_size,
         suppress_ids=suppress_ids or None,
     )
     if snap_note and transport.get("pagination") is not None:
         transport["pagination"].update(snap_note)
+    # HEAL1 behaviour 4 — THE READ SURFACES SAY ONE SENTENCE AND RUN NOTHING.
+    #
+    # `staff meeting` and `what's on my plate` are glances at the reader's own
+    # rows. A multi-minute upkeep pass in front of a glance is not a win, so
+    # these two never catch up (`maintenance_dispatcher.CATCH_UP_READ_SURFACES`
+    # is where that is written down, and `catch_up_plan` refuses them by name).
+    # What they DO carry is the one honest sentence, when there is one.
+    #
+    # It rides the TRANSPORT, not the view: the view is frozen as the page-set
+    # and handed to the renderer, and a sentence about the plumbing is neither
+    # a row nor part of a page's identity. Absent entirely when there is
+    # nothing to say, so no fire gains a key it has no opinion about.
+    if surface in _READ_SURFACE_TRUTH_LINE:
+        try:
+            _truth = maintenance_truth_line(ws, now_iso=now_iso)
+        except Exception:  # noqa: BLE001 — a sentence never costs a surface
+            _truth = ""
+        if _truth:
+            transport["maintenance_line"] = _truth
+    # FOLD1-B 1.2 item 4(a) — THE ASK-ONCE MARKER, WRITTEN AFTER THE POST.
+    #
+    # Second half of the same scope exception the staff-meeting view builder
+    # carries (see the block there): the rehomed overdue question is asked on
+    # this surface now, and the rest-until-answered fold keys on the marker
+    # whichever surface asks writes. AFTER `render_and_persist`, never
+    # before — the mark means the customer has been asked, and marking a row
+    # before the question reaches the screen rests a row nobody saw. Only
+    # page 1, because that is the fire that composed the section.
+    if surface == "staff-meeting" and page == 1 and isinstance(view, dict):
+        try:
+            from needs_review_queue import (OVERDUE_SECTION_TITLE,
+                                            mark_overdue_asked)
+            for _sec in view.get("sections") or []:
+                # STARTSWITH, not equality: the page bound appends its own
+                # honest "showing N of M" clause to a section title it
+                # trimmed, and the marker must follow the section wherever
+                # the bound leaves it — and must mark only the rows that
+                # survived the trim, which is what the section now carries.
+                if str((_sec or {}).get("title") or "").startswith(
+                        OVERDUE_SECTION_TITLE):
+                    mark_overdue_asked(ws, _sec, now_iso=now_iso)
+                    break
+        except Exception as exc:  # pragma: no cover — never cost the post
+            sys.stderr.write(f"[surface_drivers] overdue marker skipped: "
+                             f"{exc}\n")
+    if extra_receipt_data is not None:
+        # S-13: the driver asked for the text form's facts. The view it was
+        # built from, and the page's landed bytes — read back AFTER the
+        # persist and BEFORE the receipt, so a receipt that names the page's
+        # sha is a receipt written after the page.
+        transport["view"] = view
+        landed_sha = None
+        landed_bytes = None
+        try:
+            import hashlib as _hashlib
+            _landed = Path(str(transport.get("path") or "")).read_bytes()
+            landed_sha = _hashlib.sha256(_landed).hexdigest()
+            landed_bytes = len(_landed)
+        except (OSError, ValueError):
+            pass
+        receipt_extra = dict(receipt_extra or {})
+        receipt_extra.update({k: v for k, v in extra_receipt_data.items()
+                              if v is not None})
+        receipt_extra["page_sha256"] = landed_sha
+        receipt_extra["page_bytes"] = landed_bytes
     if fired_via is not None and page == 1:
         # SPEC RERUNFAN1 — merged HERE rather than inside the page-1 view
         # build so it cannot depend on which path produced the view, and
@@ -3489,9 +6082,15 @@ def main() -> int:
         pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("surface",
-                    choices=["commitments", "plate", "staff-meeting",
-                             "waiting-on", "my-plate", "morning-brief",
-                             "end-of-day"])
+                    choices=["commitments", "plate", "plate-page",
+                             "show-parked", "staff-meeting", "waiting-on",
+                             "schedule",
+                             "my-plate", "morning-brief", "end-of-day"],
+                    help="`plate` is the default plate render — the BOARD, "
+                         "one look, one line a row (R-N10-1). `plate-page` "
+                         "is the nine-row page with the full button set, "
+                         "behind the reply `work my plate`. `show-parked` "
+                         "is the door to exactly what that page held back")
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--mode", default="scheduled",
                     choices=["scheduled", "manual"],
@@ -3561,6 +6160,8 @@ def main() -> int:
     ap.add_argument("--promised-cap", type=int, default=_MP_PROMISED_CAP,
                     help="my-plate only: Promised-group row cap (BUG-8330 "
                          "item 5); the footer names what's held back")
+    ap.add_argument("--triggered-by", default=None,
+                    help="the surface that asked for this run")
     ap.add_argument("--fired-via", default=None,
                     choices=["scheduled", "manual", "catchup"],
                     help="the fire's run mode (the orchestrator's Phase-2.9 "
@@ -3574,6 +6175,11 @@ def main() -> int:
                          "the NEXT press render; OMIT the flag on every "
                          "other tier")
     args = ap.parse_args()
+    # FIX3 F3-6: export what this run was asked by, so every composer
+    # below reads it from one place instead of being threaded through
+    # a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
 
     try:
         return _dispatch(args)
@@ -3594,9 +6200,27 @@ def _dispatch(args) -> int:
         # banner, nothing to post to show_widget. The brief is read-only by
         # construction. (The banner + CR-WIDGET-HTML markers below this
         # branch still serve commitments / staff-meeting unchanged.)
-        pack = build_morning_brief_pack(args.workspace, mode=args.mode,
-                                        now_iso=args.now)
-        print("CR-BRIEF-PACK: " + json.dumps(pack, ensure_ascii=False))
+        # SPEC SURFACEFIX1 5.3 / FIX ROUND 1 (reviewer F-2) — THE BRIEF FAILS
+        # IN ONE SENTENCE TOO. This lane put three RAISING fences inside
+        # `build_morning_brief_pack` (`assert_single_open_count`,
+        # `assert_brief_never_asks`, `assert_no_reachability_line`) and left
+        # this branch unwrapped, so a tripped fence printed a full traceback
+        # at the reader — file names, function names, the exception class and
+        # the offending customer sentence quoted back verbatim. That is leak
+        # 10's class, newly opened on the morning by the lane that closes it
+        # on the evening. Same three lines as the End of Day branch below,
+        # same constants, same receipt.
+        try:
+            pack = build_morning_brief_pack(args.workspace, mode=args.mode,
+                                            now_iso=args.now)
+            line = "CR-BRIEF-PACK: " + json.dumps(pack, ensure_ascii=False,
+                                                  default=str)
+        except Exception as exc:  # noqa: BLE001 — one sentence, never a trace
+            log_surface_failed(args.workspace, SURFACE_FAILED_BRIEF, exc,
+                               mode=args.mode, now_iso=args.now)
+            print(SURFACE_FAILED_LINES[SURFACE_FAILED_BRIEF])
+            return 1
+        print(line)
         return 0
 
     if args.surface == "end-of-day":
@@ -3619,12 +6243,37 @@ def _dispatch(args) -> int:
         if args.gaps_json:
             connector_gaps = json.loads(
                 Path(args.gaps_json).read_text(encoding="utf-8"))
-        pack = build_end_of_day_pack(
-            args.workspace, mode=args.mode, now_iso=args.now,
-            close_result=close_result, calendar_events=calendar_events,
-            calendar_available=calendar_available,
-            connector_gaps=connector_gaps, lateness=lateness)
-        print("CR-EOD-PACK: " + json.dumps(pack, ensure_ascii=False))
+        # SPEC SURFACEFIX1 5.3 / amendment E-5 (Part E 09-13, leak 10) — THE
+        # FIRE FAILS IN ONE SENTENCE. On 2026-09-13 this call raised
+        # `TypeError: Object of type PosixPath is not JSON serializable` and
+        # the fire printed the TRACEBACK: `surface_drivers.py`, the pack's own
+        # key path, a module name and two Windows paths, all on the customer's
+        # screen (leak 10) — and then the chat HAND-BUILT the day-close from
+        # the ledger, which is the canonical-path-fails / freelance-substitutes
+        # class this build exists to close.
+        #
+        # Both halves are fixed here. The serialisation is fixed at the write
+        # (`str()` on the transport path above, `default=str` on both dumps).
+        # This is the floor under that: ANY exception out of the builder or
+        # the dump renders ONE plain sentence and writes a `surface_failed`
+        # receipt, and nothing else reaches the screen — no path, no module,
+        # no class name, no traceback. The orchestrator prose says the rest:
+        # a fire that printed this sentence is DONE, and hand-building the
+        # pack is forbidden.
+        try:
+            pack = build_end_of_day_pack(
+                args.workspace, mode=args.mode, now_iso=args.now,
+                close_result=close_result, calendar_events=calendar_events,
+                calendar_available=calendar_available,
+                connector_gaps=connector_gaps, lateness=lateness)
+            line = "CR-EOD-PACK: " + json.dumps(pack, ensure_ascii=False,
+                                                default=str)
+        except Exception as exc:  # noqa: BLE001 — one sentence, never a trace
+            log_surface_failed(args.workspace, SURFACE_FAILED_EOD, exc,
+                               mode=args.mode, now_iso=args.now)
+            print(SURFACE_FAILED_LINES[SURFACE_FAILED_EOD])
+            return 1
+        print(line)
         return 0
 
     if args.fmt == "artifact":
@@ -3695,13 +6344,69 @@ __all__ = [
     "NUMBER_LINE_RE",
     "MountStaleError",
     "assert_number_leads",
+    # SPEC SURFACEFIX1 5.1 / 5.4 — the brief's own fences.
+    "BriefCountError",
+    "OPEN_COUNT_SHAPES",
+    "DISTINCT_QUESTION_SHAPES",
+    "distinct_question_counts_in",
+    "open_counts_in",
+    "headline_number_in",
+    "assert_single_open_count",
+    "ReachabilityLineError",
+    "REACHABILITY_SHAPES",
+    "reachability_lines_in",
+    "catchup_plumbing_lines_in",
+    "CATCHUP_PLUMBING_SHAPES",
+    "CATCHUP_TYPED_PHRASE_RE",
+    "blank_typed_phrase",
+    "SURFACE_FORBIDDEN_SHAPES",
+    "assert_no_reachability_line",
+    "assert_no_catchup_line",
+    "CatchUpPlumbingLineError",
+    "maintenance_catch_up",
+    "MORNING_BRIEF_SURFACE",
+    "resolved_host_mode",
+    "maintenance_truth_line",
+    "MAINTENANCE_TRUTH_FALLBACK",
+    "MAINTENANCE_TRUTH_HOLE_RE",
+    "MAINTENANCE_TRUTH_WEEKDAYS",
+    "maintenance_truth_has_hole",
+    "assert_brief_never_asks",
+    "assert_no_coaching_leak",
+    "BriefCoachingLeakError",
+    "BRIEF_SURFACE_TAG",
+    "BRIEF_COACHING_SURFACE_TAG",
+    "brief_surface_tag",
+    "brief_coaching_scan_target",
+    "READER_SPAN_OPEN_FALLBACK",
+    "READER_SPAN_CLOSE_FALLBACK",
+    "reader_span_marks",
+    "as_reader_words",
+    "strip_reader_marks",
+    "DAY_INTENT_TERMINALS",
+    "BriefAsksError",
+    "interrogatives_in",
+    "PLATE_HEADLINE_DEGRADED",
     "count_shaped_before_number",
+    # SPEC_SURFACES2_11c BRIEF2 — the brief's CHANGED partition, line two,
+    # the one coaching line, the explain-once line.
+    "BRIEF_CHANGED_ORDINARY_CAP",
+    "CHANGED_MACHINE_BATCH_CATEGORIES",
+    "split_machine_batch_lines",
+    "brief_changed_lines",
+    "BRIEF_DAY_INTENT_LINE",
+    "DAY_INTENT_JOIN",
+    "brief_day_intent_line",
+    "BRIEF_COACHING_LINE",
+    "brief_coaching_line",
+    "brief_explain_once_line",
     "build_commitment_triage_view",
     "build_end_of_day_pack",
     "build_morning_brief_pack",
     "build_my_plate_view",
     "build_staff_meeting_view",
     "build_waiting_on_view",
+    "build_schedule_view",
     "refuse_if_mount_stale",
     "run_board",
     "run_surface",

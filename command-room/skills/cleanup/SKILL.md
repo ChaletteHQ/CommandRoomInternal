@@ -24,7 +24,7 @@ When a step below says AUTOMATIC, run it. The safety copy, the archive, and the 
 - **Use cleanup for:** the weekly (or on-demand) workspace maintenance pass — safe auto-fixes, substrate self-heal, and the short Monday note. Retired audit phrases ("weekly audit", "system review", "scan everything") redirect here.
 - **Use `weekly-recap` for:** "weekly recap" / "what happened this week" — the week-in-review narrative, not maintenance.
 - **Use `system-health` for:** "health check" / "system health" / "is everything running" — the scheduled-task watchdog (moved out of cleanup in Phase 3/W1).
-- **Use `level-up-command-room` for:** "level up command room" — the sidebar dashboards (install / refresh Workspace Map, Quick Commands, My Open Commitments).
+- **Use `level-up-command-room` for:** "level up command room" — it answers the one dashboards sentence (dashboards live in chat now; nothing installs into a sidebar).
 - **Does NOT fire on** bare "clean up [a thing]" (an email, a doc, a list) — only workspace-shaped cleanup fires it.
 - **Maintenance-shaped phrases run Step 0 below, NOT a cleanup pass** — "run my maintenance", "run maintenance now", "run maintenance", bare "maintenance" (EW2+T, F-14).
 
@@ -32,11 +32,44 @@ When a step below says AUTOMATIC, run it. The safety copy, the archive, and the 
 
 Post-MAINT1, the bridge and the install ritual teach the customer they have a "Maintenance" background task — so the natural phrases "run my maintenance" / "run maintenance now" / bare "maintenance" mean **fire that task's due-jobs engine now**, not "run a full workspace cleanup" (the live D8 fire ran a duplicate cleanup pass instead; harmless but not what was asked). When the firing phrase is maintenance-shaped:
 
+**Run each job by its OWN leg, not by its name (FIX3 F3-6, ruling R-RW-5).** Every row in `plan["jobs"]` carries `leg` — the whole command, already ending `--fired-via manual --triggered-by <this surface>` — and `env`, the same two answers as variables. On a legacy or local seat, paste `job["leg"]` verbatim; where the job is a SKILL rather than a script `leg` is empty, and then export `job["env"]` before running it. On a merged seat the plan line is what crosses the door and the layer forwards the same two variables. This is not decoration: on 2026-09-21 four upkeep jobs ran inside a hand-typed morning brief and all four recorded themselves as a scheduled fire, because "execute each job's skill end to end" gives a flag nowhere to go.
+
+**This engine now has a second caller (HEAL1).** `morning briefing`, `end of day` and `weekly recap` ask the same dispatcher the same question before they gather, run what it returns, and receipt it once with `triggered_by` naming the surface — see `maintenance_dispatcher.catch_up_plan`. Nothing below changes: this step is still the door someone walks through when they type the words, and it still runs the WHOLE registry. Two things follow from having two callers, and both are already in code rather than in this paragraph: a catch-up minutes ago means this fire finds nothing due (the receipt is the same receipt), and the Sunday family runs from here and from `weekly recap` and from nowhere else (R-M2).
+
 1. Resolve the workspace + plugin root per CONTRACT Rule 22 (multiple plugins may be installed — filter the plugin_* candidates by this plugin's name, the MAINT-RUN discovery wobble).
-2. Ask the dispatcher what is due — NEVER judge due-ness yourself: `python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` and hold its JSON plan (`due` is ordered; the order is the contract).
-3. **Nothing due →** one honest plain-English line built from the plan — *"Nothing's due — everything ran on schedule. Next up: [job] at [its next slot]."* — and STOP. Write NO `maintenance_run` receipt for a nothing-due manual poke: the watchdog reads `maintenance_run` for task freshness, and an empty manual receipt could mask a broken scheduled task.
-4. **Jobs due →** execute each due job's skill END-TO-END in plan order, one at a time, never in parallel — identical rules to the registered task prompt: a job COMPLETED only when its OWN receipt validator confirms its substrate receipt; an unreceipted job goes in jobs_failed and stays due (self-healing). Then finish with ONE `maintenance_dispatcher.maintenance_receipt(workspace_root, jobs_due=…, jobs_completed=…, jobs_failed=…, skipped_disabled=…, fired_via="manual")` and confirm it landed via `validate_maintenance_ran`.
-5. Chat output: one plain-English line per job that ran ("Reconciled your sent mail — closed 1, opened 2." / "Weekly cleanup done — the Monday note has 2 items."), plus each job's own must-surface lines per its SKILL.md. No event-type names, no receipts narration.
+2. Ask the dispatcher what is due — NEVER judge due-ness yourself: `python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` and hold its JSON plan (`due` is ordered; the order is the contract). Where the files are on another machine the same question goes through the access layer — `maintenance_dispatcher:catch_up_plan` with `"surface": "run-maintenance"`, one verb, one call, rendered by `workspace_access.py plan run_helper` per the Access preamble. That surface is exempt from the two gates the typed surfaces get: somebody asked, so it plans the whole registry whether or not the last slot was served. In the cloud container the plan comes back with every job that carries an `--apply` leg held out under `refused_container` — the APPLY class (`maintenance_dispatcher.apply_class_jobs`), which is NOT every job that writes: a job whose only write is its own receipt still runs there. Those held jobs stay owed, and `refused_line` is the one sentence to say about it here — plainly, once, with no count and no part named. Nothing here passes a host mode: this step is the door a person types their way through, and the resolution `surface_drivers.resolved_host_mode` does belongs to the typed read surfaces that call `maintenance_catch_up`, not to this one.
+3. **Nothing due →** the composer's nothing-due line (step 5 below builds it from the same plan) and STOP. Write NO `maintenance_run` receipt for a nothing-due manual poke: the watchdog reads `maintenance_run` for task freshness, and an empty manual receipt could mask a broken scheduled task.
+4. **Jobs due →** execute each due job's skill END-TO-END in plan order, one at a time, never in parallel — identical rules to the registered task prompt: score each job through `maintenance_dispatcher.job_counts_as_complete(job_id, receipt_validated=…, run_reported_nothing_due=…)` — ordinarily a job is COMPLETED only when its OWN receipt validator confirms its substrate receipt, and an unreceipted job goes in jobs_failed and stays due (self-healing); the one exception the function knows is a job in `maintenance_dispatcher.QUIET_RUN_JOBS` whose own return said there was nothing due, because those write no receipt on a quiet run by design. Never widen that yourself: reporting a correct nothing-to-do run as a failure is what put seven phantom question-expiry failures on the maintenance report. Then finish with ONE `maintenance_dispatcher.maintenance_receipt(workspace_root, jobs_due=…, jobs_completed=…, jobs_failed=…, skipped_disabled=…, fired_via="manual")` and confirm it landed via `validate_maintenance_ran`.
+5. **Chat output comes from the composer, not from the plan (SPEC FIXTRAIN 6.2 — MANDATORY).** On 09-13 this fire answered with an "Internal record" paragraph: a raw record number, a command-line flag, the job ids verbatim and a field name with UNKNOWN after it. All four were the plan dictionary being read out loud. **Never print that dictionary, in whole or in part, in any shape** — it is a machine's report to another machine. Build the answer from it instead, and print what comes back:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import maintenance_answer
+print(maintenance_answer(plan, completed=jobs_completed, failed=jobs_failed,
+                         findings=findings, workspace=workspace_root))
+```
+
+`findings` is a list of already-plain sentences about the CEO's own items ("Two promises to Acme have gone quiet for six weeks.") — each job's own must-surface lines per its SKILL.md go here. The composer covers all four cases (nothing due, a quiet run, findings, a job that did not finish), says every job in words rather than by id, and refuses rather than returning if a finding you handed it carries an internal name. There is no "Internal record" section, no receipts narration, and no event-type name anywhere in this answer.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. The Run Now answer was clean on 09-15 and the Staff Meeting's plumbing narration ("emit run", "seven-day dedupe") was not — same class, one turn later. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post
+# `composed_text` is `maintenance_answer`'s return, in this same run -
+# relay it, never retype it. The door vouches a relay LINE FOR LINE
+# against what a composer here actually returned, so a sentence you
+# wrote yourself cannot ride in as one. Nothing here is the CEO's own
+# typed text, so no rows are named; where a section IS composed around
+# their words it passes `customer_rows` and the door reads the words
+# off those rows itself (see the undo receipt in workspace-manager).
+print(post(whole_reply, surface="maintenance", workspace=workspace_root,
+           relayed=composed_text))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
 ## Step 0b — "roll over my session notes" (the ATTENDED notes pass; runs INSTEAD of the phases below)
 
@@ -198,6 +231,50 @@ print('pruned', len(pruned), 'stale read-alarm sidecars')
 "
 ```
 
+11a. **What a refused delete does, and the ONE delete ask per session** (DEL1, gap analysis row 9 + §0.26). On a merged seat this workspace is reached from a sandbox, and a delete there is REFUSED until the customer grants it — `PermissionError`, every time, not now and then. Two halves, and only the second one involves the customer:
+
+  - **The fallback is automatic and asks nothing.** Every runtime delete in Command Room goes through `shared/scripts/delete_grant.py::remove_or_move_aside`: it tries the delete, and when the mount refuses it RENAMES the file aside (`.stale.<epoch>.<pid>`, or `.archived.<epoch>` where the content already reached its new home), says one line naming the file, and never raises. The operation around it finishes — the profile is restored, the notes are written, the reconfigure applies, the rollback completes — and no live reader still sees the file. Nothing in this rule, and nothing anywhere else in this skill, needs permission for any of that.
+  - **The ask happens at most ONCE per session, only from this skill, and only on a seat that HAS the tool.** `device_request_delete_permission` is a device-bridge tool: it exists on a merged seat and NOWHERE else, so on a legacy Cowork seat or a Claude Code seat there is nothing to call and nothing is asked. It puts a consent card in front of the customer, so it is rationed in code, not by good intentions: `delete_grant.may_ask()` is the read — true at most once per session, on the merged seat only — and `delete_grant.mark_asked(outcome)` is the write, run AFTER the tool comes back, so a seat with no such tool can never spend the session's one ask on a call that did not happen. **No other skill may name or call that tool** — `tests/run_del1_test.py` fails the build on a second home for it.
+
+Run the block below. It reports what is past its keep and answers whether an ask is allowed; it spends nothing:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import cleanup_actions as ca, delete_grant as dg
+report = ca.runtime_cache_report('<workspace_root>')
+past_keep = len(report['retire'])
+gate = dg.ask_gate() if past_keep else {'may_ask': False, 'reason': 'nothing_past_keep'}
+print(json.dumps({'past_keep': past_keep, 'may_ask': gate['may_ask'],
+                  'why': gate['reason'], 'seat_has_tool': dg.ask_is_available(),
+                  'state': dg.grant_state()}))
+"
+```
+
+  - `may_ask` **false** → do not ask, this run or any later one in this session, and do not name the tool. Nothing is deleted; every delete is the move-aside above. Put `why` into `actions_taken[]` and nowhere else: `seat_has_no_tool` is the ordinary answer on a legacy or local seat, `no_session_identity` means this seat has the tool but nothing in it names the session — the two blocks here are two separate programs, so a ration nothing can carry between them is not spent at all (fix round 2, finding M-5) — and `already_asked_this_session` is the ration doing its job. **None of the three is a fault and none of them is ever said to the customer.**
+  - `may_ask` **true** → call `device_request_delete_permission` ONCE, for the workspace root, with a one-sentence plain-English reason ("old copies of my own working files are piling up and I can only clear them with your say-so"). Then record what came back — granted, declined, or no answer at all — so the Monday note can say it and the ration knows the answer:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import delete_grant as dg
+print(json.dumps(dg.mark_asked('<granted|declined|not_asked>')))
+"
+```
+
+A **decline is a full answer, not a retry cue**: nothing is deleted for the rest of the run, nothing is asked again, and no line anywhere treats it as a problem — the move-aside was always the fallback and it works. Record the outcome (granted / declined / not asked) into `actions_taken[]` every week; the Monday note gets a line only when the customer actually answered (Beat 1 below, `delete_grant.monday_note_line()`). Never surface a path, a version number, or the tool's name to the customer.
+
+**The asides are counted, never collected** (fix round 1, M-2). On a delete-blocked mount every delete in Command Room becomes a rename, permanently, so the set-aside files accumulate under the system folder. This pass COUNTS them and says so once; it moves nothing and removes nothing — a sweep of them is a separate decision nobody has made. Run the block below and fold the line into the Monday note (Beat 1). Zero adds nothing.
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import delete_grant as dg
+report = dg.report_asides('<workspace_root>')
+print(json.dumps({'report': report, 'line': dg.asides_note_line(report)}))
+"
+```
+
 12. **CLAUDE.md edit guard** (CLAUDEMD1 Defect B): ANY pass in this skill that rewrites or compresses `CLAUDE.md` — including "tidy the quick-reference file" style compression — must snapshot the file text BEFORE editing and run `shared/scripts/claude_md_guard.py::report(before, after)` after. When `ok` is false, surface **every line in `removed` verbatim** in the session output and the Monday note — by content, never as a count ("removed 3 lines" is the bug, not the report). For each line in `removed_rules` (imperative operating instructions — the draft-posture class that was silently deleted 2026-07-29): restore it verbatim, or refuse the compression for that section and say why. Compression may reword; it may not drop. A backup on disk is recovery, not disclosure — writing one does not satisfy this rule. Generated `LIVE-STATE` blocks are machine-owned (render_claude_md redraws them) and are outside this guard by construction; regenerate them via `shared/scripts/render_claude_md.py` instead of editing them.
 
 13. **Dangling review-proposal drain** (REFINT1): review proposals whose commitment was never created are reachable by NO surface — the review tier and amnesty derive from `commitment` events, so a dangling row appears in no count and no list while "nothing has sat unanswered" reads literally true. The write gate refuses new ones since REFINT1; this drains the residue: each orphaned question is terminally closed with a `commitment_review_dismissed` carrying `resolution_reason: "target_never_created"` (an appended tombstone — nothing deleted, the proposal rows stay in history, and calibration readers know it is a system lapse, not your "not relevant"). The drain REFUSES to apply when the log has unparseable lines (`refused: "unparseable_lines"` in its result) — surface that line in the Monday note and let the 3a/3b heal pass fix the corruption first; the drain catches up next week. Run the code block below; fold each returned line into `actions_taken[]` AND into the Monday note (Beat 1) — the note is the "surfaced once for a human" half, so the lines go in verbatim, by content, never as a bare count.
@@ -329,10 +406,130 @@ In the same pass, run the seq-prestamp lint (`wcl.lint_seq_prestamp('.')`) — i
 Historic duplicate seqs (pre-atomic-write window) are live ambiguity — a seq-alias closure resolves to EVERY commitment at that seq. This step detects and marks them additively; history is never rewritten:
 
 ```bash
-python3 shared/scripts/seq_health.py "<workspace_root>" --mark
+mkdir -p "<workspace_root>/_hq/tmp"
+DUP_REPORT_FILE="<workspace_root>/_hq/tmp/seq_health_dup_report.json"
+python3 shared/scripts/seq_health.py "<workspace_root>" --mark | tee "$DUP_REPORT_FILE"
 ```
 
-The `--mark` run appends one `seq_repaired` marker per NEWLY-found duplicated seq (the marker is the detector's own memory, so a known duplicate is never re-reported). If `n_new` is non-zero, add ONE plain-English line to the Monday note's "worth a glance" tier: *"Found N activity-log entries sharing a record number — marked them so they can't be confused for each other. New ones appearing would mean something's writing the log wrong; mention it to whoever set up your Command Room."* `n_new: 0` adds nothing.
+The `--mark` run appends one `seq_repaired` marker per NEWLY-found duplicated seq (the marker is the detector's own memory, so a known duplicate is never re-reported). If `n_new` is non-zero, add ONE plain-English line to the Monday note's "worth a glance" tier: *"Found N activity-log entries sharing a record number — marked them so they can't be confused for each other. New ones appearing would mean something's writing the log wrong; mention it to whoever set up your Command Room."* `n_new: 0` adds nothing. **This run's own JSON report is saved to `$DUP_REPORT_FILE`** (fix round 2, F-8) so rule 3d-quinquies below can read the SAME run's `n_new` instead of invoking `--mark` a second time — a second invocation would see every duplicate here as "already marked" (this run just marked it, moments ago) and would always report `n_new: 0`, even on the one week a duplicate is genuinely new. **The report file lives under the workspace itself, `<workspace_root>/_hq/tmp/`** (fix round 3, review finding F-12, MED) — not under `${CLAUDE_CODE_TMPDIR:-/tmp}` as fix rounds 1–2 had it. `_hq/tmp/` is already one of this plugin's own listed internal scratch paths (`CONTRACT.md`); resolving the SAME literal `<workspace_root>`-relative path in both this bash block and 3d-quinquies' below means there is exactly ONE path resolution shared by both halves, not two independent ones that can disagree. The two independent ones DID disagree on a Windows dev box with `CLAUDE_CODE_TMPDIR` unset: bash's `${CLAUDE_CODE_TMPDIR:-/tmp}` resolves through the MSYS mount to the real filesystem temp directory, while the embedded Python's `open('/tmp/...')` resolves the same literal string relative to the current drive instead — two different files, every single fire, so 3d-quinquies' read below always failed on that path. A workspace-relative path has no environment variable to disagree about.
+
+### 3d-quater. Missing-entry detector (LEDGERFENCE1, recurring — CONTRACT Rule 31)
+
+A duplicate entry number means two events were written with the same number. A HOLE is the opposite: numbers that are not in the file at all (2026-09-07: a chat cleaning up its own re-run backed the log up and deleted twelve lines, leaving 15555 → 15568; the health check said nothing because it read duplicates and not holes). **Not every hole is a removal** — `scan_gaps` classifies each one, and only the class it cannot explain (`removed`) is ever spoken about: a re-based counter, numbers one append took and did not use, the product's own recorded repair work, and numbers taken by a run whose lines never reached this copy are all named and none of them reach the note. Same detect-mark-report shape, same append-only posture — the marker is a memory, it does not touch the hole:
+
+```bash
+python3 shared/scripts/seq_health.py "<workspace_root>" --gaps --mark
+```
+
+The `--gaps --mark` run appends one `seq_gap_marked` marker per NEWLY-found stretch of missing entry numbers, WHATEVER its class (`detect_and_mark_gaps`), so a known stretch is never re-reported and no line repeats the following Monday. If `n_new` is non-zero, add the report's own `notice` string — `seq_health.gap_notice(report)`, composed in code and relayed VERBATIM, never re-worded, never trimmed to one class — to the Monday note's "worth a glance" tier. It is one plain sentence per class present: a removal first, then a repair, then a restarted numbering. `n_new: 0` adds nothing. Never try to fill a stretch, restore a backup, or reconstruct the missing entries: they are gone, and the only honest act is to say so.
+
+### 3d-quinquies. The morning brief's health block, relocated here (HEALTH1, 2026-09-07)
+
+**M ruled, reading his own morning brief:** *"this should not be shown."* The substrate-alarm line, the daily watchdog pointer, the dark-surface line and the schedule-refresh announcement used to render on the morning brief (CUT-PLATE moved them from the top to the end; M's ruling takes them off that surface entirely, in full, for all four kinds). None of it goes unreported: this weekly pass is now the ONLY place any of the four render, and the only surface where a cleanup pass over the finding can actually be offered and run. Three of the four are new here; the watchdog finding was already covered in more detail by 3e-bis below (no change needed there beyond this citation). (Renamed from `3d-quater` to `3d-quinquies` at the LEDGERFENCE1 merge seam — that lane's own missing-entry detector lands first and keeps the `3d-quater` number; see that section elsewhere in this same maintenance pass. **Fix round 3 (review finding F-13, MED, at-merge).** This used to say "immediately above," which a clean auto-merge is not guaranteed to preserve — trial-merging this branch onto LEDGERFENCE1's current tip lands the sections `3d-ter → 3d-quinquies → 3d-quater → 3e`, with LEDGERFENCE1's section AFTER this one, not above it, and nothing reds to flag the mis-citation. The target order at merge is `3d-ter → 3d-quater → 3d-quinquies → 3e` — reorder by hand; no conflict prompts it. This citation no longer claims a position, so it stays true either way.)
+
+**Fix round 1 (review finding F-1, HIGH).** The first cut filtered the duplicate-entry line out of `alarms` UNCONDITIONALLY, on the premise that Rule 3d-ter's own report always speaks for that exact condition. It does not: 3d-ter's `n_new` counts only NEWLY-found duplicates on THIS run — a duplicate is marked the first week it is seen, and every week after that `n_new` is 0 and 3d-ter renders nothing, while the standing condition (two records still sharing one number) has not gone anywhere. On M's own 2026-09-07 book this is exactly seq 14391: marked once, `n_new: 0` on every later run, and the line was reported on NO scheduled surface at all — not the brief, not the day-close, not this weekly note — leaving only the on-demand `health check` to say it. The fix below reads the SAME run's `n_new` that 3d-ter just reported (passed through the `DUP_N_NEW` environment variable, never string-interpolated into the python source — the guard that census-scans every embedded snippet parses this block as real Python, and a shell substitution spliced into the middle of it would not parse) and filters the duplicate-entry line only when 3d-ter genuinely spoke this week (`n_new > 0`, so the two would otherwise say the same thing twice); every other week — the standing case, which is most weeks — the line renders here verbatim, because this is the only place left that still says so.
+
+**Fix round 2 (review finding F-8, MED).** Fix round 1's own wiring re-ran `seq_health.py --mark` a SECOND time here to get `DUP_N_NEW`, rather than reading 3d-ter's report — and a second `--mark` invocation always sees this run's duplicate as already marked (the FIRST invocation, in 3d-ter above, just marked it, moments earlier in the same fire), so `DUP_N_NEW` was pinned at 0 every run and the conditional filter could never fire in a real fire: on the one week a duplicate is genuinely new, 3d-ter's own line ("Found N activity-log entries…") rendered AND this rule's unconditional-in-practice fallthrough rendered the standing line too — the same condition, said twice, in two voices, in the same note. **`seq_health.py --mark` is invoked exactly ONCE per run, in 3d-ter above; this rule reads that SAME run's report from the file 3d-ter saved it to, never re-invoking the detector.**
+
+**Fix round 3 (review finding F-12, MED).** Fix round 2's own read had no `try`: an absent, empty, truncated, or key-less report file made `json.load(...)['n_new']` raise, the command substitution below it silently captured the EMPTY STRING, `export DUP_N_NEW=` set the variable to that empty string, and the composing block's `int(os.environ.get('DUP_N_NEW', '0'))` then raised on `int('')` — BEFORE printing anything — so the WHOLE relocated block (alarms, dark-surface, schedule-refresh, all three) rendered nothing at all, silently, on the one surface that still carries any of it. Proven four ways (the file absent; empty; truncated JSON; valid JSON missing the `n_new` key) and by two real routes in (3d-ter's own `seq_health.py --mark` dying on a non-UTF-8 ledger leaves a 0-byte report via `tee`; a stale report left over from an earlier week when this run's 3d-ter is skipped). The read below is now total — every one of those four shapes resolves to the plain sentinel `MISSING` instead of raising — and a `MISSING` read renders the rest of the block exactly as before PLUS one honest sentence saying the duplicate check itself did not run this time, rather than crashing the whole thing into silence. `MISSING` also folds `dup_n_new` to `0`, the same safe direction fix round 1 already established for a standing, already-marked duplicate — the duplicate-entry line still renders from `substrate_health`'s own independent, always-live read of the ledger, which does not depend on this file at all.
+
+```bash
+# Read THIS SAME run's `--mark` report from the file 3d-ter above saved it
+# to — NEVER invoke `seq_health.py --mark` a second time here. A second
+# invocation would always see the duplicate as "already marked" (3d-ter's
+# own invocation, moments ago, in the SAME run) and would report `n_new: 0`
+# even on the one week a duplicate is genuinely new — the exact hole fix
+# round 2 (review finding F-8) found: the standing line and 3d-ter's own
+# new-finding line both rendering, saying the same thing twice.
+DUP_REPORT_FILE="<workspace_root>/_hq/tmp/seq_health_dup_report.json"
+# Fix round 3 (review finding F-12): a TOTAL read. An absent, empty,
+# truncated, or key-less report file must never raise here — the failure
+# used to crash this whole block (alarms, dark-surface AND
+# schedule-refresh) into silence, not merely the duplicate-entry line.
+export DUP_N_NEW=$(python3 -c "
+import json
+try:
+    print(json.load(open('$DUP_REPORT_FILE'))['n_new'])
+except Exception:
+    print('MISSING')
+")
+python3 -c "
+import sys, os, json; sys.path.insert(0, 'shared/scripts')
+from substrate_health import substrate_alarm_lines
+from task_alarm import dark_surface_lines
+from schedule_refresh import announce_lines
+from writer_gate_report import report_lines as writer_gate_lines
+ws = '<workspace_root>'
+# Fix round 3 (F-12): DUP_N_NEW is always exported as either a real int or
+# the sentinel 'MISSING' — never empty — so this never raises. MISSING
+# folds to the safe fallback (0, never filter) and adds one honest line
+# instead of letting the whole block die silently.
+_dup_raw = os.environ.get('DUP_N_NEW', 'MISSING')
+dup_ter_ran = _dup_raw != 'MISSING'
+dup_n_new = int(_dup_raw) if dup_ter_ran else 0
+raw_alarms = substrate_alarm_lines(ws)
+if dup_n_new > 0:
+    alarms = [l for l in raw_alarms if 'duplicate entry number(s)' not in l]
+else:
+    alarms = raw_alarms
+if not dup_ter_ran:
+    alarms = alarms + ['This weekly duplicate-record check did not run this time — nothing new to report on it.']
+dark = dark_surface_lines(ws)
+# Fix round 1 (review finding F-6, LOW): BRIDGESIL1's render-once ledger
+# keys on event seq, not sentence content, so two separate schedule-change
+# events that land on the identical announce sentence both survive its own
+# dedup and would otherwise be said twice in the SAME note — worse here
+# than on a daily surface, where the doubled line was only ever one day's
+# noise. Dedupe by TEXT here, once, without touching BRIDGESIL1's own
+# ledger (that stays a per-event memory; the source-level fix is
+# BRIDGESIL1's owner's, not built on this branch).
+refresh = list(dict.fromkeys(announce_lines(ws)))
+# OUTGATE1 (2026-09-08) — the writer-path gate's own self-report: results per
+# surface with a resultless gate_ran counted as a defect, plus a gated
+# writer surface (docx / premium_html / chat_email) quiet 48h+.
+# Maintenance-run only, never the brief or the day-close (see
+# tests/run_guard_writer_gate_not_on_brief_test.py) — no calling convention
+# differs from `dark_surface`/`schedule_refresh` above: computed here, folded
+# into this SAME note, never read anywhere a customer surface calls back
+# into.
+writer_gate = writer_gate_lines(ws)
+print(json.dumps({'alarms': alarms, 'dark_surface': dark,
+                  'schedule_refresh': refresh, 'writer_gate': writer_gate}))
+"
+```
+
+- **`alarms`** — every returned line renders verbatim in the Monday note's "worth a glance" tier, most-severe first: the log-clobber, stale-view, unreadable-JSON, read-time-corruption and forward-dated-stamp lines FS-04/05/06/15 + CLOCKTS1 exist for. **The duplicate-entry line is filtered out of this list ONLY when 3d-ter's `n_new` from THIS SAME run was greater than 0** (fix round 1, F-1) — rule 3d-ter above (`seq_health.py --mark`) speaks for the condition exactly once, the week it is newly found; every week after that the marker means "known", not "resolved", and this line is the only surface left that still says so, verbatim. Rendering both in the same run would say it twice in two voices; rendering neither, forever, after the first week, is the bug this round closes. Empty list → nothing renders, never a padded all-clear. **`n_new` comes from 3d-ter's OWN report file, never a second `--mark` call** (fix round 2, F-8) — `seq_health.py --mark` runs exactly once per fire, in 3d-ter above; a second invocation here would always report `n_new: 0` (the first invocation just marked the duplicate, moments ago in the same run) and would say the condition twice, in two voices, on the one week it is genuinely new. **The report-file read never raises** (fix round 3, F-12) — an absent, empty, truncated, or key-less file folds to a `MISSING` sentinel, `dup_n_new` falls back to `0` (the safe direction — the standing line still renders), and one line saying the check did not run this time is added instead of the entire block crashing into silence.
+- **`dark_surface`** — `task_alarm.dark_surface_lines`'s own render-once ledger (TASKALARM1), now consumed HERE instead of on the brief or the day-close (both retired their calls to it — HEALTH1 is not only a print change, it moves which surface calls the helper, because calling-and-discarding would have marked the finding "seen" before this weekly pass ever ran). Fold its lines in beside the watchdog findings below — a task already named by 3e-bis is never named twice in the same note. **The circularity this creates (review finding F-3, MED):** after this lane the ONLY scheduled thing that can say "your Maintenance task stopped firing" is this very maintenance run — if THIS is the dark surface, nothing on a schedule says so, and the on-demand `health check` is the only remaining route. M has this as an open ruling (R-2 in the review; recommendation on file: a plain one-sentence exception on the brief when the weekly maintenance itself has not run, never the full health block back). Not built on this branch pending that ruling.
+- **`schedule_refresh`** — `schedule_refresh.announce_lines`'s own render-once ledger (BRIDGESIL1): the ONE narration for a silently-applied semantic schedule change since the last time anything read it, DE-DUPED BY TEXT here (fix round 1, F-6) so two events landing on the identical sentence are never both said in the same note. Same reasoning as `dark_surface` otherwise — the brief no longer calls this helper either, so this weekly pass is its sole reader now.
+- **`writer_gate`** — OUTGATE1 (2026-09-08). `writer_gate_report.report_lines` censuses the `gate_ran` events the writer chokepoints (`brief_gates` for `docx`/`premium_html`, `turn_backstop` for `chat_email`) already emit and turns two conditions into plain lines: a resultless `gate_ran` this week (the gate ran and forgot to say pass/fail — a defect in the gate itself) and a gated surface quiet 48h or more after having fired before (dark, not merely idle — a surface that has never fired at all is never alarmed, permanently: there is no registration moment to anchor a grace period to for a writer surface the way `task_alarm` has for a scheduled task, so alarming on never-fired would light up any workspace that simply doesn't use one of the gated document kinds). A surface only belongs in that gated set if something in `shared/scripts/` can actually emit it — `run_guard_writer_gate_not_on_brief_test.py` section [4] reds otherwise, so this note can never carry a line no amount of correct behaviour would clear (FIX ROUND 2, review finding F-8). Closes `BUG_2026-08-04_no-alarm-when-scheduled-surfaces-stop` for the WRITER-GATE class of surface (`task_alarm`/`dark_surface` above already covers the SCHEDULED-TASK class) and retires the per-turn `Stop`-hook sweep this same lane deleted (`hooks/hooks.json` + `gate2_turn_sweep.py` — M ruled 2026-09-07 Cowork never runs plugin hooks; `BUG_2026-09-07_turn-hook-silent-and-gates-disagree` is why: the hook silently stopped emitting for two weeks and disagreed with the docx surface while it ran). Maintenance-run only, never the brief or the day-close — `tests/run_guard_writer_gate_not_on_brief_test.py` is the structural + behavioral fence for that boundary, INCLUDING (FIX ROUND 1, F-1) a positive check that this very fence below is genuinely wired, not merely absent from the brief. Empty list → nothing renders, same all-clear convention as every line above it.
+
+### 3d-sexies. The plumbing's own week, and the workspace's own record quality
+
+Two conditions the morning brief used to carry and no longer does. **NUMBER1 3.9 (M's 2026-09-07 ruling and its extension):** a customer surface reports the customer's work; the condition of the machinery underneath is reported here, on the run that can actually offer and perform a cleanup. They are moved, not deleted — a line reported nowhere is a worse fix than the defect.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 -c "
+import sys, json, os
+sys.path.insert(0, os.path.join(os.getcwd(), 'shared', 'scripts'))
+ws = os.environ['WORKSPACE_ROOT']
+import change_feed
+from datetime import datetime, timedelta, timezone
+since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+feed = change_feed.changes_since(ws, since)
+out = {'plumbing': change_feed.plumbing_lines(feed)}
+# Routed in from ONBOARDGUARD1 (night 11d): the scope-hygiene note. A
+# READ, never a write to entities.json, and the line carries no company
+# name. Empty string renders nothing.
+import onboarding_profile
+out['scope_hygiene'] = onboarding_profile.scope_hygiene_line(ws) or ''
+print(json.dumps(out))
+"
+```
+
+- **`plumbing`** — `change_feed.plumbing_lines` returns the week's cleanup-pass and background-maintenance sentences ("Ran the weekly cleanup pass.", "Completed N background maintenance jobs on schedule."). Render each verbatim in the Monday note's "worth a glance" tier. `surface_drivers.brief_plumbing_categories` drops the same set from the brief's CHANGED strip and reads it from the same constant, so the surface that refuses them and this note that claims them can never disagree about which sentences those are. Empty list renders nothing — never a padded all-clear.
+- **`scope_hygiene`** — routed in from ONBOARDGUARD1. One plain line when the workspace's own org records carry a missing or invalid `scope`, in the "worth a glance" tier, with no company name in it and no write of any kind. Empty string renders nothing. This is a data-quality fact about the record, which is why it belongs on this surface and on no customer one.
+
+- **The seq-GAP check is a separate hole, already landed by LEDGERFENCE1** in its own `3d-quater` section of this same maintenance pass (fix round 3, review finding F-13: worded without an adjacency claim — see the heading above for why "immediately above" no longer holds after a clean merge) (`seq_health.gap_notice(report)`, composed in code and relayed verbatim). Nothing further to wire from this lane. **Correction (fix round 2, F-10):** the parity with this rule's own duplicate-entry filter claimed above ("never told twice") does not hold. LEDGERFENCE1's `gap_notice` only ever speaks about a stretch the run it fires in newly marks (`detect_and_mark_gaps`'s own `new` list) — once a stretch is marked, `substrate_health.py` gains no standing gap line the way it carries the standing duplicate-entry line via `substrate_alarm_lines`, so a marked hole is said once, the week it is found, and then by nothing on any scheduled surface, ever again. That is this rule's own F-1 shape, one detector over, still open at LEDGERFENCE1's tip as of this writing (confirmed against `~/repos/wt-ledgerfence1` @ `532358f2f9a373230ed332c2cdb08bdbf6e237a5`, its current HEAD — that lane's own separately-numbered "FIX ROUND 2 (F-10)" addressed a different gap, that only the `removed` class rendered at all; it did not address the standing-report question). **Fix round 3 addendum (F-13):** that same `532358f2` tip's `gap_notice` returns `""` whenever `report["new"]` is empty, and `detect_and_mark_gaps(apply=True)` marks every stretch on its first sight — so from week two onward `n_new` is 0 and the notice is empty, on BOTH of that lane's own reporting surfaces (cleanup's Monday note and `system-health`'s on-demand report), forever. That is worse than this rule's own F-1 was: F-1 at least kept the on-demand `health check` route; LEDGERFENCE1's gap hole has no escape hatch at all, scheduled or on demand. Not this lane's branch to fix — flagged to LEDGERFENCE1's owner and to M as an at-merge item, the same way review finding F-10 asked.
 
 ### 3e. Append the run record + conflicts
 
@@ -350,8 +547,55 @@ Convert each project's hand-written People table into the generated Live State b
 **Hard gate (v3.18.2+ — Bug #84). Run the EXACT block below; do not pre-flight it.** The migration script ships at `shared/scripts/release_actions/migrate_brain_live_state.py` in **every v3.16+ build** — it is NOT optional and NOT version-gated. Do NOT check "does this version have the script" and skip; do NOT guess the path (`shared/scripts/migrate_brain_live_state.py` — without `release_actions/` — is the WRONG path and is what the v3.18.1 scheduled fire mis-resolved before logging "doesn't exist in this version — skipped gracefully"). The block resolves `PLUGIN_ROOT` explicitly (so it does not depend on the current working directory at fire time) and **assert-imports** the module: if the import raises, that is a LOUD, real failure (incomplete plugin install) to surface in the run record — **never** a silent "feature not in this version" skip.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 root = os.getcwd()
@@ -414,8 +658,55 @@ Runs BEFORE 3.5b's Live State re-render, so a workspace that still carries the v
 Safe and idempotent by construction: non-empty `projects` records merge into `threads` deduped by id (an id already in `threads` keeps the `threads` copy; the `projects` duplicate is quarantined under `_recovery`, never dropped), then the `projects` key is deleted. A workspace with no `projects` key at all is a true no-op — zero writes.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -434,8 +725,55 @@ print('n_deleted_keys=' + str(counts['n_deleted_keys']))
 Runs right after 3.5a-bis, same DUALKEY1-style shape: a pure mutator plus an owner-writer wrapper that persists only when something actually changed. The thread `kind` vocabulary closed under THREADBIND1 (`thread_writer.VALID_KINDS`, mirrored in `entities.schema.json` $defs.project.kind) — `create_thread` / `update_thread` now reject a novel kind at write time, but a THREAD ALREADY ON DISK from before the enum closed can carry a KNOWN off-enum spelling (today: `product_build`, a typo-split of `product`). This step heals those in place, additive: `thread_writer.KIND_MIGRATION_MAP` gets a new line the day a new drifted spelling is confirmed — this step never guesses at one on its own.
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -462,8 +800,55 @@ annotation, no proposal, no noise. Idempotent by construction: re-detecting
 the same clustering writes nothing (HONEST1).
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
@@ -479,8 +864,55 @@ print('n_split_proposals=' + str(counts['n_split_proposals']))
 
 ### 3.5b — Re-render every active thread's Live State (dirty-checked, cheap)
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 cd "$PLUGIN_ROOT" && python3 -c "
 import sys, json, os
 root = os.getcwd()
@@ -662,17 +1094,20 @@ If `rotated` is True, add one reassuring Monday-note line — *"Your activity lo
 
 ### 3e-bis. Scheduled-task watchdog sweep (Phase 3 — W1 surface (b) + R5 missed-fire detection + R10 scheduled-output self-audit)
 
-Cleanup is the weekly deep pass of the reliability watchdog (the morning brief runs the light daily pass). Three layers, in order:
+Cleanup is the weekly deep pass of the reliability watchdog. (The morning brief's light daily pass — `task_watchdog.brief_watchdog_line` — is RETIRED as of HEALTH1, 2026-09-07; this weekly deep pass is now the only place the finding surfaces on a schedule, alongside the on-demand `health check`.) Three layers, in order:
 
-**1. Fired-recency + missed-fire check (W1 + R5).** Call `mcp__scheduled-tasks__list_scheduled_tasks` (cleanup runs interactively enough to afford the MCP call — this is what makes it the deep pass), then:
+**1. Fired-recency + missed-fire check (W1 + R5).** Read the scheduler listing through `schedule_backend.plan_list` (cleanup runs interactively enough to afford the round trip — this is what makes it the deep pass).
+
+**Ask availability first, of the code, never of a tool name (TRUTH1, SPEC_NIGHTM2_LANES §3 (a)).** Run `schedule_config.scheduler_availability(<this fire's tool names>)` BEFORE planning the listing. When it answers `available: False` with `reason: "scheduler_unavailable"` there is no scheduler in this fire: set `records = None` — the literal `None`, never `[]` — and `backend = None`, and do not attempt the listing. Otherwise execute `plan_list`, `normalize` it, and carry the selected backend's id alongside. `None` and `[]` are two different facts and the verdict says a different sentence for each; substituting one for the other tells the customer something untrue about their own computer. Then:
 
 ```bash
 python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_watchdog as tw
 ws = '<workspace_root>'
-records = <the list_scheduled_tasks result, as a Python list of task dicts>
-verdict = tw.health_verdict(ws, task_records=records)
+records = <the NORMALISED records from `schedule_backend.plan_list` (executed, then `normalize`), as a Python list of task dicts — or the literal None when the availability check above said no scheduler is available>
+backend = <the selected backend's id ('cloud' / 'legacy'), or None in that same case>
+verdict = tw.health_verdict(ws, task_records=records, backend=backend)
 print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
                   'info_lines': verdict['info_lines'], 'reports': verdict['reports'],
                   # the partition counts — info_lines is ONE flat list with no
@@ -685,7 +1120,11 @@ print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
 "
 ```
 
-`task_records` gives the watchdog the scheduler's `lastRunAt` per task, which is what detects the R5 class — a task that silently skipped >=2 expected fires (`late`), a task registered but never authorized (`never_authorized`), and the fired-but-wrote-nothing case (`receipt_gap`: fresh `lastRunAt`, stale substrate receipt — the render-without-write class). Fold every returned `lines` entry into the Monday note's "worth a glance" tier verbatim. If `list_scheduled_tasks` is unavailable in this fire, run receipts-only (`tw.health_verdict(ws)`) — degraded but never skipped.
+`task_records` gives the watchdog the scheduler's `lastRunAt` per task, which is what detects the R5 class — a task that silently skipped >=2 expected fires (`late`), a task registered but never authorized (`never_authorized`), the fired-but-wrote-nothing case (`receipt_gap`: fresh `lastRunAt`, stale substrate receipt — the render-without-write class), and the case where the scheduler's own run record says the PLATFORM declined the fire (`platform_declined`, R-M1-6: a cap or quota, not a broken computer — its line names the limit and the phrase, and asks for nothing). Fold every returned `lines` entry into the Monday note's "worth a glance" tier verbatim. With `records = None` the pass runs receipts-only — degraded but never skipped, and never silently: the vantage rule below is what says so.
+
+**When `records` is `None`, layers 2–5 are SKIPPED BY NAME.** Every one of them reads the scheduler's own records, and there are none: layer 2 compares registered prompts, layer 3 reads which chats fired this week, layer 5 needs the registered task set. Do NOT derive a registered set from `None` (an empty set here reports every first-install chat as "missing from the schedule" — the F-40 false-outage class, on a fire that could not see the scheduler in the first place, and deriving one is how this section used to fail outright instead of reporting). The Monday note carries the verdict's `vantage['line']` and nothing else about schedules.
+
+**Another computer still writing (SAFETY0 — RETIRE1).** When the workspace has declared its one scheduled writer and another computer is still writing scheduled chats into it, the verdict carries that one sentence itself — as one of `lines`, or inside `vantage['line']` when the scheduler is out of sight — so the fold above already puts it in the Monday note verbatim; never name the other computer, its token or its account.
 
 **`info_lines` are not problems (M ruling 2026-08-03).** The verdict already partitions late-BUT-RECEIPTED fires into `caught_up` / `info_lines`, separately from the `late` / `receipt_gap` / `never_authorized` problems — that partition is correct and stays exactly as it is. What changes is what the note does with it: **the per-task catch-up lines do not go into the note at all.** Catch-up on wake is the designed contract for a laptop that gets closed, not an anomaly, so a task that caught up and left its receipt is a task that worked.
 
@@ -693,7 +1132,7 @@ print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
 
 **"Chronic" is a count, not a feeling.** Chronic means `len(caught_up)` is at least half of `len(caught_up) + len(on_schedule)` — most of the week's fires arrived late — and only then does the one calm summary line below apply. A single catch-up in a healthy week earns nothing at all. Never restate a caught-up task as late, asleep, or missed.
 
-**Vantage guard (F-40):** if `vantage` is non-null, this session cannot see the machine-local scheduler (cloud/remote chat, or a different computer than the one the tasks run on) — the Monday note carries the single `vantage['line']` sentence instead of any per-task registration claims, and layers 2–4 are skipped for this fire. Never report tasks as unregistered from a blind vantage.
+**Vantage guard (F-40, widened by TRUTH1):** if `vantage` is non-null, this fire cannot see the scheduler that serves these chats — the Monday note carries the single `vantage['line']` sentence instead of any per-task registration claims, and layers 2–5 are skipped for this fire. Never report tasks as unregistered from a blind vantage. `vantage['check']` says which case it is (`registry_vantage`, `registry_vantage_cloud`, `scheduler_unreachable`); the line is already composed for that case, so render it verbatim and add nothing — including the `machine` field, which is evidence for this step and never text (F16).
 
 **2. Registered-prompt drift (W4).** With the same records in hand, read the installed plugin version from `$PLUGIN_ROOT/.claude-plugin/plugin.json` and run `drift = schedule_refresh.prompt_body_drift(records, plugin_version=installed_version)` — the task ids whose registered bootloader BODY differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the compare Step 1.C writes on). A non-empty `drift` → one Monday-note line, `schedule_refresh.stale_prompt_notice(drift)` verbatim (CUT-PLATE, 2026-09-06 — the same sentence the update bridge and the health check say): *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."* (One line total, not per task. `tw.check_prompt_versions` — the stamp read — is informational and never earns the line: a stamp-only difference is not drift (fix round 1, REVIEW F-1 — Step 1.C leaves the stamp alone, BRIDGESIL1 §0.2, so a stamp-keyed line would repeat every Monday of every release whose bootloader body did not change); an unstamped legacy prompt adds nothing either.)
 
@@ -722,7 +1161,7 @@ import sys, json; sys.path.insert(0, 'shared/scripts')
 import task_watchdog as tw
 from event_gate import append_event
 ws = '<workspace_root>'
-registered = <the taskIds from list_scheduled_tasks, as a Python set>
+registered = <the taskIds from the NORMALISED `schedule_backend.plan_list` records, as a Python set>
 parity = tw.check_schedule_parity(ws, registered)
 append_event(f'{ws}/_hq/data/events.jsonl', {
     'type': 'schedule_parity_checked',
@@ -745,7 +1184,7 @@ python3 -c "
 import sys, json; sys.path.insert(0, 'shared/scripts')
 from schedule_proposals import propose_later_add_tasks, log_proposal
 ws = '<workspace_root>'
-registered = <the taskIds from list_scheduled_tasks, as a Python set>
+registered = <the taskIds from the NORMALISED `schedule_backend.plan_list` records, as a Python set>
 proposals = propose_later_add_tasks(ws, registered)
 for prop in proposals:
     log_proposal(ws, prop['task'])   # the 6-week suppression record
@@ -788,7 +1227,7 @@ Fold the result into Beat 1 (see below):
 - If `suspected_bypass > 0` AND there were no content violations: a softer line — *"A few documents were produced this week without going through the quality check — worth a glance to confirm they sound like you."* (The content sweep already covers the ones still on disk; this catches deliverables that left the workspace.)
 - Clean sweep (all zero): add nothing.
 
-> **Honest framing (SPEC GATE2 D7).** This sweep is why the product claim is "Command Room **detects and flags** voice/privacy violations in what it produces, before they leave your hands" — not "bad output can't be produced." An LLM with code access can always hand-roll a doc; reading the produced file is what makes the violation catchable. The weekly cadence is the floor; the same-turn Stop hook (`hooks/hooks.json` → `gate2_turn_sweep.py`) catches it sooner **if the runtime executes plugin hooks** (unverified in Cowork — the live re-run confirms).
+> **Honest framing (SPEC GATE2 D7, updated OUTGATE1 2026-09-08).** This sweep is why the product claim is "Command Room **detects and flags** voice/privacy violations in what it produces, before they leave your hands" — not "bad output can't be produced." An LLM with code access can always hand-roll a doc; reading the produced file is what makes the violation catchable. The weekly cadence here and the on-demand `check-deliverables` fire are now the WHOLE detection story — there is no same-turn Stop hook any more. `hooks/hooks.json` and `gate2_turn_sweep.py` are DELETED (M ruled 2026-09-07 that Cowork never runs plugin hooks; confirmed the hard way by `BUG_2026-09-07_turn-hook-silent-and-gates-disagree` — the hook silently stopped emitting for two weeks and disagreed with this same weekly sweep's `docx` surface while it ran). The `writer_gate` line above (Phase 3d-quinquies) is what now makes a save-time gate's own silence detectable, on the maintenance run, in place of the hook.
 
 ### 3g. Voice draft-snapshot pruning (B1)
 
@@ -906,6 +1345,8 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Session notes rolled over** (Phase 2 item 4, Rule 1): fold the count of `rolled_over` records into the "tidied up" line — *"…filed [N] projects' older session notes into their archive so the live notes stay short."* Never name the archive filename, the line counts, or the safety copy unless the CEO asks. `skipped` records are silent.
 - **Session notes that couldn't be rolled automatically** (the `aborted` records): decide from **THIS run's records only** — the fire has no memory of last week's, so never condition the line on how many weeks a file has been failing. When this run returned one or more `aborted` records, add exactly ONE calm line carrying the count and the way to finish the job: *"[N] projects keep their session notes in a shape that's too custom for me to reorganize on my own — say 'roll over my session notes' and I'll do them with you."* At zero aborts, omit the line entirely. Never list the files, never name the reason code, never a path, and never alarm framing — nothing was lost and nothing is broken; those files are simply the ones that need a person in the room.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files."* Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
+- **Delete permission** (Phase 2 Rule 11a, DEL1): when `delete_grant.monday_note_line()` returns a sentence, add it VERBATIM to the "worth a glance" tier — it is already plain English and already free of paths, versions and the tool's name. `None` adds nothing: a week where nothing was asked says nothing about asking (COVERQUIET1 posture). Never pair it with an apology and never re-ask in the note.
+- **Files set aside instead of deleted** (Phase 2 Rule 11a, DEL1 fix round 1 M-2): when `delete_grant.asides_note_line()` returns a sentence, add it VERBATIM to the "worth a glance" tier. It is a COUNT of files the mount would not let me delete, which I renamed out of the way instead — nothing was removed and nothing was lost, and the line says exactly that. `None` (the common case, and always the case on a seat where deletes work) adds nothing. Never name a file, a folder or a path, and never offer to clear them: collecting them is a decision nobody has made.
 - **Read-alarm sidecars pruned** (Phase 2 Rule 11, LB2 D5): ONE line, only when the count is non-zero — fold into the "tidied up" line: *"…cleared [N] old system health notes."* Never say "sidecar", "readalarm", or surface a path; omit entirely at zero (the common case).
 - **Deliverable voice/privacy flags** (Phase 3f, GATE2): when the sweep flagged docs, surface its plain-English `summary` verbatim — *"[N] documents produced recently didn't pass the quality gate — worth a glance before any go out: • [filename] — language that doesn't sound like you ('leverage')…"*. Filenames only, never `_hq/` paths or token jargon. When only `suspected_bypass` is non-zero, use the softer "produced without the quality check" line. Omit entirely on a clean sweep.
 - **Scheduled-task watchdog findings** (Phase 3e-bis, W1/R5/R10 + R3 truth rules): surface each returned `lines` entry verbatim under the "worth a glance" tier — dead task, never-authorized task, folder rename, prompt drift, render-without-write. These lead the tier when present (a dead schedule starves every other surface). If the vantage guard fired (F-40), its single line replaces ALL per-task schedule claims. Omit entirely when the watchdog returns nothing (the common case). A task named in any of these lines is never simultaneously described as running normally elsewhere in the note.
@@ -940,7 +1381,7 @@ Branch on how engaged the CEO was this week (their actions vs their own trailing
 Generate a `.docx` at `[WORKSPACE_ROOT]/_hq/cleanup-reports/[YYYY-MM-DD]-cleanup.docx` via `brief_writer.py` **only** when there's something substantive to surface (A-few-things / Backlog tiers). Clean weeks: no doc, just the one-liner. The .docx body follows the same non-technical voice (no scores, no alarm language, forward-action framing). Surface it as the canonical H2 deliverable link at the bottom of the chat turn per CONTRACT Rule 3. Create `cleanup-reports/`, `briefings/`, and `summaries/` under `_hq/` if missing.
 
 - **NEVER hand-roll the cleanup report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or leaking report (the v3.20.0 failure mode) — and Phase 3d above is the sweep that catches everyone else's hand-rolled docs, so this skill hand-rolling its own is the exact failure it exists to detect.
-- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("what you should look at", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/cleanup-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can read it on Monday", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the cleanup report in a Google Doc" is a request this gate refuses, not an override. A connector copy also lands outside `_hq/`, where next week's sweep cannot see it — hand back the `.docx` link instead.
+- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("what you should look at", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/cleanup-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can read it on Monday", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the cleanup report in a Google Doc" is a request this gate refuses, not an override. A connector copy also lands outside `_hq/`, where next week's sweep cannot see it — hand back the `.docx` link instead.
 
 ## Reliability
 
@@ -953,6 +1394,26 @@ Runs as a job inside the `maintenance` scheduled task (Sunday evening slot — C
 - Corrupted `events.jsonl` is **never restored over** — it is append-only history. It heals via the Phase 3b recurring self-heal, which quarantines just the malformed lines to `_hq/.system/quarantine/` (saved, never deleted), rewrites the file without them atomically, and appends a `corruption_recovery` event.
 
 Cleanup's role here is the Phase 3b self-heal and reporting what it healed — not snapshotting.
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 
@@ -972,3 +1433,9 @@ Cleanup's role here is the Phase 3b self-heal and reporting what it healed — n
 - Does not ask "want me to fix these?" — it does the safe fixes and surfaces only judgment calls.
 - Does not rewrite append-only history — corruption is quarantined, duplicate seqs are flagged for a deliberate converter, old `audit_run` events are read but never mutated.
 - Does not run destructive repairs silently — only the bounded safe set in Phases 2 & 3c; everything ambiguous is flagged.
+## Narration leak scan (LEAK2 — MANDATORY on every composed line)
+
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, an option, a `Sources:` line, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id, a bare mail-message id or UUID), an event or field name, a file name, a folder path, a script name, a spec or lane code, test-battery talk, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution; `narration_names.safe_name` is the one fallback when a record has no name — an honest gap, never the id). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+
+**Where it bites here.** The weekly Monday note relays `render_router_misses.monday_note_line`, which is already plain; anything you compose AROUND it — what the routing page is, why it exists, what a cleanup pass would do — is yours and is scanned. Never name the view's file, the script that regenerates it, or the folder either lives in.
+

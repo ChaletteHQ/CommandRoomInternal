@@ -79,7 +79,7 @@ Notes on the families, for anyone reading old rows:
 | `cracks_watch_*` | 3 | 11 | The retired "cracks watch" pass. Its role was inherited by the Pulse chat, which LIFECYCLE1 retired in turn; what survives is `brain_proposal` + the weekly `lifecycle` job. |
 | `org_added`, `org_archived`, `org_deleted`, `org_membership`, `org_proposal_confirmed` | 5 | 9 | Pre-`org_writer` prose org lifecycle. Superseded by `org_created` / `org_updated`. |
 | `person_context_*`, `person_enrichment_pending`, `person_merge_proposed`, `person_record_review_queued` | 5 | 9 | Pre-`people_writer` prose person lifecycle. Superseded by the PID1 lane. |
-| `session_close`, `session_end`, `scan_completed`, `substrate_cleanup`, `schedule_updated`, `schedule_skipped` | 6 | 14 | Assorted pre-receipt-contract run markers. Superseded by `shared/RECEIPT_CONTRACT.md`. |
+| `session_close`, `session_end`, `scan_completed`, `substrate_cleanup`, `schedule_updated` | 5 | 14 | Assorted pre-receipt-contract run markers. Superseded by `shared/RECEIPT_CONTRACT.md`. (The row count still includes the one pre-gate `schedule_skipped` row: COPY1 registered that spelling 2026-09-19 — it has a writer row below and is no longer a fossil.) |
 | everything else (one-off prose writes: `follow_up`, `artifact_*`, `correction`, `owner_remap`, …) | 19 | 64 | Individually hand-written by pre-gate skill prose; no family, no successor lane. |
 
 Seven fossils are near-misses of a registered name — read them as the
@@ -108,19 +108,33 @@ expected until its phase lands.
 | `skill_customization_reset` | skill_custom_writer.py (Phase 7, SCL1) | usage-report, coach, cleanup |
 | `skill_customization_review` | insight-generator Pass 12 distiller (Phase 7, SCL1) | insight-generator (28-day review gate), usage-report |
 | `onboarding_seed_ingested` | command-room-onboarding seed hook (Phase 7, Spec 3) | coach, usage-report, update-bridge |
+| `explain_once_armed` | `explain_once.arm` — written once per (workspace, surface) by `command-room-onboarding` Phase 6a2 at the end of onboarding (SPEC_SURFACES2 §9, ONBOARD2). `{surface}` | `explain_once.is_armed` / `explain_once.consume` (the only readers — the arm is consumed, not surfaced directly) |
+| `explain_once_shown` | `explain_once.consume` — written once per (workspace, surface), the first time the named surface actually renders the line (currently `morning-briefing`, wired at its Step 5 close). `{surface}` | `explain_once.is_shown` / `explain_once.consume` (idempotency check — a second render must return `None`) |
 | `schedule_config_healed` | reliability watchdog / change-schedule heal path (Phase 3) — registered for the heal path; R2 landed FLAG-ONLY under sparse-config semantics (no safe additive heal identified: the only orphan-override remedy is a removal, which cleanup never does), so nothing writes it yet | cleanup (Monday note), insight-generator |
 | `schedule_parity_checked` | cleanup schedule-parity check (Phase 3, R2) — one audit event per weekly check with ghost/orphan mismatch counts; detect + report, NO config writes | cleanup (Monday note), insight-generator, usage-report |
 | `schedule_add_proposed` | cleanup Monday note via schedule_proposals.py (Phase 3, R3) — one event per surfaced later-add proposal; the suppression record (no re-propose for 6 weeks) | schedule_proposals (suppression check), usage-report |
+| `schedule_skipped` | `schedule_config.write_schedule_skipped` (SPEC_NIGHTM1_LANES §7, COPY1, 2026-09-19) — ONE row per workspace-local day on a seat where Command Room will not set schedules up: `{reason: scheduler_unavailable|registration_blocked}` — the writer REFUSES any other reason and writes nothing (the schema carries no per-type `data` rules, so the writer is where that enum lives). Written by the scheduler-availability guard that `enable-command-room-schedules` (Phase 0), the update bridge (Phase 4.7) and `change-schedule` (change mode) all call FIRST; the same guard is the reason nothing else is written on that path — no registration, no `schedule_created`, no config write. The spelling predates the append gate (14 pre-gate rows carry it as a run marker), which is why it reads as a fossil in old substrate and as this event from 2026-09-19 on. | usage-report / system-health (read-tolerated: how long a seat has been without a scheduler); nothing is wired yet |
+| `scheduled_writer_declared` | `schedule_config.declare_scheduled_writer` (SPEC_NIGHTM3_LANES §3 R-2, RETIRE1 / SAFETY0, 2026-09-22) — ONE row each time the workspace's declared scheduled writer CHANGES: `{writer_id, previous, declared_by}` (`previous` is the id it replaced, or null). Written beside the `workspace.scheduled_writer` block in `entities.json`; the writer is idempotent, so a re-declaration of the same id writes no row. Called from `enable-command-room-schedules` (before the first registration) and the update bridge's Phase 4.7, both through the `run_writer` door on a merged seat. | history only — the live declaration is read from `entities.json` by `schedule_config.scheduled_writer` (`fire_guards.scheduled_writer`, `task_watchdog.foreign_writer_count`); this row is the audit trail of who claimed the schedule and when |
+| `deliverable_landed` | `deliverables.export_claude_doc` composes it and the calling skill appends it through `append_jsonl` (DOCS1 D-2, 2026-09-24) — ONE per document landed in the folder from outside the render chokepoint: `{source: "claude_doc", doc_id, doc_ref, rel, kind, title, format, refreshed}`. Written only when a Claude Doc was produced despite the document-routing rule and the customer (or the owning skill) exported it into the folder; a second export of the same doc within the window refreshes the file in place and writes no second row | `deliverables.export_claude_doc` (the refresh-in-place lookup by `doc_id`), usage-report / value-receipt (how often the built-in docs skill still wins the routing question — the DOCSLEAK1 signal) |
 | `schedule_refreshed` | `schedule_refresh.log_schedule_refreshed` (SPEC BRIDGESIL1, 2026-08-27) — one event per FIELD a core plugin upgrade silently re-anchored on a task the customer never customized. `cron`/`label` rows are written by `enable-command-room-schedules` Step 1.C2 via `schedule_refresh.plan_schedule_refresh` + `apply_schedule_refresh` (the classify+apply pair — never a hand-rolled write, Rule 2's one-writer discipline); `old`/`new` carry the literal cron/label value. `prompt` rows are written by Step 1.C directly on a genuine (post-stamp-normalization) content diff; `old`/`new` carry a short `schedule_refresh.prompt_fingerprint` digest, never the full bootloader body (events.jsonl is additive-forever). `command-room-update-bridge` Phase 4.7 W4 reaches both through the same `enable-command-room-schedules` invocation — it has no separate writer. Shape: `{task_id, field: cron\|label\|prompt, old, new, origin: "bridge"}`. Undoable via the existing `change-schedule` override path exactly like any other cron edit — this writer never touches `workspace.schedule_config` itself, so "customized" reverts to true the moment the customer changes it back. A CUSTOMIZED field never reaches this writer (`plan_schedule_refresh` classifies it `preserve`, not `silent_apply`) — see the mutation fence in `schedule_refresh.py`. | morning-briefing (`schedule_refresh.announce_lines` — one render-once line per `cron`/`label` row since the last brief, Ruling §0.3; `prompt` rows are never announced, plumbing only) — the only wired reader as of this build; `prompt`/system-health/usage-report are read-tolerated future consumers of the raw event, not yet wired |
 | `late_fire` | `late_fire.check_lateness` on scheduled-context fires ONLY, against an unserved slot (Phase 3 R4; served-slot ledger + run-mode gate v4.5.2 R2 — manual fires and schedule-change re-anchors never write it; carries `data.fired_via: catchup`) | cleanup (chronic-lateness detection), insight-generator (better-default-time proposals), system-health (R3 cadence truth) |
 | `clock_untrusted` | `late_fire._clock_field` via `trusted_now`, ONCE PER PROCESS, only when the machine clock is provably wrong (SPEC CLOCK1) — `{direction: stale|ahead, source, skew_seconds, machine_now, corroborated_now}`. Telemetry only: it never blocks a fire, and a workspace with a healthy clock never writes one | cleanup (chronic-skew detection), insight-generator |
 | `pulse_run` | Pulse orchestrator (Phase 3/6 quick win B) | insight-generator (cadence baseline), usage-report, value-receipt |
 | `triage_feedback` | apply-choices, on every inbox action at dispatch (Phase 6, Loop 1) — `{sender, domain, bucket_assigned, action_taken, draft_offered}` via `triage_feedback.build_triage_feedback_event` | insight-generator Pass 13 (sender-priority proposals), usage-report |
-| `prep_feedback` | orchestrator-past-meetings grades the prep brief against the transcript after meeting-notes runs (Phase 6, Loop 3) — `{meeting_id, meeting_type, sections_hit, sections_rendered, sections_missed, unpredicted_topics}` via `prep_grading.build_prep_feedback_event` | insight-generator Pass 15 (section-weight proposals), value-receipt |
+| `voice_block_updated` | the `learning` job's voice leg (`learning_pass.run_voice_leg`) after merging a learned line into `_hq/voice/voice-block-<skill>.md` — `{skill, op, section, delta, previous_markdown (the whole prior FILE, or null), had_override, fingerprint, evidence_rows, brain_batch_id, brain_change_class, detector}`. Written by this leg only (the onboarding style seed writes `onboarding_seed_ingested`, never this type); the class stamp is what `change_feed` keys on | `change_feed` (the learned line in the morning brief's CHANGED section), `brain_undo` (`_reverse_voice_block_update` reads `skill`, `previous_markdown`, `had_override`) |
+| `voice_block_reverted` | `brain_undo._reverse_voice_block_update` | `change_feed` (`changes_undone`), `brief_gates` staleness (it re-reads the override file, whose absence after a revert is the answer) |
+| `voice_correction_logged` | `voice_corrections.log_in_passing`, the ONE entry every in-passing correction lane calls (`correction_turn._record_correction` and the composers' contract paragraph) — `{skill, domain, recipient_id, said (the person's own words, truncated), correction_type, correction_fingerprint, brain_batch_id, brain_change_class: voice_correction}`. The row itself lands in `_hq/voice/corrections-<skill>.jsonl`; this is what makes the act findable, narratable and undoable | `brain_undo` (`_reverse_voice_correction` reads `skill` + `correction_fingerprint`), any surface narrating the batch |
+| `voice_correction_retracted` | `brain_undo._reverse_voice_correction`, after `voice_corrections.retract_correction` APPENDS the retraction row (nothing is ever removed from a corrections log — M's ruling R-20) | `change_feed` (`changes_undone`), the operator reading what an undo took back |
+| `prep_weights_updated` | the `learning` job's prep leg (`learning_pass.run_prep_leg`) after writing call-prep's `section_weights` — `{changes:[{meeting_type, section, from, to}], fingerprint, brain_batch_id, brain_change_class, detector}` | `change_feed` (the learned line), `brain_undo` (`_reverse_prep_section_weight` reads each row's `from`) |
+| `prep_weights_reverted` | `brain_undo._reverse_prep_section_weight` | `change_feed` (`changes_undone`), the operator reading what an undo put back |
+| `exemplar_promoted` | the `learning` job's exemplar leg (`learning_pass.run_exemplar_leg`) — `{kind, direction, previous_text|null, fingerprint, brain_batch_id, brain_change_class, detector}` | `change_feed` (the learned line), `brain_undo` (`_reverse_exemplar_promotion` reads `previous_text` and `kind`) |
+| `exemplar_reverted` | `brain_undo._reverse_exemplar_promotion` | `change_feed` (`changes_undone`), the operator reading the archive |
+| `learned_line_deleted` | the profile page, when the reader deletes a learned line - `profile.delete_learned_line` via `profile._write_deletion_event`, one row per join key: `{key, skill, op}` for a voice line (one per proposing op), `{key, meeting_type, section, fingerprint}` for a prep-section line, `{key}` alone for a line no learning job derives | the `learning` job (`learning_pass.deleted_learned_fingerprints`, unioned into `_excluded_fingerprints`, so a deleted line is never re-derived on the next fire) |
+| `prep_feedback` | orchestrator-past-meetings grades the prep brief against the transcript after meeting-notes runs (Phase 6, Loop 3) — `{meeting_id, meeting_type, sections_hit, sections_rendered, sections_missed, unpredicted_topics}` via `prep_grading.build_prep_feedback_event` | the `learning` job's prep leg (`learning_pass.run_prep_leg` — section weights), value-receipt |
 | `prep_brief` | BOTH prep paths — the morning-brief fire's prep leg (SPEC BRIEFMERGE Phase 2.95, `generated_by="morning-brief"`; before that, the retired upcoming-meetings chat) AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed}`. NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), the prep leg's / call-prep's refresh-in-place check, value-receipt |
-| `prep_weight_proposal` | insight-generator Pass 15 (Phase 6, Loop 3) — one per user decision on a proposed call-prep section-weight change; the applied weight lands in the call-prep skill config (`_hq/data/skill_config/call-prep.json`) | call-prep (reads section weights before rendering), usage-report |
+| `prep_weight_proposal` | **the RETIRED interactive Pass 15** (Phase 6, Loop 3) — one per user decision on a proposed call-prep section-weight change. Nothing writes this any more: the `learning` job applies the weight itself and writes `prep_weights_updated`. Rows already on disk still read; the weight they recorded landed in the call-prep skill config (`_hq/data/skill_config/call-prep.json`), which is where the `learning` job writes it too. | call-prep (reads section weights before rendering), usage-report |
 | `extraction_hint_proposal` | insight-generator Loop 5 pass (Phase 6, Round 3) — one per user decision on a proposed extraction hint; the applied hint appends to `_hq/data/extraction-hints.md` | meeting-notes (extraction prompt), cru_match (resolution language), usage-report |
-| `exemplar_update_proposal` | insight-generator Pass 16 (SPEC OUT8) — one per user decision on a proposed workspace-exemplar update (`{user_action, fingerprint, kind}`); the approved skeleton is written to `_hq/exemplars/<kind>/exemplar_1.md` via `exemplars.promote_workspace_exemplar` (scrub-gated, previous version rotated to `exemplar_2.md`) | insight-generator (60-day fingerprint cooldown via `proposal_ledger`), every STANDARD_KINDS composer (reads the exemplar at render time via `exemplars.get_exemplar`), usage-report |
+| `exemplar_update_proposal` | **the RETIRED interactive Pass 16** (SPEC OUT8) — one per user decision on a proposed workspace-exemplar update (`{user_action, fingerprint, kind}`). Nothing writes this any more: the `learning` job promotes automatically and writes `exemplar_promoted`. Rows already on disk still read. | every STANDARD_KINDS composer (reads the exemplar at render time via `exemplars.get_exemplar`), usage-report |
 | `sender_priority_proposal` | insight-generator Pass 13 (Phase 6, Loop 1) — one per user decision on a proposed sender/domain priority rule (`user_action` applied/edited/declined/skipped, `fingerprint`); the applied rule lands in `_hq/data/sender-priority-rules.json` | insight-generator (60-day fingerprint cooldown via `proposal_ledger`), usage-report |
 | `surface_preference_proposal` | insight-generator Pass 14 (Phase 6, Loop 2) — one per user decision on a proposed suppression; the applied rule lands in `_hq/data/surface-preferences.json` | insight-generator (60-day cooldown), every widget orchestrator (reads the store to filter), usage-report |
 | `confidence_override_proposal` | insight-generator Loop 4 calibration (Phase 6, Round 2) — one per user decision on a proposed match-score threshold change; the applied value lands in `_hq/data/confidence-overrides.json` | `confidence.py` accessors (read the override), cru_match (thresholds), usage-report |
@@ -153,6 +167,8 @@ and update-bridge write only as declared delegates through the
 | Type | Writer (phase) | Named consumers |
 |---|---|---|
 | `connector_detected` | drift-detect in workspace-manager / a silent maintenance task (Phase 4, C2) — one event when a new MCP server-id or account address first appears; carries `{server_id, provider?, fingerprint_matched?}`. Silent/scheduled fires only FLAG (R13), never prompt | command-room-onboarding (classify-before-use gate), workspace-manager (drift reconcile + fingerprint re-pair confirm), usage-report |
+| `fire_delivery_changed` | `fire_delivery.set_artifact_publish` (SPEC_NIGHTM3_LANES §2 I-12 (8), IDENT1, 2026-09-23) — ONE row each time the workspace's "publish my scheduled pages" setting CHANGES: `{artifact_publish, previous}`; the same value again writes nothing. Written by workspace-manager through the `run_writer` door on the customer's own words (`publish my scheduled pages` / `stop publishing my scheduled pages`). | history only — the live setting is read from `entities.json` (`workspace.fire_delivery`) by `fire_delivery.artifact_publish_enabled` |
+| `fire_delivery_flag` | a scheduled fire that was ALLOWED to republish its page and did not (`fire_delivery.flag_row`, IDENT1 I-12 (8)): `{task_id, reason: no_stored_page|tool_absent|republish_refused|page_not_landed}` (`page_not_landed` whenever the page did not land, whatever the tool or the stored address), appended through `append_jsonl`. A fire never asks about it (I-16). | the next interactive chat (workspace-manager), which can offer to publish the page once |
 | `connector_backend_changed` | workspace-manager `set my email backend to [connector]` verb via the `connector_config.py` setter (Phase 4, C1); update-bridge additive migration writes it through the same delegated setter (N1) | `connector_config` readers (declared-backend resolution), command-room-update-bridge (migration idempotency), usage-report |
 | `account_classified` | command-room-onboarding account-enumeration gate (Phase 4, R11) + workspace-manager classify verbs, both via the `connector_config.py` setter — `{address, role, surface, write_to_business, binding_verified}` | the writer wall (`account_scope_gate.enforce_scope` at the `atomic_append_jsonl` chokepoint in atomic_write.py + `account_scope_gate.enforce_record_scope` in `people_writer`/`org_writer` — R2/R3), `connector_config` scope readers, usage-report |
 | `account_role_changed` | workspace-manager reclassify verbs (`[address] is my personal account`, `mark [account] out of scope`) via the setter (Phase 4, R10/C6) — `{address, old_role, new_role, old_dials, new_dials}`; a business→personal transition also emits `account_scope_masked` for the silent window | `connector_config` scope readers, the tombstone machinery (R5), usage-report, cleanup (misclassification audit trail) |
@@ -363,7 +379,10 @@ for the consumers PIPE1 already named.
 | `brain_proposal` | `brain_proposals.propose()` (the single entry point for every new detector; consults `proposal_ledger.active_cooldowns` + dedups on fingerprint before emitting; `tier: auto` is refused without a registered reverser in `brain_undo.REVERSERS` + an `AUTO_ALLOWED` change class) | morning-briefing (the "Needs your eyes" card), command-room-coach (Phase 2A′), weekly-recap (Phase 4 roll-up), system-health / Staff Meeting (full queue), apply-choices (`cr-brain` dispatch), cleanup (expiry sweep + card-health line) |
 | `brain_proposal_resolved` | `brain_proposals.resolve_proposal()` (via apply-choices `cr-brain` handlers; also appends the decision to `proposal_ledger` so cooldown math is shared with the learning loops) | `brain_proposals.load_open_proposals` projector (tombstone), change_feed, value-receipt (confirm taps = engagement) |
 | `brain_proposal_expired` | cleanup expiry sweep via `brain_proposals.expire_stale()` (silent TTL expiry — logged, never nagged) | `brain_proposals.load_open_proposals` projector (tombstone), cleanup (Monday-note card-health counts), usage-report |
-| `brain_change_undone` | `brain_undo.undo_batch()` (one per reversed change; the reversal itself is the class's additive reversing event — this is the narration-trail marker) | change_feed ("undid N changes"), system-health |
+| `brain_proposal_reopened` | `brain_undo`'s `brain_proposal_expiry` reverser ONLY (TTL1 / SPEC_FLOW1 Lane G) — the additive mirror of an expiry tombstone the question-expiry engine wrote. `data: {proposal_id, reopened_by, reason, question_class?}`. Never a way to un-resolve a proposal a person answered: the reverser is registered against the engine's own change class and nothing else stamps it. | `brain_proposals._open_brain_proposals` (last writer wins on the tombstone fold, and the reopen restarts the proposal's own TTL clock so the put-back is not undone by the next read) |
+| `brain_change_undone` | `brain_undo.undo_batch()` (one per reversed change; the reversal itself is the class's additive reversing event — this is the narration-trail marker) | change_feed ("undid N changes" — counts a PERSON's undo only, ATTRIB2), system-health |
+
+**ATTRIB2 (M's ruling 2026-09-07) — `data.actor_kind`.** Every act the sanctioned writers write (`commitment_reopened`, `commitment_resolved`, `brain_change_undone`) carries `actor_kind: "person" | "machine"` beside its actor field, resolved by `event_types.resolve_actor` from the call site's `actor` and its `source_skill`. Additive and absent on every row written before that date, which is why the reader (`event_types.is_customer_act`) also answers from `user_confirmed` and from the background-source list. A reversal written under a background source ALSO takes that rail's own name as its actor value — the customer's person id is never written by a fire. Consumers: change_feed (the brief's CHANGED feed and, through `quiet.wrap_sections`, the wrap's "Decided for you"), `end_of_day.closures_since` → `compute_ledger.n_dropped_by_you` → eod_synthesis ("N things you let go"). CONTRACT Rule 32.
 
 Hard rules:
 
@@ -493,6 +512,7 @@ the change-feed spec) are added when they read. Payload shapes in
 | `person_fact_observed` | people_writer.record_person_fact (explicit user statement, confirmed proposal, or — Part 2 — the `entity_fact_structured` auto tier via entity_signal_detector.apply_structured_facts, batch-stamped for undo; auto is limited to preference/contact/personal, S2) | render_person_history, call-prep, change_feed (auto-noted count line) |
 | `org_fact_observed` | org_writer.record_org_fact (explicit user statement, confirmed proposal, or the Part 2 structured auto tier — same S2 category limits) | render_org_history, board-pack-assembler (§1/§4 company context), change_feed (auto-noted count line) |
 | `entity_fact_retracted` | brain_undo `entity_fact_structured` reverser (Part 2 — landed in the SAME commit as the AUTO_ALLOWED entry, closing the wave-pattern registration) | render_person_history, render_org_history (suppress the retracted fact) |
+| `person_alias_dropped` | `identity_reconcile.apply_alias_collisions` (SPEC_FLOW1 Lane F rule 4 — the ONE writer). One row per nickname taken back, carrying `{person_id, alias, collides_with}` plus `brain_batch_id` + `brain_change_class: person_alias_dropped`. The class is NEW rather than folded into an existing one because its reverser is new too: `add_person_alias` puts the spelling back, and no other reverser could. The removal itself goes through `people_writer.remove_person_alias`, which is the inverse of `add_person_alias` write for write | `brain_undo._changes_for_brain_batch` + the `person_alias_dropped` reverser (the undo listing and the put-it-back), change_feed (the receipt's `n_aliases_dropped` count line) |
 
 Hard rules:
 
@@ -579,7 +599,7 @@ it, nobody greps. Payload shape in `event-payloads.schema.json`.
 
 | Type | Writer | Named consumers |
 |---|---|---|
-| `day_intent` | `day_intent.write_day_intent` — BK1 ships ONE caller, the workspace-manager chat path ("tomorrow is about X", `origin="manual"`); the end-of-day chat's one-tap confirm (`origin="wrap"`) and its auto-draft (`origin="proposed"`) are EOD1's callers of the same function, wired by nothing today. `day_intent.reverse_day_intent` appends the additive restore/retraction | `day_intent.load_day_intent` (THE reader — the morning surface's "what today is about" line, the end-of-day chat's own read-back), `brain_undo` (the `day_intent` reverser + the bare-`undo` batch listing) |
+| `day_intent` | `day_intent.write_day_intent` — BK1 ships ONE caller, the workspace-manager chat path ("tomorrow is about X", `origin="manual"`); the end-of-day chat's one-tap confirm (`origin="wrap"`) and its auto-draft (`origin="proposed"`) are EOD1's callers of the same function, wired by nothing today. `day_intent.reverse_day_intent` appends the additive restore/retraction | `day_intent.load_day_intent` (THE reader — the morning surface's "what today is about" line, composed by `surface_drivers.brief_day_intent_line` and rendered as line two of the morning brief since BRIEF2, 2026-09-14; the end-of-day chat's own read-back), `brain_undo` (the `day_intent` reverser + the bare-`undo` batch listing) |
 
 Hard rules:
 
@@ -950,6 +970,69 @@ Hard rules:
   reads it back as the per-row confirm-first counter (three offers, then the
   close). Book-tier calendar closes carry `calendar_close: true` +
   `meeting_seq` with the ordinary `commitment_close` class.
+- **EXIT1 — the three exit rails' vocabulary (SPEC_FLOW1 Lane B, 2026-09-07).**
+  Each rail writes under its OWN name as both `source_skill` and the actor
+  field (`exit-own-word` / `exit-proof` / `exit-silence`), which is POLICY1-B's
+  existing "the actor IS the rail" convention and is what makes every one of
+  these a MACHINE act to `change_feed._machine_resolved` and to ATTRIB2's
+  reader — no customer surface says "you" about one of them. Every act carries
+  `data.exit_route` (`own_word` / `fact` / `silence`) and a `brain_batch_id`.
+  * **Own word** — `commitment_resolved`, `resolution: done`,
+    `confirmed_by: "own_word"` (the POLICY1-A machine door, so a verbatim
+    quote in `evidence` and a real `source_ref` are REQUIRED),
+    `resolved_by_match: "match"` + `match_score`,
+    `brain_change_class: commitment_close`. The `confirmed_by` value is a
+    DOOR, not a label: `commitment_state.close_commitment` refuses it to any
+    `source_skill` but `exit-own-word` (`OwnWordCloseWithheldError`) and
+    refuses it entirely while `exit.own_word_closes` is off. Read by
+    `change_feed` as its own line ("Closed N items you said you had
+    finished"), NEVER folded into the transcript closer's line — that closer
+    is off, and saying "your meetings said this was done" about an own-word
+    close would report a pass that never ran.
+  * **Paid or signed** — `commitment_resolved`, `resolution: done`,
+    `exit_route: "fact"`, `proof: "payment_or_agreement"`, `deal_seq` (the
+    `deal_won` / `org_promoted` row that proved it),
+    `brain_change_class: commitment_close`. A win a later `deal_won_reversed`
+    took back proves nothing and is never read.
+  * **Silence** — two acts, two batches, because they are two reversals. The
+    REST is a `commitment_updated` with `status_hint: parked`,
+    `park_reason: "no movement 45 days"`, `parked_by: exit-silence`,
+    `brain_change_class: commitment_park` (the shipped park reverser
+    un-parks it) and `days_quiet`. The LET-GO is a `commitment_resolved` with
+    `resolution: dropped` (never `done` — nothing says it was finished, only
+    that nobody touched it), `exit_route: "silence"` and
+    `brain_change_class: commitment_close`. Neither is ever written for a row
+    that is overdue or due inside seven days.
+  * **Their word puts it back** (FIX ROUND 2) — `commitment_reopened` with
+    `reopened_by` / `source_skill` = the mail rail that read the reply,
+    `brain_change_class: counter_evidence_reopen`, a `cev_` `brain_batch_id`,
+    and the closure it undid recorded verbatim (`prior_resolved_by`,
+    `prior_evidence`, `prior_resolution`, `prior_source_ref`,
+    `prior_source_skill`) so `undo` closes the item again word for word.
+    Read by `change_feed` as its own line ("Put N items back"). Eligible
+    closes are the three rails' AND the calendar leg's (`calendar-close`,
+    `exit_route: "fact"`); a close the CUSTOMER made is never eligible.
+  * **Their own move** (FIX ROUND 2) — `email_received`, written by the
+    inbound mail rail against the row it is about
+    (`data: {commitment_id, message_ref, sender_person_id, matched_on}`,
+    `person_ids: [the sender]`). THE writer for the event
+    `commitment_activity.COUNTERPARTY_ACTIVITY_EVENT_TYPES` already named
+    and nothing wrote, which is what makes "nobody has touched this in six
+    weeks" true. One marker per (row, message), for ever. No close, no
+    proposal, no question. An automated message — an out-of-office, a read
+    receipt, a delivery notice, a daemon sender
+    (`exit_doors.is_automated_message`) — is never their move and never
+    counter-evidence.
+  * **The un-rest** (FIX ROUND 2) — `commitment_updated` with
+    `status_hint: null`, `unparked: true`,
+    `brain_change_class: counter_evidence_unrest`, an `unr_`
+    `brain_batch_id`, and the rest it undid recorded (`prior_park_reason`,
+    `prior_parked_by`) so `undo` rests it again with the same words. Only a
+    rest THIS rail made is ever undone this way.
+  * **The job's receipt** — `pack_run`, `task_id: exit-doors`, carrying
+    `n_closed_deal`, `n_parked`, `n_let_go`, `silence_enabled` and the
+    `proof_census` (how many open rows each proof kind accounts for — the
+    number that says how many rows no message can ever finish).
 - `commitment_update` is drift; the gate rewrites it to `commitment_updated`.
 - `commitment_updated` — writers: the `push to [date]` verb via
   `commitment_state.apply_later`'s defer leg
@@ -1101,6 +1184,46 @@ as written — history is never rewritten. Post-A1 the appender allocates seq
 inside the writer lock, so a NEW marker indicates a real writer bug worth
 eyes, which is exactly what the Monday note surfaces.
 
+### `seq_gap_marked` (LEDGERFENCE1, 2026-09-07)
+
+| type | writer | readers |
+|------|--------|---------|
+| `seq_gap_marked` | `seq_health.detect_and_mark_gaps(apply=True)` — the ONLY writer (cleanup's weekly pass) | `seq_health.detect_and_mark_gaps` (its own dedup memory — an already-marked hole is not re-reported), cleanup's Monday note + system-health's report line (both render `seq_health.gap_notice`), and system-health ALONE for the standing line `seq_health.gap_standing_line` (fix round 3, REVIEW F-16 — the earliest marker of a stretch nothing accounts for is what dates it, so an irreversible removal is still answerable on demand after the one Monday it was news) |
+
+One additive marker per NEWLY-detected run of missing seq numbers, WHATEVER
+its class (`data.gap_after`, `data.gap_before`, `data.n_missing`,
+`data.classification`). A duplicate seq means two events were written with the
+same number; a gap means numbers that are not in the file.
+
+NOT EVERY GAP IS A REMOVAL, AND ABSENCE OF EVIDENCE IS NOT INNOCENCE
+(LEDGERFENCE1 fix rounds 1 and 2, review findings F-1 and F-10).
+`seq_health.scan_gaps` classifies each run as:
+
+- `renumbered` — the numbering VISIBLY restarts: the timestamps run backwards
+  across the boundary AND a new contiguous run of numbers begins at it;
+- `repair` — a recorded repair NAMES the numbers it set aside and this
+  stretch is inside that list (`corruption_recovery.data.quarantined_seqs`,
+  written since fix round 2, or the quarantine sidecar it points at). For
+  repairs written before the numbers were recorded, the fallback is bounded on
+  both sides: the repair RAN inside this stretch's own window AND set aside at
+  least as many lines as are missing. A `.seqregression.json` record whose
+  file maximum is exactly the last missing number also qualifies. Proximity
+  never does — round 1 cleared a hole for any repair row within three rows,
+  which silenced five rows a reviewer deleted by hand;
+- `removed` — everything else.
+
+Two round-1 classes are gone. `reserved_not_used` rested on no receipt: the
+allocator has taken one number per row it writes, inside the lock, since the
+reserve-then-write pattern was removed, so nothing anywhere records "reserved
+N, wrote fewer". `never_arrived` rested on the writers either side differing,
+which is equally consistent with a deletion.
+
+EVERY class is marked and EVERY class renders — `gap_notice` says one plain
+sentence per class on cleanup's Monday note and system-health's report, most
+serious first (CONTRACT Rule 31). The marker changes nothing about the hole;
+it is the detector's memory, so each sentence is said once and the weekly note
+only ever reports what is new.
+
 ## Receipt contract (v4.5.2 R1)
 
 Scheduled-task run receipts (`pack_run`, `sent_reconcile`, `chat_reconcile`,
@@ -1153,6 +1276,24 @@ message as channel+ts and Teams as chat+message-id, and a reader must know
 which shape it holds). `connector_adapters.chat.pointer_fields` emits both
 together so a writer cannot produce one half without the other. No pointer, no
 close.
+
+### `surface_failed` (SPEC SURFACES2_11c Lane 3 item 6, 2026-09-14)
+
+| type | writer | readers |
+|------|--------|---------|
+| `surface_failed` | `surface_drivers.log_surface_failed` -> `receipts.log_receipt` — the ONLY writer. Registered on the three tasks that HAVE a failure path — `past-meetings` (the End of Day fire), `morning-brief`, and `friday-wrap` (added 2026-09-15, REVIEW_NIGHT11C H-4: the wrap had no failure vocabulary at all, so a dead wrap left a receipt-less silence the watchdog reads as a job that never fired) — and on `end-of-day`, the day-close's COUNTING bucket: `receipts.count_runs` buckets a receipt by the task its `data.surface` names, so that row governs every day-close receipt whichever id it was written under. Four rows in all; `tests/run_eod2_test.py [5]` pins each one. `data: {surface, failure_class, status: "surface_failed", fired_via, surfaced: 0}` plus the receipt layer's own fields. `surface` is the fire that could not render (`end-of-day` / `morning-brief` / `friday-wrap`); `failure_class` is the exception's CLASS NAME and never its message, which routinely carries a path, an id or a payload and is read back by surfaces that render. | `receipts.iter_receipts` / `receipts.receipt_task_id` (the type resolves to its task exactly as `pack_run` does), `receipts.last_receipt_times` — the watchdog's freshness signal, which is why a failed fire still counts as a fire — `receipts.count_runs`, and through those `maintenance_dispatcher` due-ness, `task_watchdog`, the operator report and system-health. |
+
+A fire that could not render has a TYPE of its own rather than a status word on
+a `pack_run`. The status spelling every receipt already on disk carries
+(`pack_run` + `data.status: "surface_failed"`) keeps reading for one release —
+both spellings are pinned in `tests/run_eod2_test.py [5]` — so no reader has to
+change on the day the writer does.
+
+The freshness readers deliberately treat it as a run: a failed fire IS a fire,
+and a type that disappeared from `last_receipt_times` would make the job look
+never-run and re-fire it on the spot. What the type buys is the other half — a
+reader counting SUCCESSFUL runs no longer has to know one status word to tell
+the two apart.
 
 ## Read-side timestamp contract
 
@@ -1342,13 +1483,18 @@ live in `shared/scripts/quiet.py`. Two typed rows carry their receipts.
 | Type | Writer | Named consumers |
 |---|---|---|
 | `interaction_posture` | `quiet.write_posture_event` ONLY. Written by the `binding-gauge` job's interaction leg (`binding_gauge.run_gauge_refresh_job` → `quiet.gauge_leg`) on a CHANGE run when the effective preset MOVES: `data.action: "step_down"` (fourteen silent days — `from_preset` → `to_preset`, one level, never up) or `"restore"` (the person answered; back to `configured_preset`). Also `"restore"` with `by_user: true` + `triggered_by` from `quiet.restore_effective` — the person said `ask me more` on a stepped seat and the effective preset returned to the stored one on the spot (REVIEW_QUIET1 F-1); this by-user row IS an answer for the silence clock. And by `quiet.step_down_narration` with `data.action: "narrated"` + `data.narrates_seq` the ONE time the morning brief hands out the step-down line. And by `quiet.stamp_onboarding_preset` with `data.action: "onboarding_kept"` (CUT-D R2, 2026-09-06) — the onboarding Q5 stamp found a posture already stored (an `engaged` seat re-running onboarding, or the update bridge's `light` landing first) and left it alone: ONE row per seat, `from_preset == to_preset == configured_preset` (a receipt of a skip, not a move), `triggered_by: "onboarding Q5: <answer>"` + `answer` so the setup answer is never lost; not an answer for the silence clock, not a step. `data: {action, from_preset, to_preset, configured_preset, days_silent, narrates_seq?, triggered_by?, answer?}`. | `quiet.step_down_narration` (the once-only marker: a step_down whose seq is already named by a `narrated` row is never narrated again; a restore resets), `quiet.effective_preset` (the verdict itself rides the gauge artifact's `interaction` block — this row is its receipt), the QUIET1 replay report. |
-| `question_budget_spent` | `quiet.submit_questions` ONLY — one row per submission that asked or deferred anything (drop-empty), from the three askers `meeting_card` (`attribution_doors.card_questions`), `overdue_ask` (`end_of_day.apply_overdue_ask` with a workspace root) and `age_out_offer` (`commitment_backlog_sweep.run_age_out_job`'s offer line). `data: {asker, preset, limit, used_before, n_submitted, n_asked, n_deferred, asked_ids, deferred_ids}`. A POLICY1 chip is NOT a question and never appears here (`quiet.NOT_QUESTIONS`, refused by name). | `quiet.question_budget` (`used` = distinct (asker, id) pairs in the rolling week), `quiet.wrap_sections` ("still waiting"), `quiet.return_summary` ("N need you"), `value_receipt._window_metrics` via `quiet.receipt_counters` ("asked you M questions"). |
+| `question_budget_spent` | `quiet.submit_questions` ONLY — one row per submission that asked or deferred anything (drop-empty), from the four askers `meeting_card` (`attribution_doors.card_questions`), `overdue_ask` (`end_of_day.apply_overdue_ask` with a workspace root), `age_out_offer` (`commitment_backlog_sweep.run_age_out_job`'s offer line), and `eod_confirm` (FOLD1A, 2026-09-07 — `eod_question_budget.eod_confirm_candidates`, End of Day's ≤2 needs-review questions, RENDERED and answerable since fix round 2 — R-N10-3). `data: {asker, preset, limit, used_before, n_submitted, n_asked, n_deferred, asked_ids, deferred_ids}`. A POLICY1 chip is NOT a question and never appears here (`quiet.NOT_QUESTIONS`, refused by name). | `quiet.question_budget` (`used` = distinct (asker, id) pairs in the rolling week), `quiet.wrap_sections` ("still waiting"), `quiet.return_summary` ("N need you"), `value_receipt._window_metrics` via `quiet.receipt_counters` ("asked you M questions"). |
+| `question_expiry_run` | `question_ttl.run_question_expiry` ONLY — one row per expiry RUN that settled anything (drop-empty). `data: {batch_id, n_expired, n_tracked, n_held_important, by_class, lifetimes}` plus the ATTRIB2 actor stamp (`actor_id` = the engine's own rail name, `actor_kind: machine` — an expiry is never the customer's gesture). The `batch_id` is the ONE `qex_` batch the whole run wrote under, so a bare `undo` reverses the run. | `question_ttl.decided_for_you_lines` (the Friday wrap's "Decided for you" block, via `quiet.wrap_sections`), `brain_undo.recent_auto_batches` (the batch listing), and — since TTL1 fix round 3 — `receipts.receipt_task_id` (it is the `question-expiry` JOB's registered receipt type, one writer, so the maintenance dispatcher's due rule and the watchdog's job-freshness check both read it; written only on a run that settled something, so a quiet day leaves the job due) |
+| `flow_measure` | `flow_measure.write_measure_rows` ONLY, called by `flow_measure.run_measure_job` — the `daily-measure` job inside the `maintenance` task (MEASURE1, SPEC_FLOW1 Lane D). ONE row per workspace per COMPLETE workspace-local day; a day that already carries a row is never measured again, so FOLD1-A's three-to-four fires a day write nothing after the first (no superseding row exists or is needed — a closed day's input does not change on the clock). `data: {measure_date, in, in_open, in_held, in_reopened, out, out_by_route: {fact, own_word, silence, tap, lapse}, out_other, open, pages, plate_source, plate_as_of, plate_backfilled, plate_note, routes_without_marker}`. `in` is `in_open + in_held + in_reopened` — a REOPEN is a row arriving back on the plate and is counted in, never netted off an `out` written in an earlier window (fix round 1, reviewer F-4). `open`/`pages` are COPIED from `plate_view`'s one projection (`plate_leg`) and never computed here; `pages` is null on a tree whose `plate_view` states no page number, and a null is left out of every sentence rather than printed as zero. A BACKFILLED day carries NO plate reading at all — `open`/`pages`/`plate_as_of` null, `plate_backfilled` true and `plate_note` "not measured" — because the plate is a snapshot of now and cannot be reconstructed for a past midnight (fix round 1, reviewer F-5); the one day the reading belongs to carries it with the reading's real time in `plate_as_of`. A route whose marker does not exist yet in the tree counts 0 and is named in `routes_without_marker`, so a zero is never mistaken for a fact. | `flow_measure.measured_days` (the job's own memory — which days are done), `flow_measure.wrap_line` (the weekly wrap's one line), `flow_measure.operator_block` (the operator report's flow block), and the MEASURE1 replay. |
+| `eod_question_answered` | `eod_question_budget.apply_eod_answers` ONLY — ONE row per evening's answer to the day-close's ≤2 pre-picked confirms (FOLD1A fix round 2, REVIEW_FOLD1A R-2). NARRATION, never a change: it carries the `brain_batch_id` the two real writes were stamped with and deliberately NO `brain_change_class`, so `brain_undo._changes_for_brain_batch` does not count it as a phantom extra change in its own batch. The writes themselves are the queue's (`needs_review_queue.confirm_items` / `drop_items`), stamped `commitment_confirm` / `commitment_close`, which is why this surface registers no reverser of its own. `data: {brain_batch_id, n_confirmed, n_dropped, n_skipped, n_held, answered_by, undo, source_ref?}`. A `skip` writes nothing but is counted here. | `brain_undo` (via the batch id on the queue's own events), and any reader counting what the evening's questions actually settled. |
+| `coaching_answer` | `eod_question_budget.apply_coach_answer` ONLY — ONE row per self-scored answer to the day-close's coaching question, on a named or coached seat (SPEC SURFACES2_11c Lane 3 item 3). The seat's own reading of their own behaviour: `data: {behaviour, score, for_date, brain_batch_id, answered_by, undo, source_ref?}`, score a whole number one to ten. NO `brain_change_class` and NO reverser, by ruling R-5's default: nothing changed, so there is nothing to put back, and the `undo` field says exactly that in words rather than promising a reversal no code performs. Registering a reverser is two lines in `brain_undo.py`, which no lane owned on this train. | `eod_question_budget.coach_answered_on` — the evening does not ask a question the seat already answered today, and a re-fire spends no second question out of the week to find that out. |
 
 Hard rules:
 
 - **Never a question class.** The budget ranks and cuts questions the product
   already asks (M ruling 2026-09-03: no new question classes). Nothing may
-  submit a candidate that is not already one of the three askers' own rows.
+  submit a candidate that is not already one of the (now four, FOLD1A-cited)
+  askers' own rows.
 - **Never a step up on its own.** `interaction_posture` with `action:
   step_down` is written only from a configured posture to the one below it;
   `restore` only back to the configured one. `ask me more` / `ask me less`

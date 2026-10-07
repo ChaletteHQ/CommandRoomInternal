@@ -159,14 +159,14 @@ The corrections log is append-only. Prior rows are never edited. If a row is sup
 
 ## Correction batching and voice-block refresh
 
-Weekly or monthly (owner: `insight-generator` weekly, Chalette monthly for client installs):
+Weekly (owner: the `learning` job's voice leg — `learning_pass.run_voice_leg`, Sunday; Chalette monthly for client installs):
 
 1. Read the correction log for each writing skill.
 2. Group corrections by `correction_type` (phrasing / structure / vocabulary / tone).
 3. Identify patterns — e.g., "user corrected 7 instances of 'circle back' to 'following up on' in the last month."
 4. Propose voice-block updates: "Add to banned openers: 'wanted to circle back'. Add to preferred openers: 'Following up on [X]'."
-5. Present to user for approval.
-6. On approval, write the refreshed block to the **customer-side override store** `_hq/voice/voice-block-<skill>.md` (NOT the SKILL.md — the plugin directory is a managed clone overwritten on every update, so a block written into SKILL.md is lost on the next install). The override supersedes the baked-in `## Voice Block` **section-by-section** (a section present in the override replaces the same-named default; absent sections fall through to the SKILL.md default). Append a `voice_block_updated` event. Implementation: `shared/scripts/voice_corrections.py` `write_voice_block_override`.
+5. Write the refreshed block. **This is automatic — there is no approval step and no card.** The floors ARE the safety: ≥3 same-direction corrections on one skill before anything moves, and every change is narrated in the morning brief in the past tense with a one-word `undo`. The confirm-first version of this loop asked first, was never shown, and learned nothing in months.
+6. Write the refreshed block to the **customer-side override store** `_hq/voice/voice-block-<skill>.md` (NOT the SKILL.md — the plugin directory is a managed clone overwritten on every update, so a block written into SKILL.md is lost on the next install). The override supersedes the baked-in `## Voice Block` **section-by-section** (a section present in the override replaces the same-named default; absent sections fall through to the SKILL.md default). Append a `voice_block_updated` event. Implementation: `shared/scripts/voice_corrections.py` `write_voice_block_override`.
 7. For a universal LLM tell (same pattern across 3+ skills), Chalette MAY also promote it plugin-side into this file's banned list and push a new private-plugin version — but the per-customer calibration always lives in the workspace override, never requiring a plugin push.
 
 ### Detection + the override store (B1 — how the loop actually runs)
@@ -176,7 +176,7 @@ The corrections are detected at two points, classified deterministically, and ap
 1. **Widget-edit (synchronous):** apply-choices Step 3d snapshots the canonical body (`_hq/voice/draft-snapshots.jsonl`) at send/draft time, and when the user's `input.body` differs it runs `diff_and_classify` + `append_correction` immediately. Highest-fidelity signal.
 2. **Sent-mail (asynchronous):** reconcile-sent step 3b runs `reconcile_sent_against_snapshots` over the already-fetched Sent batch, matching by `gmail_message_id` then by recipient + normalized subject + a 7-day window.
 
-The monthly batch is **insight-generator Pass 11**. **Every writing skill, at draft time, reads its `_hq/voice/voice-block-<skill>.md` override (if present) and applies it over the baked-in block per step 6 above** — this is the customer-side write target that makes calibration take effect without a plugin push. Draft snapshots store real body text (workspace-private, same class as transcripts) and are pruned by `cleanup`.
+The weekly batch is **the `learning` job's voice leg** (`learning_pass.run_voice_leg`, Sunday). Pass 11 is RETIRED — insight-generator writes no voice block. **Every writing skill, at draft time, reads its `_hq/voice/voice-block-<skill>.md` override (if present) and applies it over the baked-in block per step 6 above** — this is the customer-side write target that makes calibration take effect without a plugin push. Draft snapshots store real body text (workspace-private, same class as transcripts) and are pruned by `cleanup`.
 
 ### Universal pattern promotion
 
@@ -358,7 +358,7 @@ Every writing skill:
 3. **Applies** the universal banned-phrase list before returning output.
 4. **Appends** corrections to `_hq/voice/corrections-[skill-name].jsonl` when detected.
 5. **Emits** staleness notice if applicable.
-6. **Never writes** to its own SKILL.md (only `insight-generator` or Chalette refresh updates voice blocks).
+6. **Never writes** to its own SKILL.md (only the `learning` job's voice leg or a Chalette refresh updates voice blocks).
 
 ---
 

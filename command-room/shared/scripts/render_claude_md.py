@@ -63,6 +63,15 @@ BLOCK_WORKSTREAMS = "workstreams"
 # the block (AC-1: byte-identical to pre-STYLE1), and a persona that is later
 # wiped clears its block instead of leaving it stale.
 BLOCK_PERSONA = "persona"
+# SPEC_SURFACES2 PROFILE1: the workspace profile rides the SAME generated-block
+# contract as the persona, for the same reason. The lines that say how this
+# seat thinks, how they like their output and what is off limits shape how the
+# product talks even in a loose question, so they belong in the file the model
+# reads on every turn - and they are REGENERATED from the structured layers,
+# never hand-edited. The switch `profile.regenerate_instructions` gates it
+# (default on, fail-to-default); a workspace with nothing stated never gets
+# the block and stays byte-identical to pre-PROFILE1.
+BLOCK_PROFILE = "profile"
 SOURCE_LINE = "_Full register: `_hq/data/entities.json` · views: `_hq/views/`_"
 
 # Above this many VISIBLE orgs (post passive/archived exclusion) the register
@@ -243,6 +252,28 @@ def _persona_body(ws: Path) -> str:
     return "\n".join(lines)
 
 
+def _profile_block_active(ws: Path, claude_md: Path) -> bool:
+    """Same dormancy gate as the persona: the block participates only when
+    the profile has something stated OR a stale block must be cleared."""
+    try:
+        import profile as _profile
+        active = _profile.profile_block_active(ws)
+    except Exception:
+        active = False
+    return active or read_block_meta(claude_md, BLOCK_PROFILE) is not None
+
+
+def _profile_body(ws: Path) -> str:
+    """Body for the profile block. Empty string when the switch is off or the
+    profile is empty - render_block then CLEARS the region rather than
+    leaving stale guidance in the hot cache."""
+    try:
+        import profile as _profile
+        return "\n".join(_profile.instruction_lines(ws))
+    except Exception:
+        return ""
+
+
 def needs_regenerate(workspace_root: str | Path) -> bool:
     ws = Path(workspace_root)
     claude_md = ws / "CLAUDE.md"
@@ -252,6 +283,8 @@ def needs_regenerate(workspace_root: str | Path) -> bool:
     blocks = [BLOCK_ORGS, BLOCK_WORKSTREAMS]
     if _persona_block_active(ws, claude_md):
         blocks.append(BLOCK_PERSONA)
+    if _profile_block_active(ws, claude_md):
+        blocks.append(BLOCK_PROFILE)
     return any(
         needs_render(claude_md, b, seq, logic_version=LOGIC_VERSION)
         for b in blocks)
@@ -285,6 +318,22 @@ def regenerate(workspace_root: str | Path) -> dict:
             )["status"]
         else:
             out[BLOCK_PERSONA] = "unchanged"
+    if _profile_block_active(ws, claude_md):
+        # PROFILE1 - identical contract, own body source (the structured
+        # profile layers, not entities.json). The persona precedent is the
+        # mechanism here on purpose: the profile lines must never be a hand
+        # edit, which is exactly what happened to the style rule STYLEROUTE1
+        # had to migrate back out of a workspace CLAUDE.md.
+        if needs_render(claude_md, BLOCK_PROFILE, seq,
+                        logic_version=LOGIC_VERSION):
+            out[BLOCK_PROFILE] = render_block(
+                claude_md, BLOCK_PROFILE, _profile_body(ws),
+                generated_at=now, source_seq=seq,
+                logic_version=LOGIC_VERSION,
+                create_after_heading="## Workspace register (generated)",
+            )["status"]
+        else:
+            out[BLOCK_PROFILE] = "unchanged"
     for block_id, body_fn in ((BLOCK_ORGS, _org_body),
                               (BLOCK_WORKSTREAMS, _workstream_body)):
         # Honor the dirty-check BEFORE rebuilding (v5.10.0 flake fix): the

@@ -136,6 +136,26 @@ tap away (expand, read-only, display numbers kept). What to know:
 - There is no setting for this and none should be invented: M's ruling is
   that it is baked in for everybody.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## Routing
 
 | The user says | Fires |
@@ -262,10 +282,55 @@ dismissal set.
 Discover the plugin root first (CONTRACT Rule 22) and run FROM `$PLUGIN_ROOT`:
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ '{print NF, $0}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||')
-cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 shared/scripts/needs_review_queue.py view "$WORKSPACE"
 ```
 
@@ -292,6 +357,19 @@ pad an all-clear.
 `view-json` returns the same view as JSON when you need the ids without
 re-reading.
 
+**Questions past their shelf life are not on this page either** (fix round
+1, 2026-09-14). A row carrying a **card question** older than its class
+lifetime is screened out of the queue — the same predicate
+(`question_ttl.within_lifetime`) the Staff Meeting card and the meeting fold
+ask, so "a question past its window is not offered anywhere" is true of the
+on-demand list too. Anything the importance rule holds — overdue, due this
+week, a client on it, money on it — is still listed however old the question
+is, because no expiry will ever take it and hiding it would hide it forever.
+A capture carrying no card question is untouched: its lifetime belongs to
+the review-expiry drain. The page's count, numbering and header are all
+computed after the screen, so every number on the page is about the rows on
+the page.
+
 **The widget form — ONE call, and it paginates by CALL.** Never hand-compose
 the rows, and never render this surface unpaginated (an unpaginated
 `render_and_persist` skips the 40KB byte-budget fit):
@@ -303,6 +381,7 @@ from needs_review_queue import render_queue_page
 transport = render_queue_page("<WORKSPACE>", page=1)
 # transport["html"]              -> show_widget widget_code, byte-exact
 # transport["group_pagination"]  -> {page, total_pages, has_more, total_groups, …}
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 `render_queue_page` builds the grouped view, packs WHOLE groups onto each page
@@ -679,6 +758,80 @@ lane ("filed a past record under its project").
 transcripts or mail (pure substrate); never touches the queue's own rows;
 never changes what the engine proposes, refuses, writes, or records —
 the CLI sitting and this widget produce the same receipts.
+
+## The Staff Meeting sections this file's code builds (FOLD1-B, 2026-09-14)
+
+Two sections of the Staff Meeting come out of this skill's module, and both
+are built here so the queue has one home and one set of writers.
+
+- **`FROM YOUR MEETINGS`** — the per-meeting fold
+  (`needs_review_queue.staff_meeting_group_section`), unchanged, except that
+  a row carrying a **card question** past its class lifetime is no longer
+  offered: the section screens those through
+  `question_ttl.within_lifetime` on the same last-activity clock the expiry
+  engine uses. An ordinary unconfirmed capture — one with no card question —
+  is untouched here; its lifetime belongs to the review-expiry drain in
+  `commitment_backlog_sweep`, which has its own holds. The Staff Meeting's
+  fire receipt records `n_hidden_past_lifetime` — how many questions that
+  fire's screen held back — so a weekly expiry rail that stops running
+  cannot hide questions silently (fix round 1, 2026-09-14).
+- **`OVERDUE — new date`** — the fatigue rule's question,
+  rehomed (`needs_review_queue.overdue_ask_section`). It used to ride the
+  morning brief as a row label. The brief states and never asks, so the
+  question moved to the surface that exists for asking. **CORRECTION,
+  2026-09-14 (fix round 2):** the heading here used to read
+  *"OVERDUE — done, new date, or drop?"* — End of Day's own words, carried
+  over whole when the question was rehomed — while the row underneath
+  rendered two buttons, `push to [date]` and `draft`. It offered an answer
+  the row does not show, named a third that is registered but deliberately
+  not a button, and left out the one it has. The heading is now composed
+  from `OVERDUE_ASK_RENDERED` (`needs_review_queue.OVERDUE_ASK_VERB_WORDS`
+  supplies each verb's customer word), so it can never fall behind what the
+  row renders, and it asks nothing: the answer is already pre-picked.
+
+The overdue section's rules, each of which is code and not prose:
+
+- **Same rows, same verdict.** The section hands its rows to
+  `end_of_day.apply_overdue_ask` — the one implementation both bookends
+  call — so no surface can ask a different question about the same row on
+  the same day. The threshold is the workspace's own
+  (`end_of_day.overdue_ask_after_days`).
+- **Out of the weekly five, never on top of them.** **CORRECTION,
+  2026-09-14 (fix round 1):** the sentence here used to say
+  `apply_overdue_ask` does the spending. It does not on this path — the
+  Staff Meeting calls it with `workspace_root=None`, deliberately pure, so
+  the page's own ceiling (read from the same weekly budget) can bound the
+  section without the section having already charged against it. **The
+  spender is the Staff Meeting itself:**
+  `needs_review_queue.mark_overdue_asked` submits through
+  `quiet.submit_questions` as the `quiet.ASKER_OVERDUE` asker, AT THE POST,
+  for exactly the rows that reached the screen. So the five is charged for
+  what the customer saw, and a row the page bound cut is neither asked nor
+  charged.
+- **One tap, pre-picked.** Each row reads `<title> — <n> days overdue ·
+  likely: new date`. It REGISTERS the question's own three answers
+  (`needs_review_queue.OVERDUE_ASK_ACTIONS`, the same three
+  `end_of_day.SLIPPED_VERBS` carries, so one question does not have two
+  answer sets) and RENDERS one of them
+  (`OVERDUE_ASK_RENDERED`): `push to [date]` pre-picked
+  (`OVERDUE_ASK_DEFAULT`) — the answer that changes nothing about the row's
+  truth if it is wrong, so leaving the page does the safe thing.
+  **CORRECTION, 2026-09-15 (trial merge, MF-11c-6):** this bullet used to
+  say the row renders two, the second being `draft`. `draft` is a
+  send-class verb and the renderer refuses an item carrying one without a
+  recipient, which this row never has — the fire raised and marked nothing.
+  `drop` stays answerable from the plate and in chat; it is simply not a
+  button, because this surface has one tap per row.
+- **The marker is written AFTER the post**, by `run_surface`, through
+  `needs_review_queue.mark_overdue_asked` → `end_of_day.mark_lane_asked`
+  stamped with this surface's own id. That marker is what rests the row on
+  the next morning's brief. Marking before the post would rest a row nobody
+  saw; not marking at all is what made switching the ask off silently kill
+  the rest-until-answered fold (SURFACEFIX1 5.4).
+- **The reader's own day.** "N days overdue" is resolved through
+  `tz.localize_date` before the verdict is asked for, the same as the
+  morning lane does, so the two surfaces cannot disagree about what day it
+  is.
 
 ## What this skill does NOT do
 

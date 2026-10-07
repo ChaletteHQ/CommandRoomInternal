@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -123,6 +124,25 @@ SOURCE_SKILL = "lifecycle"
 # this job's own success validator, per MAINT1's "a job vouches for itself".
 RECEIPT_TASK_ID = "lifecycle"
 RECEIPT_EVENT_TYPE = "lifecycle_run"
+
+
+def _effective_fired_via(explicit):
+    """`receipts.effective_fired_via`, behind an import that cannot break.
+
+    FIX3 F3-6, fix pass 2 (review N-1). This job's receipt hardcoded
+    `fired_via="scheduled"` and had no resolver at all, so a typed brief on a
+    merged seat recorded its own catch-up as a scheduled fire and nothing in
+    the process could say otherwise. The resolver's floor off a merged seat
+    is today's `scheduled`, so the un-merged fleet is byte-identical.
+    """
+    try:
+        from receipts import effective_fired_via
+    except Exception:  # noqa: BLE001 — a receipt never fails on a stamp
+        return "scheduled"
+    try:
+        return effective_fired_via(explicit)
+    except Exception:  # noqa: BLE001
+        return "scheduled"
 
 # Per-fire bounds. See the module docstring — spill is narrated in the receipt,
 # stays due, and drains at the next weekly fire.
@@ -663,7 +683,9 @@ def _set_status(workspace_root, thread_id: str, *, from_status: str,
 def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                        now_iso: Optional[str] = None,
                        caps: Optional[dict] = None,
-                       write_receipt: bool = True) -> dict:
+                       write_receipt: bool = True,
+                       fired_via: Optional[str] = None,
+                       triggered_by: Optional[str] = None) -> dict:
     """Execute the plan. `apply=False` (the default) is a dry run that writes
     NOTHING — not even the receipt — so the job stays due and a dry run can
     never be mistaken for a served slot (identity_reconcile's `--apply`
@@ -751,7 +773,9 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
             receipt = log_receipt(
                 workspace_root, RECEIPT_TASK_ID,
                 receipt_type=RECEIPT_EVENT_TYPE,
-                fired_via="scheduled",
+                # FIX3 F3-6, fix pass 2: the SEAT answers, not a literal.
+                fired_via=_effective_fired_via(fired_via),
+                triggered_by=triggered_by,
                 surfaced=applied["propose"],
                 extra_data={
                     "considered": plan["considered"],
@@ -789,9 +813,25 @@ def main(argv: Optional[list] = None) -> int:
                         help="execute the plan (without it: dry run, no writes)")
     parser.add_argument("--now", default=None,
                         help="frozen ISO instant (testing/simulation)")
+    # FIX3 F3-6, fix pass 2 (review N-1). The rendered leg ends in these two
+    # flags and this command used to exit 2 on them, so the Sunday family's
+    # lifecycle leg died with a usage error whenever a typed surface ran the
+    # catch-up.
+    parser.add_argument("--fired-via", default=None,
+                        choices=("scheduled", "manual", "catchup"),
+                        help="how this run was started; the seat decides "
+                             "when nothing is said")
+    parser.add_argument("--triggered-by", default=None,
+                        help="the surface that asked for this run")
     args = parser.parse_args(argv)
+    # The same export the other job CLIs make, so every composer below reads
+    # who asked from one place instead of a dozen signatures.
+    if getattr(args, "triggered_by", None):
+        os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
     result = run_lifecycle_pass(args.workspace, apply=args.apply,
-                                now_iso=args.now)
+                                now_iso=args.now,
+                                fired_via=args.fired_via,
+                                triggered_by=args.triggered_by)
     print(json.dumps(result, indent=2, default=str))
     return 0
 

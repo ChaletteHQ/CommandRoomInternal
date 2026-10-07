@@ -13,7 +13,7 @@ holds both halves of a graded exam and never grades it. This module grades it:
     which topics came up unpredicted, and which sections were rendered but never
     relevant. `build_prep_feedback_event(...)` writes a `prep_feedback` event.
 
-  LEARN (insight-generator Pass 15, monthly)
+  LEARN (the `learning` job's prep leg, weekly — Pass 15 is retired)
     aggregate per meeting-type; `propose_section_weights(stats, ...)` proposes
     section-weight changes to call-prep's config ("risks section has been
     empty-but-rendered in 8 of 9 internal 1:1s — drop it for internal
@@ -198,12 +198,39 @@ def propose_section_weights(
 # call-prep config extension (per-meeting-type section weights)
 # ---------------------------------------------------------------------------
 
+_MISSING = object()
+
+
 def section_weight(config: dict, meeting_type: str, section: str,
                    default: float = 1.0) -> float:
     """The learned weight for a section in a meeting-type (1.0 = render normally,
-    0 = drop). Read by call-prep before rendering. Pure; None-safe."""
+    0 = drop). Read by call-prep before rendering. Pure; None-safe.
+
+    WRITER AND READER AGREE ON ONE SPELLING. call-prep passes the section
+    names it renders — `Risks / Watch-outs`, `Questions to Ask` — while the
+    learning job writes the normalized join key (`risks watch outs`), because
+    the same section has appeared in the graded feedback under three dash
+    characters and two cases. A lookup that only tried the caller's literal
+    string found NOTHING the job wrote: a store with a reader that cannot see
+    it is a store with no reader. So this tries the caller's exact spelling
+    first (any weight an older interactive confirm wrote under a raw name
+    still answers), then the normalized key."""
     sw = (config or {}).get("section_weights") or {}
-    return sw.get(meeting_type, {}).get(section, default)
+    if not isinstance(sw, dict):
+        return default
+    exact = sw.get(meeting_type)
+    if isinstance(exact, dict):
+        found = exact.get(section, _MISSING)
+        if found is not _MISSING:
+            return found
+    norm_mt = normalize_meeting_type(meeting_type)
+    norm_sec = normalize_section_name(section)
+    folded = sw.get(norm_mt)
+    if isinstance(folded, dict):
+        found = folded.get(norm_sec, _MISSING)
+        if found is not _MISSING:
+            return found
+    return default
 
 
 def set_section_weight(config: dict, meeting_type: str, section: str, weight: float) -> dict:
@@ -218,9 +245,178 @@ def set_section_weight(config: dict, meeting_type: str, section: str, weight: fl
     return config
 
 
+# ---------------------------------------------------------------------------
+# LEARN1 — the normalized aggregate, the de-emphasis tier, and the writer
+#
+# THE DEFECT THIS CLOSES: `aggregate_section_stats` keys on the section string
+# EXACTLY as the renderer spelled it. Across the banked feedback the SAME
+# section appears as "Questions to Ask" and "questions to ask", and the risks
+# section appears under three different dash characters — so one section's
+# evidence sits in three buckets, none of which reaches the floor. Section
+# names are join keys; a re-spelling silently splits the history.
+# ---------------------------------------------------------------------------
+
+# THE ONLY ACT ON THIS RAIL IS THE SHIPPED DROP. There is no second, gentler
+# tier here. A "render this section shorter at half the evidence" act was
+# built and taken back out before merge: it is a NEW act at a NEW evidence
+# bar, SPEC_LEARN1 §6 puts changes to floors and caps out of scope, and the
+# worst-case paragraph the customer was shown when he approved automatic
+# applying says the system can hide a section that was empty in four of five
+# briefs. An act that fires at one in two makes that sentence false. It needs
+# his word and a rewritten worst-case paragraph before it exists, not a
+# builder's judgement — so the floor stands at `EMPTY_RATE`, and on a book
+# that carries no evidence at that floor this leg correctly does nothing.
+
+_DASHES_RE = re.compile("[‐-―]")
+_NONWORD_RE = re.compile(r"[^a-z0-9]+")
+# Meeting-type spellings that name the same kind of meeting. PREFIX STRIPS
+# ONLY. Two meeting types that a person would describe differently must never
+# be folded together: a section empty in a one-to-one is not evidence about a
+# hiring interview, and a weight learned on a pooled bucket would apply to
+# both. `internal_1_1` and `internal_hiring` therefore stay their own keys —
+# folding them into `internal` is a pooling decision, not a normalization.
+_MEETING_TYPE_ALIASES = {
+    "client_support": "support",
+    "client_onboarding": "onboarding",
+    "client_working_session": "working_session",
+}
+
+
+def normalize_section_name(section) -> str:
+    """The join key for a prep-brief section. Case-folded, dash-variants
+    unified, punctuation collapsed to single spaces. Pure."""
+    text = _DASHES_RE.sub("-", str(section or "")).lower()
+    return _NONWORD_RE.sub(" ", text).strip()
+
+
+def normalize_meeting_type(meeting_type) -> str:
+    """The join key for a meeting type. Pure. Unknown spellings pass through
+    normalized rather than being forced into a known bucket."""
+    text = _DASHES_RE.sub("-", str(meeting_type or "")).lower()
+    key = _NONWORD_RE.sub(" ", text).strip().replace(" ", "_")
+    return _MEETING_TYPE_ALIASES.get(key, key) or "other"
+
+
+def aggregate_section_stats_normalized(rows: List[dict]) -> Dict[tuple, dict]:
+    """Per (normalized meeting_type, normalized section): {rendered, empty}.
+    Pure. Sits BESIDE `aggregate_section_stats` rather than replacing it:
+    the raw form is what the shipped Pass-15 prose and its tests read, and
+    displacing it would rewrite history's meaning.
+
+    `empty` is derived from `sections_hit` when the row carries it (a section
+    rendered with zero hits), falling back to the `sections_missed` list —
+    the two agree on every row the grader wrote, and the derivation survives
+    a section re-spelling between the two fields."""
+    agg: Dict[tuple, dict] = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        mtype = normalize_meeting_type(r.get("meeting_type") or "other")
+        rendered = r.get("sections_rendered") or {}
+        hits = r.get("sections_hit") or {}
+        missed = {normalize_section_name(s)
+                  for s in (r.get("sections_missed") or [])}
+        if not isinstance(rendered, dict):
+            continue
+        for section, n in rendered.items():
+            try:
+                if int(n) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            key = normalize_section_name(section)
+            slot = agg.setdefault((mtype, key), {"rendered": 0, "empty": 0})
+            slot["rendered"] += 1
+            if isinstance(hits, dict) and section in hits:
+                if not hits.get(section):
+                    slot["empty"] += 1
+            elif key in missed:
+                slot["empty"] += 1
+    return agg
+
+
+def weight_change_line(change: dict, *, rendered=None, empty=None) -> str:
+    """The customer sentence for a weight change that ACTUALLY HAPPENED.
+
+    Built from the WRITTEN change — `{meeting_type, section, from, to}` as
+    the writer returned it — never from the proposal. A proposal is a thing
+    the job wanted to do; the write is the thing it did, and a surface that
+    announces the proposal announces effects the write may not have produced.
+    Returns "" for a change that moved nothing, so the caller has no sentence
+    to narrate when nothing happened.
+
+    The evidence numbers are optional and only sharpen the sentence; without
+    them it still says exactly what changed."""
+    if not isinstance(change, dict):
+        return ""
+    mtype = str(change.get("meeting_type") or "").replace("_", " ").strip()
+    section = str(change.get("section") or "").strip()
+    if not mtype or not section:
+        return ""
+    to = change.get("to")
+    if change.get("from") == to:
+        return ""
+    if to != 0:
+        # The only act on this rail is the drop. A weight this function does
+        # not have a sentence for is a weight the customer should not be told
+        # a story about.
+        return ""
+    because = ""
+    try:
+        if int(empty) > 0 and int(rendered) > 0:
+            because = (" — it came up empty in " + str(int(empty))
+                       + " of the last " + str(int(rendered)))
+    except (TypeError, ValueError):
+        because = ""
+    return ("Stopped putting the " + section + " section in your " + mtype
+            + " prep briefs" + because + ".")
+
+
+def set_section_weights(workspace_root, updates: List[dict], *,
+                        origin: str = "learning",
+                        event_extra: Optional[dict] = None) -> dict:
+    """Persist a batch of section weights into call-prep's skill config.
+
+    The wrapper the proposers never had: `set_section_weight` is pure and
+    `save_skill_config` is the store, and nothing in the tree joined them —
+    which is why a workspace with seventy graded briefs carried no weights.
+
+    Returns {"changes": [{meeting_type, section, from, to}], "config"}.
+    `from` is the weight the config held before (1.0 when it held none), so
+    the reverser has its snapshot without re-reading anything."""
+    from skill_config_writer import load_skill_config, save_skill_config
+
+    stored = load_skill_config(workspace_root, "call-prep") or {}
+    cfg = stored.get("config") if isinstance(stored, dict) else None
+    cfg = dict(cfg) if isinstance(cfg, dict) else {}
+    had_config = bool(stored)
+    changes: List[dict] = []
+    for update in updates or []:
+        mtype = update.get("meeting_type")
+        section = update.get("section")
+        if not mtype or not section:
+            continue
+        new_weight = update.get("weight", 0)
+        prior = section_weight(cfg, mtype, section)
+        if prior == new_weight:
+            continue
+        cfg = set_section_weight(cfg, mtype, section, new_weight)
+        changes.append({"meeting_type": mtype, "section": section,
+                        "from": prior, "to": new_weight})
+    if not changes:
+        return {"changes": [], "config": cfg}
+    save_skill_config(workspace_root, "call-prep", cfg,
+                      is_reconfigure=had_config, origin=origin,
+                      event_extra=event_extra or None)
+    return {"changes": changes, "config": cfg}
+
+
 __all__ = [
     "GRADABLE_SECTIONS", "MIN_MEETINGS", "EMPTY_RATE", "CAP", "PASS_NAME",
     "default_matcher", "grade_brief", "build_prep_feedback_event",
     "load_prep_feedback", "aggregate_section_stats", "propose_section_weights",
     "section_weight", "set_section_weight",
+    "normalize_section_name", "normalize_meeting_type",
+    "aggregate_section_stats_normalized", "weight_change_line",
+    "set_section_weights",
 ]

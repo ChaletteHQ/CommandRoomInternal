@@ -8,7 +8,7 @@ The handoff's R1 wanted `_hq/data` relocated OUT of the Drive mirror to end the
 multi-machine clobber class. Grounding found the conflict that makes that a
 separate, M-gated migration rather than part of this build: scheduled fires run
 in Cowork sandboxes that reach the substrate ONLY via the workspace mount (the
-row-17 marker's own quarantine_path is `/sessions/.../mnt/Penelopes Brain/_hq/
+row-17 marker's own quarantine_path is `/sessions/.../mnt/<Workspace>/_hq/
 data/...`). Moving `_hq/data` to a non-synced local path orphans every Cowork
 and scheduled fire — they'd see an empty substrate. So THIS build ships the
 resolver + a migration script, but does NOT migrate M's workspace: the default

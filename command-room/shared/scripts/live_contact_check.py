@@ -114,6 +114,19 @@ from tool_discovery import (
 )
 
 
+def _declared_calendar_backend(workspace_root):
+    """The declared `calendar` backend row, or None. DISC1: the mail half of
+    this helper has resolved the declared backend since MAILSEAM2 and the
+    calendar half never did, so a workspace that declared its calendar was
+    still resolved by substring guesswork one line below its own answer. Same
+    fail-soft contract as the mail reader."""
+    try:
+        import connector_config
+        return connector_config.declared_backend("calendar", workspace_root)
+    except Exception:
+        return None
+
+
 def _declared_mail_backend(workspace_root):
     """The declared `email` backend row for this workspace, or None. Import is
     local and swallowed: this module is imported in contexts where
@@ -211,6 +224,7 @@ def discover_live_check_tools(
     workspace_root=None,
     *,
     declared=None,
+    declared_calendar=None,
 ) -> dict:
     """Resolve the mail-search and Calendar-find tool IDs the caller needs
     in order to fetch live signals. Returns a dict the orchestrator can read
@@ -223,6 +237,12 @@ def discover_live_check_tools(
     which a workspace with two mail connectors gets whichever platform the
     hint dict happens to list first. That case now comes back named, in
     `mail_ambiguous`, so a caller can say which inbox it read.
+
+    DISC1 — the CALENDAR half now does the same. `declared_calendar` wins when
+    passed, else the `calendar` row is read from `workspace_root`. Without it
+    a workspace that had declared its calendar backend was still resolved by
+    guesswork, one line below its own answer — and on a connector that fronts
+    both mail and calendar, guesswork resolved nothing at all.
 
     The orchestrator should:
       1. Call this once per fire (tool registry is stable for a session)
@@ -251,7 +271,14 @@ def discover_live_check_tools(
         declared=declared,
         zapier_ids=_zapier_server_ids(workspace_root),
     )
-    cal = discover_calendar_tool(tools, operation="find_events")
+    cal = discover_calendar_tool(
+        tools,
+        operation="find_events",
+        declared=(declared_calendar
+                  if declared_calendar is not None
+                  else _declared_calendar_backend(workspace_root)),
+        zapier_ids=_zapier_server_ids(workspace_root),
+    )
     return {
         "mail_search_tool_id": mail.tool_id,
         "mail_search_failed_reason": mail.reason or None,

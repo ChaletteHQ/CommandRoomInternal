@@ -1,7 +1,9 @@
 <!--
-  Step 1 setup widget — v6 (SPEC QUIET1 D1 adds Q5 check-in cadence; v5
-  removed Q2 email exclusions; v4 was SPEC FRP1 email draft-posture; v3 was
-  2026-05-23 M1 redesign)
+  Step 1 setup widget — v7 (ONBOARD2, ruling 7, 2026-09-08: Q5 check-in
+  cadence REMOVED — the product never asks it; every seat is stamped
+  `light` unconditionally at Phase 0 submission. v6 added Q5 (SPEC QUIET1
+  D1); v5 removed Q2 email exclusions; v4 was SPEC FRP1 email
+  draft-posture; v3 was 2026-05-23 M1 redesign)
 
   Self-contained HTML/JS. Loaded by skills/command-room-onboarding/SKILL.md
   Phase 0, passed verbatim to mcp__visualize__show_widget. Bypasses
@@ -9,33 +11,27 @@
   from the standard CR renderer so onboarding doesn't share a single point
   of failure with the scheduled-task orchestrator surfaces.
 
-  Five questions, progressive reveal:
+  Four questions, progressive reveal:
     Q1 — Role (six top chips, sub-chip drill-down, optional refinement textbox)
     Q2 — Timezone (four US zones / Other-with-textbox)
     Q3 — AI name (default "Penelope" / pick-your-own-with-textbox)
     Q4 — Email draft posture (show_first / auto_queue) — an ask-first
          first-run decision batched into onboarding; written origin=m1_batch
-    Q5 — Check-in cadence (daily / few_times_a_week / rarely) — SPEC QUIET1 D1,
-         CUT-D (M ruling 2026-09-06): EVERY answer stamps the commitment-policy
-         preset `light` (quiet.stamp_onboarding_preset, origin=m1_batch) on a
-         FRESH seat; a seat with a posture already stored is left alone (R2,
-         the skip receipted once). The answer rides the receipt's triggered_by
-         line and sets nothing else. The only way up is `ask me more`.
 
-  Submission shape (fires on the final Q5 chip click):
+  Submission shape (fires on the final Q4 chip click):
     apply choices: [{"n":1,"action":"<top>","sub":"<sub>","input":"<text>"}, ...]
-    `sub` and `input` are optional per tuple. Five tuples total (n=5 is the cadence).
+    `sub` and `input` are optional per tuple. Four tuples total.
 
   Routes via apply-choices to command-room-onboarding "Reply handling — Phase 0
-  setup". Fire-marker event widget_kind = step_1_setup_v6.
+  setup". Fire-marker event widget_kind = step_1_setup_v7.
 -->
 <div style="padding: 1rem 0;">
-<h2 class="sr-only">Phase 0 onboarding widget — five questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; the AI-name question precedes the email draft-posture question, and the check-in cadence question closes the widget</h2>
+<h2 class="sr-only">Phase 0 onboarding widget — four questions; role chips each open sub-chips; sub-chip click opens a refine textbox; every sub-group has its own Other option; the AI-name question precedes the email draft-posture question, which closes the widget</h2>
 
 <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.25rem;">
 
   <div style="margin-bottom: 1rem;">
-    <p style="margin: 0 0 4px; font-size: 16px; font-weight: 500;">Quick setup — five questions, then I'll scan your tools</p>
+    <p style="margin: 0 0 4px; font-size: 16px; font-weight: 500;">Quick setup — four questions, then I'll scan your tools</p>
     <p style="margin: 0; font-size: 13px; color: var(--color-text-secondary);">Pick a chip, refine a step deeper, add detail if helpful.</p>
   </div>
 
@@ -44,7 +40,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <i class="ti ti-user" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">Which best describes you?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">1 / 5</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">1 / 4</span>
       </div>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top" data-v="run-company" data-label="Run a company">Run a company</button>
@@ -74,7 +70,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
         <i class="ti ti-clock" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What timezone are you in?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 5</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">2 / 4</span>
       </div>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top simple" data-v="pacific" data-label="Pacific" disabled>Pacific</button>
@@ -99,7 +95,7 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <i class="ti ti-sparkles" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">What do you want to call your AI?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 5</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">3 / 4</span>
       </div>
       <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Default is Penelope. Pick anything that feels right — Jarvis, Alfred, your own first name. She runs your Command Room and shows up by name in every chat (&ldquo;ask Penelope,&rdquo; &ldquo;Penelope said&rdquo;). Her workspace folder becomes <code>[Name]&rsquo;s Brain</code>.</p>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
@@ -122,12 +118,12 @@
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <i class="ti ti-mail" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
         <span style="font-size: 14px; font-weight: 500;">How should I handle email drafts?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 5</span>
+        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">4 / 4</span>
       </div>
-      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">When you ask me to write an email, I can show you the draft first and only touch Gmail when you click &mdash; or drop every draft straight into your Gmail Drafts. You can change this anytime by saying &ldquo;tune email-writer.&rdquo;</p>
+      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">When you ask me to write an email, I can show you the draft first and only touch {{MAIL_LABEL}} when you click &mdash; or drop every draft straight into {{MAIL_DRAFTS}}. You can change this anytime by saying &ldquo;tune email-writer.&rdquo;</p>
       <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
         <button class="chip top simple" data-v="show_first" data-label="Show me first" disabled>Show me first</button>
-        <button class="chip top simple" data-v="auto_queue" data-label="Auto-queue to Gmail Drafts" disabled>Auto-queue to Gmail Drafts</button>
+        <button class="chip top simple" data-v="auto_queue" data-label="{{MAIL_QUEUE_CHIP}}" disabled>{{MAIL_QUEUE_CHIP}}</button>
       </div>
     </div>
     <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
@@ -136,27 +132,7 @@
     </div>
   </div>
 
-  <div data-q="5" class="qcard qlocked" style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px 16px;">
-    <div class="qhead">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-        <i class="ti ti-bell" style="font-size: 16px; color: var(--color-text-secondary);" aria-hidden="true"></i>
-        <span style="font-size: 14px; font-weight: 500;">How often will you check in?</span>
-        <span style="margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);">5 / 5</span>
-      </div>
-      <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.45;">Whichever you pick, I start light: a handful of questions a week at most, and your plate shows 40 items at a time. Everything else resolves on its own with the sensible default, and anything I decide for you shows up in your Friday wrap with an undo. Say &ldquo;ask me more&rdquo; whenever you want more.</p>
-      <div class="toprow" style="display: flex; flex-wrap: wrap; gap: 6px;">
-        <button class="chip top simple" data-v="daily" data-label="Daily" disabled>Daily</button>
-        <button class="chip top simple" data-v="few_times_a_week" data-label="A few times a week" disabled>A few times a week</button>
-        <button class="chip top simple" data-v="rarely" data-label="Rarely" disabled>Rarely</button>
-      </div>
-    </div>
-    <div class="qsummary" style="display: none; font-size: 13px; color: var(--color-text-secondary);">
-      <i class="ti ti-check" style="font-size: 14px; color: var(--color-text-success); vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>
-      <span class="summary-label"></span>
-    </div>
-  </div>
-
-  <p style="margin: 1rem 0 0; font-size: 12px; color: var(--color-text-tertiary);">Everything stays in the folder you chose. Nothing leaves your machine.</p>
+  <p style="margin: 1rem 0 0; font-size: 12px; color: var(--color-text-tertiary);">Everything stays in the folder you chose. Nothing leaves your machine. I start light either way — a handful of questions a week at most — and you can say &ldquo;ask me more&rdquo; anytime.</p>
 
 </div>
 </div>
@@ -183,14 +159,14 @@
 // tightened — do not re-indent it, do not reformat it, change it in the
 // renderer and copy it back here.
 //
-// Two sentences: CRSF for a click that reached nothing, CRSF2 for one that
+// Two sentences: crSf0 for a click that reached nothing, crSf1 for one that
 // reached a stage and then tripped inside it — telling that customer the
 // card "could not reach the chat" is how an answer that already went gets
 // hand-sent twice. The chrome from a previous failure is cleared at the top
 // of every dispatch, so a card that failed once and then worked stops asking
 // for a paste (REVIEW_WIDGETSEND1 RE-VERIFY N2).
-const CRSF='This card could not reach the chat. Copy the line below and paste it.';
-const CRSF2='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+const crSf0='This card could not reach the chat. Copy the line below and paste it.';
+const crSf1='Sent. If nothing shows up in the chat in a moment, paste the line below.';
 function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
 function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
 const l=crSEl(h,'cr-sf','div');l.textContent=c;
@@ -199,13 +175,13 @@ const b=d.getElementById('cr-apply');if(b)b.disabled=false;
 const m=()=>{l.textContent=c+' Copied.';};
 try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
 try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
-function crSendPrompt(t,p){let c=CRSF;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
-for(const g of[()=>window.cowork,()=>window,()=>window.parent]){
+function crSendPrompt(t,p){let c=crSf0;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+for(const g of[()=>window,()=>window.parent]){
 let o;try{o=g();}catch(e){continue;}
-if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=CRSF2;break;}}}
+if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=crSf1;break;}}}
 crSendFailed(p,c);}
 
-    const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts', 5: 'Check-ins' };
+    const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name', 4: 'Email drafts' };
     const selections = {};
     // The visible summary each question collapses to — the customer's own
     // answer in the card's words, kept so the paste line can be written in
@@ -260,7 +236,7 @@ crSendFailed(p,c);}
         next.style.opacity = '1';
         next.querySelectorAll('.chip').forEach(function (c) { c.disabled = false; });
       } else {
-        const payload = [1, 2, 3, 4, 5].map(function (n) { return Object.assign({ n: n }, selections[n]); });
+        const payload = [1, 2, 3, 4].map(function (n) { return Object.assign({ n: n }, selections[n]); });
         // WIDGETSEND1 F2 — the SECOND argument is what the card shows and
         // copies when no stage delivers, never the 'apply choices:' wire
         // string. Every crSendPrompt call passes it.
@@ -272,7 +248,7 @@ crSendFailed(p,c);}
         // — it is an internal value the reader never saw — and the setup
         // skill reads the labelled sentence, which is what a person would
         // have written if the card had never rendered.
-        const typed = [1, 2, 3, 4, 5].map(function (n) {
+        const typed = [1, 2, 3, 4].map(function (n) {
           return labels[n] + ': ' + (summaries[n] || '');
         }).join('; ');
         crSendPrompt('apply choices: ' + JSON.stringify(payload), typed);

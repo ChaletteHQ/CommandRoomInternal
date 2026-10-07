@@ -255,6 +255,31 @@ def _norm_email(email) -> str:
     return str(email or "").strip().lower()
 
 
+def _self_addr(email) -> str:
+    """The address as an OWN-ADDRESS COMPARISON sees it: normalised, with any
+    `+tag` sub-address stripped off the local part.
+
+    SELFMAIL1 fix round 3, review F-R2-1. `you+notes@yourdomain` is your own
+    mailbox — every mail provider that supports sub-addressing delivers it to
+    you — but it is not the string on your account record, so the address
+    channel answered "not self", and the tag word (`notes`) then rode into the
+    recipient-name set as somebody else's token, un-blanked layer 2's name
+    channel, and closed a real promise whose counterparty shares a token with
+    the user's own name. One close, measured on the 2026-09-07 book copy.
+
+    STRIPPED HERE AND NOT IN `_norm_email` ON PURPOSE. The contact fingerprint
+    keys on the whole address (`contact:<normalized address>`), and a person
+    record's addresses are the literal strings the connector reports; folding
+    the tag away there would merge two addresses the rest of the product keeps
+    apart, and CONTACT1's pins say so. "Is this mailbox mine" is the one
+    question the tag is noise for."""
+    s = _norm_email(email)
+    if "@" in s:
+        loc, dom = s.split("@", 1)
+        s = loc.split("+", 1)[0] + "@" + dom
+    return s
+
+
 def _norm_name(s) -> str:
     # Same semantics as people_writer._normalize_name / identity_reconcile.
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
@@ -927,6 +952,222 @@ def own_addresses(workspace_root) -> set:
     return out
 
 
+def own_name_tokens(workspace_root) -> set:
+    """The name TOKENS that mean "the user" — the local-parts of every address
+    `own_addresses` returns, plus the primary user's own canonical name and
+    aliases.
+
+    SELFMAIL1. `own_addresses` answers the question when the fetch carried the
+    recipient's address. Some fetches carry only display names and
+    local-parts (`recipient_names` on the sent rail is exactly that shape), and
+    a name channel with nothing to compare against cannot tell the user from
+    anybody else. These are the tokens that say "this recipient is you".
+
+    Read-only, never raises into a caller. Empty on a workspace that has
+    classified nothing — which leaves the NAME channel inert and the address
+    and id channels doing the work, the same honest degrade `own_addresses`
+    already makes."""
+    out: set = set()
+    for addr in own_addresses(workspace_root) or set():
+        local = str(addr).split("@", 1)[0].strip().lower()
+        if len(local) >= 3:
+            out.add(local)
+        for piece in re.split(r"[._+\-]+", local):
+            if len(piece) >= 3:
+                out.add(piece)
+    try:
+        from primary_user import resolve_primary_user
+        from entities_io import entities_collection
+        import json as _json
+
+        uid = resolve_primary_user(workspace_root)
+        if uid:
+            raw = _json.loads(_entities_path(workspace_root).read_text(
+                encoding="utf-8"))
+            for p in entities_collection(raw, "people"):
+                if p.get("id") != uid:
+                    continue
+                labels = [p.get("canonical_name") or ""]
+                labels += [str(a) for a in (p.get("aliases") or [])]
+                for label in labels:
+                    for tok in re.split(r"[^a-z0-9]+", _norm_name(label)):
+                        if len(tok) >= 3:
+                            out.add(tok)
+    except Exception:
+        pass
+    return out
+
+
+def is_self_addressed(message, *, user_person_id="", own_addresses=None,
+                      own_name_tokens=None) -> bool:
+    """SELFMAIL1 — is every recipient of this message the user themselves?
+
+    THE SAME RULE AS BAR 2's `own_address` refusal, asked of a whole message
+    instead of one extracted recipient: "a message to yourself is not
+    correspondence with anyone." The contact pass has enforced it since
+    CONTACT1; the sent-mail matcher never asked. On 2026-09-07 a note the user
+    mailed to himself (empty subject, recipient = sender) closed two real
+    promises on a title echo and queued four proposals. A note to yourself is
+    not delivery, and it is not the other side's word — it is the user
+    thinking out loud, and nothing about it can prove a promise kept.
+
+    Pure. The caller resolves `own_addresses` / `own_name_tokens` once per run
+    (both are workspace reads) and passes them in, exactly like
+    `gate_contact_item`.
+
+    THE CHANNELS ARE ORDERED BY STRENGTH AND THE STRONGEST ONE THAT CAN
+    ACTUALLY ANSWER DECIDES. An address is the identity; a resolved person id
+    is the identity the workspace already agreed on; a display name is a
+    label. Consulting a weaker channel after a stronger one has answered is
+    how a self-note with the user's own name on it reads as correspondence
+    with a stranger.
+
+      1. `recipient_emails` — every address is one of the user's own → self.
+      2. else `recipient_person_ids` — every resolved id is the user → self.
+      3. else `recipient_names` — every name is made of the user's own tokens
+         AND between them they name him, not just a fragment of him → self.
+         Inert when `own_name_tokens` is empty: unknown is not self.
+
+    PRESENCE OF A FIELD IS NOT THE ABILITY TO ANSWER IT (review F-2). The
+    first cut let the address channel consume the decision whenever the fetch
+    carried addresses — including on a workspace where `own_addresses` is
+    empty, which is a documented and honest state, and on a message whose
+    addresses are all unrecognised because the user writes from an alias
+    nobody has written down. In both cases the strongest channel is the one
+    LEAST able to answer, and it was blocking the id channel that could. So
+    the address channel now answers only when it can:
+
+      * `own_addresses` empty → it cannot answer at all; fall through.
+      * every address is the user's → self.
+      * at least one address is the user's and at least one is not → a mixed
+        send; it answered, and the answer is NOT self (a self-CC beside a real
+        recipient is real correspondence).
+      * no address recognised, but a resolved recipient id IS on hand → it
+        cannot tell "somebody else" from "an alias of mine"; fall through and
+        let the id channel say.
+      * no address recognised and no id either → not self, as before.
+
+    A `+tag` ON YOUR OWN ADDRESS IS STILL YOUR ADDRESS (fix round 3, review
+    F-R2-1). Sub-addressing — `you+notes@yourdomain` — is how people file
+    their own mail, and it is the first shape the lane was asked about. The
+    literal string is not on the account record, so the address channel used
+    to answer "not self", and the tag word then entered the recipient-name set
+    as a token that is not the sender's, which switched layer 2's name channel
+    back on and let the user's own name match a counterparty sharing it: one
+    real promise closed on the 2026-09-07 book copy. Both sides of the
+    comparison are now canonicalised through `_self_addr`, which folds the tag
+    away for THIS question only. A send to somebody else's plus-address is
+    untouched: their local part is not the user's.
+
+    ITS TWO SIBLINGS ARE RECORDED AND NOT FIXED, FOR R-5's REASON (review
+    F-R2-2 and F-R2-4).
+
+      * TWO OF THE USER'S OWN ADDRESSES, THE SECOND NOT ON FILE, with every
+        resolved recipient id saying "the user" — the mixed-send branch above
+        answers "not self" without asking the id channel. The one-condition
+        fix (defer to the ids when they all say "you") was written and
+        measured: it flips the `[7]` pin, because `[own address, stranger
+        address]` with only the own address resolved is the SAME INPUT, and
+        that pin is the right one — a real recipient at an unresolved address
+        must not be dropped whole.
+      * THE USER'S OWN ORG ALIAS (`info@<own domain>`) not on file — the stray
+        token `info` does what `+notes` did. No rule can tell that alias from
+        a counterparty's shared inbox.
+
+      For both, the fix is the SECOND ADDRESS ON FILE (a connected account, or
+      the address on the user's own person record), not a weaker rule. Layer 2
+      on the sent rail refuses most of what they could reach; what it does not
+      refuse is a row whose counterparty name shares a token with the user's
+      own — one row on the 2026-09-07 copy.
+
+    THE ONE CASE THIS STILL GETS WRONG, AND WHY IT STAYS (fix round 2, review
+    R-5). An address of the user's own that nobody has written down, arriving
+    with no resolved id, is answered "not self" by a channel that has just
+    admitted it recognises nothing — and the name channel below, looking
+    straight at his own display name, is never asked. Falling through there is
+    one line, and it was measured: it cannot be done. "An address I do not
+    recognise, carrying the user's own name" is the SAME INPUT whether the
+    address is his unlisted alias or a counterparty's, so the fall-through
+    buys the alias by dropping a genuine send whose names field happens to
+    carry the sender's own name — and a dropped message is never reconsidered
+    (the F-5 cost, which is the expensive direction). The gap is backstopped
+    where it matters: on the sent rail layer 2 (`addressed_to_counterparty`)
+    refuses every row such a message could reach, and the own-recap leg never
+    sees one, because it `continue`s when `recipient_person_ids` is empty. So
+    the honest state is: layer 1 misses it, nothing closes on it, and the fix
+    waits for a signal that can actually tell the two inputs apart.
+
+    This matters most on the own-recap leg, where there is no second fence
+    behind it.
+
+    A FRAGMENT OF THE USER'S NAME IS NOT THE USER (review F-5). The name
+    channel's first cut answered "self" whenever every recipient name was a
+    SUBSET of the user's tokens, so a genuine send to a contact who goes by
+    "Sample" — while the user is "Sample Stone" at `sample@…` — was read as a
+    note to himself, and it takes the WHOLE BATCH down with it: the message is
+    dropped, the cursor advances past it, and nothing reconsiders it. A
+    first-name collision with a contact the workspace has not resolved is the
+    realistic shape of that. So the channel now also asks whether the names,
+    taken together, actually NAME him: at least two of his own tokens, which
+    is a full name rather than a fragment. One shared token is a coincidence.
+
+    (The review offered "require at least one recipient-name token that is NOT
+    the user's before the channel may answer self". Read literally that
+    inverts the predicate — a token that is not his is precisely what already
+    makes the answer "not self" on the line below. Its second form, "answer
+    only on a FULL-name match rather than a subset", is what is implemented;
+    the token bag holds mail local-parts and aliases as well as the canonical
+    name, so "two of his tokens" is what a full-name match reduces to here.
+    The cost is honest and named: a user with ONE token to his name leaves
+    this channel inert, and the address and id channels answer instead.)
+
+    NO recipient signal at all → NOT self-addressed. The matcher already
+    returns nothing for such a message, and claiming a message with no
+    recipients is "to yourself" would put a wrong reason in the receipt."""
+    if not isinstance(message, dict):
+        return False
+    mine_addrs = {_self_addr(a) for a in (own_addresses or set())}
+    mine_addrs.discard("")
+    mine_toks = {str(t).strip().lower() for t in (own_name_tokens or set())}
+    mine_toks.discard("")
+
+    addrs = [_self_addr(a) for a in (message.get("recipient_emails") or [])]
+    addrs = [a for a in addrs if a]
+    pids = [str(p).strip() for p in (message.get("recipient_person_ids") or [])]
+    pids = [p for p in pids if p]
+
+    # `None` = this channel cannot answer, so it does not get to decide.
+    addr_answer = None
+    if addrs and mine_addrs:
+        if all(a in mine_addrs for a in addrs):
+            addr_answer = True
+        elif any(a in mine_addrs for a in addrs) or not pids:
+            addr_answer = False
+    if addr_answer is not None:
+        return addr_answer
+
+    if pids:
+        return bool(user_person_id) and all(p == user_person_id for p in pids)
+
+    if not mine_toks:
+        return False
+    seen = False
+    named: set = set()
+    for nm in (message.get("recipient_names") or []):
+        toks = {t for t in re.split(r"[^a-z0-9]+", _norm_name(nm)) if len(t) >= 3}
+        if not toks:
+            continue
+        seen = True
+        if not toks <= mine_toks:
+            return False
+        named |= toks
+    # Every name was made of his tokens — but a display name of "Sample" is
+    # made of his tokens too, and it belongs to somebody else. Two of them
+    # name HIM; one is a coincidence, and the cost of getting it wrong is the
+    # whole batch, dropped and never looked at again.
+    return seen and len(named) >= 2
+
+
 def capture_contacts(
     workspace_root,
     items,
@@ -1426,6 +1667,8 @@ __all__ = [
     "MAX_DEFER_ATTEMPTS",
     "usable_ts",
     "own_addresses",
+    "own_name_tokens",
+    "is_self_addressed",
     "stuck_attempts",
     "STRUCTURED_NAME_SOURCES",
     "DIRECT_RECIPIENT_FIELDS",

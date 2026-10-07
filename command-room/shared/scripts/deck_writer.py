@@ -93,15 +93,46 @@ class DeckLeakError(RuntimeError):
     """Forbidden tokens found in the slide plan (pre-save). No file written."""
 
 
+def _offline_runtime() -> bool:
+    """True where `pip install` cannot succeed — the sandbox VM and the cloud
+    container (DELIV1 F-6). Anything this cannot answer is False."""
+    try:
+        from deliverables import offline_runtime  # noqa: WPS433 (lazy by design)
+        return bool(offline_runtime())
+    except Exception:
+        return False
+
+
 def _ensure_python_pptx() -> None:
     """Import python-pptx, self-installing the pin on first use (idempotent,
     brief_writer-style). Raises DeckDependencyError — never a bare
-    ImportError — so the skill's honest-stop line has one exception to catch."""
+    ImportError — so the skill's honest-stop line has one exception to catch.
+
+    DELIV1 (review F-6): the merged app's sandbox VM carries python-docx and
+    openpyxl but NOT python-pptx, and has no network. There the install is
+    refused outright and the error carries the one composed sentence, so the
+    deck's absence is said in words instead of waited for and then failed.
+    """
     try:
         import pptx  # noqa: F401
         return
     except ImportError:
         pass
+    if _offline_runtime():
+        detail = (
+            f"python-pptx (=={PYTHON_PPTX_PIN}) is not available in this "
+            "runtime and cannot be installed here (no network) — the board "
+            "deck was not rendered; the .docx pack is unaffected."
+        )
+        line = detail
+        try:
+            from deliverables import dependency_line  # noqa: WPS433
+            line = dependency_line()
+        except Exception:
+            pass
+        error = DeckDependencyError(detail)
+        error.line = line
+        raise error
     print(
         f"Installing python-pptx (=={PYTHON_PPTX_PIN}) — one-time setup. "
         "(Plugin requires this for the board-deck .pptx companion. "
@@ -489,6 +520,19 @@ assert min(_SIZES_PT.values()) >= GRAMMAR["font_floor_pt"], \
 _MARGIN_IN = 0.8
 
 
+def _delivery_for(output_path, workspace_root):
+    """DELIV1 — the build-then-land plan for one rendered deck.
+
+    The slide twin of `brief_writer._delivery_for`; see that docstring for why
+    `None` is the pre-DELIV1 runtime and not a silent fallback.
+    """
+    try:
+        from deliverables import Delivery  # noqa: WPS433 (lazy by design)
+    except ImportError:
+        return None
+    return Delivery(output_path, workspace_root)
+
+
 def make_deck(
     output_path: str,
     sections: List[Dict],
@@ -546,7 +590,15 @@ def make_deck(
         )
 
     _ensure_python_pptx()
-    _paint(plan, resolved, output_path, workspace_root)
+
+    # DELIV1 (SPEC_NIGHTM2 §5) — BUILD in the session's scratch, LAND through
+    # the access layer. The deck's leak and grammar gates both run BEFORE the
+    # paint, so there is never a refused .pptx to remove; the landing is still
+    # the only way the bytes cross into the customer's folder.
+    delivery = _delivery_for(output_path, workspace_root)
+    build_path = delivery.build_path if delivery is not None else output_path
+    _paint(plan, resolved, build_path, workspace_root)
+    final_path = delivery.finish() if delivery is not None else str(output_path)
 
     # Detectability parity with GATE1: the .docx's gate_ran event is emitted by
     # make_brief for the same fire; the deck's audit is this stderr line plus
@@ -555,10 +607,10 @@ def make_deck(
     # counts one deliverable fire, not one per artifact.
     print(
         f"[deck_writer] board_pack deck rendered via make_deck — gates: "
-        f"grammar, leak. path={output_path}",
+        f"grammar, leak. path={final_path}",
         file=sys.stderr,
     )
-    return str(output_path)
+    return str(final_path)
 
 
 def _paint(plan: List[dict], brand_dict: dict, output_path: str,

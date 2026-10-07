@@ -541,6 +541,26 @@ def gate_commitment_data(
         data["pending_review"] = True
         data.setdefault("review_reason", "; ".join(reasons))
 
+    # EXIT1 (SPEC_FLOW1 Lane B item 1) — WHAT WOULD SHOW THIS DONE, written
+    # down at the door. One word: a message to them, their reply, a meeting
+    # with them, a payment or a signature — or, for a row with nobody on the
+    # other end, `your_own_word`, which is the honest answer for 197 of the
+    # 317 rows on the operator's book and the reason routes 2 and 3 exist.
+    #
+    # ADDITIVE AND NEVER FATAL. Every builder passes through this gate, so
+    # stamping here reaches all of them at once; a derivation that raised
+    # would turn a legible-provenance nicety into a capture outage, so it
+    # never raises. An explicit value a caller already set is respected.
+    # The reader (`exit_doors.stored_proof`) DERIVES the same answer for any
+    # row that carries none — which is every row written before tonight —
+    # so nothing depends on this stamp having been there.
+    try:
+        if not str(data.get("proof") or "").strip():
+            from exit_doors import proof_for_row
+            data["proof"] = proof_for_row({"data": data})
+    except Exception:  # noqa: BLE001 — a legibility stamp never blocks a capture
+        pass
+
 
 # =============================================================================
 # Layer 2 — W4c relevance gate, observed tier, modes, corroboration, tuning.
@@ -583,11 +603,25 @@ _DISMISS_RESOLUTIONS = frozenset({"dropped", "not_mine", "not mine"})
 # symbol followed by a number, or a number followed by a currency word. Bare
 # "5k" does NOT match ("5k run", "10k users" would false-positive the rail
 # into exactly the noise W4c removes).
+# LEARNFIX1 1.7 (M's ruling R-21) — AND the paper that carries the number.
+# "Send the engagement letter with the fee quote" is a money row: it is the
+# document a fee is agreed on. It carried no currency symbol and no currency
+# word, so the shared detector said no money, `question_ttl.importance_hold`
+# let it through, and it lapsed with the other 45 on 2026-09-16 (record B4).
+# This is a VOCABULARY change to the ONE definition of money, not a second
+# predicate and not a second regex — `_has_money` imports this and DOORS1
+# 1.2's hold consults that. Deliberately four named instruments and nothing
+# looser: "letter", "quote" and "fee" on their own are ordinary words, and a
+# false positive here parks a question forever.
 _MONEY_RE = re.compile(
     r"""(?ix)
       [$€£]\s*\d
     | \b\d[\d,]*(?:\.\d+)?\s*(?:k|m|mm)?\s*
       (?:dollars|bucks|usd|eur|euros|gbp|pounds|grand)\b
+    | \bengagement\s+letter\b
+    | \bletter\s+of\s+engagement\b
+    | \bfee\s+quote\b
+    | \bretainer\s+letter\b
     """
 )
 
@@ -650,7 +684,10 @@ def observed_expired(ev, *, promoted_ids=None, now=None) -> bool:
     oid = str(d.get("id") or "")
     if oid and promoted_ids and oid in promoted_ids:
         return False
-    ts = _ev_time(ev)
+    # INTAKE1 — the clock starts when the row was HELD, not when the promise
+    # was made. A row with no `held_at` (every row written before this build)
+    # ages from its own timestamp exactly as it always did.
+    ts = str((ev.get("data") or {}).get(HELD_AT_KEY) or "") or _ev_time(ev)
     if not ts:
         return False
     try:
@@ -770,6 +807,11 @@ def workspace_capture_context(workspace_root) -> dict:
     user_names: list = []
     team_ids: set = set()
     known_ids: set = set()
+    # INTAKE1 rule 5 — people whose org the workspace calls a CLIENT. Read
+    # here because this is the one place the entity file is already open, and
+    # `classify_capture` stays pure.
+    client_ids: set = set()
+    client_names: set = set()
     try:
         import json as _json
 
@@ -788,10 +830,21 @@ def workspace_capture_context(workspace_root) -> dict:
             for o in ent.get("orgs") or []
             if (o.get("relationship_type") or "").strip().lower() == "self"
         }
+        client_orgs = {
+            o.get("id")
+            for o in ent.get("orgs") or []
+            if (o.get("relationship_type") or "").strip().lower() == "client"
+        }
         for person in ent.get("people") or []:
             pid = person.get("id")
             if pid:
                 known_ids.add(pid)
+            if pid and person.get("org_id") in client_orgs:
+                client_ids.add(pid)
+                for n in [person.get("canonical_name")] + list(
+                        person.get("aliases") or []):
+                    if n and str(n).strip():
+                        client_names.add(str(n).strip().lower())
             if pid and pid == user_id:
                 for n in [person.get("canonical_name")] + list(
                     person.get("aliases") or []
@@ -816,6 +869,12 @@ def workspace_capture_context(workspace_root) -> dict:
         "user_names": user_names,
         "team_ids": team_ids,
         "known_ids": known_ids,
+        # INTAKE1 — additive keys. A caller written before this build reads
+        # the same dict it always did; a caller that passes them on gets
+        # rules 3 and 5.
+        "client_ids": client_ids,
+        "client_names": client_names,
+        "second_witness": second_witness_enabled(workspace_root),
         "mode": mode,
         "org_overrides": policy["org_overrides"],
     }
@@ -833,6 +892,325 @@ def carries_due_or_money(data: dict) -> bool:
         return True
     text = f"{(data or {}).get('title') or ''} {(data or {}).get('evidence') or ''}"
     return bool(_MONEY_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# INTAKE1 — the home rule, the second witness, and the importance safeguards.
+# ---------------------------------------------------------------------------
+#
+# THE PROBLEM, MEASURED (SPEC_FLOW1, M's book 2026-09-07): 670 captures since
+# Aug 8; 68% arrive with no date and 26% with nothing to belong to; 317 sit
+# open, 238 of them undated, and 197 carry nobody on the other end. Every one
+# of those rows was admitted by this module. The plate is not long because the
+# customer promises too much — it is long because the door lets in rows that
+# nothing can ever finish, date, chase or close.
+#
+# THE RULE (SPEC_FLOW1 lane A, ruled by M 2026-09-07): a row OPENS only when
+# it has an owner AND at least one home — a due date, a project it belongs to,
+# or a counterparty who is on file. Anything else is written to the tier this
+# module already has (`commitment_observed`): kept, searchable, promotable,
+# rendered only by `show me what you'd hide`. NEVER a question at capture.
+#
+# THREE THINGS THIS RULE DELIBERATELY DOES NOT DO.
+#
+#   1. It does not touch the CAUTION RAIL. A row carrying a due date or a
+#      money amount still opens on the first mention, ahead of everything
+#      here — that is `carries_due_or_money`, shipped since W4c, and it is
+#      also SPEC_FLOW1's importance safeguard (rule 5) said in the code that
+#      already existed. So the home rule can only ever hold a row that is
+#      UNDATED AND MONEYLESS, which is the exact population the measurement
+#      above is about. It also keeps the observed writer's own refusal of
+#      dated rows true, and every reader that leans on it
+#      (`needs_review_queue._observed_view_groups` renders `due: None` for
+#      the tier on the strength of it).
+#   2. It never drops anything. Held is a tier, not a bin.
+#   3. It never asks. A held row is silent until a second source corroborates
+#      it (`find_corroborations`, shipped) or the day-7 safeguard below
+#      turns the important ones into ONE pre-picked Staff Meeting question.
+#
+# COUNTERPARTY ON RECORD MEANS *NOT THE OWNER* (SELFMAIL1's finding, 2026-09-07:
+# a commitment's `person_ids` carries its OWNER as well as the other side, so
+# "there is a person on this row" is not the same statement as "somebody else
+# is on this row"). A row whose only named person is the person who owes it has
+# nobody to chase, nobody to reply, and no mail or meeting that can ever prove
+# it done — it is one of the 197.
+
+HOME_DUE = "due"
+HOME_PROJECT = "project"
+HOME_COUNTERPARTY = "counterparty"
+HOME_KINDS = (HOME_DUE, HOME_PROJECT, HOME_COUNTERPARTY)
+
+# The two held-at-the-door reasons. Stored on `data.observed_reason`; rendered
+# by `review_reasons.render_clause`, which carries a sentence for each.
+HOME_REASON_NO_OWNER = "nobody owns this yet"
+HOME_REASON_NO_HOME = "no date, no project and nobody else on it"
+# Rule 3 — a guess held until a second source says the same thing.
+WITNESS_REASON = "a guess with no second source yet"
+# Rule 4 — the door's own dedup (`commitment_dedup` collapses onto the first
+# row and stamps this reason).
+DOOR_DUPLICATE_REASON = "the same ask is already on your plate"
+
+HOME_RULE_REASONS = (HOME_REASON_NO_OWNER, HOME_REASON_NO_HOME,
+                     WITNESS_REASON, DOOR_DUPLICATE_REASON)
+
+# A project binding is a PROJECT, never a mail thread. `primary_thread_id`
+# carries both spellings on live rows — the group header that printed a
+# Superhuman message id on M's plate (attended test B1.3, LEAK2's regression)
+# is what a mail id in this field looks like on a surface. Only `project_NNN`
+# is a home.
+_PROJECT_ID_RE = re.compile(r"(?i)^project_[0-9a-z_]+$")
+
+# Rule 3's corroboration window, in days. `find_corroborations` has no window
+# of its own (an observed row can be promoted by a source of any age up to the
+# tier's 30-day expiry); the SECOND-WITNESS rule names 7 days as the span in
+# which a guess is still about the same stretch of work.
+WITNESS_WINDOW_DAYS = 7
+
+# Rule 6's window: a held row carrying money or a client, with no witness in
+# this many days, becomes ONE pre-picked Staff Meeting question rather than
+# lapsing where nobody ever saw it.
+HELD_IMPORTANT_ASK_DAYS = 7
+
+
+def project_binding_of(data: dict, primary_thread_id=None) -> str:
+    """The PROJECT this row belongs to, or "" — never a mail/meeting thread id.
+
+    Reads, in order: the caller's own `primary_thread_id` (the meeting's or
+    the thread's resolved binding, which the route holds as an argument and
+    not on the item), then the payload's own `primary_thread_id`, then the
+    legacy flat `project_id` pre-v2.7.15 rows carry."""
+    data = data or {}
+    for candidate in (primary_thread_id, data.get("primary_thread_id"),
+                      data.get("project_id")):
+        s = str(candidate or "").strip()
+        if s and _PROJECT_ID_RE.match(s):
+            return s
+    return ""
+
+
+def counterparty_on_record(data: dict, known_ids=frozenset(),
+                           owner_id=None, person_ids=()) -> str:
+    """The id of a counterparty who is BOTH on file and NOT the owner, or "".
+
+    SELFMAIL1's finding said in this module's own vocabulary: the owner is a
+    party to every row, so a party check that counts them answers "is anyone
+    named here?" when the question the home rule asks is "is anyone ELSE named
+    here, whose reply or mail or meeting could ever show this done?".
+
+    IT READS THE ENVELOPE AS WELL AS THE PAYLOAD (fix round 1, review F-2).
+    Not every writer puts the other side inside `data`: `session_sweep` lifts
+    a recovered row's people to the EVENT's top-level `person_ids` and leaves
+    `data` with no counterparty at all, so a swept row that genuinely named
+    somebody was judged to name nobody and held for "no date, no project and
+    nobody else on it" — with `run_session_sweep_test` red to say so. The
+    same not-the-owner and on-file tests apply to those ids; a caller holding
+    only the payload passes nothing and gets exactly the shipped answer."""
+    from commitment_parties import counterparty_ids as _cp_ids
+
+    owner = str(owner_id or (data or {}).get("owner_id") or "").strip()
+    known = set(known_ids or ())
+    candidates = list(_cp_ids(data or {})) + list(person_ids or ())
+    for cid in candidates:
+        c = str(cid or "").strip()
+        if not c or c == owner:
+            continue
+        # An empty roster means the entity file could not be read; that is the
+        # fail-open case `workspace_capture_context` already documents, and a
+        # resolved id is evidence enough on its own there.
+        if not known or c in known:
+            return c
+    return ""
+
+
+def home_of(data: dict, *, known_ids=frozenset(), primary_thread_id=None,
+            owner_id=None, person_ids=()) -> dict:
+    """Does this row have an OWNER and a HOME? Pure.
+
+    Returns `{"owner": <id or "">, "home": <one of HOME_KINDS or "">,
+    "reason": <"" when it may open, else a HOME_RULE_REASONS string>}`."""
+    data = data or {}
+    owner = str(owner_id or data.get("owner_id") or "").strip()
+    if not owner:
+        return {"owner": "", "home": "", "reason": HOME_REASON_NO_OWNER}
+    if parse_iso_date(data.get("due")):
+        return {"owner": owner, "home": HOME_DUE, "reason": ""}
+    if project_binding_of(data, primary_thread_id):
+        return {"owner": owner, "home": HOME_PROJECT, "reason": ""}
+    if counterparty_on_record(data, known_ids, owner, person_ids):
+        return {"owner": owner, "home": HOME_COUNTERPARTY, "reason": ""}
+    return {"owner": owner, "home": "", "reason": HOME_REASON_NO_HOME}
+
+
+def is_important_capture(data: dict, *, client_ids=frozenset(),
+                         client_names=frozenset()) -> bool:
+    """SPEC_FLOW1 rule 5 — a row the second-witness rule may never hold back:
+    it carries money, or a due date the speaker said (both of those are the
+    shipped caution rail, `carries_due_or_money`), or a counterparty whose org
+    the workspace calls a CLIENT.
+
+    Rule 5 is scoped to rule 3 by its own words ("the second-witness rule can
+    never apply to it") — an important row still needs a home, and rule 6 is
+    what stops an important held row lapsing where nobody saw it.
+
+    THE CLIENT TEST READS NAMES AS WELL AS IDS, and that is not belt-and-
+    braces. A counterparty who is on file with an id and is not the owner is
+    a HOME (rule 1), so that row opens and is never held — which would leave
+    rule 6 guarding a population of nearly zero. The held row with a client
+    on it is, in practice, the one whose client is named and NOT yet a person
+    record: exactly the Stone shape the attended test found four passes
+    running. `client_names` is that set, lowercased, built once per
+    run by `workspace_capture_context`."""
+    data = data or {}
+    if carries_due_or_money(data):
+        return True
+    if not client_ids and not client_names:
+        return False
+    from commitment_parties import (counterparty_ids as _cp_ids,
+                                    counterparty_names as _cp_names)
+
+    owner = str(data.get("owner_id") or "").strip()
+    if any(str(c).strip() and str(c).strip() != owner
+           and str(c).strip() in set(client_ids)
+           for c in _cp_ids(data)):
+        return True
+    names = {str(n or "").strip().lower() for n in (client_names or ())}
+    names.discard("")
+    if not names:
+        return False
+    return any(str(n or "").strip().lower() in names for n in _cp_names(data))
+
+
+def needs_second_witness(data: dict, *, client_ids=frozenset(),
+                         client_names=frozenset()) -> bool:
+    """SPEC_FLOW1 rule 3 — is this row a GUESS that must wait for a second
+    source? True iff the extractor stamped `pending_review` and rule 5 does
+    not exempt it.
+
+    A DUPLICATE SUSPICION IS NOT A GUESS ABOUT THE PROMISE. `pending_review`
+    is one flag carrying several different doubts, and `commitment_dedup`
+    stamps it to mean "this may be the same ask as an open row" — which says
+    nothing about whether the ask is real. Rule 4 owns that shape now: inside
+    the door window it folds onto the first row, outside it the shipped flag
+    still asks. Holding it here as well would answer a question rule 4 has
+    already answered, in the one case where the SAME act is demonstrably
+    already on the plate. Measured on the operator's book: 7 of the 25 real
+    rows this rule would otherwise have held were this shape, every one of
+    them still tracked by the row it duplicates."""
+    data = data or {}
+    if data.get("pending_review") is not True:
+        return False
+    # THE CAPTURE FLOOR'S VERDICT IS NOT THE EXTRACTOR'S DOUBT. `floor_gated`
+    # means "we heard this and it does not amount to much" — a judgement about
+    # the ITEM — and M ruled on 2026-08-01 exactly where such a row goes: to
+    # the queue, answerable in one tap, never dropped. Holding it here as well
+    # would overturn that ruling as a side effect rather than as a decision,
+    # and the home rule above still judges it on its own terms. Measured on
+    # the operator's book: including these took the real rows held from 11 to
+    # 20 of 672, and 9 of the 9 were the floor's "nothing depends on it".
+    if data.get("floor_gated") or data.get("floor_code"):
+        return False
+    if data.get("suspected_duplicate_of"):
+        reasons = [r.strip() for r in
+                   str(data.get("review_reason") or "").split(";")]
+        others = [r for r in reasons
+                  if r and not r.startswith("looks like a duplicate")]
+        if not others:
+            return False
+    return not is_important_capture(data, client_ids=client_ids,
+                                    client_names=client_names)
+
+
+def second_witness_enabled(workspace_root=None) -> bool:
+    """Is the `intake.second_witness` switch ON for this workspace?
+
+    ONE reader, and it is IDENT1's (`commitment_policy.flow_switch_enabled`) —
+    that lane owns the SPEC_FLOW1 switch family and reserved this key by name
+    so this lane adds a call, not a second reader with its own fallback. The
+    fallback below exists only because this branch is cut from the v5.29.0
+    tip, where that function does not exist yet; it is the same rule in the
+    same words (default ON, only a literal `False` turns it off, every failure
+    reads as ON) so the behaviour is identical before and after IDENT1 merges.
+    A malformed config file is not a customer saying stop."""
+    try:
+        from commitment_policy import (INTAKE_SECOND_WITNESS_KEY,
+                                       flow_switch_enabled)
+        return flow_switch_enabled(workspace_root, INTAKE_SECOND_WITNESS_KEY)
+    except ImportError:
+        pass
+    except Exception:
+        return True
+    if workspace_root is None:
+        return True
+    try:
+        from skill_config_writer import load_skill_config
+        stored = load_skill_config(workspace_root, "commitment-policy") or {}
+        cfg = stored.get("config") if isinstance(stored, dict) else None
+        val = (cfg or {}).get("intake.second_witness") \
+            if isinstance(cfg, dict) else None
+        return False if val is False else True
+    except Exception:
+        return True
+
+
+def bind_owner_from_source(data: dict, *, user_id=None) -> bool:
+    """INTAKE1 rule 2 — OWN WORDS TAKE THE USER AS OWNER. Mutates `data` in
+    place; returns True when it wrote an owner.
+
+    The narrow case, and it is narrow on purpose: a row with NO owner and NO
+    counterparty of any kind, whose `kind` already means "mine by definition"
+    (`task` / `scheduling` / `agenda`), captured from a source that is the
+    user's OWN words — a dictation, a working session, a line the user typed.
+    There is nobody else it could belong to, and "nobody said whose this is"
+    is not a thing to ask about when the source only had one voice in it.
+    That is the whole of the fix for the four ownerless to-dos the attended
+    test found rendered as "delegated" to nobody.
+
+    It refuses every other shape. A row naming somebody else, a row with an
+    owner already, a `promise` — none of those is the user's by construction,
+    and guessing on them would record a guess as a fact. On a MEETING the
+    presumption stays a presumption for the same reason (`meeting_capture`'s
+    `presumed_self_owed`): somebody else was in the room."""
+    from commitment_parties import (counterparty_ids as _cp_ids,
+                                    counterparty_names as _cp_names)
+
+    uid = str(user_id or "").strip()
+    data = data if isinstance(data, dict) else {}
+    if not uid or str(data.get("owner_id") or "").strip():
+        return False
+    if str(data.get("owner_external") or "").strip():
+        return False
+    if _cp_ids(data) or _cp_names(data):
+        return False
+    if data.get("kind") not in ("task", "scheduling", "agenda"):
+        return False
+    data["owner_id"] = uid
+    pids = data.get("person_ids")
+    if isinstance(pids, list) and uid not in pids:
+        pids.append(uid)
+    return True
+
+
+def intake_kwargs(capture_context: Optional[dict] = None,
+                  primary_thread_id=None, person_ids=None,
+                  own_words: bool = False) -> dict:
+    """The INTAKE1 keyword arguments `classify_capture` takes, read off a
+    `workspace_capture_context` dict, with the caller's own project binding
+    and — for a writer that keeps the other side on the envelope rather than
+    in the payload — the event's own `person_ids` (fix round 1, F-2).
+
+    ONE place assembles them so a writer wires the gate by adding
+    `**intake_kwargs(ctx, primary_thread_id=…)` to a call it already makes —
+    and so a context built by an older caller (no `client_ids`, no
+    `second_witness`) degrades to the shipped defaults rather than raising."""
+    ctx = capture_context or {}
+    return {
+        "primary_thread_id": primary_thread_id,
+        "person_ids": tuple(person_ids or ()),
+        "own_words": bool(own_words),
+        "client_ids": ctx.get("client_ids") or frozenset(),
+        "client_names": ctx.get("client_names") or frozenset(),
+        "second_witness": ctx.get("second_witness", True) is not False,
+    }
 
 
 def _name_matches(name, user_names) -> bool:
@@ -865,12 +1243,41 @@ def classify_capture(
     team_ids=frozenset(),
     known_ids=frozenset(),
     org_override: Optional[str] = None,
+    primary_thread_id: Optional[str] = None,
+    person_ids=(),
+    own_words: bool = False,
+    client_ids=frozenset(),
+    client_names=frozenset(),
+    second_witness: bool = True,
 ) -> dict:
-    """Which tier a gated commitment payload lands in. Pure — no I/O.
+    """Which tier a gated commitment payload lands in. No I/O, and no write
+    to `data` EXCEPT the one the caller asks for by passing `own_words` (see
+    below), which only ever fills an owner in where there was none.
 
     Returns `{"tier": "open"|"observed", "reason": <plain string>}`.
-    Precedence: caution rail > org override > mode. Run AFTER
-    `gate_commitment_data` (the relevance gate assumes a valid capture).
+    Precedence: caution rail > org override > mode > INTAKE1's home rule and
+    second witness. Run AFTER `gate_commitment_data` (the relevance gate
+    assumes a valid capture).
+
+    INTAKE1 (2026-09-07) adds three keyword arguments, all of them additive
+    and all defaulting to the shape a pre-INTAKE1 caller passes:
+    `primary_thread_id` is the meeting's / thread's resolved project binding
+    (the route holds it as an argument, not on the item); `client_ids` is the
+    set of people whose org the workspace calls a client (rule 5); and
+    `second_witness` is the `intake.second_witness` switch's position, read
+    once per run by the caller through `second_witness_enabled`. Fix round 1
+    adds a fourth, `person_ids`: the EVENT's own people, for the writers that
+    keep the other side on the envelope instead of in the payload (see
+    `counterparty_on_record`); and a fifth, `own_words`, which says the
+    source has already answered "whose is this?" so the owner is bound
+    before the caution rail rather than after it.
+
+    THE ORDER IS THE CONTRACT. The relevance verdict runs FIRST and is
+    untouched: a third-party item is observed for its own reason, and the
+    caution rail still lifts a dated or money row over everything. Only a row
+    that WOULD HAVE OPENED reaches the two new gates, and each of them can
+    only move it from `open` to `observed` — never the other way. So no row
+    that used to be set aside now opens.
 
     Party test: the user is a party when their person id is the owner or the
     counterparty, or a free-text party name matches them; a `task` /
@@ -880,11 +1287,39 @@ def classify_capture(
     user) or amber (attribution unresolved) — both land observed, silently;
     corroboration or an explicit user reference promotes."""
     data = data or {}
+    # THE OWNER IS BOUND BEFORE THE RAIL, NOT AFTER IT (fix round 1, review
+    # F-6). The caution rail returns before `home_of` is ever consulted, so
+    # an ownerless row that carries a date or an amount opens ownerless —
+    # and an open row with no owner is what renders as "delegated" to nobody
+    # (attended test, Part E). Binding first cannot make any row more hidden:
+    # it only ever ADDS an owner, and every verdict below is at least as open
+    # with one as without. Doing it here rather than in each writer makes the
+    # ORDER a property of the one admission function instead of a thing five
+    # callers have to remember.
+    #
+    # `own_words` is the caller's statement that the SOURCE has already
+    # answered "whose is this?" — a dictation, a working session, a line the
+    # user typed, where there was nobody else in the room. On a call it stays
+    # OFF, and that is ATTRIB1's rule, untouched: the self-owed presumption
+    # `classify_capture` makes for RELEVANCE stays a presumption and is never
+    # written onto the row, because somebody else was in the room and a guess
+    # must not be recorded as a fact. `bind_owner_from_source` refuses
+    # everything else on its own — any row naming anybody, any row with an
+    # owner, any `promise`.
+    if own_words:
+        bind_owner_from_source(data, user_id=user_id)
     if carries_due_or_money(data):
         return {"tier": "open", "reason": "carries a due date or money — always surfaces"}
 
     effective = org_override or mode or DEFAULT_MODE
     if effective == MODE_TRACK_EVERYTHING:
+        # INTAKE1 does NOT reach this branch, deliberately. `track-everything`
+        # is both a customer's explicit "keep all of it" AND the fail-open
+        # mode `workspace_capture_context` forces when the primary user
+        # cannot be resolved (Bug #102 family) — and in that second case
+        # every row reads as ownerless, so a home rule applied here would
+        # set aside a whole workspace's captures on the strength of a broken
+        # entities file. Fail-open stays fail-open.
         return {"tier": "open", "reason": "track-everything"}
     if effective == MODE_OBSERVED_ONLY:
         return {"tier": "observed", "reason": "kept on file per preference for this relationship"}
@@ -910,10 +1345,26 @@ def classify_capture(
     ):
         user_is_party = True  # self-owed presumption — that's what these kinds mean
 
+    def _intake_gates(open_reason: str) -> dict:
+        """INTAKE1 rules 1 and 3, applied to a row the relevance gate would
+        have opened. Held beats open; between the two held reasons the HOME
+        rule speaks first, because "nobody owns this" and "this belongs
+        nowhere" are statements about the row itself, while the witness rule
+        is a statement about how sure the extractor was."""
+        verdict = home_of(data, known_ids=known_ids,
+                          primary_thread_id=primary_thread_id,
+                          person_ids=person_ids)
+        if verdict["reason"]:
+            return {"tier": "observed", "reason": verdict["reason"]}
+        if second_witness and needs_second_witness(
+                data, client_ids=client_ids, client_names=client_names):
+            return {"tier": "observed", "reason": WITNESS_REASON}
+        return {"tier": "open", "reason": open_reason}
+
     if user_is_party:
-        return {"tier": "open", "reason": "you are a party"}
+        return _intake_gates("you are a party")
     if effective == MODE_TEAM_DELEGATION and party_ids & set(team_ids or ()):
-        return {"tier": "open", "reason": "a team member is a party"}
+        return _intake_gates("a team member is a party")
 
     named = [str(n or "").strip() for n in party_names]
     unresolved = any(named) or (party_ids - set(known_ids or ()))
@@ -952,6 +1403,7 @@ def build_observed_event(
     classification_confidence: Optional[float] = None,
     source_skill: str = "scan-for-commitments",
     extra_data: Optional[dict] = None,
+    held_at=None,
 ) -> dict:
     """One set-aside item → one `commitment_observed` event dict. Context, not
     a commitment: no open item, no count, no triage/confirm row — searchable,
@@ -1019,10 +1471,40 @@ def build_observed_event(
         ev["primary_thread_id"] = stamped_thread
     # CONFCLAMP1 DD-1 — validated at the write seam, not just read-side.
     stamp_confidence(ev, classification_confidence, holder="build_observed_event")
+    # INTAKE1 — the day it was held (see `stamp_held_at`).
+    stamp_held_at(ev, now_iso=held_at)
     return ev
 
 
-def observed_from_commitment_event(event: dict, *, reason: str) -> dict:
+HELD_AT_KEY = "held_at"
+
+
+def stamp_held_at(ev: dict, *, now_iso=None, workspace_root=None) -> dict:
+    """INTAKE1 — record WHEN a row was set aside, on the row.
+
+    WHY IT IS NOT THE ROW'S OWN `ts`. A commitment's `ts` is the moment the
+    promise was MADE (a meeting's start, a message's send time), and the tier
+    ages rows against it — which was right while the tier only ever held
+    things heard in the current stretch of work. It stops being right the
+    moment the door starts holding rows, because a past-meetings backfill of
+    an August call writes rows stamped August: born expired, invisible to
+    `show me what you'd hide`, and — the part that actually breaks a rule —
+    unable to be promoted by the second witness rule 3 promises them, since
+    an expired row does not promote. So the tier ages a held row from the day
+    it was HELD, and this is that day. Absent on every legacy row, and
+    `observed_expired` falls back to the old reading for those."""
+    d = ev.setdefault("data", {}) if isinstance(ev, dict) else {}
+    if not isinstance(d, dict) or d.get(HELD_AT_KEY):
+        return ev
+    when = str(now_iso or "").strip()
+    if not when:
+        when = _clock_now(workspace_root).isoformat()
+    d[HELD_AT_KEY] = when
+    return ev
+
+
+def observed_from_commitment_event(event: dict, *, reason: str,
+                                   now_iso=None) -> dict:
     """Convert a fully-gated `commitment` event dict (pre-append) into its
     observed-tier form — used by writers that classify AFTER building the
     open shape (session_sweep). Drops the open-item-only fields
@@ -1036,6 +1518,17 @@ def observed_from_commitment_event(event: dict, *, reason: str) -> dict:
     }
     data["tier"] = "observed"
     data["observed_reason"] = reason
+    # INTAKE1 — KEEP THE EXTRACTOR'S OWN REASON, under a name that says it is
+    # not a question. `pending_review` and `review_reason` are dropped above
+    # because observed is silent by definition and a queue reader must never
+    # find a question here — but since rule 3 sends every unsure capture down
+    # this path, dropping the SENTENCE too would lose the one thing that says
+    # what the door was unsure about ("'Rowan' isn't in your contacts yet"),
+    # on the tier where that sentence is now most often the only one there is.
+    # `show me what you'd hide` renders it; `promote_observed` carries it back.
+    held_reason = str(src.get("review_reason") or "").strip()
+    if held_reason:
+        data["held_review_reason"] = held_reason
     data["id"] = observed_id(src.get("source_ref") or "", src.get("title") or src.get("summary") or "")
     out = dict(event)
     out["type"] = OBSERVED_TYPE
@@ -1050,6 +1543,9 @@ def observed_from_commitment_event(event: dict, *, reason: str) -> dict:
             out["primary_thread_id"] = derived
         else:
             out.pop("primary_thread_id", None)
+    # INTAKE1 — the tier ages a held row from the day it was held. See
+    # `stamp_held_at`.
+    stamp_held_at(out, now_iso=now_iso)
     return out
 
 
@@ -1320,7 +1816,17 @@ def promote_observed(
     else:
         data["no_due"] = True
     for k in ("owner_id", "owner_external", "counterparty_id", "counterparty_name",
-              "counterparty_ids", "counterparty_names", "evidence", "channel"):
+              "counterparty_ids", "counterparty_names", "evidence", "channel",
+              # INTAKE1 — THE CONVERSATION ANCHOR AND THE SOURCE POINTERS COME
+              # BACK TOO. A promotion used to drop `thread_ref`, which is the
+              # only thing the reply rail grades a close on (REPLYCLOSE R1's
+              # THREAD_BASIS): a promoted row could never be closed by the
+              # reply that answered it. That was survivable while almost
+              # nothing was held; since rule 3 sends every unsure capture down
+              # this path it would silently disarm the exit door for most of
+              # them, so it is fixed here rather than worked around downstream.
+              "thread_ref", "meeting_date", "source_event_seq",
+              "primary_thread_id", "project_id"):
         if od.get(k):
             data[k] = od[k]
     if evidence:
@@ -1489,6 +1995,64 @@ def live_observed(workspace_root, *, since_ts=None, now=None) -> list[dict]:
             order.append(key)
         by_id[key] = ev
     return [by_id[k] for k in order]
+
+
+def held_important_asks(workspace_root, *, now=None, client_ids=None,
+                        client_names=None, limit: int = 3) -> list[dict]:
+    """SPEC_FLOW1 rule 6 — the held rows that have earned ONE question.
+
+    A row this module set aside at the door, carrying money or a CLIENT
+    counterparty, with no second source in `HELD_IMPORTANT_ASK_DAYS`, is the
+    one class the design rule does allow a question for: it is important, it
+    is geared, and the alternative is that it lapses where nobody ever saw
+    it. Everything else in the tier stays silent and lapses on the tier's
+    own window — that is the whole point of holding it.
+
+    Oldest first, capped (the Staff Meeting's budget is the surface's, not
+    this reader's, but a reader that can hand it fifty rows has given the
+    budget nothing to work with). Returns the observed EVENTS; the surface
+    composes the row. Never raises — a fire must survive an unreadable
+    entities file, and no question is the safe side of this call."""
+    try:
+        rows = live_observed(workspace_root, now=now)
+    except Exception:  # pragma: no cover — defensive, same posture as callers
+        return []
+    if not rows:
+        return []
+    if client_ids is None or client_names is None:
+        try:
+            _ctx = workspace_capture_context(workspace_root)
+        except Exception:  # pragma: no cover
+            _ctx = {}
+        if client_ids is None:
+            client_ids = _ctx.get("client_ids") or frozenset()
+        if client_names is None:
+            client_names = _ctx.get("client_names") or frozenset()
+    now = now or _clock_now(workspace_root)
+    cutoff = _dt.timedelta(days=HELD_IMPORTANT_ASK_DAYS)
+    out: list = []
+    for ev in rows:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if str(d.get("observed_reason") or "") not in HOME_RULE_REASONS:
+            # Not a row THIS rule held — a third-party item or an
+            # observed-only org is a different tier decision with a different
+            # answer, and neither becomes a question by ageing.
+            continue
+        if not is_important_capture(d, client_ids=client_ids,
+                                    client_names=client_names):
+            continue
+        ts = str(d.get(HELD_AT_KEY) or "") or _ev_time(ev)
+        try:
+            when = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        if (now - when) < cutoff:
+            continue
+        out.append((when, ev))
+    out.sort(key=lambda pair: pair[0])
+    return [ev for _when, ev in out[:max(0, int(limit))]]
 
 
 # ---------------------------------------------------------------------------
@@ -1661,6 +2225,29 @@ __all__ = [
     "workspace_capture_context",
     "carries_due_or_money",
     "classify_capture",
+    "intake_kwargs",
+    "bind_owner_from_source",
+    # INTAKE1 — the home rule, the second witness and the importance safeguards.
+    "HOME_DUE",
+    "HOME_PROJECT",
+    "HOME_COUNTERPARTY",
+    "HOME_KINDS",
+    "HOME_REASON_NO_OWNER",
+    "HOME_REASON_NO_HOME",
+    "HOME_RULE_REASONS",
+    "WITNESS_REASON",
+    "WITNESS_WINDOW_DAYS",
+    "DOOR_DUPLICATE_REASON",
+    "HELD_IMPORTANT_ASK_DAYS",
+    "project_binding_of",
+    "counterparty_on_record",
+    "home_of",
+    "is_important_capture",
+    "needs_second_witness",
+    "second_witness_enabled",
+    "held_important_asks",
+    "HELD_AT_KEY",
+    "stamp_held_at",
     "observed_id",
     "build_observed_event",
     "observed_from_commitment_event",

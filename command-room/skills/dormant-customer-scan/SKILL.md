@@ -39,9 +39,7 @@ three decisions are **show-then-tune (STT)** — the scan runs first, then one-t
 offered. Read config through `get_config` — never the raw file.
 
 ```python
-# Resolve the plugin root first (CONTRACT Rule 22) — the placeholder form
-# silently no-opped. Bash preamble: SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; then run python FROM $PLUGIN_ROOT:
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN_ROOT per the preamble above
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -131,9 +129,55 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
 3. **Live-check overlay (v3.13.7+ — required before any flag).** For every candidate that the cadence math would flag, run `shared/scripts/live_contact_check.py::live_contact_check()`:
 
    ```bash
-   SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-   cd "$PLUGIN_ROOT"
+   # >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+   # The substrate is on the customer's machine; this process may not be. Every
+   # read, helper and write goes through workspace_access ON the host that holds
+   # the data. Never open, copy or tar a workspace file into this session, and
+   # never write one from here.
+   #  1 RESOLVE, once per call. The four lines below name the plugin root, the
+   #    environment, and -- on a seat whose files are local -- the workspace. On a
+   #    merged seat resolve instead with `workspace_access.py discover`, hand the
+   #    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+   #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+   #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+   #    before the first plan, so a saved document can name the folder the
+   #    customer opens. A runtime that is absent, or a runtime_version that
+   #    differs, is a STOP: run the update-bridge install step. There is no
+   #    container fallback.
+   #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+   #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+   #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+   #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+   #    variables in front of python3, which carry the writer identity and the
+   #    run mode to the host that holds the data. The reply is one JSON
+   #    envelope; ok:false is a stop, never a hand retry.
+   #  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+   #    redirect, an in-place edit, a heredoc into the workspace, or a python body
+   #    that opens a substrate file.
+   #  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+   #    sandbox seat, or a Code session on the customer's own machine -- the same
+   #    verbs run in this shell, and the four lines below resolve it for them.
+   #  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+   #    sentence with no file, script, path, variable, shell text or mechanism
+   #    in it -- "One step could not run here; what is below is complete." or
+   #    "... is partial." Never narrate a workaround, never say what you tried.
+   #  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+   #    render -- lives in this session's own scratch, never under the
+   #    workspace. Nothing under `_hq/` is created, copied or removed by a
+   #    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+   #    removed by `plan remove`, and a removal is reported in the envelope's
+   #    own words -- removed, moved aside, or still there -- never as done.
+   #  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+   #    `plan run_writer` naming a writer on its list -- never by importing a
+   #    writer in a shell. The door forwards who you are; a writer with no
+   #    identity on this seat refuses in one sentence, and that sentence is the
+   #    whole answer.
+   SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+   eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+   WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+   [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+   # <<< CR ACCESS PREAMBLE v6 <<<
    python3 -c "
    import sys
    sys.path.insert(0, 'shared/scripts')
@@ -178,7 +222,7 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
 7. **Write the report.**
    - Save to `_hq/dormant/DORMANT_SCAN_[YYYY-MM-DD].docx` (per CONTRACT Rule 27 — no .md deliverables). Route through `shared/scripts/brief_writer.py` for layout consistency — that route is mandatory, not a preference (DOCFENCE1):
      - **NEVER hand-roll the report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking scan (the v3.20.0 failure mode) — and this report is a list of named customers with revenue attached, which is exactly what the leak scan exists to catch.
-     - **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the top ten", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/dormant/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so sales can work the list", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the dormant list in a Google Sheet" is a request this gate refuses, not an override. Hand back the canonical file's link.
+     - **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the top ten", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/dormant/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so sales can work the list", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the dormant list in a Google Sheet" is a request this gate refuses, not an override. Hand back the canonical file's link.
    - Return file link + 1-line headline ("12 customers have gone quiet. Top 3 by revenue: Acme Co ($240K, last touch 89 days ago), Northstar Partners ($180K, 67 days), Acme Logistics ($120K, 52 days).")
 8. **Write the scan receipt (v4.5.2 R1 — REQUIRED, every run).** The dogfood found this scan surfacing 4 dormant accounts and leaving zero substrate trace (FINDINGS F-57) — the next scan couldn't dedup its own nags and value receipts couldn't count the work. One line via the canonical helper: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "dormant-scan", fired_via="manual", surfaced=n_flagged, extra_data={"flagged_entity_ids": [...], "live_check_dropped": n_dropped})` — `"scheduled"` for fired_via when configured as a recurring scan. The `flagged_entity_ids` list is what the next scan reads to avoid re-nagging.
 
@@ -189,7 +233,7 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. Pass `make_brief(brief_kind="dor
 - **changed / decide / needs** = what shifted since the last scan · the one customer worth calling today · the one-tap re-engagement to approve.
 - **Subsumes** the old prose `## Summary` line ("Looked across [N]…") — that line is REPLACED by the exec header, not added on top (net length must not increase).
 
-**Header tile band (SPEC OUT1 §4):** the FIRST section of the .docx (immediately under the exec header) is a stat-tile band — pass it as a section with a `tiles` list: **$ at stake** (sum of the annotated/quantify-derived revenue across the ranked customers) · **dormant** (count of ranked customers) · **trending quieter** (count whose gap is widening but not yet over threshold). Values come from the SAME computation that builds the ranked list — never a second pass, never a prose re-count. Drop-empty (F-60): if no revenue is annotated anywhere, DROP the "$ at stake" tile (never a $0 or estimated frame); the dormant-count tile always has data. A tile whose datum is genuinely unknown is omitted; a real zero renders.
+**Header tile band (SPEC OUT1 §4):** the FIRST section of the .docx (immediately under the exec header) is a stat-tile band — pass it as a section with a `tiles` list: **$ at stake** (sum of the annotated/quantify-derived revenue across the ranked customers) · **dormant** (count of ranked customers) · **trending quieter** (count whose gap is widening but not yet over threshold). Values come from the SAME computation that builds the ranked list — never a second pass, never a prose re-count. Drop-empty (F-60): if no revenue is annotated anywhere, DROP the "$ at stake" tile (never a zero-dollar or estimated frame); the dormant-count tile always has data. A tile whose datum is genuinely unknown is omitted; a real zero renders.
 
 **Ranked-report layout (SPEC OUT2 §4 — this scan is one of the four ranked-report surfaces; contract in `shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The ranked report").** This skill ALREADY carries the contract's pieces — align, don't duplicate: the tile band above IS the contract's tile summary band (item 1); each ranked customer entry maps to the scored row (item 2) as rank (list position) · name (customer + org) · quantify tag (historical revenue + gap vs baseline, substrate-derived only) · why-now (the suggested re-engagement angle citing real evidence) · action (draft re-engagement). Nothing new to render — this paragraph exists so the four ranked-report skills read as one system.
 
@@ -197,7 +241,7 @@ Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. Pass `make_brief(brief_kind="dor
 
 **Quantify (element 3):** per-item dollar tags come from `quantify.money_time_tag` (or the annotated `_hq/CUSTOMERS.md` revenue), never an estimate.
 
-**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("dormant_scan", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the ranked-report contract above stays authoritative; the exemplar anchors layout within it). Workspace exemplar (`_hq/exemplars/dormant_scan/`) beats the shipped seed; `None` = compose on the layout above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the scan. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered scan ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="dormant_scan", direction=..., section=...)` — capture only; the exemplar itself updates exclusively through insight-generator's confirm-first proposals (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
+**Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("dormant_scan", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the ranked-report contract above stays authoritative; the exemplar anchors layout within it). Workspace exemplar (`_hq/exemplars/dormant_scan/`) beats the shipped seed; `None` = compose on the layout above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the scan. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered scan ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="dormant_scan", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
 Checklist (binary): header concrete-or-nothing · quantify tag only when non-None · top-3 asks one-tap, reader-actionable, one-surface.
 
@@ -254,6 +298,26 @@ Contact: Aria Sample, aria@example.com, CEO
 - "quiet customers"
 - "customer dormancy check"
 - "customer re-engagement scan"
+
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
 
 ## Gotchas
 
@@ -446,9 +510,55 @@ data_view = {
 **Render + post (same pattern as email-writer Phase 4):**
 
 ```bash
-SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-cd "$PLUGIN_ROOT"
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
 python3 -c "
 import sys, json
 sys.path.insert(0, 'shared/scripts')
@@ -461,6 +571,7 @@ print(transport['html'])
 "
 # Pass the rendered HTML (transport["html"]) to mcp__visualize__show_widget as widget_code (EW2+T, F-15 —
 # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
+# Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
 **Action semantics** (per `apply-choices`):

@@ -1,0 +1,408 @@
+{
+  "_comment": [
+    "Per-skill environment policy (night M1, GUARD1; gap analysis §7.3.5, spec §5 item 6).",
+    "Gating is DATA, not a new frontmatter key: G24's `surfaces:` registry is untouched.",
+    "One row per directory under skills/ - the key set IS sorted(os.listdir('skills')),",
+    "pinned by tests/run_env_detect_test.py, so a new skill without a row is a red.",
+    "full = the skill runs as shipped. degraded = it runs with the part that needs the",
+    "missing surface named and skipped. refuse = it declines in one plain sentence.",
+    "merged_cloud: only the five `surfaces: cowork` skills differ; every other skill is",
+    "`full` because it degrades at the access layer, not by policy.",
+    "unknown (§0.34): a READER proceeds behind a banner line; a WRITER refuses. The",
+    "writer set is derived, never hand-listed - a skill is a writer iff its SKILL.md",
+    "carries a `## Writer Contract` section."
+  ],
+  "modes": [
+    "legacy_cowork",
+    "merged_cloud",
+    "claude_code_local",
+    "unknown"
+  ],
+  "policies": [
+    "full",
+    "degraded",
+    "refuse"
+  ],
+  "default": "full",
+  "writer_marker": "## Writer Contract",
+  "skills": {
+    "advisor-export": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "apply-choices": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "automation-scanner": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "balance": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "board-pack-assembler": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "boardroom": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "calendar-writer": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "call-prep": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "change-schedule": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "chart-on-demand": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "check-deliverables": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "cleanup": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "command-room-coach": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "command-room-onboarding": {
+      "legacy_cowork": "full",
+      "merged_cloud": "degraded",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "command-room-update-bridge": {
+      "legacy_cowork": "full",
+      "merged_cloud": "degraded",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "commitment-backlog-sweep": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "commitment-triage": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "contract-review": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "decision-log": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "decision-memo-composer": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "dormant-customer-scan": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "email-writer": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "enable-command-room-schedules": {
+      "legacy_cowork": "full",
+      "merged_cloud": "degraded",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "end-of-day": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "file-documents": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "follow-up-ritual": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "inbox-triage": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "ingest-context": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "insight-generator": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "intel-intake": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "intro-broker": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "level-up-command-room": {
+      "legacy_cowork": "full",
+      "merged_cloud": "refuse",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "list-active": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "log-resolution": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "meeting-notes": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "memo-writer": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "morning-briefing": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "needs-your-call": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "objectives": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "one-pager-composer": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "operator-report": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "people-crm": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "pipeline-tracker": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "reconcile-sent": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "relationship-moves": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "report-bug": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "research": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "scaffold-automation": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "scan-for-commitments": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "session-backfill": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "session-sweep": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "show-my-list": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "show-my-reminders": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "stalled-projects": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "stress-test": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "system-health": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "team-intelligence": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "transcript-search": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "usage-report": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "value-receipt": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "degraded"
+    },
+    "weekly-recap": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "workspace-ingest": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
+    "workspace-manager": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    }
+  }
+}

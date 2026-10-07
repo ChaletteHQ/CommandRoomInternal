@@ -1,0 +1,20 @@
+{
+  "version": "5.32.0",
+  "headline": "Nothing internal reaches you any more: everything the chat says after it composes an answer goes through the same door as the answer. Your morning brief, End of Day and board all say one open number and it is the plate's. Taking a lesson back adds a line to the record instead of cutting one out, and the profile page tells the truth about what the product learned. The Friday wrap rests nothing overdue, names what was decided for you, and the Staff Meeting says which week it read. 'Show scheduling' shows its rows. A workspace with a book in it is never treated as a fresh install.",
+  "items": [
+    {
+      "id": "v5320_announce_fix_train",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "What changed. (1) No raw id, file path, function name, event name or internal label reaches you on any surface, including the sentences after an answer: the whole reply goes through one door, and if the door refuses, you get one honest sentence and the phrase to try again. (2) One open number everywhere, and it is your plate's; the brief credits a background batch to the door that did it ('The review door closed 45'), and the two plumbing lines that used to sit on the brief now live on the maintenance report. (3) The Friday wrap never rests an overdue item under Parked, shows one Parked count, names up to five things decided for you plus a count of the rest, and the Staff Meeting states the week it read; its tiles match its body. (4) 'Show scheduling' renders every row with its number; a dictation that matches an item already on file never opens a second row.",
+      "action": "announce_only"
+    },
+    {
+      "id": "v5320_announce_learning_truth",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Also new. When you take a lesson back ('undo' after 'too long'), the product adds a line saying so and stops acting on it; nothing is ever cut out of the record. Saying the same thing twice writes nothing and says so ('Already on file, nothing changed'). 'My profile' now reads what the learning job actually applied, dated to when it ran; 'reset how you think' either clears its own keys or tells you which page owns them, and never touches the ledger. 'I texted / called / spoke to / talked to' close an item the way 'I sent' does; an engagement letter or a fee quote is a money item and waits for you. And on setup: a workspace that already has a book in it is never treated as new, so nothing can be seeded over it; 'restart onboarding' is refused on a live book.",
+      "action": "announce_only"
+    }
+  ]
+}

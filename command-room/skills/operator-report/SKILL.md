@@ -65,8 +65,7 @@ above: this is the enumerated **length** knob (a FRP1 config value); free-form s
 ("always pair revenue with margin") are SCL1 directives.
 
 ```python
-# Rule 22 preamble REQUIRED (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||");
-# PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"; cd "$PLUGIN_ROOT")
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 import sys; sys.path.insert(0, "shared/scripts")
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
@@ -205,6 +204,23 @@ If scheduled-tasks aren't enabled (no `pack_run` events in window), surface a si
 
 **Optional section: Pipeline (SPEC PIPE1 — available to SCL1 ordering).** The "order sections: cash, pipeline, people" directive class now has a real pipeline source: when the workspace has ≥1 open deal thread, render a compact pipeline block — the `pipeline_math.pipeline_tiles` numbers (open $, closing this month, stalled, won-rate when ≥4 closes) plus one line per terminal event in the window ("Won [Deal] — $52K" / "Lost [Deal] — price") from `deal_state.load_deal_events`. All figures from `pipeline_math` / stated deal values — never re-derived in prose, never estimated. Zero open deals AND zero terminal events in window → the section renders nothing (not a placeholder), whether or not a directive ordered it.
 
+**Section 3b: The flow — what came in, what went out, and what it cost you (SPEC_FLOW1 Lane D / MEASURE1). REQUIRED when it returns non-empty.**
+
+Night 10 rebuilt the intake door, the exit door and the plate on one claim — the plate shrinks. This block is the measurement, and it is the only place on any surface where the routes out and the touches are stated. Render the helper's `text` VERBATIM; never re-derive a number in prose, never add one it did not print, never estimate a missing one:
+
+```python
+from flow_measure import operator_block
+flow = operator_block(WORKSPACE_ROOT, since_iso=window_start_iso, now_iso=now_iso)
+# flow["text"] -> render VERBATIM; "" -> omit the section entirely (never pad)
+```
+
+It prints: how many rows came in and how many went out over the window; the doors they went out by (finished by something we could see · finished because you said so · let go after months of quiet · closed by you · expired unanswered), plus the rows that left with no door recorded at all; how many are still open, from `plate_view`'s one projection and no other count; and the last seven days' touches — questions shown, decisions offered, scheduled arrivals — which is the design rule's own measure of what Command Room asked of the reader.
+
+- **One workspace, not the fleet.** These are this seat's numbers, read from this seat's ledger. Nothing here reads another workspace and nothing here may claim to: an operator running the fleet runs this report per seat and adds the blocks up. Never present one seat's flow as a fleet number.
+- **The last bucket is not a door and never gets a door's name.** Rows the ledger records no door for are reported as what they are — closed another way, the door not recorded — and NEVER as "by hand". On M's own book that phrase would have asserted 199 closes he did not make (197 of them the transcript closer, off since v5.29.0). Never narrate that bucket as the reader's own work.
+- **A route reading zero can mean its door does not exist yet**, not that nobody went through it. The helper reports zeros honestly and `flow_measure.seams()` names which doors are built; do not narrate a zero as an achievement.
+- Empty string back → omit the section. A window with no flow prints nothing, not a row of zeros.
+
 **Section 4: A conservative time estimate**
 
 This is the anchor at the bottom — not the headline. Use a transparent rubric so the number is defensible.
@@ -246,8 +262,9 @@ Frame these as the moat-that-grows. They get bigger every month. Land the sectio
 
 Render the report verbatim in chat (for on-demand invocations) AND write to `_hq/operator-reports/YYYY-MM.docx` (for scheduled monthly run; per CONTRACT Rule 27, no .md deliverables — route through `shared/scripts/brief_writer.py`).
 
+- **The file is BUILT in this session's scratch and LANDED in the workspace by the access layer (SPEC_NIGHTM2 §5, `shared/scripts/deliverables.py`).** The render call returns where the document is on the CUSTOMER'S OWN COMPUTER — the path you handed in, byte for byte, on a seat where the plugin and the folder share a filesystem, and the customer's own spelling on the merged seat. Link THAT RETURN and pass THAT to any receipt: never a path you re-derive or re-spell yourself, and never the landing's `landed_path`, which on a merged seat names the mount this run reads through and opens nothing on their machine. When you know the workspace folder's absolute path on their computer — a scheduled chat is given it, and `get_device_info` returns it — export it as `CR_DEVICE_WORKSPACE` before the call and the returned path is absolute; without it the return is the folder-relative path, `pc_path_unknown` is set, and you say where the document went in words with no link at all. When the layer cannot reach the folder the call raises `deliverables.DeliveryRefused`: say its one sentence — it is chosen for that reason and it is the whole answer — and stop. Nothing was written anywhere, so there is nothing to clean up and no second way to save it.
 - **NEVER hand-roll the report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or leaking report (the v3.20.0 failure mode) — and this is the document that tells the operator what the system is worth, so one produced outside the gates is a value claim nothing checked.
-- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the headline counts", "the hours number", "a summary") — through Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can send it to my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put this month's report in a Google Doc" is a request this gate refuses, not an override. The `.docx` is already shareable as-is — hand back its link and let the user forward the file itself.
+- **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the headline counts", "the hours number", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/operator-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can send it to my partner", "as a copy alongside the canonical file" — **nor a direct instruction**: "put this month's report in a Google Doc" is a request this gate refuses, not an override. The `.docx` is already shareable as-is — hand back its link and let the user forward the file itself.
 
 **Render template:**
 
@@ -273,6 +290,8 @@ What got delivered without you asking
   • [N] pre-meeting prep briefs
   • [N] email drafts in your voice
   • [N] weekly workspace tidy-ups
+
+[Section 3b — the flow block, rendered VERBATIM from flow_measure.operator_block. Omitted entirely when it comes back empty.]
 
 A conservative time estimate
   ~[N] hours of operational overhead absorbed
@@ -308,7 +327,7 @@ The "Next period's projection" line is mandatory — it's what makes the report 
 
 ```python
 import sys
-# Rule 22 preamble REQUIRED before this runs: cd "$PLUGIN_ROOT" (SESSION_DIR=$(echo "$CLAUDE_CODE_TMPDIR" | sed "s|/tmp$||"); PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}")
+# Run the Access preamble first (CONTRACT Rule 22 v6, the block in shared/WORKSPACE_ACCESS.md): it resolves $PLUGIN_ROOT, exports CR_ENV, and cds there.
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import doc_headline_link
 from brief_path import get_brief_artifact_url
@@ -318,6 +337,36 @@ print(doc_headline_link("Operator report — <Window>", get_brief_artifact_url(o
 Renders as `## → **[Operator report — May 2026](computer://...)**` — same format every .docx-emitting skill uses.
 
 **Tone (per CONTRACT Rule 4 — v3.13.6+):** the report is user-facing. No FAIL/CRITICAL/ABORT framing, no `events.jsonl` / `entities.json` paths in user-visible prose, no `Phase N` / `Step Nc` labels, no internal mechanism names. The synthesis lead + body should read like a thoughtful operator's recap, not a system log. Operational counts are numbers; the synthesis is prose. Don't try to make every number sound like a story — let the numbers be numbers, and let the synthesis lead carry the meaning.
+
+**Scan before you print (SPEC FIXTRAIN 6.2 — MANDATORY, and the reason the rule above was not enough).** The tone rule is a rule; a rule is not a fence. On 09-13 this report reached the CEO carrying two internal names anyway, because the prose was composed live and nothing scanned it. Every sentence you compose for chat or for the document body goes through the chokepoint first, and you print WHAT IT RETURNS:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import say
+line = say(composed_text, workspace=workspace_root)   # raises on a leak
+```
+
+It raises rather than returning; that is the point. Rewrite the sentence in the customer's own vocabulary and call it again — never catch the error and print anyway, and never "fix" it by shortening the passage until the scanner stops noticing. Text relayed byte-exact from a driver or from `widget_transport` is already scanned and is not re-composed.
+
+**The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. **This report is the recorded proof that a per-sentence gate is not enough.** Its body sentences went through `say` on 09-16 and the report still reached the CEO carrying six internal names in a trailing block written after the last `say` call returned — leak instance 2, recorded on 09-13 and again unchanged on 09-16. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from surface_composers import post
+# `composed_text` is what the `say(...)` call above passed and stamped -
+# relay it, never retype it. The door vouches a relay LINE FOR LINE
+# against what a composer here actually returned, so a sentence you
+# wrote yourself cannot ride in as one. Nothing here is the CEO's own
+# typed text, so no rows are named; where a section IS composed around
+# their words it passes `customer_rows` and the door reads the words
+# off those rows itself (see the undo receipt in workspace-manager).
+print(post(whole_reply, surface="operator-report", workspace=workspace_root,
+           relayed=composed_text))
+```
+
+`relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
 ### Step 5 — Log
 
@@ -351,6 +400,26 @@ This skill is invokable on-demand AND scheduled. Scheduled monthly run:
 
 The scheduled fire is real (SPEC C1, task topology updated in MAINT1): the monthly-report JOB inside the `maintenance` task (nominal cadence `0 0 1 * *` in `maintenance_dispatcher.MAINTENANCE_JOBS`) runs this report AND the `value-receipt` for the previous month; the task registers via `enable-command-room-schedules` Step 1.D (the `SILENT_TASKS` registry loop, Phase 3 / SPEC-2.3). (Before C1, this section claimed a monthly fire that was never actually wired into `DEFAULT_SCHEDULES` — folding both reports into the one monthly task is where that claim became real, and it avoids paying the overlapping substrate read twice.) The on-demand trigger always works regardless of scheduled-task reliability.
 
+## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
+
+This skill touches `_hq/data`. **The activity log is never rewritten by hand.**
+`events.jsonl` and its yearly shards are only ever ADDED to, through the
+writers (`event_gate.append_event` / `atomic_write.atomic_append_jsonl`). No
+step here, and no turn this skill runs in, may edit, truncate, reorder, delete
+lines from, back up and rewrite, or restore that file — and may never instruct
+anyone else to.
+
+- A duplicate or malformed line is **quarantined through the cleanup skill's
+  existing path**, never deleted (`recover_corruption.py` for malformed lines,
+  `seq_health.py --mark` for a duplicate entry number).
+- Correcting writes this skill made means **appending a reversal through
+  `brain_undo.undo_batch`** with the batch ref the run advertised — a receipt
+  and a real `undo`. `undo` after a re-run means exactly that batch, or the
+  words "nothing to reverse"; never an improvised drop, an invented supersede,
+  or a hand-edited file.
+- If you believe the file itself must change, **STOP and say so in plain
+  words.** Do not do it, and do not offer to.
+
 ## What it doesn't do
 
 - Does not generate marketing copy, sales decks, or external reports. CEO-facing only.
@@ -365,3 +434,59 @@ The scheduled fire is real (SPEC C1, task topology updated in MAINT1): the month
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Generates a CEO-facing 'Operating Lift' report — what would have slipped, what got captured, what got delivered without being asked, and a conservative time-absorbed estimate at the bottom. NOT a usage/billing dashboard — a value-of-having-this report shaped like a board update for the CEO's own operations. Triggers: 'operator report', 'operating lift', 'what have you done for me', 'what did you save me', 'show me the value', 'what did you do this month', 'show me the impact', 'time saved report', 'my operating report', 'portfolio velocity', 'which projects are gaining momentum' (the 60-day project-momentum scorecard — coach deliverable-catalog 2.3, rendered from events.jsonl by this report). Auto-generates on the 1st of every month to `_hq/operator-reports/[YYYY-MM].docx` (per CONTRACT Rule 27, no .md deliverables). Also takes standing customization preferences — use when the CEO says 'customize operator-report', 'show operator-report customizations', 'reset operator-report customizations'. Also handles first-run settings — use when the CEO says 'tune operator-report', 'show operator-report settings', 'reset operator-report to defaults'. DOES NOT fire on 'monthly recap' / 'what happened this month' (weekly-recap's month window — a month-in-review of YOUR business, not a report on what I did). DOES NOT fire on 'value receipt' / 'roi receipt' / 'show me the receipt' (that's value-receipt — the forwardable numbers-only receipt built for a board or CFO; operator-report is the CEO-self-facing narrative with a synthesis lead and named relationships) or 'usage report' / 'token usage' (usage-report — developer-facing spend telemetry).
+
+## The Access preamble this file refers to
+
+Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is in `shared/WORKSPACE_ACCESS.md`.
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+```

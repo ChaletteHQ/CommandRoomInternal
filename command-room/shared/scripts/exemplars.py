@@ -7,8 +7,11 @@ Voice calibration taught the system WORDS from corrections; this module teaches
 it STRUCTURE and DESIGN the same way. One gold-standard exemplar per
 STANDARD_KIND lives beside the composer; every composer loads its kind's
 exemplar as a few-shot anchor before composing; client edits and user feedback
-update the exemplars through insight-generator's existing confirm-first
-proposal rail (Pass 16) — never a silent write.
+update the exemplars through the weekly `learning` job's exemplar leg
+(`learning_pass.run_exemplar_leg`) — AUTOMATIC at the shipped floors, with a
+past-tense receipt on the morning brief and a one-word undo. The confirm-first
+Pass-16 rail this module was written for is RETIRED: the card was never shown,
+and after months the corrections store was empty.
 
 TWO TIERS, MIRRORING brand.py RESOLUTION
 ----------------------------------------
@@ -46,11 +49,13 @@ THE LEARNING LOOP (extend, don't invent)
 ----------------------------------------
 Structural corrections append to `_hq/exemplars/corrections-<kind>.jsonl`
 (observed by reconcile-sent for sent docs, or explicit "make it like this"
-feedback in chat). insight-generator Pass 16 batches them; >=3 same-direction
-corrections on one kind propose a workspace-exemplar update — confirm-first,
-the Pass-15 proposal shape. On confirm, `promote_workspace_exemplar` runs the
-scrub gate (entity names -> placeholders, then the leak scan; residual
+feedback in chat, banked by `correction_turn`). The `learning` job's exemplar
+leg batches them; >=3 same-direction corrections on one kind PROMOTE that
+kind's workspace exemplar — no confirm, no card. `promote_workspace_exemplar`
+runs the scrub gate (entity names -> placeholders, then the leak scan; residual
 findings REFUSE the write) and rotates the previous exemplar_1 to exemplar_2.
+`promotion_change_line` renders the receipt the brief carries: past tense, no
+question — a brief never asks.
 
 Stdlib only. Read paths never raise; the promote path raises
 `ExemplarScrubError` rather than ever writing a poisoned exemplar.
@@ -65,7 +70,9 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 _HERE = Path(__file__).resolve().parent
 SEED_ROOT = _HERE.parent / "exemplars"
 
-# Ledger pass name for proposal_ledger cooldowns (insight-generator Pass 16).
+# Ledger pass name for proposal_ledger cooldowns. The name is the RETIRED
+# Pass 16's, kept verbatim so decisions already on disk still join; the writer
+# is now the `learning` job's exemplar leg.
 PASS_NAME = "pass16_exemplar_structure"
 
 # >=3 same-direction corrections on one kind before a proposal fires.
@@ -75,7 +82,17 @@ PROPOSAL_CAP = 3
 # The canonical direction vocabulary for a structural correction. Free strings
 # are accepted (the grouping key is the string itself), but capture sites
 # should prefer these so repeats actually group.
+# The direction a person's explicit "make it like this" carries. It is not a
+# diff — nothing was compared — it is someone holding up a document and saying
+# this is the shape. WIDENING CITATION: this set gained one member in the
+# LEARN1 fix round (2026-09-08) because the exemplar rail had thirteen prose
+# capture sites and ZERO code callers, so its store was empty after months and
+# the learning job's exemplar leg read nothing on every fire.
+# `correction_turn` is the code caller; this is the vocabulary it writes.
+DIRECTION_TEMPLATE = "use_this_shape"
+
 KNOWN_DIRECTIONS = frozenset({
+    DIRECTION_TEMPLATE,
     "move_section_up",
     "move_section_down",
     "drop_section",
@@ -314,15 +331,18 @@ def propose_exemplar_updates(
     cap: int = PROPOSAL_CAP,
     threshold: int = PROPOSAL_THRESHOLD,
 ) -> List[dict]:
-    """Batch structural corrections into confirm-first proposals (the Pass-15
-    shape). A pattern proposes when >= `threshold` corrections share the same
-    (kind, direction, section) key and its fingerprint is not in cooldown.
-    Pure; returns at most `cap` proposals, strongest evidence first, each:
+    """Batch structural corrections into candidate promotions. A pattern
+    qualifies when >= `threshold` corrections share the same (kind, direction,
+    section) key and its fingerprint is not in cooldown.
+    Pure; returns at most `cap` of them, strongest evidence first, each:
 
         {fingerprint, kind, direction, section, count, sources, plain}
 
-    `plain` is the only user-facing line — plain English, no scores, no file
-    tokens (the proposal-rail contract).
+    `plain` is the line the RETIRED confirm-first card asked, kept because the
+    shared proposal rail still records it as the proposal's evidence. It is a
+    QUESTION and it must never reach a customer surface: what the morning brief
+    carries is `promotion_change_line`, derived from the write, in the past
+    tense. A brief never asks.
     """
     cooldowns = cooldown_fingerprints or set()
     proposals: List[dict] = []
@@ -371,6 +391,57 @@ def _plain_line(kind: str, direction: str, section: str, count: int) -> str:
         f"You've {did} in {count} recent {kind_label} documents — "
         f"make that the standard layout?"
     )
+
+
+# The past-tense half of the same vocabulary. `_DIRECTION_PHRASES` is the
+# producing constant for both, so a phrase added there reaches the receipt.
+_TEMPLATE_PHRASE = "asked for that shape"
+_PROMOTION_FALLBACK = "reshaped the layout"
+
+
+def promotion_change_line(change: dict) -> str:
+    """The customer sentence for a promotion that ACTUALLY HAPPENED.
+
+    Built from the WRITE — `{kind, direction, section, count, rotated}` as the
+    caller holds it once `promote_workspace_exemplar` has returned — never
+    from the proposal. `propose_exemplar_updates` renders a QUESTION ("make
+    that the standard layout?") because it was written for a review widget
+    that asked before writing anything. This rail does not ask any more: the
+    learning job promotes at the shipped floors and the brief carries a
+    receipt with a one-word undo. **A brief never asks** — the Staff Meeting
+    is the one place for questions — so the proposer's line must not be the
+    thing that reaches a surface.
+
+    Returns "" for anything this module has no shipped act for, so a caller
+    with nothing to say narrates nothing. Never carries a path, a fingerprint
+    or any other plumbing token."""
+    if not isinstance(change, dict):
+        return ""
+    kind = str(change.get("kind") or "").strip()
+    direction = str(change.get("direction") or "").strip()
+    if not kind or direction not in KNOWN_DIRECTIONS:
+        return ""
+    section = str(change.get("section") or "").strip()
+    # The phrases already supply the article ("moved the {section} section"),
+    # so a section a person actually named "the call" would render as "the
+    # the call section". Strip the article the template is going to add.
+    if section.lower().startswith("the "):
+        section = section[4:].strip()
+    if direction == DIRECTION_TEMPLATE:
+        did = _TEMPLATE_PHRASE
+    else:
+        did = _DIRECTION_PHRASES.get(direction, _PROMOTION_FALLBACK).format(
+            section=section or "same")
+    kind_label = kind.replace("_", " ")
+    lead = ("Changed the standard layout for your " if change.get("rotated")
+            else "Made that the standard layout for your ")
+    because = ""
+    try:
+        if int(change.get("count")) > 0:
+            because = " in " + str(int(change["count"])) + " recent ones"
+    except (TypeError, ValueError):
+        because = ""
+    return (lead + kind_label + " documents — you " + did + because + ".")
 
 
 # ---------------------------------------------------------------------------
@@ -539,11 +610,12 @@ def residual_name_candidates(text: str) -> List[str]:
     only knows the workspace entity list, and the leak scan only knows the
     static forbidden-token vocabulary — a counterparty name that is in
     NEITHER (untracked org, unlogged person, a real deal figure) passes both.
-    These candidates must be confirm-listed to the user on the Pass 16 card;
-    `promote_workspace_exemplar` refuses to write while any of them is
-    unconfirmed. Deliberately noisy-but-cheap: section headings like
-    "Meeting Details" will appear — promotes are rare and user-reviewed, and
-    a false listing costs one glance where a miss is a standing leak.
+    The automatic caller (the `learning` job's exemplar leg) passes NO
+    `confirmed_residuals`, so ANY candidate here refuses the promotion — the
+    confirm card these were once listed on is retired. Deliberately
+    noisy-but-cheap: section headings like "Meeting Details" will appear, and
+    a refused promotion costs one missed learning where a miss is a standing
+    leak.
 
     Pure; sorted + deduped; never raises. ALL-CAPS annotation vocabulary
     (CHANGED, DECIDE) and single capitalized words are out of scope — the
@@ -580,10 +652,12 @@ def promote_workspace_exemplar(
 ) -> dict:
     """Write a confirmed exemplar update to
     `_hq/exemplars/<kind>/exemplar_1.md`, rotating the previous version to
-    `exemplar_2.md`. CONFIRM-FIRST ONLY: the sole legitimate caller is
-    insight-generator Pass 16 after an explicit user confirm (or the user
-    asking for it in so many words) — a silently mutating gold standard is
-    drift with a title.
+    `exemplar_2.md`. The legitimate callers are the `learning` job's exemplar
+    leg (automatic, at the shipped floors, and it passes NO
+    `confirmed_residuals`) and a person asking for it in so many words. The
+    write is never silent in the sense that matters: `exemplar_promoted` is
+    the receipt, the morning brief narrates it in the past tense, and `undo`
+    puts the previous version back.
 
     The scrub gate is three layers, all fail-closed:
       1. entity names -> placeholders (`scrub_exemplar_text` — knows only the
@@ -592,8 +666,9 @@ def promote_workspace_exemplar(
          forbidden-token vocabulary);
       3. `residual_name_candidates` over the scrubbed text — the name-shaped
          tokens NEITHER layer can vouch for (untracked orgs/persons, dollar
-         figures). Every candidate must appear in `confirmed_residuals` (the
-         user-confirmed list from the Pass 16 card) or the write is REFUSED.
+         figures). Every candidate must appear in `confirmed_residuals` or
+         the write is REFUSED — and the automatic caller passes none, so on
+         that path any candidate at all refuses the promotion.
          A real name belongs replaced with a placeholder, never confirmed
          through.
     Residual findings raise ExemplarScrubError — a poisoned name is REFUSED,
@@ -634,7 +709,7 @@ def promote_workspace_exemplar(
         raise ExemplarScrubError(
             f"candidate exemplar for {kind!r} carries {len(unconfirmed)} "
             f"name-shaped token(s) the workspace entity list cannot vouch "
-            f"for: {unconfirmed[:8]} — list each on the Pass 16 confirm "
+            f"for: {unconfirmed[:8]} — confirm each one "
             f"card and pass the user-confirmed set as confirmed_residuals=; "
             f"a REAL name or figure gets replaced with a placeholder, never "
             f"confirmed through",
@@ -739,6 +814,7 @@ __all__ = [
     "PROPOSAL_THRESHOLD",
     "PROPOSAL_CAP",
     "KNOWN_DIRECTIONS",
+    "DIRECTION_TEMPLATE",
     "ExemplarScrubError",
     "get_exemplar",
     "seed_kinds",
@@ -748,6 +824,7 @@ __all__ = [
     "group_correction_patterns",
     "proposal_fingerprint",
     "propose_exemplar_updates",
+    "promotion_change_line",
     "exemplar_marker_tokens",
     "scan_text_for_exemplar_tokens",
     "scan_docx_for_exemplar_tokens",

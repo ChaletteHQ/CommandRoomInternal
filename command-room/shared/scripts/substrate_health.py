@@ -472,6 +472,57 @@ def check_append_markers(workspace_root) -> dict:
     return out
 
 
+#: LEASE3 MUST 3 / fix N-2 — the one line for saves that landed as another
+#: session took the activity log's lock over. `{n}` counts INCIDENTS in the
+#: last `LEASE_HOLD_LOST_WINDOW_DAYS` days, so the line clears itself a week
+#: after the last one. No remedy verb: a clash that doubled a change is already
+#: said by the duplicate-entry line.
+LEASE_HOLD_LOST_LINE = ("⚠ {n} time(s) in the last 7 days, a save landed just as another "
+                        "session took over the activity log. Nothing needs doing unless a change "
+                        "looks doubled or missing; if one does, tell me which one.")
+LEASE_HOLD_LOST_WINDOW_DAYS = 7
+
+
+def check_lease_hold_lost(workspace_root, now=None) -> dict:
+    """LEASE3 MUST 3 (REVIEW_T2_LEASE2 N-7): the marker the append leaves
+    when a batch landed under a lease that was taken over AFTER its pre-write
+    check (`_hq/.system/lease_hold_lost.json`, written by
+    `lease_lock.record_hold_lost`). Read-only; an absent or unreadable marker
+    reads as nothing to report. Returns `{count, last_ts, recent_n}`:
+    `recent_n` is how many of the marker's `recent` incidents fall inside the
+    last `LEASE_HOLD_LOST_WINDOW_DAYS` days of `now` (default: the clock)."""
+    import datetime as _dt
+    out = {"count": 0, "last_ts": None, "recent_n": 0}
+    try:
+        try:
+            from lease_lock import hold_lost_marker_path
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from lease_lock import hold_lost_marker_path
+        d = json.loads(hold_lost_marker_path(workspace_root).read_text(encoding="utf-8"))
+        if isinstance(d, dict):
+            n = d.get("count")
+            out["count"] = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+            out["last_ts"] = d.get("last_ts")
+            ref = now or _dt.datetime.now(_dt.timezone.utc)
+            floor = ref - _dt.timedelta(days=LEASE_HOLD_LOST_WINDOW_DAYS)
+            n_recent = 0
+            for ts in d.get("recent") or []:
+                try:
+                    t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=_dt.timezone.utc)
+                if floor <= t <= ref + _dt.timedelta(minutes=5):
+                    n_recent += 1
+            out["recent_n"] = n_recent
+    except Exception:
+        pass
+    return out
+
+
 def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
@@ -614,6 +665,9 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
             "Harmless once; if this line stays, the log's sidecar file is not "
             "writable (a sync lock or permissions) and writes are slowing down."
         )
+    held = check_lease_hold_lost(workspace_root)
+    if held["recent_n"] > 0:
+        lines.append(LEASE_HOLD_LOST_LINE.format(n=held["recent_n"]))
     dup = check_duplicate_seqs(workspace_root)
     if dup["n_duplicated"] > 0:
         lines.append(
@@ -635,5 +689,8 @@ __all__ = [
     "check_future_ts",
     "check_ts_review",
     "check_append_markers",
+    "check_lease_hold_lost",
+    "LEASE_HOLD_LOST_LINE",
+    "LEASE_HOLD_LOST_WINDOW_DAYS",
     "substrate_alarm_lines",
 ]

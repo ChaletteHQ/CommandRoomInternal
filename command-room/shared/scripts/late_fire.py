@@ -103,12 +103,24 @@ was likely asleep"): the helper cannot know why, and the dogfood logged
 four fabricated sleep narratives in one day on fires that weren't late at
 all. Orchestrators must not add a cause either.
 
-TIME RULES: all lateness math is MACHINE-local (cron evaluates on the
-machine clock — confirmed live 2026-07-01, machine=Mountain vs workspace=
-Pacific), AND SO IS EVERY RENDERED TIME (LATETZ, 2026-07-28). One clock,
-end to end: `expected_fires` returns machine-local naive slots, `_now_local`
-is machine-local naive, `served_slot_markers` normalizes to machine-local
-naive via `_to_local_naive`, and `_human_time` renders that value as-is.
+TIME RULES: all lateness math runs on ONE clock, end to end, AND SO DOES
+EVERY RENDERED TIME (LATETZ, 2026-07-28). `expected_fires` returns naive
+slots on that clock, `_now_local` is naive on that clock,
+`served_slot_markers` normalizes to it via `_to_local_naive`, and
+`_human_time` renders the value as-is.
+
+WHICH clock it is depends on the seat, and `clock_policy` decides it in one
+place (TZ1, 2026-09-20; gap analysis §0.18):
+
+  * LEGACY desktop seat — the MACHINE clock, because that is what cron
+    evaluates in there (confirmed live 2026-07-01, machine=Mountain vs
+    workspace=Pacific). Byte for byte what this module has always done.
+  * MERGED / CLOUD seat — the WORKSPACE zone. There is no machine to be
+    local to: the fire is a container that read PDT, the helpers run in a
+    sandbox VM on UTC, and the platform evaluates the cron in UTC. Reading
+    any of those three as "the customer's clock" is how a 7 AM brief gets
+    scored as seven hours late while looking green on the one seat whose
+    container happened to agree.
 
 The banner used to be converted into the workspace TZ at render time on the
 theory that "workspace TZ is presentation-only" meant "present in workspace
@@ -213,20 +225,31 @@ SCHEDULED_CONTEXT = frozenset({"scheduled", "catchup"})
 
 
 def _now_local(workspace_root=None, env_date=None) -> _dt.datetime:
-    """Naive MACHINE-local now — the clock cron actually evaluates in.
+    """Naive USER-local now — the clock this seat's schedules evaluate in.
 
-    CLOCK1: the INSTANT is corroborated against the workspace ledger before it
-    is returned; the ZONE is untouched, and must stay untouched. This is still
-    machine-local naive, still the only clock lateness math may use, and R8's
-    "never correct a fire time against the workspace TZ" rule is unaffected.
-    Falls back to the raw machine clock if the helper is unavailable.
+    `clock_policy` picks it once per seat: the machine clock on a legacy
+    desktop (R8, unchanged in every byte), the WORKSPACE zone on a merged/
+    cloud seat where "the machine" is a container that read PDT beside a
+    sandbox VM on UTC (TZ1, gap analysis §0.18). CLOCK1 is untouched by
+    that choice — the INSTANT is still corroborated against the workspace
+    ledger before it is returned; only the zone it is expressed in is
+    decided, and it is decided in one place rather than here. R8's real
+    rule — never correct an ALREADY-CONVERTED fire time a second time —
+    is what `_to_local_naive` and `_human_time` below still enforce.
+
+    Falls back to the raw machine clock if the helpers are unavailable.
     """
     try:
-        from trusted_now import trusted_now_local_naive
+        from clock_policy import user_local_now
 
-        return trusted_now_local_naive(workspace_root, env_date=env_date)
+        return user_local_now(workspace_root, env_date=env_date)
     except Exception:
-        return _dt.datetime.now()
+        try:
+            from trusted_now import trusted_now_local_naive
+
+            return trusted_now_local_naive(workspace_root, env_date=env_date)
+        except Exception:
+            return _dt.datetime.now()
 
 
 # CLOCK1 — one `clock_untrusted` telemetry event per PROCESS, not per fire.
@@ -309,10 +332,10 @@ def _human_time(dt_naive_local: _dt.datetime) -> str:
     contract assumes a naive input is UTC. A cron slot is not a connector
     timestamp, and it is not UTC. Do not route one through it.
     """
-    # Defensive: the module's contract is naive machine-local, but an aware
+    # Defensive: the module's contract is naive user-local, but an aware
     # value from a caller is normalized rather than rendered in a foreign zone.
     if dt_naive_local.tzinfo is not None:
-        dt_naive_local = dt_naive_local.astimezone().replace(tzinfo=None)
+        dt_naive_local = _to_local_naive(dt_naive_local)
     day = dt_naive_local.strftime("%A")
     hour = dt_naive_local.strftime("%I:%M %p").lstrip("0")
     if dt_naive_local.minute == 0:
@@ -320,13 +343,19 @@ def _human_time(dt_naive_local: _dt.datetime) -> str:
     return f"{hour} {day}"
 
 
-def _to_local_naive(dt: Optional[_dt.datetime]) -> Optional[_dt.datetime]:
-    """Aware → naive machine-local (the clock cron evaluates in)."""
+def _to_local_naive(dt: Optional[_dt.datetime],
+                    workspace_root=None) -> Optional[_dt.datetime]:
+    """Aware -> naive in this seat's user-local clock (see `_now_local`)."""
     if dt is None:
         return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone().replace(tzinfo=None)
-    return dt
+    if dt.tzinfo is None:
+        return dt
+    try:
+        from clock_policy import to_user_local_naive
+
+        return to_user_local_naive(dt, workspace_root)
+    except Exception:
+        return dt.astimezone().replace(tzinfo=None)
 
 
 # WALKFIX1 Item F — the suppression reason and the skip receipt's own reason
@@ -534,7 +563,7 @@ def _log_served_slot_skip(workspace_root, task_id, *, scheduled,
 
 def served_slot_markers(workspace_root, task_id) -> dict:
     """One pass over the substrate for the two facts the lateness ledger
-    needs — machine-local naive datetimes (None = never):
+    needs — naive datetimes on this seat's user-local clock (None = never):
 
       last_receipt         — newest receipt for this task, ANY legacy shape
                              (the R1 reader's matcher), EXCLUDING skips. This
@@ -547,6 +576,9 @@ def served_slot_markers(workspace_root, task_id) -> dict:
                              PERSON asked for. Visible, counted as a delivery
                              for the ack, and deliberately NOT the served
                              marker either.
+      last_failed          : newest `surface_failed` receipt (by status or by
+                             type): a fire that could not render (W2 SCORE2
+                             MUST 3). Visible, and never the served marker.
       last_schedule_change — newest `schedule_config_changed` event naming
                              this task (change-schedule writes
                              `data.changes: [{task_id, cron, enabled}]`).
@@ -613,6 +645,7 @@ def served_slot_markers(workspace_root, task_id) -> dict:
     last_receipt: Optional[_dt.datetime] = None
     last_skip: Optional[_dt.datetime] = None
     last_rerun: Optional[_dt.datetime] = None
+    last_failed: Optional[_dt.datetime] = None
     last_change: Optional[_dt.datetime] = None
     registered: Optional[_dt.datetime] = None
     for ev in _iter_events(workspace_root):
@@ -654,6 +687,16 @@ def served_slot_markers(workspace_root, task_id) -> dict:
                 if last_skip is None or dt > last_skip:
                     last_skip = dt
                 continue
+            if status == "surface_failed" or ev.get("type") == "surface_failed":
+                # CB-T2B-4. A fire that could not render served nothing, so
+                # its receipt is never the served-slot marker: a catch-up for
+                # the same slot tries again instead of acking a delivery that
+                # did not happen. W2 SCORE2 MUST 3 (CB-T2B-4 F-1): it is kept
+                # as `last_failed`, so the retry's `late_fire` row can say it
+                # followed a failure and never feeds the chronic proposal.
+                if last_failed is None or dt > last_failed:
+                    last_failed = dt
+                continue
             if data.get(RERUN_OF_FIELD):
                 # A delivery a person asked for. Still a delivery (it is what
                 # the next re-run's ack names), never a served-slot marker.
@@ -663,11 +706,12 @@ def served_slot_markers(workspace_root, task_id) -> dict:
             if last_receipt is None or dt > last_receipt:
                 last_receipt = dt
     return {
-        "last_receipt": _to_local_naive(last_receipt),
-        "last_skip": _to_local_naive(last_skip),
-        "last_rerun": _to_local_naive(last_rerun),
-        "last_schedule_change": _to_local_naive(last_change),
-        "registered_at": _to_local_naive(registered),
+        "last_receipt": _to_local_naive(last_receipt, workspace_root),
+        "last_skip": _to_local_naive(last_skip, workspace_root),
+        "last_rerun": _to_local_naive(last_rerun, workspace_root),
+        "last_failed": _to_local_naive(last_failed, workspace_root),
+        "last_schedule_change": _to_local_naive(last_change, workspace_root),
+        "registered_at": _to_local_naive(registered, workspace_root),
     }
 
 
@@ -1047,22 +1091,34 @@ def check_lateness(
             f"the next Morning Brief will fold in what mattered."
         )
 
+    # W2 SCORE2 MUST 3 (CB-T2B-4 F-1): a fire that arrived and FAILED for this
+    # slot is not a computer that was off. When the newest `surface_failed`
+    # receipt is at or after the slot being scored, this row says so, and
+    # `detect_chronic_lateness` does not count it. On the verdict too, so a
+    # composer that builds the row from it (emit False) can carry it.
+    last_failed = markers.get("last_failed")
+    after_failed = last_failed is not None and last_failed >= scheduled
+    if after_failed:
+        out["after_failed"] = True
     if emit:
         try:
             from event_gate import append_event
 
+            row_data = {
+                "taskId": task_id,
+                "tier": out["tier"],
+                "lateness_minutes": out["lateness_minutes"],
+                "scheduled_for": out["scheduled_for"],
+                "fired_via": out["receipt_fired_via"],
+            }
+            if after_failed:
+                row_data["after_failed"] = True
             append_event(
                 Path(workspace_root) / "_hq" / "data" / "events.jsonl",
                 {
                     "type": "late_fire",
                     "source_skill": task_id,
-                    "data": {
-                        "taskId": task_id,
-                        "tier": out["tier"],
-                        "lateness_minutes": out["lateness_minutes"],
-                        "scheduled_for": out["scheduled_for"],
-                        "fired_via": out["receipt_fired_via"],
-                    },
+                    "data": row_data,
                 },
                 holder="late_fire",
             )
@@ -1087,7 +1143,7 @@ def detect_chronic_lateness(
     the actual move goes through change-schedule; existing users'
     customized crons are never touched from here.
     """
-    now = now or _now_local()
+    now = now or _now_local(workspace_root)
     cutoff = now - _dt.timedelta(weeks=window_weeks)
     weeks_late: dict[str, set] = {}
     try:
@@ -1102,10 +1158,14 @@ def detect_chronic_lateness(
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         if data.get("tier") != "degrade":
             continue
+        if data.get("after_failed") is True:
+            # W2 SCORE2 MUST 3: a retry after a failed fire. The fire arrived
+            # on time and failed; "the computer is off" would be false.
+            continue
         dt = event_dt(ev)
         if dt is None:
             continue
-        dt = dt.astimezone().replace(tzinfo=None)
+        dt = _to_local_naive(dt, workspace_root)
         if dt < cutoff:
             continue
         tid = data.get("taskId") or ev.get("source_skill")

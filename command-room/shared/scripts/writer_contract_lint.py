@@ -61,6 +61,7 @@ ROUTING_HELPERS = frozenset({
     "recover_corruption",
     "session_sweep",  # Phase 5 — session_sweep._sweep routes through append_event -> atomic_append_jsonl (the nightly sweep + the R2 backfill share it)
     "day_intent",  # SPEC BK1 — the sole day_intent writer; write_day_intent / reverse_day_intent route through event_gate.append_event (atomic_append_jsonl)
+    "workspace_access",  # SPEC_NIGHTM1 §2 item 8 (ACCESS1) — the merged-environment append door; workspace_access.append_jsonl routes through event_gate.append_event -> atomic_append_jsonl, unchanged, and REFUSES any file that is not a registered JSONL
 })
 
 # A line "declares an append" when it ties an append/emit/write verb to

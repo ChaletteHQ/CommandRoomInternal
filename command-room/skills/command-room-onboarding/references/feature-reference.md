@@ -19,8 +19,8 @@ Updated table for M1's 6-phase architecture (scheduled-task generation stripped 
 | **People CRM** | Phase 1a workspace build (PEOPLE.md populated from scan); deep dive via Phase 5 training command 2 (`tell me about [person]`). |
 | **Intel Intake** | Not surfaced in M1 — customer discovers organically. |
 | **Call Prep** | Phase 5 training command 1 (`prep me for [meeting]`). Becomes the Upcoming Meetings daily chat once the customer opts into schedules. |
-| **Workspace Map (sidebar artifact)** | Customer-opened Chat 3 at Phase 1b (`install workspace map`). Refresh from manual `↻` button on the artifact. |
-| **Quick Commands (sidebar artifact)** | Phase 1a (silent install after entities.json populated). |
+| **Workspace Map (in chat)** | Customer-opened Chat 3 at Phase 1b (`list active projects`). The sidebar artifact is retired (Night M3). |
+| **Quick Commands** | Retired with the sidebar (Night M3) — the commands work just by saying them. |
 | **Project deep-dive** | DEFERRED to M2 (`go [Project]`). |
 | **Person deep-dive** | Phase 5 training command 2 (`tell me about [person]`), then on-demand thereafter. Deeper deep-dive lives in M2. |
 | **Scheduled tasks (5 first-install)** | NOT registered by onboarding (stripped 2026-06). The customer opts in after the call by running `set up command room schedules` in a fresh chat → `enable-command-room-schedules` registers `morning-brief`, `past-meetings`, `inbox` (surfaced as `inbox-triage`), `upcoming-meetings`, `friday-wrap` (surfaced as `weekly-recap`). The remaining 2 (`commitments`, `pulse`) deferred to a follow-up session. Phase 6 points the customer to it. |
