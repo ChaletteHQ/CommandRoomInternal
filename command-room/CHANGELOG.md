@@ -1,5 +1,20 @@
 # Command Room — Changelog
 
+## v5.33.2 — 2026-10-12 — The Inbox finds the owner's names by id, not through the name resolver
+
+**One fix on v5.33.1, plus the DG client registration.** Tested and approved by the team; promoted on the owner's word of 2026-10-12.
+
+### What shipped
+
+- **Inbox owner names by id** ([ChaletteHQ/cr1#106](https://github.com/ChaletteHQ/cr1/issues/106), [#105](https://github.com/ChaletteHQ/cr1/issues/105), PR [#107](https://github.com/ChaletteHQ/cr1/pull/107)). `inbox_helpers._user_names` passed the owner's id to `entity_resolve.resolve`, a name matcher whose sound-alike rung turned `person_001` into "PERSON", and then read the `ResolveResult` as a dict: any book holding a name that sounds like "Person" (or an owner id resembling the owner's own name) crashed every Inbox run with `AttributeError: 'ResolveResult' object has no attribute 'get'`. It now reads `capture_gate.workspace_capture_context(root)["user_names"]` (owner looked up by id; canonical name and aliases), with the whole lookup inside the `try`; any failure returns `[]`. Pinned by `tests/run_inbox_user_names_by_id_test.py`; the G34 user-pointer census pins the new read; `instruction_layer_names.py` regenerated (G71).
+- **CommandRoomDG** added to `_chalette/clients.json` ([#108](https://github.com/ChaletteHQ/cr1/pull/108)).
+
+### Release manifest
+One announcement, no automatic action (`shared/releases/v5.33.2.json`).
+
+### Verification
+New test FAIL on v5.33.1, OK on the fix; full battery on Python 3.12 shows no red on the fix that is not also red on v5.33.1 (recorded on #106). User test: approved by the team.
+
 ## v5.33.1 — 2026-10-06 — Current with the fleet line: cards load their tool, Apply all sends, no dependencies key
 
 **Three ports onto v5.33.0 plus the CHATSON1 hotfix below it, on the owner's ruling of 2026-10-06 that main is no longer held ("make cr1 everything current").** Nothing else changes.

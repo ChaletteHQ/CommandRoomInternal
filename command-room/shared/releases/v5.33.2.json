@@ -1,0 +1,13 @@
+{
+  "version": "5.33.2",
+  "headline": "The Inbox runs again for owners whose book holds a name that sounds like \"Person\".",
+  "items": [
+    {
+      "id": "v5332_announce_inbox_owner_names",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "One fix. On some books the Inbox stopped with an error before it made a page, every time, scheduled or run by hand. It now finds your own names the same way the rest of Command Room does, and runs.",
+      "action": "announce_only"
+    }
+  ]
+}

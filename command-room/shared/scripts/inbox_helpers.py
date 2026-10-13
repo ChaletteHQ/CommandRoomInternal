@@ -697,16 +697,24 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
 
 def _user_names(workspace_root: str, user_person_id: str) -> List[str]:
     """Every name and address the primary user answers to, for the direction
-    doctrine: the CEO's own messages never create waiting-on-them items."""
-    try:
-        from entity_resolve import resolve
+    doctrine: the CEO's own messages never create waiting-on-them items.
 
-        record = resolve(workspace_root, user_person_id) or {}
+    Read from `capture_gate.workspace_capture_context`, the same source the
+    other capture paths use: it finds the owner's record BY ID and returns its
+    canonical_name and aliases. `inbound_capture._name_is_user` compares sender
+    display names only, so no addresses are added. Never `entity_resolve`: that
+    is a name matcher, and given an id its sound-alike rung matched any record
+    named like "Person" (cr1#106). Any failure, or an owner other than
+    `user_person_id`, gives [] rather than someone else's names."""
+    try:
+        from capture_gate import workspace_capture_context
+
+        ctx = workspace_capture_context(workspace_root)
+        if not user_person_id or ctx.get("user_id") != user_person_id:
+            return []
+        return [str(n) for n in ctx.get("user_names") or [] if n]
     except Exception:  # noqa: BLE001
         return []
-    names = [record.get("name") or "", record.get("email") or ""]
-    names += list(record.get("aliases") or [])
-    return [str(n) for n in names if n]
 
 
 # ---------------------------------------------------------------------------

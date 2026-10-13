@@ -677,6 +677,7 @@ SHIPPED_SCRIPT_NAMES: frozenset = frozenset({
     'run_idm1_multicandidate_sameas_test.py',
     'run_idpolish1_watchdog_tz_test.py',
     'run_inbox_triage_primary_user_test.py',
+    'run_inbox_user_names_by_id_test.py',
     'run_inboxdrive1_test.py',
     'run_incap1_inbound_capture_test.py',
     'run_index1a_test.py',
