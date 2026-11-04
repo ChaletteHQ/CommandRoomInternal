@@ -481,11 +481,61 @@ SHIPPED_CRON_HISTORY: dict[str, tuple[str, ...]] = {
 # accumulated workspace signal before they fire well.
 FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
     "morning-brief",
-    "end-of-day",    # EOD2 — inherits `past-meetings`' first-install slot (rename, not an addition)
-    "inbox",         # M1 — promoted into first-install set; surfaced to customer as `inbox-triage`
-    "friday-wrap",   # v3.11.0 weekly rhythm; surfaced to customer as `weekly-recap`
     "maintenance",   # MAINT1 — THE silent background task; the five pre-MAINT1 silent taskIds (cleanup / reconcile-sent / monthly-report / weekly-insights / session-sweep) run as its jobs and are disabled on migration (SUPERSEDED_BY).
+    # SHELVE1 (cr1#618, the owner's ruling 2026-11-03): `inbox`, `end-of-day`
+    # and `friday-wrap` left this set. The cockpit page shows the inbox, the
+    # plate and the day; the typed phrases still run each surface on demand.
+    # Membership of what came out is `SHELVED_TASK_IDS` below.
 })
+
+
+# -----------------------------------------------------------------------------
+# SHELVED chats (SHELVE1, cr1#618 — the owner's ruling 2026-11-03)
+# -----------------------------------------------------------------------------
+# The cockpit page (cr1#608, #619) replaced the daily chats as the surface the
+# owner reads and acts on. Only Morning Brief and Maintenance remain scheduled
+# from the previous version; these five are SHELVED: never first-install,
+# never offered as a later-add, never registered by any path, removed from a
+# seat by the update bridge's reinstall (`schedule_backend.bridge_plan(...,
+# reinstall=True)`), and refused with `shelved_line` when a customer asks to
+# add one. Their rows STAY in `DEFAULT_SCHEDULES` and their orchestrators stay
+# live, on purpose: the cockpit's inbox task and the maintenance meeting-capture
+# job read those files' phases, a typed `triage my inbox` still measures its
+# lateness against the shipped slot, and the orchestrator guards' scope is
+# unchanged. This is the owner-visible half of the retirement; the registry's
+# half (a `RETIRED_TASKS` row and a stub per chat) follows when the remaining
+# phases have homes of their own (the Review and Week tabs of the cockpit).
+SHELVED_TASK_IDS: frozenset[str] = frozenset({
+    "inbox", "end-of-day", "friday-wrap", "waiting-on", "my-plate",
+})
+
+#: The typed phrase that still runs each shelved surface on demand.
+SHELVED_PHRASE: dict[str, str] = {
+    "inbox": "triage my inbox",
+    "end-of-day": "end of day",
+    "friday-wrap": "weekly recap",
+    "waiting-on": "show waiting",
+    "my-plate": "what's on my plate",
+}
+
+SHELVED_LINE = ("Your {name} chat is retired: the Command Room Hub shows it now, "
+                "and `{phrase}` runs it any time.")
+
+
+def is_shelved(task_id: str) -> bool:
+    """True for a chat the cockpit replaced (SHELVE1). Membership is the
+    set, never a name you remember."""
+    return str(task_id or "").strip() in SHELVED_TASK_IDS
+
+
+def shelved_line(task_id: str) -> str:
+    """The one sentence `change-schedule`, the bridge and `system-health`
+    say about a shelved chat; "" for any other id."""
+    tid = str(task_id or "").strip()
+    if tid not in SHELVED_TASK_IDS:
+        return ""
+    return SHELVED_LINE.format(name=DISPLAY_NAMES.get(tid, tid),
+                               phrase=SHELVED_PHRASE.get(tid, "its phrase"))
 
 
 # -----------------------------------------------------------------------------
@@ -1819,6 +1869,11 @@ DISPLAY_NAMES: dict[str, str] = {
     "question-expiry": "Old Questions Answered",  # TTL1 (SPEC_FLOW1 Lane G) — the daily question-expiry engine (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id). "Old Questions Answered", not "Question Expiry": the render is read by a CEO, and "expiry" reads as something being deleted
     "binding-gauge": "Memory Coverage Check",  # GAUGEJOB1 — the daily binding-gauge refresh (a maintenance JOB, not a task; same reason for the row). "Memory Coverage Check", not "Binding Gauge": the render is read by a CEO, and the noun has to name what is being measured rather than the mechanism measuring it
     "daily-measure": "Flow Check",  # MEASURE1 (SPEC_FLOW1 Lane D) — the daily flow measure (a maintenance JOB, not a task; same reason for the row). Names what the CEO gets, not the mechanism: "Daily Measure" would tell a reader nothing and "Flow Measure" is a plumbing noun on its own. FIX ROUND 1 (reviewer F-6): the first cut said "Weekly Flow Measure" on a job whose nominal_cron is `0 0 * * *` — a wrong cadence claim in the ONE place that documents cadence (change-schedule's roster prose, "each runs when due"). This name makes no cadence claim at all
+    "cockpit": "Cockpit",  # COCKPIT1 (cr1#608) - the cockpit page's one task (registered by cockpit-setup, never a default or first-install chat; the row exists so its trigger name, receipts and the watchdog's lines read as English, never as a bare id)
+    "cockpit-prep": "Hub Prep",  # COCKPIT1 four-task shape (cr1#619): registered by cockpit-setup, never a default chat
+    "cockpit-inbox": "Hub Inbox",  # cr1#619
+    "cockpit-apply": "Hub Apply",  # cr1#619: the one writer from the page to the book
+    "cockpit-refresh": "Hub Refresh",  # cr1#619
 }
 
 
@@ -2265,7 +2320,9 @@ def later_add_task_ids() -> frozenset:
     all later-adds the week before, so every surface that treats this set as
     "things worth offering" stops offering them for free.
     """
-    return frozenset(DEFAULT_SCHEDULES) - FIRST_INSTALL_TASK_IDS
+    # SHELVE1 (cr1#618): a shelved chat is not "not yet added" either. It is
+    # off the schedule for good, and the cockpit shows its surface.
+    return frozenset(DEFAULT_SCHEDULES) - FIRST_INSTALL_TASK_IDS - SHELVED_TASK_IDS
 
 
 def registration_target_set(existing_registered) -> frozenset[str]:
@@ -2301,7 +2358,10 @@ def registration_target_set(existing_registered) -> frozenset[str]:
     for task_id in FIRST_INSTALL_TASK_IDS - existing:
         if any(pred in existing for pred in renamed_predecessors(task_id)):
             target.discard(task_id)
-    return frozenset(target)
+    # SHELVE1 (cr1#618): a shelved chat still registered on a seat the bridge
+    # has not reinstalled yet is never refreshed by a registration re-run
+    # either; the bridge removes it, and nothing keeps its body current.
+    return frozenset(target - SHELVED_TASK_IDS)
 
 
 def load_schedule_view(

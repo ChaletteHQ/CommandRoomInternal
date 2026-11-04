@@ -20,7 +20,12 @@ WHAT THIS MODULE DELIBERATELY DOES NOT DO
 -----------------------------------------
 
 - **It does not write.** No `window.claude.mcp` capability, no write path, no
-  queue (M ruling 2026-08-06 — both one-tap variants were rejected: a direct
+  queue. (The 2026-08-06 ruling below was REVERSED for ONE page on 2026-11-03,
+  cr1#608: the cockpit page (`shared/templates/cockpit/cockpit.html`,
+  `cockpit_helpers.py`) saves its choices in its own database and the
+  `cockpit` task applies them; its three objections each got a mechanism
+  there, expiry, a closed verb set and Reopen. This board is unchanged.)
+  The original ruling: both one-tap variants were rejected: a direct
   ledger write is a corruption risk with no append primitive, no undo and no
   idempotency; a queue write is silent-rot plus verb collapse). Apply stays
   synchronous and in-chat, so every interactive confirm (the OpenSubitemsError

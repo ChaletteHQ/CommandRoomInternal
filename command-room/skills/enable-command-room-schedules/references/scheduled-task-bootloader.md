@@ -1,6 +1,8 @@
 # Bootloader template for scheduled-task registration (v2.14.24+, v2.14.26+ workspace-aware, v3.2.1+ multi-plugin-aware, **v3 merged-environment aware — BOOT3, 2026-09-19**)
 
-This file is the canonical bootloader template registered into the scheduler at registration time. Each scheduled chat gets a copy with its placeholders substituted.
+This file is the canonical bootloader template. Each scheduled chat runs a copy with its placeholders substituted.
+
+**Since cr1#638 (2026-11-03) that copy is composed at every fire, not stored.** A chat is registered with a short stub (`schedule_refresh.compose_stub_body`): its identity line, the registration-time facts (folder path, writer pair, display name, orchestrator), the plugin-finding bash, and one call, `python3 shared/scripts/schedule_refresh.py fire-body`, that composes this template's body from those facts with `compose_bootloader_body` and prints it for the run to follow from Step 0. A change to this file therefore reaches every registered chat on its next fire. The substitution rules below are what that composer does.
 
 ## v3 (BOOT3, 2026-09-19) — what changed and why
 
@@ -78,7 +80,7 @@ You are running the scheduled chat `<TASK_ID>`. This is a bootloader, not the or
 
 A scheduled run starts with no folder attached, so this step asks for one — **once, at the start**, and never again in this run except in the one case point 6 names.
 
-1. Call `mcp__remote-devices__get_device_info`. If that tool does not exist in your tool list, this is the older desktop app: skip Step 0 entirely and go to Step 1.
+1. Load `mcp__remote-devices__get_device_info` first with ToolSearch (`select:mcp__remote-devices__get_device_info`), then call it. **A tool named only in the deferred-tools list IS present**: load it, never treat it as missing. Only when the search finds no such tool is this the older desktop app: skip Step 0 entirely and go to Step 1. (cr1#633: a run that saw the tool only as deferred skipped this step, took the mounted-folder branch, found nothing and said the folder could not be reached, on a seat where the folder was attached.)
 2. Read `connectedFolders`. If it already contains `<WORKSPACE_ABSOLUTE_PATH>`, the folder is attached — go to Step 1 and do not request anything.
 3. Otherwise call, exactly once:
 
@@ -223,7 +225,7 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
 [ -n "$WORKSPACE" ] && [ -f "$WORKSPACE/_hq/data/events.jsonl" ] || echo "ABORT_WORKSPACE_NOT_FOUND"
 ```
 
-— and then take points 2, 3, 4 and 5 of the merged branch below **in this shell**, with no `device_bash` anywhere: `expect` against the installed runtime (the STOP on a mismatch stands exactly as written), the brain file through the access layer's `read` verb, the proof through the `plan run_helper` form, and the exports of point 3. `CR_FIRED_VIA=scheduled` is already exported by the block above; add `export CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>"` before the first `plan` so a landed document can name its path on the customer's own computer.
+— and then take points 2, 3, 4 and 5 of the merged branch below **in this shell**, with no `device_bash` anywhere: `expect` against the installed runtime (on a mismatch, restage once in this shell: the same `install` line with `--out "<the workspace>/_hq/.cache/cr-runtime"` so the zip lands where it is unpacked, then its `verify_line` here, no `device_commit_files`; a second mismatch posts the message and stops, exactly as written), the brain file through the access layer's `read` verb, the proof through the `plan run_helper` form, and the exports of point 3. `CR_FIRED_VIA=scheduled` is already exported by the block above; add `export CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>"` before the first `plan` so a landed document can name its path on the customer's own computer.
 
 **If `CR_ENV=merged_cloud` and the run DOES carry `mcp__remote-devices__device_bash`** — the workspace is NOT in this container. It is on the customer's computer, inside the sandbox VM, and every read of it goes through that tool. **Every access-layer line on this branch is RENDERED IN THE CONTAINER** — `cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan <verb> --json '…'` — and the ONE line it prints is pasted into `device_bash` unchanged. The two variables in front of `python3` are this body's own facts, substituted at registration, so the line carries the writer identity even in a shell where no earlier export survived (the account is this container's own; nothing reads a synced file). Never run `plan` from the staged runtime through `device_bash`: the account this chat runs under lives in this container, so a line rendered on the device carries no writer identity, and a write it names is refused (IDENT1 I-11). Take these five steps in order:
 
@@ -242,8 +244,13 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
 
    It prints one JSON line carrying `plugin_version` and `manifest_sha`. Compare it against the discovery JSON from point 1:
 
-   - `runtime_present: false` → the runtime is not installed. Post the message below and STOP.
-   - the discovery JSON's `manifest_sha` is null, or differs from the `manifest_sha` that `expect` printed → the installed runtime is not this plugin's. Post the message below and STOP.
+   - `runtime_present: false`, or the discovery JSON's `manifest_sha` is null or differs from the `manifest_sha` that `expect` printed → the runtime in the workspace is missing or is an older build. **Restage it once, then check again** (RESTAGE1, cr1#635: every plugin update changes the build, and a run that only stopped here left every scheduled chat silent until the owner restaged by hand). In this container:
+
+     ```bash
+     cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py install --out "/mnt/user-data/outputs" --ws "<the discovery JSON's ws>" --device-path "<WORKSPACE_ABSOLUTE_PATH>"
+     ```
+
+     It prints one JSON line. Call `mcp__remote-devices__device_commit_files` with its `device_commit_files` list exactly as printed (each `stagedPath` and `devicePath`; the zip is built under `/mnt/user-data/outputs`, the only place the commit tool takes a file from, and `devicePath` names the folder the way your computer does, cr1#651), then run its `verify_line` through `device_bash`, unchanged. No approval card is involved: the folder grant from Step 0 is the permission, as it is for the update's own install step. Then run point 1's block again and compare once more. A match → continue to point 3. Still missing or different, or any of the three calls failed → the runtime could not be brought current: post the message below and STOP. **Restage at most once per run.**
    - otherwise the runtime matches the resolved plugin — continue, whatever this prompt's `plugin-version` stamp says. A stamp older than `expect`'s `plugin_version` is registration drift for the watchdog to report, not a reason to stop this fire.
 
    If `expect` cannot be run at all (no output, or output that is not JSON), continue: the runtime was found and probed in point 1, and point 5 proves it actually works. Stopping a fire on a failed self-check the customer cannot clear is the failure this step exists to avoid.

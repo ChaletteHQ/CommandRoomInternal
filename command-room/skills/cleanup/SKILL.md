@@ -599,6 +599,15 @@ Convert each project's hand-written People table into the generated Live State b
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -710,6 +719,15 @@ Safe and idempotent by construction: non-empty `projects` records merge into `th
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -777,6 +795,15 @@ Runs right after 3.5a-bis, same DUALKEY1-style shape: a pure mutator plus an own
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -852,6 +879,15 @@ the same clustering writes nothing (HONEST1).
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -916,6 +952,15 @@ print('n_split_proposals=' + str(counts['n_split_proposals']))
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1183,6 +1228,7 @@ print(json.dumps(parity))
 
 - **`ghost_first_install`** (a first-install task enabled in the config/defaults but missing from the registered set) → real breakage; one Monday-note line: *"Your [Display Name] task is missing from the schedule — say 'set up command room schedules' to restore it."* (The watchdog layer above usually catches this too; don't double-report the same task.)
 - **`ghost_later_add`** (a task in `later_add_task_ids()` not registered — read the set, never a list typed here) → EXPECTED, say nothing. A RETIRED task (`schedule_config.RETIRED_TASKS`) is the same silence for a different reason: it is gone, not pending, so never say it is missing and never propose adding it — the R3 proposal step owns that nudge. **Retired ids cannot reach either bucket anyway** (retirement takes the row out of `DEFAULT_SCHEDULES`, which is what the parity view iterates), and TASKRET1 is why that is worth knowing: `commitment-triage` and `balance` were named in this very sentence as later-adds until 2026-08-17, so a hand-typed roster here goes stale on exactly the releases that matter most.
+- **A SHELVED chat is in neither bucket (SHELVE1, cr1#618).** `inbox`, `end-of-day`, `friday-wrap`, `waiting-on` and `my-plate` were replaced by the cockpit page: absent is their normal state, the update bridge's reinstall removes them, and `check_schedule_parity` skips them by `schedule_config.is_shelved` before classifying. Its `shelved_registered` list names the ones a seat still carries; say nothing about them here (the schedule skill owns that line), and never propose adding one.
 - **`orphan_overrides`** (a `schedule_config` entry for a taskId that exists in neither DEFAULT_SCHEDULES nor the registered set — e.g. a legacy `cr-*` key) → one Monday-note line: *"An old schedule setting from a previous version is lingering — harmless, but say 'change my schedule' and 'back to defaults' if you ever want a clean slate."* FLAG ONLY: the only heal for an orphan override is a removal, and cleanup never removes; under sparse-config semantics there is no safe ADDITIVE heal (densifying would destroy the customized-cron signal), so the heal direction stays flag-only and `schedule_config_healed` remains registered-but-unwritten.
 - The audit event's counts are what make the weekly check auditable — never narrate the event name to the CEO.
 
@@ -1388,6 +1434,8 @@ Branch on how engaged the CEO was this week (their actions vs their own trailing
 ## Phase 5: Save the Report
 
 Generate a `.docx` at `[WORKSPACE_ROOT]/_hq/cleanup-reports/[YYYY-MM-DD]-cleanup.docx` via `brief_writer.py` **only** when there's something substantive to surface (A-few-things / Backlog tiers). Clean weeks: no doc, just the one-liner. The .docx body follows the same non-technical voice (no scores, no alarm language, forward-action framing). Surface it as the canonical H2 deliverable link at the bottom of the chat turn per CONTRACT Rule 3. Create `cleanup-reports/`, `briefings/`, and `summaries/` under `_hq/` if missing.
+
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery.
 
 - **NEVER hand-roll the cleanup report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or leaking report (the v3.20.0 failure mode) — and Phase 3d above is the sweep that catches everyone else's hand-rolled docs, so this skill hand-rolling its own is the exact failure it exists to detect.
 - **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("what you should look at", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/cleanup-reports/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "so I can read it on Monday", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the cleanup report in a Google Doc" is a request this gate refuses, not an override. A connector copy also lands outside `_hq/`, where next week's sweep cannot see it — hand back the `.docx` link instead.

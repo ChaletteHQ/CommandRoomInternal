@@ -432,6 +432,15 @@ Call Granola MCP for meetings in `[start_aware, end_aware]`. For each:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -510,6 +519,15 @@ Ask the declared transcript backend for the same window a SECOND way: with the i
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -591,6 +609,15 @@ For each meeting:
    #    writer in a shell. The door forwards who you are; a writer with no
    #    identity on this seat refuses in one sentence, and that sentence is the
    #    whole answer.
+   #  9 FOLDER. Three tiers, one wording here and in the block the customer
+   #    pastes into the account's Claude instructions (claude_instructions.py,
+   #    TIER_LINES). If the owner's computer is connected, work in the Command
+   #    Room folder; if it is not attached, ask for it by name before doing any
+   #    work. If the owner's computer is not connected, ask for the Command Room
+   #    folder to be attached from OneDrive or Google Drive before doing any
+   #    work. If neither is possible, answer as plain Claude and do not go
+   #    through Command Room. A scheduled chat asks nothing: it works in the
+   #    folder it was registered with, or stops in one sentence.
    SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
    eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -678,6 +705,15 @@ For each meeting:
    #    writer in a shell. The door forwards who you are; a writer with no
    #    identity on this seat refuses in one sentence, and that sentence is the
    #    whole answer.
+   #  9 FOLDER. Three tiers, one wording here and in the block the customer
+   #    pastes into the account's Claude instructions (claude_instructions.py,
+   #    TIER_LINES). If the owner's computer is connected, work in the Command
+   #    Room folder; if it is not attached, ask for it by name before doing any
+   #    work. If the owner's computer is not connected, ask for the Command Room
+   #    folder to be attached from OneDrive or Google Drive before doing any
+   #    work. If neither is possible, answer as plain Claude and do not go
+   #    through Command Room. A scheduled chat asks nothing: it works in the
+   #    folder it was registered with, or stops in one sentence.
    SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
    eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -806,6 +842,15 @@ For each meeting:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1002,6 +1047,15 @@ Otherwise, for EACH newly-processed meeting transcript, execute via bash:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1152,6 +1206,15 @@ Otherwise, for each newly-processed transcript, execute:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1257,6 +1320,15 @@ The meetings Phase 3.5 classified `non_attendee` run here, and **nowhere else**.
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1618,6 +1690,15 @@ You MUST execute the renderer through the session's bash after the Rule 22 pream
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1713,9 +1794,11 @@ Format:
 
 The `artifact_link.url` on each item IS the same `computer:///` URL used in the Meeting briefs section. Inline-in-widget link + post-widget Briefs link both point at the same file.
 
-**Step 4 (v3.13.0+ — H2 heading link primary; present_files DEMOTED):**
+**Step 4 (owner ruling 2026-11-03: the file cards first; the H3 heading links are the pointers):**
 
-Per CONTRACT.md Rule 3 (v3.13.0+) and M's 2026-05-20 testing #29: file cards don't reliably open most file types on primary click. So `present_files` is no longer the opener. The post-widget `Briefs:` section emits H3 heading links (multi-doc) per `doc_headline_link_h3()` — those native `computer://` links ARE the opener.
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery.
+
+Per CONTRACT.md Rule 3, each brief this fire produced is sent as a file card before the widget posts. The post-widget `Briefs:` section then emits H3 heading links (multi-doc) per `doc_headline_link_h3()`, the native `computer://` pointers in words beside the cards.
 
 ```python
 from chat_output_renderer import doc_headline_link_h3
@@ -1737,9 +1820,9 @@ for brief in briefs:
     print(doc_headline_link_h3(label, url))
 ```
 
-`present_files` is OPTIONAL post-v3.13.0. The 2026-05-20 testing settled the format question: native `computer://` links open reliably; cards don't. If you include `present_files`, position it AFTER the H2/H3 links as a reveal-in-folder convenience. Default: skip — the H2/H3 links are sufficient and doubling up adds noise.
+The cards and the links are not a doubling: the card is the delivery and the link is the pointer in words. Only where this run has no file-card tool is the link the delivery, and then `deliverables.card_absent_line()` is said once under the `Briefs:` section.
 
-If the native `computer://` link fails for the user despite v3.13.0's native-form fix (rare — would indicate a regression of #19), surface a one-time per-session troubleshooting line: *"If the link above doesn't open, check that you're on the latest Cowork desktop build — older builds may have a `computer://` resolver bug."* Don't fall back to cards as a hidden second surface; cards don't work either.
+If the native `computer://` link fails for the user despite v3.13.0's native-form fix (rare — would indicate a regression of #19), surface a one-time per-session troubleshooting line: *"If the link above doesn't open, check that you're on the latest Cowork desktop build — older builds may have a `computer://` resolver bug."* The cards were sent first; this line is about the links only.
 
 Replaces v2.10.x's single-surface `present_files`-only design AND v2.12.0–v2.13.x's single-surface markdown-only design. v2.14.0+ uses BOTH.
 
@@ -1840,7 +1923,7 @@ Same rule applies to any case where multiple distinct entities surface together 
 - Resolve every entity ID to canonical name (no `org_NNN`, `person_NNN`, `event_NNN`, `project_NNN`)
 - Re-run phrasing: "re-run" / "re-processed" — never "force re-emit" / "force re-emitted" / "(seq 128-136)"
 - Skipped meetings list goes in `save_confirmation` field, NOT as a separate item
-- The `artifact_link` per meeting carries the absolute path of the docx-skill-produced .docx, used for the post-chat file-card delivery (v2.10.8+). The renderer no longer emits a per-item `📄 [Open full brief]` markdown line — cards from `present_files` are the surface.
+- The `artifact_link` per meeting carries the absolute path of the docx-skill-produced .docx, used for the post-chat file-card delivery (v2.10.8+). The renderer no longer emits a per-item `📄 [Open full brief]` markdown line — the file cards (`SendUserFile`, `display: "render"`) are the surface.
 
 **No example rendered output is included by design (v2.10.8+).** Read `shared/scripts/chat_output_renderer.py` if you need to understand the output format — but never paraphrase from any rendered example you find anywhere. Execute the renderer; post what it returns.
 

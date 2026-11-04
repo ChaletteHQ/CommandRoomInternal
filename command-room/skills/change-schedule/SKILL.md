@@ -185,6 +185,15 @@ Stop. No changes, no prompt for input.
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -295,6 +304,13 @@ Membership is `schedule_config.RETIRED_TASKS`, never a name you remember. A reti
 - **When `fold_is_active` is true: render it under "Registered", with `schedule_config.folded_fire_line(task_id)` under the row — never under "Available, not added yet", never as drift, and never as a plain "paused".** A folded chat rendered as an ordinary pause is the product not knowing its own state: the customer did not pause it, an update did, and the line is what says so and names the way back. **When `paused_by_customer` is true instead, none of that applies:** render the ordinary paused row, say nothing about a fold, and let `resume` do what it always does. The two are answerable apart because the fold stamps its own discriminator on the stored override (`schedule_config.FOLDED_BY_KEY`, the SCHEDINH1 `superseded_by` device) and its `schedule_config_changed` event carries the same `reason` — so "did we fold this or did they pause it" is a read, never a guess.
 - **`add waiting on` / `add my plate` / `bring back waiting on` / `bring back my plate` → ENABLE, never refuse, and never the Phase 6 registration path.** The task is already registered; what is off is its switch. Route to the ordinary resume: `enabled: true` through the same path `resume <task>` takes, plus the live `backend.plan_update(task_id, enabled=True)` plan, executed exactly as `resume` does. Registering a second time would give the customer two of the same chat. `resume waiting on` / `enable waiting on` are the same act under other words and already worked; these are the words the product's OWN sentence prints, so they have to land here too — a trigger the product tells a customer to say, and that nothing claims, is the offer going nowhere (the same reasoning as `add end of day` below).
 - **`pause` on a FOLDED fire (`fold_is_active`) is a no-op worth one sentence, not an error.** It is already off. Say so and offer nothing. `pause` on a chat of this class that is simply ON is an ordinary pause and behaves like every other pause — the class never makes a live chat unpausable.
+
+**SHELVED chats are the fifth animal (SHELVE1, cr1#618, the owner's ruling 2026-11-03).** Membership is `schedule_config.is_shelved(task_id)` — `inbox`, `end-of-day`, `friday-wrap`, `waiting-on` and `my-plate` — never a name you remember. The cockpit page replaced them: they are never first-install, never offered, never registered by any path, and the update bridge's reinstall removes them from a seat.
+
+- **`add <shelved chat>` / `resume <shelved chat>` / `bring back <shelved chat>` → refuse with `schedule_config.shelved_line(task_id)` verbatim, and register nothing.** The line names the chat, says the cockpit page shows it now, and gives the typed phrase that runs it on demand. No "but I can add it anyway".
+- **A shelved chat still registered on a seat the bridge has not reinstalled yet renders under "Registered" with the shelved line under the row**, never as drift and never as "available, not added yet". `pause` on it is an ordinary pause; `update command room` is what removes it.
+- **The on-demand surfaces are untouched**: `triage my inbox`, `end of day`, `weekly recap`, `show waiting` and `what's on my plate` all still run in full.
+- The folded pair (`waiting-on`, `my-plate`) is shelved too, and shelving wins: `add waiting on` no longer enables anything, it gets the shelved line.
 
 **RENAMED tasks are a different animal from eliminated ones (SPEC EOD2).** A retired row carrying `renamed_to` (`schedule_config.is_renamed_task(task_id)`; `past-meetings` → `end-of-day` is the first) was NOT eliminated — the chat is alive under a new id, both ids resolve to the same orchestrator, and the old registration keeps firing the current pack at the same hour for as long as the customer leaves it. Four rules follow:
 
@@ -436,6 +452,15 @@ an empty workspace path (fix round 2, review finding R-F1).
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -504,6 +529,15 @@ changes (cron, enable/disable a whole task).
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST

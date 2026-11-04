@@ -133,6 +133,8 @@ DEFAULT_TIMEOUT_S = 150
 RUN_HELPER_ALLOWLIST = frozenset({
     # reads and computes
     "data_root:resolve",
+    # FILECARD1 (cr1#611): has this seat been shown the paste-in block (walks the ledger, writes nothing)
+    "claude_instructions:shown_status",
     # DORMSCOPE1 (cr1#170): whose accounts the dormancy scan may rank
     "dormancy:outreach_scope",
     # DORMDOOR1 (cr1#316): the scan's required live-contact check. Discovery
@@ -320,6 +322,22 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "maintenance_dispatcher:plan_schedule_realign",  # MAINTJOBS1
     "schedule_backend:bridge_plan",  # v5.33.0 merge-fix MF-3 (D-8): the bridge refreshes mapped chats only; a read that plans
     "schedule_backend:bridge_schedules_line",  # v5.33.0 merge-fix MF-3/MF-4 (D-5): the bridge's schedules sentence through the one producer
+    "cockpit_helpers:load_config",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:setup_check",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:render_page_file",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:status_doc",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:settle_statuses",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:plan_prune_choices",  # cr1#683 - the applied choices past the window the refresh leg deletes from the page, planned not written here
+    "cockpit_helpers:feed_today",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:feed_inbox",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:feed_projects",  # cr1#660 - the cockpit page's Projects tab, read only
+    "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
+    "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
+    "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:newer_message_arrived",  # COCKPIT1 (cr1#608) - the send gate: did the thread move after the draft
+    "cockpit_helpers:sent_tokens_update",  # cr1#684 - the used-token record a run writes before a send, composed not typed
+    "cockpit_helpers:plan_task_registration",  # COCKPIT1 (cr1#608) - the cockpit task's registration, planned and not called
+    "cockpit_helpers:plan_cockpit_registration",  # cr1#619 - all four cockpit tasks, planned and not called
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -442,6 +460,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "staff_meeting_helpers:run_staff_meeting_surface",
     "schedule_backend:record_trigger_row",  # SCHEDREG1 - registration's trigger row, landed where the folder is
     "schedule_backend:record_registration",  # SCHEDFAST1 (#101) - the trigger row AND the schedule_created receipt, one door call per created chat
+    "schedule_backend:record_removals",  # SHELVE1 (cr1#618) - after the bridge's reinstall deletes: the trigger rows dropped and one config record
     "schedule_config:write_schedule_skipped",  # SCHEDREG1 - the one refusal row a seat that cannot register writes
     "inbox_helpers:run_inbox_surface",  # INBOXDRIVE1
     "inbox_helpers:stamp_last_triage",  # LASTTRIAGE1 (cr1#454) - the typed triage's LAST_TRIAGE.txt, stamped from the clock; it takes no time
@@ -454,7 +473,14 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "schedule_refresh:log_schedule_refreshed",  # MAINTJOBS1
     "schedule_backend:record_trigger_map",  # MAINTJOBS1
     "release_actions.claude_md_docs_rule_v1:claude_md_docs_rule_v1",  # DOCS lane (DOCS1 D-1): the rule into CLAUDE.md, one applied row
+    "release_actions.claude_md_filecard_rule_v1:claude_md_filecard_rule_v1",  # FILECARD1 (cr1#610): the file-card line into CLAUDE.md, one applied row
+    "release_actions.claude_md_nomd_rule_v1:claude_md_nomd_rule_v1",  # FILECARD1 (cr1#610): the no-Markdown line into CLAUDE.md, one applied row
     "deliverables:export_claude_doc",  # DOCS lane (DOCS1 D-2): a Claude Doc landed in the folder + its receipt row
+    "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
+    "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
+    "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
+    "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
+    "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes
     # (ORCH2 adds entries) anchor on the two-line string
@@ -2650,8 +2676,17 @@ def _source_commit(root: Path) -> Optional[str]:
     return out if proc.returncode == 0 and out else None
 
 
+def _device_join(device_path: str, *parts: str) -> str:
+    """A path under the folder as the CUSTOMER's computer spells it: a Windows
+    drive path joins with backslashes, anything else with slashes."""
+    base = str(device_path).rstrip("/\\")
+    if len(base) >= 2 and base[1] == ":":
+        return "\\".join([base.replace("/", "\\")] + [p.replace("/", "\\") for p in parts])
+    return "/".join([base] + list(parts))
+
+
 def install(out_dir: Path, root: Optional[Path] = None,
-            ws: Optional[str] = None) -> Dict[str, Any]:
+            ws: Optional[str] = None, device_path: Optional[str] = None) -> Dict[str, Any]:
     """Build ONE zip holding the runtime plus its manifest; return the plan.
 
     One zip rather than N files because `device_commit_files` caps at 50 files
@@ -2668,19 +2703,30 @@ def install(out_dir: Path, root: Optional[Path] = None,
         for rel in sorted(manifest["files"]):
             zf.write(root / rel, rel)
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True))
-    return {
+    sha = manifest_sha(manifest)
+    out = {
         "zip": str(zip_path),
         "zip_name": zip_name,
         "version": version,
-        "manifest_sha": manifest_sha(manifest),
+        "manifest_sha": sha,
         "file_count": len(manifest["files"]),
         "device_commit_files": [{
             "stagedPath": str(zip_path),
             # `install` runs in the container, which has no workspace — so the
             # target carries the WS the model already holds from `discover`.
-            "devicePath": f"{ws or '$WS'}/{RUNTIME_CACHE_REL}/{zip_name}",
+            # cr1#651: the commit tool takes the folder as the customer's computer
+            # names it (the connected folder), never the sandbox path discover
+            # answers with; `device_path` is that, when the caller has it.
+            "devicePath": (_device_join(device_path, RUNTIME_CACHE_REL, zip_name) if device_path
+                           else f"{ws or '$WS'}/{RUNTIME_CACHE_REL}/{zip_name}"),
         }],
     }
+    if ws:
+        # RESTAGE1 (cr1#635): the verify line for THIS workspace, ready to run,
+        # so a scheduled run restages without hand-substituting a placeholder.
+        out["verify_line"] = verify_command({"vm_path": ws}, version=version,
+                                            zip_name=zip_name, manifest_sha=sha)
+    return out
 
 
 def expect(root: Optional[Path] = None) -> Dict[str, Any]:
@@ -3358,7 +3404,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not out:
             sys.stderr.write("install needs --out <dir>\n")
             return 2
-        return _print(dict(install(Path(out), ws=_flag(argv, "--ws")), ok=True))
+        return _print(dict(install(Path(out), ws=_flag(argv, "--ws"),
+                                   device_path=_flag(argv, "--device-path")), ok=True))
 
     if verb == "verify":
         stage = _flag(argv, "--stage")

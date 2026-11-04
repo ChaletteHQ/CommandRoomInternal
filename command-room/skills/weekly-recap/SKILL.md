@@ -219,6 +219,15 @@ Resolve plugin + workspace paths (canonical CONTRACT.md Rule 22 preamble):
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -700,7 +709,7 @@ The helper appends `footer` and `h2_link` itself, composed exactly as `closing_l
 
 Don't put the link inline in the recap body. It MUST be at the bottom or it gets lost between paragraphs (per M's 2026-05-20 feedback #6d/#9/#11).
 
-The file card `present_files` is OPTIONAL post-v3.13.0 and is no longer the primary opener — the Windows resolver behind it doesn't open most file types reliably from card click (per M's 2026-05-20 testing #29), and on a merged seat the card comes from the harness or not at all. The H2 native `computer://` link IS the opener. If you include `present_files`, position it AFTER the H2 link as a reveal-in-folder convenience only — skip it entirely if the user is unlikely to need filesystem navigation (default for weekly-recap: skip).
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery. The H2 native `computer://` link stays the pointer at the bottom, and `footer` and `h2_link` stay the last two lines of the post.
 
 ### 5.D — Demo closing line (first-call use only)
 

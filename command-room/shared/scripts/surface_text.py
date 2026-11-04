@@ -361,14 +361,25 @@ def plan_text_delivery(workspace_root: str, *, tools, page_rel: str, text: str,
             out["rows"].append(fd.flag_row(
                 task_id, fd.FLAG_NO_URL if ARTIFACT_TOOL in names else fd.FLAG_NO_TOOL))
     message = "\n".join(body_lines).strip() + "\n"
-    if SEND_MESSAGE_TOOL in names:
-        out["calls"].insert(0, {"tool": SEND_MESSAGE_TOOL, "text": message})
-    else:
-        out["calls"].insert(0, {"tool": "chat_turn", "text": message})
+    message_call = ({"tool": SEND_MESSAGE_TOOL, "text": message} if SEND_MESSAGE_TOOL in names
+                    else {"tool": "chat_turn", "text": message})
+    # FILECARD1 (cr1#268, owner ruling 2026-11-03): the card comes FIRST,
+    # before the summary, with the render display; the same order and the
+    # same call shape as `inbox_helpers.plan_delivery`: the staged copy (when
+    # the tools need one), the card, the message, then the republish.
+    card = None
     if SEND_FILE_TOOL in names and page_path is not None:
-        out["calls"].append({"tool": SEND_FILE_TOOL, "path": page_path})
-    if stage is not None and any(c["tool"] in (SEND_FILE_TOOL, ARTIFACT_TOOL) for c in out["calls"]):
-        out["calls"].insert(1, stage)
+        from deliverables import card_call as _card_call
+
+        card = _card_call(page_path)
+    republish = list(out["calls"])
+    out["calls"] = []
+    if stage is not None and (card is not None or republish):
+        out["calls"].append(stage)
+    if card is not None:
+        out["calls"].append(card)
+    out["calls"].append(message_call)
+    out["calls"].extend(republish)
     out.update({"branch": "text", "message": message, "push": push,
                 "receipt_flags": flags, "saved_at_line": closing})
     return out

@@ -442,6 +442,13 @@ STALE_PROMPT_ALTERNATIVE = (
 )
 
 _PLUGIN_ROOT = _HERE.parent.parent
+#: RUNTIMESCHED1 (cr1#648): the runtime staged in a workspace ships nothing
+#: from `skills/` (ACCESS1), yet registration composes from the bootloader
+#: template and the orchestrator map, which live there. The runtime carries
+#: byte-identical copies here (`run_runtimesched1_test` pins them equal to the
+#: originals); the loaders read the original when it exists and the copy when
+#: it does not, so a planner run beside the data can compose a chat.
+RUNTIME_SCHEDULE_COPIES_RELDIR = "shared/templates/schedules"
 BOOTLOADER_TEMPLATE_RELPATH = (
     "skills/enable-command-room-schedules/references/scheduled-task-bootloader.md"
 )
@@ -457,12 +464,22 @@ BOOTLOADER_BODY_MARKER = (
 _BAKED_BASENAME_RE = re.compile(r'WORKSPACE="\$SESSION_DIR/mnt/([^"/\\]+)"')
 
 
+def _schedule_source(root: Path, relpath: str) -> Path:
+    """The plugin's own file when it ships; else the runtime's copy (see
+    RUNTIME_SCHEDULE_COPIES_RELDIR)."""
+    original = root / relpath
+    if original.is_file():
+        return original
+    copy = root / RUNTIME_SCHEDULE_COPIES_RELDIR / Path(relpath).name
+    return copy if copy.is_file() else original
+
+
 def bootloader_template_body(plugin_root=None) -> str:
     """The registered prompt body of the shipped template — everything
     below the canonical marker line, exactly as `enable-command-room-
     schedules` Step 1.B splits it (same marker, same lstrip)."""
     root = Path(plugin_root) if plugin_root else _PLUGIN_ROOT
-    full = (root / BOOTLOADER_TEMPLATE_RELPATH).read_text(encoding="utf-8")
+    full = _schedule_source(root, BOOTLOADER_TEMPLATE_RELPATH).read_text(encoding="utf-8")
     if BOOTLOADER_BODY_MARKER not in full:
         raise ValueError("bootloader template missing its canonical marker line")
     return full.split(BOOTLOADER_BODY_MARKER, 1)[1].lstrip("\n").lstrip()
@@ -473,7 +490,7 @@ def orchestrator_filename(task_id: str, plugin_root=None) -> Optional[str]:
     orchestrator (a silent task, or an id this plugin does not know)."""
     root = Path(plugin_root) if plugin_root else _PLUGIN_ROOT
     try:
-        omap = json.loads((root / ORCHESTRATOR_MAP_RELPATH).read_text(encoding="utf-8"))
+        omap = json.loads(_schedule_source(root, ORCHESTRATOR_MAP_RELPATH).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     val = omap.get(task_id) if isinstance(omap, dict) else None
@@ -588,6 +605,177 @@ def compose_bootloader_body(task_id: str, *, workspace_basename: str,
     return body
 
 
+# ---------------------------------------------------------------------------
+# cr1#638 — a chat REGISTERS a short stub; its full body is composed at fire
+# ---------------------------------------------------------------------------
+#
+# A registered prompt is frozen at registration. When it was the whole composed
+# body (about 45 KB), a fix to the template reached a chat only when the chat
+# was registered again: on 2026-11-03 a cockpit run failed on a Step 0 misread
+# fixed an hour earlier, because it still ran the old copy, and every listing of
+# the triggers carried every copy in full. The stub carries only what is known
+# at registration (the identity line, the folder, the writer pair, the
+# orchestrator and display name), finds the plugin, and asks the installed
+# plugin to compose the body with `compose_bootloader_body` from those facts.
+# The facts sit in the exact shapes the readers below already match
+# (`baked_basename`, `baked_abs_path`, `baked_pair`, the identity line), so the
+# drift compare, the folder guard and the watchdog read a stub as they read a
+# body.
+
+#: The heredoc delimiter the stub feeds its facts to `fire-body` through.
+#: Quoted in the stub, so the shell expands nothing inside it.
+STUB_FACTS_DELIMITER = "CR_REGISTERED_FACTS"
+#: The ceiling a composed stub stays under (bytes, UTF-8). The full body is
+#: about 45 KB; the stub is a few hundred words.
+STUB_MAX_BYTES = 4096
+#: The first line of the full body; the stub tells the fire to check for it.
+FULL_BODY_TITLE = "# Scheduled task bootloader — "
+
+_STUB_HEADER_RE = re.compile(
+    r"cr-task:\s*(?P<task_id>[A-Za-z0-9_\-]+)\s*·\s*"
+    r"cr-workspace:\s*(?P<basename>[^·\n]+?)\s*·\s*"
+    r"plugin-version:[ \t]*(?P<version>[^\s·]*)")
+_STUB_ORCH_RE = re.compile(r"^orchestrator:[ \t]*(\S+)[ \t]*$", re.M)
+_STUB_DISPLAY_RE = re.compile(r"^display-name:[ \t]*(.+?)[ \t]*$", re.M)
+_PLUGIN_NOT_FOUND_RE = re.compile(
+    r"For `ABORT_PLUGIN_NOT_FOUND`:\s*\n\s*\n(> [^\n]+)")
+
+
+def plugin_not_found_line(task_id: str, plugin_root=None) -> str:
+    """The template's own plugin-not-found sentence for `task_id`, read off
+    the template rather than typed here, so the stub and the body say it the
+    same way."""
+    m = _PLUGIN_NOT_FOUND_RE.search(bootloader_template_body(plugin_root))
+    if not m:
+        raise ValueError("bootloader template lost its plugin-not-found sentence")
+    return m.group(1).replace("<TASK_ID>", task_id)
+
+
+def compose_stub_body(task_id: str, *, workspace_basename: str,
+                      plugin_version: str, plugin_root=None,
+                      orchestrator_filename_override: Optional[str] = None,
+                      abs_path: Optional[str] = None,
+                      display_name: Optional[str] = None,
+                      discover_block: Optional[str] = None,
+                      writer_id: Optional[str] = None,
+                      writer_derivation: Optional[str] = None) -> str:
+    """The short prompt a chat is REGISTERED with (cr1#638). Same inputs as
+    `compose_bootloader_body`'s merged composition, and it runs that
+    composition first as its check, so whatever the body refuses (an unknown
+    id, a path-shaped basename, no path, a half or malformed pair) the stub
+    refuses the same way.
+
+    `discover_block` is checked and then not stored: the fire composes with
+    the installed plugin's `workspace_access.DISCOVER_BLOCK`, which is the
+    block registration pastes in."""
+    path = str(abs_path or "").strip()
+    if not path:
+        raise ValueError(
+            f"{task_id}: a stub needs the workspace's absolute path on the "
+            "customer's computer")
+    fname = orchestrator_filename_override or orchestrator_filename(task_id, plugin_root)
+    if display_name is None and fname:
+        import schedule_config as _sc  # noqa: WPS433 - lazy
+
+        display_name = _sc.task_display_name(task_id)
+    compose_bootloader_body(
+        task_id, workspace_basename=workspace_basename,
+        plugin_version=plugin_version, plugin_root=plugin_root,
+        orchestrator_filename_override=fname, abs_path=path,
+        display_name=display_name, discover_block=discover_block,
+        writer_id=writer_id, writer_derivation=writer_derivation)
+    basename = workspace_basename.strip()
+    version = str(plugin_version or "")
+    facts = [
+        f"cr-task: {task_id} · cr-workspace: {basename} · plugin-version: {version}",
+        f"orchestrator: {fname}",
+        f"display-name: {display_name}",
+        f'WORKSPACE="$SESSION_DIR/mnt/{basename}"',
+        f'paths=["{path}"]',
+    ]
+    if writer_id is not None:
+        facts += [f"CR_WRITER_ID={writer_id.strip()}",
+                  f"CR_WRITER_DERIVATION={str(writer_derivation).strip()}"]
+    rel = f"skills/enable-command-room-schedules/references/{fname}"
+    lines = [
+        f"# Scheduled chat — {task_id}",
+        "",
+        f"You are running the scheduled chat `{task_id}`. This prompt is a "
+        "short stub: this run's full instructions are composed just now by "
+        "the installed Command Room plugin from the facts below, so a plugin "
+        "update reaches this chat on its next run with nothing to "
+        "re-register.",
+        "",
+        "Run this bash once:",
+        "",
+        "```bash",
+        'SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")',
+        f'REL="{rel}"',
+        'PLUGIN_ROOT=""',
+        'for d in "$CLAUDE_PLUGIN_ROOT" $(ls -dt /root/.claude/plugins/synced/*/*/ 2>/dev/null) '
+        '$(ls -dt "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/ 2>/dev/null); do',
+        '  [ -n "$d" ] && [ -f "${d%/}/$REL" ] && [ -f "${d%/}/shared/scripts/schedule_refresh.py" ] '
+        '&& { PLUGIN_ROOT="${d%/}"; break; }',
+        "done",
+        'if [ -z "$PLUGIN_ROOT" ]; then echo "ABORT_PLUGIN_NOT_FOUND"; else',
+        'cd "$PLUGIN_ROOT" && python3 shared/scripts/schedule_refresh.py fire-body '
+        f"<<'{STUB_FACTS_DELIMITER}' || echo \"ABORT_PLUGIN_NOT_FOUND\"",
+        *facts,
+        STUB_FACTS_DELIMITER,
+        "fi",
+        "```",
+        "",
+        "If the output contains `ABORT_PLUGIN_NOT_FOUND`, or does not start "
+        f"with the line `{FULL_BODY_TITLE}{task_id}`, post exactly this as the "
+        "whole chat turn and STOP, improvising nothing:",
+        "",
+        plugin_not_found_line(task_id, plugin_root),
+        "",
+        "Otherwise that output IS this run's instructions. If the tool saved "
+        "a long output to a file, read the whole file first. Then follow it "
+        "from its Step 0 exactly as if it were this prompt: every step, every "
+        "STOP and its anti-improvisation contract. Do not run this stub's "
+        "bash again.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def stub_facts(registered_prompt: str) -> dict:
+    """The registration-time facts a stub carries, read with the readers the
+    drift compare and the folder guard use. Missing facts are None."""
+    text = registered_prompt or ""
+    head = _STUB_HEADER_RE.search(text)
+    orch = _STUB_ORCH_RE.search(text)
+    disp = _STUB_DISPLAY_RE.search(text)
+    pair = baked_pair(text)
+    return {
+        "task_id": head.group("task_id") if head else None,
+        "basename": baked_basename(text) or (head.group("basename").strip() if head else None),
+        "plugin_version": head.group("version") if head else None,
+        "orchestrator": orch.group(1) if orch else None,
+        "display_name": disp.group(1) if disp else None,
+        "abs_path": baked_abs_path(text),
+        "writer_id": pair[0] if pair else None,
+        "writer_derivation": pair[1] if pair else None,
+    }
+
+
+def compose_from_stub(registered_prompt: str, *, plugin_root=None) -> str:
+    """THE fire-time composition (cr1#638): the full body for the facts a
+    stub carries, through `compose_bootloader_body`, from the plugin this
+    process runs in. Raises ValueError when a fact it needs is missing."""
+    f = stub_facts(registered_prompt)
+    missing = [k for k in ("task_id", "basename", "abs_path") if not f[k]]
+    if missing:
+        raise ValueError(f"stub is missing {missing}")
+    return compose_bootloader_body(
+        f["task_id"], workspace_basename=f["basename"],
+        plugin_version=f["plugin_version"] or "", plugin_root=plugin_root,
+        orchestrator_filename_override=f["orchestrator"],
+        abs_path=f["abs_path"], display_name=f["display_name"],
+        writer_id=f["writer_id"], writer_derivation=f["writer_derivation"])
+
+
 _BAKED_PATH_RE = re.compile(r'paths=\["([^"]+)"\]')
 _BAKED_ID_RE = re.compile(r"CR_WRITER_ID=(acct-[0-9a-f]{12})\b")
 _BAKED_DIGEST_RE = re.compile(r"CR_WRITER_DERIVATION=([0-9a-f]{64})\b")
@@ -663,13 +851,15 @@ def seat_compose_inputs(task_id: str, registered_prompt: str, workspace_root,
 def compose_for_seat(task_id: str, registered_prompt: str, *, basename: str,
                      plugin_version: str, workspace_root, plugin_root=None,
                      abs_path: Optional[str] = None, env=None) -> str:
-    """A CHAT's body composed the way THIS seat would register it (MUST 5).
-    Raises ValueError when no path can be named (the caller: drift)."""
+    """A CHAT's prompt composed the way THIS seat would register it (MUST 5):
+    the stub (cr1#638), so a registered full body from before the stub reads
+    as drift and the next registration or refresh replaces it. Raises
+    ValueError when no path can be named (the caller: drift)."""
     inputs = seat_compose_inputs(task_id, registered_prompt, workspace_root,
                                  abs_path=abs_path, env=env)
     if not inputs["abs_path"]:
         raise ValueError(f"{task_id}: no workspace path to compose against")
-    return compose_bootloader_body(
+    return compose_stub_body(
         task_id, workspace_basename=basename, plugin_version=plugin_version,
         plugin_root=plugin_root, abs_path=inputs["abs_path"],
         writer_id=inputs["writer_id"],
@@ -1116,6 +1306,11 @@ __all__ = [
     "bootloader_template_body",
     "orchestrator_filename",
     "compose_bootloader_body",
+    "compose_stub_body",
+    "compose_from_stub",
+    "stub_facts",
+    "plugin_not_found_line",
+    "STUB_MAX_BYTES",
     "baked_basename",
     "prompt_body_drift",
     "stale_prompt_notice",
@@ -1125,3 +1320,32 @@ __all__ = [
     "load_announce_ledger",
     "announce_lines",
 ]
+
+
+def _main(argv=None) -> int:
+    """`fire-body`: read a stub's facts block on stdin and print the full body
+    the installed plugin composes for them (cr1#638). Prints nothing and exits
+    1 when it cannot compose, so the stub's `|| echo ABORT_PLUGIN_NOT_FOUND`
+    takes over."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] != ["fire-body"]:
+        sys.stderr.write("usage: schedule_refresh.py fire-body < facts\n")
+        return 2
+    try:
+        src = getattr(sys.stdin, "buffer", None)
+        facts = (src.read().decode("utf-8") if src is not None
+                 else sys.stdin.read())
+        body = compose_from_stub(facts)
+    except Exception as exc:  # noqa: BLE001 - one exit code for any refusal
+        sys.stderr.write(f"fire-body: {exc}\n")
+        return 1
+    out = getattr(sys.stdout, "buffer", None)
+    if out is not None:
+        out.write(body.encode("utf-8"))
+    else:  # pragma: no cover - a captured text stream
+        sys.stdout.write(body)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

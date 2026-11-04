@@ -98,6 +98,12 @@
       "claude_code_local": "full",
       "unknown": "refuse"
     },
+    "cockpit-setup": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
     "command-room-coach": {
       "legacy_cowork": "full",
       "merged_cloud": "full",

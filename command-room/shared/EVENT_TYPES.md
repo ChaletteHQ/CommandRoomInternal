@@ -1530,3 +1530,15 @@ Hard rules:
 - **Narrated once.** The brief prints the step-down line the first time
   `quiet.step_down_narration` hands it out; the `narrated` marker is written
   in the same call, so a re-run says nothing.
+
+## Account instructions lane (FILECARD1, cr1#611, 2026-11-03)
+
+The block a client pastes into the account-level Claude instructions is
+generated per seat by `shared/scripts/claude_instructions.py`, saved at
+`_hq/Claude_Instructions.txt` through the write door, and shown once by the
+update bridge (Phase 5.5) and by onboarding (6a3), then again on "show my
+Claude instructions". One row records each showing with the block's hash.
+
+| Type | Writer (phase) | Named consumers |
+|---|---|---|
+| `claude_instructions_shown` | command-room-update-bridge Phase 5.5 and its show door; command-room-onboarding 6a3 (through `plan append_jsonl`; `claude_instructions.shown_row` is the shape) | `claude_instructions.shown_status` (the bridge's print-once gate: a second update with the same hash prints nothing); usage-report |

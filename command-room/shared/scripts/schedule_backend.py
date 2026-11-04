@@ -946,11 +946,56 @@ def parse_header_line(prompt: Optional[str]) -> Optional[dict]:
     }
 
 
-def is_deletable(task_id: Optional[str]) -> bool:
-    """Only Command Room's own one-shots and probes may be deleted."""
+def is_deletable(task_id: Optional[str], *, by_bridge: bool = False) -> bool:
+    """Only Command Room's own one-shots and probes may be deleted — except
+    by the update bridge's REINSTALL (SHELVE1, cr1#618, the owner's ruling
+    2026-11-03: "when you run update bridge, it should delete the previous
+    scheduled tasks and install them fresh"). With `by_bridge` the bridge may
+    also delete every chat and silent task of the previous version: a
+    shipped default, a retired or superseded id, the one-task `cockpit` of
+    cr1#614. Never a cockpit task (`cockpit-…`, the page's own, registered by
+    `cockpit-setup`) and never an id Command Room does not know."""
     if not task_id:
         return False
-    return task_id in CR_ONE_SHOT_TASK_IDS or task_id.startswith(CR_PROBE_PREFIX)
+    if task_id in CR_ONE_SHOT_TASK_IDS or task_id.startswith(CR_PROBE_PREFIX):
+        return True
+    if not by_bridge:
+        return False
+    if task_id.startswith(COCKPIT_TASK_PREFIX):
+        return False
+    sc = _schedule_config()
+    return (task_id in sc.DEFAULT_SCHEDULES or task_id in sc.RETIRED_TASKS
+            or task_id in sc.SILENT_TASKS or task_id in sc.SUPERSEDED_BY
+            or task_id == ONE_TASK_COCKPIT_ID)
+
+
+#: SHELVE1 — the page's own tasks (cr1#619) are never the bridge's to delete.
+COCKPIT_TASK_PREFIX = "cockpit-"
+#: The one-task cockpit of cr1#614, superseded by the four; the bridge removes it.
+ONE_TASK_COCKPIT_ID = "cockpit"
+
+REINSTALL_LINE = ("Your scheduled chats were reinstalled: {kept} are set up fresh; "
+                  "{removed} were removed, because the Command Room Hub shows them now "
+                  "(their typed phrases still work).")
+#: Said when the bridge removed the one-task Hub of the first build (cr1#679).
+HUB_ONE_TASK_LINE = "Your Command Room Hub needs its new tasks: say `update my hub`."
+REINSTALL_NOTHING_LINE = "Your scheduled chats were already the reinstalled set; nothing changed."
+#: Nothing of the previous version was on this seat (a fresh install, or a seat
+#: whose chats were cleared by hand): the sentence names the set-up alone.
+REINSTALL_CREATED_ONLY_LINE = "Your scheduled chats are set up: {kept}."
+
+
+def reinstall_line(created_names, removed_names) -> str:
+    """The ONE sentence the bridge says after a reinstall, composed here so
+    the bridge never counts or names the chats itself."""
+    created = [str(n) for n in (created_names or []) if str(n).strip()]
+    removed = [str(n) for n in (removed_names or []) if str(n).strip()]
+    if not created and not removed:
+        return REINSTALL_NOTHING_LINE
+    if not removed:
+        return REINSTALL_CREATED_ONLY_LINE.format(kept=_join_names(created))
+    return REINSTALL_LINE.format(kept=_join_names(created) or "nothing",
+                                 removed=_join_names(removed) or "none")
 
 
 def record_trigger_map(workspace_root, task_id: str, row: dict,
@@ -1432,8 +1477,9 @@ class CloudTriggersBackend:
             note="update this trigger, then write the receipt the change owes",
         )
 
-    def plan_delete(self, task_id: str, *, trigger_id: Optional[str] = None) -> Planned:
-        if not is_deletable(task_id):
+    def plan_delete(self, task_id: str, *, trigger_id: Optional[str] = None,
+                    by_bridge: bool = False) -> Planned:
+        if not is_deletable(task_id, by_bridge=by_bridge):
             return Refusal(
                 line=DELETE_REFUSED_LINE, reason_code="delete_refused", task_id=task_id
             )
@@ -1441,7 +1487,9 @@ class CloudTriggersBackend:
             tool=CLOUD_TOOL_MAP["delete"],
             args={"trigger_id": trigger_id},
             task_id=task_id,
-            note="one of Command Room's own one-shots or probes — safe to remove",
+            note=("the bridge's reinstall (SHELVE1) removes the previous version's chat"
+                  if by_bridge else
+                  "one of Command Room's own one-shots or probes — safe to remove"),
         )
 
     def plan_fire(
@@ -1854,7 +1902,13 @@ def compose_registration_body(task_id: str, *, basename: str,
                               writer_pair=None, discover_block=None,
                               plugin_root=None) -> str:
     """The body THIS seat registers for `task_id` - chat or silent - through
-    the one composer each kind has. Raises KeyError for an id with neither."""
+    the one composer each kind has. Raises KeyError for an id with neither.
+
+    A chat registers its STUB (cr1#638, `schedule_refresh.compose_stub_body`):
+    the full body is composed from it by the installed plugin at every fire,
+    so a template fix reaches the chat with no re-registration. With no path
+    there is nothing for a stub to ask for, and the chat keeps the full body,
+    composed as before."""
     sc = _schedule_config()
     import schedule_refresh as _sr  # noqa: WPS433 - lazy
 
@@ -1866,7 +1920,9 @@ def compose_registration_body(task_id: str, *, basename: str,
         return sc.compose_silent_task_prompt(
             task_id, basename, writer_id=wid, writer_derivation=wder,
             workspace_path=(str(abs_path or "").strip() or None))
-    return _sr.compose_bootloader_body(
+    compose = (_sr.compose_stub_body if str(abs_path or "").strip()
+               else _sr.compose_bootloader_body)
+    return compose(
         task_id, workspace_basename=basename, plugin_version=plugin_version,
         plugin_root=plugin_root, abs_path=abs_path,
         discover_block=discover_block, writer_id=wid,
@@ -2204,7 +2260,8 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
                 registered=None, plugin_version: str, tz_name: str,
                 writer_pair=None, discover_block: Optional[str] = None,
                 on_date=None, plugin_root=None, env=None,
-                trigger_map: Optional[dict] = None) -> dict:
+                trigger_map: Optional[dict] = None,
+                reinstall: bool = False) -> dict:
     """The update bridge's schedule phase (MUST 8, coordinator decision D-8).
 
     It REFRESHES only chats already in the stored trigger map - it never
@@ -2214,8 +2271,25 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
     where this seat could act on it. Otherwise it is `plan_registration` over
     the mapped ids, with every CREATE dropped (a mapped chat missing from the
     listing is the customer's to re-add, never the bridge's).
+
+    `reinstall=True` is the SHELVE1 path (cr1#618, the owner's ruling
+    2026-11-03), the cloud backend only: every Command Room chat and silent
+    task of the previous version that the listing carries for this folder is
+    planned as a DELETE (`removals`), and the first-install set is planned as
+    CREATES, fresh; the cockpit's own tasks are never touched. The answer
+    adds `removals` (one `CallPlan` per trigger, with its display name),
+    `removed_names`, `created_names` and `reinstall_line`, the one sentence
+    the bridge says. A seat whose listing carries nothing of Command Room's
+    plans the creates alone; a legacy scheduler refuses with the invite line
+    as before, because it has no delete.
     """
     sc = _schedule_config()
+    if reinstall:
+        return _bridge_reinstall_plan(
+            tools, workspace_root=workspace_root, abs_path=abs_path,
+            registered=registered, plugin_version=plugin_version, tz_name=tz_name,
+            writer_pair=writer_pair, discover_block=discover_block, on_date=on_date,
+            plugin_root=plugin_root, env=env)
     stored = _resolve_trigger_map(trigger_map, workspace_root or None)
     mapped = sorted(k for k, v in stored.items() if isinstance(v, dict))
     if not mapped:
@@ -2280,6 +2354,100 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
 BODIES_NOT_COMPARED_NOTE = "bodies not compared here"
 
 
+def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
+                           plugin_version, tz_name, writer_pair, discover_block,
+                           on_date, plugin_root, env) -> dict:
+    """SHELVE1: the bridge's reinstall plan (see `bridge_plan`). Pure."""
+    sc = _schedule_config()
+    backend, _found = select_backend(sc._tool_names(tools))
+    out: Dict[str, Any] = {"ok": False, "first_registration_needed": False,
+                           "reinstall": True, "line": "", "creates": [], "updates": [],
+                           "current": [], "refused": [], "removals": [],
+                           "removed_names": [], "created_names": [], "reinstall_line": ""}
+    if backend is None or backend.id != "cloud":
+        out["line"] = sc.setup_invite_line(
+            tools, workspace_root=workspace_root, abs_path=abs_path, env=env,
+            invite=FIRST_REGISTRATION_INVITE, alternative=FIRST_REGISTRATION_ALTERNATIVE)
+        out["reason"] = "legacy_backend" if backend is not None else "no_scheduler"
+        return out
+    path = _seat_path(abs_path, env)
+    records = [r for r in (registered or []) if isinstance(r, (TaskRecord, dict))]
+    kept, _unplaced = _seat_placed(records, path, workspace_root) if records else ({}, [])
+    for rec in records:
+        tid = str(_rec_get(rec, "taskId") or "").strip()
+        trigger_id = _rec_get(rec, "trigger_id")
+        if not tid or not trigger_id:
+            continue
+        if tid in kept and kept[tid] is not rec:
+            continue  # another computer's registration of the same id
+        plan = backend.plan_delete(tid, trigger_id=str(trigger_id), by_bridge=True)
+        if isinstance(plan, Refusal):
+            continue  # a cockpit task, or an id Command Room does not know
+        out["removals"].append(plan)
+        if tid == ONE_TASK_COCKPIT_ID:
+            # cr1#679: the one-task Hub of the first build is not a chat the
+            # Hub replaced; the line says to set the Hub up instead of naming it.
+            out["hub_one_task_removed"] = True
+            continue
+        out["removed_names"].append(sc.task_display_name(tid))
+    planned = plan_registration(
+        tools, workspace_root=workspace_root, abs_path=abs_path,
+        task_ids=sorted(sc.FIRST_INSTALL_TASK_IDS), registered=[],
+        plugin_version=plugin_version, tz_name=tz_name, writer_pair=writer_pair,
+        discover_block=discover_block, on_date=on_date, plugin_root=plugin_root,
+        env=env, trigger_map={})
+    if not planned.get("ok"):
+        out["line"] = planned.get("line") or ""
+        out["reason"] = planned.get("reason")
+        out["removals"], out["removed_names"] = [], []
+        return out
+    out.update(ok=True, backend=backend.id, pair=planned.get("pair"),
+               creates=list(planned.get("creates") or []),
+               refused=list(planned.get("refused") or []))
+    out["created_names"] = [sc.task_display_name(p.task_id) for p in out["creates"]]
+    out["reinstall_line"] = reinstall_line(out["created_names"], out["removed_names"])
+    if out.get("hub_one_task_removed"):
+        out["reinstall_line"] += " " + HUB_ONE_TASK_LINE
+    return out
+
+
+def record_removals(workspace_root, task_ids, *, source_skill: str = "command-room-update-bridge") -> dict:
+    """A WRITER (SHELVE1). After the bridge's deletes landed: drop each id's
+    row from the stored trigger map and write ONE `schedule_config_changed`
+    record naming every id switched off, through the one config-event writer,
+    so the lateness ledger stops scoring their slots. `{forgotten, event}`."""
+    from atomic_write import atomic_write_json
+
+    sc = _schedule_config()
+    ids = [str(t).strip() for t in (task_ids or []) if str(t or "").strip()]
+    path = Path(workspace_root) / "_hq" / "workspace_config.json"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            config = json.load(fh)
+        if not isinstance(config, dict):
+            config = {}
+    except (OSError, ValueError):
+        config = {}
+    triggers = config.get("triggers")
+    forgotten = []
+    if isinstance(triggers, dict):
+        for tid in ids:
+            if tid in triggers:
+                triggers.pop(tid, None)
+                forgotten.append(tid)
+        config["triggers"] = triggers
+        registered_ids = config.get("registered_taskIds")
+        if isinstance(registered_ids, list):
+            config["registered_taskIds"] = [x for x in registered_ids if str(x) not in ids]
+        atomic_write_json(path, config)
+    event = None
+    if ids:
+        event = sc.log_schedule_config_change(
+            workspace_root, [{"task_id": tid, "cron": None, "enabled": False} for tid in ids],
+            source_skill=source_skill, extra_data={"reinstall": True})
+    return {"forgotten": forgotten, "event": event}
+
+
 def composer_reachable(task_id: str, plugin_root=None) -> bool:
     """Can THIS process compose `task_id`'s registered body? A silent task
     composes from the registry alone (always True); a chat needs the
@@ -2291,8 +2459,9 @@ def composer_reachable(task_id: str, plugin_root=None) -> bool:
         return True
     import schedule_refresh as _sr  # noqa: WPS433 - lazy
     root = Path(plugin_root) if plugin_root else _sr._PLUGIN_ROOT
-    return ((root / _sr.BOOTLOADER_TEMPLATE_RELPATH).is_file()
-            and (root / _sr.ORCHESTRATOR_MAP_RELPATH).is_file())
+    # RUNTIMESCHED1 (cr1#648): the staged runtime now carries copies of both.
+    return (_sr._schedule_source(root, _sr.BOOTLOADER_TEMPLATE_RELPATH).is_file()
+            and _sr._schedule_source(root, _sr.ORCHESTRATOR_MAP_RELPATH).is_file())
 
 
 def _seat_placed(registered, path, workspace_root=None):

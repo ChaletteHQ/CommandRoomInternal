@@ -5598,7 +5598,7 @@ def promote_task_to_commitment(
 
 def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
                          source_event_seq=None, source_skill="apply-choices",
-                         now_iso=None) -> dict:
+                         now_iso=None, priority=None, source=None) -> dict:
     """CTS1FIX 'Add to My Plate' — mint a fresh owner-me task commitment.
     Writes a `commitment` event with kind=task, owner_id=<me>, status open, which
     surface_split's `personal` partition renders on My Plate. Provenance links back
@@ -5641,9 +5641,13 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
         "owner_id": owner_id,
         "status": "open",
         "no_due": True,
-        "source": "my_plate_capture",
+        "source": source or "my_plate_capture",
         "origin": "user_stated",
     }
+    # cr1#662: the Command Room page's priority to-do (1 high, 2 medium,
+    # 3 low); a plain My Plate task carries none.
+    if priority is not None:
+        data["priority"] = int(priority)
     data["source_ref"] = user_initiated_source_ref(source_ref)
     if source_event_seq is not None:
         data["source_event_seq"] = source_event_seq

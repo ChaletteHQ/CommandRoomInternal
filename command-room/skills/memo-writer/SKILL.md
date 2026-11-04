@@ -234,6 +234,15 @@ Rewrite what fails, re-check once, then continue. Also apply the universal banne
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -291,7 +300,7 @@ make_brief(
 
 **Do NOT save a markdown source alongside the .docx** — per CONTRACT.md Rule 27, .docx is the canonical deliverable and a parallel `.md` would surface as a redundant file in the customer's folder. The .docx itself is the version-of-record; regeneration uses the source skill + the current substrate.
 
-**Surface in chat (CONTRACT Rule 3 — H2 heading link, LAST in the turn):** after the .docx is written, end the chat turn with the H2 doc link. Build it with the canonical helpers — never hand-encode a `computer:///` URL:
+**Surface in chat (CONTRACT Rule 3: the file card first; the H2 heading link is the pointer, LAST in the turn):** after the .docx is written, send its file card (the paragraph below), then the summary, then end the chat turn with the H2 doc link. Build it with the canonical helpers — never hand-encode a `computer:///` URL:
 
 ```python
 import sys
@@ -302,6 +311,8 @@ print(doc_headline_link("Memo: <topic>", get_brief_artifact_url(output_path)))
 ```
 
 One-line summary above the link; nothing after it.
+
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "I made 2 calls: external-formal register · signed"

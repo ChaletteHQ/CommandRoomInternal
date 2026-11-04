@@ -43,7 +43,7 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 
 1. **Read the installed plugin version** from `$PLUGIN_ROOT/.claude-plugin/plugin.json` (resolve `$PLUGIN_ROOT` via the canonical CONTRACT.md Rule 22 preamble: the Access preamble (CONTRACT Rule 22 v6 — `shared/WORKSPACE_ACCESS.md`)).
 2. Execute the plan `backend.plan_list()` returns and `normalize` the result. The Command Room set is every registered taskId that appears in `ORCHESTRATOR_MAP` (the chats) or the `SILENT_TASKS` registry (the background tasks) — bare taskIds, up to the full `DEFAULT_SCHEDULES` set. Count the set from the registry at read time; never state a number from memory. Do NOT filter on a `cr-` prefix (retired v2.14.27; matches zero tasks on a current install).
-3. **Chat tasks — verify the registered prompt is a canonical bootloader:** check the same `REQUIRED_MARKERS` Phase 3.5 uses (`# Scheduled task bootloader`, `Resolve the plugin path`, `Read the orchestrator and execute it verbatim`, `Anti-improvisation contract`) plus correct `<TASK_ID>`/orchestrator-filename substitution and no leading frontmatter. A prompt missing the markers is a stub or a pre-bootloader pin → "refresh needed".
+3. **Chat tasks — verify the registered prompt is a canonical bootloader:** the registered prompt is the chat's stub (cr1#638), so check the body it composes, `schedule_refresh.compose_from_stub(<registered prompt>)`, against the same `REQUIRED_MARKERS` Phase 3.5 uses (`# Scheduled task bootloader`, `Resolve the plugin path`, `Read the orchestrator and execute it verbatim`, `Anti-improvisation contract`) plus correct `<TASK_ID>`/orchestrator-filename substitution and no leading frontmatter. A prompt missing the markers is a stub or a pre-bootloader pin → "refresh needed".
 4. **Chat tasks — read the registration version stamp:** parse `plugin-version:` from the registered prompt (stamped at registration, Phase 3/W4). Stamp == installed version → current. Stamp older → "registered under vX — refresh will land on the next `set up command room schedules` run". No stamp → "pre-stamp registration (older than Phase 3)" — informational, not a failure, because fire behavior always comes from the freshly-resolved plugin.
 5. **Contract layer — read from the FILES, not the prompts:** for each taskId in `ORCHESTRATOR_MAP`, read the on-disk `references/orchestrator-<name>.md` and confirm it carries the `OUTPUT CONTRACT` marker in its first 1500 chars (same assertion Step 1.A applies at registration). That is where the contract lives in the bootloader era; a registered prompt was never the right place to look for it.
 6. **Silent tasks:** verify the registered prompt matches the current composed prompt from `compose_silent_task_prompt()` — match → current; differ → "refresh needed"; missing → "not registered — say `set up command room schedules`".
@@ -94,6 +94,15 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -242,6 +251,15 @@ Absent that explicit confirmation it stays inert (the dispatcher never surfaces 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -590,6 +608,15 @@ The bootloader assumes the orchestrator files exist on disk and contain the OUTP
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -621,7 +648,7 @@ If any assertion fails, ABORT the whole skill with a plain-English error: *"One 
 
 **Step 1.B — Compose every chat's prompt for THIS seat, with the one composer (SCHEDREG1, coordinator decision D-1; ruling R-RW3-3).**
 
-Nothing in this skill substitutes a placeholder by hand any more, and no map of orchestrator files is typed here. The prompt each chat is registered with comes from ONE composer — `schedule_refresh.compose_bootloader_body` for a chat (all seven placeholders filled, the writer pair baked; `references/orchestrator-map.json` is its map, so `staff-meeting` and every other row resolve) and `schedule_config.compose_silent_task_prompt` for a silent task (Step 1.D) — and the whole registration is planned by ONE call that uses them: `schedule_backend.plan_registration`. The drift compare, the refresh and the dev renderer compose through the same composer, so a chat registered here reads as current everywhere and a second run changes nothing.
+Nothing in this skill substitutes a placeholder by hand any more, and no map of orchestrator files is typed here. The prompt each chat is registered with comes from ONE composer — for a chat, its short STUB from `schedule_refresh.compose_stub_body` (cr1#638: the identity line, the folder, the writer pair, the orchestrator and display name, and one instruction to have the installed plugin compose the full body with `schedule_refresh.compose_bootloader_body` at every fire — all seven placeholders filled, the writer pair baked; `references/orchestrator-map.json` is its map, so `staff-meeting` and every other row resolve; a template fix therefore reaches every chat on its next fire, with nothing to re-register) and `schedule_config.compose_silent_task_prompt` for a silent task (Step 1.D) — and the whole registration is planned by ONE call that uses them: `schedule_backend.plan_registration`. The drift compare, the refresh and the dev renderer compose through the same composer, so a chat registered here reads as current everywhere and a second run changes nothing.
 
 The seat's inputs, each read from THIS seat — never from another computer's render, never typed from memory:
 
@@ -831,6 +858,15 @@ Read the per-workspace schedule configuration via the `schedule_config` helper. 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1042,6 +1078,8 @@ For each created schedule, log a `schedule_created` event (OMIT `seq`/`ts` — t
 
 ## Phase 3.5 — Post-registration verification (v2.14.24+ — bootloader pattern)
 
+**A chat's registered prompt is its STUB (cr1#638).** Every check below runs on the body that stub composes at fire, `schedule_refresh.compose_from_stub(<the registered prompt>)`, in this plugin; a stub that does not compose is a failure. `bootloaders[task_id]` is the same composition of the stub Phase 1.B planned. A registered prompt that is still a full body from before the stub is not a failure here: it reads as drift, and this run's update replaces it with the stub.
+
 After ALL the create and update plans of Phase 3 have been executed, **read back what's now registered ONCE (one `backend.plan_list()` + `normalize`) and verify every task you registered or refreshed this run against it.** One listing for the whole run, not one per chat (SCHEDFAST1, #101 — on the merged seat every listing is a device round trip, and a read-back after each of six creates was six of them for one answer); the checks below are per task and unchanged. This is the hard gate that catches v2.14.20-style improvisation regressions, adapted for the bootloader pattern. Keep this listing: Phase 5.9 reads the same one.
 
 What's verified:
@@ -1078,6 +1116,12 @@ for task_id, fname in tasks_to_register.items():
     if actual_prompt.lstrip().startswith("---"):
         failures.append(f"{task_id}: registered prompt starts with frontmatter (Cowork doubling bug); re-register without leading ---")
         continue
+    # cr1#638 — the registered prompt is the stub; check the body it composes.
+    try:
+        actual_prompt = schedule_refresh.compose_from_stub(actual_prompt)
+    except ValueError as exc:
+        failures.append(f"{task_id}: registered stub does not compose a body ({exc})")
+        continue
     # Marker checks
     for marker in REQUIRED_MARKERS:
         if marker not in actual_prompt:
@@ -1107,7 +1151,7 @@ for task_id, fname in tasks_to_register.items():
         # composed bootloader, never a hardcoded range (hardcoded ranges drift
         # the moment the template changes — the pre-Phase-3 gate failed every
         # healthy install for exactly that reason).
-        expected = len(bootloaders[task_id])   # from Phase 1.B composition
+        expected = len(schedule_refresh.compose_from_stub(bootloaders[task_id]))   # Phase 1.B's stub, composed
         if len(actual_prompt) > expected * 1.5:
             failures.append(f"{task_id}: registered prompt is {len(actual_prompt)} chars vs ~{expected} composed — too large for a bootloader. Did the full orchestrator body get registered by mistake?")
             continue

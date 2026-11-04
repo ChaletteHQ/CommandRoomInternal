@@ -248,9 +248,9 @@ Use `_hq/CONVENTIONS_SOURCE_LINKS.md` as the canonical source-link format:
 - If the orchestrator produced 0 meetings/threads/items with linkable sources, omit the entire Links block.
 - If a specific item has no source URL (e.g., a self-commitment with no email thread), render its line without the source link: `4. (no source) · [📄 brief](...)` or just skip the entry.
 
-### Drop `present_files` in v2.12.0+
+### File cards come first (owner ruling 2026-11-03, CONTRACT Rule 3)
 
-The post-widget markdown links section replaces the harness's file cards. Cards are visually separated from the chat content; markdown links sit naturally inline and match Sam's Apr 30 ask: *"those briefs hyperlinked right under that UI."* `present_files` calls in orchestrator phase 6/9 specs are removed v2.12.0+.
+Every `.docx` a fire produces is handed to the harness's file-card tool (`SendUserFile`, `display: "render"`) before the widget posts; the post-widget markdown links are the pointers in words beside the cards, matching Sam's Apr 30 ask: *"those briefs hyperlinked right under that UI."* From v2.12.0 to v5.33 the links replaced the cards; the ruling put the cards first again, and `present_files` (the retired desktop tool's name) is never written into a spec as the opener.
 
 ## Action reference — what each button does (v2.12.2+; v4.5.2 S2)
 
@@ -658,13 +658,13 @@ Everything the cowork path guarantees holds here, produced by the SAME gate stac
 
 1. Build the data view, set `widget_mode: "all_batch_widget"`, and render + validate + persist it via `widget_transport.render_and_persist` (§ Transport above) — all validators fire inside the call. Unbounded views pass `page=N` and paginate; bounded views omit `page`.
 2. Post the widget by passing `transport["html"]` (the persisted page's validated bytes, verbatim) to `mcp__visualize__show_widget` as `widget_code`. **The widget is the entire user-facing surface for the items.** No accompanying markdown narration, no "here's what you can do" prose, no recap of the widget's button labels.
-3. After the widget posts, if any `.docx` deliverables were produced this fire (briefs, prep docs, etc.), hand the harness the array of all absolute paths ONCE, through whichever file-delivery verb it exposes. Inline file cards appear beneath the widget, named by the source filename (which already includes the meeting / project slug). Where the harness has no such verb the markdown links above are the surface. This is the ONLY mechanism for clickable file surfaces — `computer://` links inside the widget HTML do not work (iframe sandbox blocks them).
+3. Before the widget posts, if any `.docx` deliverables were produced this fire (briefs, prep docs, etc.), hand the harness every file through its file-card tool (`SendUserFile`, `display: "render"`; on a merged seat a staged copy, never a path on the customer's computer). The file cards appear above the widget, named by the source filename (which already includes the meeting / project slug). Where the harness has no such tool the markdown links are the surface, and `deliverables.card_absent_line()` is said once under them. This is the ONLY mechanism for clickable file surfaces — `computer://` links inside the widget HTML do not work (iframe sandbox blocks them).
 
 **MUST NOT do:**
 
 1. **Do NOT narrate or paraphrase the widget's behavior in chat.** Lines like *"Click any action button per item, then Apply all to fire..."* are forbidden. The widget's footer counter + Apply button are self-explanatory; explaining them in markdown text duplicates the surface and signals fallback-mode behavior. If you ever feel like writing prose about what the buttons do, STOP — emit the widget and trust it.
 2. **Do NOT leak internal routing metadata into chat.** Forbidden patterns include `Domain match: x@y.com → Org Name (project_NNN, active)`, `Routing: stage 3 of 5`, `Confidence: 0.87`, `entities.json line 142`, internal entity IDs (`person_NNN`, `project_NNN`, `org_NNN`), event seq numbers, file paths under `_hq/staging/`, debug strings, "phase 4" labels. These are internal mechanics and never appear in user-facing output. The user sees PEOPLE NAMES and PROJECT NAMES — never the internal machinery. And the person name shown is the RESOLVED record's spelling (`canonical_name` via `entity_resolve`), never a transcript/ASR spelling — F-50 P2b rendered "Myra Samples" in a widget for a correctly-resolved Mira Sample. Raw spellings appear only inside verbatim evidence quotes or on genuinely unresolved rows (see `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names).
-3. **Do NOT include brief / .docx links inside the widget HTML.** The widget's `_render_widget_item` no longer renders `artifact_link` (v2.11.3+). The `artifact_link` field stays in the data shape so the orchestrator can collect paths for `present_files` — it does not appear in the widget body.
+3. **Do NOT include brief / .docx links inside the widget HTML.** The widget's `_render_widget_item` no longer renders `artifact_link` (v2.11.3+). The `artifact_link` field stays in the data shape so the orchestrator can collect paths for the file cards — it does not appear in the widget body.
 4. **Do NOT fall back to markdown narration, a hand-built widget, or a compact freelance render if `mcp__visualize__show_widget` errors or is unavailable (FS-08 no-silent-fallback).** SAY SO in plain English and STOP: surface the error string verbatim, or `(Widget surface unavailable — re-fire when the visualize MCP is reachable.)` Do not improvise a text-based action surface, a custom wire prefix, or a "here's what it would have shown" summary. The pre-flight check (`from widget_transport import render_and_persist; print('OK')`) catches the renderer/transport-import case; if `show_widget` itself is missing or errors, surface the same plain-English abort. A mandated call that cannot execute is reported, never worked around quietly.
 5. **Do NOT post any commentary AFTER the widget + Links section.** No "Surfaced 5 items from this morning's scan." No "Cadence math is in early-baseline mode for almost everyone." No "Diversification rule pulled X into slot 1." No "Wrote pattern_break_detected × 5, dont_forget_run, pack_run to events.jsonl." No "Backup at events.YYYY-MM-DDTHHMM.dont_forget.bak.jsonl." No "I noted that in the Quick read." NO commentary at all about what you observed under the hood, what you wrote, what backups you made, what scoring decisions you made, what diversification did. (v2.12.5+ — per M's Apr 30 ask: *"this technical stuff should not show up."*)
 
@@ -794,6 +794,15 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST

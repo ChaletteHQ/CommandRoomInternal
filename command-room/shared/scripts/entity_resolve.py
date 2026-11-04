@@ -418,19 +418,72 @@ def _parse_ts(ts) -> "datetime | None":
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
-def _person_recency(workspace_root: Path, person_ids: set[str]) -> dict[str, str]:
-    """The newest event `ts` that names each person id, read through
-    events_io (the full-history reader). A person no event names has no
-    entry. Defensive: an unreadable ledger returns {}.
+# A whole `person_...` id inside an event's JSON text. The greedy tail stops
+# at the first character outside [0-9A-Za-z_], so a match IS a whole id, the
+# same boundary the per-id pattern below draws (N-4).
+_PERSON_ID_TOKEN = re.compile(r"(?<![0-9A-Za-z_])person_[0-9A-Za-z_]*")
+_PERSON_ID_SHAPE = re.compile(r"person_[0-9A-Za-z_]*")
 
-    An id is matched as a WHOLE id, never as a substring (`person_100` is not
-    named by a row naming `person_1000`; REVIEW_PARALLEL_A N-4), and "newest"
-    is the latest instant, not the largest string (N-5)."""
+# One index per workspace, valid while the ledger files are byte-for-byte the
+# same size, mtime and inode (cr1#705). Building it is one pass over the ledger; the
+# old per-call scan read the whole ledger for every ranking, and one
+# commitment close ranks about ten times, so a Hub Apply of twenty closes read
+# a 12 MB ledger about two hundred times and ran out of the door's 150 s.
+_RECENCY_INDEX: dict[str, tuple[tuple, dict[str, tuple[datetime, str]]]] = {}
+
+
+def _ledger_stamp(workspace_root: Path) -> "tuple | None":
+    """Size, mtime and inode of every ledger file iter_events reads, in order;
+    None when any of them cannot be stat'ed (then nothing is cached)."""
+    try:
+        from events_io import shard_paths
+        stamp = []
+        for p in shard_paths(workspace_root):
+            st = Path(p).stat()
+            stamp.append((str(p), st.st_size, st.st_mtime_ns, st.st_ino))
+        return tuple(stamp)
+    except Exception:
+        return None
+
+
+def _person_recency_index(workspace_root: Path) -> "dict[str, tuple[datetime, str]] | None":
+    """Every `person_` id the ledger names -> (newest instant, its ts), from
+    one pass; cached per workspace until a ledger file changes. None when the
+    ledger cannot be read whole (the caller then scans exactly as before)."""
+    stamp = _ledger_stamp(workspace_root)
+    key = str(workspace_root)
+    hit = _RECENCY_INDEX.get(key)
+    if stamp is not None and hit is not None and hit[0] == stamp:
+        return hit[1]
+    index: dict[str, tuple[datetime, str]] = {}
+    try:
+        from events_io import iter_events
+        for ev in iter_events(workspace_root):
+            if not isinstance(ev, dict):
+                continue
+            ts = ev.get("ts")
+            when = _parse_ts(ts)
+            if when is None:
+                continue
+            blob = json.dumps(ev, default=str)
+            if "person_" not in blob:
+                continue
+            for pid in set(_PERSON_ID_TOKEN.findall(blob)):
+                prior = index.get(pid)
+                if prior is None or when > prior[0]:
+                    index[pid] = (when, ts)
+    except Exception:
+        return None
+    if stamp is not None and stamp == _ledger_stamp(workspace_root):
+        _RECENCY_INDEX[key] = (stamp, index)
+    return index
+
+
+def _person_recency_scan(workspace_root: Path, ids: set[str]) -> dict[str, str]:
+    """The per-id scan: any id, one full pass. Used for ids that are not of
+    the `person_` shape, and when the index cannot be built."""
     out: dict[str, str] = {}
     newest: dict[str, datetime] = {}
-    ids = {i for i in person_ids if i}
-    if not ids:
-        return out
     pats = {pid: re.compile(r"(?<![0-9A-Za-z_])" + re.escape(pid) + r"(?![0-9A-Za-z_])")
             for pid in ids}
     try:
@@ -449,6 +502,33 @@ def _person_recency(workspace_root: Path, person_ids: set[str]) -> dict[str, str
                     out[pid] = ts
     except Exception:
         return out
+    return out
+
+
+def _person_recency(workspace_root: Path, person_ids: set[str]) -> dict[str, str]:
+    """The newest event `ts` that names each person id, read through
+    events_io (the full-history reader). A person no event names has no
+    entry. Defensive: an unreadable ledger returns {}.
+
+    An id is matched as a WHOLE id, never as a substring (`person_100` is not
+    named by a row naming `person_1000`; REVIEW_PARALLEL_A N-4), and "newest"
+    is the latest instant, not the largest string (N-5). Ids of the
+    `person_` shape are answered from one cached index per ledger state
+    (cr1#705); any other id is scanned for as before."""
+    ids = {i for i in person_ids if i}
+    if not ids:
+        return {}
+    shaped = {i for i in ids if _PERSON_ID_SHAPE.fullmatch(i)}
+    out: dict[str, str] = {}
+    index = _person_recency_index(workspace_root) if shaped else None
+    if index is None:
+        return _person_recency_scan(workspace_root, ids)
+    for pid in shaped:
+        if pid in index:
+            out[pid] = index[pid][1]
+    rest = ids - shaped
+    if rest:
+        out.update(_person_recency_scan(workspace_root, rest))
     return out
 
 

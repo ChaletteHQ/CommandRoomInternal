@@ -435,7 +435,8 @@ def mail_seams(workspace_root: str,
                tools: Optional[List[Dict[str, Any]]] = None, *,
                silent: Optional[bool] = None,
                accounts: Optional[List[Any]] = None,
-               discovery_ran: Optional[bool] = None) -> Dict[str, Any]:
+               discovery_ran: Optional[bool] = None,
+               pressed_send: bool = False) -> Dict[str, Any]:
     """The mail and calendar operations resolved through the seams, one answer.
 
     The declared backend wins, with its own operation vocabulary; nothing else
@@ -453,6 +454,12 @@ def mail_seams(workspace_root: str,
     several candidates is today's skip-and-flag. On an interactive seat
     nothing changes: the drift reason stands and the person confirms a
     re-pin (workspace-manager's drift-detect flow).
+
+    `pressed_send` (cr1#707) is for the Hub's Apply run alone: a scheduled
+    run whose sends are the owner's own confirmed presses on the page, each
+    gated by the page's one-use token and the newer-mail check before it
+    goes out. On a silent fire it lets `send` resolve; label, archive and
+    mark_read stay read-only, and the answer says `send_by_press: true`.
     """
     from tool_discovery import ToolDescriptor, discover_for_category
 
@@ -518,6 +525,9 @@ def mail_seams(workspace_root: str,
         # archives or marks anything read - those are a person's clicks on
         # the widget, never the fire's own act.
         for op in SILENT_READ_ONLY_OPS:
+            if op == "send" and pressed_send:
+                out["send_by_press"] = True
+                continue
             out["email"][op] = {"tool_id": None, "reason": SILENT_READ_ONLY_REASON,
                                 "candidates_considered": None}
     # IDENT1 I-14: say how many tools this answer was computed over and
@@ -1298,15 +1308,27 @@ def plan_delivery(workspace_root: str, *, tools, page_rel: str, text: str = "",
             out["rows"].append(fd.flag_row(
                 task_id, fd.FLAG_NO_URL if ARTIFACT_TOOL in names else fd.FLAG_NO_TOOL))
     message = "\n".join(body_lines).strip() + "\n"
-    if SEND_MESSAGE_TOOL in names:
-        out["calls"].insert(0, {"tool": SEND_MESSAGE_TOOL, "text": message})
-    else:
-        out["calls"].insert(0, {"tool": "chat_turn", "text": message})
+    message_call = ({"tool": SEND_MESSAGE_TOOL, "text": message} if SEND_MESSAGE_TOOL in names
+                    else {"tool": "chat_turn", "text": message})
+    # FILECARD1 (cr1#268, owner ruling 2026-11-03): the card comes FIRST,
+    # before the summary. The page is carded with the render display, so the
+    # card opens the page on click rather than leaving the host to decide by
+    # file type; one call shape, owned by deliverables. The order of the
+    # calls is therefore: the staged copy (when the tools need one), the
+    # card, the message, then the republish.
+    card = None
     if SEND_FILE_TOOL in names and page_path is not None:
-        out["calls"].append({"tool": SEND_FILE_TOOL, "path": page_path})
-    if stage is not None and any(c["tool"] in (SEND_FILE_TOOL, ARTIFACT_TOOL)
-                                 for c in out["calls"]):
-        out["calls"].insert(1, stage)
+        from deliverables import card_call as _card_call
+
+        card = _card_call(page_path)
+    republish = list(out["calls"])
+    out["calls"] = []
+    if stage is not None and (card is not None or republish):
+        out["calls"].append(stage)
+    if card is not None:
+        out["calls"].append(card)
+    out["calls"].append(message_call)
+    out["calls"].extend(republish)
     out.update({"branch": "text", "message": message,
                 "push": push_line("text_fallback", urgent=urgent, this_week=week),
                 "receipt_flags": flags})

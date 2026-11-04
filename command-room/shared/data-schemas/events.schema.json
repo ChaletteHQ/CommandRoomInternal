@@ -97,6 +97,7 @@
         "workspace_migration_applied",
         "workspace_migration_skipped",
         "workspace_setting_changed",
+        "claude_instructions_shown",
         "brain_name_captured",
         "brain_name_declined",
         "artifact_installed",

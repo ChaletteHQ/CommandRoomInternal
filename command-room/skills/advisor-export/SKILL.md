@@ -61,7 +61,9 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes
 Read the operator's own substrate: voice/communication profile, `decision` events (to infer heuristics + risk posture), stated positions surfaced via `transcript-search`, role/org from their person record. Draft the Advisor Profile — `headline`, `mandate_default`, `decision_heuristics[]`, `priorities[]`, `risk_posture`, `known_positions[]`, `pushback_patterns[]`, `communication_style`, honest `blind_spots[]`. Show the user the draft for confirmation/edits (it's a portrait of them — they get final say). Provenance: `fidelity: "self"`, `shareable: true`, `forged_by_label` = brain name, `source_signal_summary` = counts. Persist locally via `write_local_advisor()`.
 
 ### Export (self only)
-Call `export_advisor()`. The writer refuses anything not self+shareable. Surface the resulting `.json` path as a clickable link with a one-line "send this file to whoever's board you want a seat on; they run **import advisor profile**." Emits `advisor_profile_exported`.
+Call `export_advisor()`. The writer refuses anything not self+shareable. Hand the resulting `.json` back as a file card (the paragraph below), then the one-line "send this file to whoever's board you want a seat on; they run **import advisor profile**." Emits `advisor_profile_exported`.
+
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery.
 
 ### Model (colleague) — observed, local only
 After `resolve_all` identifies the person, build the profile from **your** signal only: transcripts of meetings with them, emails, people-crm `communication_style`/notes. Be explicit about inference — `blind_spots[]` should note this is an outside read. Provenance: `fidelity: "observed"`, `shareable: false`, `workspace_origin_label` = your workspace. Persist via `write_local_advisor()` (emits `advisor_profile_modeled`). The pack is hard-blocked from export.
@@ -158,6 +160,15 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST

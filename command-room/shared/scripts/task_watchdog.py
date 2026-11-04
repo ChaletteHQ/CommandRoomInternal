@@ -2895,13 +2895,17 @@ def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
       ghost_later_add     — enabled later-add task not registered: EXPECTED
         (deliberately not first-install) — say nothing; R3's proposal step
         owns the nudge.
+      A SHELVED chat (SHELVE1, cr1#618: the cockpit page replaced it) is in
+        neither class whether registered or not — absent is its normal state,
+        and the bridge's reinstall removes it. `shelved_registered` lists the
+        ones a seat still carries, for the one line the schedule skill says.
       orphan_overrides    — schedule_config entries for taskIds that exist
         in neither DEFAULT_SCHEDULES nor the registered set (e.g. legacy
         cr-* keys): flag in the Monday note. Removal would be the only
         heal and cleanup never removes — flag-only (R2 reframed; the
         original densify-heal died with old-R1).
     """
-    from schedule_config import DEFAULT_SCHEDULES, load_schedule_view
+    from schedule_config import DEFAULT_SCHEDULES, is_shelved, load_schedule_view
 
     ws_config = read_workspace_config(workspace_root)
     if registered_ids is None:
@@ -2913,8 +2917,11 @@ def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
     view = load_schedule_view(entities, registered_ids)
     ghosts_first, ghosts_later = [], []
     for tid, spec in view.items():
+        if is_shelved(tid):
+            continue  # SHELVE1: never a ghost, in either class
         if spec["enabled"] and not spec["registered"]:
             (ghosts_later if spec["later_add"] else ghosts_first).append(tid)
+    shelved_registered = sorted(t for t in registered_ids if is_shelved(t))
 
     # MAINT1: superseded taskIds (the five old silent tasks) are disabled by
     # migration, not removed — an override left behind for one of them is
@@ -2949,6 +2956,7 @@ def check_schedule_parity(workspace_root, registered_ids=None) -> dict:
         "ghost_first_install": sorted(ghosts_first),
         "ghost_later_add": sorted(ghosts_later),
         "orphan_overrides": sorted(orphans),
+        "shelved_registered": shelved_registered,
     }
 
 

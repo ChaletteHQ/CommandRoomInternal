@@ -197,7 +197,7 @@ res = resolve_candidate(
 
 **To identify which one — dispatch on `src` FIRST (Phase 3 / W4, 2026-07):** every tuple emitted by a current widget carries `src` — the emitting surface's id, stamped by the renderer from the data view's `source_skill`. When the payload's tuples carry `src`, that IS the source: map it to the registry above (`inbox` → `cr-inbox` handlers, `show-my-list` → show-my-list handlers, etc.) and dispatch — no fire-marker read, no time window. A widget click is valid no matter how much later it lands; scheduled chats are persistent threads the CEO opens hours after the fire, so the evening click on the morning widget is the NORMAL case. (Mixed payloads shouldn't occur — one widget, one source — but if tuples disagree on `src`, treat the payload as ambiguous and use the error line below rather than guessing.)
 
-**One `src`, more than one emitter (SPEC_BOARD1, 2026-08-06).** `src: "commitment-triage"` no longer means "an in-chat widget" — it means the commitment-triage SURFACE, whichever page the user was looking at. The artifact **triage board** (`surface_drivers.py commitments --format artifact`, published as a private Artifact page and read from a phone between sessions) emits the identical tuples: `data.id` verbatim, a verb from the same per-kind sets, `src: "commitment-triage"`, and the same `apply choices: ` prefix — composed by a Copy button and PASTED by the user, because the board never writes. **There is nothing to add for it:** dispatch keys on id + verb and never on which surface emitted the click, so every handler below applies unchanged. Two consequences worth stating, because they are the ones that show up in chat: (a) a board is STALE by design — it does not refresh itself, so an already-closed id WILL arrive; `close_commitment` returns `already_resolved`, and the honest one-line ack ("that one was already closed") is the whole handling, never a hand-built tombstone; (b) `undo` still works, because the batch cache is in-session and the paste happens in-session.
+**One `src`, more than one emitter (SPEC_BOARD1, 2026-08-06).** `src: "commitment-triage"` no longer means "an in-chat widget" — it means the commitment-triage SURFACE, whichever page the user was looking at. The artifact **triage board** (`surface_drivers.py commitments --format artifact`, published as a private Artifact page and read from a phone between sessions) emits the identical tuples: `data.id` verbatim, a verb from the same per-kind sets, `src: "commitment-triage"`, and the same `apply choices: ` prefix — composed by a Copy button and PASTED by the user, because the board never writes. **A second page emitter, the cockpit (COCKPIT1, cr1#608, the owner's 2026-11-03 reversal of the 2026-08-06 queued-write ruling for that one page): its commitment choices are applied by `cockpit_helpers:apply_commitment_choices` inside the cockpit task's run, and its `cr-inbox` choices arrive here as ordinary tuples from that same run, each already checked by `cockpit_helpers.plan_apply` (expired, stale, unconfirmed send refused) and each send carrying the page's one-use token.** **There is nothing to add for it:** dispatch keys on id + verb and never on which surface emitted the click, so every handler below applies unchanged. Two consequences worth stating, because they are the ones that show up in chat: (a) a board is STALE by design — it does not refresh itself, so an already-closed id WILL arrive; `close_commitment` returns `already_resolved`, and the honest one-line ack ("that one was already closed") is the whole handling, never a hand-built tombstone; (b) `undo` still works, because the batch cache is in-session and the paste happens in-session.
 
 **Fire-marker fallback (legacy widgets only):** when the tuples carry NO `src` (a widget rendered before the src stamp shipped, still live in an old chat thread), fall back to the pre-W4 mechanism — read the most recent fire-marker event whose timestamp is within the last 60 minutes; that event's source field names the source orchestrator. The 60-minute TTL applies ONLY to this fallback path.
 
@@ -362,6 +362,15 @@ The two real-world failure classes this gate prevents — **wrong field names** 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -806,6 +815,15 @@ Before producing the consolidated response, you MUST execute:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -969,6 +987,15 @@ Otherwise, per send, execute via bash:
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST

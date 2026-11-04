@@ -27,6 +27,8 @@
 - IMPORTANT: After a successful render, the show_widget call with `transport["html"]` is not optional — relay the render_and_persist page before any prose (summarizing as text strips my one-tap actions); text-instead-of-widget only when the transport itself failed or `pagination["over_budget"]` is set, and then say so explicitly.
 - IMPORTANT: Any research ask — "research [X]", "deep dive on [X]", "look into [X]", "background on [person]" — runs through the **research** skill, never the generic built-in deep-research skill; the built-in one can't see my workspace and its findings evaporate. The reply names which source tier actually ran, in one line.
 - IMPORTANT: Anything about my work that comes out as a document — a prep, brief, memo, one-pager, recap, or notes — is produced by the Command Room skill that owns it and saved in the Command Room folder, never as a Claude Doc, page, or artifact, even when the composer's Output is set to Docs or Slides; the built-in docs skill can't see my workspace and nothing it makes lands on my files.
+- IMPORTANT: Every file you make for me — a document, a sheet, a deck or a note, Markdown included — is saved in my Command Room folder and comes back in this chat as a clickable file card, first, before the summary, because a path in words is not delivery; only when this chat has no file card does a link stand in for it, with one sentence saying so.
+- IMPORTANT: A document about my work that I will read or forward — a prep, memo, one-pager, recap or report — is a Word, PDF, spreadsheet or deck file in my Command Room folder, never a Markdown text file, because Markdown opened in Word shows raw markup instead of a document; Markdown is only for the working notes Command Room keeps for itself.
 
 ## Preferences
 {{MEETING_PREFS}}
@@ -76,7 +78,7 @@ The onboarding skill fills this template as its **final step** after the workspa
 |---------|--------|-----|
 | Me | Onboarding interview answers | 2 lines |
 | Quick Commands | Static (same for all users) | 2 lines |
-| Session Rules | Static binding layer (EW1 / T2.2 / RSR1 compressed form — see below) | 6 bullets |
+| Session Rules | Static binding layer (EW1 / T2.2 / RSR1 / DOCS1 / FILECARD1 compressed form — see below) | 8 bullets |
 | Preferences | Onboarding: meeting/schedule/language/prompt-restructuring. Tone and format preferences are NOT filled here (SPEC STYLE1 — see persona note below) | 3-5 lines |
 | People | _hq/PEOPLE.md — top 15 by interaction frequency or recency | 15 rows (promotion may grow to 20) |
 | Active Projects | _hq/MASTER_TRACKER.md — Active + Scoping projects only | 5-12 rows |
@@ -89,14 +91,14 @@ The onboarding skill fills this template as its **final step** after the workspa
 
 ### The compressed binding layer (SPEC STYLE1 step 3b, D9 ruling):
 
-The four IMPORTANT bullets above are the compressed form of the EW1 / T2.2 / RSR1 enforcement paragraphs. Three things about them are load-bearing and pinned by tests — do not reword casually:
-- Each carries its **idempotency marker phrase** verbatim (`claude_md_email_rule_v1` / `claude_md_widget_rule_v1` / `claude_md_research_rule_v1` / `draft_posture_queue_on_click_v1` in the update bridge detect application by these exact phrases).
+The seven IMPORTANT bullets above are the compressed form of the EW1 / T2.2 / RSR1 / DOCS1 / FILECARD1 enforcement paragraphs. Three things about them are load-bearing and pinned by tests — do not reword casually:
+- Each carries its **idempotency marker phrase** verbatim (`claude_md_email_rule_v1` / `claude_md_widget_rule_v1` / `claude_md_research_rule_v1` / `claude_md_docs_rule_v1` / `claude_md_filecard_rule_v1` / `claude_md_nomd_rule_v1` / `draft_posture_queue_on_click_v1` in the update bridge detect application by these exact phrases).
 - Each keeps **rule language** (never/must/only-when) so `claude_md_guard.is_rule_language` still protects it from cleanup compression.
 - Each carries its **why in one clause** — emphasis markers plus a reason measurably improve adherence (STYLE1 research addendum).
-Regression cover: `run_email_delegation_rule_test.py`, `run_widget_rule_migration_test.py`, and the step-3b pins in `run_style1_test.py`.
+Regression cover: `run_email_delegation_rule_test.py`, `run_widget_rule_migration_test.py`, `run_docs_rule_migration_test.py`, `run_filecard_rule_migration_test.py`, and the step-3b pins in `run_style1_test.py`.
 
 ### Line budget (≤80 including the persona block):
-- Header + Me: ~4 · Quick Commands: ~3 · Session Rules: ~9 · Preferences: ~5
+- Header + Me: ~4 · Quick Commands: ~3 · Session Rules: ~11 · Preferences: ~5
 - People: ~17 (header + 15) · Projects: ~14 · Terms: ~13 · Workspace: ~4
 - LIVE-STATE blocks: persona ≤8 (configured workspaces only) + org/workstream registers (soft-capped)
 - **Trim People or Terms first if over 80.**

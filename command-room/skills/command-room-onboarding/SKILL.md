@@ -1155,6 +1155,10 @@ arm(workspace_root, "morning-briefing")
 
 This arms — never renders — the first-week line morning-briefing shows once, the first time it fires for this workspace, and never again (`explain_once.consume`, receipted at the point it renders).
 
+### 6a3. The account instructions block, shown once (FILECARD1, cr1#611)
+
+After the Phase 6 message, show the customer the one block they paste into their account's Claude instructions (Settings, the box for how Claude should respond), exactly as `command-room-update-bridge` Phase 5.5 does it: render it with `claude_instructions.py` from the plugin's own folder (`--plugin-root "$PLUGIN_ROOT" --folder-name "<the folder's own name>" --json`; the plugin beside this chat, never the staged runtime, which carries no skills), save `_hq/Claude_Instructions.txt` through the write door, card the saved file first (`SendUserFile`, `display: "render"`), print the block in a copy box with the one paste line under it, and record ONE `claude_instructions_shown` row through `plan append_jsonl` (`source_skill: "command-room-onboarding"`). On a fresh seat there is no prior showing, so it always prints. The block is fences and routing only, generated from the skills installed on this seat; it carries none of the profile captured in 6a2. The operator, when present, says in one sentence where the box is.
+
 ### 6c. (removed) Day-1 + week-1 retention one-shots
 
 **Removed in the Command Room build (2026-06).** Onboarding no longer registers the `cr-day1-checkin` or `cr-week1-followup` one-shot scheduled tasks — onboarding registers no scheduled tasks of any kind. Retention after the call now rides on the customer opting into the daily/weekly scheduled chats themselves (the Phase 6 message points them to `set up command room schedules`) plus their permanent coach surface in Chat 4. The `{SKILL_DIR}/references/day1-checkin-orchestrator.md` and `{SKILL_DIR}/references/week1-followup-orchestrator.md` prompt bodies (skill-local) are retained in the repo for reference but are no longer wired to any registration.
@@ -1300,6 +1304,15 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST

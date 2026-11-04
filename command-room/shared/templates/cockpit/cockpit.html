@@ -1,0 +1,1174 @@
+<!doctype html>
+<html lang="en" data-theme="ink">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Command Room Hub</title>
+<meta name="robots" content="noindex">
+<!--
+  Command Room cockpit page (COCKPIT1, cr1#608; four tasks cr1#619; the Ink
+  console look and the Start sequence cr1#621). Rendered ONLY by
+  shared/scripts/cockpit_helpers.py render_page(): the tokens below are
+  filled mechanically, a leftover placeholder refuses the render, and the
+  visible text passes the same leak scan every widget passes. Never hand-fill,
+  never hand-edit after the fill.
+
+  SELF-CONTAINED FENCE: no external fonts, no CDN, no remote stylesheet, no
+  external script. Everything renders offline, byte for byte. The wordmark is
+  the design system's own SVG (letter outlines, olive tick) inlined below with
+  the ink as currentColor, never the name retyped in a font.
+
+  WHAT THE PAGE DOES: reads its own database (feeds, status lights, choices)
+  and the owner's Command Room triggers through the viewer's connector; saves
+  every press as a choice row; starts tasks. It never writes the book and it
+  never republishes itself. The four cockpit tasks do the rest.
+
+  THEME: the Ink console by default (the design system's ink stage), Paper on
+  the viewer's own switch, remembered in this browser only.
+-->
+<style>
+  :root {
+    --paper: #2a1f17; --sheet: #352920; --rule: #4f4236; --ink: #f3ebdc;
+    --ink-soft: #c9bba6; --olive: #a9b67c; --olive-mark: #a9b67c; --on-olive: #2a1f17;
+    --pen: #a9bbe8; --amber: #e0b35a; --red: #e08585;
+    --font-sans: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --radius: 3px; --gutter: 16px;
+  }
+  :root[data-theme="paper"] {
+    --paper: #ffffff; --sheet: #f8f5ef; --rule: #e6dfd3; --ink: #2a1f17;
+    --ink-soft: #62564a; --olive: #50681f; --olive-mark: #6b8f23; --on-olive: #ffffff;
+    --pen: #22397a; --amber: #a86b00; --red: #9b2c2c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.45; }
+  body { padding: 0 var(--gutter) 56px; max-width: 1120px; margin: 0 auto; }
+  button { font-family: var(--font-sans); }
+  @keyframes ripple { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
+  @keyframes breathe { 0%, 100% { opacity: 0; transform: scale(1); } 50% { opacity: .35; transform: scale(1.12); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+  @keyframes shimmer { 0% { opacity: .35; } 50% { opacity: .7; } 100% { opacity: .35; } }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: translateY(0); } }
+  @keyframes caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 26px 0 18px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .wordmark { height: 26px; width: auto; display: block; color: var(--ink); }
+  .kicker { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+  .meta { color: var(--ink-soft); font-size: 13px; }
+  .topright { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  button.ghost { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius); color: var(--ink-soft); font: 500 12px var(--font-sans); padding: 5px 10px; cursor: pointer; }
+  button.ghost:hover { color: var(--ink); }
+
+  .start { display: flex; align-items: center; gap: 32px; padding: 6px 0 22px; flex-wrap: wrap; }
+  .ringwrap { position: relative; width: 150px; height: 150px; flex: none; }
+  .ringwrap .halo { position: absolute; inset: 0; border-radius: 999px; border: 3px solid var(--olive); opacity: 0; pointer-events: none; }
+  .ringwrap.idle.wired .halo { animation: breathe 3.2s ease-in-out infinite; }
+  .ringwrap.rippling .halo { animation: ripple .9s ease-out forwards; }
+  .ringwrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .ringwrap .track { stroke: var(--rule); }
+  .ringwrap .arc { stroke: var(--rule); transition: stroke-dashoffset .8s ease, stroke .4s ease; }
+  .ringwrap.running .arc { stroke: var(--amber); }
+  .ringwrap.done .arc { stroke: var(--olive); }
+  .ring { position: absolute; inset: 14px; border-radius: 999px; border: none; background: var(--sheet); color: var(--ink); font: 600 20px var(--font-sans); cursor: pointer; transition: transform .25s ease, background .4s ease, color .4s ease; }
+  .ring:disabled { cursor: default; }
+  .ring:disabled:not(.live) { opacity: .45; }
+  .ringwrap.starting .ring { transform: scale(.94); background: var(--rule); }
+  .ringwrap.done .ring { background: var(--olive); color: var(--on-olive); }
+  .lights { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; flex: 1; min-width: min(280px, 100%); }
+  .light { background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); padding: 13px 15px; min-height: 76px; display: flex; flex-direction: column; gap: 5px; }
+  .light.rise { animation: rise .45s ease both; }
+  .light .name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .light .dot { display: inline-block; width: 10px; height: 10px; border-radius: 999px; background: var(--rule); flex: none; transition: background .4s ease; }
+  .light.running .dot { background: var(--amber); animation: blink 1.2s ease-in-out infinite; }
+  .light.done .dot { background: var(--olive); }
+  .light.waiting .dot { background: transparent; border: 2px solid var(--amber); }
+  .light.error .dot, .light.no_answer .dot { background: transparent; border: 2px solid var(--ink-soft); width: 10px; height: 10px; }
+  .light .line { color: var(--ink-soft); font-size: 13px; }
+  .band { background: var(--olive); color: var(--on-olive); border-radius: var(--radius); padding: 14px 18px; font-size: 17px; font-weight: 600; margin: 0 0 18px; animation: rise .5s ease; display: none; }
+  .band.on { display: block; }
+  .dayline { font-size: 28px; line-height: 1.2; font-weight: 500; max-width: 980px; min-height: 34px; padding: 0 0 18px; }
+  .dayline .caret { display: inline-block; width: 3px; height: 26px; background: var(--olive); margin-left: 4px; vertical-align: -4px; animation: caret .8s steps(1) infinite; }
+  .quiet { color: var(--ink-soft); font-size: 13px; padding: 10px 0; }
+  .banner { background: var(--sheet); border-left: 3px solid var(--pen); padding: 8px 12px; margin: 0 0 12px; font-size: 13px; }
+  .banner.err { border-left-color: var(--red); }
+
+  nav.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--rule); align-items: center; }
+  nav.tabs button { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 10px 14px; font: 600 14px var(--font-sans); color: var(--ink-soft); cursor: pointer; }
+  nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--olive); }
+  nav.tabs .count { display: inline-block; margin-left: 6px; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--rule); color: var(--ink); }
+  nav.tabs .waiting { margin-left: auto; font-size: 13px; color: var(--amber); padding: 10px 0; }
+  nav.tabs .waiting.none { color: var(--ink-soft); }
+  section.tab { display: none; padding-top: 18px; }
+  section.tab.on { display: block; }
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+  .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); margin: 10px 0 2px; font-weight: 600; }
+  .row { background: var(--sheet); border-radius: var(--radius); padding: 13px 16px; display: flex; gap: 12px; align-items: center; }
+  .row.rise { animation: rise .45s ease both; }
+  .row.closed { opacity: .72; }
+  .row .title .num { color: var(--ink-soft); font-weight: 500; margin-right: 6px; font-size: 13px; }
+  .row .main { flex: 1; min-width: 0; }
+  .row .title { font-weight: 500; }
+  .row .sub { color: var(--ink-soft); font-size: 13px; }
+  .row .title, .row .sub, .light .line { overflow-wrap: anywhere; }
+  .row .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .skeleton { height: 52px; background: var(--sheet); border-radius: var(--radius); animation: shimmer 1.4s ease-in-out infinite; }
+  .skeleton + .skeleton { animation-delay: .2s; }
+  .skeleton + .skeleton + .skeleton { animation-delay: .4s; }
+  button.act { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px 12px; font: 600 13px var(--font-sans); color: var(--ink); cursor: pointer; }
+  button.act.primary { background: var(--olive); color: var(--on-olive); border-color: var(--olive); }
+  button.act.warn { border-color: var(--amber); color: var(--amber); }
+  button.act.undo { border-color: transparent; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 3px; padding: 6px 8px; }
+  button.act.undo:hover { color: var(--ink); }
+  .summary { color: var(--ink-soft); font-size: 13px; padding: 2px 0 6px; }
+  .summary b { color: var(--ink); font-weight: 600; }
+  button.act:disabled { opacity: .5; cursor: default; }
+  a.act { font-size: 13px; font-weight: 600; text-decoration: none; padding: 6px 12px; border: 1px solid var(--olive); border-radius: var(--radius); color: var(--olive); }
+  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink-soft); margin-left: 6px; vertical-align: middle; }
+  .tag.wait { border-color: var(--amber); color: var(--amber); }
+  .tag.ok { border-color: var(--olive); color: var(--olive); animation: rise .4s ease; }
+  .tag.err { border-color: var(--red); color: var(--red); }
+  textarea.note, input.when { width: 100%; font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px; margin-top: 6px; }
+  textarea.draft { width: 100%; min-height: 110px; font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 8px; margin-top: 6px; }
+  .search { width: 100%; font: 14px var(--font-sans); padding: 8px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); color: var(--ink); margin: 6px 0 10px; }
+  a { color: var(--olive); }
+  .parts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+  .mine { margin-bottom: 26px; }
+  .addrow { display: flex; gap: 6px; align-items: center; margin: 2px 0 6px; flex-wrap: wrap; }
+  .addrow input.when { margin-top: 0; flex: 1; min-width: 140px; }
+  .addrow input[type="date"] { flex: 0 0 auto; width: auto; min-width: 0; }
+  select.prio { font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px; }
+  .title .prio { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 8px; vertical-align: 1px; background: var(--rule); }
+  .title .prio.p1 { background: var(--red); }
+  .title .prio.p2 { background: var(--amber); }
+  .row.pinned { border-left: 3px solid var(--amber); }
+  .prepbox { display: none; margin: -4px 0 6px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 14px 16px; font-size: 14px; max-height: 60vh; overflow: auto; }
+  .prepbox.on { display: block; }
+  .prepbox h4 { margin: 12px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-soft); }
+  .prepbox h4:first-child { margin-top: 0; }
+  .prepbox p { margin: 4px 0; }
+  .prepbox li { margin: 2px 0 2px 16px; }
+  .row .count-open { font-size: 13px; color: var(--ink-soft); white-space: nowrap; align-self: center; }
+  .row .count-open b { color: var(--ink); font-weight: 600; }
+  .row .count-open .late { color: var(--amber); }
+  .overnight { margin-top: 14px; font-size: 13px; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 12px; }
+  .overnight b { color: var(--ink); font-weight: 600; }
+  @media (max-width: 820px) {
+    .cols { grid-template-columns: 1fr; }
+    .lights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dayline { font-size: 22px; }
+  }
+  @media (max-width: 520px) {
+    body { padding-bottom: 40px; }
+    header.top { padding-top: 18px; }
+    .start { gap: 18px; }
+    .ringwrap { width: 118px; height: 118px; }
+    .ring { inset: 11px; font-size: 17px; }
+    .lights { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .light { min-height: 0; padding: 10px 12px; }
+    .row { flex-direction: column; align-items: flex-start; }
+    .row .acts { justify-content: flex-start; }
+    nav.tabs { flex-wrap: wrap; }
+    nav.tabs .waiting { margin-left: 0; width: 100%; padding-top: 4px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4.1225 1.3900" role="img" aria-label="chalette">
+<title>chalette</title>
+<g fill="currentColor">
+<path transform="translate(0.0800,1.0500),scale(0.000500,-0.000500)" d="M555,-21Q419,-21,313.5,45.5Q208,112,148.5,230.5Q89,349,89,504Q89,668,154.5,795.5Q220,923,335.5,996.0Q451,1069,600,1069Q705,1069,788.0,1034.5Q871,1000,919.5,943.5Q968,887,968,820Q968,765,940.0,735.0Q912,705,864,705Q812,705,786.0,736.0Q760,767,752,833Q741,932,709.0,966.0Q677,1000,606,1000Q464,1000,385.5,878.5Q307,757,307,556Q307,354,389.0,246.0Q471,138,622,138Q722,138,801.0,175.0Q880,212,942,298L982,275Q927,133,817.0,56.0Q707,-21,555,-21Z"/>
+<path transform="translate(0.5750,1.0500),scale(0.000500,-0.000500)" d="M44,0V44L195,75V1464L47,1518V1548L375,1643H398V75L545,44V0ZM712,0V44L858,73V715Q858,834,810.0,892.5Q762,951,655,951Q579,951,510.0,915.0Q441,879,380,815V896Q472,981,575.0,1025.0Q678,1069,777,1069Q1062,1069,1062,800V73L1210,44V0Z"/>
+<path transform="translate(1.1710,1.0500),scale(0.000500,-0.000500)" d="M334,-21Q227,-21,160.5,46.0Q94,113,94,220Q94,308,148.0,372.0Q202,436,322.5,484.5Q443,533,641,573V760Q641,887,606.5,938.0Q572,989,488,989Q405,989,356.0,949.0Q307,909,307,841Q307,822,309.5,803.5Q312,785,312,768Q312,717,281.5,684.0Q251,651,204,651Q161,651,134.5,679.0Q108,707,108,752Q108,817,164.5,885.5Q221,954,314,1003Q438,1069,583,1069Q670,1069,730.5,1042.0Q791,1015,818,965Q834,931,839.5,879.0Q845,827,845,705V258Q845,161,860.5,126.0Q876,91,919,91Q968,91,1014,147L1050,113Q1001,42,950.5,10.5Q900,-21,833,-21Q752,-21,707.0,23.0Q662,67,647,157H641Q584,75,503.0,27.0Q422,-21,334,-21ZM434,106Q496,106,550.0,138.5Q604,171,641,229V511Q507,485,430.5,454.0Q354,423,322.5,378.5Q291,334,291,267Q291,190,327.5,148.0Q364,106,434,106Z"/>
+<path transform="translate(1.6685,1.0500),scale(0.000500,-0.000500)" d="M44,0V44L196,75V1465L46,1518V1549L379,1643H400V75L550,44V0Z"/>
+<path transform="translate(1.9355,1.0500),scale(0.000500,-0.000500)" d="M575,-21Q430,-21,320.5,45.5Q211,112,150.5,231.5Q90,351,90,508Q90,675,157.5,801.0Q225,927,346.5,998.0Q468,1069,628,1069Q826,1069,931.5,954.0Q1037,839,1041,617L1027,605H252V663L812,683Q819,709,819,762Q819,1002,608,1002Q463,1002,384.5,888.5Q306,775,306,567Q306,132,644,132Q864,132,981,292L1018,269Q966,131,849.5,55.0Q733,-21,575,-21Z"/>
+<path transform="translate(2.4655,1.0500),scale(0.000500,-0.000500)" d="M417,-21Q306,-21,248.0,42.0Q190,105,190,223V975H60L54,1011L354,1309L393,1305V1049H679L662,975H393V243Q393,79,511,79Q551,79,590.5,100.0Q630,121,658,158L693,127Q647,59,573.5,19.0Q500,-21,417,-21Z"/>
+<path transform="translate(2.7890,1.0500),scale(0.000500,-0.000500)" d="M417,-21Q306,-21,248.0,42.0Q190,105,190,223V975H60L54,1011L354,1309L393,1305V1049H679L662,975H393V243Q393,79,511,79Q551,79,590.5,100.0Q630,121,658,158L693,127Q647,59,573.5,19.0Q500,-21,417,-21Z"/>
+<path transform="translate(3.1125,1.0500),scale(0.000500,-0.000500)" d="M575,-21Q430,-21,320.5,45.5Q211,112,150.5,231.5Q90,351,90,508Q90,675,157.5,801.0Q225,927,346.5,998.0Q468,1069,628,1069Q826,1069,931.5,954.0Q1037,839,1041,617L1027,605H252V663L812,683Q819,709,819,762Q819,1002,608,1002Q463,1002,384.5,888.5Q306,775,306,567Q306,132,644,132Q864,132,981,292L1018,269Q966,131,849.5,55.0Q733,-21,575,-21Z"/>
+</g>
+<path d="M3.7583,0.9330,L3.8436,1.0188,L4.0167,0.8160" fill="none" stroke="var(--olive-mark)" stroke-width="0.0672" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+    <span class="kicker">Command Room Hub</span>
+  </div>
+  <div class="topright">
+    <span class="meta" id="metaline">{{WORKSPACE_BASENAME}}</span>
+    <button class="ghost" id="themeBtn" type="button" title="Switch between the ink and paper looks">Paper</button>
+  </div>
+</header>
+
+<div class="start">
+  <div class="ringwrap idle" id="ringwrap">
+    <div class="halo"></div>
+    <svg width="150" height="150" viewBox="0 0 150 150" aria-hidden="true">
+      <circle class="track" cx="75" cy="75" r="68" fill="none" stroke-width="6"></circle>
+      <circle class="arc" id="arc" cx="75" cy="75" r="68" fill="none" stroke-width="6" stroke-linecap="round" stroke-dasharray="427" stroke-dashoffset="427" transform="rotate(-90,75,75)"></circle>
+    </svg>
+    <button class="ring" id="startBtn" disabled title="Switch every task on and run the morning">Start</button>
+  </div>
+  <div class="lights" id="lights" aria-live="polite"></div>
+</div>
+<div class="band" id="band"></div>
+<div id="banners" role="status" aria-live="polite"></div>
+<div class="dayline" id="dayline">Loading the day.</div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" aria-selected="true" aria-controls="tab-today" data-tab="today">Today</button>
+  <button role="tab" aria-selected="false" aria-controls="tab-inbox" tabindex="-1" data-tab="inbox">Inbox<span class="count" id="inboxCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count" id="plateCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-projects" tabindex="-1" data-tab="projects">Projects<span class="count" id="projectCount">0</span></button>
+  <span class="waiting none" id="waiting" aria-live="polite"></span>
+</nav>
+
+<section class="tab on" id="tab-today" role="tabpanel">
+  <div class="parts">
+    <button class="act" data-part="prep" disabled>Prep next 4 meetings</button>
+    <button class="act" data-part="refresh" disabled>Refresh day</button>
+    <button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply</button>
+  </div>
+  <div class="cols mine">
+    <div class="col">
+      <h2>Priorities</h2>
+      <div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><select class="prio" id="todoPrio" aria-label="Priority"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div>
+      <div id="todos"></div>
+    </div>
+    <div class="col">
+      <h2>Reminders</h2>
+      <div class="addrow"><input class="when" id="remText" placeholder="Remind me to" aria-label="Remind me to"><input class="when" id="remDate" type="date" aria-label="Day"><button class="act primary" id="remAdd" type="button">Add</button></div>
+      <div id="reminders"></div>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="col">
+      <h2>Upcoming</h2>
+      <div id="meetings"></div>
+    </div>
+    <div class="col">
+      <h2>Move these today</h2>
+      <div id="focus"></div>
+      <div id="overnight" class="overnight"></div>
+    </div>
+  </div>
+</section>
+
+<section class="tab" id="tab-inbox" role="tabpanel">
+  <div class="parts">
+    <button class="act" data-part="inbox" disabled>Check inbox</button>
+    <button class="act primary" data-part="apply" disabled>Apply</button>
+  </div>
+  <div class="quiet" id="inboxhead"></div>
+  <div id="inboxrows" class="col"></div>
+</section>
+
+<section class="tab" id="tab-projects" role="tabpanel">
+  <input class="search" id="psearch" placeholder="Search projects" aria-label="Search projects">
+  <div id="projecthead" class="quiet"></div>
+  <div id="projectrows" class="col"></div>
+</section>
+
+<section class="tab" id="tab-plate" role="tabpanel">
+  <div class="parts">
+    <button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply</button>
+  </div>
+  <input class="search" id="search" placeholder="Search the list" aria-label="Search the list">
+  <div id="platehead" class="quiet"></div>
+  <div id="platerows" class="col"></div>
+</section>
+
+<script>
+(function () {
+  "use strict";
+  var CFG = {
+    server: {{TRIGGER_SERVER_JSON}},
+    basename: {{WORKSPACE_BASENAME_JSON}},
+    version: {{PLUGIN_VERSION_JSON}},
+    published: {{PUBLISHED_AT_JSON}}
+  };
+  var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh day"]];
+  var TASKS = { prep: "Hub Prep", inbox: "Hub Inbox", apply: "Hub Apply", refresh: "Hub Refresh" };
+  // The same four under their names before the rename (cr1#670): a seat that has
+  // not run set-up since still finds its tasks.
+  var PRE_HUB = { "Hub Prep": "Cockpit Prep", "Hub Inbox": "Cockpit Inbox", "Hub Apply": "Cockpit Apply", "Hub Refresh": "Cockpit Refresh" };
+  var PARTS = { prep: ["prep"], refresh: ["refresh"], inbox: ["inbox"], apply: ["apply"], confirm: ["apply", "refresh"] };
+  // What keeps each button off while it runs: Refresh day also waits for Apply,
+  // so it never reads the book halfway through a write (cr1#679).
+  var BLOCKS = { prep: ["prep"], refresh: ["refresh", "apply"], inbox: ["inbox"], apply: ["apply"], confirm: ["apply", "refresh"] };
+  // An Apply run claims a choice before it acts on it (cr1#675). A claim this
+  // fresh means the run is applying it: Undo is gone, the row says so.
+  var CLAIM_MS = 20 * 60 * 1000;
+  var RUNNING_TIMEOUT_MS = 15 * 60 * 1000;
+  // The inbox leg reads and drafts a whole inbox: it gets longer (cr1#678).
+  var RUNNING_TIMEOUT_BY_LEG = { inbox: 30 * 60 * 1000 };
+  // A light only the page wrote ("Started.") that its task never touched: the
+  // run did not get far enough to write its own light (no computer, no folder,
+  // a fire that failed before its first step). Its own first write lands within
+  // a minute or two, so after this long it reads as no answer and Start is
+  // free again (cr1#633: a failed run held the ring on Running for 15 minutes).
+  var NO_START_MS = 8 * 60 * 1000;
+  var RING = 427;
+  var S = { projects: null, pquery: "", today: null, plate: null, inbox: null, status: {}, choices: [], streak: null, pendingSend: {}, query: "",
+    // What the owner has typed or opened, kept across every redraw (cr1#677,
+    // cr1#679): a draft's edits, an open note or snooze box, an open brief.
+    drafts: {}, open: {}, prepOpen: {} };
+  // The Start sequence's own memory: when this page pressed Start, which lights
+  // have risen since, what the day line last said, what the band already said.
+  var SEQ = { startedAt: null, risen: {}, dayText: "", typing: null, counted: {}, bandShown: null, settled: false, confirmRestart: false, starting: false, full: false };
+  var db = null, mcp = null, server = null, triggers = [], wired = false, dbReady = false, dbMissing = false;
+  // A row rises the first time this page shows it, never on a re-render: every
+  // data update re-renders the lists, and replaying the fade made them flicker.
+  var SEEN = {};
+  function riseClass(key) { if (SEEN[key]) return ""; SEEN[key] = true; return " rise"; }
+  var $ = function (id) { return document.getElementById(id); };
+  // A commitment's title as the list shows it: the first letter capital, the
+  // rest exactly as written (the book keeps the words as captured).
+  var cap = function (t) { var s = String(t == null ? "" : t).replace(/^\s+/, ""); return s.charAt(0).toUpperCase() + s.slice(1); };
+  var esc = function (t) { return String(t == null ? "" : t).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+  var num = function (v) { var n = Number(v); return isFinite(n) ? n : 0; };
+  var nowIso = function () { return new Date().toISOString().replace(/\.\d{3}Z$/, "Z"); };
+  var rid = function () { var s = ""; for (var i = 0; i < 20; i++) s += "abcdefghijklmnopqrstuvwxyz0123456789".charAt(Math.floor(Math.random() * 36)); return s; };
+  var fmtTime = function (iso) { if (!iso) return ""; var d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
+  var fmtWhen = function (iso) { if (!iso) return ""; var d = new Date(iso); if (isNaN(d)) return ""; return d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }); };
+  var fmtDay = function (d) { return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); };
+  var dayKey = function (d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); };
+  var after = function (iso, since) { if (!iso || !since) return false; var a = new Date(iso), b = new Date(since); return !isNaN(a) && !isNaN(b) && a.getTime() > b.getTime(); };
+  var elapsed = function (iso) { var d = new Date(iso); if (isNaN(d)) return ""; var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000)); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); };
+
+  var TAB_ID = "tab-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // The page keeps an applied choice for as long as the refresh leg does
+  // (cr1#683, the same window as the run's expiry): past it the item is long
+  // gone from the lanes, so the closed list and the result tags stop at it.
+  var CHOICE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  function withinWindow(c) {
+    if (!c || !c.applied) return true;
+    var raw = c.applied_at || c.created_at; if (!raw) return true;
+    var at = new Date(raw);
+    return isNaN(at) || (Date.now() - at.getTime()) <= CHOICE_WINDOW_MS;
+  }
+  function claimed(c) {
+    if (!c || !c.claimed_by || c.applied) return false;
+    var at = new Date(c.claimed_at || 0); return !isNaN(at) && (Date.now() - at.getTime()) < CLAIM_MS;
+  }
+  function resultTag(res) {
+    if (!res || !res.result) return "";
+    return '<span class="tag ' + (res.result.outcome === "applied" ? "ok" : (res.result.outcome === "already" ? "" : "err")) + '">' + esc(res.result.line || res.result.outcome) + "</span>";
+  }
+  function waitTag(c, text) { return '<span class="tag wait">' + esc(claimed(c) ? "being applied" : text) + "</span>"; }
+  function undoBtn(c, title) {
+    if (!c || claimed(c)) return "";
+    return '<button class="act undo" data-undo="' + esc(c.id) + '"' + (title ? ' title="' + esc(title) + '"' : "") + ">Undo</button>";
+  }
+  function banner(text, err, detail) {
+    var el = document.createElement("div"); el.className = "banner" + (err ? " err" : ""); el.textContent = text;
+    if (detail) el.title = detail;
+    $("banners").appendChild(el); setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 12000);
+  }
+
+  // ---- theme ---------------------------------------------------------------
+  function setTheme(name) {
+    document.documentElement.setAttribute("data-theme", name);
+    $("themeBtn").textContent = name === "ink" ? "Paper" : "Ink";
+    try { localStorage.setItem("cockpit.theme", name); } catch (e) {}
+  }
+  try { var savedTheme = localStorage.getItem("cockpit.theme"); if (savedTheme === "paper" || savedTheme === "ink") setTheme(savedTheme); } catch (e) {}
+  $("themeBtn").addEventListener("click", function () { setTheme(document.documentElement.getAttribute("data-theme") === "ink" ? "paper" : "ink"); });
+
+  // ---- status lights -------------------------------------------------------
+  function legState(leg) {
+    var d = S.status[leg]; if (!d) return { state: "idle", line: "Not run yet." };
+    if (d.state === "running") {
+      var at = new Date(d.at || 0);
+      if (d.by_page && !isNaN(at) && (Date.now() - at.getTime()) >= NO_START_MS) {
+        return { state: "no_answer", line: "The task did not start. Is this computer on with the folder allowed? Press Start to try again.", at: d.at };
+      }
+      var limit = RUNNING_TIMEOUT_BY_LEG[leg] || RUNNING_TIMEOUT_MS;
+      if (isNaN(at) || (Date.now() - at.getTime()) >= limit) {
+        return { state: "no_answer", line: "No answer for " + Math.round(limit / 60000) + " minutes. Is your computer on?" + (d.stop_reason ? " Last stop: " + d.stop_reason : ""), at: d.at };
+      }
+    }
+    return { state: d.state, line: d.line || "", at: d.at };
+  }
+  function isRunning(leg) { return legState(leg).state === "running"; }
+  function thisRun(leg) { var st = legState(leg); return SEQ.startedAt && after(st.at, SEQ.startedAt) ? st : null; }
+  function runProgress() {
+    // The ring fills a quarter per light that turned green since this Start.
+    var n = 0; LEGS.forEach(function (l) { var st = thisRun(l[0]); if (st && st.state === "done") n += 1; });
+    return n;
+  }
+  function ringView() {
+    // What the ring and the Start button show (cr1#687): a Start press fills
+    // the ring a quarter per light that turned green since; a single leg
+    // press (Prep, Check inbox, Refresh day, Apply) leaves the ring alone and
+    // the button reads Running, never a percentage.
+    var anyRunning = LEGS.some(function (l) { return isRunning(l[0]); });
+    var full = !!(SEQ.startedAt && SEQ.full), done = full ? runProgress() : 0, allDone = full && done === LEGS.length;
+    var phase = allDone ? "done" : (anyRunning ? "running" : (SEQ.starting ? "starting" : "idle"));
+    var fill = full ? done / LEGS.length : (anyRunning ? 0 : 1);
+    var label = SEQ.starting ? "Starting" : (SEQ.confirmRestart ? "Start over?" : (allDone && !SEQ.settled ? "Done" : (anyRunning ? (full ? Math.round(100 * done / LEGS.length) + "%" : "Running") : "Start")));
+    return { anyRunning: anyRunning, allDone: allDone, phase: phase, fill: fill, label: label };
+  }
+  function renderLights() {
+    var h = "", i = 0;
+    LEGS.forEach(function (l) {
+      var st = legState(l[0]), line = st.line;
+      if (st.state === "running" && st.at) line = (line === "Started." ? "Running" : line) + " · " + elapsed(st.at);
+      var rise = "";
+      if (SEQ.startedAt && !SEQ.risen[l[0]] && st.state !== "idle" && after(st.at, SEQ.startedAt)) { SEQ.risen[l[0]] = true; rise = " rise"; }
+      h += '<div class="light ' + st.state + rise + '" style="animation-delay:' + (i * 120) + 'ms"><div class="name"><span class="dot"></span>' + esc(l[1]) + '</div><div class="line">' + esc(line) + "</div></div>";
+      i += 1;
+    });
+    $("lights").innerHTML = h;
+    var view = ringView(), anyRunning = view.anyRunning, allDone = view.allDone;
+    var sb = $("startBtn"), wrap = $("ringwrap");
+    // "starting" only while Start's own calls are in flight; a run that ended
+    // part done and part failed rests at idle, never on a stuck amber ring.
+    wrap.className = "ringwrap " + view.phase + (wired ? " wired" : "") + (wrap.className.indexOf("rippling") >= 0 ? " rippling" : "");
+    $("arc").setAttribute("stroke-dashoffset", String(Math.round(RING - RING * view.fill)));
+    // cr1#675: the button stays off until Start's own calls settle, so a second
+    // press can never fire every task twice.
+    sb.disabled = !wired || SEQ.starting;
+    sb.className = "ring" + (anyRunning || allDone ? " live" : "");
+    sb.textContent = view.label;
+    sb.title = anyRunning ? "Running. Press twice to start over." : "Switch every task on and run the morning";
+    var parts = document.querySelectorAll("button[data-part]");
+    for (var k = 0; k < parts.length; k++) {
+      var p = parts[k].getAttribute("data-part");
+      parts[k].disabled = !wired || SEQ.starting || (BLOCKS[p] || PARTS[p]).some(isRunning);
+    }
+    if (allDone) showBand();
+  }
+  function showBand() {
+    if (SEQ.bandShown === SEQ.startedAt) return;
+    SEQ.bandShown = SEQ.startedAt;
+    var bits = [];
+    ["prep", "inbox", "apply"].forEach(function (leg) { var line = legState(leg).line; if (line && line !== "Not run yet.") bits.push(line.replace(/\.$/, "")); });
+    var o = S.plate && S.plate.overnight;
+    if (o && o.closed) bits.push(o.closed + " closed overnight");
+    var streak = S.streak && S.streak.count ? "Mornings started in a row: " + S.streak.count : "";
+    var el = $("band"); el.textContent = "Morning ready" + (bits.length ? " · " + bits.join(" · ") : "") + (streak ? " · " + streak : ""); el.className = "band on";
+    setTimeout(function () { el.className = "band"; SEQ.settled = true; renderLights(); }, 9000);
+  }
+
+  // ---- choices -------------------------------------------------------------
+  function waitingChoices() { return S.choices.filter(function (c) { return !c.applied; }); }
+  function choiceFor(kind, n, action, applied_too) {
+    // The waiting choice on a row; an applied one is a result, not a wait
+    // (the first build read it as still waiting and kept the row's buttons off).
+    for (var i = 0; i < S.choices.length; i++) { var c = S.choices[i]; if (c.kind === kind && String(c.n) === String(n) && (!action || c.action === action) && (applied_too || !c.applied)) return c; }
+    return null;
+  }
+  function latestResult(kind, n) {
+    var best = null;
+    S.choices.forEach(function (c) { if (c.kind === kind && String(c.n) === String(n) && c.applied) { if (!best || (c.applied_at || "") > (best.applied_at || "")) best = c; } });
+    return best;
+  }
+  function renderWaiting() {
+    var w = waitingChoices(), el = $("waiting");
+    if (!w.length) { el.textContent = dbMissing ? "This view cannot reach the page's data." : (dbReady ? "Nothing waiting." : "Connecting to the page's data."); el.className = "waiting none"; return; }
+    var oldest = w.map(function (c) { return c.created_at || ""; }).sort()[0];
+    el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". Apply or Start sends them to your book.";
+    el.className = "waiting";
+  }
+  function undoChoice(id) {
+    // Undo before the book has it: the waiting choice is removed, so the next
+    // Apply never sees it. After the book has it, Undo is a `reopen` choice.
+    if (!db || !id) return;
+    var c0 = S.choices.filter(function (c) { return c.id === id; })[0];
+    if (claimed(c0)) { banner("Apply is writing that one now. Use Undo on the result once it lands.", true); return; }
+    db.collection("choices").doc(id).delete().then(function () {
+      S.choices = S.choices.filter(function (c) { return c.id !== id; }); renderAll();
+    }, function (e) { banner("Could not undo that; try again.", true, errText(e)); });
+  }
+  function closedHere(cid) {
+    // The latest applied close of this row from this page, if no reopen followed it.
+    var res = latestResult("commitment", cid);
+    if (!res || !res.result || res.result.outcome !== "applied") return null;
+    if (res.action !== "done" && res.action !== "confirm") return null;
+    return reopenedAfter(cid, res) ? null : res;
+  }
+  function reopenedAfter(cid, res) {
+    // A reopen pressed after this close (cr1#679: any reopen ever used to
+    // cancel every later close, so a second close lost its Undo).
+    var mark = res.created_at || res.applied_at || "";
+    return S.choices.some(function (c) { return c.kind === "commitment" && String(c.n) === String(cid) && c.action === "reopen" && (c.created_at || "") > mark; });
+  }
+  function closedFromPage(shown) {
+    // The closes this page applied whose item is not back in the lanes
+    // (cr1#686): with a reopen waiting, the row stays and carries it, so the
+    // owner can take the reopen back; once Apply reopens the item the row
+    // leaves. `shown(cid)` says whether the lanes already list the item.
+    var out = [];
+    S.choices.forEach(function (c) {
+      if (c.kind !== "commitment" || !c.applied || !c.result || c.result.outcome !== "applied" || (c.action !== "done" && c.action !== "confirm")) return;
+      if (shown(String(c.n))) return;
+      var mark = c.created_at || c.applied_at || "", waiting = null, reopened = false;
+      S.choices.forEach(function (r) {
+        if (r.kind !== "commitment" || String(r.n) !== String(c.n) || r.action !== "reopen" || (r.created_at || "") <= mark) return;
+        if (r.applied) { if (r.result && r.result.outcome === "applied") reopened = true; }
+        else waiting = waiting || r;
+      });
+      if (!reopened) out.push({ res: c, waiting: waiting });
+    });
+    return out;
+  }
+  function saveChoice(doc) {
+    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); return Promise.resolve(); }
+    var row = { id: rid(), applied: false, created_at: nowIso() };
+    for (var k in doc) row[k] = doc[k];
+    return db.collection("choices").doc(row.id).set(row).then(function () {
+      var exists = S.choices.some(function (c) { return c.id === row.id; }); if (!exists) S.choices.push(row); renderAll();
+    }, function (e) { banner("That press was not saved; try again.", true, errText(e)); });
+  }
+
+  // ---- the day line, typed in when a run brings a new one ------------------
+  function setDayline(text) {
+    var el = $("dayline");
+    if (text === SEQ.dayText) return;
+    var fresh = SEQ.startedAt && S.plate && after(S.plate.generated_at, SEQ.startedAt);
+    SEQ.dayText = text;
+    if (SEQ.typing) { clearInterval(SEQ.typing); SEQ.typing = null; }
+    if (!fresh) { el.textContent = text; return; }
+    var i = 0;
+    el.innerHTML = '<span class="caret"></span>';
+    SEQ.typing = setInterval(function () {
+      i += 2;
+      el.innerHTML = esc(text.slice(0, i)) + (i < text.length ? '<span class="caret"></span>' : "");
+      if (i >= text.length) { clearInterval(SEQ.typing); SEQ.typing = null; }
+    }, 24);
+  }
+  function countUp(el, n, suffix) {
+    // The overnight number counts up once per plate that lands after Start.
+    var key = S.plate && S.plate.generated_at;
+    n = num(n);
+    if (!SEQ.startedAt || !after(key, SEQ.startedAt) || SEQ.counted[key]) { el.innerHTML = "<b>" + n + "</b>" + suffix; return; }
+    SEQ.counted[key] = true;
+    var c = 0;
+    var tick = setInterval(function () { c += 1; el.innerHTML = "<b>" + Math.min(c, n) + "</b>" + suffix; if (c >= n) clearInterval(tick); }, 220);
+  }
+
+  // ---- today tab -----------------------------------------------------------
+  function prepHtml(text) {
+    // The brief's lines: `## ` a heading, `- ` a list item, the rest a paragraph.
+    var h = "", inList = false;
+    String(text || "").split("\n").forEach(function (line) {
+      var l = line.trim(); if (!l) return;
+      if (l.indexOf("- ") === 0) { if (!inList) { h += "<ul>"; inList = true; } h += "<li>" + esc(l.slice(2)) + "</li>"; return; }
+      if (inList) { h += "</ul>"; inList = false; }
+      if (l.indexOf("## ") === 0) h += "<h4>" + esc(l.slice(3)) + "</h4>"; else h += "<p>" + esc(l) + "</p>";
+    });
+    return h + (inList ? "</ul>" : "");
+  }
+  function skeletons(n) { var h = ""; for (var i = 0; i < n; i++) h += '<div class="skeleton"></div>'; return h; }
+  function dayLine(t, p) {
+    // The page's own sentence from the two feeds (cr1#633: the first build
+    // showed the chat's quick read, which tells a chat what to type next).
+    var bits = [];
+    var focus = p && p.focus ? p.focus : [];
+    if (focus.length) {
+      var names = focus.slice(0, 2).map(function (r) { return cap(r.title); }).filter(Boolean);
+      bits.push(focus.length + " to move today" + (names.length ? ": " + names.join(", ") + (focus.length > 2 ? " and more" : "") : ""));
+    }
+    var ms = t && t.meetings ? t.meetings : [];
+    if (ms.length) {
+      var prepped = ms.filter(function (m) { return m.prep; }).length;
+      bits.push(ms.length + (ms.length === 1 ? " meeting" : " meetings") + " ahead" + (prepped ? ", " + (prepped === ms.length ? "all" : prepped) + " prepped" : ""));
+    }
+    if (bits.length) return bits.join(". ") + ".";
+    if (p) return "Nothing to move today.";
+    if (t) return "Your day, as of " + fmtWhen(t.generated_at) + ".";
+    return isRunning("refresh") || isRunning("prep") ? "Filling the day." : "Press Start to fill the day.";
+  }
+  function renderToday() {
+    var t = S.today, p = S.plate;
+    setDayline(dayLine(t, p));
+    var h = "";
+    if (t && t.meetings && t.meetings.length) {
+      t.meetings.forEach(function (m, i) {
+        var held = m.prep_shown_until && new Date(m.prep_shown_until) > new Date();
+        var pk = (m.start || "") + "|" + (m.title || ""), open = !!S.prepOpen[pk];
+        // cr1#655: the brief opens in place; a page cannot open a file on the computer.
+        // cr1#679: an open brief stays open when the page redraws.
+        var prep = (m.prep && held) ? (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Prep") + "</button>" : '<span class="tag ok">Prep ready</span>') : '<span class="tag">No prep</span>';
+        var when = m.all_day ? "All day" : fmtWhen(m.start);
+        h += '<div class="row' + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><div class="main"><div class="title">' + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + "</div></div>"
+          + (m.prep_text && held ? '<div class="prepbox' + (open ? " on" : "") + '" id="prep-' + i + '">' + prepHtml(m.prep_text) + "</div>" : "");
+      });
+    } else if (!t && isRunning("prep")) h = skeletons(3);
+    else h = '<div class="quiet">' + (t ? "Nothing in the next 24 hours." : "No calendar read yet.") + "</div>";
+    $("meetings").innerHTML = h;
+    var f = "";
+    if (p && p.focus && p.focus.length) p.focus.forEach(function (r, i) { f += plateRow(r, true, i); });
+    else if (!p && isRunning("refresh")) f = skeletons(3);
+    else f = '<div class="quiet">' + (p ? "Nothing to move today." : "No plate read yet.") + "</div>";
+    $("focus").innerHTML = f;
+    var o = p && p.overnight, ov = $("overnight");
+    if (o) {
+      var parts = []; (o.by || []).forEach(function (b) { parts.push(b.n + " " + b.how); });
+      var tail = (o.closed ? " closed in the last " + o.hours + " hours" + (parts.length ? " (" + parts.join(", ") + ")" : "") : "Nothing closed in the last " + o.hours + " hours") + (o.opened ? "; " + o.opened + " opened." : ".") + (S.streak && S.streak.count ? " Mornings started in a row: " + S.streak.count + "." : "");
+      if (o.closed) countUp(ov, o.closed, esc(tail)); else ov.textContent = tail;
+    } else ov.textContent = isRunning("refresh") ? "Counting what closed overnight." : (S.streak && S.streak.count ? "While you were away: not read yet. Mornings started in a row: " + S.streak.count + "." : "");
+    $("plateCount").textContent = p && p.rows ? p.rows.length : 0;
+    renderMine();
+  }
+
+  // ---- priorities and reminders on Today (cr1#662) --------------------------
+  // Both are the owner's own lists in the book. An add, a Done or a Push is a
+  // choice like every other press: it waits here, and Apply writes it.
+  var PRIO = { 1: "High", 2: "Medium", 3: "Low" };
+  // The reminder whose Push box is open, and its day: a redraw keeps it open.
+  var PUSH = { rid: null, day: "" };
+  function pushSlot(rid) {
+    return '<div class="addrow"><input class="when" type="date" data-pushday value="' + esc(PUSH.day) + '"><button class="act primary" data-rsave="' + esc(rid) + '">Push</button><button class="act" data-rsave="">Cancel</button></div>';
+  }
+  function todayIso() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function fmtDate(iso) { if (!iso) return ""; var d = new Date(String(iso).slice(0, 10) + "T12:00:00"); if (isNaN(d)) return ""; return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
+  function pendingAdds(kind) { return S.choices.filter(function (c) { return c.kind === kind && c.action === "add" && !c.applied; }); }
+  function landedAdds(kind, ids) {
+    // An add Apply wrote that the feed has not caught up with yet.
+    var m = S.mine;
+    return S.choices.filter(function (c) {
+      if (c.kind !== kind || c.action !== "add" || !c.applied || !c.result || c.result.outcome !== "applied") return false;
+      var id = c.result.commitment_id || c.result.reminder_id;
+      return !(id && ids[id]) && !(m && after(m.generated_at, c.applied_at));
+    });
+  }
+  function waitRow(c, line, cls) {
+    var tag = c.applied ? '<span class="tag ' + (cls || "wait") + '">' + esc(line) + "</span>" : waitTag(c, line);
+    return '<div class="row' + riseClass("w" + c.id) + '"><div class="main"><div class="title">' + esc(c.title || "") + tag + "</div></div><div class=\"acts\">" + (c.applied ? "" : undoBtn(c)) + "</div></div>";
+  }
+  function renderMine() {
+    var m = S.mine, h = "", ids = {};
+    pendingAdds("todo").forEach(function (c) { h += waitRow(c, PRIO[(c.input || {}).priority] + " · waits for Apply"); });
+    var todos = m && m.todos ? m.todos : [];
+    todos.forEach(function (t, i) {
+      ids[t.id] = true;
+      var pr = PRIO[num(t.priority)] ? num(t.priority) : 2;
+      h += plateRow({ id: t.id, title: t.title, project: PRIO[pr] + " priority", horizon: t.due ? "due " + fmtDate(t.due) : "" }, true, i)
+        .replace('<div class="title">', '<div class="title"><span class="prio p' + pr + '"></span>');
+    });
+    landedAdds("todo", ids).forEach(function (c) { h += waitRow(c, "added · shows after the next refresh", "ok"); });
+    var errs = (m && m.errors) || [];
+    if (errs.indexOf("todos") >= 0) h += '<div class="quiet">Your priorities could not be read just now; the next refresh tries again.</div>';
+    $("todos").innerHTML = h || '<div class="quiet">' + (m ? "No priorities yet. Add one above." : "Your priorities show after the next refresh.") + "</div>";
+    h = ""; ids = {};
+    pendingAdds("reminder").forEach(function (c) { h += waitRow(c, fmtDate((c.input || {}).when) + " · waits for Apply"); });
+    (m && m.reminders ? m.reminders : []).forEach(function (r, i) {
+      ids[r.id] = true;
+      var w = choiceFor("reminder", r.id), res = latestResult("reminder", r.id);
+      var when = r.status === "pinned" ? (r.days_pinned > 1 ? "on your list " + r.days_pinned + " days" : "today") : "from " + fmtDate(r.remind_from);
+      var tag = w ? waitTag(w, w.action === "push" ? "push to " + fmtDate((w.input || {}).when) + " waiting" : "done waiting") : resultTag(res);
+      var acts = w ? undoBtn(w)
+        : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button><button class="act" data-ract="push" data-rid="' + esc(r.id) + '">Push</button>';
+      h += '<div class="row' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title">' + esc(r.summary) + (r.repeat ? '<span class="tag">repeats</span>' : "") + tag + '</div><div class="sub">' + esc(when) + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    });
+    landedAdds("reminder", ids).forEach(function (c) { h += waitRow(c, "set · shows after the next refresh", "ok"); });
+    if (errs.indexOf("reminders") >= 0) h += '<div class="quiet">Your reminders could not be read just now; the next refresh tries again.</div>';
+    else if (m && num(m.n_reminders) > (m.reminders || []).length) h += '<div class="quiet">Showing ' + (m.reminders || []).length + " of " + num(m.n_reminders) + " reminders.</div>";
+    $("reminders").innerHTML = h || '<div class="quiet">' + (m ? "No reminders. Add one above." : "Your reminders show after the next refresh.") + "</div>";
+  }
+  function reminderTitle(rid) { var m = S.mine; if (m) for (var i = 0; i < (m.reminders || []).length; i++) if (m.reminders[i].id === rid) return m.reminders[i].summary; return ""; }
+  $("tab-today").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button"); if (!b) return;
+    if (b.id === "todoAdd") {
+      var t = $("todoText").value.trim(); if (!t) { $("todoText").focus(); return; }
+      var p = Number($("todoPrio").value) || 2;
+      saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: t, priority: p }, title: t });
+      $("todoText").value = ""; return;
+    }
+    if (b.id === "remAdd") {
+      var s = $("remText").value.trim(), d = $("remDate").value || todayIso(); if (!s) { $("remText").focus(); return; }
+      saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: { summary: s, when: d }, title: s });
+      $("remText").value = ""; return;
+    }
+    var ra = b.getAttribute("data-ract"), rid = b.getAttribute("data-rid");
+    // The day the page showed travels with Done, so a repeating reminder
+    // cleared twice clears that one day only (cr1#675).
+    if (ra === "done") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "done", input: { occurrence: b.getAttribute("data-rfrom") || "" }, title: reminderTitle(rid) }); return; }
+    if (ra === "push") {
+      var tm = new Date(); tm.setDate(tm.getDate() + 1);
+      PUSH.rid = rid; PUSH.day = tm.getFullYear() + "-" + ("0" + (tm.getMonth() + 1)).slice(-2) + "-" + ("0" + tm.getDate()).slice(-2);
+      renderMine(); return;
+    }
+    if (b.hasAttribute("data-rsave")) {
+      var id = b.getAttribute("data-rsave"), day = PUSH.day;
+      PUSH.rid = null; PUSH.day = "";
+      if (id && day) saveChoice({ kind: "reminder", src: "hub", n: id, action: "push", input: { when: day }, title: reminderTitle(id) });
+      renderMine();
+    }
+  });
+  $("tab-today").addEventListener("input", function (ev) { if (ev.target.hasAttribute("data-pushday")) PUSH.day = ev.target.value; });
+  ["todoText", "remText"].forEach(function (k) { $(k).addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); $(k === "todoText" ? "todoAdd" : "remAdd").click(); } }); });
+  // ---- commitments ---------------------------------------------------------
+  function plateRow(r, compact, i) {
+    var cid = r.id, w = choiceFor("commitment", cid), res = latestResult("commitment", cid), shut = closedHere(cid);
+    var tag = w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res);
+    var acts = "";
+    if (w) acts += undoBtn(w, "Take this back before it reaches your book");
+    else if (shut) acts += '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
+    if (!w && !shut) {
+      acts += '<button class="act primary" data-cact="' + (r.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (r.pending ? "Confirm" : "Done") + "</button>";
+      if (!compact) acts += '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>';
+    }
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, r.horizon].filter(Boolean).join(" · ")) + '</div><div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+  }
+  function renderPlate() {
+    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading the plate." : "No plate read yet. Press Start or Refresh day."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    var q = S.query.toLowerCase();
+    var rows = (p.rows || []).filter(function (r) { return !q || (r.title + " " + r.project + " " + r.context).toLowerCase().indexOf(q) >= 0; });
+    var total = num(p.n_rows) || ((p.rows || []).length + num(p.n_hidden));
+    $("platehead").innerHTML = '<div class="summary"><b>' + total + "</b> open" + (p.n_hidden ? " · showing the first " + (p.rows || []).length + "; the rest are on your plate in chat" : "") + (q ? " · " + rows.length + " match" : "") + "</div>";
+    var LANE_ORDER = ["confirm", "do_it", "chase", "schedule", "wait", "parked"];
+    var lanes = {}, order = [];
+    rows.forEach(function (r) { var k = r.lane || "other"; if (!lanes[k]) { lanes[k] = []; order.push(k); } lanes[k].push(r); });
+    order.sort(function (a, b) { var x = LANE_ORDER.indexOf(a), y = LANE_ORDER.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+    var names = { confirm: "Confirm", do_it: "Do it", chase: "Chase", wait: "Wait", schedule: "Schedule", parked: "Parked" };
+    var h = "", i = 0;
+    order.forEach(function (k) { h += "<h2>" + esc(names[k] || k) + " (" + lanes[k].length + ")</h2>"; lanes[k].forEach(function (r) { h += plateRow(r, false, i); i += 1; }); });
+    $("platerows").innerHTML = h || '<div class="quiet">Nothing matches.</div>';
+    // applied closes the page can reopen, and a reopen still waiting
+    var reopen = "";
+    closedFromPage(function (id) { return rows.some(function (r) { return String(r.id) === id; }); }).forEach(function (e) {
+      var c = e.res;
+      reopen += '<div class="row closed"><div class="main"><div class="title">' + esc(cap(c.title || c.n)) + '<span class="tag ok">closed</span>' + (e.waiting ? waitTag(e.waiting, "reopen waiting") : "") + '</div></div><div class="acts">'
+        + (e.waiting ? undoBtn(e.waiting, "Take the reopen back before it reaches your book") : '<button class="act undo" data-cact="reopen" data-cid="' + esc(c.n) + '">Undo</button>') + "</div></div>";
+    });
+    if (reopen) $("platerows").innerHTML += "<h2>Closed from this page</h2>" + reopen;
+  }
+  function titleOf(cid) { var p = S.plate; if (p) for (var i = 0; i < (p.rows || []).length; i++) if (String(p.rows[i].id) === String(cid)) return p.rows[i].title; return ""; }
+  function onPlateAct(btn) {
+    var act = btn.getAttribute("data-cact"), cid = btn.getAttribute("data-cid"), row = btn.closest(".row"), slot = row ? row.querySelector(".slot") : null;
+    if (act === "done" || act === "confirm" || act === "reopen") { saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: act, title: titleOf(cid) }); return; }
+    if (!slot || (act !== "context" && act !== "snooze")) return;
+    // The open box lives in the page's state, so a redraw keeps it and what
+    // was typed in it (cr1#679).
+    S.open[cid] = { kind: act, value: "" };
+    slot.innerHTML = slotHtml(cid);
+    var f = slot.querySelector("textarea, input"); if (f) f.focus();
+  }
+  function slotHtml(cid) {
+    var o = S.open[cid]; if (!o) return "";
+    if (o.kind === "context") return '<textarea class="note" data-slot="' + esc(cid) + '" aria-label="Note for your book" placeholder="What should the book know about this?">' + esc(o.value) + '</textarea><div class="parts"><button class="act primary" data-save="context" data-scid="' + esc(cid) + '">Save note</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
+    return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Snooze until" placeholder="Days from today, or a date (2026-12-01)" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="snooze" data-scid="' + esc(cid) + '">Snooze</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
+  }
+  function onSlotSave(b) {
+    var kind = b.getAttribute("data-save"), cid = b.getAttribute("data-scid"), o = S.open[cid];
+    if (kind === "cancel" || !o) { delete S.open[cid]; renderAll(); return; }
+    var v = String(o.value || "").trim(); if (!v) return;
+    delete S.open[cid];
+    saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: kind, input: v, title: titleOf(cid) });
+  }
+
+  // ---- inbox ---------------------------------------------------------------
+  function renderInbox() {
+    var ib = S.inbox;
+    $("inboxCount").textContent = ib && ib.items ? ib.items.length : 0;
+    if (!ib) { $("inboxhead").textContent = isRunning("inbox") ? "Reading the inbox." : "No inbox read yet. Press Check inbox."; $("inboxrows").innerHTML = isRunning("inbox") ? skeletons(3) : ""; return; }
+    $("inboxhead").textContent = (ib.header || (ib.n_items + " threads")) + " · read " + fmtWhen(ib.generated_at) + ".";
+    var h = "";
+    (ib.items || []).forEach(function (it, i) {
+      var w = inboxChoice(it), res = inboxResult(it), pend = S.pendingSend[ikey(it)];
+      var tag = w ? waitTag(w, w.action + " waiting") : resultTag(res);
+      var acts = "";
+      if (w) acts += undoBtn(w, "Take this back before it is applied");
+      if (!w) {
+        var blanks = it.draft && it.draft.blanks && it.draft.blanks.length ? it.draft.blanks : null;
+        if (it.kind === "email_reply" && it.draft && it.draft.body && !blanks) {
+          acts += '<button class="act ' + (pend ? "warn" : "primary") + '" data-iact="send" data-n="' + esc(it.n) + '">' + (pend ? "Press again to send" : "Send") + "</button>";
+          acts += '<button class="act" data-iact="draft" data-n="' + esc(it.n) + '">Draft</button>';
+        }
+        acts += '<button class="act" data-iact="snooze" data-n="' + esc(it.n) + '">Snooze 3 days</button>';
+      }
+      var fill = (it.draft && it.draft.blanks && it.draft.blanks.length && !w) ? '<div class="sub"><span class="tag wait">Fill in ' + esc(it.draft.blanks.join(", ")) + ' before sending</span></div>' : "";
+      // cr1#677: what the owner typed is kept by thread, never rebuilt from
+      // the original draft on a redraw.
+      var typed = S.drafts[ikey(it)];
+      var draft = (it.draft && it.draft.body && !w) ? fill + '<div class="sub">To: ' + esc(it.draft.to) + (it.draft.cc ? " · Cc: " + esc(it.draft.cc) : "") + "</div><textarea class=\"draft\" aria-label=\"Reply draft\" data-n=\"" + esc(it.n) + '" data-ikey="' + esc(ikey(it)) + '">' + esc(typed != null ? typed : it.draft.body) + "</textarea>" : "";
+      h += '<div class="row' + riseClass("i" + it.n + "-" + (it.fire_stamp || "")) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title"><span class="num">' + esc(it.n) + "</span>" + esc(it.name) + (it.subject ? " · " + esc(it.subject) : "") + tag + '</div><div class="sub">' + esc(it.why) + "</div>" + draft + '</div><div class="acts">' + acts + "</div></div>";
+    });
+    $("inboxrows").innerHTML = h || '<div class="quiet">Nothing needs you.</div>';
+  }
+  function inboxItem(n) { var ib = S.inbox; if (!ib) return null; for (var i = 0; i < ib.items.length; i++) if (String(ib.items[i].n) === String(n)) return ib.items[i]; return null; }
+  // A press belongs to one thread in one inbox read (cr1#677): the row number
+  // alone pointed at a different thread once a new read renumbered the list.
+  function ikey(it) { return (it.thread_id || ("n" + it.n)) + "|" + (it.fire_stamp || ""); }
+  function samePress(c, it) {
+    if (c.kind !== "inbox" || String(c.n) !== String(it.n)) return false;
+    if ((c.fire_stamp || "") !== (it.fire_stamp || "")) return false;
+    return !c.thread_id || !it.thread_id || c.thread_id === it.thread_id;
+  }
+  function inboxChoice(it) { for (var i = 0; i < S.choices.length; i++) { var c = S.choices[i]; if (!c.applied && samePress(c, it)) return c; } return null; }
+  function inboxResult(it) {
+    var best = null;
+    S.choices.forEach(function (c) { if (c.applied && samePress(c, it) && (!best || (c.applied_at || "") > (best.applied_at || ""))) best = c; });
+    return best;
+  }
+  var SEND_CONFIRM_MIN_MS = 600;
+  function onInboxAct(btn) {
+    var act = btn.getAttribute("data-iact"), n = btn.getAttribute("data-n"), it = inboxItem(n); if (!it) return;
+    var k = ikey(it), typed = S.drafts[k];
+    var body = typed != null ? typed : (it.draft ? it.draft.body : "");
+    var d = it.draft || {};
+    var base = { kind: "inbox", src: "cr-inbox", n: Number(n), title: it.name + (it.subject ? ": " + it.subject : ""), fire_stamp: it.fire_stamp, thread_id: it.thread_id || null, message_ts: it.message_ts || null };
+    if (act === "send" || act === "draft") {
+      // The email exactly as the owner saw it travels with the press, so the
+      // run never sends whatever the row holds by the time it runs.
+      base.input = { body: body };
+      base.draft = { to: d.to || "", cc: d.cc || "", subject: d.subject || it.subject || "", body: body };
+    }
+    if (act === "send") {
+      var first = S.pendingSend[k];
+      if (!first) { S.pendingSend[k] = Date.now(); renderInbox(); setTimeout(function () { if (S.pendingSend[k]) { delete S.pendingSend[k]; renderInbox(); } }, 20000); return; }
+      // A double-click is one press, never the confirmation (cr1#677).
+      if (Date.now() - first < SEND_CONFIRM_MIN_MS) return;
+      delete S.pendingSend[k];
+      base.action = "send"; base.confirmed = true; base.token = rid() + rid();
+      saveChoice(base); return;
+    }
+    if (act === "draft") { base.action = "draft"; saveChoice(base); return; }
+    if (act === "snooze") { base.action = "snooze"; saveChoice(base); }
+  }
+
+  // ---- projects (cr1#660) ---------------------------------------------------
+  function ago(iso) {
+    if (!iso) return "no activity yet"; var d = new Date(iso); if (isNaN(d)) return "";
+    // Calendar days where the viewer is, not 24-hour blocks (cr1#679).
+    var a = new Date(d.getFullYear(), d.getMonth(), d.getDate()), t = new Date(); t = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    var days = Math.round((t.getTime() - a.getTime()) / 86400000);
+    if (days <= 0) return "active today"; if (days === 1) return "active yesterday";
+    if (days < 14) return "active " + days + " days ago";
+    return "last active " + d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  function renderProjects() {
+    var pj = S.projects;
+    $("projectCount").textContent = pj && pj.rows ? pj.rows.length : 0;
+    if (!pj) { $("projecthead").textContent = isRunning("refresh") ? "Reading your projects." : "No projects read yet. Press Refresh day."; $("projectrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    var q = S.pquery.toLowerCase();
+    var rows = (pj.rows || []).filter(function (r) { return !q || (r.name + " " + r.org).toLowerCase().indexOf(q) >= 0; });
+    var openTotal = 0; (pj.rows || []).forEach(function (r) { openTotal += num(r.open); });
+    $("projecthead").innerHTML = '<div class="summary"><b>' + num(pj.n_rows) + "</b> live projects · <b>" + openTotal + "</b> open commitments across them" + (pj.n_hidden ? " · showing the first " + (pj.rows || []).length : "") + (q ? " · " + rows.length + " match" : "") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>";
+    var names = { active: "Active", scoping: "Scoping", paused: "Paused", dormant: "Dormant" };
+    var h = "", last = null, i = 0;
+    rows.forEach(function (r) {
+      if (r.status !== last) { last = r.status; var n = rows.filter(function (x) { return x.status === r.status; }).length; h += "<h2>" + esc(names[r.status] || r.status) + " (" + n + ")</h2>"; }
+      var counts = num(r.open) ? '<span class="count-open"><b>' + num(r.open) + "</b> open" + (num(r.overdue) ? ' · <span class="late">' + num(r.overdue) + " overdue</span>" : "") + "</span>" : '<span class="count-open">nothing open</span>';
+      var btn = r.open ? '<button class="act" data-proj="' + esc(r.name) + '" title="Show the commitments on this project">Commitments</button>' : "";
+      h += '<div class="row' + riseClass("p" + r.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(r.name) + '</div><div class="sub">' + esc([r.org, ago(r.last_activity)].filter(Boolean).join(" · ")) + '</div></div><div class="acts">' + counts + btn + "</div></div>";
+      i += 1;
+    });
+    $("projectrows").innerHTML = h || '<div class="quiet">' + (q ? "Nothing matches." : "No live projects.") + "</div>";
+  }
+  function renderAll() { renderLights(); renderWaiting(); renderToday(); renderInbox(); renderPlate(); renderProjects(); }
+
+  // ---- tabs and clicks -----------------------------------------------------
+  document.querySelector("nav.tabs").addEventListener("keydown", function (ev) {
+    // Arrow keys move between the tabs, as a tab list should.
+    if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+    var tabs = Array.prototype.slice.call(document.querySelectorAll("nav.tabs button[data-tab]"));
+    var i = tabs.indexOf(document.activeElement); if (i < 0) return;
+    var next = tabs[(i + (ev.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    ev.preventDefault(); next.click(); next.focus();
+  });
+  document.querySelector("nav.tabs").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-tab]"); if (!b) return;
+    var tabs = document.querySelectorAll("nav.tabs button"); for (var i = 0; i < tabs.length; i++) { tabs[i].setAttribute("aria-selected", tabs[i] === b ? "true" : "false"); tabs[i].setAttribute("tabindex", tabs[i] === b ? "0" : "-1"); }
+    var secs = document.querySelectorAll("section.tab"); for (var j = 0; j < secs.length; j++) secs[j].className = "tab" + (secs[j].id === "tab-" + b.getAttribute("data-tab") ? " on" : "");
+    try { localStorage.setItem("cockpit.tab", b.getAttribute("data-tab")); } catch (e) {}
+  });
+  try { var saved = localStorage.getItem("cockpit.tab"); if (saved) { var tb = document.querySelector('nav.tabs button[data-tab="' + saved + '"]'); if (tb) tb.click(); } } catch (e) {}
+  document.body.addEventListener("click", function (ev) {
+    var pb = ev.target.closest("button[data-prep]");
+    if (pb) { var box = document.getElementById("prep-" + pb.getAttribute("data-prep")); if (box) { var on = box.className.indexOf(" on") < 0; box.className = "prepbox" + (on ? " on" : ""); pb.setAttribute("aria-expanded", on ? "true" : "false"); pb.textContent = on ? "Hide prep" : "Prep"; var pk = pb.getAttribute("data-prepkey"); if (pk) { if (on) S.prepOpen[pk] = true; else delete S.prepOpen[pk]; } } return; }
+    var sv = ev.target.closest("button[data-save]"); if (sv) { onSlotSave(sv); return; }
+    var u = ev.target.closest("button[data-undo]"); if (u) { undoChoice(u.getAttribute("data-undo")); return; }
+    var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
+    var ib = ev.target.closest("button[data-iact]"); if (ib) { onInboxAct(ib); return; }
+    var p = ev.target.closest("button[data-part]"); if (p) { runPart(p.getAttribute("data-part")); }
+  });
+  document.body.addEventListener("input", function (ev) {
+    var t = ev.target;
+    if (t.matches && t.matches("textarea.draft[data-ikey]")) { S.drafts[t.getAttribute("data-ikey")] = t.value; return; }
+    if (t.hasAttribute && t.hasAttribute("data-slot")) { var o = S.open[t.getAttribute("data-slot")]; if (o) o.value = t.value; }
+  });
+  $("search").addEventListener("input", function () { S.query = this.value; renderPlate(); });
+  $("psearch").addEventListener("input", function () { S.pquery = this.value; renderProjects(); });
+  $("tab-projects").addEventListener("click", function (ev) {
+    // A project's Commitments button opens the Commitments tab searched to it.
+    var b = ev.target.closest("button[data-proj]"); if (!b) return;
+    var name = b.getAttribute("data-proj"); S.query = name; $("search").value = name;
+    var tb = document.querySelector('nav.tabs button[data-tab="plate"]'); if (tb) tb.click();
+    renderPlate();
+  });
+  $("startBtn").addEventListener("click", function () { start(); });
+
+  // ---- triggers through the viewer's connector -----------------------------
+  function payloadRows(res) {
+    var p = res && res.payload; if (!p) return [];
+    if (Array.isArray(p)) return p;
+    var keys = ["data", "triggers", "items", "results"]; for (var i = 0; i < keys.length; i++) if (Array.isArray(p[keys[i]])) return p[keys[i]];
+    return [];
+  }
+  function normTrigger(r) {
+    // The cloud listing gives last_run as an object ({status, fired_at, ...}),
+    // the same shape schedule_backend reads with ISO_OBJECT_KEYS (cr1#681):
+    // taken as it came, the top line printed "last run" with no time after it.
+    var lastRunIso = function (v) {
+      if (v == null || v === "") return null;
+      if (typeof v === "number") return new Date(v * 1000).toISOString();
+      if (typeof v === "string") return v;
+      if (typeof v === "object") {
+        var keys = ["iso", "timestamp", "at", "value", "fired_at"];
+        for (var i = 0; i < keys.length; i++) { var got = lastRunIso(v[keys[i]]); if (got) return got; }
+      }
+      return null;
+    };
+    return { id: r.id || r.trigger_id || r.triggerId || "", name: r.name || r.title || "", enabled: (r.enabled === false || r.paused === true) ? false : true,
+      lastRun: lastRunIso(r.last_run_at || r.lastRunAt || r.last_run), task: String(r.name || "").split(" - Command Room")[0].trim() };
+  }
+  function call(tool, input) { return mcp.callTool(server, tool, input); }
+  function errText(e) { return e && e.code ? e.code + (e.message ? ": " + e.message : "") : String(e); }
+  // The owner's sentence for a connector failure (cr1#685): the codes with a
+  // fix of their own get that fix; the rest say what did not happen. The raw
+  // code and message ride on the banner's hover text, never in the sentence.
+  function errLine(e, what) {
+    var code = e && e.code ? String(e.code) : "", name = CFG.server;
+    if (code === "needs_reauth") return what + ". Reconnect " + name + " in claude.ai Settings, Connectors, then reload this page.";
+    if (code === "server_not_connected") return what + ". Add the " + name + " connector on this account in claude.ai Settings, Connectors, then reload this page.";
+    if (code === "not_in_manifest") return what + ". This page is not allowed to use " + name + " yet: allow it from the page's menu, then reload.";
+    if (code === "approval_required") return what + ". That call needs your approval: allow it when the page asks, then press again.";
+    if (code === "selection_required") return what + ". More than one " + name + " connector is on this account: choose one when the page asks, then reload.";
+    if (code === "server_unavailable" || code === "upstream_error" || code === "rate_limited") return what + ". The scheduler did not answer; try again in a moment.";
+    return what + ". Try again, and if it keeps happening say `set up my hub` in a Command Room chat.";
+  }
+  function owned() {
+    // The tasks Start runs and may switch on: the four Hub tasks and the two
+    // chats that survive. Never a retired chat or a task from before the
+    // rename (cr1#676: Start switched those back on, so every leg ran twice).
+    var out = [];
+    Object.keys(TASKS).forEach(function (k) { var t = trig(TASKS[k]); if (t) out.push(t); });
+    ["Morning Brief", "Maintenance"].forEach(function (n) { var t = byName(n); if (t) out.push(t); });
+    return out;
+  }
+  function byName(task) { for (var i = 0; i < triggers.length; i++) if (triggers[i].task === task) return triggers[i]; return null; }
+  function topline() {
+    var mine = owned();
+    var on = mine.filter(function (t) { return t.enabled; }).length;
+    var last = null; mine.forEach(function (t) { if (t.lastRun && (!last || t.lastRun > last)) last = t.lastRun; });
+    $("metaline").textContent = fmtDay(new Date()) + " · " + on + " of " + mine.length + " tasks on" + (last ? " · last run " + fmtWhen(last) : "") + " · " + CFG.basename;
+  }
+  // The listing comes in pages (cr1#636): one bare call returned the first
+  // twenty tasks, or fewer when the page ran out of room, and a Hub whose
+  // tasks sat further down read as not registered. Every page is read,
+  // following the cursor the last one gave, up to a bound.
+  function listAllTriggers() {
+    var LIST_PAGE = 100, LIST_MAX_PAGES = 25, rows = [];
+    function page(cursor, n) {
+      var input = { limit: LIST_PAGE }; if (cursor) input.cursor = cursor;
+      return call("list_triggers", input).then(function (res) {
+        rows = rows.concat(payloadRows(res));
+        var p = res && res.payload && !Array.isArray(res.payload) ? res.payload : {};
+        var next = p.next_cursor || p.nextCursor || null;
+        if (next && p.has_more !== false && n < LIST_MAX_PAGES) return page(next, n + 1);
+        return rows;
+      });
+    }
+    return page(null, 1);
+  }
+  function loadTriggers() {
+    return listAllTriggers().then(function (all) {
+      var suffix = " - Command Room (" + CFG.basename + ")";
+      triggers = all.map(normTrigger).filter(function (t) { return t.name.indexOf(suffix) >= 0; });
+      var missing = Object.keys(TASKS).filter(function (k) { return !trig(TASKS[k]); });
+      wired = missing.length === 0;
+      if (!wired) banner("Not every Hub task is registered for this folder on this account (missing: " + missing.map(function (k) { return TASKS[k]; }).join(", ") + "). Say `set up my hub` in a Command Room chat.", true);
+      topline();
+      renderLights();
+    }, function (e) { banner(errLine(e, "Could not read your scheduled tasks"), true, errText(e)); });
+  }
+  function trig(task) {
+    var t = byName(task); if (t) return t;
+    var old = PRE_HUB[task];
+    return old ? byName(old) : null;
+  }
+  function enableIfOff(t) { if (!t || t.enabled) return Promise.resolve(); return call("update_trigger", { trigger_id: t.id, enabled: true }).then(function () { t.enabled = true; }); }
+  // A fire carries NO text (cr1#651): every run the page started with a text
+  // payload ran without the computer's device tools, so it never reached the
+  // folder; the same fire with no text did. Never put a message back here.
+  function fire(t) { return call("fire_trigger", { trigger_id: t.id }); }
+  function markRunning(legs) {
+    if (!db) return Promise.resolve();
+    var at = nowIso(); var ps = legs.map(function (leg) { S.status[leg] = { leg: leg, state: "running", line: "Started.", at: at, by_page: true }; return db.doc("status/" + leg).set(S.status[leg]); });
+    renderLights(); return Promise.all(ps);
+  }
+  function fireLeg(leg, stamp) {
+    var t = trig(TASKS[leg]); if (!t) return Promise.reject({ code: "not_registered", message: TASKS[leg] });
+    return enableIfOff(t).then(function () { return markRunning([leg]); }).then(function () { return fire(t); });
+  }
+  function failLeg(leg, e) {
+    // The light is written to the page's data, so the next update keeps it
+    // instead of putting "Started." back (cr1#679).
+    S.status[leg] = { leg: leg, state: "error", line: errLine(e, "Did not start"), at: nowIso() };
+    if (db) db.doc("status/" + leg).set(S.status[leg]).then(null, function () {});
+    // Apply that never started never turns green, so the refresh waiting on it
+    // is dropped now rather than after three hours.
+    if (leg === "apply" && refreshArmed) dropArm("Not refreshed: Apply did not start. Press Refresh day when it is sorted.");
+    renderLights();
+  }
+  // Refresh follows Apply only when Apply turns green on THIS run: the arm remembers
+  // the apply light it saw, so yesterday's `done` never fires the refresh early.
+  // cr1#658: the arm lives in the page's data, not in this tab's memory, so
+  // closing the page while Apply runs no longer loses the refresh: the next
+  // open of the page sees Apply green and fires it. An arm older than
+  // ARM_MAX_MS is dropped, and the Refresh light says what it is waiting for.
+  var ARM_MAX_MS = 3 * 60 * 60 * 1000;
+  var refreshArmed = false, refreshArmedAt = null, refreshArmedOn = null;
+  function setArm(arm) {
+    refreshArmed = !!arm; refreshArmedAt = arm ? (arm.apply_at || null) : null; refreshArmedOn = arm ? (arm.armed_at || null) : null;
+  }
+  function armRefreshAfterApply() {
+    var arm = { armed_at: nowIso(), apply_at: (legState("apply") || {}).at || null };
+    setArm(arm);
+    if (!db) return;
+    db.doc("config/refresh_arm").set(arm).then(null, function () {});
+    S.status.refresh = { leg: "refresh", state: "waiting", line: "Waits for Apply, then refreshes the day.", at: arm.armed_at, by_page: true };
+    db.doc("status/refresh").set(S.status.refresh).then(null, function () {});
+    renderLights();
+  }
+  function disarm() { setArm(null); if (db) db.doc("config/refresh_arm").delete().then(null, function () {}); }
+  function dropArm(line) {
+    // The arm goes, and the Refresh light stops saying it waits (cr1#679: it
+    // stayed on "Waits for Apply" for good).
+    disarm();
+    if ((S.status.refresh || {}).state === "waiting") {
+      S.status.refresh = { leg: "refresh", state: "error", line: line, at: nowIso() };
+      if (db) db.doc("status/refresh").set(S.status.refresh).then(null, function () {});
+    }
+    renderLights();
+  }
+  var firingRefresh = false;
+  function maybeFireRefresh() {
+    if (!refreshArmed || firingRefresh) return;
+    var on = new Date(refreshArmedOn || 0);
+    if (isNaN(on) || (Date.now() - on.getTime()) > ARM_MAX_MS) { dropArm("Not refreshed: Apply took too long. Press Refresh day."); return; }
+    var a = legState("apply") || {};
+    if (!a.at || a.at === refreshArmedAt) return;
+    if (a.state === "done") {
+      // Two open views see Apply turn green together; only the one that
+      // holds the arm fires the refresh (cr1#679).
+      firingRefresh = true;
+      var arm = db ? db.doc("config/refresh_arm") : null;
+      var go = function () { disarm(); return fireLeg("refresh", nowIso()).then(null, function (e) { failLeg("refresh", e); }); };
+      var claim = arm && arm.acquire ? arm.acquire({ holder: TAB_ID, ttlMs: 60000 }).then(function (r) {
+        if (!r || !r.acquired) { setArm(null); return null; }
+        return arm.get().then(function (snap) { if (snap.exists) return go(); setArm(null); return null; });
+      }) : go();
+      Promise.resolve(claim).then(function () { firingRefresh = false; }, function () { firingRefresh = false; });
+    }
+    else if (a.state === "error" || a.state === "no_answer") {
+      disarm();
+      var line = "Not refreshed: Apply did not finish. Press Refresh day when it is sorted.";
+      S.status.refresh = { leg: "refresh", state: "error", line: line, at: nowIso() };
+      if (db) db.doc("status/refresh").set(S.status.refresh).then(null, function () {});
+      renderLights(); banner("Apply did not finish, so the day was not refreshed. Press Refresh day when it is sorted.", true);
+    }
+  }
+  function beginRun(stamp, full) {
+    // A press is a run of this page: the lights that rise after it are this
+    // run's and a new day line types in. Only a Start (`full`) fills the ring
+    // with them and ends in the band (cr1#687).
+    SEQ.startedAt = stamp; SEQ.full = !!full; SEQ.risen = {}; SEQ.counted = {}; SEQ.bandShown = null; SEQ.settled = false;
+  }
+  function runPart(part) {
+    var legs = PARTS[part], stamp = nowIso();
+    if (part === "confirm") { armRefreshAfterApply(); legs = ["apply"]; }
+    if (!SEQ.startedAt || !SEQ.full || runProgress() === LEGS.length) beginRun(stamp, false);
+    legs.forEach(function (leg, i) { setTimeout(function () { fireLeg(leg, stamp).then(function () { banner("Started " + leg + "."); }, function (e) { failLeg(leg, e); banner(errLine(e, "Could not start " + leg), true, errText(e)); }); }, i * 250); });
+  }
+  function bumpStreak() {
+    if (!db) return;
+    var today = dayKey(new Date()), y = new Date(); y.setDate(y.getDate() - 1); var yk = dayKey(y);
+    var s = S.streak || { count: 0, last_day: "" };
+    if (s.last_day === today) return;
+    var next = { count: s.last_day === yk ? (s.count || 0) + 1 : 1, last_day: today };
+    db.doc("config/streak").set(next).then(function () { S.streak = next; renderToday(); }, function () {});
+  }
+  // Every Start runs the two chats that survive the Hub (owner ruling,
+  // cr1#682): the click is the morning, so no last-run date decides for them.
+  function chatsToFire() {
+    var out = [];
+    ["Morning Brief", "Maintenance"].forEach(function (n) { var t = byName(n); if (t) out.push([n, t]); });
+    return out;
+  }
+  function start() {
+    if (!wired) return;
+    var busy = LEGS.some(function (l) { return isRunning(l[0]); });
+    if (busy && !SEQ.confirmRestart) {
+      SEQ.confirmRestart = true; renderLights();
+      setTimeout(function () { if (SEQ.confirmRestart) { SEQ.confirmRestart = false; renderLights(); } }, 6000);
+      return;
+    }
+    SEQ.confirmRestart = false;
+    if (SEQ.starting) return;
+    SEQ.starting = true;
+    var stamp = nowIso();
+    var wrap = $("ringwrap"); wrap.className = "ringwrap starting wired rippling";
+    setTimeout(function () { wrap.className = wrap.className.replace(" rippling", ""); }, 1000);
+    beginRun(stamp, true); renderLights();
+    var started = 0;
+    var finish = function () { SEQ.starting = false; renderLights(); };
+    // The task list is read again first, so a page left open overnight never
+    // runs yesterday's Morning Brief decision (cr1#679).
+    loadTriggers().then(function () {
+      return Promise.all(owned().map(enableIfOff));
+    }).then(function () {
+      // The two chats answer for themselves: a failure there never marks the
+      // Hub's own lights as not started (cr1#679).
+      chatsToFire().forEach(function (c) { fire(c[1]).then(null, function (e) { banner(errLine(e, c[0] + " did not start"), true, errText(e)); }); });
+      armRefreshAfterApply();
+      // The three that run together come on a beat apart, so the eye can follow.
+      return Promise.all(["prep", "inbox", "apply"].map(function (leg, i) {
+        return new Promise(function (resolve) { setTimeout(resolve, i * 250); }).then(function () { return fireLeg(leg, stamp).then(function () { started += 1; }, function (e) { failLeg(leg, e); }); });
+      }));
+    }).then(function () {
+      finish(); topline();
+      if (started) { bumpStreak(); banner("Started. The lights fill in as each part finishes; the day refreshes once Apply is done."); }
+      else banner("Nothing started. The lights say why; press Start to try again.", true);
+    }, function (e) { finish(); banner(errLine(e, "Start did not go through"), true, errText(e)); });
+  }
+
+  // ---- boot ----------------------------------------------------------------
+  renderAll();
+  var loadTimer = setTimeout(function () { if (!dbReady) banner("The page's data has not answered yet; what you see may be out of date."); }, 10000);
+  if (window.claude && window.claude.use) {
+    window.claude.use("db").then(function (d) {
+      db = d; if (!db) { dbMissing = true; clearTimeout(loadTimer); renderWaiting(); banner("This view cannot reach the page's data, so choices cannot be saved here.", true); return; }
+      // One banner when the data stream ends, however many lists were listening.
+      var errShown = false;
+      var onErr = function (e) { if (errShown) return; errShown = true; banner("The page's data stream ended. Reload to reconnect.", true, errText(e)); };
+      ["today", "plate", "inbox", "projects"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? snap.data() : null; if (!snap.metadata.fromCache) { dbReady = true; clearTimeout(loadTimer); } renderAll(); }, onErr); });
+      db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); S.status = st; renderLights(); maybeFireRefresh(); }, onErr);
+      db.collection("choices").onSnapshot(function (snap) { S.choices = snap.docs.map(function (d) { return d.data(); }).filter(withinWindow); renderAll(); }, onErr);
+      db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
+      db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
+      db.doc("config/streak").onSnapshot(function (snap) { S.streak = snap.exists ? snap.data() : null; renderToday(); }, onErr);
+    });
+    window.claude.use("mcp").then(function (m) {
+      mcp = m; if (!mcp) { banner("This view cannot reach your connectors, so the buttons stay off. Open the page signed in on claude.ai.", true); return; }
+      return mcp.listTools().then(function (lt) {
+        var servers = (lt && lt.servers) || [];
+        var pick = null;
+        servers.forEach(function (s) { var has = (s.tools || []).some(function (t) { return t.name === "fire_trigger"; }); if (s.server === CFG.server && (has || !s.tools || !s.tools.length)) pick = pick || s; });
+        if (!pick) servers.forEach(function (s) { if ((s.tools || []).some(function (t) { return t.name === "fire_trigger"; })) pick = pick || s; });
+        server = pick ? pick.server : CFG.server;
+        return loadTriggers();
+      }, function (e) { banner(errLine(e, "Could not list your connectors"), true, errText(e)); });
+    });
+  } else {
+    banner("Open this page on claude.ai to use the buttons.", true);
+  }
+  // The tick also checks the refresh waiting on Apply, so a light that times
+  // out with no new data still drops or fires it (cr1#679).
+  setInterval(function () { renderLights(); maybeFireRefresh(); }, 1000);
+})();
+</script>
+</body>
+</html>

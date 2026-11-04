@@ -96,7 +96,10 @@ UP_TO_DATE = (
 #: exactly these phrases; `run_retire1_test` pins the text to them.
 INTENT_FULL_UPDATE = "full_update"
 INTENT_ARTIFACT_ONLY = "artifact_only"
-BRIDGE_INTENTS = (INTENT_FULL_UPDATE, INTENT_ARTIFACT_ONLY)
+#: FILECARD1 (cr1#611): the paste-in block, regenerated and shown again. Not
+#: an update: Phase 5.5 alone runs, nothing else is read or written.
+INTENT_SHOW_INSTRUCTIONS = "show_instructions"
+BRIDGE_INTENTS = (INTENT_FULL_UPDATE, INTENT_ARTIFACT_ONLY, INTENT_SHOW_INSTRUCTIONS)
 
 #: The full-update phrases (Phase 4.7's intent table, full-update row).
 FULL_UPDATE_PHRASES = (
@@ -113,12 +116,24 @@ ARTIFACT_ONLY_PHRASES = (
     "add my dashboards", "i'm missing dashboards",
 )
 
+#: The show-my-Claude-instructions phrases (FILECARD1, cr1#611). "pull up
+#: my Claude instructions" is NOT one: workspace-manager owns `pull up [name]`
+#: and the two collide on the router.
+SHOW_INSTRUCTIONS_PHRASES = (
+    "show my claude instructions", "my claude instructions",
+    "show me my claude instructions",
+)
+
 #: What the full-update intent runs, in order — every phase of the bridge,
 #: as today. (`exit: "up_to_date"` is an early stop inside Phase 2, after the
 #: Phase 4.7 state-gated blocks; it does not change which phases the intent
-#: owns.)
+#: owns, and Phase 5.5, the account instructions block, still runs on that
+#: exit: a seat that is already current needs the block once too.)
 FULL_UPDATE_PHASES = ("1", "2", "3", "4", "4.4", "4.4b", "4.5", "4.6",
-                      "4.7", "4.8", "5", "6")
+                      "4.7", "4.8", "5", "5.5", "6")
+
+#: What the show intent runs: Phase 5.5 alone, regenerated, no gate.
+SHOW_INSTRUCTIONS_PHASES = ("5.5",)
 
 
 def _normalize_phrase(phrase: object) -> str:
@@ -140,6 +155,8 @@ def bridge_intent(phrase: object) -> str:
         return INTENT_FULL_UPDATE
     if any(p in text for p in ARTIFACT_ONLY_PHRASES):
         return INTENT_ARTIFACT_ONLY
+    if any(p in text for p in SHOW_INSTRUCTIONS_PHRASES):
+        return INTENT_SHOW_INSTRUCTIONS
     return INTENT_FULL_UPDATE
 
 
@@ -194,6 +211,12 @@ def bridge_plan(tools: Optional[Iterable] = None,
         return {"exit": "dashboards_only", "ask": False, "calls": calls,
                 "missing_defaults": missing, "say": [answer(installed_ids)],
                 "log_on_decline": None, "run_phases": []}
+    if intent == INTENT_SHOW_INSTRUCTIONS:
+        # FILECARD1 (cr1#611): Phase 5.5 alone, with no print-once gate; the
+        # chat says nothing of its own, the step's own lines are the turn.
+        return {"exit": "show_instructions", "ask": False, "calls": calls,
+                "missing_defaults": missing, "say": [],
+                "log_on_decline": None, "run_phases": list(SHOW_INSTRUCTIONS_PHASES)}
     migrations = list(pending_migrations or ())
     remediations = list(pending_remediations or ())
     up_to_date = (not missing and not migrations and not remediations
@@ -210,6 +233,7 @@ def bridge_plan(tools: Optional[Iterable] = None,
 
 __all__ = ["ARTIFACT_ONLY_PHRASES", "BRIDGE_INTENTS", "CURRENT_DEFAULTS",
            "DASHBOARDS_IN_CHAT", "FULL_UPDATE_PHASES", "FULL_UPDATE_PHRASES",
-           "INTENT_ARTIFACT_ONLY", "INTENT_FULL_UPDATE", "UNPIN_NOTE",
+           "INTENT_ARTIFACT_ONLY", "INTENT_FULL_UPDATE", "INTENT_SHOW_INSTRUCTIONS",
+           "SHOW_INSTRUCTIONS_PHASES", "SHOW_INSTRUCTIONS_PHRASES", "UNPIN_NOTE",
            "UP_TO_DATE", "answer", "bridge_intent", "bridge_plan",
            "missing_defaults", "plan"]

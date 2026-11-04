@@ -326,10 +326,42 @@ def opener_line(device_path, rel) -> str:
         return ""
 
 
+# ---------------------------------------------------------------------------
+# How a landed file is HANDED BACK (FILECARD1, cr1#268, owner ruling 2026-11-03)
+# ---------------------------------------------------------------------------
+
+#: The host's file-card tool. Every file a turn makes for the owner comes back
+#: through it, first, before the summary: a brief, a memo, a sheet, a deck, a
+#: note, Markdown included, and a hand-built file no skill owns. A path in
+#: words is not delivery (CONTRACT Rule 3).
+SEND_FILE_TOOL = "SendUserFile"
+
+#: The display that opens the file in the chat's side panel on click. The
+#: owner's own rule since 2026-10-02; the ruling of 2026-11-03 made it the
+#: product's. Without it the host decides by file type, which is how the
+#: scheduled surfaces carded a page that opened nowhere.
+SEND_FILE_DISPLAY = "render"
+
+#: The ONE sentence said when the chat has no file-card tool at all, under the
+#: link or the saved-to line that then stands in for the card. Gate-checked
+#: like every other sentence this module says.
+CARD_ABSENT_LINE = ("No file card can be shown in this chat, so the line above "
+                    "is how to open it.")
+
+
+def card_call(path) -> Dict[str, Any]:
+    """The call a skill makes to hand one file back: the tool, the path the
+    tool can read, the render display. The path is where the bytes ARE for the
+    process that calls the tool: `landed_path` on a seat whose files are local,
+    a staged copy in this session's scratch on a merged seat (the card tool
+    runs in the chat and cannot read the customer's computer)."""
+    return {"tool": SEND_FILE_TOOL, "path": str(path), "display": SEND_FILE_DISPLAY}
+
+
 #: Every sentence this module can say, for the gate and for a reviewer who
 #: wants to read them all in one place.
 ALL_LINES = (REFUSED_LINE, NOT_ATTACHED_LINE, MISSING_PARENT_LINE,
-             REFUSED_TARGET_LINE, DEPENDENCY_LINE,
+             REFUSED_TARGET_LINE, DEPENDENCY_LINE, CARD_ABSENT_LINE,
              PC_PATH_UNKNOWN_LINE.format(filename="Call_Prep.docx"),
              SAVED_TO_LINE.format(path="C:\\Users\\sample\\Sample Brain"
                                        "\\_hq\\meetings\\Call_Prep.docx"))
@@ -591,6 +623,15 @@ def land(workspace_root: Union[str, Path, None], rel: str,
         # say had no words for it, and the chat invented an arrow.
         out.update({"opener_line": (opener_line(out["device_path"], rel)
                                     if root else out["line"])})
+        # The handover (FILECARD1): the card call for THIS file, composed here
+        # beside the sentence, so no skill writes its own. The path is the
+        # landed one; a merged seat stages a copy before calling the tool.
+        out["card"] = card_call(out["landed_path"])
+        # On the merged seat `landed_path` is on the customer's computer and
+        # the card tool runs in the chat: the skill stages a copy into this
+        # session's scratch and cards THAT (same tool, same display). On
+        # every other seat the landed path is the card's path as given.
+        out["card_stage_first"] = ctx.get("mode") == _wa.VM
     else:
         out.setdefault("line", refusal_line(str(out.get("reason") or "")))
     return out
@@ -677,7 +718,8 @@ class Delivery:
 
     __slots__ = ("final_path", "build_path", "landing", "rel", "ctx",
                  "workspace_root", "envelope", "device_root", "landed_path",
-                 "device_path", "pc_path_unknown", "opener_line")
+                 "device_path", "pc_path_unknown", "opener_line", "card",
+                 "card_stage_first")
 
     def __init__(self, final_path: Union[str, Path],
                  workspace_root: Union[str, Path, None] = None,
@@ -698,6 +740,11 @@ class Delivery:
         #: caller prints this and nothing else of its own about the location.
         self.opener_line = opener_line(self.final_path,
                                        Path(self.final_path).name)
+        #: The handover (FILECARD1, cr1#268): the card call for this file and
+        #: whether a merged seat has to stage a copy first. Replaced by the
+        #: landing's own answer in `finish()`.
+        self.card = card_call(self.final_path)
+        self.card_stage_first = self.ctx.get("mode") == _wa.VM
         root = self.ctx.get("vm_path")
         self.rel = workspace_relative(self.final_path, root) if root else None
         if self.rel and _is_deliverable(self.rel):
@@ -751,6 +798,9 @@ class Delivery:
             raise DeliveryRefused(envelope.get("line") or refusal_line(), envelope)
         self.landed_path = str(envelope.get("landed_path") or self.final_path)
         self.device_path = str(envelope.get("device_path") or self.landed_path)
+        self.card = dict(envelope.get("card") or card_call(self.landed_path))
+        self.card_stage_first = bool(envelope.get("card_stage_first",
+                                                  self.card_stage_first))
         self.pc_path_unknown = bool(envelope.get("pc_path_unknown"))
         if _same_file(self.device_path, self.final_path):
             # The file never moved, so the sentence names the caller's OWN
@@ -806,6 +856,22 @@ def refusal_sentence(exc: BaseException) -> Optional[str]:
     if isinstance(line, str) and line in ALL_LINES:
         return line
     return None
+
+
+def card_absent_line() -> str:
+    """The composed sentence for a chat with no file-card tool, gate-checked."""
+    line = CARD_ABSENT_LINE
+    try:
+        from chat_output_validator import validate_chat_output  # type: ignore
+    except ImportError:
+        return line
+    result = validate_chat_output(line)
+    if not getattr(result, "ok", True):
+        raise RuntimeError(
+            "the card-absent line does not pass validate_chat_output: "
+            + "; ".join(str(v) for v in getattr(result, "violations", []))
+        )
+    return line
 
 
 def dependency_line() -> str:
@@ -1274,6 +1340,7 @@ def export_claude_doc(workspace_root: Union[str, Path, None], doc_ref: str, *,
 
 __all__ = [
     "ALL_LINES",
+    "CARD_ABSENT_LINE",
     "CONTAINER_SCRATCH",
     "DELIVERABLE_SUFFIXES",
     "DEPENDENCY_LINE",
@@ -1285,6 +1352,10 @@ __all__ = [
     "REFUSED_LINE",
     "REFUSED_TARGET_LINE",
     "RESERVED_DIRECTORIES",
+    "SEND_FILE_DISPLAY",
+    "SEND_FILE_TOOL",
+    "card_absent_line",
+    "card_call",
     "dependency_line",
     "device_join",
     "device_workspace_root",

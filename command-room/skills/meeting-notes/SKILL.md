@@ -572,6 +572,15 @@ Commitments accumulate as "open" in events.jsonl forever unless something explic
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -643,6 +652,15 @@ Run it AFTER 5e-bis and BEFORE Step 5e, for the same reason 5e-bis runs first: a
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1074,9 +1092,9 @@ When the drafts could not be prepared here (follow-up-ritual did not run, or sto
 1. **Header line:** `Processed meeting: [Title] · [date] [time range]`
 2. **RECAP** — 3–5 factual bullet points summarizing what happened (third-person, shareable register — same content profile as the brief docx).
 3. **DECISIONS LOGGED** — list of decisions, each shown with a "added to your decision log" annotation. Each decision listed here ALREADY EXISTS as a `decision` event in `events.jsonl` (written in Step 5b, both modes, at processing time — not on user click), and the section's count comes from the Step 9a3 claim audit. Render exactly `counts["decision"]` entries; a decision whose event failed to write goes in the failed-write line, never in this section.
-4. **BRIEF** — link to the .docx with one-line metadata: `Clean recap — safe to forward`. **v3.13.0+ surface the brief as an H2 heading link at the BOTTOM of the chat turn** via `chat_output_renderer.doc_headline_link(label, artifact_url)`. Format: `## → **[{Meeting title} — Past Meeting Recap]({computer_url})**`. `present_files` is no longer the primary opener — per CONTRACT.md Rule 3 (v3.13.0+) it's demoted to a reveal-in-folder secondary; include the `present_files` call only if the user is likely to want to navigate the filesystem (rare for meeting recaps — default: skip).
+4. **BRIEF** — link to the .docx with one-line metadata: `Clean recap — safe to forward`. **v3.13.0+ surface the brief as an H2 heading link at the BOTTOM of the chat turn** via `chat_output_renderer.doc_headline_link(label, artifact_url)`. Format: `## → **[{Meeting title} — Past Meeting Recap]({computer_url})**`. The brief's file card (`SendUserFile`, `display: "render"`, Step 9d) is sent FIRST, before this card is posted, per CONTRACT.md Rule 3; the H2 link at the bottom is the pointer beside it.
 5. **OPEN ITEMS** — interactive list of items requiring M's resolution. Each item is M-only (clarification needed, decision he must make, action with no resolved owner).
-6. **Sources — ONE footer, never per line (owner ruling 2026-10-23, cr1#178).** No row in this card carries a `sources` list: the renderer's per-item `Sources:` line stays empty on every RECAP bullet, DECISIONS LOGGED entry and OPEN ITEMS row, because per-line citations made the one surface the user sees after every call read as clutter. Below the widget, append the canonical `Sources:` section ONCE, the way inbox-triage and the weekly recap do (`_hq/CONVENTIONS_SOURCE_LINKS.md`): one line, one markdown link per source this call actually read (the transcript, the calendar event, each mail thread it cited), separated by commas, in exactly the shape `Sources: [label](url), [label](url)`, then the H2 brief link as the last line of the turn. **The footer and the brief link come out together, from ONE call (cr1#178 round 2):** `chat_output_renderer.recap_closing(sources, label, artifact_url, coverage=...)` composes the coverage sentences, the one `Sources:` line and the H2 brief link, in that order (Step 9d shows the call). Print its answer verbatim as the LAST thing in the turn; nothing follows it: no sentence about where the file was saved, no path, no second mention of the brief (the optional `present_files` card below Step 9d is a tool card, not text, and stays discouraged). The UAT of 2026-10-26 found the link missing in one run and replaced by a bare file path plus a further sentence in another, when the footer and the link were two separate steps. Pass the target exactly as `get_brief_artifact_url` minted it: a bare file path is refused by the composer, and an empty mint (a brief with no link this chat can open) leaves the headline out, as `doc_headline_link` already does, so the `Sources:` line closes. Coverage honesty (what was and was not read: a transcript the connector did not return, a thread it could not open) is its own sentence ABOVE the `Sources:` line, never folded into it; a link says where a fact came from, a coverage line says what the card could not see, and the reader must be able to tell them apart.
+6. **Sources — ONE footer, never per line (owner ruling 2026-10-23, cr1#178).** No row in this card carries a `sources` list: the renderer's per-item `Sources:` line stays empty on every RECAP bullet, DECISIONS LOGGED entry and OPEN ITEMS row, because per-line citations made the one surface the user sees after every call read as clutter. Below the widget, append the canonical `Sources:` section ONCE, the way inbox-triage and the weekly recap do (`_hq/CONVENTIONS_SOURCE_LINKS.md`): one line, one markdown link per source this call actually read (the transcript, the calendar event, each mail thread it cited), separated by commas, in exactly the shape `Sources: [label](url), [label](url)`, then the H2 brief link as the last line of the turn. **The footer and the brief link come out together, from ONE call (cr1#178 round 2):** `chat_output_renderer.recap_closing(sources, label, artifact_url, coverage=...)` composes the coverage sentences, the one `Sources:` line and the H2 brief link, in that order (Step 9d shows the call). Print its answer verbatim as the LAST thing in the turn; nothing follows it: no sentence about where the file was saved, no path, no second mention of the brief (the file card of Step 9d is a tool call, not text, and it was sent first). The UAT of 2026-10-26 found the link missing in one run and replaced by a bare file path plus a further sentence in another, when the footer and the link were two separate steps. Pass the target exactly as `get_brief_artifact_url` minted it: a bare file path is refused by the composer, and an empty mint (a brief with no link this chat can open) leaves the headline out, as `doc_headline_link` already does, so the `Sources:` line closes. Coverage honesty (what was and was not read: a transcript the connector did not return, a thread it could not open) is its own sentence ABOVE the `Sources:` line, never folded into it; a link says where a fact came from, a coverage line says what the card could not see, and the reader must be able to tell them apart.
 
 **Renderer pre-flight (v2.10.9+):**
 
@@ -1124,6 +1142,15 @@ When the drafts could not be prepared here (follow-up-ritual did not run, or sto
 #    writer in a shell. The door forwards who you are; a writer with no
 #    identity on this seat refuses in one sentence, and that sentence is the
 #    whole answer.
+#  9 FOLDER. Three tiers, one wording here and in the block the customer
+#    pastes into the account's Claude instructions (claude_instructions.py,
+#    TIER_LINES). If the owner's computer is connected, work in the Command
+#    Room folder; if it is not attached, ask for it by name before doing any
+#    work. If the owner's computer is not connected, ask for the Command Room
+#    folder to be attached from OneDrive or Google Drive before doing any
+#    work. If neither is possible, answer as plain Claude and do not go
+#    through Command Room. A scheduled chat asks nothing: it works in the
+#    folder it was registered with, or stops in one sentence.
 SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
 eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
@@ -1195,12 +1222,11 @@ A read, so it runs through the READ door (MNSTEPS1, cr1#550); on a seat whose fi
 - Bad: "Got it — {brain_name} processed [Meeting]. Brief: Clean recap · no internal asks."
 - Good: "Got it — I've processed [Meeting]. Brief: Clean recap — safe to forward."
 
-**Step 9d — Surface .docx as the canonical H2 heading link below the widget (v3.13.0+).** After posting the widget, render the H2 link at the bottom of the chat turn:
+**Step 9d — Send the brief's file card first, then surface the H2 heading link below the widget.** Before posting the widget, send the brief's file card (the paragraph after the code below); after posting the widget, render the H2 link at the bottom of the chat turn:
 
 ```python
-# v3.13.0+: per CONTRACT.md Rule 3 — H2 heading link is the canonical opener.
-# present_files was demoted to reveal-in-folder secondary because Cowork's
-# Windows card-click handler doesn't open .docx reliably (M's 2026-05-20 testing).
+# CONTRACT.md Rule 3 (owner ruling 2026-11-03): the brief's file card was sent
+# first; the H2 heading link at the bottom is the pointer beside it.
 # cr1#178 round 2: the Sources footer and the H2 link come out of ONE composer.
 from chat_output_renderer import recap_closing
 from brief_path import get_brief_artifact_url
@@ -1219,7 +1245,7 @@ closing = recap_closing(
 print(closing)
 ```
 
-`present_files` is optional and discouraged for meeting recaps — if you include it, position it AFTER the H2 link (so the user sees the opener first and the reveal-in-folder card second as a convenience). The H2 `computer://` link is the canonical clickable surface; workspace-relative paths and `file://` URLs render as plain text.
+**File card first (CONTRACT Rule 3, owner ruling 2026-11-03).** Every file this turn made, this document included, comes back in the chat as a file card before the summary and before any link: call `SendUserFile` with the file and `display: "render"` (load it through the host's tool search when it is not in the tool list yet; a tool that has to be loaded is present, not absent). On a merged seat the card tool runs in this chat and cannot read the customer's computer, so stage the landed file into this session's own scratch first (the device staging tool, or the staged copy `plan_delivery` makes) and card that copy; never hand the card tool a path on the customer's computer, and never paste the file's bytes as text. Only where this chat has no file-card tool at all does the link or the saved-to line stand in for the card, and then `deliverables.card_absent_line()` is said once, in plain words, under it. A path in words is not delivery. The H2 `computer://` link stays the pointer at the bottom; workspace-relative paths and `file://` URLs render as plain text.
 
 **Step coverage: a step that did not run is named, and the result is never called complete (MNSTEPS1, cr1#550).** For this skill this paragraph replaces the access preamble's rule 6 sentence ("One step could not run here; what is below is complete." or "... is partial."): never print either. On a merged seat that sentence once covered eight skipped steps while promises the call had settled stayed open. Keep one list, `skipped`, through the whole run, and put EVERY step that did not run into it the moment it does not run (an `ok` false answer, a refusal, a step this seat has no form for), whatever the step: use the key below where one names it, and any other short label otherwise (for example `5f` or `claim_audit`):
 
