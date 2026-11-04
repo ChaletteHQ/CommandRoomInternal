@@ -239,7 +239,7 @@ def count_rows(root: str | Path, since_ts=None) -> int:
 
 # ---- owner-tier seam (READER1 fix round 2026-08-28) ----
 # PURE ADDITION on a new-files-only charter — scope deviation, flagged in
-# handoffs/BUILD_READER1_2026-08-28.md for reviewer sign-off. The import
+# docs/history/handoffs/2026-08/BUILD_READER1_2026-08-28.md for reviewer sign-off. The import
 # fallback below deliberately DUPLICATES load_events_org_scoped's (rather
 # than extracting a shared helper) so no existing line in this file changes.
 

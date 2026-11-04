@@ -53,6 +53,11 @@ correction was complaining about in the first place.
    log is never rewritten, backed up and cut, or deleted from, by any path
    (M's ruling R-20; `tests/run_guard_corrections_append_only_test.py` reds
    on any other write).
+9. **On a merged seat the call is a writer (cr1#518).** `handle_correction_turn` writes the lesson and its
+   ledger row, so where the folder is on the customer's computer it runs
+   through `workspace_access.py plan run_writer` naming
+   `correction_turn:handle_correction_turn`, never `plan run_helper` (which
+   refuses it `not_allowed_helper` with `next: run_writer`).
 
 ## The paragraph (verbatim — this is what each SKILL.md carries)
 
@@ -69,3 +74,9 @@ correction was complaining about in the first place.
 > document body as `document=<the text>` in the same call — that is the only
 > path that banks a structural correction, and without it the shape they just
 > showed you is lost.
+> On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}`
+> (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN
+> scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3
+> shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "<this skill>"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`,
+> paste what it prints and run that; the envelope's `result` is the answer
+> described above.

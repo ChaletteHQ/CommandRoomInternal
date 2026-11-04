@@ -6,7 +6,7 @@ This file contains lookup tables, detailed procedures, and examples that support
 
 ## Master Tracker Full Template
 
-The MASTER_TRACKER.md file lives at `[WORKSPACE_ROOT]/_hq/MASTER_TRACKER.md` and is the single source of truth across the entire workspace.
+The MASTER_TRACKER.md file lives at `[WORKSPACE_ROOT]/_hq/MASTER_TRACKER.md` and is the workspace-wide view of status, regenerated from `_hq/data/` (the rule: `references/SOURCE_OF_TRUTH.md`).
 
 ```markdown
 # Master Tracker

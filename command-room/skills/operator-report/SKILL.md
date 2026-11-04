@@ -88,7 +88,7 @@ settings handoff flagged). Config keys are validated at write against
 | **Detect** (default) | "operator report", scheduled 1st-of-month fire | produce the report with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "operator-report", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
 | **Show settings** | "show operator-report settings" | render current config in plain English; no report. Listed beside "show operator-report customizations" (SCL1) in the footer. |
 | **Tune** | "tune operator-report" | freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-produce. |
-| **Reset** | "reset operator-report to defaults" | `wipe_skill_config(workspace_root, "operator-report")` → next fire is a first-fire again. |
+| **Reset** | "reset operator-report to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "operator-report", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "operator-report")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer):**
 
@@ -110,7 +110,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-produce + con
 
 ## Why hours-saved isn't the headline
 
-CEOs at $5B+ companies don't think in hours. They think in:
+CEOs of large companies don't think in hours. They think in:
 - **Things that would have slipped** — commitments dropped, relationships cooled, decisions re-debated
 - **Things they no longer have to remember** — people, context, project history
 - **Output delivered without being asked** — morning briefings, prep briefs, drafts, audits
@@ -154,7 +154,7 @@ Method:
 
 Example (the kind of output #1 was asking for):
 
-> *"Heavy month on go-to-market and the Acme Co partnership. The May 14 CEO-group stage talk was the anchor — it spun off ~$45K in early pipeline, two demo cycles already booked, and a new vertical wedge that's now an active project. Acme Co moved from handshake to paperwork. Operating businesses stayed in steady-state; older consulting clients continued to fade."*
+> *"Heavy month on go-to-market and the Acme Co partnership. The May 14 CEO-group stage talk was the anchor: it spun off an amount in early pipeline, two demo cycles already booked, and a new vertical wedge that's now an active project. Acme Co moved from handshake to paperwork. Operating businesses stayed in steady-state; older consulting clients continued to fade."*
 
 If the period has no clear anchor moment (truly mid-cycle period, no events with significant cluster connections), surface that honestly: *"This period was steady-state — no single anchor, just baseline execution across [active orgs]."*
 
@@ -170,7 +170,7 @@ Pull from the Step-2 org-scoped event list within the window (same `load_events_
 
 If a category returns 0, omit the bullet entirely (don't say "0 commitments captured" — that reads worse than not mentioning it).
 
-**Quantify discipline (EXEC1 element 3 — Section 1 only; Section 0 is untouched, it's the prototype).** Each "what would have slipped" item that traces to a valued relationship gets the dollar via `shared/scripts/quantify.py::money_time_tag(commitment_or_thread, entities)` — "the pricing reply you owed Acme — a $240K relationship." Append the tag ONLY when `money_time_tag` returns non-None (the helper traces commitment → thread → org → revenue/deal field and returns None when that field is absent). NEVER hand-type a dollar figure and NEVER estimate — a workspace without the field simply shows the item with no tag.
+**Quantify discipline (EXEC1 element 3, Section 1 only; Section 0 is untouched, it's the prototype).** Each "what would have slipped" item that traces to a valued relationship gets the dollar via `shared/scripts/quantify.py::money_time_tag(commitment_or_thread, entities)`, e.g. "the pricing reply you owed Acme, a relationship worth an amount." Append the tag ONLY when `money_time_tag` returns non-None (the helper traces commitment → thread → org → revenue/deal field and returns None when that field is absent). NEVER hand-type a dollar figure and NEVER estimate: a workspace without the field simply shows the item with no tag.
 
 **Section 2: What you no longer have to hold**
 
@@ -202,7 +202,7 @@ Pull scheduled-task fire records. `pack_run` events carry `data.task_id` (NOT `o
 
 If scheduled-tasks aren't enabled (no `pack_run` events in window), surface a single-line note instead of the section: *"Your daily briefings and other scheduled work weren't turned on this period — you can flip them on anytime and they'll show up here next time."*
 
-**Optional section: Pipeline (SPEC PIPE1 — available to SCL1 ordering).** The "order sections: cash, pipeline, people" directive class now has a real pipeline source: when the workspace has ≥1 open deal thread, render a compact pipeline block — the `pipeline_math.pipeline_tiles` numbers (open $, closing this month, stalled, won-rate when ≥4 closes) plus one line per terminal event in the window ("Won [Deal] — $52K" / "Lost [Deal] — price") from `deal_state.load_deal_events`. All figures from `pipeline_math` / stated deal values — never re-derived in prose, never estimated. Zero open deals AND zero terminal events in window → the section renders nothing (not a placeholder), whether or not a directive ordered it.
+**Optional section: Pipeline (SPEC PIPE1, available to SCL1 ordering).** The "order sections: cash, pipeline, people" directive class now has a real pipeline source: when the workspace has ≥1 open deal thread, render a compact pipeline block: the `pipeline_math.pipeline_tiles` numbers (open $, closing this month, stalled, won-rate when ≥4 closes) plus one line per terminal event in the window ("Won [Deal]: [amount]" / "Lost [Deal]: price") from `deal_state.load_deal_events`. All figures from `pipeline_math` / stated deal values, never re-derived in prose, never estimated. Zero open deals AND zero terminal events in window → the section renders nothing (not a placeholder), whether or not a directive ordered it.
 
 **Section 3b: The flow — what came in, what went out, and what it cost you (SPEC_FLOW1 Lane D / MEASURE1). REQUIRED when it returns non-empty.**
 
@@ -355,6 +355,7 @@ It raises rather than returning; that is the point. Rewrite the sentence in the 
 import sys
 sys.path.insert(0, "shared/scripts")
 from surface_composers import post
+from offer_gate import compose, SITE_OPERATOR_REPORT
 # `composed_text` is what the `say(...)` call above passed and stamped -
 # relay it, never retype it. The door vouches a relay LINE FOR LINE
 # against what a composer here actually returned, so a sentence you
@@ -362,7 +363,13 @@ from surface_composers import post
 # typed text, so no rows are named; where a section IS composed around
 # their words it passes `customer_rows` and the door reads the words
 # off those rows itself (see the undo receipt in workspace-manager).
-print(post(whole_reply, surface="operator-report", workspace=workspace_root,
+# `compose` is the OFFER fence (OFFERS1) and it runs FIRST, on the whole
+# reply. This report ended 2026-09-16 with "want me to capture both" - a
+# trailer under a composed report - and that sentence is never offered
+# here again. There is no sentence after the report that asks the reader
+# for anything; the fence raises rather than returning.
+print(post(compose(SITE_OPERATOR_REPORT, whole_reply),
+           surface="operator-report", workspace=workspace_root,
            relayed=composed_text))
 ```
 

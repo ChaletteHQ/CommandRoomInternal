@@ -126,6 +126,7 @@
         "person_created",
         "person_updated",
         "person_merged",
+        "person_renamed",
         "person_repaired",
         "person_proposal",
         "person_update_proposal",

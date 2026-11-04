@@ -77,7 +77,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 | **Detect** (default) | "weekly recap", scheduled Friday fire | render the recap with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "weekly-recap", DEFAULTS)` BEFORE rendering, then append the first-run block. |
 | **Show settings** | "show weekly-recap settings" | render current config in plain English; no recap. |
 | **Tune** | "tune my weekly recap", "tune weekly-recap" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-render. |
-| **Reset** | "reset weekly-recap to defaults" | `wipe_skill_config(workspace_root, "weekly-recap")` → next fire is a first-fire again. |
+| **Reset** | "reset weekly-recap to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "weekly-recap", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "weekly-recap")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (transport):** the on-demand fire ends in a chat summary + a `.docx` link
 (not an action widget), so it uses a 2–3 line FOOTER after the recap. The scheduled Friday fire
@@ -382,11 +382,11 @@ The answer is `{events, counts_by_type, n_skipped, truncated}`: the window's row
 
 **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("weekly_recap", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions. Workspace exemplar (`_hq/exemplars/weekly_recap/`) beats the shipped seed; `None` = compose on the section list below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the recap. After saving the .docx, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered recap ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="weekly_recap", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
-**1. Headline → exec-header VERDICT (EXEC1).** One sentence framing the week, as the verdict; CHANGED = week-over-week money/time deltas ("pipeline +45K dollars WoW; 2 deals slipped a week"). Pull from the dominant signal: "Heavy week on [Project A] (47 events) and [Project B] (31 events); 3 new people surfaced; 4 commitments captured." This is the exec header, not a standalone "Headline" section.
+**1. Headline → exec-header VERDICT (EXEC1).** One sentence framing the week, as the verdict; CHANGED = week-over-week money/time deltas ("pipeline up an amount WoW; 2 deals slipped a week"). Pull from the dominant signal: "Heavy week on [Project A] (47 events) and [Project B] (31 events); 3 new people surfaced; 4 commitments captured." This is the exec header, not a standalone "Headline" section.
 
 Apply the Universal writing standards in `shared/VOICE_CALIBRATION.md`. The headline names a dated anchor moment AND what changed — not a bare metric count.
 ```
-GOOD: The May 14 CEO-group talk was the anchor, 45K dollars of early pipeline, two
+GOOD: The May 14 CEO-group talk was the anchor, an amount of early pipeline, two
       booked demos, and it opened the non-profit logistics wedge now running
       as a thread. Everything else this week supported it.
 BAD:  This week had a lot of activity. Closed some deals, shipped features.
@@ -412,10 +412,10 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"n
 
 ```text
 plate_section = plate["docx_section"]      # plate_view.wrap_docx_section(plate), composed beside the data
-# {"heading": "Your plate this week", "bullets": [...], "user_spans": [...]}
+# {"heading": "Your plate this week", "bullets": [...], "user_spans": [...], "md_headings": true}
 ```
 
-**HAND THE SECTION OVER WHOLE — never rebuild it key by key (WRAPSAVE1, REVIEW_ONEPLATE1 F-1/N-3).** `wrap_docx_section` returns THREE keys, and the third one is load-bearing. `user_spans` is the list of strings your customer's counterparties actually wrote — the promise titles. `brief_writer.make_brief` reads `section["user_spans"]` and hands them to `docx_leak_scanner`, which then blanks a banned MARKETING word only where the renderer wrote it, and leaves it alone inside somebody's own sentence. Copy the `bullets` across on their own and one promise that says "synergy proposal" — a word the counterparty chose, not one Command Room wrote — refuses the whole weekly document, exactly as v5.29.0 did. Every other leak family still reads the document in full, so nothing is weakened by carrying the key. Put the whole dict into `sections` (`sections.append(plate_section)`); if you are writing the JSON by hand, write BOTH `bullets` and `user_spans`.
+**HAND THE SECTION OVER WHOLE — never rebuild it key by key (WRAPSAVE1, REVIEW_ONEPLATE1 F-1/N-3).** `wrap_docx_section` returns FOUR keys, and the last two are load-bearing. `md_headings: true` (cr1#471) tells `brief_writer` to render the cut's `##` and `###` lines as headings; without it the saved wrap shows them as bullets with literal `#` marks. `user_spans` is the list of strings your customer's counterparties actually wrote — the promise titles. `brief_writer.make_brief` reads `section["user_spans"]` and hands them to `docx_leak_scanner`, which then blanks a banned MARKETING word only where the renderer wrote it, and leaves it alone inside somebody's own sentence. Copy the `bullets` across on their own and one promise that says "synergy proposal" — a word the counterparty chose, not one Command Room wrote — refuses the whole weekly document, exactly as v5.29.0 did. Every other leak family still reads the document in full, so nothing is weakened by carrying the key. Put the whole dict into `sections` (`sections.append(plate_section)`); if you are writing the JSON by hand, write `bullets`, `user_spans` and `"md_headings": true`.
 
 **4. Notable meetings** — rank by (duration × attendee count × first-touch flag for new attendees). Top 6. Each bullet: title + date + duration + attendees + project routing + one-line topic if transcript summary exists.
 
@@ -591,7 +591,7 @@ The payload object, the same example that used to be piped as `brief_writer.py <
   "subtitle": "What happened this week and what's next",
   "exec_header": {
     "verdict": "<the synthesis-lead headline sentence — the dated anchor + what changed>",
-    "changed": "<week-over-week money/time deltas: 'pipeline +45K dollars WoW; 2 deals slipped a week'>",
+    "changed": "<week-over-week money/time deltas: 'pipeline up an amount WoW; 2 deals slipped a week'>",
     "decide": "<the one decision this week needs, or 'Nothing — execution week.'>",
     "needs": "<the single most important reader-action, or 'Nothing from you.'>"
   },
@@ -606,7 +606,8 @@ The payload object, the same example that used to be piped as `brief_writer.py <
      ]},
     {"heading": "Decisions this week", "body": "..."},
     {"heading": "Your plate this week", "bullets": ["<EVERY line of plate_view.wrap_docx_section(plate)['bullets'], in order — WRAPSAVE1; never a body>"],
-     "user_spans": ["<EVERY string in plate_view.wrap_docx_section(plate)['user_spans'], verbatim — WRAPSAVE1; drop this key and the whole document refuses to save>"]},
+     "user_spans": ["<EVERY string in plate_view.wrap_docx_section(plate)['user_spans'], verbatim — WRAPSAVE1; drop this key and the whole document refuses to save>"],
+     "md_headings": true},
     {"heading": "What you owe (external)",
      "table": {"headers": ["What", "For whom · due"],
                "rows": [["Send the packet", "Sam Sample · Fri Jul 11"]]}},

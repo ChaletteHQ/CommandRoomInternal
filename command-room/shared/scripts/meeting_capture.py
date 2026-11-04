@@ -1060,6 +1060,40 @@ def _norm_name(name) -> str:
     return re.sub(r"\s+", " ", str(name or "").strip()).lower()
 
 
+def record_participants(meeting_event, *, email_index=None,
+                        exclude_person_ids=(), exclude_names=()) -> dict:
+    """THE owner-exclusion rule the brief binder and the claim audit share
+    (CLAIMAUDIT1, cr1#152). Who a cited meeting's own record names once the
+    operator's own identity is left out: `person_ids` (every legacy variant,
+    folded by `event_refs.meeting_person_ids`, resolved through `email_index`
+    when given, the excluded ids removed) and `external` (the
+    `data.attendees_external` names, the excluded names removed). The audit
+    used to build its own participant set with no exclusion, so a record
+    where the owner was the only participant read as "names participants"
+    and failed the unbound brief the binder had correctly produced.
+
+    Returns `{person_ids: sorted list, external: list, excluded_ids: set,
+    excluded_names: set}`."""
+    ev = meeting_event if isinstance(meeting_event, dict) else {}
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    try:
+        from event_refs import meeting_person_ids
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from event_refs import meeting_person_ids
+    excluded_ids = {str(x) for x in (exclude_person_ids or ()) if x}
+    excluded_names = {_norm_name(x) for x in (exclude_names or ()) if x}
+    person_ids = sorted(
+        str(pid) for pid in meeting_person_ids(ev, email_index)
+        if pid and str(pid) not in excluded_ids)
+    external = [nm.strip() for nm in (data.get("attendees_external") or [])
+                if isinstance(nm, str) and nm.strip()
+                and _norm_name(nm) not in excluded_names]
+    return {"person_ids": person_ids, "external": external,
+            "excluded_ids": excluded_ids, "excluded_names": excluded_names}
+
+
 def brief_counterparty(meeting_event, *, email_index=None,
                        exclude_person_ids=(), exclude_names=(),
                        resolved_names=None, association=None) -> dict:
@@ -1098,30 +1132,20 @@ def brief_counterparty(meeting_event, *, email_index=None,
     Returns `{"bound", "person_ids", "names", "unbound_reason",
     "association_ignored"}`.
     """
-    ev = meeting_event if isinstance(meeting_event, dict) else {}
-    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    try:
-        from event_refs import meeting_person_ids
-    except ImportError:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from event_refs import meeting_person_ids
-    excluded_ids = {str(x) for x in (exclude_person_ids or ()) if x}
-    excluded_names = {_norm_name(x) for x in (exclude_names or ()) if x}
-    person_ids = sorted(
-        pid for pid in meeting_person_ids(ev, email_index)
-        if pid and str(pid) not in excluded_ids)
+    record = record_participants(meeting_event, email_index=email_index,
+                                 exclude_person_ids=exclude_person_ids,
+                                 exclude_names=exclude_names)
+    excluded_names = record["excluded_names"]
+    person_ids = record["person_ids"]
     names = []
     lookup = resolved_names if isinstance(resolved_names, dict) else {}
     for pid in person_ids:
         nm = lookup.get(pid)
         if nm and _norm_name(nm) not in excluded_names:
             names.append(str(nm))
-    for nm in (data.get("attendees_external") or []):
-        if isinstance(nm, str) and nm.strip() \
-                and _norm_name(nm) not in excluded_names \
-                and _norm_name(nm) not in {_norm_name(n) for n in names}:
-            names.append(nm.strip())
+    for nm in record["external"]:
+        if _norm_name(nm) not in {_norm_name(n) for n in names}:
+            names.append(nm)
     association_ignored = [str(a) for a in (association or ()) if a]
     if person_ids or names:
         # The record's own evidence, and nothing else, decides the binding.
@@ -1136,7 +1160,8 @@ def brief_counterparty(meeting_event, *, email_index=None,
 
 
 def brief_claim_audit(meeting_event, claimed, *, email_index=None,
-                      resolved_names=None) -> dict:
+                      resolved_names=None,
+                      exclude_person_ids=(), exclude_names=()) -> dict:
     """G28's MIS-binding half (SPEC BRIEFBIND1). Does the cited record
     SUPPORT the counterparty a brief names?
 
@@ -1156,18 +1181,19 @@ def brief_claim_audit(meeting_event, claimed, *, email_index=None,
         the association-fill case
       * record empty, brief unbound                   -> supported (the
         G28 contract shape)
+
+    `exclude_person_ids` / `exclude_names` (CLAIMAUDIT1, cr1#152): the
+    operator's own identity, the SAME exclusion the binder takes, through
+    the same rule (`record_participants`). A record where the owner is the
+    only participant is an empty record for binding purposes, so the
+    unbound brief the binder renders for it passes here instead of failing
+    as "names participants".
     """
-    ev = meeting_event if isinstance(meeting_event, dict) else {}
-    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-    try:
-        from event_refs import meeting_person_ids
-    except ImportError:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from event_refs import meeting_person_ids
-    person_ids = {str(p) for p in meeting_person_ids(ev, email_index)}
-    external = [n for n in (data.get("attendees_external") or [])
-                if isinstance(n, str) and n.strip()]
+    record = record_participants(meeting_event, email_index=email_index,
+                                 exclude_person_ids=exclude_person_ids,
+                                 exclude_names=exclude_names)
+    person_ids = set(record["person_ids"])
+    external = record["external"]
     record_present = bool(person_ids or external)
     claim = str(claimed or "").strip()
     if not claim:
@@ -1709,9 +1735,34 @@ CAPTURE_CONTRACT_VIOLATION = "capture_contract_violation"
 # token capitalised name. Markers are INLINE in real transcripts (` Me: `
 # mid-line, not line-initial — the review's census found a line-initial regex
 # matches nothing), so the anchor is "start of text or after whitespace".
+#
+# cr1#512: the backend's audio-source labels: `Microphone:` (the recording
+# microphone, so the owner's voice, read like `Me:`) and `System audio:` or
+# `System audio (handle):` (the call audio, which may carry several people,
+# so the other side, read like `Them:`). The bracket holds a lowercase handle
+# (an address local part), never a capitalised name, which is why the name
+# alternative below cannot catch it. Line-initial in the files seen so far;
+# the same "start of text or after whitespace" anchor covers both.
 _SPEAKER_LABEL_RE = re.compile(
-    r"(?:(?<=\s)|^)(Me|Them|Speaker \d{1,2}|"
+    r"(?:(?<=\s)|^)(Me|Them|Microphone|System audio(?: \([^()\r\n]{1,80}\))?|"
+    r"Speaker \d{1,2}|"
     r"[A-Z][a-z]+(?: [A-Z][A-Za-z'.-]+){0,2}):\s"
+)
+_AUDIO_LABEL_RE = re.compile(
+    r"(?:(?<=\s)|^)(Microphone|System audio(?: \([^()\r\n]{1,80}\))?):\s"
+)
+_AUDIO_MIC_LABEL = "Microphone"
+_AUDIO_SYSTEM_RE = re.compile(r"System audio(?: \(([^()\r\n]{1,80})\))?\Z")
+# cr1#512: the notice line for a transcript whose labels say nothing about
+# who was speaking (class `unlabelled`: no markers at all, or only
+# `Speaker N` labels that name nobody). Without it a meeting whose owners
+# were never read from the transcript reads exactly like a clean capture. It
+# rides `routed["notice_lines"]`, its own key, because `receipt_lines` is
+# ATTENDEE1's "one line per person created" and stays exactly that.
+UNLABELLED_NOTICE_LINE = (
+    "No speaker labels in this transcript say who was speaking, so the "
+    "owners on this meeting's items were not read from the transcript. "
+    "Check them."
 )
 # A named label counts as a SPEAKER only when it recurs: a one-off
 # `Note:` / `Decision:` in prose is a heading, not a voice.
@@ -1726,17 +1777,111 @@ _LABEL_STOPLIST = frozenset((
 ))
 
 
-def transcript_turns(transcript_text) -> list:
+def transcript_turns(transcript_text, *, attendee_records=None,
+                     user_names=()) -> list:
     """Every turn marker in the transcript, in order:
     `[(label, marker_start, body_start)]` — `label` is the marker text as
     written (`Me`, `Them`, `Speaker 2`, `Bo Sample`), `marker_start` the char
     offset where it begins and `body_start` where the turn's words begin.
-    Pure. A transcript with no markers yields `[]`."""
+    Pure. A transcript with no markers yields `[]`.
+
+    cr1#512: an audio-source label is returned as the side it stands for,
+    so every reader of `Me` / `Them` reads it unchanged: `Microphone` as
+    `Me`, and `System audio` (with or without a handle) as `Them`. The one
+    exception is a handle that resolves to exactly one attendee other than
+    the user (`_resolve_audio_handle`), which is returned as that attendee's
+    name; with no `attendee_records` nothing is resolved."""
+    return [(label, start, body) for label, start, body, _audio
+            in _transcript_turns_sided(transcript_text,
+                                       attendee_records=attendee_records,
+                                       user_names=user_names)]
+
+
+def _transcript_turns_sided(transcript_text, *, attendee_records=None,
+                            user_names=()) -> list:
+    """`transcript_turns` plus a fourth field: True when the label came from
+    an audio-source marker. `transcript_class` reads it so a resolved
+    System audio turn counts as a voice even when it is heard once."""
     text = str(transcript_text or "")
     out = []
+    records = None
+    audio_on = _audio_labels_recur(text)
     for m in _SPEAKER_LABEL_RE.finditer(text):
-        out.append((m.group(1), m.start(1), m.end()))
+        label = m.group(1)
+        audio = False
+        if not audio_on:
+            # A one-off "Microphone:" in prose is a heading, not a voice:
+            # it reads exactly as main read it before cr1#512 (a capitalised
+            # label heard once), and a lone "System audio:" is no turn.
+            if _AUDIO_SYSTEM_RE.match(label):
+                continue
+        elif label == _AUDIO_MIC_LABEL:
+            label, audio = "Me", True
+        else:
+            sm = _AUDIO_SYSTEM_RE.match(label)
+            if sm:
+                audio = True
+                handle = (sm.group(1) or "").strip()
+                name = ""
+                if handle and attendee_records is not None:
+                    if records is None:
+                        records = _audio_handle_records(attendee_records,
+                                                        user_names)
+                    name = _resolve_audio_handle(handle, records)
+                label = name or "Them"
+        out.append((label, m.start(1), m.end(), audio))
     return out
+
+
+def _audio_labels_recur(text) -> bool:
+    """Are the audio-source labels this transcript's turn markers? Only when
+    they recur, the same `_NAMED_MIN_TURNS` rule a named label meets: a real
+    call carries one per turn, and a single "Microphone:" in a kit list or a
+    note is not a speaker."""
+    n = 0
+    for _m in _AUDIO_LABEL_RE.finditer(str(text or "")):
+        n += 1
+        if n >= _NAMED_MIN_TURNS:
+            return True
+    return False
+
+
+def _audio_handle_records(attendee_records, user_names) -> list:
+    """The attendees a System audio handle may name: every record with a
+    name that is not the user, as `(name, email_local_part)`."""
+    try:
+        from attendee_evidence import normalize_attendee_records
+    except ImportError:  # pragma: no cover, direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from attendee_evidence import normalize_attendee_records
+    out = []
+    for rec in normalize_attendee_records(attendee_records):
+        name = str((rec or {}).get("name") or "").strip()
+        email = str((rec or {}).get("email") or "").strip().lower()
+        if not name or _is_user_name(name, user_names):
+            continue
+        out.append((name, email.split("@", 1)[0] if "@" in email else ""))
+    return out
+
+
+def _resolve_audio_handle(handle, records) -> str:
+    """A System audio handle → the ONE attendee it names, or "".
+
+    A match is the handle equal to an attendee's address local part, or to
+    their whole name once dots, dashes and underscores are read as spaces;
+    case never matters, and a part of a name or an address is never a match.
+    The call audio may carry several people, so two attendees matching, or
+    none, leaves the turn as the other side."""
+    h = str(handle or "").strip().lower()
+    if not h:
+        return ""
+    h_name = _norm_person_name(re.sub(r"[._-]+", " ", h))
+    hits = {}
+    for name, local in records or ():
+        if (local and local == h) or _norm_person_name(name) == h_name:
+            hits.setdefault(_norm_person_name(name), name)
+    return next(iter(hits.values())) if len(hits) == 1 else ""
 
 
 def _norm_person_name(name) -> str:
@@ -1795,13 +1940,22 @@ def transcript_class(transcript_text, attendee_records=None,
     `other_party_ids` empty — the class itself never depends on the calendar.
     """
     text = str(transcript_text or "")
-    turns = transcript_turns(text)
+    sided = _transcript_turns_sided(text, attendee_records=attendee_records,
+                                    user_names=user_names)
+    turns = [(label, start, body) for label, start, body, _a in sided]
     n_me = n_them = 0
     named_counts: dict = {}
     named_order: list = []
     generic: dict = {}
-    for label, _s, _b in turns:
+    # cr1#512: a System audio turn whose handle named an attendee is a
+    # voice even when it is heard once: the recurrence rule below exists to
+    # tell a heading from a speaker, and an audio-source marker is never a
+    # heading.
+    audio_named: set = set()
+    for label, _s, _b, from_audio in sided:
         low = label.lower()
+        if from_audio and low not in ("me", "them"):
+            audio_named.add(label)
         if low == "me":
             n_me += 1
         elif low == "them":
@@ -1814,7 +1968,8 @@ def transcript_class(transcript_text, attendee_records=None,
             if label not in named_counts:
                 named_order.append(label)
             named_counts[label] = named_counts.get(label, 0) + 1
-    named = [n for n in named_order if named_counts[n] >= _NAMED_MIN_TURNS]
+    named = [n for n in named_order
+             if named_counts[n] >= _NAMED_MIN_TURNS or n in audio_named]
 
     if not text.strip():
         cls = TRANSCRIPT_CLASS_UNKNOWN
@@ -3744,8 +3899,23 @@ def _fusion_token_spans(text) -> list:
     low = raw.lower()
     if len(low) != len(raw):  # pragma: no cover — locale-dependent expansion
         raw = low
-    return [(m.group(0), m.start(), m.end(), raw)
-            for m in _FUSION_WORD_RE.finditer(low)]
+    # cr1#512: an audio-source label is ONE turn token, `me` or `them`,
+    # exactly as `Me:` / `Them:` tokenise, so the fusion anchor and the
+    # acceptance reader's "a marker came first" see the same stream in both
+    # label shapes. Its offsets still point at the label as written.
+    out = []
+    pos = 0
+    audio = (_AUDIO_LABEL_RE.finditer(raw) if _audio_labels_recur(raw)
+             else ())
+    for am in audio:
+        out.extend((m.group(0), m.start(), m.end(), raw)
+                   for m in _FUSION_WORD_RE.finditer(low, pos, am.start(1)))
+        tok = "me" if am.group(1) == _AUDIO_MIC_LABEL else "them"
+        out.append((tok, am.start(1), am.end(1), raw))
+        pos = am.end(1)
+    out.extend((m.group(0), m.start(), m.end(), raw)
+               for m in _FUSION_WORD_RE.finditer(low, pos))
+    return out
 
 
 def _locate_span(hay_tokens: list, needle: str):
@@ -4541,6 +4711,7 @@ def route_meeting_captures(
     attendee_records=None,
     now_iso: Optional[str] = None,
     meeting_person_ids=None,
+    bind_threads: bool = True,
 ) -> dict:
     """THE meeting-capture admission path. Both meeting legs call this — it is
     the one place the floor, the fusion guardrail and party-only scoping run,
@@ -4585,10 +4756,12 @@ def route_meeting_captures(
     THIS IS THE ONE PLACE THIS FUNCTION WRITES, and it is deliberate: the
     "construction only" contract held because no upstream code chokepoint
     existed where resolution failure was observable, and this is that point.
-    Everything else is unchanged.
+    Everything else is unchanged, except the cr1#208 binding question below,
+    which is the other write.
 
     `attendee_records=None` — the default, and every shipped caller — is
-    BYTE-IDENTICAL to before: nothing is consulted, no writer is imported, and
+    BYTE-IDENTICAL to before for this seam (the cr1#208 binding below is
+    separate): nothing is consulted, no writer is imported, and
     the items are passed through by object identity. `now_iso` is the fire's
     own clock reading, handed down so nothing here reads a live clock (G14);
     absent, this fire takes its own corroborated reading once, at the top
@@ -4620,6 +4793,18 @@ def route_meeting_captures(
     repair door for a meeting whose rows are wrong is
     `brain_undo.undo_after_reprocess` plus the correction writers (bind an
     owner, fix a date, move a project); re-extraction is not a repair.
+
+    cr1#208: EVERY ROW IS BOUND TO ITS PROJECT AT THE WRITE, through
+    `capture_gate.bind_capture_thread`, the same call site sent mail, the chat
+    sweep and contract review use (BIND1). A meeting that resolved hands its
+    thread in as `primary_thread_id` and every row keeps it, untouched. A
+    meeting that did not resolve leaves each row to its OWN evidence (the
+    parties and org the row carries), never the meeting's org: one project
+    binds and stamps `data.thread_basis`; several is ONE `thread_binding`
+    question on the bindings door and the row ships unbound; nothing to go on
+    leaves the row exactly as before. Binding runs after the verdict, so no
+    row changes lane. That question is a write, so `bind_threads=False` is
+    for a caller that must write nothing (the non-attendee shadow lane).
 
     Construction only, plus that one seam — append `book + review + observed`
     through `event_gate.append_event` in ONE call, exactly as before."""
@@ -4653,15 +4838,30 @@ def route_meeting_captures(
             },
         }
     try:
-        from capture_gate import (build_observed_event, resolve_capture_mode,
+        from capture_gate import (bind_capture_thread, build_observed_event,
+                                  resolve_capture_mode,
                                   workspace_capture_context)
     except ImportError:  # pragma: no cover — direct-path import
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from capture_gate import (build_observed_event, resolve_capture_mode,
+        from capture_gate import (bind_capture_thread, build_observed_event,
+                                  resolve_capture_mode,
                                   workspace_capture_context)
 
     ctx = workspace_capture_context(workspace_root)
+
+    def _bind(ev: dict) -> dict:
+        # cr1#208: bind AT THE WRITE, after the verdict (see the docstring).
+        # A binder failure never sinks the meeting: the row ships unbound,
+        # which is today's behaviour.
+        if not bind_threads:
+            return ev
+        try:
+            return bind_capture_thread(
+                workspace_root, ev, detector=source_skill or "meeting-notes",
+                user_person_id=ctx.get("user_id"))
+        except Exception:  # noqa: BLE001 - a binder miss never sinks a batch
+            return ev
     override = resolve_capture_mode(workspace_root, org_id=org_id,
                                     org_name=org_name)
     # `resolve_capture_mode` already folds the global mode; it is passed as the
@@ -5187,7 +5387,7 @@ def route_meeting_captures(
                     obs_data["evidence_kind"] = _ek
                     if _ek == EVIDENCE_PARAPHRASE:
                         n_paraphrase += 1
-                observed.append(obs_ev)
+                observed.append(_bind(obs_ev))
                 continue
             except Exception as exc:
                 if not floor_gated:
@@ -5328,9 +5528,9 @@ def route_meeting_captures(
                 n_floor_gated += 1
             else:
                 ev["data"]["fusion_unverified"] = True
-            review.append(ev)
+            review.append(_bind(ev))
         else:
-            book.append(ev)
+            book.append(_bind(ev))
 
     return {
         "book": book,
@@ -5344,6 +5544,13 @@ def route_meeting_captures(
         # always did plus two empties.
         "auto_created": auto_created,
         "receipt_lines": auto_receipt,
+        # cr1#512: one line when the transcript's labels said nothing about
+        # who spoke, printed beside `receipt_lines` so the fire never looks
+        # clean over that. Empty otherwise, including when no transcript
+        # reached the call (class `unknown` is a different fact).
+        "notice_lines": ([UNLABELLED_NOTICE_LINE]
+                         if tclass.get("class") == TRANSCRIPT_CLASS_UNLABELLED
+                         else []),
         # ATTRIB1-A DD-1 — the class this meeting's transcript was declared
         # to be. The caller stamps it on the `meeting` event
         # (`build_meeting_event(transcript_class=...)`).
@@ -5517,6 +5724,7 @@ __all__ = [
     "TRANSCRIPT_CLASS_NAMED",
     "TRANSCRIPT_CLASS_ME_THEM",
     "TRANSCRIPT_CLASS_UNLABELLED",
+    "UNLABELLED_NOTICE_LINE",
     "TRANSCRIPT_CLASS_DICTATION",
     "TRANSCRIPT_CLASS_UNKNOWN",
     "TRANSCRIPT_CLASSES",

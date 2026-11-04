@@ -297,6 +297,80 @@ def lint_seq_prestamp(plugin_root) -> List[Dict]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Raw entities.json writes in skill prose (cr1#130)
+# ---------------------------------------------------------------------------
+#
+# entities.json is written only through `atomic_write_json_locked` (or a
+# writer script that calls it). A skill whose code sample writes the file
+# with `write_text`, `open(..., "w")` or a shell redirect replaces it
+# non-atomically, which is exactly the half-written state readers tear on.
+# Only fenced code is scanned: prose that FORBIDS those calls names them too.
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_ENTITIES_RE = re.compile(r"entities\.json")
+_ASSIGN_RE = re.compile(r"^\s*\$?(\w+)\s*=")
+_RAW_WRITE_RE = re.compile(
+    r"\.write_text\(|\.write_bytes\("
+    r"|\bopen\([^)]*,\s*(mode\s*=\s*)?[\"'][wax]b?\+?[\"']"
+    r"|(^|\s)>{1,2}\s*[\"']?[^\s,\"'\[\]]*entities\.json"
+    r"|\bSet-Content\b|\bOut-File\b|\bAdd-Content\b|\btee\b"
+)
+
+
+def lint_raw_entities_writes_text(name: str, text: str) -> List[Dict]:
+    """Findings for one markdown file: a fenced code line that writes
+    entities.json (named directly, or through a variable assigned from it in
+    the same block) without the locked writer."""
+    findings: List[Dict] = []
+    in_block = False
+    tainted: set = set()
+    for lineno, line in enumerate(text.split("\n"), 1):
+        if _FENCE_RE.match(line):
+            in_block = not in_block
+            tainted = set()
+            continue
+        if not in_block:
+            continue
+        m = _ASSIGN_RE.match(line)
+        if m and _ENTITIES_RE.search(line):
+            tainted.add(m.group(1))
+        names_file = bool(_ENTITIES_RE.search(line)) or any(
+            re.search(r"\b%s\b" % re.escape(v), line) for v in tainted)
+        if not names_file or "atomic_write" in line:
+            continue
+        if _RAW_WRITE_RE.search(line):
+            findings.append({
+                "skill": name,
+                "check": "writer_contract.entities_raw_write",
+                "reason": (
+                    f"{name} line {lineno} writes entities.json without the "
+                    "locked writer. Use `atomic_write_json_locked` (or a "
+                    "writer script such as people_writer); a raw write leaves "
+                    "a half-written file that readers can tear on (cr1#130)."
+                ),
+            })
+    return findings
+
+
+def lint_raw_entities_writes(plugin_root) -> List[Dict]:
+    """Scan every skills/**/*.md under `plugin_root` for raw entities.json
+    writes in code samples. Flag-only, like the other lints here."""
+    root = Path(plugin_root)
+    findings: List[Dict] = []
+    skills_dir = root / "skills"
+    if not skills_dir.is_dir():
+        return findings
+    for md in sorted(skills_dir.rglob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        rel = str(md.relative_to(root)).replace("\\", "/")
+        findings.extend(lint_raw_entities_writes_text(rel, text))
+    return findings
+
+
 def _resolve_plugin_root() -> Path:
     """This file lives at <root>/shared/scripts/writer_contract_lint.py."""
     return Path(__file__).resolve().parent.parent.parent

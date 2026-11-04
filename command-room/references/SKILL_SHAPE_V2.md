@@ -1,8 +1,8 @@
 # Skill Shape — v2.1 Spec
 
-**Purpose:** The canonical definition of what a v2.1 Command Room skill looks like. Every new skill added to the plugin must conform. Conformance is enforced by the test battery (`tests/run_all.py` — the structural guard tier plus the skill-validator static gates in `tests/run_cr_skill_validator_test.py`); non-conforming skills fail the battery and cannot be merged.
+**Purpose:** The canonical definition of what a v2.1 Command Room skill looks like. Every new skill added to the plugin should conform. Only some of these rules are checked by a suite; the Validation section below lists each rule with the suite that checks it, or says it is checked in review only.
 
-**Read by:** skill authors (human or agentic — the HQ `skill-creator` skill reads this when scaffolding new skills), the test battery (validator), and contributors adding to the plugin.
+**Read by:** skill authors (human or agentic; the HQ `skill-creator` skill reads this when scaffolding new skills), contributors adding to the plugin, and `run_guard_skill_shape_claims_test.py`, which checks this file's own claims (cr1#295).
 
 ---
 
@@ -19,7 +19,7 @@ description: [intent-led description — see shape below]
 
 **`name`:** Kebab-case, unique across the plugin, matches the folder name exactly. No spaces, no underscores, no capitals.
 
-**`description`:** One long paragraph, 80–300 words. Shape (in order):
+**`description`:** One paragraph, at most 980 characters (the cap `run_guard_g11_description_budget_test.py` checks, with headroom under the host's 1,024-character limit). Shape (in order):
 1. **Opening sentence:** what the skill does for the CEO. Lead with the OUTCOME, not the mechanism.
 2. **Middle:** what the skill reads, writes, or produces. What connectors it uses.
 3. **Trigger phrases:** a natural list ("Use when the CEO says '...', '...', '...'") — not a bullet list, narrative prose.
@@ -28,18 +28,18 @@ description: [intent-led description — see shape below]
 **Reject any description that:**
 - Starts with "Triggers: ..." (command-line, not intent-led)
 - Omits negative triggers when close neighbors exist
-- Exceeds 300 words or is shorter than 50 words
+- Exceeds 980 characters, or holds an angle bracket or a version tag (all three checked by `run_guard_g11_description_budget_test.py`)
 - Uses "Comprehensive [thing]" or "Tool for [thing]" — these are category labels, not outcomes
 
 ---
 
 ## Required Sections
 
-Every SKILL.md, after frontmatter, must include these sections in roughly this order. Section headers use `##` (H2).
+A SKILL.md carries these sections after frontmatter, in roughly this order. Each one says whether it is recommended or required when a condition holds. Section headers use `##` (H2).
 
 ### 1. Skill Boundary (v2.1)
 
-Required on every skill. Disambiguates from close neighbors. Minimum 3 bullets:
+Recommended. Disambiguates from close neighbors. Minimum 3 bullets:
 - **Use [this-skill] for:** single-sentence scope statement.
 - **Use `[close-neighbor]` for:** what that other skill does instead.
 - **Pair pattern / Does NOT / Related:** any other routing guidance.
@@ -70,7 +70,7 @@ Free-form per skill. Typical sections:
 
 ### 5. What It Doesn't Do
 
-Required. Mirror of Skill Boundary but from the output perspective. What the skill produces is not [X], [Y], [Z].
+Recommended. Mirror of Skill Boundary but from the output perspective. What the skill produces is not [X], [Y], [Z].
 
 ---
 
@@ -101,21 +101,28 @@ Forbidden. Every file the skill writes must resolve under `[WORKSPACE_ROOT]`. Wr
 
 ---
 
-## Validation (run by the test battery)
+## Validation
 
-Enforced by `tests/run_all.py` (run the guard tier with `python tests/run_all.py --tier guard`; the skill-validator static gates live in `tests/run_cr_skill_validator_test.py`). For each SKILL.md in `skills/` (the plugin tree — `command-room/skills/` in the repo), verify:
+Each rule in this spec, and what checks it. "Review only" means the rule is not enforced by any suite: the author's checklist below and the fresh-context review before a pull request are its only check.
 
-1. Frontmatter parses. `name` matches folder. `description` exists and is 50–300 words.
-2. Description opens with an intent statement, not a trigger list.
-3. Description includes at least one "Use when the CEO says..." phrase.
-4. If close neighbors exist (heuristic: other skills with shared trigger words), description includes a "DOES NOT fire on" clause.
-5. `## Skill Boundary (v2.1)` section exists with at least 3 bullets.
-6. If the skill references `shared/VOICE_CALIBRATION.md` or `shared/PASSIVE_CAPTURE.md`, the reference appears in a contract section (Writer Contract or Voice Calibration).
-7. If the skill is a composer (produces user-facing written output), the Voice Calibration section is present.
-8. No literal customer strings (grep against `entities.json` canonical names).
-9. `## What It Doesn't Do` section exists.
+| Rule | Checked by |
+|---|---|
+| Description at most 980 characters, no angle brackets, no version tags, at least one tested trigger stem in its first 250 characters (G11) | `run_guard_g11_description_budget_test.py` |
+| Description at most 1,024 characters and no angle brackets, mirroring the remote marketplace validator (G15) | `run_guard_marketplace_validity_test.py` |
+| No real client, person or company names (G9) | `run_no_real_customer_names_test.py` |
+| No literal Drive paths in skill text | `run_no_hardcoded_drive_test.py` |
+| Advertised trigger phrases route to the expected skill and do not collide | `run_trigger_test.py`, with `tests/triggers.yaml` |
+| The skill validator's static gates (event types in the schema, atomic writes, entity resolution, widget format, leak tokens and the rest named in its own docstring) | `run_cr_skill_validator_test.py` reports them, but only its `--strict` mode exits non-zero and the battery runs it without that flag, so a gate it reports does not fail the battery |
+| Frontmatter `name` matches the folder | review only |
+| Description opens with an outcome, has a "Use when" phrase, and has a "DOES NOT fire on" clause where close neighbors exist | review only |
+| `## Skill Boundary (v2.1)` and `## What It Doesn't Do` (recommended, not required) | review only |
+| Voice calibration on composer skills | partly `run_voice_block_coverage_test.py`: the composers it registers carry a `## Voice Block` section or cite `VOICE_CALIBRATION.md`, and carry the `voice_block_last_refreshed` date; the `## Voice Calibration` heading itself is review only |
+| Writer Contract, PASSIVE_CAPTURE and RELIABILITY references where they apply | review only |
+| Every write resolves under `[WORKSPACE_ROOT]` | review only (the validator's atomic-write and machine-path gates report part of it, without failing the battery) |
 
-Any violation fails the test battery — the offending gate prints the file and check that broke, and the battery's non-zero exit blocks the ship gate.
+`run_guard_g11_description_budget_test.py`, `run_guard_marketplace_validity_test.py`, `run_no_real_customer_names_test.py`, `run_no_hardcoded_drive_test.py`, `run_trigger_test.py` and `run_voice_block_coverage_test.py` each exit non-zero on a violation of what they check, so that violation fails the battery.
+
+This file is held to its own word by `run_guard_skill_shape_claims_test.py`: a sentence here that says a rule is enforced must name the suite that does it, every suite named here must exist, a section marked required on every skill must be carried by every skill, and the description rule must state the cap that G11 checks.
 
 ---
 
@@ -126,13 +133,13 @@ Before submitting a new skill:
 - [ ] Frontmatter `name` matches folder name exactly
 - [ ] Description leads with CEO outcome, not trigger list
 - [ ] Description includes natural-language triggers + negative triggers
-- [ ] Description length between 50 and 300 words
-- [ ] `## Skill Boundary (v2.1)` section present with neighbor disambiguation
+- [ ] Description at most 980 characters, with a trigger stem in the first 250
+- [ ] `## Skill Boundary (v2.1)` section present with neighbor disambiguation (recommended)
 - [ ] `## Writer Contract` present (if skill writes) referencing WORKSPACE_API.md
 - [ ] `## Voice Calibration` present (if skill drafts text) referencing VOICE_CALIBRATION.md
 - [ ] PASSIVE_CAPTURE referenced (if skill reads connectors)
 - [ ] RELIABILITY referenced (if skill runs as scheduled task)
-- [ ] `## What It Doesn't Do` section present
+- [ ] `## What It Doesn't Do` section present (recommended)
 - [ ] No hard-coded customer names, project names, or emails
 - [ ] All writes resolve under `[WORKSPACE_ROOT]`
 - [ ] Added to `plugin.json` skills array

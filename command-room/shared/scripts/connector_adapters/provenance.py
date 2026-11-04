@@ -662,7 +662,9 @@ def build_email_drafted_provenance(*, draft_id: Optional[str] = None,
                                    server_id: Optional[str] = None,
                                    address: Optional[str] = None,
                                    account_id: Optional[str] = None,
-                                   workspace_root=None) -> Dict[str, Any]:
+                                   workspace_root=None,
+                                   voice_block_sha256: Optional[str] = None,
+                                   skill: str = "email-writer") -> Dict[str, Any]:
     """The `email_drafted` payload fragment (EW2+T, F-12; FB-plumbing item 5).
 
     Returns data fields for the draft-created event:
@@ -681,7 +683,17 @@ def build_email_drafted_provenance(*, draft_id: Optional[str] = None,
     Skills call THIS instead of hand-writing the field (grep-gate 1): the id
     spelling lives here, in the adapter layer. Mirrors
     `build_email_sent_provenance` so the drafted/sent pair carries one identity
-    model."""
+    model.
+
+    VOICELOAD1 (cr1#197): with a `workspace_root`, the fragment also carries
+    the voice receipt: `voice_block_sha256` (the calibrated block on disk, or
+    None when the workspace has none) and `voice_applied` (True when the hash
+    the composer carried from `load_draft_constraints` matches it; None when
+    there is no block to apply). The event carries the facts only; the one
+    sentence to say when a block is present and was not applied comes from
+    `draft_constraints.voice_receipt(...)["line"]`, which the click asks for
+    its ack. A draft the voice file never reached is recorded as such and
+    said so, never silently returned."""
     out: Dict[str, Any] = {}
     did = (draft_id or "").strip()
     if did:
@@ -692,7 +704,49 @@ def build_email_drafted_provenance(*, draft_id: Optional[str] = None,
                              workspace_root=workspace_root)
     if p:
         out["provenance"] = p
+    if workspace_root is not None:
+        receipt = _voice_receipt(workspace_root, skill, voice_block_sha256)
+        if receipt is not None:
+            out["voice_block_sha256"] = receipt["voice_block_sha256"]
+            out["voice_applied"] = receipt["applied"]
     return out
+
+
+def _voice_receipt(workspace_root, skill: str, seen: Optional[str]):
+    """`draft_constraints.voice_receipt`, reached from this subpackage; None
+    when the module is not importable here (a bare adapter import), so the
+    identity fragment still builds."""
+    try:
+        import draft_constraints as dc
+    except Exception:  # noqa: BLE001
+        try:
+            _here = Path(__file__).resolve().parent.parent
+            if str(_here) not in sys.path:
+                sys.path.insert(0, str(_here))
+            import draft_constraints as dc
+        except Exception:  # noqa: BLE001
+            return None
+    try:
+        return dc.voice_receipt(workspace_root, skill, seen)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def recipient_from_data(data: Optional[dict]) -> Optional[str]:
+    """Read the recipient address from an `email_drafted` / `email_sent`
+    event's `data`, accepting BOTH the schema's `recipient` and the `to`
+    spelling some hand-written drafts carried (RECIPIENTALIAS1, cr1#129).
+    `recipient` wins when both are present. Returns None when neither is a
+    non-empty string. Reader back-compat forever: append-only history is
+    never rewritten, so a `to`-keyed row on disk reads as having a recipient
+    from now on instead of a blank."""
+    if not isinstance(data, dict):
+        return None
+    for key in ("recipient", "to"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
 
 
 def native_draft_id_from_data(data: Optional[dict]) -> Optional[str]:

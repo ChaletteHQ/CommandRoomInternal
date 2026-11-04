@@ -477,10 +477,30 @@ def check_append_markers(workspace_root) -> dict:
 #: last `LEASE_HOLD_LOST_WINDOW_DAYS` days, so the line clears itself a week
 #: after the last one. No remedy verb: a clash that doubled a change is already
 #: said by the duplicate-entry line.
-LEASE_HOLD_LOST_LINE = ("⚠ {n} time(s) in the last 7 days, a save landed just as another "
+LEASE_HOLD_LOST_LINE = ("⚠ {times} in the last 7 days, a save landed just as another "
                         "session took over the activity log. Nothing needs doing unless a change "
                         "looks doubled or missing; if one does, tell me which one.")
 LEASE_HOLD_LOST_WINDOW_DAYS = 7
+
+
+def lease_hold_lost_times(n) -> str:
+    """LEASE3 RF-2 (cr1#204): the count as a customer reads it — "Once",
+    "Twice", "3 times" — never "3 time(s)"."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n == 1:
+        return "Once"
+    if n == 2:
+        return "Twice"
+    return f"{n} times"
+
+
+def lease_hold_lost_line(n) -> str:
+    """The one pinned line for `n` lost-hold incidents in the window, rendered
+    through `LEASE_HOLD_LOST_LINE` and `lease_hold_lost_times`."""
+    return LEASE_HOLD_LOST_LINE.format(times=lease_hold_lost_times(n))
 
 
 def check_lease_hold_lost(workspace_root, now=None) -> dict:
@@ -667,7 +687,7 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
         )
     held = check_lease_hold_lost(workspace_root)
     if held["recent_n"] > 0:
-        lines.append(LEASE_HOLD_LOST_LINE.format(n=held["recent_n"]))
+        lines.append(lease_hold_lost_line(held["recent_n"]))
     dup = check_duplicate_seqs(workspace_root)
     if dup["n_duplicated"] > 0:
         lines.append(
@@ -691,6 +711,8 @@ __all__ = [
     "check_append_markers",
     "check_lease_hold_lost",
     "LEASE_HOLD_LOST_LINE",
+    "lease_hold_lost_line",
+    "lease_hold_lost_times",
     "LEASE_HOLD_LOST_WINDOW_DAYS",
     "substrate_alarm_lines",
 ]

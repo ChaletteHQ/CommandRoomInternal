@@ -248,6 +248,8 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
 
    If `expect` cannot be run at all (no output, or output that is not JSON), continue: the runtime was found and probed in point 1, and point 5 proves it actually works. Stopping a fire on a failed self-check the customer cannot clear is the failure this step exists to avoid.
 
+   Before posting it, ask the retirement question exactly as the `ABORT_WORKSPACE_NOT_FOUND` handler below says, in this container (cr1#140): a retired answer posts its line as the whole turn instead, and only the fall-through posts this message. The same holds wherever point 5 sends a fire to this message.
+
    The message, posted EXACTLY as the whole chat turn:
 
    > Command Room's runtime is not installed in your workspace yet, so this chat did nothing. Open a new chat and say `what's new in command room`.
@@ -264,7 +266,11 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
 
    rendered HERE, in the container, and the ONE line it prints — `CR_PLAN_ORIGIN=container` and the writer identity in front of `python3 "<staged_root>/…"` — pasted into `device_bash` unchanged. The argument is the WORKSPACE ROOT (`<vm_path>` = the discovery JSON's `ws`) — the helper resolves the ledger itself, and the access layer binds these arguments by NAME onto the helper's own parameters, so a key the helper does not take comes back `ok: false` and this chat stops for nothing. `events_io.count_rows` counts the rows in the ledger — the cheapest possible read that proves helpers, workspace and mount are all reachable together. If the envelope is `ok: false`, treat it exactly like a missing runtime and post the message in point 2. If it says `folder_not_attached`, that is Step 0 point 6: re-request the folder exactly once, retry the SAME command string, and stop on a second drop.
 
-If either branch prints `ABORT_WORKSPACE_NOT_FOUND`, post this message in chat and STOP:
+If either branch prints `ABORT_WORKSPACE_NOT_FOUND`, ask Step 1.5's retirement question FIRST, before posting anything (cr1#140). A retired chat must say that it retired even on a computer with no workspace folder; otherwise it tells the customer to re-bind a chat the product has retired. The question needs no workspace: membership and the line come from the plugin's own registry, and the plugin is in this run's own shell on every shape (Step 1 resolved it there; on the device shape this is the container, never `device_bash`). So ask it right here, in this shell, straight from the plugin, with no access-layer line:
+
+`cd "$PLUGIN_ROOT" && python3 shared/scripts/fire_guards.py --task-id <TASK_ID>`
+
+(If `$PLUGIN_ROOT` is empty in this shell, re-run Step 1's bash block first to re-derive it, exactly as Step 1.5 says.) It prints one JSON line. If `retirement.retired` is true: post `retirement.line`, exactly as it came back, as the ENTIRE chat turn, then STOP, under every rule Step 1.5 sets for that line. Anything else (`retired` false, no output, output that is not JSON) is the FALL-THROUGH: post this message in chat and STOP:
 
 > ⚠️ Command Room's scheduled chat `<TASK_ID>` could not reach your workspace folder from this run, so it did nothing. Open a new chat with your Command Room folder attached and say `set up command room schedules` to re-bind.
 
@@ -292,7 +298,15 @@ If `result.blocked` is false, continue to Step 1.5 unchanged. A `state` of `"STA
 
 A retired chat must say that it retired. It must never say the plugin is broken — and before this step existed it said exactly that, because Step 2's contract grep runs BEFORE Step 3 ever opens the file. A retirement stub that had not been given the `OUTPUT CONTRACT` marker failed that grep, the fire aborted with "the plugin may be partially installed or corrupted", and the customer's only available workaround was to switch the task off themselves (BUG-9517). This step makes the corruption message unreachable for a retired task id.
 
-Ask the registry through the same door — ONE rendered `run_helper` form:
+First make sure the plugin path survived. Every earlier step exported `$PLUGIN_ROOT`, but a fresh shell does not carry an earlier export, and `cd ""` would run the question from wherever the shell happens to be (cr1#140):
+
+```bash
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/shared/scripts" ] && echo "PLUGIN_ROOT=$PLUGIN_ROOT" || echo "PLUGIN_ROOT_LOST"
+```
+
+If it prints `PLUGIN_ROOT_LOST`, re-run Step 1's bash block (the same block, unchanged) to re-derive `$PLUGIN_ROOT`, and use the path it prints. If that block aborts, post its message and STOP exactly as Step 1 says.
+
+Then ask the registry through the same door, with ONE rendered `run_helper` form:
 
 `cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:retirement", "args": {"task_id": "<TASK_ID>"}}'`
 

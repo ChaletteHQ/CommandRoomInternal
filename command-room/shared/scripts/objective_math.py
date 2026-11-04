@@ -727,6 +727,36 @@ def load_objective_inputs(workspace_root) -> dict:
     }
 
 
+def readout(workspace_root, config: Optional[dict] = None,
+            today: Optional[str] = None) -> dict:
+    """The objectives readout in ONE read (OBJDOOR1, cr1#317): the inputs,
+    the ranked health rows, the check-ins due and the count of saved-history
+    lines that could not be read. This is the composition the skill used to
+    run as an in-shell block, moved here so a merged seat can ask it through
+    the read door (`plan run_helper`); a seat whose files are local calls the
+    same function in its own shell. Reads only.
+
+    `config` is the drift preset map from the skill's settings; `today` is an
+    ISO date, and the local day when omitted (the block's own behaviour).
+    """
+    inputs = load_objective_inputs(workspace_root)
+    day = (datetime.date.fromisoformat(str(today)) if today
+           else datetime.date.today())
+    # Every input the assembler built that the health function takes, handed
+    # across by the function's own signature (the friday_wrap_helpers shape):
+    # the owner id arrives already resolved through the primary-user seam.
+    import inspect
+    accepted = (set(inspect.signature(compute_objective_health).parameters)
+                - {"open_objectives", "today", "config"})
+    health = compute_objective_health(
+        inputs["open_objectives"], today=day, config=config,
+        **{k: v for k, v in inputs.items() if k in accepted})
+    due = due_self_reports(health, inputs["open_objectives"],
+                           inputs["objective_events"], day)
+    return {"health": health, "due": [d["thread_id"] for d in due],
+            "n_skipped": len(inputs["skipped"])}
+
+
 __all__ = [
     "DEFAULT_CONFIG",
     "SEVERITY_POINTS",
@@ -738,4 +768,5 @@ __all__ = [
     "brief_lines",
     "recap_rows",
     "load_objective_inputs",
+    "readout",
 ]

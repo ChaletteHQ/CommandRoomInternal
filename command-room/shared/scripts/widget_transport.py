@@ -318,6 +318,62 @@ def _first_over_budget_page(data_view: dict, wrapper: str, size: int):
     return None
 
 
+#: VOICELOAD1 (cr1#197): the skill whose draft cards are judged against its
+#: calibrated voice file. The other drafting skills are the issue's separate
+#: second step and are left as they were.
+_VOICE_CHECKED_SKILL = "email-writer"
+
+
+def _workspace_of_widgets_dir(persist_dir) -> Optional[Path]:
+    """The workspace root when `persist_dir` is `<root>/_hq/.system/widgets`
+    (where every draft card lands), else None."""
+    p = Path(persist_dir)
+    if p.name == "widgets" and p.parent.name == ".system" and p.parent.parent.name == "_hq":
+        return p.parent.parent.parent
+    return None
+
+
+def _flag_unproven_voice(view: dict, persist_dir, data_view: dict,
+                         name_hint: Optional[str]) -> dict:
+    """VOICELOAD1 (cr1#197, second build after the 2026-10-26 UAT fail).
+
+    The compose step puts the hash `load_draft_constraints` returned on the
+    draft's row (`voice_block_sha256`); the renderer carries it onto the
+    click's tuple. This is the check at the one call every card goes through:
+    when the workspace has a calibrated voice file for email-writer and an
+    email-shaped row does not carry its hash (the read was skipped, or the
+    file changed since), the row gets the one plain sentence as `voice_note`,
+    so a skipped read is flagged on the card even when the click's record
+    never lands. Returns a new view; the caller's is never changed. Never
+    raises: a check that cannot run says nothing it cannot prove."""
+    try:
+        if _VOICE_CHECKED_SKILL not in (data_view.get("source_skill"), name_hint):
+            return view
+        root = _workspace_of_widgets_dir(persist_dir)
+        if root is None:
+            return view
+        from chat_output_renderer import _is_email_shaped
+        from draft_constraints import voice_receipt
+
+        def _item(item):
+            if not isinstance(item, dict) or not _is_email_shaped(item):
+                return item
+            line = voice_receipt(root, _VOICE_CHECKED_SKILL,
+                                 item.get("voice_block_sha256"))["line"]
+            return dict(item, voice_note=line) if line else item
+
+        sections = []
+        for sec in view.get("sections") or []:
+            if isinstance(sec, dict) and isinstance(sec.get("items"), list):
+                sec = dict(sec, items=[_item(i) for i in sec["items"]])
+            sections.append(sec)
+        if "sections" not in view:
+            return view
+        return dict(view, sections=sections)
+    except Exception:  # noqa: BLE001 - never raises into a render
+        return view
+
+
 def render_and_persist(
     *,
     data_view: dict,
@@ -437,6 +493,10 @@ def render_and_persist(
                 pagination = dict(pagination or {})
                 pagination["suppressed"] = n_suppressed
                 view["pagination"] = pagination
+
+    # VOICELOAD1 (cr1#197) — an email-writer draft card whose row does not
+    # carry the hash of the voice file on disk says so on the card itself.
+    view = _flag_unproven_voice(view, persist_dir, data_view, name_hint)
 
     # SPEC_WIDGETRO1 §2-1 (CUT-C item 9) — `read_only=True` renders the
     # surface's own row verbs and NO batch footer (no Apply all / Reset /

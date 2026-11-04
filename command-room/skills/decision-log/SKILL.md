@@ -17,7 +17,7 @@ description: "Turn every decision the CEO makes — in meetings, Slack threads, 
 - **Writes:** `decision` events to `_hq/data/events.jsonl` (append-only) with v2.2 shape (`primary_thread_id` + optional `related_thread_ids[]` + `org_ids[]`). **v3.13.0+ MANDATORY: stamp `data.project_id` on every new decision event** by inferring from the active project context (the most-recently-loaded project per session, or the project matching `primary_thread_id`). Without `project_id`, the decision can't be surfaced when the CEO opens that specific project — pre-v3.13.0, ~95% of decisions in M's substrate carried no project_id, breaking project-scoped recall.
 - **Regenerates:** `_hq/views/DECISION_LOG.md` view after every write via `shared/scripts/render_decision_log.py` (v3.13.0+ — script created in this release). Also regenerated when a `decision_resolved`, `decision_superseded`, `decision_reaffirmed`, or `decision_revisit_scheduled` event is appended — those overlays update the status badge ([SUPERSEDED] / [RESOLVED] / [REAFFIRMED] / [SNOOZED]) on the referenced decision in the view. Pre-v3.13.0 the SKILL prose claimed auto-regeneration but no script existed; the view fell ~57 decisions stale.
 
-**Event append recipe (MANDATORY — SPEC GATE1 / A1).** The `decision` event MUST be written through the locked writer `atomic_append_jsonl`, NOT a hand-rolled `next_seq`+`open('a')` append or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock (`_hq/data/.writer.lock`), so a concurrent append can't lose your decision or duplicate a seq. Omit `seq`/`ts` — the helper auto-stamps both atomically. This recipe is the A1 lock contract; see `shared/WORKSPACE_API.md` → Append Protocol §3.
+**Event append recipe (MANDATORY — SPEC GATE1 / A1).** The `decision` event MUST be written through the append door (`plan append_jsonl`, whose gate runs the locked writer `atomic_append_jsonl`), NOT a hand-rolled `next_seq`+`open('a')` append or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock (`_hq/data/.writer.lock`), so a concurrent append can't lose your decision or duplicate a seq. Omit `seq`/`ts` — the helper auto-stamps both atomically. This recipe is the A1 lock contract; see `shared/WORKSPACE_API.md` → Append Protocol §3.
 
 ```bash
 # >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
@@ -69,27 +69,10 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-from atomic_write import atomic_append_jsonl
-event = {
-    'type': 'decision',
-    'source_skill': 'decision-log',
-    'primary_thread_id': '<project_NNN or null>',
-    'person_ids': ['<canonical decider id>'],
-    'data': {
-        'project_id': '<project_NNN — MANDATORY per v3.13.0+>',
-        'decision': '<what was decided>',
-        'rationale': '<why — alternatives considered>',
-        'made_by': '<who made the call>',
-        'impact': '<what changes>',
-    },
-}
-atomic_append_jsonl('$WORKSPACE/_hq/data/events.jsonl', [event], holder='decision-log')
-print('decision event appended via locked writer')
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "decision-log", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"decision": "<what was decided>", "impact": "<what changes>", "made_by": "<who made the call>", "project_id": "<project_NNN, MANDATORY per v3.13.0+>", "rationale": "<why, alternatives considered>"}, "person_ids": ["<canonical decider id>"], "primary_thread_id": "<project_NNN, or null>", "source_skill": "decision-log", "type": "decision"}]}'
 ```
+
+Paste what it prints and run that: the append door lands the `decision` row through the gate's locked append (DECDOOR1, cr1#315), which reserves the `seq` and stamps the `ts`. Its answer is `{ok, n, stamped}`. `ok` false is a stop, never a hand retry. On a seat whose files are local the same append runs in this shell.
 
 **Extraction-miss tag (Phase 6 Loop 5).** When the CEO logs a decision by hand shortly after a meeting was processed, that's a signal meeting-notes missed the extraction. Before appending, check for a recent processed meeting sharing an attendee: `from extraction_hints import find_recent_meeting` → if `find_recent_meeting(event, <recent meeting_processed/meeting events>)` returns a ref, add `data.extraction_miss = True` and `data.source_meeting_ref = <ref["meeting_id"]>` to the event. The decision still logs normally; the tag is additive telemetry that insight-generator's Loop 5 pass clusters into extraction hints (never surfaced to the CEO). Best-effort — on any error, append the decision untagged.
 
@@ -147,14 +130,10 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-from render_decision_log import regenerate
-result = regenerate('$WORKSPACE')
-print(f'regenerated {result[\"total\"]} decisions ({result[\"active\"]} active)')
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "render_decision_log:regenerate"}'
 ```
+
+Paste what it prints and run that: the write door runs `render_decision_log:regenerate` beside the data (DECDOOR1, cr1#315). Its `result` is the counts by status (`total`, `active`, `reaffirmed`, `snoozed`, `resolved`, `superseded`) and the view's `view_path`. `ok` false is a stop: say its `line` when it carries one. On a seat whose files are local the same writer runs in this shell.
 
 Per `shared/CONTRACT.md` Rule 4: the regeneration is silent — the user sees the updated view at `_hq/views/DECISION_LOG.md`, not a "regenerated X decisions" narration in chat.
 - **Does not write to:** `entities.json` (decisions are events, not entities), `aliases.json`, `classifier_feedback.jsonl`.
@@ -202,7 +181,7 @@ controls whether `decision_revisit_scheduled` reminders are set on strategic dec
 | **Detect** (default) | "log decision", "we decided…" | log the decision with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "decision-log", DEFAULTS)` BEFORE confirming, then append the first-run footer. |
 | **Show settings** | "show decision-log settings" | render current config in plain English; no logging. |
 | **Tune** | "tune decision-log" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → confirm. |
-| **Reset** | "reset decision-log to defaults" | `wipe_skill_config(workspace_root, "decision-log")` → next fire is a first-fire again. |
+| **Reset** | "reset decision-log to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "decision-log", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "decision-log")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — decision-log confirms in chat, no widget):**
 
@@ -339,7 +318,7 @@ Each decision in the log follows this structure:
 ## Connected Tools
 
 - **meeting-notes** — Automatically extracts and logs decisions from processed meetings
-- **entities.json + events.jsonl** — the substrate this skill cross-references project status against (MASTER_TRACKER is a regenerated Tier-2 view — never read it as the source of truth or write to it)
+- **entities.json + events.jsonl** — the substrate this skill cross-references project status against (MASTER_TRACKER is a regenerated Tier-2 view — never read it as authoritative or write to it)
 - **BUSINESS_CONTEXT** — Provides context for decision rationale
 - **Session Notes** — Pulls decisions from ongoing work sessions
 
@@ -383,7 +362,7 @@ anyone else to.
 
 **After Each Meeting:**
 1. meeting-notes skill processes the transcript
-2. Decisions are automatically logged as `decision` events in events.jsonl (the source of truth); the `_hq/views/DECISION_LOG.md` view regenerates from them
+2. Decisions are automatically logged as `decision` events in events.jsonl (the canonical record); the `_hq/views/DECISION_LOG.md` view regenerates from them
 3. You can review them with "decisions from the [Project] meeting"
 
 **Weekly Reviews:**
@@ -545,12 +524,27 @@ print(decision_log_answer(found=one_line_summaries, topic=the_topic,
 
 Where the decision is kept is never part of the answer. The customer asked what they decided, not where it is filed.
 
+**Doubled entries: say it, never offer it (OFFERS1 — MANDATORY).** Asked for the log on 2026-09-16, this skill noticed four entries that were logged twice and **offered to clear them** instead of saying what it sees. It could not have cleared them: the append-only contract below never deletes a line, and the cleanup path that contract points at marks a duplicate entry NUMBER (`seq_health.py --mark`) — two decisions logged under the same heading are two distinct entries with two distinct numbers, which that scan never sees. So the offer promised a verb nothing in this product has. The count and the sentence are both composed, and **the sentence names no door either** (review round 1, F-2): pointing the reader at a command that cannot do it is the same defect one sentence over. It ends at what is true — the log lost nothing:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from decision_match import load_open_decisions
+from offer_gate import duplicate_decisions, decision_log_duplicates_line
+
+rows = load_open_decisions(events_jsonl_path)     # the canonical loader
+dupes = decision_log_duplicates_line(duplicate_decisions(rows))
+```
+
+`duplicate_decisions` counts, among the OPEN decisions it is handed, the rows that repeat a heading already logged that day — the same heading the rendered log shows. **It is handed the rows; it never opens the book itself**, and it reaches no other bucket: the rendered log also shows resolved and superseded decisions, and the line says what this count saw, not what every bucket holds (review round 1, F-3). The canonical decision loader is the one reader on this path, and a fence module that reads the ledger a second way is the shape the privacy firewall's allowlist exists to stop. A repeat months later is a decision taken again, not a duplicate entry, and is not counted. When it is zero the line is empty and **nothing is said at all**; there is no "no duplicates found" sentence, because a clean log is the ordinary case and needs no line. When it is not zero, say the line as its own line under the log and say nothing else about it.
+
 **The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. The 09-13 record carried the same shape here as everywhere else: the composer's line was clean and the paragraph after it named the record. So compose everything you intend to post, hand it to `post` ONCE, and print what it returns as your entire reply.
 
 ```python
 import sys
 sys.path.insert(0, "shared/scripts")
 from surface_composers import post
+from offer_gate import compose, SITE_DECISION_LOG
 # `composed_text` is `decision_log_answer`'s return, in this same run -
 # relay it, never retype it. The door vouches a relay LINE FOR LINE
 # against what a composer here actually returned, so a sentence you
@@ -558,8 +552,12 @@ from surface_composers import post
 # typed text, so no rows are named; where a section IS composed around
 # their words it passes `customer_rows` and the door reads the words
 # off those rows itself (see the undo receipt in workspace-manager).
-print(post(whole_reply, surface="decision-log", workspace=workspace_root,
-           relayed=composed_text))
+# `compose` is the OFFER fence (OFFERS1) and it runs FIRST, on the whole
+# reply: this surface offered to clear doubled entries on 09-16, which is
+# a verb it does not have. It raises rather than returning; rewrite the
+# sentence, never the fence.
+print(post(compose(SITE_DECISION_LOG, whole_reply), surface="decision-log",
+           workspace=workspace_root, relayed=composed_text))
 ```
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**

@@ -106,19 +106,19 @@
     "properties": {"source_ref": "string", "summary": "string", "direction": "string", "dedup_hash": "string", "person_ids": "array", "primary_thread_id": "string"}
   },
   "email_drafted": {
-    "description": "A draft produced by email-writer (event fires from apply-choices on click). native_draft_id is the declared backend's native draft id (FB-plumbing item 5 — writers emit native_draft_id; the legacy gmail_draft_id spelling stays listed so pre-rename events on disk validate + read forever via native_draft_id_from_data).",
-    "required": [["recipient"]],
-    "properties": {"recipient": "string", "topic": "string", "native_draft_id": "string", "gmail_draft_id": "string", "draft_event_seq": "number", "commitment_refs": "array", "decision_refs": "array"}
+    "description": "A draft produced by email-writer (event fires from apply-choices on click). native_draft_id is the declared backend's native draft id (FB-plumbing item 5 — writers emit native_draft_id; the legacy gmail_draft_id spelling stays listed so pre-rename events on disk validate + read forever via native_draft_id_from_data). `to` is a read-side alias of `recipient` (RECIPIENTALIAS1, cr1#129): writers emit `recipient`; rows on disk that carried `to` validate and read through recipient_from_data.",
+    "required": [["recipient", "to"]],
+    "properties": {"recipient": "string", "to": "string", "topic": "string", "native_draft_id": "string", "gmail_draft_id": "string", "draft_event_seq": "number", "commitment_refs": "array", "decision_refs": "array", "voice_block_sha256": "string", "voice_applied": "boolean"}
   },
   "email_sent": {
-    "description": "A sent email; closure event linking back via draft_event_seq. gmail_thread_id (B6) when the send response provides it.",
-    "required": [["recipient"]],
-    "properties": {"recipient": "string", "topic": "string", "gmail_message_id": "string", "gmail_thread_id": "string", "draft_event_seq": "number"}
+    "description": "A sent email; closure event linking back via draft_event_seq. gmail_thread_id (B6) when the send response provides it. `to` is a read-side alias of `recipient` (RECIPIENTALIAS1, cr1#129).",
+    "required": [["recipient", "to"]],
+    "properties": {"recipient": "string", "to": "string", "topic": "string", "gmail_message_id": "string", "gmail_thread_id": "string", "draft_event_seq": "number"}
   },
   "pack_run": {
     "description": "Audit/telemetry trail of a scheduled-task / orchestrator fire. EODFIX1: the End of Day's receipt additionally carries data.receipt_id (`eod_<UTC to the second>-<8 hex>`, minted by end_of_day.mint_receipt_id) — optional and additive; it is what every one-tap gesture on that fire points at (`session:<receipt_id>:<gesture>`), so two acts of one evening cannot share a pointer. Receipts written before EODFIX1 carry none and their taps fall back to `session:end-of-day:<receipt ts>`.",
     "required": [["task_id"]],
-    "properties": {"task_id": "string", "digest_path": "string", "sections_rendered": "array", "receipt_id": "string"}
+    "properties": {"task_id": "string", "digest_path": "string", "sections_rendered": "array", "receipt_id": "string", "sections_check": "object"}
   },
   "pattern_break_detected": {
     "description": "A person whose contact cadence broke (Pulse). Carries the person and the diagnostic counts.",

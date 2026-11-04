@@ -54,7 +54,7 @@ cfg = get_config(workspace_root, "stress-test", DEFAULTS)
 | **Detect** (default) | "stress test this plan" | run with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "stress-test", DEFAULTS)` BEFORE rendering, then append the first-run footer after the output. |
 | **Show settings** | "show stress-test settings" | render current config in plain English; no analysis. |
 | **Tune** | "tune stress-test" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
-| **Reset** | "reset stress-test to defaults" | `wipe_skill_config(workspace_root, "stress-test")` → next fire is a first-fire again. |
+| **Reset** | "reset stress-test to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "stress-test", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "stress-test")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — after the output):**
 

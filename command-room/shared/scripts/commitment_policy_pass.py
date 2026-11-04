@@ -176,17 +176,10 @@ TRANSCRIPT_PROSE_CLOSERS = frozenset({"meeting-notes", "follow-up-ritual", "team
 # is now held by a pin rather than by a second copy — `run_ident1_test` [13]
 # and `run_wrapstaff1_test` [8].
 
-# INTAKE1 (BUILD_INTAKE1 §7) — the second-witness door. Its branch ships the
-# read, the four phrases and the workspace-manager section; the writing of it
-# was left here by that lane's own design.
-FLOW_SWITCH_ACKS[policy.INTAKE_SECOND_WITNESS_KEY] = {
-    "on": ("New items will be kept out of sight until something confirms "
-           "them."),
-    "off": ("New items will go straight onto your plate, even when I'm only "
-            "guessing."),
-    "already_on": "New items are already kept until something confirms them.",
-    "already_off": "New items already go straight onto your plate.",
-}
+# INTAKE1 (BUILD_INTAKE1 §7), the second-witness door. cr1#472: this was a
+# second copy of the words, overwritten on every import by
+# `INTAKE_SECOND_WITNESS_ACKS` near the end of the module, so an edit here
+# changed nothing. ONE definition now, at the end of the module.
 
 # EXIT1 — the two exit doors. WRAPSTAFF1 4.8 (2026-09-17): this was the
 # SECOND, byte-identical copy of both dictionaries, written here in advance
@@ -1140,35 +1133,27 @@ __all__ = [
 # which is the right failure, and it means a lane that reserves a key name and
 # stops there leaves a shipped phrase that wakes a skill and raises.
 #
-# WHY IT IS GUARDED, AND WHY IT SITS AT THE FOOT OF THE FILE. This branch is
-# cut from v5.29.0, where neither `FLOW_SWITCH_ACKS` nor the writer nor the
-# key constant exists: that table is IDENT1's, by that lane's own design note
-# (a lane that builds a switch adds a constant and its words, never a second
-# reader with its own fallback). An unconditional assignment here would raise
-# at import on this branch, and re-declaring the table would be the second
-# reader IDENT1 exists to prevent. So the registration runs when the table is
-# there and is a no-op when it is not, and it is anchored far from every hunk
-# IDENT1 and EXIT1 touch so four lanes editing one file on one night do not
-# collide at one anchor.
+# ONE DEFINITION (cr1#472). This branch was once cut from a release without
+# the shared table, so the registration was guarded and a second, identical
+# copy sat beside the identity switches. Both shipped, this one won on every
+# import, and the copy above was dead text. The copy is gone and the table is
+# always there now, so the registration is a plain assignment; the invariant
+# "every key in FLOW_SWITCH_KEYS has ack text" is held by `run_ident1_test`
+# [13], and this definition by `run_intake1_test` [5c].
 #
-# AT MERGE (order is IDENT1 -> INTAKE1): IDENT1's HEAD already registers this
-# key with this text, character for character, citing BUILD_INTAKE1 §7. KEEP
-# EITHER COPY — they are identical, a second assignment of the same key to the
-# same value changes nothing, and the duplicate is deliberate so that the
-# invariant "every key in FLOW_SWITCH_KEYS has ack text" is true on EVERY
-# merge order rather than only on the last one.
+# THE WAY BACK (cr1#472). Like every sibling receipt, the ON line names the
+# phrase that turns the switch off and the OFF line says `undo`. The phrase
+# quoted in the ON line is `VERB_INTAKE_SECOND_WITNESS_OFF`, pinned so.
 INTAKE_SECOND_WITNESS_ACKS = {
-    "on": ("New items will be kept out of sight until something confirms "
-           "them."),
-    "off": ("New items will go straight onto your plate, even when I'm only "
-            "guessing."),
+    "on": ("Done. New items will be kept out of sight until something "
+           "confirms them. Say `turn off holding new items until something "
+           "confirms them` to stop."),
+    "off": ("Done. New items will go straight onto your plate, even when I'm "
+            "only guessing. Say `undo` to put this back."),
     "already_on": "New items are already kept until something confirms them.",
     "already_off": "New items already go straight onto your plate.",
 }
-try:  # pragma: no cover - the guard is the point, not a branch to exercise
-    FLOW_SWITCH_ACKS[policy.INTAKE_SECOND_WITNESS_KEY] =         INTAKE_SECOND_WITNESS_ACKS
-except (NameError, AttributeError):
-    pass
+FLOW_SWITCH_ACKS[policy.INTAKE_SECOND_WITNESS_KEY] = INTAKE_SECOND_WITNESS_ACKS
 
 # ---------------------------------------------------------------------------
 # SPEC_FLOW1 Lane B (EXIT1) — the two exit switches' verbs and acks
@@ -1235,3 +1220,250 @@ FLOW_SWITCH_ACKS[policy.EXIT_SILENCE_AGE_OUT_KEY] = {
     "already_on": "Parking items nobody touches is already on.",
     "already_off": "Parking items nobody touches is already off.",
 }
+
+# ---------------------------------------------------------------------------
+# SWITCH2 5.1 — THE PHRASE IS THE ROUTE, IN CODE
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS BROKEN. Seven switches ship with four customer phrases each. The
+# runtime router reads ONE thing — a skill's frontmatter `description` — and
+# `skills/workspace-manager/SKILL.md`'s description is 977 characters against
+# G11's budget of 980. Two phrases fit in that headroom and were bought with
+# it (`turn off closing when I say it is done`, `turn off parking items
+# nobody touches`, SURFACEFIX1 5.5). Every other announced switch phrase
+# lived in the BODY and in `tests/triggers.yaml`, neither of which the router
+# reads — so a customer who typed an announced phrase got a freelance handler
+# that searched files and asked a question back (ATTENDED_TEST v5.31.0 B2.9).
+# Three characters of headroom is not a mechanism.
+#
+# THE MECHANISM. One table, in code, on the model `render_router_misses.
+# chat_route` already uses for the router-miss question: the phrase IS the
+# route. `switch_route` answers "is this sentence a switch, and which one";
+# `apply_switch_phrase` is the ONE entry the skill calls, and it returns the
+# writer's own receipt. No surface grows, no description grows, and no phrase
+# is ever re-typed as prose: every phrase in the table is DERIVED from the
+# `VERB_*` constants the switches already export, so the announcement and the
+# router cannot drift.
+#
+# THE FOUR PHRASINGS. Each switch exports one ON verb and one OFF verb. The
+# leading verb is swapped across the synonym pairs below and the TAIL — the
+# part that names the switch — comes from the constant, untouched. That is
+# how four phrases per switch exist with one constant pair per switch, and it
+# is why adding a switch without a table row reds the census pin by name.
+SWITCH_ON_VERBS = ("turn on", "start")
+SWITCH_OFF_VERBS = ("turn off", "stop")
+
+# INTAKE1's and LEARN1's switches shipped their four customer phrases in
+# `skills/workspace-manager/SKILL.md` and in `tests/triggers.yaml` with NO
+# constant anywhere in the tree — an announcement with no code to drift from.
+# Named here, beside their siblings, so the census pin can see them.
+VERB_INTAKE_SECOND_WITNESS_ON = ("turn on holding new items until something "
+                                 "confirms them")
+VERB_INTAKE_SECOND_WITNESS_OFF = ("turn off holding new items until something "
+                                  "confirms them")
+VERB_LEARNING_AUTO_APPLY_ON = "turn on learning from my edits"
+VERB_LEARNING_AUTO_APPLY_OFF = "turn off learning from my edits"
+
+#: Which writer a switch is flipped by. Three exist; the table names which,
+#: so `apply_switch_phrase` never guesses and never grows a fourth.
+SWITCH_WRITER_TRANSCRIPT = "set_transcript_closes"
+SWITCH_WRITER_QUESTION_EXPIRY = "set_question_expiry"
+SWITCH_WRITER_FLOW = "set_flow_switch"
+
+
+def _switch_tail(verb_phrase: str, verbs) -> str:
+    """The part of an announced phrase that NAMES the switch.
+
+    `turn off merging duplicate people` -> `merging duplicate people`. The
+    tail is what the receipt says the switch is, so the receipt is composed
+    from the constant and can never drift from the phrase a customer typed.
+    """
+    text = str(verb_phrase or "").strip()
+    for v in verbs:
+        if text.lower().startswith(v + " "):
+            return text[len(v) + 1:].strip()
+    raise ValueError(
+        f"switch phrase {verb_phrase!r} does not start with one of {verbs!r} "
+        "— every announced switch phrase is <verb> <what it governs>")
+
+
+#: (config key, writer, ON verb constant, OFF verb constant). ONE row per
+#: switch. A row removed here is a switch that stops routing, by name.
+_SWITCH_SPECS = (
+    (policy.TRANSCRIPT_CLOSES_CONFIG_KEY, SWITCH_WRITER_TRANSCRIPT,
+     VERB_TRANSCRIPT_CLOSES_ON, VERB_TRANSCRIPT_CLOSES_OFF),
+    (policy.QUESTIONS_EXPIRE_TO_DEFAULT_KEY, SWITCH_WRITER_QUESTION_EXPIRY,
+     VERB_QUESTION_EXPIRY_ON, VERB_QUESTION_EXPIRY_OFF),
+    (policy.IDENTITY_AUTO_CREATE_KEY, SWITCH_WRITER_FLOW,
+     VERB_IDENTITY_AUTO_CREATE_ON, VERB_IDENTITY_AUTO_CREATE_OFF),
+    (policy.IDENTITY_AUTO_MERGE_KEY, SWITCH_WRITER_FLOW,
+     VERB_IDENTITY_AUTO_MERGE_ON, VERB_IDENTITY_AUTO_MERGE_OFF),
+    (policy.INTAKE_SECOND_WITNESS_KEY, SWITCH_WRITER_FLOW,
+     VERB_INTAKE_SECOND_WITNESS_ON, VERB_INTAKE_SECOND_WITNESS_OFF),
+    (policy.EXIT_OWN_WORD_CLOSES_KEY, SWITCH_WRITER_FLOW,
+     VERB_EXIT_OWN_WORD_ON, VERB_EXIT_OWN_WORD_OFF),
+    (policy.EXIT_SILENCE_AGE_OUT_KEY, SWITCH_WRITER_FLOW,
+     VERB_EXIT_SILENCE_ON, VERB_EXIT_SILENCE_OFF),
+    (policy.LEARNING_AUTO_APPLY_KEY, SWITCH_WRITER_FLOW,
+     VERB_LEARNING_AUTO_APPLY_ON, VERB_LEARNING_AUTO_APPLY_OFF),
+)
+
+_SWITCH_PHRASE_TRIM_RE = None
+
+
+def _switch_phrase_key(text) -> str:
+    """Case, backticks and punctuation are the reader's, not the router's —
+    the same normalisation `render_router_misses.chat_route` applies."""
+    global _SWITCH_PHRASE_TRIM_RE
+    if _SWITCH_PHRASE_TRIM_RE is None:
+        import re as _re
+        _SWITCH_PHRASE_TRIM_RE = _re.compile(r"[^a-z ]+")
+    key = _SWITCH_PHRASE_TRIM_RE.sub("", str(text or "").lower()).strip()
+    return " ".join(key.split())
+
+
+def _build_switch_phrases() -> dict:
+    table: dict = {}
+    for key, writer, on_verb, off_verb in _SWITCH_SPECS:
+        tail = _switch_tail(on_verb, SWITCH_ON_VERBS)
+        if _switch_tail(off_verb, SWITCH_OFF_VERBS) != tail:
+            raise ValueError(
+                f"switch {key!r} announces two different things: "
+                f"{on_verb!r} / {off_verb!r}")
+        for verbs, enabled in ((SWITCH_ON_VERBS, True),
+                               (SWITCH_OFF_VERBS, False)):
+            for v in verbs:
+                phrase = f"{v} {tail}"
+                table[_switch_phrase_key(phrase)] = {
+                    "phrase": phrase, "key": key, "writer": writer,
+                    "switch": tail, "enabled": enabled}
+    return table
+
+
+#: THE table. Normalised phrase -> the switch it is. Read by `switch_route`,
+#: by `skills/workspace-manager/SKILL.md`'s one switch route, and by the
+#: census pin that asserts nothing is announced that does not resolve.
+SWITCH_PHRASES: dict = _build_switch_phrases()
+
+
+def announced_switch_phrases() -> tuple:
+    """Every switch phrase the product announces, in announcement order."""
+    return tuple(row["phrase"] for row in SWITCH_PHRASES.values())
+
+
+#: The politeness a person wraps a switch in. Peeled off ONE piece at a time
+#: and only after the whole sentence has already missed the table (fix round
+#: 1, review F-6, ruling 6): `please turn on closing on evidence for me` is
+#: the same switch as `turn on closing on evidence`, one padding word out,
+#: and it was falling through to the file search this lane exists to displace.
+#:
+#: Peeling never lengthens or rewrites a sentence, so the route stays an
+#: EXACT match on an announced phrase — `turn off closing` still resolves to
+#: nothing. The exact key is always tried FIRST, which is what keeps the
+#: announced `turn on answering old questions for me` matching itself rather
+#: than being trimmed to a phrase nobody announced.
+_SWITCH_PAD_LEADING = ("please", "can you", "could you", "would you",
+                       "will you", "id like you to", "i want you to")
+_SWITCH_PAD_TRAILING = ("please", "for me", "for us", "thanks", "thank you")
+
+
+def _peel_switch_padding(key: str) -> str:
+    """One piece of politeness off one end, longest first. `key` unchanged
+    when there is none, which is what ends the walk."""
+    for pad in sorted(_SWITCH_PAD_LEADING, key=len, reverse=True):
+        if key.startswith(pad + " ") and len(key) > len(pad) + 1:
+            return key[len(pad) + 1:].strip()
+    for pad in sorted(_SWITCH_PAD_TRAILING, key=len, reverse=True):
+        if key.endswith(" " + pad) and len(key) > len(pad) + 1:
+            return key[:-(len(pad) + 1)].strip()
+    return key
+
+
+def switch_phrase_candidates(text) -> tuple:
+    """What a sentence might be, most literal first: the normalised key, then
+    the same key with one more piece of politeness peeled off each time."""
+    key = _switch_phrase_key(text)
+    out = [key]
+    seen = {key}
+    cur = key
+    while True:
+        nxt = _peel_switch_padding(cur)
+        if nxt == cur or not nxt:
+            break
+        cur = nxt
+        if cur not in seen:
+            seen.add(cur)
+            out.append(cur)
+    return tuple(out)
+
+
+def switch_route(text):
+    """The switch these words are, or None. NEVER a guess and never a search.
+
+    Returns a copy of the table row — `{phrase, key, writer, switch,
+    enabled}` — so a caller that mutates what it got cannot poison the route
+    for the next turn.
+
+    ONE TABLE. A politely padded sentence (`please …`, `can you …`,
+    `… for me`) resolves through the same rows as the bare one: the exact
+    key is tried first, then the same key with the politeness peeled, and
+    nothing else is ever consulted.
+    """
+    for key in switch_phrase_candidates(text):
+        row = SWITCH_PHRASES.get(key)
+        if row:
+            return dict(row)
+    return None
+
+
+def apply_switch_phrase(workspace_root, text, *, origin: str = "m_action",
+                        now_iso=None):
+    """THE one entry for an announced switch phrase. None when it is not one.
+
+    Resolves the phrase through `SWITCH_PHRASES` and calls the switch's OWN
+    writer — no second writer, no second store, no second set of words. The
+    customer line is the writer's `line` VERBATIM (WRAPSTAFF1 4.8: a receipt
+    is composed from the door's own constants, never re-typed here).
+
+    Returns the writer's receipt with three fields added:
+      `phrase`  the announced form of what the customer typed
+      `switch`  the switch in plain words, from the constant that names it
+      `undo`    the bare word a customer says to reverse it, and the batch
+                it reverses — None when nothing was written
+    """
+    row = switch_route(text)
+    if row is None:
+        return None
+    key, writer, enabled = row["key"], row["writer"], row["enabled"]
+    if writer == SWITCH_WRITER_TRANSCRIPT:
+        res = set_transcript_closes(workspace_root, enabled, origin=origin,
+                                    triggered_by=row["phrase"],
+                                    now_iso=now_iso)
+    elif writer == SWITCH_WRITER_QUESTION_EXPIRY:
+        res = set_question_expiry(workspace_root, enabled, origin=origin,
+                                  triggered_by=row["phrase"], now_iso=now_iso)
+    else:
+        res = set_flow_switch(workspace_root, key, enabled, origin=origin,
+                              triggered_by=row["phrase"], now_iso=now_iso)
+    out = dict(res)
+    out["phrase"] = row["phrase"]
+    out["key"] = key
+    out["switch"] = row["switch"]
+    out["undo"] = ({"say": "undo", "batch_id": out.get("batch_id")}
+                   if out.get("ran") and out.get("batch_id") else None)
+    return out
+
+
+__all__ += [
+    "SWITCH_ON_VERBS", "SWITCH_OFF_VERBS",
+    "VERB_INTAKE_SECOND_WITNESS_ON", "VERB_INTAKE_SECOND_WITNESS_OFF",
+    "VERB_LEARNING_AUTO_APPLY_ON", "VERB_LEARNING_AUTO_APPLY_OFF",
+    "VERB_EXIT_OWN_WORD_ON", "VERB_EXIT_OWN_WORD_OFF",
+    "VERB_EXIT_SILENCE_ON", "VERB_EXIT_SILENCE_OFF",
+    "VERB_IDENTITY_AUTO_CREATE_ON", "VERB_IDENTITY_AUTO_CREATE_OFF",
+    "VERB_IDENTITY_AUTO_MERGE_ON", "VERB_IDENTITY_AUTO_MERGE_OFF",
+    "SWITCH_WRITER_TRANSCRIPT", "SWITCH_WRITER_QUESTION_EXPIRY",
+    "SWITCH_WRITER_FLOW", "SWITCH_PHRASES", "switch_route",
+    "apply_switch_phrase", "announced_switch_phrases",
+    "switch_phrase_candidates",
+]

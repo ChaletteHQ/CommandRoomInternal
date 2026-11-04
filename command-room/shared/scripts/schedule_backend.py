@@ -1036,7 +1036,7 @@ def trigger_row_payload(after_kwargs: dict, *, trigger_id: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
-# SCHEDFAST1 (ChaletteHQ/cr1#101) - ONE door write per created chat
+# SCHEDFAST1 (chaletteholdings/cr1#101) - ONE door write per created chat
 # ---------------------------------------------------------------------------
 #
 # A create's `after` list has two entries - the trigger row and the

@@ -150,6 +150,7 @@ def _load_entities(entities: Union[dict, str, "os.PathLike", None]) -> Optional[
     """Accept an already-loaded entities dict, a workspace_root path, or None.
     A path is read defensively (missing / malformed => None, same posture as
     personification.get_brain_name). Never raises."""
+    from entities_io import read_entities_json
     if entities is None:
         return None
     if isinstance(entities, dict):
@@ -167,7 +168,7 @@ def _load_entities(entities: Union[dict, str, "os.PathLike", None]) -> Optional[
     if not entities_path.exists():
         return None
     try:
-        data = json.loads(entities_path.read_text(encoding="utf-8"))
+        data = read_entities_json(entities_path)
     except (json.JSONDecodeError, OSError) as e:
         # FS-15 — this exact fallback is the 2026-07-14 dogfood incident: a
         # sync cache served a truncated entities.json for ~90 minutes and

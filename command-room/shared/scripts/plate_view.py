@@ -834,10 +834,14 @@ REASON_ORIGIN_PRODUCT = "product"
 
 def _customer_typed(row) -> bool:
     """LEAK3's predicate, imported at call time so the plate and the chat
-    renderer agree about a STAMPED reason (MF-3). They differ, by design, on
-    an UNSTAMPED one: the chat gate treats a missing stamp as machine text,
-    while the plate's row line keeps the legacy arm — a reason written
-    before the stamp existed is still the customer's words (MF-11c-7b).
+    renderer agree about a reason — STAMPED OR NOT (MF-3; SWITCH2 5.4).
+
+    They used to differ on an unstamped one: the chat gate read a missing
+    stamp as machine text, the plate's row line read it as the customer's
+    words (the legacy arm, MF-11c-7b). M ruled the gate's reading
+    (2026-09-18, ruling 11), so there is now ONE predicate and one answer,
+    and `_row_line` asks nothing else. A reason with no stamp is machine
+    text on the plate, the brief, the day-close and the wrap alike.
     """
     try:
         from chat_output_renderer import customer_typed
@@ -1923,12 +1927,16 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
             # customer never typed. A writer that stores the customer's typed
             # reason stamps `customer` itself.
             # MF-11c-7 (CARD1 seam, MF-5's plate half): the stamp the WRITER
-            # put on the reason travels. MF-11c-7b (reader, FAIL): a writer
-            # that said NOTHING stays "" — never `product` — because the
-            # row line's legacy arm reads that absence as "written before
-            # the stamp existed, still the customer's words"; a `product`
-            # fallback here made that arm unreachable and would have refused
-            # the whole wrap on 9 of the book's 809 historical reasons.
+            # put on the reason travels. SWITCH2 5.4 (M's ruling 11; fix
+            # round 1, review F-4) REPLACED what used to be written here.
+            # An unstamped reason is MACHINE TEXT EVERYWHERE now: the row
+            # line's legacy arm — which read a missing stamp as "written
+            # before the stamp existed, so still the customer's words" — is
+            # deleted, and an unstamped reason faces the internal-vocabulary
+            # scan exactly as the chat gate has always made it face one.
+            # What did NOT change is the "" itself: this module never
+            # invents a stamp, so a writer that said NOTHING still leaves
+            # "" here and the reader downstream answers for it.
             # `REASON_ORIGIN_PRODUCT` is stamped only by the writers that
             # COMPOSE a reason (the silence park), never invented here.
             "reason_origin": ((hints.get(cid) or {}).get("reason_origin") or ""),
@@ -2230,13 +2238,32 @@ def _row_line(r: dict, *, verbs: bool) -> str:
         # `reason_origin: customer` (deferred MF-5, night 11c). A customer-
         # stamped reason is user text by LEAK3's predicate. A reason this
         # module COMPOSED is neither and is scanned in full.
-        # MF-11c-7 — the SAFE form (CARD1 review): a customer-stamped reason
-        # is user text; a reason with NO stamp is a legacy row written before
-        # the stamp existed and keeps the legacy arm (809 historical rows
-        # render unchanged, 0 new refusals); a `product` stamp is this
-        # module's own words and is scanned in full.
-        why = (_user(r["reason"]) if (_customer_typed(r) or not r.get("reason_origin"))
-               else r["reason"])
+        # SWITCH2 5.4 (M's ruling 11) — ONE READER, ONE ANSWER. This line
+        # used to read `_customer_typed(r) or not r.get("reason_origin")`:
+        # the legacy arm, which treated an UNSTAMPED reason as the
+        # customer's own words on the grounds that it was written before the
+        # stamp existed (MF-11c-7b). The chat gate has always read the same
+        # absence the other way — `customer_typed()` returns False on a
+        # missing stamp, by design, because nothing may infer provenance
+        # from a row's age or from the shape of a sentence. Two readers, two
+        # answers, about one row.
+        #
+        # The gate's reading wins. The arm is gone, so `_customer_typed` is
+        # the whole test here and on every other surface, and a reason with
+        # no stamp is machine text everywhere.
+        #
+        # WHAT IT COSTS, MEASURED (a private copy of the 2026-09-17 scratch,
+        # 18,392 ledger lines): 317 open rows, 152 of them carrying a
+        # reason, ALL 152 unstamped. Rendered both ways the customer-visible
+        # text is BYTE-IDENTICAL (39,167 characters) on the plate, the
+        # brief, the day-close and the wrap, and nothing refuses on any of
+        # the four. What changes is the provenance CLAIM: the marked spans
+        # drop from 918 to 777. The product stops telling the reader that
+        # 141 sentences it composed are their own words.
+        #
+        # Pre-stamp rows get a one-shot stamp pass on M's word — an operator
+        # act, never a product write — and it is NOT built here.
+        why = _user(r["reason"]) if _customer_typed(r) else r["reason"]
         reason = f" — {why}"
     return f"- {_user(r['title'])}{who}{due}{badge}{folded}{sub}{reason}{chip}"
 
@@ -3727,6 +3754,14 @@ def wrap_docx_section(cut: dict, *, heading: str = WRAP_DOCX_HEADING) -> dict:
     (`wrap_relay_check` passes over the joined bullets), every Parked row
     still renders (P2), and nothing about the words changes.
 
+    cr1#471: the cut's `## <block>` and `### <project>` lines stay in
+    `bullets` byte-exact, so the relay above is untouched, and the section
+    sets `md_headings: True`, the writer's opt-in, so
+    `brief_writer._add_bullets` renders each of them as a heading in the
+    saved document rather than as a bullet with literal `#` marks. The cut's
+    `# ` title, which repeats this section's heading, is not printed twice.
+    Only this section opts in: elsewhere a leading `# ` is ordinary text.
+
     Refused cut (`cut["refused"]`) → the one plain line, as the single
     bullet. It carries a dash of its own ("Nothing was rendered — update
     Command Room…"), so a refusal handed over as `body` would fail the save
@@ -3754,7 +3789,9 @@ def wrap_docx_section(cut: dict, *, heading: str = WRAP_DOCX_HEADING) -> dict:
     # blanks them for the MARKETING family only; every other family still
     # reads the document in full.
     return {"heading": heading, "bullets": bullets,
-            "user_spans": list(cut.get("user_spans") or [])}
+            "user_spans": list(cut.get("user_spans") or []),
+            # cr1#471 - the cut's `##` / `###` lines render as headings.
+            "md_headings": True}
 
 
 __all__ = [

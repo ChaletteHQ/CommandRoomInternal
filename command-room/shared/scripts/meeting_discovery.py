@@ -1045,6 +1045,9 @@ def shadow_route_meeting(*, meeting, items=(), transcript_text=None,
         org_name=org_name,
         primary_thread_id=primary_thread_id,
         source_skill=source_skill,
+        # cr1#208: a binding question is a write, and this lane writes
+        # nothing while it is in shadow.
+        bind_threads=not shadow_mode_enabled(),
     )
 
     candidates: List[dict] = []

@@ -27,6 +27,7 @@ migration). WARN/INFO findings do not fail the run.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -246,6 +247,76 @@ def _folder_structure_findings(root: Path, threads: list[dict]) -> list[Finding]
             findings.append(Finding("C11b.missing_session_notes", WARN,
                 f"project '{name}/' has scaffolding but no SESSION_NOTES file (backfill a scaffold)", name))
     return findings
+
+
+#: C20 judges only rows whose `ts` is the SOURCE's time: the inbound-mail and
+#: chat writers backdate the row to the message. Meeting and sweep rows are
+#: stamped at capture (event_gate), so a promise made last week and captured
+#: today, due yesterday, is legitimate there and is not judged.
+_SOURCE_STAMPED_PREFIXES = ("gmail:", "outlook:", "ms365_outlook:", "ms365:", "slack:", "ms365_teams:", "teams:")
+_SOURCE_STAMPED_SKILLS = frozenset({"inbox-triage", "inbound-capture", "slack-capture", "reconcile-chat",
+                                    "reconcile-sent"})
+#: PROV2: a stored `source_ref` is read byte-for-byte; only Layer A4 may
+#: case-fold a pointer. The scheme match is case-insensitive on the PATTERN
+#: side, so no reader here normalizes the stored string (cr1 battery guard
+#: `run_prov2_case_preserving_pointer_test`, section [5]).
+_SOURCE_STAMPED_RE = re.compile(
+    r"^(?:" + "|".join(re.escape(p.rstrip(":")) for p in _SOURCE_STAMPED_PREFIXES) + r"):",
+    re.IGNORECASE)
+
+
+def _source_stamped(ev: dict, d: dict) -> bool:
+    ref = str(d.get("source_ref") or "")
+    return (bool(_SOURCE_STAMPED_RE.match(ref))
+            or str(ev.get("source_skill") or "") in _SOURCE_STAMPED_SKILLS)
+
+
+def _due_before_capture_findings(root: Path, events: list[dict]) -> list[Finding]:
+    """DUEBEFORE1 (cr1#270). The OPEN set is the folded one (a later
+    `commitment_resolved` closes the row for this check as for every reader);
+    the fold is done here, not through cru_match — this module is
+    dependency-light by contract (the bare-string reader guard, site 6). A
+    row the inbound door already flagged (`due_before_source`) is reported
+    once here too, so the flag has a reader beyond the door that set it."""
+    out: list[Finding] = []
+    try:
+        from inbound_capture import source_local_date
+    except Exception:  # noqa: BLE001 - the helper's module is beside this one
+        return out
+    import datetime as _dt
+    closed: set[str] = set()
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment_resolved" and d.get("commitment_id"):
+            closed.add(str(d["commitment_id"]))
+        elif ev.get("type") == "commitment_updated" and d.get("commitment_id") \
+                and d.get("status") not in (None, "open", "overdue"):
+            closed.add(str(d["commitment_id"]))
+    for ev in events:
+        if ev.get("type") != "commitment":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        cid_key = str(d.get("id") or "")
+        if d.get("status") not in (None, "open", "overdue") or cid_key in closed:
+            continue
+        if not isinstance(d.get("due"), str) or not _source_stamped(ev, d):
+            continue
+        cap_day = source_local_date(ev.get("ts"), root)
+        if cap_day is None:
+            continue
+        try:
+            due_day = _dt.date.fromisoformat(d["due"][:10])
+        except ValueError:
+            continue
+        if due_day < cap_day:
+            cid = str(d.get("id") or d.get("commitment_id") or ev.get("seq") or "?")
+            flagged = " (already flagged for review at capture)" if d.get("due_before_source") else ""
+            out.append(Finding("C20.due_before_capture", WARN,
+                f"open commitment '{cid}' is due {due_day.isoformat()}, before the day its message "
+                f"arrived ({cap_day.isoformat()}) — a relative date resolved against the wrong day; "
+                f"fix the date{flagged}. Meeting and sweep rows are stamped at capture and are not judged here.",
+                cid))
+    return out
 
 
 def scan_project_structure(workspace_root: str | Path) -> list[Finding]:
@@ -640,6 +711,12 @@ def run_checks(root: Path) -> list[Finding]:
                 f"one row (lowest seq survives) and history is left intact; "
                 f"the writer that re-appended it is the thing to fix", _cid))
 
+    # C20 — DUEBEFORE1 (cr1#270): an OPEN commitment whose due date is before
+    # the day it was captured. "tomorrow" resolved against the wrong day shows
+    # as overdue the moment it lands and ranks wrongly on every plate; this
+    # names each so the owner can fix the date. Capture day = the event's own
+    # timestamp in the workspace's zone (its offset when the zone is unknown).
+    findings.extend(_due_before_capture_findings(root, events))
     return findings
 
 

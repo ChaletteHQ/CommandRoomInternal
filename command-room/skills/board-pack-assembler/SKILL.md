@@ -68,7 +68,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
   - `intel_logged` for context dropped in the period
 - `_hq/data/entities.json` — project status (active/at-risk/paused), hiring slate (people records with `role: "open"`), org tier changes. **This is the canonical source for project state-of-the-world per `references/SOURCE_OF_TRUTH.md`.** Pre-v3.11.4 this skill also read `_hq/views/MASTER_TRACKER.md` for the same roll-up; that's been removed because the tracker is a Tier 2 projection that can lag entities.json + events.jsonl by hours-to-days. Reading both risks rendering inconsistent state in the same pack.
 - `_hq/board-packs/BoardPack_*.docx` (prior packs) — for format/voice consistency. The most recent prior pack defines the section ordering, KPI list, target lines that this pack continues.
-- `_hq/data/events.jsonl` — `type == "decision"` events about KPI targets (e.g., "Q1 MRR target = $450K" — surfaces in the KPIs vs Targets section). Same org-scoped read as above — one `load_events_org_scoped` call serves both.
+- `_hq/data/events.jsonl`: `type == "decision"` events about KPI targets (e.g., "Q1 MRR target = an amount", which surfaces in the KPIs vs Targets section). Same org-scoped read as above: one `load_events_org_scoped` call serves both.
 - QuickBooks MCP (if installed) — for financial detail. Specific tools to call: `mcp__*__qbo_accounting_get_balance_sheet` (for assets/liabilities/equity), `mcp__*__qbo_accounting_get_ap_aging_summary` + `mcp__*__qbo_accounting_get_ar_aging_summary` (AR/AP aging buckets), `mcp__*__qbo_accounting_get_sales_by_customer_summary` (revenue concentration). Use `mcp__*__profit_loss_quickbooks_account` if available for P&L; otherwise compose from balance-sheet + AR aging. **No-QB fallback:** if no `qbo_*` tool is discoverable in the session, skip §7C entirely and put a single line in §7C's place: *"Financials aren't in this pack yet — once QuickBooks is connected, AR/AP, runway, and P&L will fill in automatically."* Do NOT estimate financials from email/intel signal — the operator's board would rather see a missing-data note than inferred numbers.
 - Calendar MCP — to find the board meeting itself (if the trigger references a date, confirm the date matches the meeting on calendar; if it doesn't, ask).
 
@@ -116,7 +116,7 @@ cfg = get_config(workspace_root, "board-pack-assembler", DEFAULTS)
 | **Detect** (default) | "build the board pack" | assemble the pack with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "board-pack-assembler", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
 | **Show settings** | "show board-pack-assembler settings" | render current config in plain English; no pack. |
 | **Tune** | "tune board-pack-assembler" / "tune the board pack" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. KPI-set changes confirm first (AF). |
-| **Reset** | "reset board-pack-assembler to defaults" | `wipe_skill_config(workspace_root, "board-pack-assembler")` → next fire is a first-fire again. |
+| **Reset** | "reset board-pack-assembler to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "board-pack-assembler", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "board-pack-assembler")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — this skill ends in a chat link to the .docx, not a widget):**
 
@@ -284,7 +284,7 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The s
 
 **No-fabrication gate — run before rendering each section:** is every claim traceable to a specific event seq or entity record? Trend language ("velocity is accelerating", "relationship strengthened") with no event behind it = fabrication; cut it. Wins/concerns cite DATE + OUTCOME. Decisions copy the logged decision event — never inferred from circumstantial signal. KPI deltas name their baseline source. An empty section renders "(nothing logged this period)" — filler erodes board trust faster than a gap.
 
-> **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: **§1 becomes the exec-header shape** (board-pack §1 is a sanctioned synthesis-lead surface) and **the Asks move to PAGE 1 with dollar sizes** — "an ask on page 5 is an ask not made." Pass `make_brief(brief_kind="board_pack", ...)` an `exec_header` (verdict = the biggest move; CHANGED = what changed since last board; DECIDE = the decision the board must make; NEEDED = the top board ask with its dollar size). The page-1 ask summary carries dollar sizes via `quantify.money_time_tag` (or a logged target/envelope figure) — "$340K Q3 envelope" — ONLY when derivable, never estimated. **§6 keeps the ask DETAIL** (this is the one place a board-pack legitimately restates: §1/exec-header is the page-1 summary, §6 is the backing detail — not a washing duplicate).
+> **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`: **§1 becomes the exec-header shape** (board-pack §1 is a sanctioned synthesis-lead surface) and **the Asks move to PAGE 1 with dollar sizes**: "an ask on page 5 is an ask not made." Pass `make_brief(brief_kind="board_pack", ...)` an `exec_header` (verdict = the biggest move; CHANGED = what changed since last board; DECIDE = the decision the board must make; NEEDED = the top board ask with its dollar size). The page-1 ask summary carries dollar sizes via `quantify.money_time_tag` (or a logged target/envelope figure), e.g. "Q3 envelope of an amount", ONLY when derivable, never estimated. **§6 keeps the ask DETAIL** (this is the one place a board-pack legitimately restates: §1/exec-header is the page-1 summary, §6 is the backing detail, not a washing duplicate).
 
 **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("board_pack", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the §1–§7 spine and the prior-pack KPI-list inheritance below stay authoritative; the exemplar anchors layout within them). Workspace exemplar (`_hq/exemplars/board_pack/`) beats the shipped seed; `None` = compose on the defaults below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header or any gate, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the pack. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered pack ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="board_pack", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
@@ -296,13 +296,13 @@ On exit 1 (`FAIL`), rewrite the flagged lines and re-run until it exits 0. The s
 - **Period delta waterfall (`waterfall`)** — the period's dollar walk from the SAME `deal_won` / `deal_lost` events §3/§4 already cite: one step per event with a stated value (`label` = the deal name, `delta` = +value on a win, −value on a loss, `"unit": "$"`). Only events with user-stated values contribute (never estimated); fewer than 2 valued steps → no waterfall.
 Both render through `charts.try_chart_png` inside `make_brief` automatically — a refused shape or a machine with no rasterizer drops the chart and §2 renders exactly as before (the table/tiles are the fallback, byte-identical). Never hand-compose chart markup or numbers.
 
-**§3 Wins** — top 3 outcomes pulled from `outcome_positive` events ranked by impact. `deal_won` events in period (SPEC PIPE1) are win candidates too — "Closed [Deal] — $52K" with the stated value via quantify, never estimated.
+**§3 Wins**: top 3 outcomes pulled from `outcome_positive` events ranked by impact. `deal_won` events in period (SPEC PIPE1) are win candidates too, e.g. "Closed [Deal]: [amount]" with the stated value via quantify, never estimated.
 
 **§4 Concerns** — top 3 pulled from `pattern_break_detected` + dormancy signals + lost-deal events + recorded org facts (SPEC HIST1: an `org_fact_observed` in period whose content is concern-shaped — a churn signal, a leadership departure, adverse company news — is real, sourced material; quote the recorded fact with its date, never embellish it). Each concern has 1-line mitigation. **Lost-deal events are real as of SPEC PIPE1:** read `deal_lost` events in period via `deal_state.load_deal_events` — each carries the org, the stated value (when the user gave one — never estimated), and the loss_reason from the fixed picklist; a period with 2+ losses sharing a reason renders the pattern as one concern ("both losses cited price"). No `deal_lost` events in period → this source contributes nothing (never backfill from prose).
 
 **§5 Decisions Logged** — direct enumeration of `decision` events in period (rationale + date).
 
-**§6 Asks (detail)** — the full ask detail behind the page-1 summary (EXEC1: the ask SUMMARY with dollar sizes lives on page 1 / the exec header; §6 is the backing detail). Pulled from the prior session-notes pattern "ASK board:" if the user has been logging them, else surface as "[add asks here]" placeholder. Each ask carries its dollar size via `quantify` when derivable ("$340K Q3 envelope"), never estimated.
+**§6 Asks (detail)**: the full ask detail behind the page-1 summary (EXEC1: the ask SUMMARY with dollar sizes lives on page 1 / the exec header; §6 is the backing detail). Pulled from the prior session-notes pattern "ASK board:" if the user has been logging them, else surface as "[add asks here]" placeholder. Each ask carries its dollar size via `quantify` when derivable ("Q3 envelope of an amount"), never estimated.
 
 **§7 Appendices** — pipeline by stage, hiring slate, QB financial detail. **Pipeline-by-stage is real data as of SPEC PIPE1:** build it from open deal threads (`deal_state.list_open_deals`) + `pipeline_math` — one row per stage — labeled via `deal_state.STAGE_DISPLAY` (Lead / Qualified / Proposal sent / Negotiating; wire ids never render, UXC1) — with count and summed stated value, plus the period's moves from `deal_stage_changed` / `deal_won` / `deal_lost` events. Untracked deal threads render as one honest count line ("N deals tracked without stages yet"), never invented stages. **Zero deals → DROP the appendix section entirely** (no hardcoded counts, no empty table — G7). Values are user-stated only; a stage with no valued deals shows count-only.
 
@@ -326,7 +326,7 @@ Render in chat — summary first, links LAST in the turn as H2 heading links per
 Board pack ready for the May 28 meeting (covering April 28 – May 28).
 
   Inside: 3 wins, 2 concerns, 5 decisions, 2 asks for the board.
-  Biggest move: MRR up 13% over last month — $478K against a $470K target.
+  Biggest move: MRR up 13% over last month, to an amount, above its target.
 ```
 
 Then, at the BOTTOM of the turn, the H2 link(s) built with the canonical helpers — never a hand-encoded `computer:///` URL:
@@ -359,10 +359,10 @@ TABLE OF CONTENTS
 
 PAGE 1 — EXECUTIVE SUMMARY
   What changed since last board:
-    • MRR $478K, +13% MoM (target was +10%)             ✓
-    • Closed Acme Co — $52K ARR, largest deal to date   ✓
+    • MRR [amount], +13% MoM (target was +10%)          ✓
+    • Closed Acme Co: [amount] ARR, largest deal to date ✓
     • Lost Northstar Partners (cited timing)                  — postmortem §4
-    • Command Room hit $200K ARR in 60 days             ✓
+    • Command Room hit [amount] ARR in 60 days          ✓
 
   Decisions you should know about (detail §5):
     • Hired Rio Sample as Head of Ops (2026-04-08)
@@ -376,15 +376,15 @@ PAGE 1 — EXECUTIVE SUMMARY
 PAGE 2 — KPIs VS TARGETS
   [ tile band — top 4–5 KPIs ]
    ┌──────────┬──────────┬──────────────┬──────────┐
-   │  $478K   │   134%   │      8       │  18.4 mo │
+   │ [amount] │   134%   │      8       │  18.4 mo │
    │ MRR ▲    │ NRR ▲    │ NEW CUST ▲   │ RUNWAY   │
    └──────────┴──────────┴──────────────┴──────────┘
   Metric          Apr      Target    vs Tgt    Trend
-  MRR             $478K    $470K     +1.7%     ▲
+  MRR             [amount] [amount]  +1.7%     ▲
   NRR             134%     125%      +9 pts    ▲
   New customers   8        6         +33%      ▲
   Logo churn      1        ≤1        flat      —
-  Burn            -$31K    -$40K     better    ▲
+  Burn            -[amount] -[amount] better   ▲
   Runway          18.4 mo  >18       ✓         flat
   Sales cycle     42 days  <60       ✓         ▲
 

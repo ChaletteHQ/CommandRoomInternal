@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Sam Sample | $480K | 37% -->
+<!-- tokens: Acme Co | Sam Sample | 37% -->
 
 # One-Pager — structural exemplar (kind: one_pager)
 
@@ -19,7 +19,7 @@
 
 ---
 
-**Take the Acme Co pilot at $480K; decide by [date].** [headline verdict, ≤25 words, the conclusion]
+**Take the Acme Co pilot at an amount; decide by [date].** [headline verdict, ≤25 words, the conclusion]
 
 ## Recommendation
 [2–4 sentences: the pick, the decide-by date, cost of delay only when it traces to a real figure]

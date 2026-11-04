@@ -209,7 +209,16 @@
           "type": ["string", "null"]
         },
         "reports_to_id": {
-          "type": ["string", "null"]
+          "type": ["string", "null"],
+          "description": "The person id of whoever this person reports to. A personal layer's `reports_to` is folded into this field by the person schema migration (cr1#132)."
+        },
+        "is_user": {
+          "type": "boolean",
+          "description": "Legacy primary-user flag that personal layers write (cr1#132). Read only through primary_user.resolve_primary_user, after the canonical workspace.user_id pointer."
+        },
+        "pronouns": {
+          "type": ["string", "null"],
+          "description": "How this person is referred to, as a personal layer records it (cr1#132)."
         },
         "status": {
           "type": "string",
@@ -853,7 +862,7 @@
         "user_id": {
           "type": "string",
           "pattern": "^person_[0-9]{3,}$",
-          "description": "The primary user's person_id. Used by readers that need to identify whose workspace this is (Friday Wrap internal/external split, dormancy live-check self-reply filter, etc.). Canonical signal — preferred over the legacy `is_primary_user: true` person field."
+          "description": "The primary user's person_id. Read through primary_user.resolve_primary_user by every consumer that needs to know whose workspace this is: the Friday Wrap internal/external split, the dormancy scan's and relationship-moves' account-owner filters (dormancy.outreach_scope, relationship_moves), the capture gate's self detection, and the receipt writers. Canonical signal — preferred over the legacy `is_primary_user: true` person field."
         },
         "user_timezone": {
           "type": "string",

@@ -101,8 +101,9 @@ def _events_path(ws: Path) -> Path:
 
 
 def _load_entities(ws: Path) -> dict:
+    from entities_io import read_entities_json
     p = Path(ws) / "_hq" / "data" / "entities.json"
-    return json.loads(p.read_text(encoding="utf-8"))
+    return read_entities_json(p)
 
 
 def _threads(data: dict) -> list:

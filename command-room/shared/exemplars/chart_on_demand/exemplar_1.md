@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | $240K | $180K | $60K -->
+<!-- tokens: Acme Co | Northstar Partners -->
 
 # Chart on Demand — structural exemplar (kind: chart_on_demand)
 
@@ -41,6 +41,6 @@
 Source: from the open deals on the pipeline as of [as-of date] — stated deal values only, unpriced deals excluded (never estimated). [one-line provenance + as-of date]
 
 [TABLE TWIN of the same numbers — Client | Revenue in play — no blank cells:]
-[Acme Co | $240K]
-[Northstar Partners | $180K]
-[Sample Org 3 | $60K]
+[Acme Co | [amount]]
+[Northstar Partners | [amount]]
+[Sample Org 3 | [amount]]

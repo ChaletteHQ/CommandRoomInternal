@@ -28,9 +28,10 @@ Skills that fire as scheduled tasks (morning-briefing at 7:30am, cleanup Sundays
 ### 1. Skip, don't fail, when context is missing
 
 If a scheduled task fires and the workspace isn't ready (no entities.json, no BUSINESS_CONTEXT.md, no recent session activity), the skill must:
-- Log a single line to `_hq/logs/scheduled-task-skips.log` — `YYYY-MM-DD HH:MM [skill-name] skipped: [reason]`
 - Exit cleanly with no output.
 - NEVER create an empty briefing, empty audit, or generic fallback content.
+
+There is no skip log. A not-ready skip leaves no record unless the skill's own receipt step writes one.
 
 ### 2. Holiday / vacation detection
 
@@ -96,13 +97,13 @@ Every connector read follows this error protocol:
 - Full skill connector-scan timeout: 60 seconds (aggregate across all connectors).
 - If budget exceeded, abort remaining reads, return partial output with a `⚠️ [Connector] skipped — timeout` line.
 
-> **Honest mechanism (SPEC CON1):** these are **targets the skill self-polices**, not a hard ceiling — there is no shared timeout wrapper around connector/MCP calls, and the runtime does not interrupt a slow call at 15s. The numbers are a budget the model is asked to honor (stop scanning past ~60s and return partial output) plus the shape of the `connector-timeout` event a skill logs when it gives up. Treat them as a service-level *intent*, not an enforced limit. A real shared wrapper is future work; until it exists, do not claim these are guaranteed.
+> **Honest mechanism (SPEC CON1):** these are **targets the skill self-polices**, not a hard ceiling — there is no shared timeout wrapper around connector/MCP calls, and the runtime does not interrupt a slow call at 15s. The numbers are a budget the model is asked to honor (stop scanning past ~60s and return partial output). There is no timeout event or timeout log, so a skill that gives up leaves no record unless its own receipt step writes one. Treat them as a service-level *intent*, not an enforced limit. A real shared wrapper is future work; until it exists, do not claim these are guaranteed.
 
 ### 2. Graceful degradation
 
 For every connector read, if the connector:
 - Is not connected: silently skip. Never surface "Gmail is not connected" to the user — they know. Build the output from available sources.
-- Returns an auth error (expired OAuth): surface ONCE per session: "⚠️ [Connector] needs reconnection — [link]." Save a flag in `_hq/logs/auth-failures.log` so subsequent skills in the same session don't re-prompt.
+- Returns an auth error (expired OAuth): surface ONCE per session: "⚠️ [Connector] needs reconnection — [link]." No file holds that flag: nothing writes an auth-failure log, so not re-prompting later in the session is up to the chat.
 - Returns a rate-limit error: back off exponentially (wait 5s, 15s, 60s) up to 3 attempts. If still rate-limited, mark that connector unavailable for the rest of the session.
 - Returns a 5xx: retry once after 3s. If still failing, treat as unavailable.
 - Returns malformed data: skip the specific bad record, log to `_hq/CONFLICTS.md` with type `connector-malformed`, continue with the rest.
@@ -132,7 +133,7 @@ For skills that do both a JSON append and a markdown append (per `PASSIVE_CAPTUR
 1. Append to `events.jsonl` FIRST.
 2. Append to the SESSION_NOTES or other markdown source SECOND.
 3. If step 1 fails: skip step 2, log to `_hq/CONFLICTS.md`, surface "couldn't log this event — workspace may be stale. Try again or check `_hq/CONFLICTS.md`."
-4. If step 1 succeeds and step 2 fails: log to CONFLICTS, flag "event captured but narrative notes incomplete — `events.jsonl` has the source of truth."
+4. If step 1 succeeds and step 2 fails: log to CONFLICTS, flag "event captured but narrative notes incomplete — `events.jsonl` has the record."
 
 ### 2. Idempotency via dedup
 
@@ -180,24 +181,20 @@ Two different files, two different mechanisms — they are not interchangeable.
 
 ---
 
-## Logging Convention
+## Where failures are recorded
 
-Every skill that hits a reliability edge case logs in a standard format:
+There is no log folder and no per-type failure log, so there is nothing to rotate. Earlier versions of this contract named such files; no code ever wrote them. A failure lands in one of these records, or in none. The third column says which records code writes and which exist only when the chat follows a skill's or orchestrator's instruction:
 
-```
-[YYYY-MM-DDTHH:MM:SSZ] [skill-name] [event-type] [message]
-```
-
-Event types:
-- `scheduled-task-skip` — scheduled fire that exited cleanly without producing output.
-- `connector-timeout` — connector hit the 15s timeout.
-- `connector-auth-failure` — OAuth needs refresh.
-- `connector-rate-limit` — backed off due to rate limit.
-- `dedup-hit` — event append was skipped because hash matched.
-- `write-failure` — write protocol failed after retries.
-- `corruption-recovery` — auto-restored from backup.
-
-Logs rotate weekly — the writer-helper archives `_hq/logs/[type].log` to `_hq/logs/archive/YYYY-WW-[type].log.gz` and starts fresh.
+| What happened | Where it is recorded | Written by | What reads it |
+|---|---|---|---|
+| A scheduled fire found its slot already served | A `pack_run` receipt with status `skipped` | Code: `late_fire`, through `receipts.log_receipt` | `receipts.last_receipt_times`, which the watchdog (`task_watchdog.health_verdict`) uses |
+| A scheduled fire skipped because the workspace was not ready | No record, unless the skill's own receipt step writes one (weekly-insights and dormant-customer-scan require a receipt on every run) | The chat, on the skill's instruction | The receipt readers, when a receipt exists |
+| A connector timed out, refused auth, or hit a rate limit | No record of its own. The End of Day receipt carries `connector_gaps` when the chat passes them to the pack writer | The chat supplies the reasons; code (`end_of_day`) copies them onto the receipt | Nothing in code reads them back from the receipt |
+| A dedup hit | Nothing. A matched hash is a silent success (Write Reliability, rule 2) | Nobody | Nothing |
+| A scheduled fire could not go on (hard failure) | A `scheduled_task_failure` event carrying the diagnostic | The chat, on orchestrator instruction (the morning-brief and historical-backfill orchestrators); no code writes it | `task_watchdog.check_task_failures`, inside the watchdog's verdict, for 7 days |
+| A surface could not render | A `surface_failed` receipt | Code: `surface_drivers.log_surface_failed`, the only writer | `receipts.last_receipt_times` and `receipts.count_runs` |
+| An `events.jsonl` append could not get the writer lock | `atomic_append_jsonl` raises `TimeoutError`, and the timeout is counted in `_hq/.system/lock_stats.json` | Code: `writer_lock` | `cleanup`, which reports the counters weekly and resets them |
+| Malformed lines in `events.jsonl` | They move to `_hq/.system/quarantine/` and a `corruption_recovery` event is appended | Code: `recover_corruption.py` | `cleanup`, which runs it every fire and reports what it healed |
 
 ---
 
@@ -235,12 +232,11 @@ If you don't know why something failed, say "[Connector] unavailable" and move o
 
 ## Validation
 
-`cleanup` checks these reliability invariants:
+No check reads a failure log, because none exists. These are the reliability checks that run today:
 
-1. `_hq/logs/*.log` files exist and are actively written (no skill is silently swallowing errors).
-2. `_hq/caches/` exists for any skill that uses caches.
-3. No skill has more than 5 unresolved `connector-auth-failure` logs in the last 7 days (surface to CEO).
-4. No skill has `write-failure` logs in the last 7 days (blocks auto-update until resolved).
+1. `cleanup` (weekly, in its scheduled-task watchdog step) and the on-demand health check (`system-health`) read one verdict, `task_watchdog.health_verdict`: each scheduled task's newest receipt against its schedule, and any `scheduled_task_failure` event from the last 7 days that is newer than the task's last good receipt.
+2. `cleanup` reads the writer-lock counters in `_hq/.system/lock_stats.json`, reports them in plain words, and resets them.
+3. `cleanup` runs `recover_corruption.py` on every fire, which heals malformed `events.jsonl` lines and records a `corruption_recovery` event.
 
 ---
 

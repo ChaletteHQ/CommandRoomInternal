@@ -167,7 +167,7 @@ receipt's vocabulary); the screen is where the placement lives now.
 | `alarm_lines` | `substrate_health.substrate_alarm_lines` | **RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07).** Still computed on the pack (harmless, side-effect-free — other readers use it), never placed on `pack["screen"]`. Reported by the weekly `cleanup` maintenance run instead |
 | `dark_surface_lines` | TASKALARM1 — the dead-surface alarm, task_alarm.dark_surface_lines | **RETIRED FROM THIS SURFACE (HEALTH1, 2026-09-07).** The driver hard-codes `[]` and never calls `task_alarm.dark_surface_lines` here at all — not just unrendered, uncalled, so its render-once ledger stays available for `cleanup`'s weekly pass, the surface that reports it now. See below |
 | `coverage` | What this fire actually READ, per capability | **RETIRED FROM THIS SURFACE (M's ruling R3, 2026-09-13 — SPEC SURFACEFIX1 5.1).** Same class as the health lines above: a statement about plumbing, home = the `system health` check and the weekly `cleanup` maintenance report. Still computed on every fire and still receipted (a `COMPUTED_ONLY` member now), placed on `pack["screen"]` never. The ONE survivor is `end_of_day.coverage_number_caveat` — one clause, composed in code, appended INSIDE the plate block next to the figure it qualifies. See below |
-| `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended |
+| `day_went` | One grounded paragraph: what moved today | Composed in code by `eod_synthesis.compute_day_went` from the LEDGER's own fields and today's named closes. Printed verbatim; never extended. **ONE CLOSED FIGURE AND ONE OPENED FIGURE REACH THIS SCREEN, and they are the plate cut's** (M's ruling 7, 2026-09-18 — SPEC DAYCLOSE1 3.2): `build_synthesis` passes `render_ledger_figures=False`, so the ledger's own *"N promises closed today"* / *"N new promises landed on the book"* pair stays COMPOSED and grounded on the block under `ledger_figures`, keeps its `ledger:n_closed` / `ledger:n_opened` keys on the synthesis join, and does not print. Two populations answering one question is how the v5.31.0 fire showed *"11 closed"* beside *"2 promises closed"*. **A duplicate merge the machine made renders here too** — ONE line per batch at its own door (`end_of_day.MERGE_DOOR`), with one `undo`, never credited to "you"; a merge the customer made earns no sentence at all |
 | `what_it_meant` | THE ARC READ (SPEC EODARC1): which arcs moved today, which consequence-carrying arcs did not move, where the day's weight went | Composed in code by `eod_synthesis.compute_what_it_meant` over DECLARED arcs only. A sentence with no arc attached does not belong in the section (`eod_synthesis.drop_rows_only`); a genuinely empty day says so honestly in one grounded line; never an arc the model inferred |
 | `worth_remembering` | Decisions and notes logged today, 1–4 lines | Each line IS a row, not a summary of one |
 | `slipped_prose` | The slips whose consequence is STATED | Prose, not a list. No denominator, no "137 slipped". Everything else that slipped is silent here and appears in the morning |
@@ -701,6 +701,29 @@ for that window (*"…more moved since midnight"* rather than *"…more moved
 today"*). Print it as given and never re-word it to claim "today" over a
 floored window. This rule is here and not only in the fire's own text because
 the manual family renders the same pack.
+
+**A MERGE IS NOT A CLOSE AND NOT A DROP (SPEC DAYCLOSE1 3.1, M's ruling 6 of
+2026-09-18).** `end_of_day._CLOSE_TYPES` carries `commitment_superseded`, so
+the duplicate-merge job's work reaches this surface at all — before that it
+wrote a supersede row and a `pack_run` and nothing here could see either.
+What it is NOT is a promise kept or a thing you let go: nothing was finished
+and nobody let anything go, two rows became one. `compute_ledger` gives it
+`n_merged` (split `n_merged_by_you` / `n_merged_by_machine`) and the
+machine's share earns exactly one sentence at the `merged_duplicate` door.
+Never describe a fold as a close, on this surface or any other.
+
+**AND A SPLIT IS NOT ONE EITHER (fix round 1, 2026-09-18).**
+`commitment_superseded` has two writers, not one: the duplicate merge, and
+the `split into [items]` triage verb, which closes the original and opens N
+parts that are all still open — the book GREW. `end_of_day.merge_row`
+therefore decides on the closer's own TYPE (`closer_type`, projected onto
+every closure row) and keeps the `resolution: "duplicate"` arm only for the
+historic folds written before the supersede writer existed. A split lands in
+`n_merged`, never in `n_closed`; it is the customer's own act, so it mints no
+machine door and the duplicate-check sentence is never composed over one.
+Never tell the reader a split shipped, closed, or was let go — and if a
+split ever deserves a movement and a sentence of its own, that is a change
+with its own pass line, not a re-use of the fold's.
 
 **AND THE PARAGRAPH INHERITS THAT FLOOR, because it inherits these rows.**
 `day_went` is composed over the same closure window (`pack["window"]["wins"]`

@@ -42,7 +42,8 @@ from org_writer import (  # noqa: E402
 
 
 def _load_entities(workspace_root: Path) -> dict:
-    return json.loads((workspace_root / "_hq" / "data" / "entities.json").read_text("utf-8"))
+    from entities_io import read_entities_json
+    return read_entities_json(workspace_root / "_hq" / "data" / "entities.json")
 
 
 def _index_org_hints_by_person(events_path: Path) -> dict[str, list[str]]:

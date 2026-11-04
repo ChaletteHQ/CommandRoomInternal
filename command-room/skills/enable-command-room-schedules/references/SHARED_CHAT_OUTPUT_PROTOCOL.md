@@ -201,7 +201,7 @@ print(text)
 **Where the validator owns:**
 - Catching what shouldn't have slipped through (entity-ID leaks, phase labels, internal paths, telemetry narration, threshold rationales, empty subjects, mojibake, missing item numbers, flag names, engineer phrasing)
 
-The 12 rules below are STILL THE SOURCE OF TRUTH for what the renderer + validator implement. They're documented here for clarity. Orchestrators reference this doc for context, but they don't reimplement the rules themselves — they trust the renderer.
+The 12 rules below are STILL WHAT the renderer + validator implement. They're documented here for clarity. Orchestrators reference this doc for context, but they don't reimplement the rules themselves — they trust the renderer.
 
 ---
 
@@ -209,7 +209,7 @@ The 12 rules below are STILL THE SOURCE OF TRUTH for what the renderer + validat
 
 Universal rules for every Command Room scheduled-task chat output. Every orchestrator (`Upcoming Meetings`, `Inbox`, `Commitments`, `Pulse`, `Past Meetings`) references this doc and follows it. New orchestrators added later inherit by referencing it too.
 
-**Why this exists:** v2.10.0/v2.10.1 fixed render leaks per-orchestrator. They drifted within hours because the rules were duplicated in each prompt and we patched each one independently. Single source of truth here so future fixes don't drift.
+**Why this exists:** v2.10.0/v2.10.1 fixed render leaks per-orchestrator. They drifted within hours because the rules were duplicated in each prompt and we patched each one independently. One home here so future fixes don't drift.
 
 **Where this fits:** peer to `EMAIL_DRAFT_PROTOCOL.md`. That doc owns email-draft mechanics (lazy creation, Gmail MCP defensive handling, action shortcuts). This doc owns chat-output presentation. Each orchestrator references both.
 
@@ -417,7 +417,7 @@ Telemetry events (`pack_run`, `draft_created`, `connector_read`, `meeting_proces
   > 2. `shared/scripts/receipts.py` — the `receipt_errors_notice` function and its docstring;
   > 3. `tests/run_walkfix1_chat_errors_test.py` — `section_errors_notice` (its `[J]` / `[J2]` output) **and its call in `main()`**;
   > 4. `tests/run_walkfix1_mutation_test.py` — mutation **`W18`** (the `M.run_mutation("W18 …")` block) **and its `W18` row in the module docstring**. *This is the one the partial list missed: the mutation's anchor is the code struck in step 2, so leaving it in place halts the harness.*
-  > 5. `CHANGELOG.md` — the *"A run that corrected itself says so, in one line"* section of the `## Unreleased — WALKFIX1` block, which would otherwise ship a release note for a feature that is not in the build.
+  > 5. the staging repo's `CHANGELOG.md` — the *"A run that corrected itself says so, in one line"* section of the `## Unreleased — WALKFIX1` block, which would otherwise ship a release note for a feature that is not in the build.
 - Nothing else. No internal mechanics. No tool-call summaries. No event seq numbers.
 
 ### Rule 11 — Phase labels NEVER appear in chat (v2.10.5+)

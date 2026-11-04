@@ -500,6 +500,99 @@ def _reverse_person_alias_dropped(workspace_root, change, *, undone_by,
             "alias": alias}
 
 
+def _seq_of_change_ref(change) -> Optional[float]:
+    """The seq inside a `seq:<n>` change ref, or None when the change came
+    in without one. A number, never the string: the ledger reads it back as
+    a seq and compares it to one (fix round 2, review N-5)."""
+    ref = str((change or {}).get("change_ref") or "")
+    if not ref.startswith("seq:"):
+        return None
+    raw = ref[4:].strip()
+    try:
+        n = float(raw)
+    except ValueError:
+        return None
+    return int(n) if n.is_integer() else n
+
+
+def _reverse_person_renamed(workspace_root, change, *, undone_by,
+                            source_skill):
+    # SWITCH2 5.3 (M's ruling 12) - put the name back. Registered in the SAME
+    # commit as `people_writer.rename_person` and its `person_renamed` row
+    # (the step-10 mandate): a class that can write and cannot be undone does
+    # not ship.
+    #
+    # ONE WRITE, AND IT MINTS NO NEW BATCH (fix round 1, review F-1, ruling
+    # 1). The put-back goes through `people_writer._apply_rename` with
+    # `stamp_batch=False`, so the reversal row carries neither
+    # `brain_batch_id` nor `brain_change_class` - the two keys that make a
+    # row an undoable batch. `recent_auto_batches` therefore does not list
+    # it, the listing SHRINKS by one after this undo rather than growing,
+    # and a second bare `undo` reaches the batch BEFORE the rename instead of
+    # redoing it. That is the shape every other reverser here already has:
+    # `_reverse_person_alias_dropped` writes through `add_person_alias`,
+    # whose `person_updated` row carries neither key either. Going through
+    # the rename's own writer (rather than a second writer of our own) is
+    # what keeps the reversal and the act from drifting apart.
+    #
+    # THE ALIAS IT ADDED, AND ONLY THAT ONE (fix round 1, review F-2). The
+    # rename made exactly two changes: the canonical name, and the previous
+    # name appended to `aliases` - appended only when the record was not
+    # already carrying it. So the put-back subtracts exactly that one
+    # spelling and adds none of its own (`keep_previous_name=False`, or the
+    # name being undone would land in `aliases` as residue). It does NOT
+    # overwrite the list with `previous_aliases`, because a spelling the
+    # customer added by hand BETWEEN the rename and the undo must survive,
+    # and a wholesale restore is precisely what would delete it.
+    #
+    # The alias the rename added is derived, not carried: `rename_person`
+    # appends `previous_name` when and only when it is not already in the
+    # list it found, and both of those are on the change. So no third key is
+    # widened into `_changes_for_brain_batch` to learn it.
+    person_id = change.get("person_id")
+    previous_name = change.get("previous_name")
+    if not person_id or not previous_name:
+        raise BrainUndoError(
+            "person_renamed reversal needs person_id and previous_name")
+    prior_aliases = change.get("previous_aliases")
+    added = ([previous_name]
+             if isinstance(prior_aliases, list)
+             and previous_name not in prior_aliases else [])
+    from people_writer import _apply_rename
+
+    # A collision refusal on this path is correct and is the sibling's rule:
+    # `_reverse_person_alias_dropped` refuses to re-add a spelling that has
+    # since been saved onto a DIFFERENT record, because putting it back would
+    # recreate an ambiguity on top of somebody's later decision. If the old
+    # name now belongs to someone else, the same is true here, and the undo
+    # says so rather than minting two records under one name.
+    # FIX ROUND 2 (review N-5) - the put-back row NAMES the row it puts
+    # back. A reversal and a rename are otherwise the same shape, and the
+    # first surface built on this class would read an undone rename as two
+    # renames. The change already carries the anchor: `change_ref` is
+    # `seq:<n>` of the rename's own row, minted from the NORMALIZED seq, so
+    # no second read of the ledger is needed to learn it.
+    res = _apply_rename(workspace_root, person_id,
+                        canonical_name=previous_name,
+                        reason="undo", source_skill=source_skill,
+                        stamp_batch=False, keep_previous_name=False,
+                        drop_aliases=added,
+                        reversal_of=_seq_of_change_ref(change))
+    if res.get("status") == "unchanged":
+        # The record is already back on the old name and the alias the rename
+        # added is already gone - the batch has been undone before. The
+        # `already_` convention (REVIEW_POLICY1B F-9) counts this apart from
+        # an undo and writes no marker, which is what keeps a second bare
+        # `undo` on a listed-but-already-reversed rename from writing a row
+        # that says something happened.
+        return {"status": "already_renamed_back", "person_id": person_id,
+                "canonical_name": previous_name}
+    return {"status": "renamed_back", "person_id": person_id,
+            "canonical_name": previous_name,
+            "aliases_dropped": res.get("aliases_dropped") or [],
+            "batch_id": res.get("batch_id")}
+
+
 def _reverse_person_split(workspace_root, change, *, undone_by, source_skill):
     # IDENT1 rule 4 — RE-FOLD. The split made exactly one write: a new record
     # carrying the second person's name and the address the two of them share.
@@ -1683,6 +1776,27 @@ REVERSERS: dict[str, dict] = {
                        "else, which would recreate the ambiguity on top of "
                        "a later human decision",
     },
+    # SWITCH2 5.3 — the rename, and the way back from it. Lands in the SAME
+    # commit as `people_writer.rename_person` (the step-10 mandate).
+    "person_renamed": {
+        "reverse": _reverse_person_renamed,
+        # FIX ROUND 2 (review N-1). This row said "+ a person_updated
+        # restoring the aliases the rename appended to" — the wholesale
+        # alias restore that fix round 1 (review F-2) DELETED. Measured on
+        # the ledger after a rename and its undo, the rows are exactly
+        # `person_renamed`, `person_renamed`, `brain_change_undone` — no
+        # `person_updated` anywhere. The registry is the first place a
+        # future reader trusts, so it names the rows the reverser actually
+        # writes and nothing else.
+        "reverses_via": "person_renamed (the name put back, carrying no "
+                        "brain_batch_id and no brain_change_class, so it "
+                        "heads no new batch, and marked `reversal_of` the "
+                        "seq it reverses) — the one alias the rename "
+                        "appended is subtracted on that same row",
+        "description": "call someone by the name they were on file under "
+                       "before; every spelling they were findable by comes "
+                       "back with it",
+    },
     "person_split": {
         "reverse": _reverse_person_split,
         "reverses_via": "person_updated (status -> archived, the shared "
@@ -2333,6 +2447,15 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # and the restore has nothing to write back without
                     # these two.
                     "custom_skill", "prev_custom_text",
+                    # SWITCH2 5.3 — the `person_renamed` reverser's two
+                    # anchors: the name the record was on file under before,
+                    # and the alias list the rename found. A deliberate
+                    # widening of this pinned key set, cited here and in
+                    # `_reverse_person_renamed`, on the same grounds as
+                    # `custom_skill` above: both are free NAME text, so no
+                    # existing key can carry them and the put-back has
+                    # nothing to write without these two.
+                    "previous_name", "previous_aliases",
                     "brain_batch_id"):
             if data.get(key) is not None:
                 change[key] = data[key]
@@ -2788,7 +2911,16 @@ _UNDO_PUT_BACK = {
 #: printed: it is looked up in the name index and the NAME is what is
 #: composed, through the same `safe_name` and the same gate as every other
 #: line here.
-_UNDO_NAMED_BY = {"org_promotion": "org_id", "deal_won": "deal_thread_id"}
+#:
+#: FIX ROUND 2 (review N-2, coordinator ruling) — `person_renamed` joins
+#: them, and it is the class that needed it most: a rename's WHOLE content
+#: is a person's name, and without a row here the receipt for the one act
+#: made entirely of a name read "an item with no name on file". The change
+#: carries `person_id`, and by the time this composer runs the record is
+#: back on the OLD spelling — so the index answers with the name the undo
+#: RESTORED, which is the destination half of the sentence M reads.
+_UNDO_NAMED_BY = {"org_promotion": "org_id", "deal_won": "deal_thread_id",
+                  "person_renamed": "person_id"}
 
 #: The deal stages `thread_writer` allows, in the words a person reads them
 #: in. The stored spelling is snake_case machine text; a receipt says
@@ -2845,6 +2977,36 @@ def _never_an_id(candidate):
     return None if _ID_SHAPED_TITLE_RE.fullmatch(text) else text
 
 
+def _rename_new_names(events: List[dict]) -> dict:
+    """{`seq:<n>` -> the spelling that rename PUT ON the record}.
+
+    Fix round 2 (review N-2). The receipt for an undone rename says
+    "<the name that is going away> — back to <the name that is back>". The
+    second half comes from the name index (the record is already restored
+    when this runs); the first half exists nowhere else by then, so it is
+    read off the rename's OWN row, keyed by the same `seq:<n>` ref
+    `_changes_for_brain_batch` mints. Both halves are the row's own fields.
+    Reversal rows are skipped — they carry `reversal_of`, and their
+    `canonical_name` is the restored name, not the one going away."""
+    from event_seq import event_seq
+    from people_writer import RENAME_CHANGE_CLASS
+
+    out: dict = {}
+    for ev in events or []:
+        # The WRITER's own constant, not a second spelling of the type: the
+        # reader and the writer cannot drift, and the event contract's
+        # dangling-read guard keeps seeing one name for this class.
+        if str(ev.get("type") or "") != RENAME_CHANGE_CLASS:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("reversal_of") is not None:
+            continue
+        name = d.get("canonical_name")
+        if isinstance(name, str) and name.strip():
+            out[f"seq:{event_seq(ev)}"] = name.strip()
+    return out
+
+
 def _row_titles(events: List[dict]) -> dict:
     """{commitment id -> the newest title written for it}. Titles are what a
     receipt names a row by; ids are what it must never name one by."""
@@ -2893,9 +3055,21 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
     from narration_names import safe_name
 
     results = [r for r in (undo_result or {}).get("results") or []]
-    n_ok = sum(1 for r in results if r.get("status") == "undone")
-    n_err = int((undo_result or {}).get("n_errors") or 0)
-    titles = _row_titles(_load_events(workspace_root)) if results else {}
+
+    def _went_back(r: dict) -> bool:
+        # UNDOMARK1 (cr1#147): a row whose reversal ran but whose marker
+        # could not be written DID go back; it is reported as put back, with
+        # its own tail below, never as "could not go back".
+        return r.get("status") == "undone" or (
+            r.get("status") == "error" and r.get("reversed") is True)
+
+    n_ok = sum(1 for r in results if _went_back(r))
+    n_marker = sum(1 for r in results
+                   if r.get("status") == "error" and r.get("reversed") is True)
+    n_err = max(0, int((undo_result or {}).get("n_errors") or 0) - n_marker)
+    events = _load_events(workspace_root) if results else []
+    titles = _row_titles(events)
+    renamed_to = _rename_new_names(events)
 
     def _gated(line: str, fallback: str, *, raw_title: str = "") -> str:
         # Merged-tree review F-2 (night 11b): the row title inside `line` is
@@ -2933,7 +3107,7 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
         if tid and rd.get("deal_stage"):
             stage_by_thread[str(tid)] = str(rd["deal_stage"])
     for r in results:
-        if r.get("status") != "undone":
+        if not _went_back(r):
             continue
         change = r.get("change") if isinstance(r.get("change"), dict) else {}
         cls = str(change.get("change_class") or "")
@@ -2950,22 +3124,44 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
                     from narration_names import name_index
                     name_idx = name_index(workspace_root)
                 raw = name_idx.get(str(ent_id))
-        title = safe_name(_never_an_id(raw),
-                          fallback="an item with no name on file")
         where = _UNDO_PUT_BACK.get(cls, "back the way it was")
         tail = ""
+        from chat_output_renderer import mark_field as _mark_field
+        if cls == "person_renamed" and raw:
+            # N-2. `raw` here is the name the undo PUT BACK — the index,
+            # reached through `_UNDO_NAMED_BY` above, because the record is
+            # already restored by the time a receipt is composed. That is
+            # the DESTINATION half, not the subject: the sentence names the
+            # spelling that is going away and says which one it goes back
+            # to. Both halves are the row's own fields; neither is composed
+            # here. The restored name goes through the same `_never_an_id`
+            # + `safe_name` + `mark_field` as the subject does, so a record
+            # whose "name" is an id shape loses the clause rather than
+            # printing it, and the line falls back to the vague phrase.
+            back_to = _never_an_id(raw)
+            if back_to and not _title_carries_path_or_id(back_to):
+                where = ("back to "
+                         + _mark_field({"name": back_to}, "name", back_to,
+                                       surface="widget"))
+            raw = renamed_to.get(str(change.get("change_ref") or "")) or raw
+        title = safe_name(_never_an_id(raw),
+                          fallback="an item with no name on file")
         if cls == "deal_won":
             stage = stage_by_thread.get(
                 str(change.get("deal_thread_id") or ""))
             if stage in _STAGE_WORDS:
                 tail = f", at {_STAGE_WORDS[stage]}"
-        from chat_output_renderer import mark_field as _mark_field
         marked = _mark_field({"name": title}, "name", title, surface="widget")
-        lines.append(_gated(f"  {marked} — {where}{tail}.",
-                            f"  one item — {where}.", raw_title=title))
+        lines.append(_gated(
+            f"  {marked} — {where}{tail}.",
+            f"  one item — {_UNDO_PUT_BACK.get(cls, 'back the way it was')}.",
+            raw_title=title))
 
     if n_err:
         lines.append(f"{n_err} could not go back — say `undo` again to retry.")
+    if n_marker:
+        lines.append(f"{n_marker} went back but could not be noted in the record; "
+                     "nothing to redo.")
     return lines
 
 
@@ -3269,6 +3465,8 @@ _CLASS_PHRASES = {
     # and has a reverser; G57 is what keeps that true, rather than a memory.
     "person_alias_dropped": "dropped a nickname that pointed at two people",
     "person_split": "gave a second person their own record",
+    # SWITCH2 5.3 — what the reader saw happen, in their own words.
+    "person_renamed": "changed the name someone is on file under",
     # SPEC_FLOW1 — the put-back (review R-4) and the un-rest (review R-5).
     "counter_evidence_reopen": "put an item back when they came back about it",
     "counter_evidence_unrest": "took an item off the resting list when they "
@@ -3369,7 +3567,7 @@ def undo_batch(
     n_already = 0   # F-9 (review): a row already in the restored state is not "undone"
 
     def _record(change, cls, reversed_result):
-        nonlocal n_undone, n_already
+        nonlocal n_undone, n_already, n_errors
         # REVIEW_POLICY1B F-9 — a reverser answering `already_open` /
         # `already_unconfirmed` / `already_undone` / `not_open` reversed
         # nothing: count it apart, write no marker for it.
@@ -3378,17 +3576,30 @@ def undo_batch(
             results.append({"status": "already", "change": change, "result": reversed_result})
             n_already += 1
             return
-        append_event(events_path, {
-            "type": "brain_change_undone",
-            "source_skill": source_skill,
-            "data": {
-                "change_ref": change["change_ref"],
-                "reverser": cls,
-                "batch_ref": batch_label,
-                "undone_by": undone_by,
-                _AKK: _actor_kind,
-            },
-        }, holder="brain_undo")
+        # UNDOMARK1 (cr1#147): the reverser has ALREADY run by the time the
+        # marker is written. A marker append that fails (a sync client holding
+        # the ledger for a moment) is this item's error, never the batch's
+        # end: the docstring promises per-item failures are collected, and
+        # until this clause only the reversal call was inside that promise.
+        try:
+            append_event(events_path, {
+                "type": "brain_change_undone",
+                "source_skill": source_skill,
+                "data": {
+                    "change_ref": change["change_ref"],
+                    "reverser": cls,
+                    "batch_ref": batch_label,
+                    "undone_by": undone_by,
+                    _AKK: _actor_kind,
+                },
+            }, holder="brain_undo")
+        except Exception as exc:
+            results.append({"status": "error", "change": change,
+                            "result": reversed_result, "reversed": True,
+                            "error": ("reversed, but the brain_change_undone marker "
+                                      f"was not written: {type(exc).__name__}: {exc}")})
+            n_errors += 1
+            return
         results.append({"status": "undone", "change": change,
                         "result": reversed_result})
         n_undone += 1

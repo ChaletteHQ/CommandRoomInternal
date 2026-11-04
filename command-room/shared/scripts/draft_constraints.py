@@ -41,6 +41,7 @@ constraints, which is exactly the pre-LEARN1 behaviour.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -79,6 +80,51 @@ def _match_scope(nrow: dict, recipient_id, domain) -> Optional[str]:
     return "skill"
 
 
+#: VOICELOAD1 (cr1#197): the one sentence a draft carries when the workspace
+#: has a calibrated voice file and the draft's record does not prove it was
+#: read. Said in the ack, never silently dropped.
+VOICE_NOT_APPLIED_LINE = ("This draft was written without your calibrated voice "
+                          "file, so it may not sound like you.")
+
+
+def voice_block_sha256(workspace_root, skill: str):
+    """The sha256 of `_hq/voice/voice-block-<skill>.md` as it is on disk, or
+    None when the workspace has no calibrated block for this skill. The hash
+    is the proof a composer READ the block (VOICELOAD1, cr1#197): the skill
+    text said "read the voice file if it exists" and nothing could tell a
+    draft that skipped the read from one that obeyed."""
+    try:
+        import voice_corrections as vc
+        path = vc._override_path(workspace_root, skill)
+        if not path.exists():
+            return None
+        # text, universal newlines: the file is the customer's to edit, and a
+        # CRLF save must not read as a different voice
+        return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - never raises into a compose path
+        return None
+
+
+def voice_receipt(workspace_root, skill: str, voice_block_sha256_seen) -> dict:
+    """Was the calibrated voice block applied to this draft? Pure read.
+
+    `voice_block_sha256_seen` is what the composer carried from
+    `load_draft_constraints` (the hash of the block it read). Returns
+    `{present, applied, voice_block_sha256, line}`: `present` when the
+    workspace has a block for this skill; `applied` when the carried hash
+    equals the block on disk right now (a block edited between compose and
+    click reads as not applied, honestly); `line` is the one sentence to say
+    when a block is present and was not applied, else empty. No block on file
+    means nothing to apply: `applied` is None and `line` is empty."""
+    current = voice_block_sha256(workspace_root, skill)
+    if current is None:
+        return {"present": False, "applied": None, "voice_block_sha256": None, "line": ""}
+    seen = (voice_block_sha256_seen or "").strip().lower() if isinstance(voice_block_sha256_seen, str) else ""
+    applied = bool(seen) and seen == current
+    return {"present": True, "applied": applied, "voice_block_sha256": current,
+            "line": "" if applied else VOICE_NOT_APPLIED_LINE}
+
+
 def load_draft_constraints(
     workspace_root,
     skill: str,
@@ -91,11 +137,15 @@ def load_draft_constraints(
     learned voice-block override, folded into constraints.
 
     Returns `{skill, recipient_id, domain, scope, corrections, override_block,
-    max_paragraphs, banned_phrases, lines}`. `lines` is the plain-English
-    form a composer is told to obey; `max_paragraphs` and `banned_phrases`
-    are what `apply_draft_constraints` enforces mechanically."""
+    voice_block_sha256, voice_block_present, max_paragraphs, banned_phrases,
+    lines}`. `lines` is the plain-English form a composer is told to obey;
+    `max_paragraphs` and `banned_phrases` are what `apply_draft_constraints`
+    enforces mechanically; `voice_block_sha256` is the proof the block was
+    read, carried onto the draft's event and snapshot at the click
+    (VOICELOAD1, cr1#197)."""
     out = {"skill": skill, "recipient_id": recipient_id, "domain": domain,
            "scope": None, "corrections": [], "override_block": None,
+           "voice_block_sha256": None, "voice_block_present": False,
            "max_paragraphs": None, "banned_phrases": [], "lines": []}
     try:
         import voice_corrections as vc
@@ -131,6 +181,8 @@ def load_draft_constraints(
         override = None
     if override:
         out["override_block"] = override.get("markdown")
+    out["voice_block_sha256"] = voice_block_sha256(workspace_root, skill)
+    out["voice_block_present"] = out["voice_block_sha256"] is not None
 
     caps: List[int] = []
     banned: List[str] = []

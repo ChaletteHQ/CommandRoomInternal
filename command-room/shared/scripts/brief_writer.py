@@ -41,6 +41,8 @@ import json
 import re
 import subprocess
 import sys
+import os
+import datetime as _dt
 from pathlib import Path
 from typing import List, Dict, Optional, Union
 
@@ -674,9 +676,9 @@ def _add_timeline(doc, points: List[Dict[str, str]]) -> None:
         p = doc.add_paragraph()
         date_run = p.add_run(str(pt["date"]).strip() + "   ")
         _set_run(date_run, font=HEADING_FONT, size=9, color=ACCENT, bold=True)
-        label_text = str(pt["label"]).strip()
-        if is_current:
-            label_text += "  — this meeting"
+        # TIMELINEMARK1 (cr1#150): one rule for both renderers, one marker
+        from components import current_marker_label
+        label_text = current_marker_label(pt["label"], is_current)
         label_run = p.add_run(label_text)
         _set_run(label_run, font=BODY_FONT, size=9,
                  color=INK if is_current else MUTED, bold=is_current)
@@ -689,10 +691,38 @@ def _add_timeline(doc, points: List[Dict[str, str]]) -> None:
     spacer.paragraph_format.space_after = Pt(6)
 
 
-def _add_bullets(doc, bullets: List[str]) -> None:
+# cr1#471: the Friday wrap hands its whole plate cut over as bullets so the
+# words stay byte-exact for `plate_view.wrap_relay_check`, and its block and
+# project heading lines ("## Opened this week") used to land as bullets with
+# literal `#` marks in the saved document. A section that sets
+# `md_headings: True` (only `plate_view.wrap_docx_section` does) has those
+# lines rendered as headings. OPT-IN ON PURPOSE: everywhere else a leading
+# `# ` is ordinary text ("# of sales calls: 3 vs 5 target" on a scorecard),
+# and such a line stays a bullet with its mark.
+_BULLET_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*)$")
+
+
+def _add_bullets(doc, bullets: List[str],
+                 section_heading: Optional[str] = None,
+                 md_headings: bool = False) -> None:
+    """One bullet per line. With `md_headings` (cr1#471, the wrap's opt-in),
+    a line written as a markdown heading renders as a heading one level
+    below its `#` count under the section (`#` -> level 2, `##` -> level 3,
+    `###` -> level 4), and a `#` line that only repeats the section's own
+    heading is not printed a second time. Without it every line is a
+    bullet, as before. The caller's list is not changed."""
+    own = (section_heading or "").strip()
     for line in bullets:
         line = line.strip()
         if not line:
+            continue
+        m = _BULLET_HEADING_RE.match(line) if md_headings else None
+        if m:
+            level = len(m.group(1)) + 1
+            text = m.group(2).strip()
+            if level == 2 and own and text == own:
+                continue
+            _add_section_heading(doc, text, level=level)
             continue
         # Strip leading bullet markers if the caller already added them.
         if line.startswith(("- ", "* ", "• ")):
@@ -875,25 +905,68 @@ def _build_digest(payload) -> str:
     return _hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _recent_build(key) -> bool:
-    """True when this exact document was built here, just now."""
+def _recent_build(key):
+    """The path this exact document landed at when it was built here, just
+    now; None otherwise. READONLY1 (cr1#127, review F1): the path is stored
+    with the entry, because a build that went to a dated sibling must answer
+    the sibling again, never the locked original it was asked for."""
     import time as _time
 
-    at = _RECENT_BUILDS.get(key)
-    if at is None:
-        return False
+    entry = _RECENT_BUILDS.get(key)
+    if entry is None:
+        return None
+    at, landed = entry
     if _time.monotonic() - at > BRIEF_BUILD_WINDOW_SECONDS:
         _RECENT_BUILDS.pop(key, None)
-        return False
-    return True
+        return None
+    return landed
 
 
-def _remember_build(key) -> None:
+def _remember_build(key, landed_path) -> None:
     import time as _time
 
     if len(_RECENT_BUILDS) >= _RECENT_BUILDS_MAX:
         _RECENT_BUILDS.pop(next(iter(_RECENT_BUILDS)), None)
-    _RECENT_BUILDS[key] = _time.monotonic()
+    _RECENT_BUILDS[key] = (_time.monotonic(), str(landed_path))
+
+
+#: READONLY1 (cr1#127): the one sentence said when yesterday's file could not
+#: be overwritten and today's brief went beside it. Read by the composer skills
+#: after `make_brief` returns a path that is not the one they asked for.
+READONLY_SIBLING_LINE = ("Yesterday's file was read-only, so today's brief was saved "
+                         "beside it as {name}.")
+#: The last save's note: "" when the brief landed where it was asked to.
+LAST_SAVE_NOTE = ""
+
+
+def dated_sibling(output_path, today=None) -> str:
+    """`<stem>_<YYYY-MM-DD><ext>` beside the target, never clobbering: a
+    taken name gets `-2`, `-3`, ... The caller's file is left exactly as it
+    was; today's brief is never lost because yesterday's is locked."""
+    p = Path(str(output_path))
+    day = (today or _dt.date.today()).isoformat()
+    cand = p.with_name(f"{p.stem}_{day}{p.suffix}")
+    n = 2
+    while cand.exists():
+        cand = p.with_name(f"{p.stem}_{day}-{n}{p.suffix}")
+        n += 1
+    return str(cand)
+
+
+def _target_locked(output_path) -> bool:
+    """True when the target exists on THIS host and cannot be written (a
+    read-only file on a synced cloud folder is the reported case)."""
+    try:
+        p = Path(str(output_path))
+        return p.exists() and not os.access(str(p), os.W_OK)
+    except OSError:
+        return False
+
+
+def _note_sibling(path) -> None:
+    global LAST_SAVE_NOTE
+    LAST_SAVE_NOTE = READONLY_SIBLING_LINE.format(name=Path(str(path)).name)
+    print(LAST_SAVE_NOTE, file=sys.stderr)
 
 
 def make_brief(
@@ -958,6 +1031,9 @@ def make_brief(
           - "body": str (optional) — paragraph-style content; blank lines
             become paragraph breaks
           - "bullets": list[str] (optional) — bullet items
+          - "md_headings": bool (optional, cr1#471) - True renders a bullet
+            line written as a markdown heading as a heading; only the
+            Friday wrap's `plate_view.wrap_docx_section` sets it
           - "table": dict (optional) — {rows: list[list], headers?: list,
             highlight_row_idx?: int, column_widths?: list[float]}
           - "matrix": dict (optional) — {cells: 2D list or {(r,c): v} dict,
@@ -1062,11 +1138,13 @@ def make_brief(
          "voice_gate": voice_gate, "contract": contract,
          "profile": contract_profile, "brand": brand,
          "org": org_id, "workspace": workspace_root}))
-    if _recent_build(_dedup_key):
+    _landed_before = _recent_build(_dedup_key)
+    if _landed_before:
         # Already built, this turn, byte for byte. Returning the same
         # path is the honest answer; writing the file again and
-        # auditing it again says two documents were produced.
-        return str(output_path)
+        # auditing it again says two documents were produced. The path is
+        # where it LANDED (a dated sibling when the target was locked).
+        return _landed_before
     # SPEC OUT5 §3b — the canonical pre-save gate sequence (input validation →
     # EXEC1 kwarg validation → rec-ordering → contract gate → voice gate →
     # exec-header requirement) runs through the SHARED stack in brief_gates.py,
@@ -1174,7 +1252,8 @@ def make_brief(
             if bullets:
                 if not isinstance(bullets, list):
                     raise ValueError(f"section 'bullets' must be a list: {sec!r}")
-                _add_bullets(doc, bullets)
+                _add_bullets(doc, bullets, section_heading=heading,
+                             md_headings=sec.get("md_headings") is True)
             if table:
                 if not isinstance(table, dict):
                     raise ValueError(f"section 'table' must be a dict: {sec!r}")
@@ -1231,7 +1310,23 @@ def make_brief(
         # so the save is byte-for-byte what it has always been.
         delivery = _delivery_for(output_path, workspace_root)
         build_path = delivery.build_path if delivery is not None else output_path
-        doc.save(build_path)
+        global LAST_SAVE_NOTE
+        LAST_SAVE_NOTE = ""
+        try:
+            doc.save(build_path)
+        except PermissionError:
+            # READONLY1 (cr1#127): the legacy direct save onto a file that is
+            # read-only (a synced cloud folder, the reported case). Yesterday's
+            # file stays; today's brief goes beside it as a dated sibling, and
+            # the note says so. A landing build writes to scratch, so a refusal
+            # there is not this case and propagates as before.
+            if delivery is not None and getattr(delivery, "landing", False):
+                raise
+            sibling = dated_sibling(output_path)
+            doc.save(sibling)
+            _note_sibling(sibling)
+            output_path = build_path = sibling
+            delivery = _delivery_for(output_path, workspace_root)
 
         # v3.13.8+ — universal post-render leak scan gate (Bug #57 + #59 + #54).
         # Runs against every brief regardless of which skill called us. The
@@ -1282,7 +1377,28 @@ def make_brief(
         # (one composed line, no path in it) when the layer cannot reach the
         # workspace from here, after removing the scratch copy: no file
         # anywhere, and a sentence that says so.
-        final_path = delivery.finish() if delivery is not None else output_path
+        try:
+            final_path = delivery.finish() if delivery is not None else output_path
+        except Exception as exc:  # noqa: BLE001 - only the landing refusal is handled below
+            # READONLY1 (cr1#127): the landing refused and the target is a
+            # file this host can see and cannot write. Land today's brief as a
+            # dated sibling instead; the scratch copy is gone after a refusal,
+            # so the document is built again for the retry. Any other refusal
+            # (a workspace this host cannot reach) propagates as before.
+            refused_write = (str(getattr(getattr(exc, "envelope", None) or {}, "get", lambda k, d=None: d)("reason", "")) == "write_failed"
+                             and Path(str(output_path)).exists())
+            if type(exc).__name__ != "DeliveryRefused" or not (_target_locked(output_path) or refused_write):
+                # review F3: a read-only attribute (W_OK false) or the layer's
+                # own write_failed on a file that exists (a handle held by a
+                # sync client or an open document) both mean "today's file
+                # could not be written"; anything else is the layer's answer
+                raise
+            sibling = dated_sibling(output_path)
+            retry = _delivery_for(sibling, workspace_root)
+            doc.save(retry.build_path if retry is not None else sibling)
+            final_path = retry.finish() if retry is not None else sibling
+            delivery = retry
+            _note_sibling(final_path)
 
         # SPEC GATE1 — emit the detectable-bypass audit AFTER a fully successful
         # render+save (deliverable on disk, all wired gates passed). A composer
@@ -1296,7 +1412,7 @@ def make_brief(
         # ran for this prep and are on the record.
         if not _recent_gate_ran(workspace_root, final_path, brief_kind):
             _emit_gate_ran_audit(brief_kind, gates_ran, final_path, workspace_root)
-        _remember_build(_dedup_key)
+        _remember_build(_dedup_key, final_path)
 
         return final_path
     finally:

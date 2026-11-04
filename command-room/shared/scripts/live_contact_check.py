@@ -163,7 +163,8 @@ def _entities_path(workspace_root: Path) -> Path:
 
 
 def _load_entities(workspace_root: Path) -> dict:
-    return json.loads(_entities_path(workspace_root).read_text(encoding="utf-8"))
+    from entities_io import read_entities_json
+    return read_entities_json(_entities_path(workspace_root))
 
 
 def _find_person(entities: dict, person_id: str) -> Optional[dict]:

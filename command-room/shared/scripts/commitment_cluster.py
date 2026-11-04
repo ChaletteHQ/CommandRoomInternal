@@ -57,7 +57,9 @@ THE DOCTRINE (SPEC §0, binding)
        — the sweep's own title-echo answer, one implementation);
      - temporal adjacency: the two captures landed within
        `CLUSTER_WINDOW_DAYS` of EACH OTHER (pairwise — not "recent vs now",
-       which is the scorer's own window and a different question);
+       which is the scorer's own window and a different question). A
+       meeting-derived row is dated by its source meeting
+       (`data.meeting_date`), capture time as the fallback (cr1#155);
      - a title score at or above `CLUSTER_TITLE_FLOOR` (the scorer's
        corroborated bar, restated here so the mutation suite can zero it
        by name and watch the false-join control go red).
@@ -183,6 +185,29 @@ def _when(ev) -> Optional[_dt.datetime]:
     return parse_ts(event_time(ev))
 
 
+def _adjacency_when(ev) -> Optional[_dt.datetime]:
+    """The date temporal adjacency reads (cr1#155): the SOURCE MEETING's
+    date for a meeting-derived row, capture time as the fallback.
+
+    A later sweep that re-captures an old meeting stamps a fresh capture
+    time, so two copies of one promise from ONE meeting can sit weeks apart
+    by capture time and never join. The meeting happened once; its date is
+    what both copies share. Rows with no meeting date, or one that does not
+    parse, keep capture-time adjacency exactly as before. Only the window
+    reads this: the title, counterparty and conflicting-deliverable fences
+    are unchanged for every row (owner ruling 2026-10-26), and the survivor
+    order stays capture-time."""
+    from cru_match import _commitment_field
+    from event_time import parse_ts
+
+    meeting_date = _commitment_field(ev, "meeting_date")
+    if isinstance(meeting_date, str):
+        parsed = parse_ts(meeting_date)
+        if parsed is not None:
+            return parsed
+    return _when(ev)
+
+
 def _shares_counterparty(a, b, *, workspace_root=None) -> bool:
     """The roster conjunct — ONE implementation, the sweep's (its docstring
     is the argument; forking it here would let two surfaces disagree about
@@ -261,7 +286,7 @@ def cluster_events(events, *, workspace_root=None, now_iso=None,
     scores: dict = {}
     for i, older in enumerate(items):
         parent.setdefault(_cid(older), _cid(older))
-        t_older = _when(older)
+        t_older = _adjacency_when(older)
         for j in range(i + 1, len(items)):
             newer = items[j]
             parent.setdefault(_cid(newer), _cid(newer))
@@ -269,8 +294,10 @@ def cluster_events(events, *, workspace_root=None, now_iso=None,
                 continue
             # Temporal adjacency, PAIRWISE. An unparseable timestamp on
             # either side refuses the join — precision over recall: absence
-            # of evidence about WHEN is not adjacency.
-            t_newer = _when(newer)
+            # of evidence about WHEN is not adjacency. A meeting-derived row
+            # is dated by its meeting, not by the sweep that captured it
+            # (cr1#155).
+            t_newer = _adjacency_when(newer)
             if t_older is None or t_newer is None:
                 continue
             if abs(t_newer - t_older) > max_gap:
@@ -465,7 +492,7 @@ def apply_cluster_merge(workspace_root, survivor_id, folded_ids, *,
         detail = (evidence or
                   (f"kept as one from {source_skill} — same real-world item "
                    f"as {survivor} (shared wording, shared counterparty, "
-                   f"captured within {CLUSTER_WINDOW_DAYS} days)"))
+                   f"dated within {CLUSTER_WINDOW_DAYS} days)"))
         try:
             res = supersede_commitment(
                 workspace_root, survivor, fid,

@@ -406,7 +406,7 @@ In practice, every producer skill uses the writer helper described in `shared/WO
 
 ## Owed vs Task — the two-surface split (SPEC CTS1, 2026-07)
 
-The daily experience partitions the ONE open set into two named surfaces plus a confirm tail. This is a **read-side projection** (`shared/scripts/surface_split.py`) — no new field, no second store, and NEVER a `direction` field (direction is derived from `owner_id` vs the primary user; storing it would create a second source of truth for the same fact).
+The daily experience partitions the ONE open set into two named surfaces plus a confirm tail. This is a **read-side projection** (`shared/scripts/surface_split.py`) — no new field, no second store, and NEVER a `direction` field (direction is derived from `owner_id` vs the primary user; storing it would create a second copy of the same fact).
 
 **Definitions:**
 

@@ -606,7 +606,13 @@ def _is_handbuilt_sources_heading(heading: str) -> bool:
     Sources sections, which is the failure this tripwire exists to prevent.
     """
     return bool(_HANDBUILT_SOURCES_RE.match(
-        str(heading or "").strip().rstrip(":—-").strip().lower()))
+        str(heading or "").strip().rstrip(_SOURCES_TRAILING).strip().lower()))
+
+
+#: SOURCESTRIP1 (cr1#153): the trailing punctuation the tripwire ignores. The
+#: strip set held a colon and the dashes; "Sources." and "Sources…" slipped
+#: through and rendered a second Sources section next to the derived one.
+_SOURCES_TRAILING = ":\u2014\u2013-.\u2026"
 
 # Source key -> the plain-language label the page carries. CLOSED vocabulary,
 # deliberately: an unknown key is DROPPED from the page (its testimony stays
@@ -893,7 +899,7 @@ def assemble_prep_sections(
         "changed": (changed_summary or "").strip()
         or (changed_lines[0] if changed_lines else "Nothing new since last touch."),
         "decide": (decide_summary or "").strip()
-        or (decide_lines[0] if decide_lines else "Nothing — execution call."),
+        or (decide_lines[0] if decide_lines else "Nothing. Execution call."),
         "needs": (needs or "").strip() or "Nothing from you.",
     }
 

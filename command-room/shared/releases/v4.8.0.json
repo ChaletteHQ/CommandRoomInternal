@@ -6,7 +6,7 @@
    "id": "v480_announce_deal_tracking",
    "detector_module": "release_detectors.always",
    "detector_function": "always_applies",
-   "prompt_template": "Command Room now tracks deals. Say 'new deal [name] with [company], $40k' to open one, 'show my pipeline' for the full picture (totals, what's closing this month, what's gone quiet), 'move [deal] to negotiating' as it progresses, and 'mark [deal] won' or 'mark [deal] lost — [reason]' to close it. If a prospect signs, just say '[Company] signed' — the deal closes as won and they become a client in the same breath. Your morning brief will also quietly flag a deal that's been silent too long.",
+   "prompt_template": "Command Room now tracks deals. Say 'new deal [name] with [company], [amount]' to open one, 'show my pipeline' for the full picture (totals, what's closing this month, what's gone quiet), 'move [deal] to negotiating' as it progresses, and 'mark [deal] won' or 'mark [deal] lost — [reason]' to close it. If a prospect signs, just say '[Company] signed' — the deal closes as won and they become a client in the same breath. Your morning brief will also quietly flag a deal that's been silent too long.",
    "action": "announce_only"
   },
   {

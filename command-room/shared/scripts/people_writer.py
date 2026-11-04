@@ -178,7 +178,9 @@ ALLOWED_PERSON_FIELDS = {
     "connections",         # array of {person_id, connection_source, connection_event_seq, connected_ts} (v3.13.6+ — intro-broker-namespaced relationship-graph edges)
     "notes",               # string | null
     "communication_style", # string | null
-    "reports_to_id",       # string | null
+    "reports_to_id",       # string | null, a person id. A personal layer's `reports_to` folds in here (migrate_persons_v3_13_0, cr1#132).
+    "is_user",             # bool, the legacy primary-user flag personal layers write (cr1#132). Read ONLY through primary_user.resolve_primary_user; workspace.user_id is canonical.
+    "pronouns",            # string | null, a personal-layer field (cr1#132).
     "status",              # "active" | "archived"
     "needs_enrichment",    # bool — provisional record awaiting the people-crm enrichment pull (v3.16+, deep-audit #21). The ON-ENTITY enrichment flag; REPLACES the forbidden pending_review/inferred_from trigger (which this writer strips). people-crm clears it (sets false) after enriching.
     "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: the retired Pulse chat's "just busy" reply widened it (LIFECYCLE1 — read forever, never written again) so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
@@ -219,6 +221,7 @@ FORBIDDEN_PERSON_FIELDS = {
     "last_name":            "(merge into canonical_name)",
     "company":              "primary_org_id (resolve org name to org_id first)",
     "related_people":       "reports_to_id (if reporting relationship) or notes",
+    "reports_to":           "reports_to_id (a person id; the person schema migration folds it in)",
     "is_primary_user":      "(remove — workspace.user_id in entities.json marks the workspace owner)",
     "created_at":           "(remove — track via person_created event in events.jsonl)",
     "created_by":           "(remove — track via person_created event in events.jsonl)",
@@ -251,6 +254,22 @@ LEGACY_KEY_RENAMES = {
 
 
 # ---------- exceptions ----------
+
+class ImmutablePersonIdError(ValueError):
+    """Raised when a caller asks `update_person` to change a person's id
+    (PERSONID1, cr1#246). The id is the record's identity: every event,
+    alias and commitment points at it, so it never changes after creation.
+    A `ValueError` subclass, so the schema-refusal clauses callers already
+    carry still catch it."""
+
+    def __init__(self, person_id: str, attempted) -> None:
+        self.person_id = person_id
+        self.attempted = attempted
+        super().__init__(
+            f"update_person refused to change the id of {person_id!r} "
+            f"(to {attempted!r}): a person's id is immutable after creation; "
+            "every event, alias and commitment points at it")
+
 
 class DuplicatePersonError(Exception):
     """Raised when create_person detects an existing record."""
@@ -336,7 +355,8 @@ def _events_path(workspace_root: Path) -> Path:
 
 
 def _load_entities(workspace_root: Path) -> dict:
-    return json.loads(_entities_path(workspace_root).read_text(encoding="utf-8"))
+    from entities_io import read_entities_json
+    return read_entities_json(_entities_path(workspace_root))
 
 
 def _save_entities(workspace_root: Path, data: dict, source_skill: str) -> None:
@@ -1243,6 +1263,14 @@ def update_person(
     if target is None:
         raise KeyError(f"no person with id {person_id!r}")
 
+    # PERSONID1 (cr1#246): a person's id is immutable after creation. The raw
+    # writer took `id` as an ordinary field and overwrote it, so any caller on
+    # a legacy seat or a repair script could silently renumber a person and
+    # orphan every event, alias and commitment pointing at the old id; only
+    # the door wrapper refused it. The refusal now lives in the writer itself.
+    if "id" in fields:
+        raise ImmutablePersonIdError(person_id, fields.get("id"))
+
     extras = set(fields) - ALLOWED_PERSON_FIELDS
     if extras:
         msgs = []
@@ -1269,6 +1297,300 @@ def update_person(
         _emit_lineage_events(workspace_root, before, target, source_skill)
     return target
 
+
+
+# SWITCH2 5.3 (M's ruling 12) — THE PERSON RENAME, IN THE PRODUCT.
+#
+# There was no writer for this. The only `rename` in this file is
+# `LEGACY_KEY_RENAMES`, which renames legacy FIELD keys, so a mis-named
+# person record — a real one, carried on the repair list since 2026-09-13 —
+# could only be fixed by an operator editing `entities.json` by hand. An act
+# a customer can describe in one sentence and the product cannot do is an act
+# that happens outside the record, with no receipt and no way back.
+#
+# THE SHAPE. Same three writes every sibling makes: validate, save through
+# the locked writer, append ONE event. The event is gated
+# (`event_gate.append_event`, strict enum) and carries a `brain_batch_id`
+# plus `brain_change_class`, and the reverser for that class is registered in
+# `brain_undo.REVERSERS` in the SAME commit — the step-10 mandate. A class
+# that can write and cannot be undone does not ship.
+#
+# THE OLD NAME IS KEPT, NEVER REPLACED. A rename is not a correction of
+# history: mail, meetings and notes on file still carry the old spelling, and
+# `find_existing_person`'s alias tier and `identity_reconcile` both read the
+# record's `aliases`. So the previous canonical name is APPENDED there (and
+# stays out of it when the record already carries it), which is also what
+# `get_person_display_names` reads. The rename changes what the product CALLS
+# someone; it never makes what they used to be called unfindable.
+RENAME_BATCH_PREFIX = "prn_"
+RENAME_CHANGE_CLASS = "person_renamed"
+
+
+class PersonNameCollisionError(ValueError):
+    """Raised when a rename would put one name on two people.
+
+    SWITCH2 5.3, fix round 1 (review F-3, coordinator ruling 3). A rename
+    onto a name - or onto a spelling - that a DIFFERENT record already
+    carries is refused, with one honest sentence and no write.
+
+    IT IS A REFUSAL, NEVER A MERGE. Folding two records into one is
+    `merging duplicate people`'s act: it has its own switch, its own
+    evidence and its own way back. Accepting the rename here would mint
+    exactly the ambiguity `identity_reconcile.apply_alias_collisions` exists
+    to take back - two records answering to one name, with the product's own
+    writer as the author of the knot.
+
+    A ValueError subclass, so a caller already guarding `rename_person`
+    against the empty name keeps catching this too.
+
+    Attributes: `person_id` (the record being renamed), `other_id` (the
+    record already holding the name), `name`, `matched_on` ("name" or
+    "alias"), and `line` - the one sentence a surface says. The line offers
+    nothing: no pick-one, no "say the word and I'll merge them".
+    """
+
+    def __init__(self, person_id: str, other_id: str, name: str, *,
+                 matched_on: str = "name", on_file: str = ""):
+        self.person_id = person_id
+        self.other_id = other_id
+        self.name = name
+        self.matched_on = matched_on
+        # The sentence names the spelling as it is ON FILE, not the casing
+        # the asker happened to type - what the customer needs to see is the
+        # record that is already there.
+        self.on_file = on_file or name
+        if matched_on == "alias":
+            self.line = (f"{self.on_file} is already a spelling on file for "
+                         f"someone else, so I left this person's name as it "
+                         f"was.")
+        else:
+            self.line = (f"Someone else on file is already called "
+                         f"{self.on_file}, so I left this person's name as "
+                         f"it was.")
+        super().__init__(
+            f"rename refused: {name!r} is already on file for {other_id} "
+            f"(matched on {matched_on}); renaming {person_id} onto it would "
+            f"leave two records under one name")
+
+
+def _other_record_holding_name(people: list, person_id: str,
+                               name: str) -> tuple:
+    """The OTHER record already answering to `name`, how it matches, and the
+    spelling as it stands on file.
+
+    Returns `(record, "name"|"alias", on_file)`, or `(None, "", "")`. Matching
+    is
+    case-insensitive and ignores surrounding space, because that is how
+    `find_existing_person` matches - a refusal a different capital walks
+    around is not a refusal.
+
+    ARCHIVED RECORDS COUNT. `find_existing_person`'s Tier 1 walks every
+    record regardless of status, so an archived record holding the name is
+    still a second answer to it - the same reasoning `_reverse_person_split`
+    gives for clearing the shared address off an archived record.
+    """
+    want = str(name or "").strip().casefold()
+    if not want:
+        return None, "", ""
+    for p in people:
+        if p.get("id") == person_id:
+            continue
+        cn = str(p.get("canonical_name") or "").strip()
+        if cn.casefold() == want:
+            return p, "name", cn
+        for a in (p.get("aliases") or []):
+            spelling = str(a or "").strip()
+            if spelling.casefold() == want:
+                return p, "alias", spelling
+    return None, "", ""
+
+
+def _apply_rename(
+    workspace_root: str | Path,
+    person_id: str,
+    *,
+    canonical_name: str,
+    reason: str = "",
+    source_skill: str = "people_writer",
+    brain_batch_id: str | None = None,
+    now_iso: str | None = None,
+    stamp_batch: bool = True,
+    keep_previous_name: bool = True,
+    drop_aliases=(),
+    reversal_of: int | float | None = None,
+) -> dict:
+    """The rename, once. `rename_person` is the public door; the `undo`
+    reverser is the other caller, and it comes in with the last three
+    arguments flipped.
+
+    `stamp_batch=False` writes the SAME `person_renamed` row WITHOUT
+    `brain_batch_id` / `brain_change_class` - fix round 1, review F-1,
+    coordinator ruling 1. Those two keys are exactly what makes a row an
+    undoable batch: `brain_undo.recent_auto_batches` lists a row only when it
+    carries both, and `_changes_for_brain_batch` only reverses rows carrying
+    a class. A reversal that stamped them would head a NEW batch, so the
+    bare-undo listing would GROW by one after an undo, and a second bare
+    `undo` would redo the rename. Every other registered reverser in
+    `brain_undo` writes its put-back this way (`_reverse_person_alias_dropped`
+    goes through `add_person_alias`, whose `person_updated` row carries
+    neither key); this is that same shape, reached through the rename's own
+    writer so the two paths cannot drift.
+
+    `keep_previous_name=False` skips appending the name being replaced to
+    `aliases`, and `drop_aliases` removes named spellings from the list. The
+    reverser passes both, so the put-back subtracts exactly the alias the
+    rename added and adds nothing of its own - fix round 1, review F-2.
+
+    `reversal_of` is the seq of the rename row this write PUTS BACK, and it
+    is what tells the two apart on the ledger (fix round 2, review N-5).
+    Without it a reversal and a rename are the same row shape, and the first
+    surface built on this class would narrate every undone rename as two
+    renames. It is written into `data`, not onto the event's top-level
+    `supersedes_seq`: a supersede says the earlier row is no longer true and
+    is folded away by the readers that honour it, while an undo is ADDITIVE
+    - the rename really happened, and the put-back is a second fact beside
+    it, not a correction of the first. `deal_won_reversed`'s `won_seq` and
+    the thread reclassification's `supersedes_seq` are the same
+    name-the-seq-you-answer shape; neither is a generic field this could
+    reuse, so the key says what it is.
+    """
+    workspace_root = Path(workspace_root)
+    new_name = str(canonical_name or "").strip()
+    if not new_name:
+        raise ValueError(
+            "rename_person needs a canonical_name - a rename to an empty "
+            "name would remove the person from every surface that looks "
+            "them up by name")
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+
+    # F-3 - the name is somebody else's. Refused BEFORE any write, so the
+    # record on disk is untouched and the caller has one sentence to say.
+    other, matched_on, on_file = _other_record_holding_name(
+        people, person_id, new_name)
+    if other is not None:
+        raise PersonNameCollisionError(person_id, other.get("id") or "?",
+                                       new_name, matched_on=matched_on,
+                                       on_file=on_file)
+
+    before = dict(target)
+    previous_name = str(target.get("canonical_name") or "").strip()
+    aliases = list(target.get("aliases") or [])
+    drop = tuple(drop_aliases)
+    dropped = [a for a in aliases if a in drop]
+    if dropped:
+        aliases = [a for a in aliases if a not in drop]
+    # Nothing to do, so nothing is written - the idempotence every switch and
+    # door in this tree has. `drop_aliases` names spellings that may already
+    # be gone (a second `undo` of the same rename), so the question is what is
+    # actually DROPPABLE, never what the caller asked to drop.
+    if previous_name == new_name and not dropped:
+        return {"status": "unchanged", "person_id": person_id,
+                "canonical_name": new_name, "previous_name": previous_name,
+                "aliases_added": [], "aliases_dropped": [],
+                "batch_id": None, "record": target}
+
+    added: list[str] = []
+    if keep_previous_name and previous_name and previous_name not in aliases:
+        aliases.append(previous_name)
+        added.append(previous_name)
+    target["canonical_name"] = new_name
+    if aliases or "aliases" in target:
+        target["aliases"] = aliases
+
+    _validate_person(target)
+    _save_entities(workspace_root, data, source_skill)
+
+    batch_id = None
+    event_data = {
+        "person_id": person_id,
+        "canonical_name": new_name,
+        "previous_name": previous_name,
+        # What `undo` puts back, byte for byte. The reverser restores
+        # BOTH - a rename that added an alias and an undo that left it
+        # behind is a reversal that is only mostly true.
+        "previous_aliases": list(before.get("aliases") or []),
+        "aliases_added": added,
+        "aliases_dropped": dropped,
+        "reason": str(reason or "").strip()[:200],
+    }
+    if reversal_of is not None:
+        event_data["reversal_of"] = reversal_of
+    if stamp_batch:
+        batch_id = brain_batch_id or _rename_batch_id(now_iso, workspace_root)
+        event_data["brain_batch_id"] = batch_id
+        event_data["brain_change_class"] = RENAME_CHANGE_CLASS
+    event = {
+        "type": RENAME_CHANGE_CLASS,
+        "source_skill": source_skill,
+        "data": event_data,
+    }
+    from event_gate import append_event
+    append_event(_events_path(workspace_root), [event], holder=source_skill)
+    return {"status": "renamed", "person_id": person_id,
+            "canonical_name": new_name, "previous_name": previous_name,
+            "aliases_added": added, "aliases_dropped": dropped,
+            "batch_id": batch_id, "record": target}
+
+
+def rename_person(
+    workspace_root: str | Path,
+    person_id: str,
+    *,
+    canonical_name: str,
+    reason: str = "",
+    source_skill: str = "people_writer",
+    brain_batch_id: str | None = None,
+    now_iso: str | None = None,
+) -> dict:
+    """Give a person on file a different canonical name. Returns a receipt.
+
+    `canonical_name` is what they are called from now on; the name they were
+    called before is appended to `aliases` so every past record still
+    resolves to them. `reason` is the customer's own words for why, carried
+    on the event and never composed here.
+
+    Returns `{status, person_id, canonical_name, previous_name, aliases_added,
+    aliases_dropped, batch_id, record}`. `status` is `"renamed"`, or
+    `"unchanged"` when the record already carries that name - in which case
+    nothing is written and `batch_id` is None (the idempotence every switch
+    and door in this tree has: saying it twice is not two acts).
+
+    Raises `KeyError` when no person has that id, `ValueError` on an empty
+    name - a rename to nothing is a delete wearing a rename's clothes - and
+    `PersonNameCollisionError` (a ValueError) when the name, or a spelling of
+    it, is already on file for somebody ELSE: refused with one sentence and
+    no write, because merging two people is `merging duplicate people`'s act
+    and not this one's.
+    """
+    return _apply_rename(workspace_root, person_id,
+                         canonical_name=canonical_name, reason=reason,
+                         source_skill=source_skill,
+                         brain_batch_id=brain_batch_id, now_iso=now_iso,
+                         stamp_batch=True, keep_previous_name=True)
+
+
+def _rename_batch_id(now_iso: str | None = None,
+                     workspace_root=None) -> str:
+    """The rename's batch id. CLOCK1: the fallback instant comes from
+    `_clock_now`, the module's corroborated clock, never from a raw machine
+    read — an unsynced box must not stamp its own wrong reading into a batch
+    id that a receipt and an `undo` both key on."""
+    import secrets
+    stamp = None
+    if now_iso:
+        try:
+            s = str(now_iso).replace("Z", "+00:00")
+            stamp = datetime.datetime.fromisoformat(s).strftime(
+                "%Y%m%dT%H%M%SZ")
+        except (ValueError, TypeError):
+            stamp = None
+    if stamp is None:
+        stamp = _clock_now(workspace_root).strftime("%Y%m%dT%H%M%SZ")
+    return f"{RENAME_BATCH_PREFIX}{stamp}-{secrets.token_hex(4)}"
 
 def _aliases_path(workspace_root: Path) -> Path:
     return Path(workspace_root) / "_hq" / "data" / "aliases.json"
@@ -1568,6 +1890,175 @@ def merge_person_into(
     return keep
 
 
+# ---------- cr1#195: the record on file carries the OTHER person's name ----------
+#
+# Owner ruling, 2026-10-26: when two people share one address and the record
+# holding it carries the other person's name, the split PROPOSES the rename
+# for the owner's confirmation. It never renames a person record on its own,
+# and it no longer mints an empty record beside the misnamed one. "Add beside,
+# never displace" stays the rule for every unattended path; the rename is the
+# owner's act, through `rename_person`, on the proposal rail that already
+# carries `person_link` and `person_merge`.
+
+#: The proposal kind. Its confirm is `confirm_person_rename` below.
+RENAME_PROPOSAL_KIND = "person_rename"
+#: The detector both raisers use, so the split and the reconcile pass share
+#: one fingerprint, one open row and one cooldown.
+RENAME_PROPOSAL_DETECTOR = "identity-reconcile"
+
+
+def rename_proposal_fingerprint(person_id: str, new_name: str) -> str:
+    return f"{RENAME_PROPOSAL_KIND}:{person_id}:{_normalize_name(new_name)}"
+
+
+def propose_person_rename(
+    workspace_root: str | Path,
+    *,
+    record: dict,
+    new_name: str,
+    shared_email: str = "",
+    shell_id: str | None = None,
+    evidence: str = "",
+) -> dict:
+    """Raise ONE rename question on the existing proposal rail. Writes a
+    `brain_proposal` row and nothing else: no record changes here.
+
+    `shell_id` names an empty record already holding `new_name` beside the
+    misnamed one (the reconcile pass's case). Confirming that row folds the
+    empty record in, which cannot be undone, so its confirm verb is
+    `merge person records` and the ack says the merge is permanent.
+    Returns `brain_proposals.propose`'s answer.
+    """
+    from brain_proposals import propose
+
+    current = str(record.get("canonical_name") or "").strip()
+    pid = record.get("id")
+    if shell_id:
+        actions = [{"action": "merge person records"},
+                   {"action": "proposal not relevant"},
+                   {"action": "snooze proposal 7d"}]
+        line = (f"{current} and {new_name} share one address. {new_name} has "
+                f"an empty record, and the record named {current} holds "
+                f"{new_name}'s history. Fold the empty record in and rename "
+                f"{current} to {new_name}?")
+    else:
+        actions = [{"action": "confirm proposal"},
+                   {"action": "dismiss proposal"},
+                   {"action": "snooze proposal 7d"}]
+        line = (f"{current} and {new_name} share one address, and the record "
+                f"named {current} holds {new_name}'s history. Rename it to "
+                f"{new_name}?")
+    extra = {"title": f"{current} / {new_name}", "new_name": new_name,
+             "current_name": current}
+    if shell_id:
+        extra["shell_id"] = shell_id
+    if shared_email:
+        extra["shared_email"] = shared_email
+    return propose(
+        workspace_root,
+        kind=RENAME_PROPOSAL_KIND,
+        fingerprint=rename_proposal_fingerprint(pid, new_name),
+        evidence=evidence or (f"the history on {current}'s record names "
+                              f"{new_name}, never {current}"),
+        action_tuples=actions,
+        tier="confirm",
+        detector=RENAME_PROPOSAL_DETECTOR,
+        render_line=line,
+        person_id=pid,
+        extra=extra,
+    )
+
+
+def confirm_person_rename(workspace_root, proposal_id: str, *,
+                          resolved_by: str,
+                          source_skill: str = "apply-choices") -> dict:
+    """The owner's YES to a `person_rename` row. The one confirm path for the
+    rename question, whichever pass raised it (cr1#195).
+
+    Calls `people_writer.rename_person`, so the rename writes its own
+    `person_renamed` row with its own undo. A row carrying `shell_id` first
+    folds that empty record in through `merge_person_into` (re-checked empty
+    here, at the moment of the click), which is permanent; that is why such a
+    row's verb is `merge person records`. Then the row is answered `applied`.
+
+    Returns `{ok, status, ack, ...}`. A refusal writes nothing and leaves the
+    row open: a name somebody else already holds (the rename writer's own
+    sentence), a shell that has gathered history since, or a row that is no
+    longer open.
+    """
+    import brain_proposals
+    from identity_reconcile import shell_is_empty
+
+    ws = Path(workspace_root)
+    row = next((p for p in brain_proposals.open_brain_proposals(ws)
+                if p.get("id") == proposal_id
+                and p.get("kind") == RENAME_PROPOSAL_KIND), None)
+    if row is None:
+        return {"ok": False, "status": "not_open",
+                "ack": "That question is already answered, so nothing "
+                       "changed."}
+    pid = row.get("person_id")
+    new_name = str(row.get("new_name") or "").strip()
+    shell_id = row.get("shell_id")
+    if not pid or not new_name:
+        return {"ok": False, "status": "malformed",
+                "ack": "That question is missing who to rename, so nothing "
+                       "changed."}
+    try:
+        people = entities_collection(_load_entities(ws), "people")
+    except Exception as exc:
+        return {"ok": False, "status": "unreadable",
+                "ack": f"The roster could not be read, so nothing changed "
+                       f"({type(exc).__name__})."}
+    if not any(p.get("id") == pid for p in people):
+        return {"ok": False, "status": "not_on_file",
+                "ack": "That person is not on file any more, so nothing "
+                       "changed."}
+    # The name collision is decided BEFORE the permanent merge, against
+    # everyone except the shell the merge would fold in.
+    others = [p for p in people if p.get("id") != shell_id]
+    holder, _, on_file = _other_record_holding_name(others, pid, new_name)
+    if holder is not None:
+        return {"ok": False, "status": "refused",
+                "ack": f"Someone else on file is already called "
+                       f"{on_file or new_name}, so I left this person's name "
+                       f"as it was."}
+    merged = None
+    if shell_id:
+        shell = next((p for p in people if p.get("id") == shell_id), None)
+        if shell is None or shell.get("status") == "archived" \
+                or _normalize_name(shell.get("canonical_name") or "") \
+                != _normalize_name(new_name) \
+                or not shell_is_empty(ws, shell_id):
+            return {"ok": False, "status": "shell_changed",
+                    "ack": f"The empty record for {new_name} has changed "
+                           f"since I asked, so I left both records as they "
+                           f"were."}
+        merge_person_into(ws, keep_id=pid, duplicate_id=shell_id,
+                             source_skill=source_skill)
+        merged = shell_id
+    try:
+        res = rename_person(
+            ws, pid, canonical_name=new_name,
+            reason="confirmed: the record's history belongs to this name",
+            source_skill=source_skill)
+    except PersonNameCollisionError as exc:
+        return {"ok": False, "status": "refused", "ack": exc.line,
+                "merged_shell_id": merged}
+    brain_proposals.resolve_proposal(ws, proposal_id, "applied",
+                                     resolved_by=resolved_by,
+                                     source_skill=source_skill)
+    ack = f"Renamed {res.get('previous_name') or 'the record'} to {new_name}."
+    if merged:
+        ack += (" The empty record was folded in, and that merge cannot be "
+                "undone.")
+    return {"ok": True, "status": res.get("status"), "person_id": pid,
+            "canonical_name": new_name,
+            "previous_name": res.get("previous_name"),
+            "batch_id": res.get("batch_id"), "merged_shell_id": merged,
+            "ack": ack}
+
+
 def split_person_from_shared_address(
     workspace_root: str | Path,
     *,
@@ -1622,6 +2113,10 @@ def split_person_from_shared_address(
       {"status": "split", "person_id", "canonical_name", "shared_email",
        "from_person_id", "record"}
       {"status": "already_on_file", "person_id", "detail"}
+      {"status": "rename_proposed", "person_id", "canonical_name",
+       "from_person_id", "proposal_status", "proposal_id", "detail"}
+        (cr1#195: the folded record's own history is the named person's, so
+        a rename question is raised instead and NOTHING is minted)
       {"status": "refused", "detail"}
     Raises ValueError on a malformed call (no provenance, no batch id, a name
     equal to the folded record's own, a record that does not hold the address).
@@ -1677,6 +2172,39 @@ def split_person_from_shared_address(
         return {"status": "already_on_file",
                 "person_id": by_name.get("id"),
                 "detail": "the second person is already on file"}
+
+    # cr1#195, owner ruling 2026-10-26. The record's own history belongs to
+    # the person the invite names, so the record carries the OTHER person's
+    # name. Minting a record here would leave that history under the wrong
+    # name and add an empty record nobody notices; renaming here would
+    # displace on an unattended path. So the split ASKS, and writes nothing
+    # else. The confirmed answer calls `rename_person`.
+    from identity_reconcile import name_belongs_to_other
+
+    #
+    # The question holds the split back only while it is OPEN (just raised,
+    # or already waiting). Once the owner has declined it the cooldown
+    # suppresses it, and the split goes back to what it did before this
+    # rule: the second person gets their own record. A question that could
+    # not be raised at all falls through the same way. Asking must never
+    # leave the second person with no record for good.
+    asked = {}
+    if name_belongs_to_other(workspace_root, folded, canonical_name):
+        try:
+            asked = propose_person_rename(
+                workspace_root, record=folded, new_name=canonical_name,
+                shared_email=shared_email)
+        except Exception:
+            asked = {}
+    if asked.get("status") in ("proposed", "duplicate_open"):
+        return {"status": "rename_proposed",
+                "person_id": folded_person_id,
+                "canonical_name": canonical_name,
+                "from_person_id": folded_person_id,
+                "proposal_status": asked.get("status"),
+                "proposal_id": asked.get("proposal_id"),
+                "detail": "the record's history belongs to the person named; "
+                          "the rename is asked, never applied"}
 
     record = create_person(
         workspace_root,
@@ -1858,12 +2386,19 @@ def door_create_person(
     source_ref: str | None = None,
     account_address: str | None = None,
     source_skill: str = DOOR_SOURCE_SKILL,
+    confirmed_different_person: bool = False,
 ) -> dict:
-    """`create_person` through the writer door. Dedup always runs (no
-    `skip_dedup` here). Answers `{ok: true, id, canonical_name}`, or `ok:
-    false` with `reason` `duplicate` (and `existing_id`), `ambiguous` (and
-    `candidates`), `single_word_name` or `out_of_scope`, each with nothing
-    written."""
+    """`create_person` through the writer door. Dedup runs unless the OWNER
+    has confirmed this is a different person who shares a name on file
+    (`confirmed_different_person`, PEOPLEDUP1 cr1#247): the door never
+    exposed `skip_dedup`, so on a merged seat a second Sam Sample was refused
+    every time and the second person's meetings and promises landed on the
+    first. The flag is the owner's answer to the duplicate refusal, carried by
+    people-crm, never set on the chat's own judgement; it skips the dedup and
+    nothing else (the scope wall and the one-word-name refusal still apply).
+    Answers `{ok: true, id, canonical_name}`, or `ok: false` with `reason`
+    `duplicate` (and `existing_id`), `ambiguous` (and `candidates`),
+    `single_word_name` or `out_of_scope`, each with nothing written."""
     scope_error = _account_scope_error()
     try:
         record = create_person(
@@ -1874,7 +2409,12 @@ def door_create_person(
             last_interaction=last_interaction,
             needs_enrichment=needs_enrichment, provenance=provenance,
             source_ref=source_ref, account_address=account_address,
-            source_skill=source_skill)
+            source_skill=source_skill,
+            # the JSON boolean true and nothing else: the door binds
+            # arguments untyped, and a chat that spells "false" must not
+            # skip the dedup (review of cr1#247)
+            skip_dedup=(confirmed_different_person is True),
+        )
     except DuplicatePersonError as exc:
         return {"ok": False, "reason": "duplicate",
                 "existing_id": exc.person_id,

@@ -158,7 +158,7 @@ whether the one-pager footer carries a sign-off.
 | **Detect** (default) | "one-pager on…" | produce the one-pager with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "one-pager-composer", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
 | **Show settings** | "show one-pager-composer settings" | render current config in plain English; no one-pager. |
 | **Tune** | "tune one-pager-composer" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-produce. |
-| **Reset** | "reset one-pager-composer to defaults" | `wipe_skill_config(workspace_root, "one-pager-composer")` → next fire is a first-fire again. |
+| **Reset** | "reset one-pager-composer to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "one-pager-composer", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "one-pager-composer")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — one-pager-composer ends in a chat link to the .docx, not a widget):**
 
@@ -208,7 +208,7 @@ Every one-pager uses this skeleton. No exceptions — consistency is the product
 > **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("one_pager", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions (the fixed skeleton below stays authoritative; the exemplar anchors layout within it). Workspace exemplar (`_hq/exemplars/one_pager/`) beats the shipped seed; `None` = compose on the skeleton below, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header, the ordering check, or the one-page cap, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the page. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered one-pager ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="one_pager", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
 
 1. **Headline → exec-header VERDICT** (1 line) — The single conclusion the reader should take away. Active voice, specific, no hedging. (Subhead's why-now folds into the header's CHANGED line.)
-2. **Recommendation** — What the reader should do. One paragraph, specific and time-bound. *(EXEC1: leads the body, directly under the header.)* Gains a decide-by date always, and a cost-of-delay line when it traces to substrate ("every week of delay is ~$18K of exposure" — only when `quantify` returns it).
+2. **Recommendation**: What the reader should do. One paragraph, specific and time-bound. *(EXEC1: leads the body, directly under the header.)* Gains a decide-by date always, and a cost-of-delay line when it traces to substrate ("every week of delay is about an amount of exposure", only when `quantify` returns it).
 3. **Three Key Points** — Each one a tight paragraph, 2-4 sentences max. Lead with the claim, follow with the evidence. Bolded lead-in phrase. *(The audit trail for the recommendation above.)*
 4. **Supporting Data** — 3-5 bullets with numbers, dates, sources. If data is estimated or unavailable, say so plainly.
 5. **Footer** — Author, date, 1-line source note.
@@ -301,7 +301,7 @@ The canonical `brief_writer.make_brief(brief_kind="one_pager", ...)` path alread
 
 ### Examples
 
-**Example 1 — Headline + subhead (margin drop topic):**
+**Example 1: Headline and subhead (margin drop topic).**
 ```
 # Q3 Margin Dropped 17%. Three Supplier Concentration Bets Are Why.
 
@@ -309,7 +309,7 @@ The problem compounds through Q4 unless we diversify the top-3 supplier
 list by August 15.
 ```
 
-**Example 2 — Key point paragraph:**
+**Example 2: Key point paragraph.**
 ```
 **Supplier concentration is the headline risk.** 62% of Q3 hardware
 COGS came from three suppliers in Shenzhen. Two raised prices 9-14%
@@ -317,7 +317,7 @@ in September. The third signaled a 2027 capacity cut. A single-supplier
 outage would stop the line for 4-6 weeks.
 ```
 
-**Example 3 — Recommendation close:**
+**Example 3: Recommendation close.**
 ```
 ## Recommendation
 

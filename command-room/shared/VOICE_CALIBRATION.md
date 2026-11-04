@@ -25,7 +25,7 @@ Contains NOTHING client-specific. Never references a CEO's actual voice.
 
 ### Tier 2 — Per-skill voice block (baked into each writing skill's SKILL.md)
 
-Every writing skill has a section titled `## Voice Block` in its SKILL.md. This block contains the CEO's domain-specific voice for that skill. For the public plugin, the voice block is populated with a generic professional default. For client installs (the $10K customization), Chalette replaces the generic voice block with a calibrated one extracted from the client's actual writing samples.
+Every writing skill has a section titled `## Voice Block` in its SKILL.md. This block contains the CEO's domain-specific voice for that skill. For the public plugin, the voice block is populated with a generic professional default. For client installs (the paid customization), Chalette replaces the generic voice block with a calibrated one extracted from the client's actual writing samples.
 
 ### The rail boundary — voice owns WORDS, exemplars own LAYOUT (SPEC OUT8)
 
@@ -279,7 +279,7 @@ When a writing skill ships with the public plugin (no client calibration yet), t
 - Register: professional, direct, no hedging.
 - Bullets: acceptable for lists of 3+ items, avoided for flowing prose.
 
-This default works at ~60% quality — the product still functions on day 1 without calibration. The $10K Chalette calibration lifts this to ~90%.
+This default works at ~60% quality: the product still functions on day 1 without calibration. The paid Chalette calibration lifts this to ~90%.
 
 ---
 

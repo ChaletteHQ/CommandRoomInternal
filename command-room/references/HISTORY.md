@@ -7,6 +7,8 @@ breadcrumb like `(Bug #86 — see references/HISTORY.md)`. Per-skill ledgers
 (`skills/workspace-manager/references/HISTORY.md`, `skills/workspace-ingest/references/HISTORY.md`)
 remain valid; this file is the plugin-wide index and the home for every skill without its own
 ledger. Entries are keyed by bug number or incident name. Append-only — archive, never delete.
+The architectural decisions these incidents produced are listed one per line, with their reasons, in
+`docs/DECISIONS.md` at the repo root (issue #408).
 
 Note on numbering: bug numbers were assigned per-session in early tracking, so a number can name
 more than one incident (e.g. two distinct Bug #82s). Entries below disambiguate in the title.

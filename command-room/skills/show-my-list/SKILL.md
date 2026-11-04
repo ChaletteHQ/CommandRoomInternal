@@ -194,8 +194,8 @@ Widget IS the post. No commentary.
 If 0 items match: the backlog has drained — surface ONLY the plain-English empty state: `Your list is empty. This list is retired — new items go to My Plate or a contact note.` No widget, no fire-marker (nothing to dispatch), no retirement widget banner — the empty state is the whole render.
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary (these are **scheduled chats** to the customer — never "scheduled tasks" or "daily check-ins" in rendered copy).
-- BAD: "Your list — 5 to discuss · 3 touch revenue — $45K · oldest 12d"
-- GOOD: "Your list — 5 to discuss · 3 tied to revenue ($45K) · oldest 12 days"
+- BAD: "Your list — 5 to discuss · 3 touch revenue — [amount] · oldest 12d"
+- GOOD: "Your list — 5 to discuss · 3 tied to revenue ([amount]) · oldest 12 days"
 
 ## What this skill does NOT do
 

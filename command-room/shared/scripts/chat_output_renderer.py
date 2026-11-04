@@ -209,6 +209,159 @@ def _doc_headline_link_impl(label: str, url: str, level: int = 2) -> str:
     return f"{prefix} → **[{label}]({url})**"
 
 
+#: MNSTEPS1 (cr1#550): the meeting recap's steps that can fail to run on a
+#: seat, and the ONE plain sentence each says to the owner when it did not
+#: run: what did not happen and what that leaves undone. No file, script,
+#: mechanism or step number, and never the word "complete". The order here is
+#: the order they print in. `recap_closing(..., skipped=[...])` takes these
+#: keys, and any other label for a step that did not run, so the words are
+#: fixed in code, not typed per run: a label with no sentence here prints
+#: `MEETING_STEP_SKIPPED_OTHER` once, never the label itself.
+#: `recap_closing(..., ran=[...])` names every key here the chat does not
+#: confirm as run (cr1#550 UAT fail: the card was never named).
+MEETING_STEP_SKIPPED_LINES = {
+    "card": ("I could not show this call's card here, so its one-tap actions "
+             "are not in this chat."),
+    "closes": ("I could not check whether this call settled promises already "
+               "on your list, so any it settled are still open."),
+    "entity_signals": ("I could not note what this call said about people and "
+                       "companies you already track, such as a new role or a "
+                       "move, so none of it was saved."),
+    "deal_signals": ("I could not look for deal changes in this call, such as "
+                     "a new stage or a win, so none were suggested."),
+    "objective_review": ("I could not check whether this call reviewed one of "
+                         "your objectives, so no status from it was recorded."),
+    "tracker": ("Your project tracker was not refreshed, so it does not show "
+                "this call yet."),
+    "decision_log": ("Your decision log was not refreshed, so it does not list "
+                     "this call's decisions yet."),
+    "follow_ups": ("I could not prepare follow-up drafts for this call, so "
+                   "none are waiting for you."),
+    "card_questions": ("I could not show the questions this call left about "
+                       "who owes whom, so you were not asked them here."),
+    "expiry_line": ("I could not say what happens to the questions above if "
+                    "you leave them unanswered."),
+}
+
+#: The one sentence for a step that did not run and has no sentence above,
+#: printed once however many such steps there were.
+MEETING_STEP_SKIPPED_OTHER = ("Part of processing this call could not run "
+                              "here, so this result is partial.")
+
+import re as _re_skip  # noqa: E402 - the file's own aliased-import style
+
+_COMPLETE_WORD = _re_skip.compile(r"\bcomplete\b", _re_skip.IGNORECASE)
+
+
+def _skipped_lines(skipped) -> list:
+    """The fixed sentences for `skipped`, once each, in the table's order,
+    then `MEETING_STEP_SKIPPED_OTHER` ONCE when any label has no sentence
+    here (review of #576: a skip with no key must still be said, never
+    dropped and never a raise that loses the closing). The label itself is
+    never printed: a model typing its own words is how a file name or a
+    shell detail reaches the owner."""
+    if isinstance(skipped, str):
+        skipped = [skipped]
+    keys = set()
+    other = False
+    for key in skipped or []:
+        key = str(key or "").strip()
+        if not key:
+            continue
+        if key in MEETING_STEP_SKIPPED_LINES:
+            keys.add(key)
+        else:
+            other = True
+    lines = [line for key, line in MEETING_STEP_SKIPPED_LINES.items() if key in keys]
+    if other:
+        lines.append(MEETING_STEP_SKIPPED_OTHER)
+    return lines
+
+
+def recap_closing(sources, brief_label: str, brief_url: str, coverage=None,
+                  skipped=None, ran=None) -> str:
+    """The meeting recap's closing block, composed in ONE call (cr1#178).
+
+    Owner ruling 2026-10-23: one `Sources:` footer on the recap card, no
+    per-line citations, coverage lines kept apart from the links. The card
+    side held in UAT; the last-line rule did not, because the footer and the
+    H2 brief link were two separate prose steps and the brief link closed the
+    reply in 1 of 3 runs (missing once, a bare file path once). So both come
+    out of this one composer and the caller prints its answer verbatim.
+
+    Shape, top to bottom, blocks separated by a blank line:
+      - each coverage sentence (what was and was not read) on its own line;
+      - ONE `Sources: [label](url), [label](url)` line (a source with no URL
+        is named in plain words, never given an empty link; no sources, no
+        line);
+      - the H2 brief link from `doc_headline_link`, always the LAST line
+        when there is a link to give.
+
+    `brief_url` is what `brief_path.get_brief_artifact_url` mints: a link
+    (a `scheme://` target) or "". A non-empty target that is not a link (a
+    bare file path) raises ValueError: printed, it is a dead pointer. An
+    EMPTY target is main's own "no target, no line" answer (HYGIENE3,
+    BRIEFLINK1: a scratch or session-sandboxed path mints nothing), so the
+    headline is left out exactly as `doc_headline_link` leaves it out and the
+    Sources line closes. On Slack the headline is retired the same way.
+
+    `skipped` (MNSTEPS1, cr1#550) names the steps that did not run, by the
+    keys of `MEETING_STEP_SKIPPED_LINES` where one fits and any other label
+    otherwise; each known key prints its fixed sentence once, any other label
+    prints `MEETING_STEP_SKIPPED_OTHER` once, all above the coverage lines.
+    A coverage line calling the result complete beside a skipped step is
+    DROPPED (the preamble's one-sentence "what is below is complete" said
+    exactly that while a step's work was missing); the skip sentences, the
+    Sources line and the brief link still print. Nothing about `skipped`
+    raises. With nothing skipped the block is exactly what it was.
+
+    `ran` (cr1#550, UAT fail of 2026-10-30) names the keys of
+    `MEETING_STEP_SKIPPED_LINES` the chat confirms DID run. When it is given,
+    every key there it does not confirm is treated as skipped, so a step the
+    chat forgot to add to `skipped` is still named (the card, in all three
+    runs). A label in `ran` with no sentence is ignored; a key in both lists
+    is named. `ran` None keeps the old behaviour: only `skipped` is read.
+    """
+    target = str(brief_url or "").strip()
+    if target and "://" not in target:
+        raise ValueError("recap_closing: the brief target is a file path, "
+                         "not a link; mint it with "
+                         "brief_path.get_brief_artifact_url first")
+    if isinstance(skipped, str):
+        skipped = [skipped]
+    skipped = list(skipped or [])
+    if ran is not None:
+        if isinstance(ran, str):
+            ran = [ran]
+        confirmed = {str(k or "").strip() for k in ran}
+        skipped += [k for k in MEETING_STEP_SKIPPED_LINES if k not in confirmed]
+    blocks: list[str] = _skipped_lines(skipped)
+    any_skipped = bool(blocks)
+    if isinstance(coverage, str):
+        coverage = [coverage]
+    for line in coverage or []:
+        line = str(line or "").strip()
+        if line:
+            if any_skipped and _COMPLETE_WORD.search(line):
+                # a step did not run: this line would call the result
+                # complete, so it is left out and the closing still prints
+                continue
+            blocks.append(line)
+    cited = []
+    for src in sources or []:
+        label = str((src or {}).get("label") or "").strip()
+        url = str((src or {}).get("url") or "").strip()
+        if not label:
+            continue
+        cited.append(_link(label, url) if url else label)
+    if cited:
+        blocks.append("Sources: " + ", ".join(cited))
+    headline = doc_headline_link(brief_label, target)
+    if headline:
+        blocks.append(headline)
+    return "\n\n".join(blocks) + "\n"
+
+
 def doc_headline_link_h3(label: str, url: str) -> str:
     """H3 variant for multi-document lists (e.g. upcoming-meetings surfacing
     several briefs). The single-doc case uses `doc_headline_link()` (H2);
@@ -1414,7 +1567,7 @@ import re as _leak_re
 # time, not after.
 try:
     from surface_leak_patterns import CMT_ID_MIN_LEN as _CMT_ID_MIN_LEN
-    from surface_leak_patterns import NUMERIC_TAILED_ID_SRC as _NUM_TAIL_SRC
+    from surface_leak_patterns import NUMERIC_TAILED_ID_SEPARATOR_SRC as _NUM_TAIL_SEP
     from surface_leak_patterns import NUMERIC_TAILED_ID_PREFIXES as _NUM_TAIL_PREFIXES
     from surface_leak_patterns import SUBSTRATE_PATH_SOURCES as _SUBSTRATE_SRC
 except ImportError:  # pragma: no cover — direct-path fallback
@@ -1422,7 +1575,7 @@ except ImportError:  # pragma: no cover — direct-path fallback
     from pathlib import Path as _Path_cml
     _sys_cml.path.insert(0, str(_Path_cml(__file__).resolve().parent))
     from surface_leak_patterns import CMT_ID_MIN_LEN as _CMT_ID_MIN_LEN
-    from surface_leak_patterns import NUMERIC_TAILED_ID_SRC as _NUM_TAIL_SRC
+    from surface_leak_patterns import NUMERIC_TAILED_ID_SEPARATOR_SRC as _NUM_TAIL_SEP
     from surface_leak_patterns import NUMERIC_TAILED_ID_PREFIXES as _NUM_TAIL_PREFIXES
     from surface_leak_patterns import SUBSTRATE_PATH_SOURCES as _SUBSTRATE_SRC
 
@@ -1459,6 +1612,60 @@ _LINK_TARGET_SPAN_RE = _leak_re.compile(
 _ENTITY_ID_PREFIXES = tuple(p for p in _NUM_TAIL_PREFIXES if p not in ("cmt", "seq"))
 _ENTITY_ID_SRC = (r"\b(?:(?:" + "|".join(_ENTITY_ID_PREFIXES) + r")_\d+"
                   r"|(?:event|matter|engagement)_\d{3,})\b")
+
+# THE EVENT-TYPE NAMES, IN ONE PLACE (REVIEW_LEAK4 RE-VERIFY 2 P-4, class
+# (b)). The row used to be one hand-typed alternation that required the word
+# `event(s)` / `written` / `logged` / `appended` to follow the type. The
+# reviewer measured what that costs: `commitment_resolved` refuses ONLY when
+# the literal word `event` follows it, so "Six `commitment_resolved` rows are
+# stale." — the shape the attended record actually caught — read clean at
+# base and at tip.
+#
+# TWO ARMS, ONE LABEL, ONE NAME LIST.
+#
+#   1. the recorded shape — the type followed by the mechanic noun, exactly
+#      as before, for EVERY name including the two ordinary English words;
+#   2. the type ON ITS OWN, word-bounded, with no following noun and no
+#      delimiter required.
+#
+# ARM 2 IS SPELLING-BLIND, AND THAT IS THE WHOLE POINT (REVIEW_GATECUT1 F-1
+# and F-3). It first shipped as a BACKTICK pair, which closed the shape on
+# the chat surface and left every HTML surface open: `scan_rendered_html`
+# strips only `<style>` and `<script>`, so `<code>` and `<tt>` reach this
+# scanner intact and `<code>commitment_resolved</code>` read clean while the
+# backtick spelling refused. Chasing delimiters is a losing game — backtick,
+# `'`, `"`, `<code>`, `<tt>`, a bold star — so the arm drops them: an
+# underscore-joined machine name is not a word a customer writes, in any
+# wrapper or none. Measured before shipping, on two private copies of a real
+# book: the bare form matches 0 of 7,216 customer-authored strings on the
+# 2026-09-17 copy and 0 of 6,929 on the 2026-09-14 copy, and the whole gate's
+# refusal count is flat on both (56 → 56, 52 → 52).
+#
+# Arm 2 carries the UNDERSCORE-JOINED names only. `interaction` and
+# `decision` are ordinary English — "I made a decision on Tuesday" is a
+# sentence a person writes — so they are never matched alone, in code font
+# or out of it; the same admission test the hand roster applies, applied
+# here. Arm 1 still covers those two, which is where they were caught before
+# and is unchanged.
+_EVENT_TYPE_NAMES = (
+    "chat_dismissal", "pack_run", "connector_read", "outreach_sent",
+    "draft_created", "commitment_resolved", "commitment_updated",
+    "commitment_review_proposed", "commitment_review_dismissed",
+    "commitment_to_discuss", "thread_resolved", "choices_applied",
+    "chat_suppressed", "dont_forget_feedback", "interaction",
+    "meeting_processed", "pattern_break_detected", "decision",
+)
+# Longest first so a long name is one hit, never a prefix of itself.
+_EVENT_TYPE_ALT = "|".join(sorted(_EVENT_TYPE_NAMES, key=len, reverse=True))
+# The machine-name subset: underscore-joined, so never ordinary English.
+# Built from `_EVENT_TYPE_NAMES` by the SAME admission test the roster uses,
+# so a name added to the list above joins both arms and neither is hand-kept.
+_EVENT_TYPE_MACHINE_NAMES = tuple(n for n in _EVENT_TYPE_NAMES if "_" in n)
+_EVENT_TYPE_MACHINE_ALT = "|".join(
+    sorted(_EVENT_TYPE_MACHINE_NAMES, key=len, reverse=True))
+_EVENT_TYPE_SRC = (
+    r"\b(?:" + _EVENT_TYPE_ALT + r")\s+(?:event(?:s)?|written|logged|appended)"
+    r"|\b(?:" + _EVENT_TYPE_MACHINE_ALT + r")\b")
 
 _LEAK_PATTERNS = [
     # Internal entity / event IDs
@@ -1584,13 +1791,7 @@ _LEAK_PATTERNS = [
     # Internal event-type names (v2.12.4+ — surfaced in apply-time outputs;
     # v2.14.6+ — added commitment_updated, commitment_review_proposed for CRU layer;
     # v2.14.7+ — added commitment_review_dismissed for review-skip path)
-    (_leak_re.compile(r"\b(chat_dismissal|pack_run|connector_read|outreach_sent|draft_created|"
-                      r"commitment_resolved|commitment_updated|commitment_review_proposed|"
-                      r"commitment_review_dismissed|"
-                      r"commitment_to_discuss|thread_resolved|choices_applied|"
-                      r"chat_suppressed|dont_forget_feedback|interaction|meeting_processed|"
-                      r"pattern_break_detected|decision)\s+(?:event(?:s)?|written|logged|appended)",
-                      _leak_re.IGNORECASE),
+    (_leak_re.compile(_EVENT_TYPE_SRC, _leak_re.IGNORECASE),
      "internal event-type leak"),
     # Phase / Step labels (development-time scaffold)
     (_leak_re.compile(r"\b(Phase|Step)\s+\d+(?:\.\d+)?[a-z]?\b"), "phase/step label"),
@@ -1601,7 +1802,15 @@ _LEAK_PATTERNS = [
     # Event seq numbers. REVIEW_LEAK3 F-6 — the separator was whitespace
     # only, so `seq_86` (the shape a composer writes when it builds an id
     # rather than a sentence) read clean. An underscore counts too.
-    (_leak_re.compile(r"\bseq[\s_]\d+\b", _leak_re.IGNORECASE),
+    # REVIEW_GATECUT1 F-2 — and the separator class is now the SHARED
+    # constant, imported above, the same one `carries_surface_id()` builds
+    # its space arm from. It was hand-typed in both places and had already
+    # drifted: this row read `[\s_]` while the composer door read `[ \t]`,
+    # so a title pasted with a non-breaking space refused the whole page
+    # here and was invisible there. The prefix list was already shared for
+    # exactly this reason; the separator is now shared too.
+    (_leak_re.compile(r"\bseq" + _NUM_TAIL_SEP + r"\d+\b",
+                      _leak_re.IGNORECASE),
      "event seq leak"),
     # Plugin protocol / version internals (e.g. "post-widget chat-links section per v2.12.0+ protocol")
     (_leak_re.compile(r"\bv\d+\.\d+(?:\.\d+)?\+?\s+(?:protocol|spec|format)\b", _leak_re.IGNORECASE),
@@ -4234,13 +4443,30 @@ def _strip_action_n_prefix(action: str, item_n) -> str:
     return action
 
 
+_VOICE_SHA_RE = _re_mod.compile(r"[0-9a-f]{64}")
+
+
+def _voice_sha_attr(value) -> str:
+    """` data-voice-sha="<hex>"` for a lowercase sha256, else empty
+    (VOICELOAD1, cr1#197). Validated, never escaped through: a value that is
+    not a hash never reaches the card."""
+    if isinstance(value, str) and _VOICE_SHA_RE.fullmatch(value):
+        return f' data-voice-sha="{value}"'
+    return ""
+
+
 def _render_widget_item(item: dict) -> str:
     """Render one item as an HTML block with a per-row verb dropdown (T2.2)."""
     n = item.get("n")
     if n is None:
         raise ValueError("Item missing required 'n' field")
 
-    parts = [f'<div class="cr-item" data-item-n="{_html_mod.escape(str(n), quote=True)}">']
+    # VOICELOAD1 (cr1#197): the hash of the voice block the compose step read
+    # rides the row, so the click carries it on its tuple instead of from
+    # chat memory. Only a sha256 reaches the card; anything else is dropped
+    # and the click honestly carries nothing.
+    voice_sha = _voice_sha_attr(item.get("voice_block_sha256"))
+    parts = [f'<div class="cr-item" data-item-n="{_html_mod.escape(str(n), quote=True)}"{voice_sha}>']
 
     # T2.2 display hygiene (RV-5): `n` is the WIRE id (data-n, the apply
     # payload); `display_n` is the visible row number. When a surface keys
@@ -4314,6 +4540,13 @@ def _render_widget_item(item: dict) -> str:
     body_lines = item.get("body_lines", [])
     if metadata or body_lines:
         parts.append(_render_email_blockquote_html(metadata, body_lines))
+    # VOICELOAD1 (cr1#197): the one sentence a draft card carries when the
+    # compose step did not prove it read the voice file. Set by
+    # `widget_transport.render_and_persist`, which checks the hash against the
+    # file on disk; renderer prose, so it faces the whole scan.
+    voice_note = item.get("voice_note", "")
+    if voice_note:
+        parts.append(f'<div class="cr-verbset-note">{_md_to_html(voice_note)}</div>')
 
     # Sources line
     sources = item.get("sources", [])
@@ -5066,7 +5299,7 @@ function crSel(sel) {
   }
   crUpdateCounter();
   // WG1-A D-A5 — single-item ≥5 dropdown: picking an option dispatches.
-  if (crSingleItem && sel.value) crSingleDispatch(sel);
+  if (crSingleItem && sel.value && typeof crSingleDispatch === 'function') crSingleDispatch(sel);
 }
 """.strip()
 
@@ -5087,7 +5320,7 @@ function crToggle(btn) {
   crUpdateCounter();
   // WG1-A D-A5 — no batch footer on a single-item widget: arming IS the
   // dispatch (only when the button was just selected, never on toggle-off).
-  if (crSingleItem && !was) crSingleDispatch(btn);
+  if (crSingleItem && !was && typeof crSingleDispatch === 'function') crSingleDispatch(btn);
 }
 """.strip()
 
@@ -5155,6 +5388,32 @@ function crSkipAll() {
   crUpdateCounter();
   crApplyAll();
 }
+""".strip()
+
+# VOICELOAD1 (cr1#197): a draft row's voice hash rides its tuple. The block
+# wraps the one dispatcher and adds `voice_block_sha256` to every tuple whose
+# `n` is a row carrying `data-voice-sha`, so the click reads the hash off the
+# card, never from chat memory. Emitted only on a card whose row carries one
+# (`_compose_widget_js`), and kept out of the compat monolith, so every other
+# card and the scaffold budget are byte for byte as before.
+_JS_VOICE = """
+const crVoiceSend = crSendPrompt;
+crSendPrompt = function (t, p) {
+  if (typeof t === 'string' && t.indexOf('apply choices: ') === 0) {
+    try {
+      const cs = JSON.parse(t.slice(15));
+      const rows = document.querySelectorAll('.cr-item');
+      cs.forEach(c => {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          if (r.dataset.voiceSha && String(r.dataset.itemN) === String(c.n)) c.voice_block_sha256 = r.dataset.voiceSha;
+        }
+      });
+      t = 'apply choices: ' + JSON.stringify(cs);
+    } catch (e) {}
+  }
+  return crVoiceSend(t, p);
+};
 """.strip()
 
 _JS_CORE = """
@@ -5406,83 +5665,6 @@ function crNoteFor(n) {
   return null;
 }
 
-function crInlineBody(n) {
-  // t3 FB-10 — the row's directly-editable email body, or null.
-  const items = crQ('.cr-item, .cr-sub-item');
-  const s = String(n);
-  for (let i = 0; i < items.length; i++) {
-    const rn = items[i].dataset.itemN || items[i].dataset.subId;
-    if (String(rn) !== s) continue;
-    return items[i].querySelector('.cr-eb-body[contenteditable]');
-  }
-  return null;
-}
-
-function crBodyText(el) {
-  // Normalized on-screen text: trim line-trailing space, collapse blank-line
-  // runs (an empty .cr-eb-empty line div reads back as TWO breaks via
-  // innerText), drop trailing blanks — the shape data-original carries.
-  const raw = (el.innerText || '').replace(/\\n{3,}/g, '\\n\\n');
-  const lines = raw.split('\\n').map(l => l.replace(/\\s+$/, ''));
-  while (lines.length && !lines[lines.length - 1]) lines.pop();
-  return lines.join('\\n');
-}
-
-function crRowArmed(row){
-  // Any verb armed on this row — a dropdown value or a pressed primary button?
-  const s=row.querySelectorAll('.cr-action-select');
-  for(let i=0;i<s.length;i++)if(s[i].value)return true;
-  return !!row.querySelector('.cr-action.cr-selected');
-}
-
-function crBodyEdited(el){
-  // FB-CTS1 (Bug A): editing the email body must let the user Apply. The Apply
-  // gate only counts armed verbs + note text, so a body edit alone left Apply
-  // greyed and read as "editing the email breaks Apply." Auto-arm the row's
-  // DRAFT verb (never Send — a mere edit must not queue a send) so the counter
-  // ticks, the edited body serializes, and (post-CSS-fix) "Draft" shows armed.
-  // NEVER on a single-item page: there arming IS the dispatch (D-A5), so the
-  // auto-arm would fire `draft` on the first keystroke with zero clicks —
-  // violating the draft-posture ruling. The auto-arm is also unnecessary
-  // there: crApplyAll's FB-10 block serializes the current on-screen body at
-  // explicit click time, so edit-then-click-Draft/Send still ships the edit.
-  const row=el.closest('.cr-sub-item')||el.closest('.cr-item');
-  if(row&&!crRowArmed(row)&&!crSingleItem){
-    const d=row.querySelector('.cr-action[data-action="draft"]');
-    if(d&&typeof crToggle==='function')crToggle(d);
-  }
-  crUpdateCounter();
-}
-
-function crSingleDispatch(ctl) {
-  // WG1-A D-A5 — a single-item widget has no Apply footer, so a click
-  // dispatches immediately. Build the SAME wire crApplyAll would (byte-equal
-  // to the multi-select form). If the armed action needs an input that is
-  // missing, open its wrapper + show the inline reason and dispatch when the
-  // user supplies it (Enter / blur) — never fire an empty required action.
-  const all = crSelected();
-  const picks = crReadOnly ? all.filter(p => p.el === ctl) : all;
-  if (!picks.length) return;
-  const sel = picks[0];
-  if (sel.req) {
-    const w = crWrap(sel.n, sel.action);
-    const f = w ? w.querySelector('textarea, input') : null;
-    if (!(f && f.value && f.value.trim())) {
-      crValidate();  // opens the wrapper + surfaces the inline missing reason
-      if (f && !f.dataset.crSingleBound) {
-        f.dataset.crSingleBound = '1';
-        const go = function () { if (f.value && f.value.trim()) crSingleDispatch(ctl); };
-        f.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
-        });
-        f.addEventListener('blur', go);
-      }
-      return;
-    }
-  }
-  crApplyAll(crReadOnly ? ctl : null);
-}
-
 function crApplyAll(onlyCtl) {
   // APPLYCLICK1 — the filter is a CONTROL or nothing. Anything else (an
   // event object from a listener that passed it through) is the batch.
@@ -5514,7 +5696,7 @@ function crApplyAll(onlyCtl) {
     // t3 FB-10 — serialize the CURRENT on-screen body at Apply time. An
     // inline edit rides the choice as {body}; an open mfe editor wins
     // (it already carries body + To/Cc/Subject).
-    if (!choice.input) {
+    if (!choice.input && typeof crInlineBody === 'function') {
       const eb = crInlineBody(sel.n);
       if (eb) {
         const cur = crBodyText(eb);
@@ -5578,7 +5760,7 @@ function crClear() {
   crQ('.cr-note-field').forEach(f => { f.value = ''; });
   crQ('.cr-note-toggle-open').forEach(t => t.classList.remove('cr-note-toggle-open'));
   // t3 FB-10 — Reset restores an inline-edited body to the queued text.
-  crQ('.cr-eb-body[contenteditable]').forEach(eb => {
+  if (typeof crBodyText === 'function') crQ('.cr-eb-body[contenteditable]').forEach(eb => {
     const orig = eb.dataset.original;
     if (orig !== undefined && crBodyText(eb).trim() !== orig.trim()) eb.innerText = orig;
   });
@@ -5614,12 +5796,99 @@ function crClear() {
       w.querySelectorAll('textarea, input').forEach(f => f.addEventListener('input', crUpdateCounter));
     });
     // FB-CTS1 (Bug A) — editing the inline email body auto-arms Draft (crBodyEdited).
-    crQ('.cr-eb-body[contenteditable]').forEach(el=>{el.addEventListener('input',()=>crBodyEdited(el));});
+    if (typeof crBodyEdited === 'function') crQ('.cr-eb-body[contenteditable]').forEach(el=>{el.addEventListener('input',()=>crBodyEdited(el));});
     crUpdateCounter();
   } catch (e) {
     console.error('cr-widget bind failed:', e);
   }
 })();
+""".strip()
+
+# CARDTRIM1 (cr1#549, owner ruling 2026-10-30, route 2): two pieces of the
+# shared core only some cards reach, moved out of it so a card that never uses
+# them does not carry them (the chat copies every byte of a card by hand on a
+# merged seat). The inline email-body editor ships with an editable body; the
+# single-item dispatcher ships with a single-item or read-only card, the only
+# cards where `crSingleItem` is true. The core's calls into them are guarded.
+_JS_EDIT_BODY = """
+function crInlineBody(n) {
+  // t3 FB-10 — the row's directly-editable email body, or null.
+  const items = crQ('.cr-item, .cr-sub-item');
+  const s = String(n);
+  for (let i = 0; i < items.length; i++) {
+    const rn = items[i].dataset.itemN || items[i].dataset.subId;
+    if (String(rn) !== s) continue;
+    return items[i].querySelector('.cr-eb-body[contenteditable]');
+  }
+  return null;
+}
+
+function crBodyText(el) {
+  // Normalized on-screen text: trim line-trailing space, collapse blank-line
+  // runs (an empty .cr-eb-empty line div reads back as TWO breaks via
+  // innerText), drop trailing blanks — the shape data-original carries.
+  const raw = (el.innerText || '').replace(/\\n{3,}/g, '\\n\\n');
+  const lines = raw.split('\\n').map(l => l.replace(/\\s+$/, ''));
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  return lines.join('\\n');
+}
+
+function crRowArmed(row){
+  // Any verb armed on this row — a dropdown value or a pressed primary button?
+  const s=row.querySelectorAll('.cr-action-select');
+  for(let i=0;i<s.length;i++)if(s[i].value)return true;
+  return !!row.querySelector('.cr-action.cr-selected');
+}
+
+function crBodyEdited(el){
+  // FB-CTS1 (Bug A): editing the email body must let the user Apply. The Apply
+  // gate only counts armed verbs + note text, so a body edit alone left Apply
+  // greyed and read as "editing the email breaks Apply." Auto-arm the row's
+  // DRAFT verb (never Send — a mere edit must not queue a send) so the counter
+  // ticks, the edited body serializes, and (post-CSS-fix) "Draft" shows armed.
+  // NEVER on a single-item page: there arming IS the dispatch (D-A5), so the
+  // auto-arm would fire `draft` on the first keystroke with zero clicks —
+  // violating the draft-posture ruling. The auto-arm is also unnecessary
+  // there: crApplyAll's FB-10 block serializes the current on-screen body at
+  // explicit click time, so edit-then-click-Draft/Send still ships the edit.
+  const row=el.closest('.cr-sub-item')||el.closest('.cr-item');
+  if(row&&!crRowArmed(row)&&!crSingleItem){
+    const d=row.querySelector('.cr-action[data-action="draft"]');
+    if(d&&typeof crToggle==='function')crToggle(d);
+  }
+  crUpdateCounter();
+}
+""".strip()
+
+_JS_SINGLE = """
+function crSingleDispatch(ctl) {
+  // WG1-A D-A5 — a single-item widget has no Apply footer, so a click
+  // dispatches immediately. Build the SAME wire crApplyAll would (byte-equal
+  // to the multi-select form). If the armed action needs an input that is
+  // missing, open its wrapper + show the inline reason and dispatch when the
+  // user supplies it (Enter / blur) — never fire an empty required action.
+  const all = crSelected();
+  const picks = crReadOnly ? all.filter(p => p.el === ctl) : all;
+  if (!picks.length) return;
+  const sel = picks[0];
+  if (sel.req) {
+    const w = crWrap(sel.n, sel.action);
+    const f = w ? w.querySelector('textarea, input') : null;
+    if (!(f && f.value && f.value.trim())) {
+      crValidate();  // opens the wrapper + surfaces the inline missing reason
+      if (f && !f.dataset.crSingleBound) {
+        f.dataset.crSingleBound = '1';
+        const go = function () { if (f.value && f.value.trim()) crSingleDispatch(ctl); };
+        f.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
+        });
+        f.addEventListener('blur', go);
+      }
+      return;
+    }
+  }
+  crApplyAll(crReadOnly ? ctl : null);
+}
 """.strip()
 
 # JS feature blocks with triggers, emitted in this order (function
@@ -5633,6 +5902,9 @@ _JS_FEATURE_BLOCKS: list[tuple[str, str]] = [
                                            # button handler must still ship.
     ("cr-note-toggle", _JS_NOTES),
     ('id="cr-skip-all"', _JS_SKIP),
+    ('class="cr-eb-body"', _JS_EDIT_BODY),  # CARDTRIM1 - an editable email body
+    ("cr-card-single", _JS_SINGLE),  # CARDTRIM1 - a single-item card...
+    ("cr-card-readonly", _JS_SINGLE),  # ...or a read-only one (crSingleItem)
 ]
 
 
@@ -5873,6 +6145,9 @@ _CSS_CORE_MIN = _minify_css(_CSS_CORE)
 _CSS_FEATURE_BLOCKS_MIN = [(t, _minify_css(b)) for t, b in _CSS_FEATURE_BLOCKS]
 _JS_CORE_MIN = _minify_js(_JS_CORE)
 _JS_FEATURE_BLOCKS_MIN = [(t, _minify_js(b)) for t, b in _JS_FEATURE_BLOCKS]
+#: CARDTRIM1 - the two pieces moved out of the core, minified (the suite measures them).
+_JS_TRIMMED_BLOCKS_MIN = [_minify_js(_JS_EDIT_BODY), _minify_js(_JS_SINGLE)]
+_JS_VOICE_MIN = _minify_js(_JS_VOICE)
 
 _WIDGET_CSS_MIN = _minify_css(_WIDGET_CSS)
 _ALL_CLEAR_CSS_MIN = _minify_css(_ALL_CLEAR_CSS)
@@ -5906,6 +6181,8 @@ def _compose_widget_js(content_html: str) -> str:
         if trigger in content_html and block not in seen:
             parts.append(block)
             seen.add(block)
+    if 'data-voice-sha="' in content_html:  # VOICELOAD1 (cr1#197)
+        parts.append(_JS_VOICE_MIN)
     parts.append(_JS_CORE_MIN)
     return "\n".join(parts)
 

@@ -144,7 +144,7 @@ Close with a one-line confidence read tied to source coverage. Web-only firmogra
 (Acme Co already a prospect thread, so Step 1 pulls that context either way.)
 
 - **Web-only path:** "Freight brokerage, Midwest. ~200 employees (LinkedIn, may be stale). CEO Rio Sample. No funding info found. Confidence medium on the company, low on size and on who the buyer is — confirm headcount and decision-maker on the call." Decent, but it evaporates unless saved.
-- **Vibe Prospecting present:** corrects the stale headcount (~200 → 312 verified, i.e. growing faster than the public footprint shows), catches a $15M growth round that web search missed, surfaces 7 open ops roles incl. a VP RevOps hire, and names the real buyer — Bo Stone, COO (owns ops tooling), not the homepage CEO — alongside Skyler Sample, VP Finance (budget). Sources line: `web (3) + Vibe Prospecting enrichment`. Reports `~3 credits` spent. On save: brief → intel-intake, the three decision-makers → people-crm. Next week's call-prep and brief inherit all of it.
+- **Vibe Prospecting present:** corrects the stale headcount (~200 → 312 verified, i.e. growing faster than the public footprint shows), catches a growth round of an amount that web search missed, surfaces 7 open ops roles incl. a VP RevOps hire, and names the real buyer (Bo Stone, COO, owns ops tooling), not the homepage CEO, alongside Skyler Sample, VP Finance (budget). Sources line: `web (3) + Vibe Prospecting enrichment`. Reports `~3 credits` spent. On save: brief → intel-intake, the three decision-makers → people-crm. Next week's call-prep and brief inherit all of it.
 
 Same skill, same request. The branch simply turns on when the tools are there.
 

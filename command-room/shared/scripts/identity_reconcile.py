@@ -1811,8 +1811,182 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
         plan[cls["tier"]].append({"cluster": cluster, "email": cls["email"],
                                   "why": cls["why"]})
 
-    plan["merge_suspects"] = scan_existing_duplicates(ws)
+    # cr1#195 - an empty shell beside a misnamed record is the rename
+    # question, so that pair is never ALSO offered as a plain merge: the merge
+    # keeps the richer record's name, which is exactly the wrong one here.
+    plan["rename_suspects"] = scan_rename_suspects(ws)
+    shell_pairs = {frozenset((s["person_id"], s["shell_id"]))
+                   for s in plan["rename_suspects"]}
+    plan["merge_suspects"] = [
+        s for s in scan_existing_duplicates(ws)
+        if frozenset((s["keep"].get("id"), s["duplicate"].get("id")))
+        not in shell_pairs]
     return plan
+
+
+# ---------------------------------------------------------------------------
+# cr1#195 - an empty shell beside a misnamed record
+# ---------------------------------------------------------------------------
+
+def _split_born_ids(events: list) -> set:
+    """Person ids a split minted. The split stamps the `person_split` change
+    class on the one row that creates the record and on nothing else, so the
+    class alone names them (no type string is read here)."""
+    out = set()
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("brain_change_class") == "person_split" and d.get("person_id"):
+            out.add(d["person_id"])
+    return out
+
+
+def _referenced_outside_lifecycle(events: list) -> set:
+    """Person ids any row other than the record's own `person_*` lifecycle
+    rows points at. A record outside this set has no history of its own."""
+    import event_refs
+
+    out = set()
+    for ev in events:
+        if str(ev.get("type") or "").startswith("person_"):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        out |= event_refs.persons_of(ev)
+        cp = d.get("counterparty_id")
+        if isinstance(cp, str) and cp:
+            out.add(cp)
+    return out
+
+
+def record_history_names(workspace_root, person_id: str) -> list[str]:
+    """The person names the ledger OBSERVED on rows bound to this record.
+
+    A row counts only when it binds the record and names the person in the
+    same slot: `counterparty_id` with `counterparty_name`, which is how a
+    commitment carries the person as heard. The record's own lifecycle rows
+    (`person_*`) copy the record's name and are no evidence about it, so they
+    never carry that pair. Never raises: an unreadable ledger is no history.
+    """
+    try:
+        import event_refs
+        events = event_refs.load_events(_events_path(workspace_root))
+    except Exception:
+        return []
+    out: list[str] = []
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("counterparty_id") != person_id:
+            continue
+        name = d.get("counterparty_name")
+        if isinstance(name, str) and name.strip():
+            out.append(name.strip())
+    return out
+
+
+def name_belongs_to_other(workspace_root, record: dict,
+                          incoming_name: str) -> bool:
+    """Does this record's own history belong to `incoming_name` rather than
+    to the name the record carries?
+
+    True only when the history names the incoming person AND never names the
+    record by any name it answers to. A history name answers to the record
+    when its words are all words of one of the record's names
+    (`get_person_display_names`): the full name, an alias, a nickname, or
+    any part of one, so "Bo" on "Bo Sample" is the record's own history.
+    That errs toward OWN on purpose (a bare shared surname counts as own
+    too): a wrong "own" only means the split behaves as before, a wrong
+    "other" asks the owner a question with no basis. Mixed or absent history
+    says nothing. This only ever decides whether to ASK; the owner's
+    confirmation is the act.
+    """
+    from people_writer import _normalize_name, get_person_display_names
+
+    seen = {_normalize_name(n) for n in
+            record_history_names(workspace_root, record.get("id") or "")}
+    seen.discard("")
+    if _normalize_name(incoming_name) not in seen:
+        return False
+    own_words = [set(_normalize_name(n).split())
+                 for n in get_person_display_names(record)]
+    own_words = [w for w in own_words if w]
+    return not any(set(n.split()) <= w for n in seen for w in own_words)
+
+
+def shell_is_empty(workspace_root, shell_id: str) -> bool:
+    """Is this record still an empty shell: minted by a split, and pointed at
+    by no row outside its own `person_*` lifecycle? Read at the moment of the
+    owner's click by `people_writer.confirm_person_rename`. An unreadable
+    ledger is NOT empty: the fold that follows is permanent."""
+    import event_refs
+
+    try:
+        events = event_refs.load_events(_events_path(workspace_root))
+    except Exception:
+        return False
+    return shell_id in _split_born_ids(events)         and shell_id not in _referenced_outside_lifecycle(events)
+
+
+def scan_rename_suspects(workspace_root) -> list[dict]:
+    """Empty shells a split minted beside a record whose own history is the
+    shell's person's.
+
+    A SHELL is a live record a split created (`person_split` class) that no
+    row outside its own lifecycle has ever pointed at. Its NEIGHBOUR is a live
+    record holding the same personal address. The pair is a suspect when the
+    neighbour's history names the shell's person and never the neighbour's
+    own names (`name_belongs_to_other`, the split's own rule).
+    PROPOSE-only input, like `scan_existing_duplicates`: nothing here writes.
+    Never raises; an unreadable substrate is no suspects.
+    """
+    from entities_io import entities_collection
+    import event_refs
+    from people_writer import get_person_emails
+
+    try:
+        data = json.loads((Path(workspace_root) / "_hq" / "data" /
+                           "entities.json").read_text(encoding="utf-8"))
+        people = [p for p in entities_collection(data, "people")
+                  if p.get("status") != "archived"]
+        events = event_refs.load_events(_events_path(workspace_root))
+    except Exception:
+        return []
+    born = _split_born_ids(events)
+    busy = _referenced_outside_lifecycle(events)
+    out: list[dict] = []
+    seen: set = set()
+    for shell in people:
+        sid = shell.get("id")
+        if sid not in born or sid in busy:
+            continue
+        name = str(shell.get("canonical_name") or "").strip()
+        if not name:
+            continue
+        for e in get_person_emails(shell):
+            e = e.strip().lower()
+            if not e or is_role_address(e):
+                continue
+            for other in people:
+                oid = other.get("id")
+                if oid == sid or (oid, sid) in seen:
+                    continue
+                if e not in {x.strip().lower()
+                             for x in get_person_emails(other)}:
+                    continue
+                try:
+                    hit = name_belongs_to_other(workspace_root, other, name)
+                except Exception:
+                    hit = False
+                if not hit:
+                    continue
+                seen.add((oid, sid))
+                out.append({
+                    "person_id": oid,
+                    "current_name": other.get("canonical_name") or "",
+                    "new_name": name, "shell_id": sid, "email": e,
+                    "record": other,
+                    "why": f"{name} has an empty record, and the record "
+                           f"named {other.get('canonical_name')} at {e} "
+                           f"holds {name}'s history"})
+    return out
 
 
 def _record_emails(record: dict) -> list[str]:
@@ -2154,6 +2328,28 @@ def run_identity_reconcile(
             results["spilled"]["merge_propose"] += 1
             continue
         if _propose_person_link(ws, cluster, matched, source_skill):
+            results["merge_rows_proposed"] += 1
+
+    # ---- cr1#195 an empty shell beside a misnamed record ------------------
+    # Asked, never applied: the owner's confirm is
+    # `people_writer.confirm_person_rename`.
+    # Rides the merge-propose cap, since it is the same kind of question.
+    for suspect in plan.get("rename_suspects") or []:
+        if results["merge_rows_proposed"] >= merge_cap:
+            results["spilled"]["merge_propose"] += 1
+            continue
+        try:
+            from people_writer import propose_person_rename
+
+            asked = propose_person_rename(
+                ws, record=suspect["record"], new_name=suspect["new_name"],
+                shared_email=suspect.get("email") or "",
+                shell_id=suspect["shell_id"], evidence=suspect.get("why", ""))
+        except Exception as exc:
+            results["errors"].append({"person_id": suspect.get("person_id"),
+                                      "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if asked.get("status") == "proposed":
             results["merge_rows_proposed"] += 1
 
     # ---- D4b existing-record duplicate suspects ----------------------------

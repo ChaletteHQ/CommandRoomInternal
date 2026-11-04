@@ -1,3 +1,5 @@
+> **Long-form reference.** Start at `docs/ARCHITECTURE.md` in the staging repo (the current, dated map) and `docs/START_HERE.md` (the front door). This document keeps the earlier walk-through in full; sections that describe retired or superseded behaviour carry a **History** note in place (marked 2026-10-24).
+
 # How Command Room Works
 
 A single reference for understanding the plugin end-to-end — written for the operator who uses it in Cowork AND the developer who maintains it in Code. Read in order, or skip to a section.
@@ -54,7 +56,7 @@ The most important file in the workspace. Every consequential thing that happens
 
 **Append-only is non-negotiable.** Per the schema doc, events are never rewritten or deleted. Resolution / closure happens via NEW events (`commitment_resolved` references the original `commitment` by id; `decision_superseded` does the same for decisions).
 
-**Why append-only?** History is the source of truth for surface generation. If we let events get rewritten, we can't reconstruct what the user actually saw in the morning brief on day N, can't reproduce a Pulse fire to debug, can't trust dormancy detection.
+**Why append-only?** History is what every surface is generated from. If we let events get rewritten, we can't reconstruct what the user actually saw in the morning brief on day N, can't reproduce a Pulse fire to debug, can't trust dormancy detection.
 
 **Five known event shape variants for `commitment` events**:
 
@@ -116,6 +118,8 @@ First detector through the rails: the deal-signal detector (`shared/scripts/deal
 
 ## The scheduled chats — six daily + one weekly
 
+> **History (marked 2026-10-24).** The current set is `schedule_config.DEFAULT_SCHEDULES` (the brief, the inbox, End of Day, the Friday wrap, the silent maintenance task and the Staff Meeting; Waiting On and My Plate fold into the brief since v5.30.0). Registration and the scheduler seam are described in `docs/ARCHITECTURE.md` section 7.
+
 These fire on cron (defaults: weekdays 6:30 AM–5 PM for the daily loop, plus Friday 4 PM for the weekly Friday Wrap). Together they constitute most of the operator-facing value. They're configured via `enable-command-room-schedules` and registered through Cowork's scheduled-tasks API. Each is one persistent chat thread in Cowork's "Scheduled" section.
 
 ### 1. morning-brief (cron 7:00 AM weekdays)
@@ -130,7 +134,7 @@ Thin wrapper around the `morning-briefing` skill (the on-demand variant). Produc
 
 Triages overnight email into Reply Now / Decision Needed / FYI / Discard / Deep Read buckets. Drafts replies for 2-3 highest-priority items via `email-writer`. Renders a widget where each thread has its own action set (Send / Edit then send / Draft / Skip).
 
-**The financial-signal override** (v3.x): senders matching `^(billing|invoices?|estimates?|payments?|accounting)@` get +30 priority to override the automated-domain demote — caught a $10,400 QuickBooks estimate that was previously being filtered out.
+**The financial-signal override** (v3.x): senders matching `^(billing|invoices?|estimates?|payments?|accounting)@` get +30 priority to override the automated-domain demote. It caught a QuickBooks estimate for an amount that was previously being filtered out.
 
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-inbox.md`.
 
@@ -241,6 +245,8 @@ Unlike the 6 daily tasks, this is a **markdown-post orchestrator**, not a widget
 **Spec**: `skills/enable-command-room-schedules/references/orchestrator-friday-wrap.md`.
 
 ### How widgets work (applies to 2-6 — the 6 daily widget orchestrators)
+
+> **History (marked 2026-10-24).** Step 3 describes the raw relay of the early releases. Since v3.13.8 the one path is `widget_transport.render_and_persist` and the bytes it validates go unchanged to the widget tool, which on the merged app must be loaded before it is judged (`shared/CHAT_ACTION_WIDGET.md`, section "Finding the widget tool first"; v5.33.1). See `docs/ARCHITECTURE.md` section 6.
 
 Each widget orchestrator follows the same architecture:
 1. **Renderer pipeline**: `shared/scripts/build_*_input.py` projects entities + events into a structured input JSON. Then `shared/scripts/chat_output_renderer.py::render_chat_output_widget(data_view)` produces HTML bytes.
@@ -385,11 +391,13 @@ Future action types (`apply_workspace_migration`, `programmatic_refire`) will be
 
 ## Development model — cr1 staging + per-client production
 
+> **History (marked 2026-10-24).** The staging and production split below still holds. The way work moves (GitHub issues, one branch and one pull request per issue, the `cr1-build` skill, the owner merges) is in the staging repo's `CONTRIBUTING.md` and `ISSUES.md`; the SPEC, BUILD and REVIEW record lifecycle this section predates is retired.
+
 Current model established 2026-06-22 (the "cr1 model"). Documented in the staging repo's `DEVELOPMENT.md` and the operator workspace's CLAUDE.md + `_hq/INFRASTRUCTURE.md`.
 
 ### The canonical edit surface
 
-**A dedicated working clone is the source of truth.** Path: `~/repos/cr1-canonical/command-room/` — a git clone of **`ChaletteHQ/cr1`**, the private staging repo. Edits land there directly and push to `cr1`.
+**A dedicated working clone is the edit surface.** Path: `~/repos/cr1-canonical/command-room/` — a git clone of **`chaletteholdings/cr1`**, the private staging repo. Edits land there directly and push to `cr1`.
 
 **Do not edit any Command Room clone under `~/.claude/plugins/marketplaces/`.** Those are Cowork's locally-installed copies — read-only install caches, coupled to the Cowork install location and stale the moment staging moves ahead. The legacy staging marketplace clone's remote was renamed to `oldtest` and retired on 2026-06-22.
 
@@ -397,7 +405,7 @@ Current model established 2026-06-22 (the "cr1 model"). Documented in the stagin
 
 | | Repo(s) | Visibility | Role |
 |---|---|---|---|
-| Staging | `ChaletteHQ/cr1` | Private | The canonical edit surface clones this; the operator dogfoods from it |
+| Staging | `chaletteholdings/cr1` | Private | The canonical edit surface clones this; the operator dogfoods from it |
 | Production | Per-client repos under `ChaletteHQ`: `CommandRoomInternal` plus one `CommandRoom<Client>` repo per client | Private (one repo per client) | What each client installs from |
 | Chalette admin | `chaletteholdings/chalette` | Private (operator only) | Internal operator tooling |
 
@@ -412,7 +420,7 @@ A promote fans the core out from staging to every per-client repo via `scripts/p
 3. Release-readiness inspect
 4. Get version bump from the operator
 5. Get release notes summary
-6. Write CHANGELOG.md + plugin.json
+6. Write plugin.json; `RELEASE_NOTES.md` is re-rendered from the release manifests after step 7 (the engineering changelog stays in the staging repo)
 7. **(v0.4.1+) MANDATORY release manifest at `shared/releases/v<X.Y.Z>.json`** — Step 5.5. Step 6 has a pre-commit gate that aborts if missing.
 8. Commit + push to staging
 9. Mirror to Cowork local-uploads (bypass VHD cache)
@@ -429,11 +437,13 @@ Production promote is a separate command (`promote v3.X.Y`). It fans staging out
 
 ## File layout — where things live
 
+> **History (marked 2026-10-24).** The tree below is the v3-era layout. The release manifests now run to the current version under `shared/releases/`, `shared/scripts/` holds several hundred modules, and `tests/` is run through `tests/run_all.py`. A current module index is issue #373.
+
 ```
 command-room/
 ├── .claude-plugin/
 │   └── plugin.json                    # Plugin metadata + version
-├── CHANGELOG.md                       # All releases, newest first
+├── RELEASE_NOTES.md                   # All releases, newest first (rendered from shared/releases/)
 ├── README.md                          # Marketplace-facing description
 │
 ├── skills/                            # <!-- skill-count -->63 skills, one directory each
@@ -537,6 +547,8 @@ command-room/
 
 ## Recurring bug classes to watch
 
+> **History (marked 2026-10-24).** The four classes still recur; the fifth, the prose-only mandate that a green battery cannot see, is the reason for the access layer and the instruction-layer guards (G67 to G76).
+
 Four classes have hit the plugin repeatedly in May 2026. Knowing them lets you triage future bugs in the right shape.
 
 ### 1. Writer/consumer split
@@ -580,6 +592,8 @@ Dump the current state of <X>. Output as fenced JSON / markdown. Don't summarize
 Caught the v2.14.34 widget-wrapper-dropping bug after two days of misdiagnosis chasing CSS issues.
 
 ### Running tests locally
+
+> **History (marked 2026-10-24).** Run the battery through `tests/run_all.py` (`--quick` for the quick check, `--changed` while building, no flag for the full battery), always with `PYTHONUTF8=1`, one battery per machine. Single suites still run by name as shown.
 
 ```bash
 cd ~/repos/cr1-canonical/command-room/

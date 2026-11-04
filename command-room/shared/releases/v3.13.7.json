@@ -1,0 +1,13 @@
+{
+  "version": "3.13.7",
+  "headline": "Email drafts wait for your click, and a quiet contact is checked against live mail before anyone says so.",
+  "items": [
+    {
+      "id": "v3137_announce_trust_fixes",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Drafting an email now shows you the card first and writes the draft only when you choose. Before anyone is flagged as going quiet, I check recent mail and calendar activity. The commitments card stays small enough to arrive every time, a name that could be two people asks you which one, and the morning brief drops an item once you have replied.",
+      "action": "announce_only"
+    }
+  ]
+}

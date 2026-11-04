@@ -41,7 +41,7 @@ A brain file is: durable narrative + exactly one generated **Live State** block
 
 ## 3. What is generated vs pointed-at
 
-| Class | Treatment | Source of truth |
+| Class | Treatment | Comes from |
 |---|---|---|
 | People / roster | **GENERATED** (Live State block) | `thread_roster.derive_roster()` over `events.jsonl` |
 | Thread status | **GENERATED** (Live State block) | `entities.json` thread `status` |

@@ -499,6 +499,7 @@ def snapshot_draft(
     recipient_email: Optional[str], subject: str, body: str, draft_event_seq,
     native_draft_id=None, native_message_id=None,
     gmail_message_id=None, gmail_draft_id=None,
+    voice_block_sha256: Optional[str] = None,
 ) -> None:
     """Append the drafted body to `_hq/voice/draft-snapshots.jsonl` so a
     drafted-vs-sent diff is possible later. Bodies stay OUT of events.jsonl.
@@ -527,9 +528,111 @@ def snapshot_draft(
             "native_message_id": native_message_id or gmail_message_id,
             "gmail_message_id": native_message_id or gmail_message_id,
             "subject": subject, "body": body,
+            # VOICELOAD1 (cr1#197): the block the composer read, or None
+            "voice_block_sha256": voice_block_sha256,
         }])
     except Exception:
         pass
+
+
+#: cr1#586: the one sentence a Draft click says when its book record was
+#: not written. The mail draft is already made by then, so it says so.
+DRAFT_NOT_RECORDED_LINE = ("The draft is in your mailbox, but it was not "
+                           "recorded in your Command Room notes.")
+
+
+def record_draft_click(
+    workspace_root, *, recipient: str, subject: str, body: str,
+    native_draft_id: Optional[str] = None, provider: Optional[str] = None,
+    server_id: Optional[str] = None, address: Optional[str] = None,
+    topic: str = "", recipient_id: Optional[str] = None, domain: str = "",
+    edited_body: str = "", voice_block_sha256: Optional[str] = None,
+    primary_thread_id: Optional[str] = None, source_skill: str = "email-writer",
+) -> dict:
+    """A WRITER (on `RUN_WRITER_ALLOWLIST` only, cr1#586): a Draft click's
+    book record, the writes apply-choices Step 4B and Step 3d already ask for,
+    in their order, in one call a merged seat can make through the write door.
+
+    1. the `email_drafted` row: `recipient`, `topic` and the identity and voice
+       fields from `connector_adapters.provenance.build_email_drafted_provenance`
+       (never hand-written), with `person_ids` and `primary_thread_id` on the
+       envelope as email-writer's event shape has them;
+    2. the draft snapshot of the queued `body`, keyed to that row's seq;
+    3. when `edited_body` differs from `body` (an inline edit on the card),
+       its corrections, keyed to the same seq;
+    4. the sentence the ack owes, `draft_constraints.voice_receipt(...)["line"]`.
+
+    Answers `{ok, event_seq, snapshot, corrections, voice_line}`. With no
+    recipient, or when the row cannot be appended, nothing is written and it
+    answers `{ok: false, refused, line}` with `DRAFT_NOT_RECORDED_LINE`. The
+    snapshot, the corrections and the voice line never take the row down
+    with them: each is best-effort, as Step 3d says."""
+    recipient = str(recipient or "").strip()
+    if not recipient:
+        return {"ok": False, "refused": "no_recipient", "line": DRAFT_NOT_RECORDED_LINE}
+    try:
+        from connector_adapters.provenance import build_email_drafted_provenance
+        from event_gate import append_event
+
+        frag = build_email_drafted_provenance(
+            draft_id=native_draft_id, provider=provider, server_id=server_id,
+            address=address, workspace_root=workspace_root,
+            voice_block_sha256=voice_block_sha256, skill=source_skill)
+        data = {"recipient": recipient, "topic": str(topic or subject or "")}
+        data.update(frag)
+        event = {"type": "email_drafted", "source_skill": source_skill, "data": data}
+        # The envelope keys email-writer's event shape carries: readers
+        # (dormancy, balance) count the draft as a touch through them.
+        if primary_thread_id:
+            event["primary_thread_id"] = primary_thread_id
+        if recipient_id:
+            event["person_ids"] = [recipient_id]
+        events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        written = append_event(events_path, event, holder="voice_corrections")
+        seq = written[0].get("seq") if written and isinstance(written[0], dict) else None
+    except Exception:  # noqa: BLE001 - nothing landed; say so, never raise
+        return {"ok": False, "refused": "not_appended", "line": DRAFT_NOT_RECORDED_LINE}
+    if seq is None:
+        return {"ok": False, "refused": "not_appended", "line": DRAFT_NOT_RECORDED_LINE}
+
+    snaps = _voice_dir(workspace_root) / "draft-snapshots.jsonl"
+    had = _count_lines(snaps)
+    snapshot_draft(workspace_root, skill=source_skill, domain=domain,
+                   recipient_id=recipient_id, recipient_email=recipient,
+                   subject=subject, body=body, draft_event_seq=seq,
+                   native_draft_id=native_draft_id,
+                   voice_block_sha256=voice_block_sha256)
+    snapshot = _count_lines(snaps) > had
+
+    n = 0
+    if edited_body and edited_body.strip() != (body or "").strip():
+        try:
+            for r in diff_and_classify(body, edited_body):
+                if append_correction(workspace_root, skill=source_skill, domain=domain,
+                                     recipient_id=recipient_id, original=r["original"],
+                                     corrected=r["corrected"],
+                                     correction_type=r["correction_type"],
+                                     notes=r["notes"], draft_event_seq=seq):
+                    n += 1
+        except Exception:  # noqa: BLE001 - voice capture never blocks the click
+            pass
+
+    line = ""
+    try:
+        import draft_constraints as dc
+        line = str(dc.voice_receipt(workspace_root, source_skill,
+                                    voice_block_sha256).get("line") or "")
+    except Exception:  # noqa: BLE001
+        line = ""
+    return {"ok": True, "event_seq": seq, "snapshot": snapshot,
+            "corrections": n, "voice_line": line}
+
+
+def _count_lines(path: Path) -> int:
+    try:
+        return sum(1 for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip())
+    except OSError:
+        return 0
 
 
 # ---------------------------------------------------------------------------

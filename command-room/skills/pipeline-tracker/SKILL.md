@@ -54,7 +54,7 @@ cfg = get_config(workspace_root, "pipeline-tracker", DEFAULTS)
 | **Detect** (default) | "pipeline", "show my pipeline", "deals" | run the report with `cfg`. FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "pipeline-tracker", DEFAULTS)` BEFORE rendering, then append the first-run footer. |
 | **Show settings** | "show pipeline-tracker settings" | render current config in plain English; no report. |
 | **Tune** | "tune pipeline-tracker", "tune the pipeline" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-render. |
-| **Reset** | "reset pipeline-tracker to defaults" | `wipe_skill_config(workspace_root, "pipeline-tracker")` → next fire is a first-fire again. |
+| **Reset** | "reset pipeline-tracker to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "pipeline-tracker", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "pipeline-tracker")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run footer (chat text under the report, renders exactly once ever):**
 
@@ -79,7 +79,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + one-
 "pipeline" / "show my pipeline"      → the ranked report
 "pipeline review"                     → same report, review framing (what moved, what's stuck)
 "what deals are closing this month"  → the closing subset
-"new deal Acme pilot with Acme Co, $40k"
+"new deal Acme pilot with Acme Co, [amount]"
 "move Acme pilot to negotiating"
 "mark Acme pilot won" / "mark Acme pilot lost — price"
 "Acme signed" / "closed the deal with Acme"   → win + prospect→client conversion in one turn
@@ -257,12 +257,12 @@ print('DEAL_CREATED ' + t['id'] + ' stage=' + t['deal']['stage'])
    The `DEAL_CREATED` line is the proof (thread + `deal_created` event through the gate). The org record is NOT touched — a new deal on a prospect changes nothing about the org.
 3b. **The org already has an open deal (ENTITY1 §4c) — propose, never traceback.** The block above raises `thread_writer.DuplicateDealError` when a non-archived, un-closed deal thread already hangs off that org. Catch it. The exception carries `.existing` (the live deal thread — `id`, `canonical_name`, and its nested `deal` object with `stage` / `value`); NEVER print the exception text or a Python traceback to the user (Output guard below). Say what already exists and offer the two real moves:
 
-   > *"Acme Co already has an open deal — **Acme pilot**, proposal sent, $40K. Want this folded into that one, or are these genuinely two separate engagements?"*
+   > *"Acme Co already has an open deal: **Acme pilot**, proposal sent, an amount. Want this folded into that one, or are these genuinely two separate engagements?"*
 
-   - **Fold in** (the default, and what most repeat asks mean) → don't create anything. Apply the new details to the existing thread: value / expected close / source via `deal_state.update_deal(ws, <existing id>, value=…, expected_close=…)`, a stage move via `deal_state.set_stage`, a stated next step as a commitment on `.existing['id']`. Ack as an update, not a create: *"✓ Folded into Acme pilot — value now $40K."*
+   - **Fold in** (the default, and what most repeat asks mean) → don't create anything. Apply the new details to the existing thread: value / expected close / source via `deal_state.update_deal(ws, <existing id>, value=…, expected_close=…)`, a stage move via `deal_state.set_stage`, a stated next step as a commitment on `.existing['id']`. Ack as an update, not a create: *"✓ Folded into Acme pilot, value now an amount."*
    - **Two engagements** (explicit user confirmation only — a second product line, a separate region, a genuinely parallel pursuit) → re-run the block with `skip_dedup=True` added to the `create_deal(...)` call. That flag belongs to the user's answer; never set it to make the error go away, and never retry with it automatically.
    - If the existing deal actually ended and nobody closed it, the close verbs are the fix — `mark [deal] won` / `mark [deal] lost — [reason]` — then open the new one. A closed deal never blocks (repeat business is not a duplicate).
-4. Ack in plain English: *"✓ Acme pilot opened — lead stage, $40K. Give it a next step? ('revised proposal by Friday' works.)"* A stated next step becomes a commitment on the new thread.
+4. Ack in plain English: *"✓ Acme pilot opened, lead stage, an amount. Give it a next step? ('revised proposal by Friday' works.)"* A stated next step becomes a commitment on the new thread.
 
 ### "move [deal] to [stage]"
 
@@ -297,7 +297,7 @@ The deal-signal detector (`shared/scripts/deal_signal_detector.py`) is the obser
 
 ## Executive Output Standard (EXEC1)
 
-Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. The chat lead is the quantified count line, not a theme: *"6 open · $137K · 2 stalled · 2 closing this month."* Exec header on the docx path: verdict = the headline pipeline number; CHANGED = moves since the last receipt; DECIDE = the one deal to push today; NEEDED = the top one-tap. Money via `quantify` only — no estimation.
+Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. The chat lead is the quantified count line, not a theme: *"6 open · [amount] · 2 stalled · 2 closing this month."* Exec header on the docx path: verdict = the headline pipeline number; CHANGED = moves since the last receipt; DECIDE = the one deal to push today; NEEDED = the top one-tap. Money via `quantify` only, no estimation.
 
 **Output guard:** no internal tokens, paths, event names, entity ids, or version numbers in anything the CEO sees (`shared/VOICE_CALIBRATION.md` § Plain-language glossary).
 - Bad: "deal_stage_changed appended for project_017."

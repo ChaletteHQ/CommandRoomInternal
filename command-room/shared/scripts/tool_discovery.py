@@ -76,6 +76,59 @@ class DiscoveryResult:
     mail_ambiguous: Optional[List[str]] = None
 
 
+def _as_tool_descriptors(tools) -> List[ToolDescriptor]:
+    """The tool list a mail or calendar entry point was handed, as
+    `ToolDescriptor`s (cr1#453).
+
+    A chat calls the seams with the tool names it can see, which is a list of
+    plain strings, and every seam read `t.tool_id` off each item: the first
+    call died with `AttributeError: 'str' object has no attribute 'tool_id'`
+    and the chat had to read this file before its second call worked. The
+    seam now takes the shapes a caller has in hand:
+
+      * a `ToolDescriptor`, or anything else carrying a `tool_id`: passed
+        through untouched (the same object, so every existing caller gets
+        exactly the answer it got before);
+      * a plain string: the tool id;
+      * a dict: `tool_id` first, else `name`, which is the host registry's key
+        for the id (the shape `inbox_helpers.mail_seams` receives);
+      * one bare string or dict in place of the list: one tool, never a list
+        of characters or keys.
+
+    Anything else is a `TypeError` that names these shapes, so a wrong call
+    says what to pass instead of sending the chat into the source.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    if isinstance(tools, (str, _Mapping)):
+        tools = [tools]
+    out: List[ToolDescriptor] = []
+    for t in tools:
+        if isinstance(t, str):
+            out.append(ToolDescriptor(tool_id=t))
+            continue
+        if isinstance(t, _Mapping):
+            tid = t.get("tool_id") or t.get("name")
+            if isinstance(tid, str) and tid:
+                if t.get("tool_id"):
+                    name = t.get("name") or t.get("display") or ""
+                else:
+                    name = t.get("display") or t.get("name") or ""
+                out.append(ToolDescriptor(
+                    tool_id=tid, name=str(name),
+                    description=str(t.get("description") or "")))
+                continue
+        elif hasattr(t, "tool_id"):
+            out.append(t)
+            continue
+        raise TypeError(
+            "tool_discovery: each tool must be a ToolDescriptor, a tool-id "
+            "string such as 'mcp__<server>__<operation>', or a dict with a "
+            f"'tool_id' (or 'name') key; got {type(t).__name__}: {t!r}"
+        )
+    return out
+
+
 import re as _re
 
 # tool_id shape: mcp__<server-id>__<operation>
@@ -385,8 +438,11 @@ def discover_calendar_tool(
 
     Per CONTRACT.md Rule 8 — calendar NEVER through Zapier. If only Zapier
     calendar tools are exposed, returns no match with a plain-English reason.
+
+    `tools` may be descriptors, plain tool-id strings or registry dicts
+    (`_as_tool_descriptors`, cr1#453).
     """
-    tools_list = list(tools)
+    tools_list = _as_tool_descriptors(tools)
 
     if declared and declared.get("server_id"):
         # The same unconditional `return` the mail and chat seams carry: on a
@@ -1040,6 +1096,23 @@ def _calendar_op_candidates(provider: Optional[str], operation: str) -> list:
         _CALENDAR_OPERATION_KEYWORDS.get(operation, ()))
 
 
+def _ask_once_line(detected: list, operation_label: str) -> str:
+    """The sentence the seam answers when two mail connectors are present and
+    NONE is declared (MAILPICK1, cr1#266). Nothing is read: an inbox bound by
+    registry order to the wrong account is a plausible, silent, wrong answer
+    (a week that looks quiet), and a message sent from it cannot be recalled.
+    The line names every connector seen and the one phrase that settles it,
+    so the question is asked once; after the declaration this branch is never
+    reached again. No question mark: a scheduled fire relays this line too,
+    and a fire never asks."""
+    names = ", ".join(detected)
+    first = detected[0] if detected else "<connector>"
+    return (f"{len(detected)} mail connectors are connected ({names}) and none "
+            f"is declared as yours, so no mailbox was read for {operation_label}. "
+            f"To make it deliberate, say: set my email backend to {first} "
+            "(or the other one). Command Room remembers it.")
+
+
 def _ambiguity_note(detected: list, operation_label: str,
                     chosen: Optional[str]) -> str:
     """The plain-English half of DD-3. `detected` is the sorted list of
@@ -1084,14 +1157,19 @@ def _discover_mail_tool(
 
     Steps 2–3 are byte-identically the pre-MAILSEAM2 behavior, which is what a
     workspace with NO declaration must keep getting (R4). The one thing they
-    gain is the DD-3 ambiguity note: with two mail connectors present and
-    nothing declared, `_MAIL_PLATFORM_HINTS` dict order silently decides which
-    inbox answers, and the client-visible symptom of picking the empty one is
-    not an error — it is a week that looks quiet. The note (and
-    `mail_ambiguous`) make that choice provable on the hit AND on the miss.
-    Resolution order itself is unchanged: the note is reported, never acted on.
+    gain was the DD-3 ambiguity note: with two mail connectors present and
+    nothing declared, `_MAIL_PLATFORM_HINTS` dict order silently decided which
+    inbox answered, and the client-visible symptom of picking the empty one is
+    not an error — it is a week that looks quiet. MAILPICK1 (cr1#266) acts on
+    it: two connectors and no declaration answer NO tool, `mail_ambiguous`
+    naming both, and `reason` carrying the one phrase that declares a backend.
+    One connector, or a declared backend, resolves exactly as before.
+
+    Every `discover_mail_*` entry point lands here, so this is where `tools`
+    is wrapped: descriptors, plain tool-id strings and registry dicts all
+    resolve alike (`_as_tool_descriptors`, cr1#453).
     """
-    tools_list = list(tools)
+    tools_list = _as_tool_descriptors(tools)
     candidates = len(tools_list)
 
     # The same branch `discover_chat_tool` carries, structure for structure —
@@ -1163,6 +1241,21 @@ def _discover_mail_tool(
                        if r["mail_op"]})
     ambiguous = detected if len(detected) >= 2 else None
 
+    # MAILPICK1 (cr1#266): two mail connectors and nothing declared is a
+    # REFUSAL, not a first-match. DD-3 made the choice visible (the note and
+    # `mail_ambiguous`) but still let `_MAIL_PLATFORM_HINTS` order decide which
+    # inbox answered, and a wrong inbox does not error: it reads as a quiet
+    # week, or sends from the account nobody chose. The seam now answers no
+    # tool and the one sentence that settles it; the declared path above is
+    # untouched, and a single connector resolves exactly as before.
+    if ambiguous:
+        return DiscoveryResult(
+            tool_id=None,
+            reason=_ask_once_line(detected, operation_label),
+            candidates_considered=candidates,
+            mail_ambiguous=ambiguous,
+        )
+
     # Keywords are scanned in PRIORITY order rather than registry order, so a
     # server exposing both a precise and a broad tool always resolves to the
     # precise one — which tool you get stops depending on how the connector
@@ -1182,21 +1275,18 @@ def _discover_mail_tool(
                     tool_id=t.tool_id,
                     candidates_considered=candidates,
                     platform=platform,
-                    reason=(_ambiguity_note(detected, operation_label, platform)
-                            if ambiguous else ""),
-                    mail_ambiguous=ambiguous,
+                    reason="",
+                    mail_ambiguous=None,
                 )
     miss = (
         f"No native mail tool found for {operation_label}. Connect one of "
         f"{_known_mail_products()} in the Claude app's Settings → Connectors."
     )
-    if ambiguous:
-        miss = miss + " " + _ambiguity_note(detected, operation_label, None)
     return DiscoveryResult(
         tool_id=None,
         reason=miss,
         candidates_considered=candidates,
-        mail_ambiguous=ambiguous,
+        mail_ambiguous=None,
     )
 
 

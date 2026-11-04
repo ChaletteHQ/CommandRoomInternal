@@ -1644,6 +1644,11 @@ def check_tasks(
             # HEALTH3 MUST 1: the app's own value, as the instant it names.
             "last_run_at_raw": app_run.isoformat() if app_run else None,
             "last_run_unread": last_run_unread,
+            # SWITCHEDOFF1 (cr1#203): the app's own switch for this chat.
+            # None when the app holds no record; False when it holds one it
+            # has switched off, so the task line names no next run for it.
+            "app_enabled": (None if rec is None
+                            else (rec or {}).get("enabled") is not False),
             # Fix round 1 (review N-5): two records of this chat were equal on
             # everything that decides which is read. A code fact, never text.
             "duplicate_tied": tid in duplicate_tied,
@@ -2367,6 +2372,12 @@ TASK_STAMP_FIRST_LINE = "<Chat>: the app has not run it yet; first run <next>."
 TASK_STAMP_NEXT_LINE = "<Chat>: next run <next>."
 #: The clause each form drops when no next run can be named.
 _STAMP_NEXT_CLAUSES = ("; next <next>", "; first run <next>")
+#: SWITCHEDOFF1 (cr1#203): the line for a chat the app holds switched off.
+#: It names no next run, because none will happen until the owner turns the
+#: chat back on; the app's last run is still named when it is known. Its
+#: own words, so HEALTH3 (1i) still finds the ordinary sentence typed once.
+TASK_STAMP_OFF_LINE = "<Chat>: switched off in the app; last run <last>. It will not run again until you turn it on."
+TASK_STAMP_OFF_FIRST_LINE = "<Chat>: switched off in the app; it has not run yet and will not until you turn it on."
 
 
 def task_stamp_line(r: dict, now=None) -> str:
@@ -2386,6 +2397,12 @@ def task_stamp_line(r: dict, now=None) -> str:
             nxt = _human_time(_dt.datetime.fromisoformat(r["next_fire"]), now=now)
         except ValueError:
             nxt = ""
+    if r.get("app_enabled") is False:
+        # SWITCHEDOFF1 (cr1#203): a next run the app will not make is not
+        # named, whatever the cron says
+        if last:
+            return TASK_STAMP_OFF_LINE.replace("<Chat>", name).replace("<last>", last)
+        return TASK_STAMP_OFF_FIRST_LINE.replace("<Chat>", name)
     if not last and r.get("last_run_unread"):
         if not nxt:
             return ""
@@ -3109,6 +3126,8 @@ __all__ = [
     "TASK_STAMP_FIRST_LINE",
     "TASK_STAMP_LINE",
     "TASK_STAMP_NEXT_LINE",
+    "TASK_STAMP_OFF_FIRST_LINE",
+    "TASK_STAMP_OFF_LINE",
     "FOREIGN_SWITCHED_OFF_LINE",
     "FOREIGN_SWITCHED_OFF_ONE",
     "app_last_run",

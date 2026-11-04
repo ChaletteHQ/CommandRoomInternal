@@ -791,6 +791,7 @@ def _load_entities(
     """brand._load_entities posture: dict passes through; a path reads
     workspace_root/_hq/data/entities.json (or a direct file path)
     defensively. Never raises."""
+    from entities_io import read_entities_json
     if entities is None:
         return None
     if isinstance(entities, dict):
@@ -803,7 +804,7 @@ def _load_entities(
     try:
         if not path.exists():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = read_entities_json(path)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return data if isinstance(data, dict) else None

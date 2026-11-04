@@ -605,6 +605,17 @@ def brief_state(workspace_root: str, *, now_iso: str = "",
     # seat is not a VM seat and composes exactly as before.
     _require_named_writer(workspace_root)
     events_path = _events_path(workspace_root)
+    if sent_reconcile_cursor is None:
+        # BRIEFCURSOR1 (cr1#167): the cursor is the BOOK's, so when the caller
+        # hands none it is read here through the shared two-block accessor,
+        # exactly as the scheduled driver reads it (surface_drivers.
+        # _sent_reconcile_cursor). The hand-run brief used to read
+        # `workspace.sent_reconcile_cursor` itself, which misses a cursor in
+        # the inner block; the cursor then read empty, reconcile_stale went
+        # true, and every owed item was softened over mail already reconciled.
+        from connector_config import workspace_block
+        cur = workspace_block(workspace_root=workspace_root).get("sent_reconcile_cursor")
+        sent_reconcile_cursor = cur if isinstance(cur, str) and cur.strip() else None
     # MIGRATE3-MB fix round 1 (N-4): the thread activity is the book's, so it
     # is derived HERE when not handed in (the pack's own canonical
     # derivation); the calendar events are capped at the stated ceiling.
@@ -821,13 +832,42 @@ def plan_combined_receipt(workspace_root: str, *,
 
     leg = dict(leg_result) if isinstance(leg_result, dict) else pl.skipped_leg(
         pl.SKIP_NO_LEG)
+    data = dict(extra_data or {})
+    check = _snapshot_sections_check(workspace_root, brief_status,
+                                     data.get("digest_path"))
+    if check is not None:
+        data["sections_check"] = check
     with _captured_appends() as captured:
         pl.log_combined_receipt(workspace_root, leg_result=leg,
                                 brief_status=brief_status,
                                 fired_via=fired_via, duration_ms=duration_ms,
                                 late_tier=late_tier,
-                                extra_data=dict(extra_data or {}))
+                                extra_data=data)
     return {"rows": _jsonable(list(captured))}
+
+
+def _snapshot_sections_check(workspace_root: str, brief_status: str,
+                             digest_path: Any) -> Optional[Dict[str, Any]]:
+    """cr1#148 - `brief_sections.sections_check` over the snapshot the fire
+    saved at `digest_path`, so the receipt says which expected org sections
+    the brief carried and which it dropped. Read from the file, never from
+    the composer's own `sections_rendered`.
+
+    `None` (no key on the receipt) when there is nothing to check: a
+    degrade-tier fire renders only its notice, an on-demand receipt names no
+    snapshot, and a snapshot that cannot be read is not evidence either way.
+    """
+    if brief_status != "ran" or not isinstance(digest_path, str) or not digest_path:
+        return None
+    from pathlib import Path
+
+    import brief_sections
+
+    try:
+        text = (Path(workspace_root) / digest_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    return brief_sections.sections_check(workspace_root, text)
 
 
 # ---------------------------------------------------------------------------

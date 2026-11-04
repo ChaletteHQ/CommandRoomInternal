@@ -3695,6 +3695,16 @@ def _brief_plate_block(ws, *, now_iso: str, user_id, state: dict,
     }
 
 
+def _expected_sections(ws, thread_activity) -> list:
+    """cr1#148: `brief_sections.expected_org_sections`, best-effort: an
+    unreadable entities file costs the pack this list, never the brief."""
+    try:
+        from brief_sections import expected_org_sections
+        return expected_org_sections(ws, thread_activity=thread_activity)
+    except Exception:  # noqa: BLE001 - the fire must not crash
+        return []
+
+
 def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
                              now_iso: str | None = None,
                              catch_up_runner=None,
@@ -3912,6 +3922,10 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
                 brief_view = None
         except Exception:  # noqa: BLE001 — the fire must not crash
             brief_view, brief_plate_open = None, None
+    # cr1#148: derived ONCE and read twice: by the brief state below and by
+    # the expected org sections (their order). One call keeps the BOOKENDS1
+    # pin of one derivation per bookend true.
+    _thread_activity = _brief_thread_activity(ws)
     state = compute_and_log_brief_state(
         ws, open_commitments=opens, user_person_id=user_id, now_iso=_local_today,
         plate_open=brief_plate_open,
@@ -3924,7 +3938,7 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         # the recent-activity drop could not apply at all, so this path and
         # the hand-driven Step-3d path disagreed by construction.
         sent_reconcile_cursor=_sent_reconcile_cursor(ws),
-        thread_activity=_brief_thread_activity(ws),
+        thread_activity=_thread_activity,
         # DELIBERATE DEGRADATION, named so no one reads it as an oversight:
         # `threads` (Step 3c latest-sender) and `calendar_events` (Step 3c-bis)
         # stay unpassed because both require connector I/O — a Gmail
@@ -4440,6 +4454,14 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         # count; the reason rides here so the health check and the operator
         # report can say so, and nobody has to infer it from a missing line.
         PLATE_HEADLINE_DEGRADED: list(_headline_degraded),
+        # cr1#148: THE ORG SECTIONS THIS BRIEF IS EXPECTED TO RENDER, named
+        # in code. Step 4 composes them in prose and nothing on the pack used
+        # to carry them, so a brief that dropped them left no trace. One
+        # `{kind, org_id, heading}` per primary-focus org with live work,
+        # most recently active first. The orchestrator renders each heading
+        # as its own line; the receipt's `sections_check` compares the saved
+        # snapshot to this same list (`brief_sections`).
+        "expected_sections": _expected_sections(ws, _thread_activity),
     }
 
     # Persist the pack (audit trail, parallel to the widget audit files).

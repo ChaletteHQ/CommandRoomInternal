@@ -19,7 +19,7 @@ Every name-bearing trigger ("complete objective [name]", "archive objective [nam
 ## Writer Contract
 
 - **Reads:** open/closed objectives via `objective_state.list_open_objectives` / `list_closed_objectives` (defensive, wrapper-aware), everything else via `objective_math.load_objective_inputs` (objective/meeting/deal events through the canonical defensive reader, recency via `thread_activity.derive_thread_activity` — NEVER the deprecated `thread.last_activity`, open commitments via `cru_match.load_open_commitments`), `_hq/data/skill_config/objectives.json`.
-- **Writes — ONLY through `shared/scripts/objective_state.py`,** the single writer of every `objective.*` field and every `objective_*` event (`objective_created` / `objective_updated` / `objective_review` / `objective_report` / `objective_completed` / `objective_archived`). It routes through `thread_writer` + `event_gate.append_event` (`atomic_append_jsonl`) internally. Hand-editing entities.json or hand-appending an objective event is forbidden — a hand-stamped status is the exact bug class the derived-status doctrine exists to kill.
+- **Writes — ONLY through `shared/scripts/objective_state.py`,** the single writer of every `objective.*` field and every `objective_*` event (`objective_created` / `objective_updated` / `objective_review` / `objective_report` / `objective_completed` / `objective_archived`). It routes through `thread_writer` + `event_gate.append_event` (`atomic_append_jsonl`) internally. Each lifecycle writer this skill calls runs through the write door (OBJDOOR1, cr1#317): `plan run_writer` naming `objective_state:create_objective`, `objective_state:record_report`, `objective_state:complete_objective`, `objective_state:archive_objective` or `objective_state:rebind_objective`, with `"workspace_root": "<WS>"` and the writer's own arguments by name; on a seat whose files are local the same writer runs in this shell. Hand-editing entities.json or hand-appending an objective event is forbidden — a hand-stamped status is the exact bug class the derived-status doctrine exists to kill.
 - **Directional status comes from three sources only:** a stated review in the bound meeting (`record_review`, called by meeting-notes — not by this skill), the owner's own word (`record_report`), or an unambiguous linked-deal signal (computed, never written). Everything else renders as "moving" / "quiet since [date]". Never fabricate a directional status.
 - **Config** via `skill_config_writer` (`save_skill_config` / `get_config` / `wipe_skill_config`).
 - **Scan receipt (REQUIRED, every readout fire):** `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "objectives", fired_via="manual", surfaced=n_open, extra_data={"drifting_thread_ids": [...]})` — the drift-flag trail the monthly value receipt counts (flagged-before-stalled).
@@ -48,7 +48,14 @@ cfg = get_config(workspace_root, "objectives", DEFAULTS)
 
 `drift_preset` maps to `objective_math` config: standard = `drift_meeting_cycles 2 / drift_self_cycles 2 / quiet_activity_days 21`; relaxed = `3 / 3 / 30`; aggressive = `1 / 1 / 14`. `death_self_cycles` stays `drift_self_cycles + 2` in every preset (drift escalates before the graceful-death ask, never the reverse). `active_cap` is a FOCUS device, not a wall: creating one past the cap succeeds and the ack offers to park the lowest-signal one.
 
-**Mode dispatch (4 modes):** Detect (default — any readout/creation trigger; first fire saves DEFAULTS before rendering + appends the footer) · Show settings ("show objectives settings") · Tune ("tune objectives" — pre-filled re-questionnaire OR freeform, then `save_skill_config(..., is_reconfigure=True)`) · Reset ("reset objectives to defaults" → `wipe_skill_config`).
+**Mode dispatch (4 modes):**
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Detect** (default) | any readout/creation trigger | first fire saves DEFAULTS before rendering + appends the footer. |
+| **Show settings** | "show objectives settings" | show the current settings. |
+| **Tune** | "tune objectives" | pre-filled re-questionnaire OR freeform, then `save_skill_config(..., is_reconfigure=True)`. |
+| **Reset** | "reset objectives to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "objectives", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "objectives")`); say its `line` → next fire is a first-fire again. |
 
 **Freeform tune (natural language → config):** "flag drift sooner" / "be stricter" → `drift_preset = aggressive` · "give them more room" / "less naggy" → `drift_preset = relaxed` · "cap at five" → `active_cap = 5` · "skip the proposals" / "no suggestions" → `cold_start_proposals = False` · "propose objectives again" → `cold_start_proposals = True`. After applying: save + one-line confirm + re-render.
 
@@ -124,24 +131,10 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-cd "$PLUGIN_ROOT" && python3 -c "
-import sys, json, datetime
-sys.path.insert(0, 'shared/scripts')
-import objective_math
-ws = '<workspace_root>'
-inputs = objective_math.load_objective_inputs(ws)
-today = datetime.date.today()
-health = objective_math.compute_objective_health(
-    inputs['open_objectives'], objective_events=inputs['objective_events'],
-    meeting_events=inputs['meeting_events'], deal_events=inputs['deal_events'],
-    activity_by_thread=inputs['activity_by_thread'], threads_by_id=inputs['threads_by_id'],
-    open_commitments=inputs['open_commitments'], today=today,
-    primary_user_id=inputs['primary_user_id'], config=<preset map from cfg>)
-due = objective_math.due_self_reports(health, inputs['open_objectives'], inputs['objective_events'], today)
-print(json.dumps({'health': health, 'due': [d['thread_id'] for d in due],
-                  'n_skipped': len(inputs['skipped'])}, default=str))
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"config": <preset map from cfg>, "workspace_root": "<WS>"}, "name": "objective_math:readout"}'
 ```
+
+Paste what it prints and run that: the read door runs `objective_math:readout` beside the data (OBJDOOR1, cr1#317). Its `result` is `{health, due, n_skipped}`: the ranked health rows, the thread ids of the check-ins due, and the count of saved-history lines that could not be read. On a seat whose files are local the same helper runs in this shell, `objective_math.readout(workspace_root, config=<preset map from cfg>)`, and answers the same. `ok` false is a stop, never a hand retry.
 
 Render worst-first, exactly the `health` order:
 
@@ -214,18 +207,10 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-cd "$PLUGIN_ROOT" && python3 -c "
-import sys
-sys.path.insert(0, 'shared/scripts')
-import objective_state
-t = objective_state.create_objective('<workspace_root>',
-    statement='<their words>', name='<the short name>',
-    binding=<confirmed binding dict>,
-    owner_person_id=<resolved id or None>, horizon=<ISO date or None>,
-    anchor_thread_id=<resolved id or None>, source_skill='objectives')
-print('OBJECTIVE_CREATED ' + t['id'])
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"anchor_thread_id": "<resolved id, or omit>", "binding": <confirmed binding dict>, "horizon": "<ISO date, or omit>", "name": "<the short name>", "owner_person_id": "<resolved id, or omit>", "source_skill": "objectives", "statement": "<their words>", "workspace_root": "<WS>"}, "name": "objective_state:create_objective"}'
 ```
+
+Paste what it prints and run that: the write door runs `objective_state:create_objective` beside the data (OBJDOOR1, cr1#317). Its `result` is the new objective thread; its `id` is the objective's thread id. `ok` false is a stop: say its `line` when it carries one, and nothing was written. On a seat whose files are local the same writer runs in this shell with the same arguments.
 
 7. **Ack in plain English:** *"✓ On the board: Land three enterprise pilots — tracked through your Monday Sales Sync, yours, aiming for end of Q3."* Past the `active_cap`: *"That's 8 in focus — more than the seven that keeps focus honest. Want me to park the quietest one (Ops handbook, silent 5 weeks)?"* — parking = archive with reason "parked", one tap, fully reversible by recreating.
 

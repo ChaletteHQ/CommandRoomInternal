@@ -1,0 +1,13 @@
+{
+  "version": "3.17.0",
+  "headline": "A Sunday evening tidy-up, with a Monday note on what was handled for you.",
+  "items": [
+    {
+      "id": "v3170_announce_sunday_cleanup",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Command Room now tidies your workspace every Sunday at 6 PM. It refreshes every project page and leaves a short note for Monday: what it tidied, what it handled for you during the week, and what is waiting on you.",
+      "action": "announce_only"
+    }
+  ]
+}

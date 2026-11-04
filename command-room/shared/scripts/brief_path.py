@@ -85,8 +85,15 @@ def get_brief_path(workspace_root: str, brief_type: BriefType, slug: str, date_i
     return f"{root_normalized}/_hq/meetings/{fn}"
 
 
-def get_brief_artifact_url(absolute_path: str) -> str:
+def get_brief_artifact_url(absolute_path: str, workspace_root=None) -> str:
     """Convert an absolute brief path to a `computer://` URL for `artifact_link.url`.
+
+    BRIEFLINK1 (cr1#260): a RELATIVE path mints nothing. `_hq/briefs/x.docx`
+    used to fall into the POSIX branch and come out as
+    `computer:///_hq/briefs/x.docx`, a link that opens nothing. The fence
+    sits at the mint, so no surface can render a dead link for a relative
+    path; a caller that holds the workspace root passes it and the path is
+    resolved against it first, then minted as the absolute form.
 
     v3.13.0+ — Windows-form fix per the 2026-05-20 brief-link handoff:
 
@@ -132,6 +139,12 @@ def get_brief_artifact_url(absolute_path: str) -> str:
     'computer://C:\\\\Users\\\\Sample\\\\Desktop\\\\Claude\\\\Command Room\\\\_hq\\\\meetings\\\\x.docx'
     >>> get_brief_artifact_url("/mnt/user-data/outputs/Memo_sample_2026-01-02.docx")
     ''
+    >>> get_brief_artifact_url("_hq/briefs/x.docx")
+    ''
+    >>> get_brief_artifact_url("_hq/briefs/x.docx", workspace_root="/workspace")
+    'computer:///workspace/_hq/briefs/x.docx'
+    >>> get_brief_artifact_url("_hq/briefs/x.docx", workspace_root="/sessions/abc/mnt/CR")
+    ''
     """
     if not absolute_path:
         return ""
@@ -151,6 +164,21 @@ def get_brief_artifact_url(absolute_path: str) -> str:
         and detect[1] == ":"
         and detect[0].isalpha()
     )
+    is_posix_absolute = absolute_path.startswith("/")
+
+    if not is_windows and not is_posix_absolute:
+        # BRIEFLINK1 (cr1#260): relative. Resolve against the root when the
+        # caller holds one (and that root is itself absolute); otherwise
+        # nothing is minted, never a link that opens nothing.
+        root = str(workspace_root or "").strip()
+        if not root:
+            return ""
+        joined = root.rstrip("/\\") + "/" + absolute_path.replace("\\", "/").lstrip("/")
+        if is_session_scoped_path(joined):
+            # a session sandbox is not a file on anybody's computer either
+            # (the rule `get_brief_opener_url` keeps); never a link into it
+            return ""
+        return get_brief_artifact_url(joined)
 
     if is_windows:
         # v3.13.0+ native form. Cowork's Windows resolver opens this; URL-encoded

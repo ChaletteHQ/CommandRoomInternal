@@ -105,7 +105,7 @@ cfg = get_config(workspace_root, "decision-memo-composer", DEFAULTS)
 | **Detect** (default) | "decision memo on…" | compose with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "decision-memo-composer", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
 | **Show settings** | "show decision-memo-composer settings" | render current config in plain English; no memo. |
 | **Tune** | "tune decision-memo-composer" / "tune decision memos" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
-| **Reset** | "reset decision-memo-composer to defaults" | `wipe_skill_config(workspace_root, "decision-memo-composer")` → next fire is a first-fire again. |
+| **Reset** | "reset decision-memo-composer to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "decision-memo-composer", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "decision-memo-composer")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — after the .docx link):**
 
@@ -344,13 +344,13 @@ Sam Sample | 2026-05-19 | Status: Draft v1
 
 [EXEC HEADER — the 30-second contract, first block]
 Option A — hire now, gated on Sales Playbook v0 — decide by Jun 15.
-CHANGED   $400K MRR threshold crossed ($478K April); 3 deals stuck >30d.
+CHANGED   The MRR threshold of an amount was crossed in April; 3 deals stuck >30d.
 DECIDE    Timing of the first sales hire — by Jun 15 (board).
 NEEDED    Approve the hire (one tap) — or Edit weights.
 
 FRAMING
   Decision required: timing of first dedicated sales hire.
-  Trigger: April $42K MRR jump driven by inbound; founder sales
+  Trigger: April MRR jump of an amount driven by inbound; founder sales
   at capacity. 3 conversations stuck >30d. Deadline: 2026-06-15
   (board).
 
@@ -382,8 +382,8 @@ COMPARISON
   Weighted score        3.05      2.85      2.10
 
 PRIOR DECISIONS ON THIS TOPIC
-  - 2025-11-12: Decided "wait until $400K MRR" — that threshold
-    has now been crossed ($478K April).
+  - 2025-11-12: Decided "wait until MRR reaches an amount"; that threshold
+    has now been crossed (April).
   - 2026-02-20: Decided "founder-led sales through Q1" — Q1 over.
 
 WHAT KILLS THIS DECISION  (stress-test integration — optional)

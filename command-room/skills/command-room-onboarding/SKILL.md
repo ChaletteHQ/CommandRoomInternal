@@ -225,7 +225,7 @@ print(json.dumps(route, ensure_ascii=False))
 **On `in_progress`, the resume branch is unchanged.** Read `route["signals"]["checkpoint_phase"]` and `route["signals"]["checkpoint_ts"]`, apply the legacy-mapping table above if it is a pre-M1 phase identifier, then branch on **age + phase danger**:
    - **Age ≤ 6 hours** (any phase) → *"Picking up right where we left off. We were [plain description of the last thing we did — e.g. "scanning your email and calendar"; never an internal phase slug like "triple-beat" or "coach-handoff"]. Want to keep going?"* Wait for confirmation, then resume from the next sub-beat. Do NOT re-run earlier phases, re-scan connectors, or re-seed files.
    - **Age > 6 hours AND mapped phase ∈ {0, 1, 2}** (dangerous — substrate mid-seed, scan data stale) → **branch on `route["signals"]["populated"]`, and offer only what can actually happen:**
-     - **`populated` is True** — there is a book in this folder, so a restart is refused in code and must not be offered. ONE verb: *"We started setting up your Command Room a while back and stopped partway through [phase name]. I'll pick up where we left off."* Resume from the next sub-beat. (Fix round 1, review finding M2: offering a clean restart here and then refusing it is a promised verb that cannot act, and it is a second option on a card M's standing rule says to cut.)
+     - **`populated` is True** — there is a book in this folder, so a restart is refused in code and must not be offered. ONE verb, and **the sentence is composed, not typed** (OFFERS1): `offer_gate.onboarding_resume_line("<phase name in plain words>")` returns *"We started setting up your Command Room a while back and stopped partway through [phase name]. I'll pick up where we left off."* Say it, then resume from the next sub-beat. (Fix round 1, review finding M2: offering a clean restart here and then refusing it is a promised verb that cannot act, and it is a second option on a card M's standing rule says to cut. The prose said this on the day and the probe still offered — so the sentence now lives in code and the whole reply goes through `offer_gate.compose(SITE_ONBOARDING_PROBE, ...)` before it is printed.)
      - **`populated` is False** — the genuine mid-seed this branch was written for. Present the explicit **two-option choice, neither auto-taken**: *"We started setting up your Command Room a while back and stopped partway through [phase name]. Two options: I can **pick up where we left off**, or **start fresh**, where I archive the partial setup and run it clean. Which do you want?"* On "pick up," resume from the next sub-beat; on "start fresh," re-call `workspace_route(..., restart_requested=True)` and obey it.
    - **Age > 6 hours AND mapped phase ∈ {3, 4, 5}** (safe — substrate is already built) → resume: re-render the current phase's customer instruction and continue. Do NOT re-seed files. (No scheduled-task externals to re-verify — onboarding registers none.)
 
@@ -689,10 +689,10 @@ After org tree is drafted, group each detected workstream under its most-specifi
 Key files written during the scan, with narration:
 
 - **CLAUDE.md** — generate from `references/claude-md-template.md` (plugin-root `references/`). Fill with identity, preferences, top 15–20 people, active projects, terms, and `brain_name` from Phase 0. ~80 lines max.
-  - **Language (bilingual overlay, opt-in) — the `{{LANGUAGE_PREF}}` slot.** Core ships an opt-in Spanish/bilingual overlay (Mexican Spanish today — `references/SPANISH_BETA_SETUP.md`). **Default English: do nothing** — leave `{{LANGUAGE_PREF}}` empty (the line collapses) and write NO language config; the workspace stays byte-for-byte identical to an English-native install. Spanish turns on ONLY by explicit opt-in, decided in this order:
+  - **Language (bilingual overlay, opt-in) — the `{{LANGUAGE_PREF}}` slot.** Core ships an opt-in Spanish/bilingual overlay (Mexican Spanish today — its beta setup note is in the staging repo only). **Default English: do nothing** — leave `{{LANGUAGE_PREF}}` empty (the line collapses) and write NO language config; the workspace stays byte-for-byte identical to an English-native install. Spanish turns on ONLY by explicit opt-in, decided in this order:
     1. **Seed first.** If `ONBOARDING_SEED.json` carries `language: "es"` (or `"en"`), honor it as anchor truth and never ask.
     2. **Ask only on signal.** No seed field → ask the one-line question — *"¿En qué idioma quieres tu Command Room? / What language do you want your Command Room in?"* (English · Español/bilingüe) — ONLY when the customer's own material signals Spanish (their sent mail or transcripts are substantially in Spanish, or the operator's pre-call brief says so). A customer with no Spanish signal is never asked, and the language question never blocks or delays the scan.
-    3. **On Español/bilingual opt-in only:** write the activation signal `_hq/data/skill_config/language.json` via the atomic writer (`shared/scripts/atomic_write.py` — never a raw write): `{"version": 1, "languages": ["en", "es"], "last_writer": "command-room-onboarding"}`. This is what turns on the deterministic scanners' bilingual overlay (`shared/scripts/lexicon.py`) — commitment/decision/prospect phrase matching becomes English ∪ Spanish and entity resolution folds accents (José/Jose). It is bilingual, never Spanish-only; English is never dropped. Then fill `{{LANGUAGE_PREF}}` with these two lines (the LLM-output lever + the Spanish voice guard, from `references/SPANISH_BETA_SETUP.md`):
+    3. **On Español/bilingual opt-in only:** write the activation signal `_hq/data/skill_config/language.json` via the atomic writer (`shared/scripts/atomic_write.py` — never a raw write): `{"version": 1, "languages": ["en", "es"], "last_writer": "command-room-onboarding"}`. This is what turns on the deterministic scanners' bilingual overlay (`shared/scripts/lexicon.py`) — commitment/decision/prospect phrase matching becomes English ∪ Spanish and entity resolution folds accents (José/Jose). It is bilingual, never Spanish-only; English is never dropped. Then fill `{{LANGUAGE_PREF}}` with these two lines (the LLM-output lever + the Spanish voice guard, inlined below; their source note is in the staging repo only):
        ```markdown
        - **Idioma / Language:** Respond in Spanish (Mexican / es-MX). Briefings, meeting notes, and chat replies in Spanish. **Outbound drafts match the recipient: reply in the language of the thread** — an English thread gets an English draft, a Spanish thread a Spanish one; Spanish is the default only when there is no thread to match (fresh outreach to a Spanish-speaking contact). Keep English product names, proper nouns, and established technical terms as-is — do not force-translate. Mixing in English is fine when the Spanish would be awkward or a term has no clean translation.
        - **Voz en español (drafts):** Avoid stiff, machine-translated business clichés ("Quedo atento a sus comentarios", "No dude en contactarme", "Por medio de la presente", "Sin otro particular") unless the recipient writes that way. Prefer direct, warm, lead-with-the-point Spanish. Match usted vs. tú to the recipient — default to usted for external/business contacts.
@@ -776,9 +776,14 @@ this is a disclosure, not a settings menu:
 > *"One more thing I picked up: [the evidence sentences from the inference proposals, verbatim —
 > e.g. "your last 30 sent emails run a median of 38 words, and in meetings you ask for the bottom
 > line"]. So I'll talk to you that way — [the persona in plain English: "short and direct, answer
-> first"]. That's my read, not a setting you filled in — if I've got you wrong, say the word and
-> I'll adjust it right now. Any time later: 'show my style' shows you exactly how I'm set up, and
-> 'recalibrate my style' makes me re-read you."*
+> first"]. That's my read, not a setting you filled in, and it is already on. Say 'recalibrate my
+> style' and I'll re-read you; 'show my style' shows you exactly how I'm set up."*
+
+**Why that last sentence is a statement and not an offer (OFFERS1).** It used to read *"if I've
+got you wrong, say the word and I'll adjust it right now"* — the offer form, over a change the
+product had already applied. The persona IS on; what the reader needs is the door back, named,
+not a question. Same rule everywhere on this skill: act and say so, or say plainly it was not
+done.
 
 - An adjustment here IS the confirm flow: apply it via the workspace-manager tune path's write
   discipline (validate → `save_skill_config(..., is_reconfigure=True)` → `style_changed` origin
@@ -979,7 +984,7 @@ Do not fabricate last-7-days specifics here — the deep read is the customer's 
 
 This is distinct from the Phase 2a Voice contrast (which is a *memory* proof — "five words beat seventy because I remember your threads"). Phase 5b is a pure *voice* proof — no cross-references, no manual-context comparison, just: **here is how you sound, and here is what that does to a draft.** Both can run in one onboarding; they teach different things. Keep 5b tight — it lands after the customer has already worked, so it's confirmation, not a new pitch.
 
-Source of truth for everything below is `BRAND_VOICE.md` (written in Phase 1). Do not invent traits — read the file and surface what's actually in it.
+Everything below comes from `BRAND_VOICE.md` (written in Phase 1). Do not invent traits — read the file and surface what's actually in it.
 
 **CHAT 4 SHOWS:**
 > *"Last thing before I hand back. When I write as you, this is what I'm matching —"*
@@ -1072,7 +1077,7 @@ Choose by **sent-email count** (voice signal), read from the Phase 1 scan / `BRA
 > *• Your Workspace Map, in chat any time — say `list active projects`*
 >
 > *Two things to do on your own time, whenever you're ready:*
-> *• Want me running on a daily rhythm — a morning brief, inbox triage, a Friday recap, a Monday staff meeting? Open a new chat and say `set up command room schedules`. If schedules aren't available on your setup yet, that chat will say so and tell you the words that produce each one on demand — everything works today either way.*
+> *• Want me running on a daily rhythm: a morning brief, inbox triage, a Friday recap? Open a new chat and say `set up command room schedules`. If schedules aren't available on your setup yet, that chat will say so and tell you the words that produce each one on demand: everything works today either way.*
 > *• Want the sharp read of your last week? Say `weekly recap` in a new chat anytime.*
 >
 > *This chat is now your home with me. Come back here anytime — that's how you'll spend most of your time with me going forward. I'll be your coach.*
@@ -1201,12 +1206,18 @@ Read **{SKILL_DIR}/references/feature-reference.md** (skill-local) for the full 
 import sys
 sys.path.insert(0, "shared/scripts")
 from surface_composers import post
+from offer_gate import compose, SITE_ONBOARDING_PROBE
 # THIS SECTION HAS NO COMPOSER - it writes its own sentences, so it
 # declares NOTHING. No `relayed`: there is no composer return to relay,
 # and the door refuses a relay it cannot vouch for line by line. No
 # `customer_rows` either. The whole reply is this product's own words and
 # is scanned in full, which is the point of the door.
-print(post(whole_reply, surface="onboarding", workspace=workspace_root))
+# `compose` is the OFFER fence (OFFERS1) and it runs FIRST, on the whole
+# reply. The probe on a populated book offered a restart the guard then
+# refuses in code; where this skill may not act it says so in one
+# sentence and offers nothing. It raises rather than returning.
+print(post(compose(SITE_ONBOARDING_PROBE, whole_reply),
+           surface="onboarding", workspace=workspace_root))
 ```
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**

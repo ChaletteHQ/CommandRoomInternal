@@ -242,6 +242,72 @@ def effective_baseline(
     return max(vals) if vals else None
 
 
+#: DORMSCOPE1 (cr1#170): the one sentence a scan says when it could not tell
+#: whose workspace this is, so nobody's account was filtered out.
+SCOPE_UNRESOLVED_LINE = ("I could not tell which operator this workspace belongs to, so "
+                         "accounts owned by other operators were not filtered out of "
+                         "this scan.")
+
+
+def outreach_scope(workspace_root, org_ids=None) -> dict:
+    """Which orgs and people are THIS operator's to chase (DORMSCOPE1, cr1#170).
+
+    The dormancy scan was told to call `org_writer.outreach_eligible` with the
+    operator's id and never told where that id came from; with it empty the check
+    kept every org, and in a multi-operator workspace a colleague's accounts
+    ranked as this operator's to chase. This helper resolves the primary user
+    through THE seam (`primary_user`), applies `outreach_eligible` to every org
+    (or to `org_ids` when given), and names the people attached to a skipped
+    org the way relationship-moves does (`primary_org_id`, `org_id`,
+    `affiliation_ids`), so one answer drives both the emit gate and the report.
+
+    Returns `{operator_id, user_resolved, eligible_org_ids, skipped_org_ids,
+    skipped_person_ids, line}`. An unidentifiable user skips nobody and says
+    so in `line` (never silently); an unreadable entities file answers the
+    same way rather than raising into a scan. Read-only: on the read door."""
+    import json
+
+    from org_writer import outreach_eligible
+    from primary_user import resolve_primary_user_from_entities
+
+    out = {"operator_id": None, "user_resolved": False, "eligible_org_ids": [],
+           "skipped_org_ids": [], "skipped_person_ids": [], "line": ""}
+    try:
+        raw = json.loads((Path(workspace_root) / "_hq" / "data" / "entities.json")
+                         .read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a scan never crashes on the anchor file
+        raw = {}
+    ent = raw.get("entities") if isinstance(raw, dict) and isinstance(raw.get("entities"), dict) else raw
+    if not isinstance(ent, dict):
+        ent = {}
+    orgs = [o for o in (ent.get("orgs") or []) if isinstance(o, dict) and o.get("id")]
+    if org_ids is not None:
+        wanted = {str(i) for i in org_ids}
+        orgs = [o for o in orgs if o["id"] in wanted]
+    user_id = resolve_primary_user_from_entities(raw) if isinstance(raw, dict) else None
+    out["operator_id"] = user_id
+    out["user_resolved"] = bool(user_id)
+    if not user_id:
+        out["eligible_org_ids"] = [o["id"] for o in orgs]
+        out["line"] = SCOPE_UNRESOLVED_LINE
+        return out
+    for o in orgs:
+        (out["eligible_org_ids"] if outreach_eligible(o, user_id)
+         else out["skipped_org_ids"]).append(o["id"])
+    skipped = set(out["skipped_org_ids"])
+    if skipped:
+        for rec in ent.get("people") or []:
+            if not isinstance(rec, dict) or not rec.get("id"):
+                continue
+            refs = set(rec.get("affiliation_ids") or [])
+            for k in ("primary_org_id", "org_id"):
+                if rec.get(k):
+                    refs.add(rec[k])
+            if refs & skipped:
+                out["skipped_person_ids"].append(rec["id"])
+    return out
+
+
 def record_just_busy(
     workspace_root, person_id: str, observed_gap_days: float,
     # FOSSIL default (LIFECYCLE1): the only surface that ever called this was

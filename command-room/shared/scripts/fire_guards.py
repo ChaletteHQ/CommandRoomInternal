@@ -204,7 +204,12 @@ __all__ = ["STATE_STALE", "retirement", "root_guard", "scheduled_writer"]
 
 
 def _main(argv: Optional[list] = None) -> int:
-    """A tiny CLI, for a human looking at one workspace by hand."""
+    """A tiny CLI, for a human looking at one workspace by hand.
+
+    The bootloader also calls `--task-id` alone before a Step 1.3 stop
+    (cr1#140): that question needs no workspace, so a retired chat on a
+    computer with no workspace folder still posts its retirement line.
+    """
     import argparse
     import json
 

@@ -47,6 +47,28 @@ PUSH_LINES = {
     "staff-meeting": "Staff Meeting: {to_confirm} to confirm, {overdue} overdue; the list is in your Staff Meeting chat.",
 }
 
+#: cr1#456 (owner ruling 2026-10-27): a chat whose card could not be posted
+#: ends its text list with ONE sentence on how to act: the verbs it takes,
+#: typed by row number, or the phrase that runs the chat by hand, where the
+#: card and its one-tap actions are. Only what main carries is named: Waiting
+#: On's typed `mine`, `theirs to [name]` and `drop` go through
+#: `commitments_helpers:apply_row_action` (cr1#513). The inbox keeps its own
+#: typed line (`inbox_helpers.DRAFT_HINT_LINE`), which is that list's one
+#: sentence whenever it carries a draft.
+ACT_TYPED_LINES = {
+    "waiting-on": ("To act on a row, type its number and a verb: `3 mine`, "
+                   "`3 theirs to` and a name, or `3 drop`."),
+}
+
+#: The phrase each surface's hand-run chat answers to: a trigger its owning
+#: skill claims (inbox-triage, commitment-triage, system-health).
+ACT_PHRASES = {
+    "inbox": "triage my inbox",
+    "my-plate": "what's on my plate",
+    "staff-meeting": "staff meeting",
+}
+ACT_PHRASE_LINE = "To act on these with one tap, start a new chat and say `{phrase}`."
+
 
 def _fire_mode() -> Optional[str]:
     via = str(os.environ.get("CR_FIRED_VIA", "") or "").strip().lower()
@@ -65,6 +87,35 @@ def validated(line: str, *, content: bool = False, fired_via: Optional[str] = No
         raise ValueError("a composed surface line did not pass the gate: "
                          + "; ".join(str(v) for v in result.violations))
     return line
+
+
+def act_line(surface: str, *, fired_via: Optional[str] = None) -> str:
+    """The one how-to-act sentence for `surface`'s text list, or "".
+
+    The typed form is said on any run (the verbs work wherever the list is
+    read). The phrase form is said on a fire only (`scheduled` or `catchup`,
+    the argument first, then `CR_FIRED_VIA`): a hand-run chat that reached
+    the text branch is already the chat the phrase would open."""
+    typed = ACT_TYPED_LINES.get(surface)
+    if typed:
+        return typed
+    phrase = ACT_PHRASES.get(surface)
+    if not phrase:
+        return ""
+    mode = str(fired_via or _fire_mode() or "").strip().lower()
+    if mode not in ("scheduled", "catchup"):
+        return ""
+    return ACT_PHRASE_LINE.format(phrase=phrase)
+
+
+def _append_act_line(lines: List[str], surface: str, n_rows: int,
+                     fired_via: Optional[str]) -> None:
+    """The list's last line: the how-to-act sentence (cr1#456), when the list
+    has a row to act on and the surface has a sentence for this run."""
+    act = act_line(surface, fired_via=fired_via) if n_rows else ""
+    if act:
+        lines.append("")
+        lines.append(validated(act, fired_via=fired_via))
 
 
 def saved_at_line(page_rel: str, device_root: Optional[str]) -> str:
@@ -176,6 +227,7 @@ def render_my_plate_text(data_view: Dict[str, Any], *, now_iso: Optional[str] = 
             for item in rows:
                 lines.append(_row_line(item, fired_via))
                 groups.setdefault(bucket, []).append(item.get("display_n", item.get("n")))
+    _append_act_line(lines, "my-plate", counts["rows"], fired_via)
     return {"text": "\n".join(lines).strip() + "\n", "counts": counts, "groups": groups}
 
 
@@ -229,6 +281,7 @@ def render_staff_meeting_text(data_view: Dict[str, Any], *, now_iso: Optional[st
         for item in items:
             lines.append(_row_line(item, fired_via))
             groups.setdefault(title, []).append(item.get("display_n", item.get("n")))
+    _append_act_line(lines, "staff-meeting", counts["rows"], fired_via)
     return {"text": "\n".join(lines).strip() + "\n", "counts": counts, "groups": groups}
 
 

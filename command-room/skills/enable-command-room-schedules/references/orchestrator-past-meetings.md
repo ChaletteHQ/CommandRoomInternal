@@ -192,7 +192,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 
 The mail plan's `first_run` and `intent` are the Sent fetch floor above (its `after` is the cursor branch's date, one day of overlap already applied, or the first-run floor); its `user_person_id` is USER_PERSON_ID and its `provider` is the resolved mail provider tag. The chat plan's `after` is `backfill_floor`'s answer and nothing else. Fetch through the connectors (here, never through the door).
 
-**THE DAY'S INPUTS TRAVEL AS FILES, AND THE CODE KEEPS THE FIELDS (EODHARD3).** Stage each batch as the connector's answer came: ONE JSON list, one object per message, every message it returned, in ONE stage (a batch is never split, and nothing needs cutting away). Each object carries the plan's `message_fields` under the plan's names; where the connector spells one differently, add it under the plan's name. Anything else an object carries is dropped in code: the code keeps these fields of a Sent message: message_id, ts, thread_id, has_attachment, recipient_person_ids, recipient_names, recipient_emails, subject, body; and these of a chat message: chat_or_channel_id, message_id, ts, user_id, user_name, text, thread_ts, permalink. The leg then runs the whole batch in ONE call, a first run's 30 days included. **Each stage states `n_returned`, how many messages the connector returned** (0 when it answered with none): a stage with no batch, no count, or a count that is not the batch's lands nothing and answers one sentence, because a read that never happened must never pass as a day that was read and found empty. Each batch is staged through the door as bytes, then its leg is run by the staged file's `rel`:
+**THE DAY'S INPUTS TRAVEL AS FILES, AND THE CODE KEEPS THE FIELDS (EODHARD3).** Stage each batch as the connector's answer came: ONE JSON list, one object per message, every message it returned, in ONE stage (a batch is never split, and nothing needs cutting away). Each object carries the plan's `message_fields` under the plan's names; where the connector spells one differently, add it under the plan's name. Anything else an object carries is dropped in code: the code keeps these fields of a Sent message: message_id, ts, thread_id, has_attachment, recipient_person_ids, recipient_names, recipient_emails, subject, body; and these of a chat message: chat_or_channel_id, message_id, ts, user_id, author_id, user_name, text, thread_ts, permalink, counterparty_person_ids, counterparty_names. The leg then runs the whole batch in ONE call, a first run's 30 days included. **Each stage states `n_returned`, how many messages the connector returned** (0 when it answered with none): a stage with no batch, no count, or a count that is not the batch's lands nothing and answers one sentence, because a read that never happened must never pass as a day that was read and found empty. Each batch is staged through the door as bytes, then its leg is run by the staged file's `rel`:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"kind": "sent_messages", "n_returned": <how many messages the connector returned>, "workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_stage_sent.json", "name": "eod_helpers:stage_fire_input"}'
@@ -203,7 +203,7 @@ The stage's file holds `{"content_base64": "<the Sent batch as one JSON list, ba
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"kind": "chat_messages", "n_returned": <how many messages the connector returned>, "workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_stage_chat.json", "name": "eod_helpers:stage_fire_input"}'
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"chat_rel": "<the rel the stage answered>", "exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "source_skill": "past-meetings", "user_person_id": "<the chat plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_chat_staged"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"chat_rel": "<the rel the stage answered>", "exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "source_skill": "past-meetings", "user_chat_ids": [<the user's own ids on that chat backend>], "user_names": [<the user's own names there>], "user_person_id": "<the chat plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_chat_staged"}'
 ```
 
 The chat stage's file is built the same way from the chat messages you read. `reconcile_chat_staged` runs `chat_reconcile.reconcile_chat_and_receipt` beside the data over the whole staged batch. No chat backend, or a blocked read: skip the stage and leave `chat_rel` out.
@@ -330,6 +330,40 @@ This is DOCTRINE, written down and never run in this process — the migrated pa
 `appendable(routed)` is `book + review + observed + HELD`, and held rows are in it deliberately: "out of sight" is a property of the surfaces, not of the disk, and a held capture the fire never wrote could not be retrieved on request.
 
 **Enabling the flip is an operator action and it is FENCED.** `held_tier.enable_held_routing` calls `held_tier.capability_status(...)` — which asks `operator_capability.capability_status("held_tier_routing")` — and REFUSES until that capability has been granted in the plugin payload. It is not a measurement this workspace takes of itself and there is nothing here that can earn it. **This fire never enables it**, never writes the config value to work around the refusal, and never narrates the fence to the user. A fire that flips it has decided the thing the review exists to decide.
+
+## THE CAPTURE PASS RECORD (cr1#138): which passes ran, which were skipped, and why
+
+**Initialize `capture_passes = {"ran": [], "skipped": []}` once, before Phase 3 below runs.** It travels to Phase 5 in the `capture_leg` block, and the receipt writer (`end_of_day.capture_pass_record`) turns it into the receipt's `capture_passes`. Without it, a pass that was skipped and a pass that ran leave the same clean receipt.
+
+The passes, by name, in the order this phase runs them (`end_of_day.CAPTURE_PASSES` is the one spelling):
+
+- `extract`: Phase 4 step 2, the per-meeting extraction.
+- `narrative_people_sync`: Phase 4.5.
+- `commitment_cru`: Phase 4.6.
+- `own_word_closes`: Phase 4.6.a.
+- `decision_cru`: Phase 4.6.b.
+- `prep_grade`: Phase 4.7.
+- `nonattendee_shadow`: Phase 4.8.
+
+After each pass, record what it did:
+
+- It ran on at least one meeting: add its name to `ran`.
+- It did not run on a meeting, or did not run at all: add one entry to `skipped`, `{"pass": "<name>", "reason": "<code>", "n_meetings": <how many meetings it skipped, when the skip is per meeting>}`. A pass that ran on some meetings and skipped another goes in both lists.
+
+The reason is one of these codes and nothing else (`end_of_day.CAPTURE_PASS_SKIP_REASONS`), never free text and never a meeting title:
+
+- `no_meetings`: nothing reached the pass (no newly processed meeting, or for the shadow lane no non-attendee meeting).
+- `nothing_open`: no open commitments, or no open decisions, to cross-reference.
+- `walk_ledger_honored`: the CRU walk ledger honored the transcript (Phase 4.6).
+- `no_prep_brief`: there was no prep brief to grade (Phase 4.7).
+- `transcript_too_large`: the transcript was too large for the pass in this run.
+- `time_budget`: the run ran out of time before the pass.
+- `error`: the pass failed and was swallowed; its `pack_run.data.errors[]` entry carries the detail.
+- `other`: none of the above.
+
+`not_reported` is not yours to write. The writer stamps it on every pass this record does not name, so a pass left out shows on the receipt as not reported, never as a pass that ran. A meeting the capture fence deferred never reached any pass; `n_time_fence_deferred` already counts it, and it is not a skip here. Codes and counts only, the same discipline `capture_counts` keeps.
+
+The record rides the End of Day receipt (Phase 5). The incremental meeting-capture pass runs these same phases, and its own receipt does not carry the record yet.
 
 # Phase 3 — Find unprocessed meetings (everything since the last successful run) — Phase D, step 1
 
@@ -574,6 +608,8 @@ For each meeting:
 
    `meeting_capture.route_meeting_captures` is a WRITER (with the attendee list it creates the person a capture names, ATTENDEE1), so it runs through the write door; the answer is `routed`. Its `book + review + observed` rows land with the ONE append above. Print `routed['summary']` and every line of `routed['receipt_lines']`, and carry `routed['transcript_class']` (ATTRIB1-A) — stamp it on the meeting event in step 8.
 
+   Print every line of `routed['notice_lines']` beside the receipt lines too (cr1#512): it carries one line when the transcript has no speaker labels that say who was speaking (class `unlabelled`), and is empty otherwise. The backend's `Microphone:` / `System audio (handle):` labels are read as `Me:` / `Them:`.
+
    **ATTRIB1-A (2026-09-02) — the transcript is classified first; the flag is derived.** The helper declares the transcript's class before any row is built (`named` / `me_them` / `unlabelled` / `dictation`), writes `data.attribution` `{transcript_class, owner_basis, counterparty_basis, span, turn}` on every row, `data.fusion_status` on every row and `data.floor_code` on every gated row, and derives `pending_review` from those — never from a literal you pass. A `dictation` transcript (`Me:` is the only voice — a working session) sends every capture to `observed` with `routed['summary']['working_session'] = True`: kept for prep, no open item, no question; only the caution rail (a due date or money) still opens a row. Carry `routed['transcript_class']` and `routed['summary']['working_session']` onto the `meeting` event in step 8, and render a working session as one line ("Working session — N notes kept, nothing opened"), never as "0 commitments".
 
    **ATTRIB1-B (2026-09-04) — the owner comes from the turn marker when the grammar agrees, the counterparty from the calendar, and when neither answers the row carries ONE question.** The helper reads your facts against the transcript and the roster: a first-person line under `Me:` is the user's (`owner_basis: speaker`), a second-person line under `Me:` ("you'll send…") belongs to the addressee (`inferred`), the other voice's own promise on a two-party call is that attendee's (`calendar`); the counterparty resolves calendar-2p → vocative → named speaker → meeting `person_ids` → ask, and the ask is `attribution.question = {kind: who_is_you, options, default}` — pass `meeting_person_ids` so the last rung can read. M RULING 2 (2026-09-03): `scheduling` and `agenda` rows ask NOTHING — they book silently with their basis on the record, and the calendar closer finishes them; the only question is the `who_is_you` one, on a `promise`, and only on the meeting card (at most three per meeting). Fences on the same pass: the user is never their own counterparty (stripped, `self_counterparty_stripped: true`); the user's own no-consequence item is an ASIDE → `observed`; advice / an unaccepted request / a declined conditional offer / reported third-party speech / dictation to a tool are each NAMED on the row as `data.speech_act` (EXTRACT1) — a label beside the shipped floor verdict, never instead of it, and never on a row that clears the floor. Quote verbatim, or pass `evidence_kind: "paraphrase"` when you cannot — the guardrail is then honestly inert on that row. DOOR 1: after this meeting's card, render its questions through `attribution_doors.render_card_questions('<workspace_root>', 'granola:<meeting_id>', persist_dir='<workspace_root>/_hq/.system/widgets')` as a second widget when it returns one (≤3 questions, likely answer first); no answer inside the review window and the likely answer is applied on its own, `undo` reverses it.
@@ -693,7 +729,7 @@ For each meeting:
 
    **Name spelling (v4.6.1 S3 / F-50 P2b):** every attendee name in `title`, the Attendees section, and the meeting event's title comes from the RESOLVED person record (`entity_resolve` display_name — the record's `canonical_name`), never the transcript's spelling. The dogfood rendered "Myra Samples" on this surface while resolution had correctly matched Mira Sample. Transcript spellings survive only inside verbatim evidence quotes (Notable quotes keeps its original text); an attendee with no record yet (open `person_proposal`) keeps the as-heard spelling until adjudicated. Full rule: `shared/ENTITY_RESOLVE_PROTOCOL.md` § Display names.
 
-   **⛔ The headlined counterparty is the binder's, not yours (SPEC BRIEFBIND1, BUG-8244 / G28 family):** the person a brief's `title` names comes from `meeting_capture.brief_counterparty` over THIS meeting's own record — its `person_ids` / `data.attendees_external`, nothing else. When the binder returns `bound: False`, the title renders WITHOUT a person name (topic only) — unbound per the G28 contract — and you NEVER fill the vacuum from a recent joint session, a topic cluster, a calendar neighbor, or any other association: pass whatever association evidence you hold as `association=` and let the binder record the refusal. A wrong name here is strictly worse than none — downstream surfaces key person context on the headline. `brief_claim_audit(meeting_event, <the name the title carries>)` must come back `supported` before the brief is written; a `supported: False` verdict means the headline is claiming a human the cited record does not back — fix the headline, never the record.
+   **⛔ The headlined counterparty is the binder's, not yours (SPEC BRIEFBIND1, BUG-8244 / G28 family):** the person a brief's `title` names comes from `meeting_capture.brief_counterparty` over THIS meeting's own record — its `person_ids` / `data.attendees_external`, nothing else. Call it with the operator's own identity left out: `exclude_person_ids=[primary_user.resolve_primary_user('<workspace_root>')]` and `exclude_names=[<that person record's canonical_name>]` (CLAIMAUDIT1, cr1#152), so the headline names the counterparty and never the owner, and a meeting where only the owner took part renders unbound. When the binder returns `bound: False`, the title renders WITHOUT a person name (topic only) — unbound per the G28 contract — and you NEVER fill the vacuum from a recent joint session, a topic cluster, a calendar neighbor, or any other association: pass whatever association evidence you hold as `association=` and let the binder record the refusal. A wrong name here is strictly worse than none — downstream surfaces key person context on the headline. `brief_claim_audit(meeting_event, <the name the title carries>, exclude_person_ids=<the same operator ids the binder was given>, exclude_names=<the same operator names>)` must come back `supported` before the brief is written (CLAIMAUDIT1, cr1#152: the audit takes the binder's own owner exclusion, so a meeting where only the owner took part passes unbound); a `supported: False` verdict means the headline is claiming a human the cited record does not back — fix the headline, never the record.
 
    **Section list is the canonical past_meeting set — `skills/meeting-notes/SKILL.md` "SESSION_NOTES Format" is the source of truth for what meeting-notes extracts.** Same ordering every fire. Omit any section with no signal — never include placeholder/`TBD` content. Don't paraphrase heading names. **If you add or rename a section, update both `meeting-notes/SKILL.md` AND this template in the same commit — they MUST stay in sync.**
 
@@ -713,7 +749,7 @@ For each meeting:
 
    If it is `MISSING`: the writer failed to save. EXCLUDE this meeting from the Meeting briefs section (no broken links). Surface plain-English: `(Brief for <meeting> couldn't be saved to _hq/meetings/. Re-fire `process the call <name>` to retry.)` Append a `brief_save_failed` event silently. **And carry the exclusion into the render set (SPEC MEETCOUNT1):** this meeting's `meeting_render_set` row gets status `brief_failed`, so the coverage line names the reduction instead of the count silently dropping by one.
 
-   On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). Single source of truth — no path drift.
+   On success: cache the BRIEF_PATH + BRIEF_URL on the meeting record. Phase 6 Step 3 uses BRIEF_URL as the `artifact_link.url` (inside widget) AND as the Briefs-section link target (below widget). One value — no path drift.
 8. **Write canonical `meeting` event** (v2.14.19+ — REQUIRED, not optional) to events.jsonl. This is the authoritative record that the meeting occurred. **Construct via `meeting_capture.build_meeting_event()` (BUG-8244 — the one sanctioned constructor; hand-rolled dicts are how 4 incompatible attendee shapes shipped),** passing `brief_path` through the returned event's `data` before appending. Shape the builder produces: `{type: "meeting", ts: <meeting_start_local_ISO>, source_skill: "past-meetings", primary_thread_id: <resolved or null>, org_ids: [<the counterparty org(s) this meeting was WITH, when resolved — including an org this very run just created for the counterparty; NEVER the CEO's own org>], person_ids: [<all attendees resolved>], data: {title, source_ref: "granola:<meeting_id>", duration_min, brief_path, attendees: [<every invitee EMAIL from the calendar invite / backend metadata, verbatim, resolved or not — identity-reconcile corroborates merges from these and the backfill repairs history with them>], attendees_external: [<names not in entities.json>], meeting_type: <sales|internal_1_1|external|board|… — the same classification Phase 4.7's grading derives; ALWAYS stamp it here>}}`. Pass `source_had_attendees=True` whenever the backend listed ANY participants — an empty binding then stamps `data.binding_missing` for the audit instead of vanishing silently. Pass `transcript_class=routed['transcript_class']` and `working_session=routed['summary']['working_session']` from step 5 (ATTRIB1-A): the class is what the per-class re-measure reads, and `working_session: true` is how a dictated session is told apart from a call that produced nothing. `org_ids` matters even when `primary_thread_id` resolves: a sales call with a new prospect routes to the CEO's own product/GTM thread, which attributes the event to the CEO's org — leaving the prospect org structurally unlinked from the one event that should seed its pipeline record (the PIPE1 D9.1 live gap). Use `ts` = meeting START time per Granola's metadata, NOT the processing timestamp. `meeting_type` is a load-bearing read for the deal-signal detector (PIPE1 D9.1: `meeting_type: "sales"` on an org with no deal coverage proposes deal creation) — stamp it on every meeting event, not only graded ones. This event is what `tell me about <person>` and "when did I last meet with X" queries read from — without it, there's no canonical meeting record (only `meeting_processed` which is a status event, not a meeting event).
 
 9. **Write `meeting_processed` event** to events.jsonl with `meeting_id`, `processed_at`, `extracted_count`, `pending_review_count`. Build it with `meeting_capture.build_meeting_processed_event(..., capture_summary=routed)` — passing Phase 4 step 5's `route_meeting_captures` return stamps `data.capture_counts` = `{n_book, n_review, n_observed, n_skipped, n_floor_gated, n_deduped, n_fusion_inert, floor_reasons, skipped_reasons}`, which is the ONLY record anywhere of what the admission gates did. `n_floor_gated` is the share of `n_review` the capture floor routed — a SUBSET of it, never added to it — `n_deduped` counts twin captures of one act that FLOOR3's collapse pass folded into a surviving row (never written, so no other count moves), `n_fusion_inert` counts written rows the fusion guardrail could NOT check at all (a transcript-less fire stamps every row it writes — see the guardrail section below; it cuts across all three lanes, so it is a subset of nothing and is never added to another count), and `floor_reasons` tallies which `FLOOR_*` condition gated each one; together they are what make the floor's tuning measurable, and without them a mis-tuned floor is undetectable and the acceptance re-measure has nothing to read. None of it goes in the chat card. Counts and reason tallies only — never a title. This is a SEPARATE event from #8 — `meeting_processed` records that THE ORCHESTRATOR processed this transcript (status), while `meeting` records that THE MEETING happened (data substrate). Both must exist. **Pass `appended=` too (INTAKE1):** keep the return value of the step-5 append and hand it to `build_meeting_processed_event(..., capture_summary=routed, appended=written)`, so the receipt's tier counts are reconciled against the rows that really reached the ledger. A receipt that claims a number the ledger does not carry is what justified a hand-deletion of twelve real lines on 2026-09-07; the ledger wins, and any disagreement is recorded as `counts_corrected`. Narrate the receipt's numbers, never your own count of what you extracted.
@@ -911,6 +947,8 @@ Skip entirely if:
 - No newly-processed meetings this fire (nothing to cross-reference against).
 - Open-commitment count is zero (helper returns `[]`).
 
+Either skip, and each transcript the walk ledger honors below, goes on the capture pass record as `commitment_cru` with its reason code (`no_meetings`, `nothing_open`, `walk_ledger_honored`).
+
 **⛔ THE CRU WALK LEDGER (SPEC EODSPEED1 part 4) — consult it BEFORE each transcript's pass, feed it AFTER.** One live fire re-walked 237 stale-evidence rows a prior fire had already refused — same transcript, same open book, same deterministic verdicts, re-fetched to re-derive them. The ledger closes that class:
 
 - **Before** running the matcher for a transcript, call `eod_incremental.already_walked(workspace_root, evidence_ref='granola:<THIS meeting id>', evidence_ts='<THIS meeting start ts — the same value passed as transcript_ts>')`. A non-None return means a COMPLETE walk of this exact evidence is on the ledger inside the evidence window: **skip this transcript's CRU pass entirely** — no matcher call, no re-fetch for this purpose — and count it: `n_cru_walks_ledger_skipped += 1`, `n_stale_evidence_ledger_honored += walked["n_stale"]`. The recorded verdicts already landed as events when the walk ran; there is nothing to re-write.
@@ -1020,6 +1058,8 @@ counts = apply_transcript_results(
 
 **Failure handling:** if the CRU pass errors (events.jsonl read failure, helper import fails, transcript empty), swallow silently and continue. Phase 4.6 is best-effort enrichment; the Phase 4 commitment writes already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+) so the failure is auditable via `usage report` even though the user doesn't see it: `{"phase": "4.6_commitment_cru", "reason": "<short>", "detail": "<truncated stderr or exception message>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
 
+On the capture pass record this is `commitment_cru` skipped for that meeting: `transcript_too_large` when the transcript was too large for the pass in this run, `error` for any other failure.
+
 # Phase 4.6.a — Own-word closes: what the CEO said, in their own turns, that they finished (EXIT1)
 
 A DIFFERENT question from 4.6, a different rail, a different switch. 4.6 asks whether a call shows somebody's promise was kept — that is the transcript closer, it is OFF, and nothing here turns it on. This phase asks only whether the CEO, in their OWN turns, reported finishing something already on the list. It reads `Me:` turns and the CEO's own named turns and nothing else; a sentence in anybody else's mouth is dropped before it is graded. It exists because most open items have nobody on the other end, so no message, reply, meeting or payment can ever show them done.
@@ -1037,6 +1077,8 @@ The answer is `apply_own_word_closes`' own — `n_closed`, `n_statements` and `a
 **Carry `closed` to Phase 5** as `n_own_word_closed` in the same `capture_leg` block, and `ambiguous` as `n_own_word_ambiguous` (statements that matched two items equally well and therefore closed nothing and asked nothing). Zero is written, not omitted. **The stdout is diagnostic only** — the customer sees these in the CHANGED feed's own line ("Closed N items you said you had finished"), with its `undo`.
 
 **Failure handling:** identical to 4.6 — swallow, continue, and append a `pack_run.data.errors[]` entry with `"phase": "4.6a_own_word"`.
+
+On the capture pass record it is `own_word_closes`, with the same two codes.
 
 # Phase 4.6.b — Decision CRU pass: auto-resolve / supersede open decisions (v3.4.5+)
 
@@ -1061,6 +1103,8 @@ A supersede is a WRITE to the canonical decision ledger and a superseded decisio
 **Skip entirely if:**
 - No newly-processed transcripts in this fire.
 - No open decisions in events.jsonl (helper returns `[]`).
+
+Either skip goes on the capture pass record as `decision_cru` with its reason code (`no_meetings`, `nothing_open`).
 
 Otherwise, for each newly-processed transcript, execute:
 
@@ -1144,6 +1188,8 @@ for transcript in <list of newly-processed transcripts>:
 **The stdout is for diagnostic logging only.** Per CONTRACT.md Rule 4 forbidden-pattern list: `decision_resolved` and `decision_superseded` event-type names never appear in chat. The user sees the resolution effect on the next DECISION_LOG view regeneration — closed decisions filter out of the "Active" list.
 
 **Failure handling:** if the decision-CRU pass errors (helper import fails, transcript empty, JSON malformed), swallow silently and continue. Best-effort enrichment; the Phase 4 decision writes (newly-extracted decisions from this transcript) already succeeded. **Append a `pack_run.data.errors[]` entry** (v3.5.0+): `{"phase": "4.6b_decision_cru", "reason": "<short>", "detail": "<truncated stderr>", "meeting_id": "<id>", "ts": "<UTC ISO — never the local wall clock>"}`.
+
+On the capture pass record this is `decision_cru` skipped for that meeting: `transcript_too_large` when the transcript was too large for the pass in this run, `error` for any other failure.
 
 # Phase 4.7 — Grade the prep brief against the transcript (Phase 6 Loop 3, silent)
 
@@ -1389,6 +1435,10 @@ log_end_of_day_receipt(
         "capture_counts": routed["summary"],
         "held_routing": routed.get("held_routing"),
         "n_held": routed["summary"].get("n_held", 0),
+        # cr1#138 - the capture pass record Phase D built: which passes ran,
+        # which were skipped, and the reason code for each. Pass it on every
+        # fire; the writer stamps `not_reported` on any pass it does not name.
+        "capture_passes": capture_passes,
     },
     # ⛔ MANDATORY (SPEC EODLEG1) — `phase_ledger=led`, the ledger this same
     # Phase built directly above. This is no longer the optional argument it
@@ -1653,7 +1703,7 @@ Format:
 - If 0 meetings have briefs, omit the entire Briefs section.
 
 **Sources section rules:**
-- Bullet list, no numbering (sources don't need 1:1 mapping to widget items).
+- Bullet list, no numbering (sources don't need 1:1 mapping to widget items). This scheduled block keeps its bullet list on purpose; the on-demand recap card's one-line form is meeting-notes Step 9c rule 6 (cr1#178): two surfaces, two shapes, each stated.
 - Anchor text = "Granola — \<meeting title\> (\<date\>)" or similar source-specific format.
 - Click target = the underlying transcript / source URL (Granola, calendar event, etc.).
 - If 0 meetings have linkable sources, omit the Sources section.
@@ -1709,7 +1759,7 @@ File save location (v2.10.8+): `[Project]/meetings/Past_Meeting_<slug>_<YYYY-MM-
         "- Asked for a refreshed margin model by Friday",
         "- Tabled the partner-tier discussion until next week",
     ],
-    "sources": [{"label": "Granola transcript", "url": "https://notes.granola.ai/d/abc123"}],
+    "sources": [{"label": "Granola transcript", "url": "https://notes.granola.ai/d/abc123"}],  # NOT-RUN block (CUT-PLATE): the live recap card carries no per-row sources (meeting-notes Step 9c rule 6, cr1#178)
     "artifact_link": {                         # v2.12.4+ — renders inline INSIDE the widget AND in post-widget Links
         "label": "Open full meeting brief",
         "url": "computer:///<URL-encoded-absolute-path-to-Past_Meeting_Sam_2026-04-29.docx>",

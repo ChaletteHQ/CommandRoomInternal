@@ -99,7 +99,7 @@ When applying the business lens in Step 7, ask the user these detailed questions
 
 ### 7. Master Tracker not updated, becomes stale
 
-**Risk:** Your source of truth is weeks behind reality. Strategic decisions are based on outdated context.
+**Risk:** Your record is weeks behind reality. Strategic decisions are based on outdated context.
 
 **Prevention:** Update Master Tracker **in this skill run**, not later.
 

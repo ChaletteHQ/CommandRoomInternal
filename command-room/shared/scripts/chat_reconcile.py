@@ -154,6 +154,15 @@ def _empty_counts() -> Dict[str, int]:
 # Normalization — one shape from two connectors
 # ---------------------------------------------------------------------------
 
+#: CHATAUTHOR1 (cr1#244): every spelling of "who wrote this" the normaliser
+#: reads, in order. `user_id` is the plan's own name for it (the staged shape
+#: the fires hand this leg, `CHAT_MESSAGE_FIELDS`); `author_id`, `user` and
+#: `from_id` are the raw connector spellings. Before this the staged shape's
+#: author was never read, so an owner's chat reply could never be the owner's
+#: and nothing it discharged ever closed.
+CHAT_AUTHOR_KEYS = ("author_id", "user_id", "user", "from_id")
+
+
 def normalize_chat_message(msg, *, provider: Optional[str],
                            user_chat_ids=(), user_names=(),
                            diagnostics: Optional[dict] = None) -> Optional[dict]:
@@ -232,7 +241,7 @@ def normalize_chat_message(msg, *, provider: Optional[str],
     # wedge, one layer down.
     ts = canonical_ts
 
-    author = _norm(msg.get("author_id") or msg.get("user") or msg.get("from_id"))
+    author = next((_norm(msg.get(k)) for k in CHAT_AUTHOR_KEYS if _norm(msg.get(k))), "")
     ids = {i for i in (user_chat_ids or ()) if i}
     is_user = bool(author and author in ids)
     if not is_user and msg.get("is_user") is True:
@@ -372,6 +381,87 @@ def _to_matcher_shape(msg: dict) -> dict:
     }
 
 
+def _people_names(workspace_root) -> Dict[str, List[str]]:
+    """person id -> every name on file for that person (name, canonical name,
+    aliases). Read-only; an unreadable entity graph answers `{}`, which leaves
+    only the names the message and the commitment carry themselves."""
+    if workspace_root is None:
+        return {}
+    try:
+        import json
+        from entities_io import entities_collection
+        raw = json.loads(_entities_path(workspace_root).read_text(encoding="utf-8"))
+        out: Dict[str, List[str]] = {}
+        for p in entities_collection(raw, "people"):
+            pid = _norm(p.get("id"))
+            if not pid:
+                continue
+            labels = [p.get("name"), p.get("canonical_name")]
+            labels += list(p.get("aliases") or [])
+            out[pid] = [_norm(x) for x in labels if _norm(x)]
+        return out
+    except Exception:  # noqa: BLE001 - a name lookup must never raise into the leg
+        return {}
+
+
+def _require_shared_words(auto: List[dict], pending: List[dict],
+                          open_commitments, by_native: Dict[str, dict], *,
+                          user_person_id: str, workspace_root=None):
+    """cr1#468 (owner ruling 2026-10-27, option B): a chat line that shares no
+    words with a commitment can never close it.
+
+    THE DEFECT. The title matcher counts every shared token. On a short chat
+    line the only shared token can be a person's name (every message to
+    someone "mentions" them, and a namesake gets the same token) or the stem a
+    contraction leaves ("won't" tokenizes to "won"). One such token cleared the
+    propose bar, FS-11 promoted the unambiguous moderate match, and an owner
+    aside closed an unrelated promise as "probably handled".
+
+    THE RULE. Each row the two seams graded is checked against its own
+    message: `cru_match.shared_content_words` with the names of the user, the
+    people the message went to and the commitment's counterparties set aside.
+    A row whose answer is empty is dropped, whatever basis graded it (the
+    title echo, a delivery, a reply or the thread the item came from): it
+    neither closes nor is proposed, as the issue's acceptance check reads.
+    Rows that share a word pass untouched, so FS-11's weak-match closes stand
+    exactly as before (the 2026-09-07 "chat is your own word" ruling).
+
+    ONLY NARROWS. It runs after both seams and only removes rows, so it never
+    adds a row, never changes a grade and never touches the mail rail. A row whose message
+    cannot be found is left as the seams graded it: the pointer fence in
+    `_apply` already refuses a close it cannot point at.
+    """
+    from commitment_parties import counterparty_ids, counterparty_names
+    from cru_match import _commitment_id, shared_content_words
+
+    people = _people_names(workspace_root)
+    by_cid = {str(_commitment_id(c)): c for c in open_commitments or []
+              if isinstance(c, dict)}
+
+    def _names(row: dict, msg: dict) -> List[str]:
+        out: List[str] = list(people.get(_norm(user_person_id), []))
+        out += list(msg.get("counterparty_names") or [])
+        for pid in msg.get("counterparty_person_ids") or []:
+            out += people.get(_norm(pid), [])
+        ev = by_cid.get(str(row.get("commitment_id") or ""))
+        if ev is not None:
+            data = ev.get("data") or {}
+            out += counterparty_names(data, workspace_root=workspace_root)
+            for pid in counterparty_ids(data) + [_norm(data.get("owner_id"))]:
+                out += people.get(_norm(pid), [])
+        return out
+
+    def _shares(row: dict) -> bool:
+        msg = by_native.get(str(row.get("message_id") or ""))
+        if msg is None:
+            return True
+        return bool(shared_content_words(msg.get("text"), row.get("title"),
+                                         names=_names(row, msg)))
+
+    return ([row for row in auto if _shares(row)],
+            [row for row in pending if _shares(row)])
+
+
 def score_candidates(open_commitments, candidates: List[dict], *,
                      user_person_id: str, provider: Optional[str],
                      exclude_captured_since=None,
@@ -428,6 +518,10 @@ def score_candidates(open_commitments, candidates: List[dict], *,
         )
         auto.extend(res.get("auto_close") or [])
         pending.extend(res.get("pending") or [])
+
+    auto, pending = _require_shared_words(
+        auto, pending, open_commitments, by_native,
+        user_person_id=user_person_id, workspace_root=workspace_root)
 
     # One row per commitment across both lanes — a close beats a confirm, and
     # within a tier the higher score wins. Without this a promise discharged
@@ -551,8 +645,13 @@ def backfill_floor(workspace_root, *, now=None, days: int = DEFAULT_BACKFILL_DAY
 #: MAINTJOBS1 MUST 2 - what a raw chat message carries into the writer
 #: (Step 6b of `skills/reconcile-sent/SKILL.md`); the leg normalizes both id
 #: shapes itself, so these are the names the plan hands the connector step.
+#: CHATAUTHOR1 (cr1#244): the kept shape carries both author spellings this
+#: leg reads (`user_id`, the plan's; `author_id`, the raw one) and the
+#: counterparty fields the scorer reads, so a staged message can still say
+#: who wrote it and to whom.
 CHAT_MESSAGE_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
-                       "user_name", "text", "thread_ts", "permalink")
+                       "author_id", "user_name", "text", "thread_ts", "permalink",
+                       "counterparty_person_ids", "counterparty_names")
 
 
 def plan_chat_scan(workspace_root, now=None) -> dict:
@@ -919,6 +1018,18 @@ def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
                 has_completion_signal=None,
             )
             ev["data"].update(_chat.pointer_fields(ref))
+            # BIND1 STOPPED SHORT HERE, ON PURPOSE. This leg writes no OPEN
+            # commitment row - it closes, and it proposes - so the only row
+            # it could bind is this review proposal. Importing the capture
+            # door to do it reds G26's scope fence
+            # (`tests/run_guard_chatscan1_wiring_test.py`, "no chat leg
+            # imports the capture writer"), which exists to keep chat CAPTURE
+            # unbuilt; and reaching past that door into the resolver directly
+            # would be the same trespass spelled differently. The binding
+            # belongs one level down, inside
+            # `cru_match.build_pending_review_event` - the SHARED writer both
+            # this leg and the mail rail already call - which is not this
+            # lane's file. Recorded as a seam in BUILD_BIND1_2026-09-18.md.
             # Same post-write verification the close branch runs. A proposal
             # is the row a human adjudicates, so its pointer is the thing that
             # lets them check the claim before confirming — an unauditable

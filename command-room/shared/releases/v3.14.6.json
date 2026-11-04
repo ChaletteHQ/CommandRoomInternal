@@ -1,0 +1,13 @@
+{
+  "version": "3.14.6",
+  "headline": "Reading a transcript or an email on demand now remembers the people in it.",
+  "items": [
+    {
+      "id": "v3146_announce_people_remembered",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Pulling a meeting or an email into the chat used to show you what you asked for and forget the new people it mentioned. They are now added to your contacts the same way the scheduled chats add them.",
+      "action": "announce_only"
+    }
+  ]
+}

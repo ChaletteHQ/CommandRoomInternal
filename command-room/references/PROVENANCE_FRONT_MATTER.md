@@ -123,7 +123,7 @@ Three options were considered:
 
 1. **YAML front-matter on the file itself (chosen).** Pros: in-band, travels with the file, visible in any text editor. Cons: clutters the first 5 lines.
 2. **Sidecar `.meta.json` files.** Pros: clean separation. Cons: doubles the file count, easy to drift out of sync, breaks if file is moved/renamed.
-3. **Single index file** (e.g., `_hq/staging/[date]/_index.json`). Pros: single source of truth. Cons: the index becomes a coordination bottleneck — every orchestrator has to read+modify+write it; race conditions on parallel fires.
+3. **Single index file** (e.g., `_hq/staging/[date]/_index.json`). Pros: one index. Cons: the index becomes a coordination bottleneck — every orchestrator has to read+modify+write it; race conditions on parallel fires.
 
 Front-matter wins on simplicity. The 5-line cost per file is trivial; the in-band visibility is the win.
 

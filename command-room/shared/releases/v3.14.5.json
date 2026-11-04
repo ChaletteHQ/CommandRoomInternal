@@ -1,0 +1,13 @@
+{
+  "version": "3.14.5",
+  "headline": "Something you are waiting on closes itself when the other person's email delivers it.",
+  "items": [
+    {
+      "id": "v3145_announce_inbound_close",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When a contact emails you the thing they promised, with words like here is the deck or as promised, the item leaves your waiting-on list on its own. A message that only says they are still working on it leaves the item open.",
+      "action": "announce_only"
+    }
+  ]
+}

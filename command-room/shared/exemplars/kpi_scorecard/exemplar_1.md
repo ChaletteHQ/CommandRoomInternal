@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | $478K | $470K | 118% | 125% -->
+<!-- tokens: Acme Co | 118% | 125% -->
 
 # KPI Scorecard — structural exemplar (kind: kpi_scorecard)
 
@@ -32,7 +32,7 @@ DECIDE   [which off-target KPI, if any, needs an intervention this period]
 NEEDED   [count of flagged KPIs — a real "nothing" when none crossed]
 
 ## 1. KPIs vs Targets
-[TILE BAND first: 4–5 stat tiles, each metric + target-delta arrow — e.g. "$478K" under "MRR ▲"]
+[TILE BAND first: 4–5 stat tiles, each metric + target-delta arrow, e.g. "[amount]" under "MRR ▲"]
 [then the table: Metric | Current | Target | Vs target | Trend — no blank cells; the dollar Current-vs-Target bar renders where charts.py can]
 
 ## 2. Scorecard

@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | Sam Sample | $480K | 37% -->
+<!-- tokens: Acme Co | Northstar Partners | Sam Sample | 37% -->
 
 # Memo — structural exemplar (kind: memo)
 
@@ -35,7 +35,7 @@
 [one short paragraph per option — 2 to 4 options, each named plainly]
 
 ## Tradeoffs
-[table: Option | Cost | Speed | Risk — one row per option; a cell like "$480K" or "37%" always traces to a source; empty cells render "n/a", never blank]
+[table: Option | Cost | Speed | Risk, one row per option; a cell like an amount or "37%" always traces to a source; empty cells render "n/a", never blank]
 
 ## Risks
 [2–3 bullets, each with the mitigation inline]

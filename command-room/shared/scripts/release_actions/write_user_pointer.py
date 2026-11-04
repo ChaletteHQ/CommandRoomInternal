@@ -61,12 +61,12 @@ TRIGGERED_BY = "release_action:write_user_pointer"
 
 
 def _load_entities(workspace_root: Path) -> dict | None:
-    import json
+    from entities_io import read_entities_json
     p = workspace_root / "_hq" / "data" / "entities.json"
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except Exception:
         return None
 

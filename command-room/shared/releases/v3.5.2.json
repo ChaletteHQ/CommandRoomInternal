@@ -1,0 +1,13 @@
+{
+  "version": "3.5.2",
+  "headline": "Sample names replace real ones throughout the product's own notes and examples.",
+  "items": [
+    {
+      "id": "v352_announce_privacy_pass",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Nothing changes in how Command Room works for you. The product's own notes and examples now use sample names only, so nothing about any real person travels with an update.",
+      "action": "announce_only"
+    }
+  ]
+}

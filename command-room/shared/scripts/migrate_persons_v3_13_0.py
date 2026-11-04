@@ -24,6 +24,23 @@ What it does (in order, per record):
        (FALLBACK_FIRST_SEEN constant — default "2026-04-01", before any
        Command Room substrate writes in M's workspace)
 
+  2b. Fold a personal layer's `reports_to` into `reports_to_id` (cr1#132,
+     owner ruling 2026-10-26). `reports_to_id` holds a person id. A
+     `reports_to` value that is an id on file is taken as it is; any other
+     value is resolved through people_writer.find_existing_person, which only
+     answers on an unambiguous match. Then:
+     - `reports_to_id` empty and the value resolves: the id moves across and
+       the move is listed in the report.
+     - `reports_to_id` already names the same person: `reports_to` goes.
+     - `reports_to_id` names someone else, or the value does not resolve:
+       `reports_to_id` is kept as it is, the old value moves into `notes` as
+       one line ("Reports to (from an older field, not matched): ..."),
+       appended after any existing notes and never twice (notes that are not
+       text are first rewritten as their JSON text, nothing removed), the rest of the
+       record is migrated, and the report lists it under "needs a look",
+       instead of failing.
+     `is_user` and `pronouns` are schema fields since cr1#132 and are kept.
+
   3. Re-validate every record via _validate_person.
      Fail loudly if any record still doesn't pass after migration.
 
@@ -58,7 +75,10 @@ from people_writer import (  # noqa: E402
     _normalize_legacy_keys,
     _validate_person,
     ALLOWED_PERSON_FIELDS,
+    MultipleCandidatesError,
+    PERSON_ID_RE,
     REQUIRED_PERSON_FIELDS,
+    find_existing_person,
 )
 from atomic_write import atomic_write_json  # noqa: E402
 
@@ -151,10 +171,110 @@ def _build_first_seen_index(events_path: Path) -> dict[str, str]:
     return earliest
 
 
-def _migrate_record(p: dict, first_seen_index: dict[str, str]) -> tuple[dict, list[str]]:
+def _resolve_reports_to(value, workspace_root: Path | None,
+                        known_ids: set[str]) -> str | None:
+    """The person id a `reports_to` value names, or None when it names nobody
+    for certain. An id on file is taken as it is. Anything else goes through
+    find_existing_person, which answers only on an unambiguous match (an exact
+    email, or a unique full canonical name) and refuses a one-word or
+    alias-only hit; an ambiguous answer is treated as unresolved."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if PERSON_ID_RE.match(text):
+        return text if text in known_ids else None
+    if workspace_root is None:
+        return None
+    try:
+        if "@" in text:
+            hit = find_existing_person(workspace_root, email=text)
+        else:
+            hit = find_existing_person(workspace_root, name=text)
+    except MultipleCandidatesError:
+        return None
+    if isinstance(hit, dict) and hit.get("id") in known_ids:
+        return hit["id"]
+    return None
+
+
+#: The line a conflicting or unresolved `reports_to` leaves in the record's
+#: `notes`. The value must never leave the live record: the backups folder
+#: keeps only three copies and the update bridge does not relay this
+#: script's report to the owner (review finding on cr1#132).
+REPORTS_TO_NOTE_PREFIX = "Reports to (from an older field, not matched): "
+
+
+def _keep_in_notes(record: dict, value) -> str:
+    """Append the unmatched `reports_to` value to `notes` as one plain line,
+    after any existing notes, and only if that exact line is not there yet,
+    so a re-run never appends it twice. Notes that are not text (the
+    validator does not type-check them) are rewritten as their JSON text
+    first, so nothing is lost and the record ends valid (`notes` is
+    string | null). Returns the phrase the report uses for where the value
+    went, saying exactly what happened."""
+    shown = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    line = REPORTS_TO_NOTE_PREFIX + shown.strip()
+    notes = record.get("notes")
+    if notes is None or (isinstance(notes, str) and not notes.strip()):
+        record["notes"] = line
+        return "kept the old value in notes"
+    if isinstance(notes, str):
+        if line in notes.splitlines():
+            return "kept the old value in notes, where it already was"
+        record["notes"] = notes.rstrip("\n") + "\n" + line
+        return "kept the old value in notes, after the existing notes"
+    record["notes"] = json.dumps(notes, ensure_ascii=False) + "\n" + line
+    return ("kept the old value in notes; the existing notes were not text, "
+            "so they were rewritten as text first, with nothing removed")
+
+
+def _fold_reports_to(record: dict, workspace_root: Path | None,
+                     known_ids: set[str]) -> tuple[list[str], list[str]]:
+    """Fold a personal layer's `reports_to` into `reports_to_id`, in place
+    (cr1#132, owner ruling 2026-10-26). Returns (changes, notices): changes
+    go in the per-record report; notices are the conflicts and unresolved
+    values the owner should look at. A conflicting or unresolved value is
+    kept on the record as a line in `notes`. Never raises on the data."""
+    if "reports_to" not in record:
+        return [], []
+    value = record.pop("reports_to")
+    current = record.get("reports_to_id")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return ["dropped empty 'reports_to'"], []
+    resolved = _resolve_reports_to(value, workspace_root, known_ids)
+    if not current:
+        if resolved:
+            record["reports_to_id"] = resolved
+            return [f"moved 'reports_to' {value!r} into reports_to_id = {resolved}"], []
+        kept = _keep_in_notes(record, value)
+        return (
+            [f"moved 'reports_to' {value!r} out of its old field: it does not "
+             f"name one person on file; {kept}"],
+            [f"unresolved: 'reports_to' was {value!r}, which does not name one "
+             f"person on file, so reports_to_id was left empty and {kept}. "
+             "Set reports_to_id by hand if you know who this person reports to."],
+        )
+    if resolved == current:
+        return [f"dropped 'reports_to' {value!r}: same person as reports_to_id = {current}"], []
+    kept = _keep_in_notes(record, value)
+    return (
+        [f"moved 'reports_to' {value!r} out of its old field: kept "
+         f"reports_to_id = {current}; {kept}"],
+        [f"conflict: 'reports_to' was {value!r} but reports_to_id is {current}. "
+         f"Kept reports_to_id = {current} and {kept}. "
+         "Change reports_to_id by hand if 'reports_to' was right."],
+    )
+
+
+def _migrate_record(p: dict, first_seen_index: dict[str, str], *,
+                    workspace_root: Path | None = None,
+                    known_ids: set[str] | None = None,
+                    notices: list[str] | None = None) -> tuple[dict, list[str]]:
     """Return (migrated_record, list_of_changes_applied).
 
-    Changes are described in plain English for the report.
+    Changes are described in plain English for the report. Conflicts and
+    unresolved values from the `reports_to` fold are appended to `notices`
+    when a list is passed.
     """
     changes: list[str] = []
     original_keys = set(p.keys())
@@ -171,6 +291,13 @@ def _migrate_record(p: dict, first_seen_index: dict[str, str]) -> tuple[dict, li
     for k in sorted(added):
         if k not in original_keys:
             changes.append(f"added canonical key {k!r} (from legacy field)")
+
+    # cr1#132: a personal layer's `reports_to` folds into `reports_to_id`.
+    fold_changes, fold_notices = _fold_reports_to(
+        cleaned, workspace_root, known_ids or set())
+    changes.extend(fold_changes)
+    if notices is not None:
+        notices.extend(f"{cleaned.get('id', '?')}: {n}" for n in fold_notices)
 
     # Backfill first_seen if missing
     if "first_seen" not in cleaned:
@@ -228,12 +355,17 @@ def main(argv: list[str]) -> int:
     # Migrate each record
     migrated_people: list[dict] = []
     changes_by_pid: dict[str, list[str]] = {}
+    notices: list[str] = []
+    known_ids = {p.get("id") for p in people
+                 if isinstance(p, dict) and isinstance(p.get("id"), str)}
     for p in people:
         if not isinstance(p, dict):
             print(f"WARN: person record is not a dict, skipping: {type(p).__name__}")
             migrated_people.append(p)
             continue
-        new_record, changes = _migrate_record(p, first_seen_index)
+        new_record, changes = _migrate_record(
+            p, first_seen_index, workspace_root=workspace_root,
+            known_ids=known_ids, notices=notices)
         migrated_people.append(new_record)
         if changes:
             changes_by_pid[new_record.get("id", "?")] = changes
@@ -255,6 +387,14 @@ def main(argv: list[str]) -> int:
         for c in changes:
             print(f"    - {c}")
     print()
+
+    # cr1#132: who-reports-to-whom values the fold could not settle. Reported,
+    # never a reason to stop: the records are otherwise migrated.
+    if notices:
+        print(f"Needs a look, who someone reports to ({len(notices)}):")
+        for n in notices:
+            print(f"  - {n}")
+        print()
 
     if failures:
         # v3.13.6+ — friendly abort (per CONTRACT Rule 4, "FAIL" is forbidden

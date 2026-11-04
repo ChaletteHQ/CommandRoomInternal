@@ -172,8 +172,9 @@ def _events_path(ws: Path) -> Path:
 
 
 def _load_entities(ws: Path) -> dict:
+    from entities_io import read_entities_json
     try:
-        return json.loads(_entities_path(ws).read_text(encoding="utf-8"))
+        return read_entities_json(_entities_path(ws))
     except (OSError, json.JSONDecodeError) as exc:
         raise ThreadArchiveError(
             f"cannot read {_entities_path(ws)}: {exc}") from exc

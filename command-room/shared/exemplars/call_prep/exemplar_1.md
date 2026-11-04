@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | Sam Sample | Quinn Stone | $480K | 13 days quiet | 4 open items -->
+<!-- tokens: Acme Co | Northstar Partners | Sam Sample | Quinn Stone | 13 days quiet | 4 open items -->
 
 # Call Prep — structural exemplar (kind: call_prep)
 
@@ -61,7 +61,7 @@ NEEDED    Nothing from you before the call. [nothing-form is legal and encourage
 [only decisions live on THIS call; prior decisions get one compact "already on the record" list above this]
 
 ## Risks / Watch-outs
-[2–3 bullets max; a $480K exposure claim would carry its source and a hedge when single-sourced]
+[2–3 bullets max; an exposure claim for an amount would carry its source and a hedge when single-sourced]
 
 ## Sources
 [DO NOT COMPOSE THIS SECTION — it is shown only so the structure is complete. `assemble_prep_sections` appends it from what the render actually consumed; a hand-built "Sources" section raises `PrepContractError` and ships no brief at all. One line, "Built from: …".]

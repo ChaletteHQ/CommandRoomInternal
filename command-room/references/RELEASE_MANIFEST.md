@@ -11,6 +11,12 @@ The manifest exists because plugin code updates only fix forward — they don't 
 
 Each manifest enumerates these and the update-bridge plays them in order.
 
+## What reaches a client
+
+The manifests under `shared/releases/` ship to every client repo, and so does `RELEASE_NOTES.md`, the customer-facing release history rendered from them (cr1#410). The engineering `CHANGELOG.md` does not ship (cr1#409). The list of what ships and what does not is owned by `scripts/payload_contract.py` in the staging repo and rendered as one table in `DEVELOPMENT.md` (Release + promote).
+
+`RELEASE_NOTES.md` is written by `scripts/dev/render_release_notes.py` (run from the staging repo root right after the manifest is written; `--check` says whether the committed file is current). It carries, newest first, each version, its date (read from the changelog heading), the headline and the customer-facing items; an item whose text carries a `{placeholder}` is a per-workspace prompt and is left out. Guard G82 fails the battery when the notes differ from a fresh render or when a version the repo has shipped has no manifest, so the headline you write here is the sentence every client reads twice: on update, and in their release history.
+
 ## Schema
 
 ```json
@@ -79,6 +85,8 @@ Migration-function contract (`migration_function`): `fn(workspace_root, *, apply
 Safety constraint on `auto_apply`: actions MUST be additive, reversible, and no-data-loss. Substrate-rewriting actions (corruption recovery, backfills) are allowed because they quarantine sidecar-style — original data is preserved. Anything destructive (delete, overwrite without backup) MUST stay `instruct_user` so the customer explicitly consents.
 
 The non-technical-customer principle (CONTRACT.md Rule 28): if the question would expose schema / migration / JSON / `taskId` / `enum` / `events.jsonl` / `entities.json` / `backfill` / `quarantine` / `re-fire` / `re-register` / `wrapper` vocabulary to the customer, it MUST be `auto_apply` (the system picks the answer) or rewritten in plain English. The jargon-guard pre-commit test scans customer-facing manifest surfaces — the top-level `headline` plus each item's `prompt_template`, `notice_template` and `fallback_prompt_template` — for these patterns and fails the ship if any leak. (Quoted customer prose in SKILL.md files is covered by a sibling guard, `tests/run_customer_facing_voice_test.py`, against its own rule set — not by this one.)
+
+Which fields the battery's three manifest guards read is written down once, in `tests/run_no_unscanned_manifest_headline_test.py` (MANIFESTSCOPE1, cr1#179): the jargon guard reads, per item, the field(s) its `action` renders (`prompt_template` for announce_only and instruct_user; `notice_template` and `fallback_prompt_template` for auto_apply; `notice_template` and `blocked_template` for apply_workspace_migration); the voice and banned-terms guards read every one of those fields that is present, whatever the action.
 
 ## Detector contract
 

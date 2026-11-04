@@ -102,7 +102,7 @@ value forever and write only the new one.
 | **Detect** (default) | "process the call", "meeting notes" | process with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "meeting-notes", DEFAULTS)` BEFORE rendering, then append the first-run block. |
 | **Show settings** | "show meeting-notes settings" | render current config in plain English; no processing. |
 | **Tune** | "tune meeting-notes" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → confirm. |
-| **Reset** | "reset meeting-notes to defaults" | `wipe_skill_config(workspace_root, "meeting-notes")` → next fire is a first-fire again. |
+| **Reset** | "reset meeting-notes to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "meeting-notes", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "meeting-notes")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (transport):** the three decisions ride as `fr1`/`fr2`/`fr3` items in a
 "Make this yours" section at the BOTTOM of the Step 9 OPEN ITEMS widget (the documented fr-item
@@ -261,14 +261,14 @@ What actually updates the tracker is the DATA this skill already writes:
 the meeting event (Step 5d), commitments (Step 5e), decisions (Step 5b),
 and SESSION_NOTES routing — the regenerator derives Last Touched / Next
 Action / Commitments from those. After the data steps land, refresh the
-view:
+view through the WRITE door (MNSTEPS1, cr1#550: the regeneration rewrites the view, so on a merged seat it runs only through `run_writer`):
 
-```python
+```bash
 # After the Rule 22 preamble + cd "$PLUGIN_ROOT"
-import sys; sys.path.insert(0, "shared/scripts")
-import render_master_tracker
-render_master_tracker.main(["render_master_tracker.py", "<WORKSPACE_ROOT>"])
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "render_master_tracker:regenerate"}'
 ```
+
+Paste what it prints and run that. On a seat whose files are local the same call runs in this shell, `render_master_tracker.regenerate("<WORKSPACE>")`, and answers the same counts. `ok` false means the tracker was not refreshed: add `tracker` to the closing's skipped steps (Step coverage, below Step 9d).
 
 Relationship-quality observations (new / strong / fragile / warming /
 cooling) belong in the PEOPLE layer, not a tracker column: record them as
@@ -302,7 +302,7 @@ ev = build_decision_event(
     source_event_seq=<seq of the parent meeting event>,
     confidence=<attribution confidence 0.0-1.0>,   # below 0.75 the builder forces data.pending_review: true
 )
-# SPEC THREADBIND1 §0 ruling 1 — a FALLBACK, not a second source of truth.
+# SPEC THREADBIND1 §0 ruling 1 — a FALLBACK, not a second store.
 # "<same as parent meeting event>" above is step 1 of the evidence order
 # (the meeting's own binding) done by hand; when the parent meeting was
 # ITSELF unbound (primary_thread_id came through empty), this gives the
@@ -320,6 +320,15 @@ append_event("<WORKSPACE>/_hq/data/events.jsonl", [ev], holder="meeting-notes.de
 The speaker-attribution ambiguity guard (Step 5e) applies to decisions identically: ambiguous decider → `pending_review: true`, never an auto-pick. The cross-meeting fusion guardrail applies too — a decision whose evidence phrase does not appear in THIS transcript is not written.
 
 After the appends, regenerate the view via `render_decision_log.regenerate("<WORKSPACE>")` (decision-log's renderer invocation pattern — silent per CONTRACT Rule 4).
+
+It rewrites the view, so it runs through the WRITE door (DECDOOR1; named here by MNSTEPS1, cr1#550):
+
+```bash
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "render_decision_log:regenerate"}'
+```
+
+Paste what it prints and run that; on a seat whose files are local the same call runs in this shell. `ok` false means the view was not refreshed: add `decision_log` to the closing's skipped steps (Step coverage, below Step 9d).
 
 Each event carries the fields the old hand-written entry carried:
 
@@ -397,12 +406,16 @@ append_event("<WORKSPACE>/_hq/data/events.jsonl",
 
 for line in routed["receipt_lines"]:      # ATTENDEE1 — never optional
     print(line)
+for line in routed["notice_lines"]:       # cr1#512: no speaker label said who spoke
+    print(line)
 # ATTRIB1-A — carry the declared transcript class onto the meeting event in Step 9a1:
 #   build_meeting_event(..., transcript_class=routed["transcript_class"],
 #                       working_session=routed["summary"]["working_session"])
 ```
 
 **⛔ THE TRANSCRIPT IS CLASSIFIED FIRST, AND THE FLAG IS DERIVED — YOU DO NOT CHOOSE `pending_review` (ATTRIB1-A, 2026-09-02).** Before any row is built the helper declares what kind of transcript this is (`meeting_capture.transcript_class`): `named` (speaker tags carry names), `me_them` (your voice and one collapsed other voice — most real transcripts), `unlabelled` (no markers), or `dictation` (`Me:` is the only voice — you talking to nobody: a working session). The class rides every row as `data.attribution.transcript_class` and comes back as `routed["transcript_class"]` for the `meeting` event. Every row also carries `data.attribution` — `{transcript_class, owner_basis, counterparty_basis, span, turn}` — which is the EVIDENCE the review flag is derived from: `owner_basis` is `inferred` when you resolved an owner id (or the kind is self-owed by definition) and `unknown` when a promise names nobody you could resolve; `counterparty_basis` is `inferred` for a resolved id, `unknown` for a name with no record or a promise with nobody on the other end, `none` for a task. `span` is where the row's own words sit in the transcript (token offsets, located from `evidence` — or from `span` if you pass the verbatim quote) and `turn` is the marker that stretch sits under (`Me` / `Them` / a speaker name). What you owe at extraction is the FACTS, not the verdict: the ids or names you resolved, the verbatim `evidence` (and `span` when you have it), `attribution_ambiguous` / `attribution_unknown` when the guard below applies, and an honest `classification_confidence`. Never pass `pending_review` yourself — a caller that does gets the derived value anyway plus a `capture_contract_violation` note on the row.
+
+The backend's audio-source labels are read the same way (cr1#512): `Microphone:` is your voice, like `Me:`, and `System audio:` or `System audio (handle):` is the other side, like `Them:`. A handle that matches exactly one attendee other than you reads as that attendee. When the transcript has no speaker labels that say who was speaking (class `unlabelled`), `routed["notice_lines"]` carries one line that says so, printed beside `receipt_lines`; it is empty otherwise.
 
 **⛔ THE OWNER COMES FROM THE TURN MARKER, THE COUNTERPARTY FROM THE CALENDAR, AND WHEN NEITHER ANSWERS THE ROW ASKS ONE QUESTION (ATTRIB1-B, 2026-09-04).** You still pass the facts; the helper now reads them against the transcript and the roster. The marker decides the owner ONLY when the grammar agrees with it: "I'll send…" under `Me:` is the user's promise (`owner_basis: speaker`); "you'll send…" under `Me:` is the user telling the OTHER party what they will do (owner = the addressee, `inferred`); "I'll send…" under `Them:` on a two-party call is the other attendee's promise (`calendar`); a named speaker's own first-person line is theirs (`speaker`). Disagreement never yields `speaker`. The counterparty resolves down a ladder — the two-party calendar, then a name the turn OPENS with ("Bo, I'll send you…"), then the previous turn's named speaker, then the meeting's resolved people when exactly one is left — and only when every rung fails does the row carry ONE question, `attribution.question = {kind: who_is_you, options: [the other parties], default: the party a heard name spells, or null}`. Pass `meeting_person_ids` (the same ids you stamp on the meeting event in Step 9a1) so the last rung has something to read. **M RULING 2 (night 8, 2026-09-03): `scheduling` and `agenda` rows ask NOTHING.** They book silently with their `counterparty_basis` on the record and the calendar closer finishes them later; the ONE question in the product is the one below, on a `promise`, rendered on the meeting card at most three times. Three fences ride the same pass: the user is NEVER their own counterparty (a self-reference is stripped and the row says `self_counterparty_stripped: true` — EXTRACT1 dragger 4); the user's own item that fails ONLY the consequence test is an ASIDE and goes to `observed` (kept for prep, no question, no row — D11); and every non-commissive speech act the W34 census found — advice ("you should…"), a request nobody accepted ("can you send me…"), a conditional offer the other side declined, speech reported about a third party ("she said she'd…"), and dictation to a tool ("Claude, draft…") — is NAMED on the row as `data.speech_act` (EXTRACT1 dragger 2). It is a LABEL, not a verdict: the row's lane and its `floor_code` are whatever the shipped floor decided, and a row that CLEARS the floor is never labelled — a promise naming a person and a date is a promise whatever nouns it contains. **Quote verbatim, or label the paraphrase (EXTRACT1 dragger 3, D-C):** pass `span` / `evidence` as the transcript's own words; when you genuinely cannot quote, pass `evidence_kind: "paraphrase"` on the item — the fusion guardrail is then honestly `inert` on that row and the label rides it, instead of a false `refused`. A row whose words locate is stamped `evidence_kind: verbatim` for you. The summary carries the tallies: `n_questions`, `n_owner_changed`, `n_self_counterparty`, `n_asides`, `n_paraphrase`, `speech_acts`.
 
@@ -565,20 +578,10 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from commitment_policy_pass import apply_meeting_closes
-counts = apply_meeting_closes(
-    '<WORKSPACE>',
-    meeting_ref='granola:<meeting_id>',            # THIS transcript's own pointer (PROV1) — also the self-evidence fence
-    transcript_ts='<THIS meeting start ts, offset-carrying or UTC, e.g. 2026-07-28T18:00:00-07:00>',
-    transcript_text='<full transcript text for THIS meeting>',
-    attendee_person_ids=['<resolved attendee person_id 1>', ...],
-    source_skill='meeting-notes',
-)
-print(json.dumps(counts))
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_meeting_closes.json", "name": "commitment_policy_pass:apply_meeting_closes"}'
 ```
+
+**The write door, with the transcript in a file (MNSTEPS1, cr1#550).** The pass appends review proposals (and closes, when the switch is on), so it is a writer and runs only through `run_writer`; before this it was an in-shell call to a writer on no door's list, and on a merged seat the step was skipped. A whole transcript does not survive a pasted command line (a long one has already failed with "Argument list too long"), so it travels the way the End of Day's transcript pass carries it: write ONE JSON object into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace), name it as `args_file` above, paste what the form prints and run that. The file holds `{"meeting_ref": "granola:<meeting_id>", "transcript_ts": "<THIS meeting start ts, offset-carrying or UTC, e.g. 2026-07-28T18:00:00-07:00>", "transcript_text": "<full transcript text for THIS meeting>", "attendee_person_ids": ["<resolved attendee person_id 1>", ...], "source_skill": "meeting-notes"}`. The answer's `result` is the counts dict described below. On a seat whose files are local the same call runs in this shell, `apply_meeting_closes("<WORKSPACE>", meeting_ref=..., transcript_ts=..., transcript_text=..., attendee_person_ids=[...], source_skill="meeting-notes")`, and answers the same counts. `ok` false means this step did not run: add `closes` to the closing's skipped steps (Step coverage, below Step 9d), and never call the result complete.
 
 - **`meeting_ref` is PROV1 — the TRANSCRIPT the close was read out of** (`granola:<meeting_id>`, the meeting's native id prefixed with its provider), carried onto every close and proposal the pass writes as `source_ref`; it is also the self-evidence fence (a row captured FROM this transcript is never closed by it). A close is never blocked for want of one — since SPEC PROVMINT1, an empty `meeting_ref` makes the writer mint `session:meeting-notes:<now>` marked `surface_minted`, a pointer at the act rather than at the transcript, and PROV1's bare marker is no longer reachable here. But on this path there is always a meeting, so there is never a reason to omit it: a minted ref on THIS rail is a real transcript pointer thrown away, and the coverage split shows it as exactly that.
 - **`transcript_ts` is the MEETING's own start — the same value Step 8 stamps as the `meeting` event's `ts`. Never the processing clock.** "Now" is after every commitment, so a guessed value fences nothing and reads as if it did. Without it every close is refused by name (`NoTranscriptTs` on `close_refusals`) and only proposals write.
@@ -730,13 +733,20 @@ Step 5f covers UNKNOWN names; this step covers what the meeting revealed about e
 
 After the Step 5b/5e/5f event writes land, run the entity-signal scan over the substrate (it reads the just-appended events — bounded, windowed, capped):
 
+It appends proposals, so it runs through the WRITE door (MNSTEPS1, cr1#550):
+
 ```bash
-python3 -c "
-import sys; sys.path.insert(0, 'shared/scripts')
-from entity_signal_detector import run_entity_signal_scan
-print(run_entity_signal_scan('<workspace_root>', source_skill='meeting-notes'))
-"
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"source_skill": "meeting-notes", "workspace_root": "<WS>"}, "name": "entity_signal_detector:run_entity_signal_scan"}'
 ```
+
+Paste what it prints and run that; on a seat whose files are local the same call runs in this shell, `run_entity_signal_scan("<WORKSPACE>", source_skill="meeting-notes")`. Structured facts (the second rule below) go through the same door:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"facts": [{"category": "<preference|contact|personal>", "fact": "<the atomic fact>", "source_ref": "<the structured field it came from>", "target_id": "<the resolved person or org id>"}], "source_skill": "meeting-notes", "workspace_root": "<WS>"}, "name": "entity_signal_detector:apply_structured_facts"}'
+```
+
+`ok` false on either call means this step did not run: add `entity_signals` to the closing's skipped steps (Step coverage, below Step 9d).
 
 Rules (the D3/S2 tier law — the scan enforces them; do not work around it):
 - **Prose-inferred signals are confirm-ONLY.** "Sounds like Mira got promoted" becomes a `person_update` / `entity_fact` proposal on the brain rail (staff meeting / confirm card) — NEVER a silent field write, NEVER an auto fact. The scan writes the proposals itself; do not also hand-write them.
@@ -749,27 +759,28 @@ Rules (the D3/S2 tier law — the scan enforces them; do not work around it):
 
 After the substrate writes above land (the detector reads what THIS run just appended), run the deal-signal detector scoped to the orgs this meeting touched, and propose through the Living Brain rails:
 
-```python
-# After the Rule 22 preamble + cd "$PLUGIN_ROOT" (same pattern as Step 5e)
-import sys; sys.path.insert(0, "shared/scripts")
-from deal_signal_detector import detect_deal_signals, propose_candidates
-
-# org_ids = the orgs THIS meeting resolved to (the counterparty org(s) —
+```bash
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+# org_ids = the orgs THIS meeting resolved to (the counterparty org(s),
 # including one this run just created for a new prospect; never the CEO's own
 # org). Scoping lives in the detector; do NOT hand-filter its return.
-cands = detect_deal_signals("<WORKSPACE>", org_ids=[<resolved org ids>])
-counts = propose_candidates("<WORKSPACE>", cands)
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"org_ids": ["<resolved org id>"], "workspace_root": "<WS>"}, "name": "deal_signal_detector:detect_deal_signals"}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_deal_candidates.json", "name": "deal_signal_detector:propose_candidates"}'
 ```
+
+Two calls through the layer (MNSTEPS1, cr1#550): detection is a READ (`run_helper`) and its answer's `result` is the candidate list; proposing APPENDS, so it goes through the WRITE door with `{"candidates": <that result list, verbatim>}` written as JSON into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace) and named by `args_file`. An empty list skips the second call. Paste what each form prints and run that; on a seat whose files are local the same calls run in this shell, `detect_deal_signals("<WORKSPACE>", org_ids=[...])` then `propose_candidates("<WORKSPACE>", cands)`. `ok` false on either means this step did not run: add `deal_signals` to the closing's skipped steps (Step coverage, below Step 9d), and render no nudge line.
 
 Rules (all load-bearing):
 
 - **Never `run_deal_signal_job` from here** — its `pack_run` receipt belongs to the Sunday `deal-signals` maintenance job; a meeting fire minting one would falsely satisfy the job's due-ness and its validator.
 - **Propose-and-confirm only.** `propose_candidates` goes through `brain_proposals.propose(tier="confirm")` — cooldown + open-dedup enforced inside; nothing here writes a deal field, creates a thread, or touches the org record. Confirmation happens on the brain confirm card / Staff Meeting → apply-choices → `deal_state`.
 - **Chat surface (plain chat lines immediately AFTER the Step 9 four-section card — the card's RECAP → DECISIONS LOGGED → BRIEF → OPEN ITEMS contract is unchanged; never invent a card section):** for each candidate the detector returned, render its `nudge_line` VERBATIM — one line per candidate, cap NOTHING (Bug #92b: the detector owns inclusion; a surface dropping a candidate on its own judgment is the regression class). Zero candidates → zero lines, no filler. The nudge teaches the typed command; the queued proposal is the durable capture either way (same two-layer contract as Step 5f).
-- Detector import fails / raises → swallow silently, skip the step, note it in `pack_run.data.errors[]` if this fire writes one. Best-effort enrichment; meeting processing never blocks on it.
+- Detector import fails / raises → skip the step, note it in `pack_run.data.errors[]` if this fire writes one, and add `deal_signals` to the closing's skipped steps so the owner is told in one plain line (MNSTEPS1, cr1#550; it used to be swallowed silently). Best-effort enrichment; meeting processing never blocks on it.
 ## Step 5i: Objective Review Harvest (SPEC OBJ1, DRAFT — meeting-bound objectives only)
 
 Some standing objectives are bound to a recurring review meeting (the objectives skill's meeting path). When THIS transcript is such an objective's review forum, harvest the stated status — this is the ONE place transcripts feed objectives (the objectives skill never reads transcripts itself; no parallel scanner).
+
+**Merged seat: this step has no door form yet (MNSTEPS1, cr1#550).** The blocks below run only in a shell whose files are local. On a merged seat do not import them into a shell; skip the step and add `objective_review` to the closing's skipped steps (Step coverage, below Step 9d), so the owner is told it did not run.
 
 1. **Cheap gate first (one call, usually empty):**
 
@@ -1056,6 +1067,8 @@ Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N co
 
 **Step 9b — Invoke `follow-up-ritual` silently.** **Recursion guard (shared invocation contract, P1.3):** this step runs ONLY when meeting-notes is the top-level skill. When meeting-notes was itself invoked FROM follow-up-ritual (its internal logging step), SKIP 9b entirely — follow-up-ritual already owns the draft layer, and re-invoking it loops the pair. Drafts per-attendee follow-up emails as TEXT only (lazy creation per `EMAIL_DRAFT_PROTOCOL.md`). The drafts surface in the next Inbox / Commitments fire where the user picks `N send` / `N draft`. **The drafts do NOT appear in the chat output of this skill, and do NOT appear in the brief docx.** This step matches `orchestrator-past-meetings.md` Phase 4 step 3 — same skill, same output destination.
 
+When the drafts could not be prepared here (follow-up-ritual did not run, or stopped on a refusal), add `follow_ups` to the closing's skipped steps (Step coverage, below Step 9d; MNSTEPS1, cr1#550); a skipped recursion-guard run is not a skip: add `follow_ups` to `ran` (Step coverage), so the closing does not name it.
+
 **Step 9c — Render the 4-section chat card** through `chat_output_renderer.py` — the renderer landed in v2.12.4; there is no markdown fallback. The card has these sections in order:
 
 1. **Header line:** `Processed meeting: [Title] · [date] [time range]`
@@ -1063,6 +1076,7 @@ Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N co
 3. **DECISIONS LOGGED** — list of decisions, each shown with a "added to your decision log" annotation. Each decision listed here ALREADY EXISTS as a `decision` event in `events.jsonl` (written in Step 5b, both modes, at processing time — not on user click), and the section's count comes from the Step 9a3 claim audit. Render exactly `counts["decision"]` entries; a decision whose event failed to write goes in the failed-write line, never in this section.
 4. **BRIEF** — link to the .docx with one-line metadata: `Clean recap — safe to forward`. **v3.13.0+ surface the brief as an H2 heading link at the BOTTOM of the chat turn** via `chat_output_renderer.doc_headline_link(label, artifact_url)`. Format: `## → **[{Meeting title} — Past Meeting Recap]({computer_url})**`. `present_files` is no longer the primary opener — per CONTRACT.md Rule 3 (v3.13.0+) it's demoted to a reveal-in-folder secondary; include the `present_files` call only if the user is likely to want to navigate the filesystem (rare for meeting recaps — default: skip).
 5. **OPEN ITEMS** — interactive list of items requiring M's resolution. Each item is M-only (clarification needed, decision he must make, action with no resolved owner).
+6. **Sources — ONE footer, never per line (owner ruling 2026-10-23, cr1#178).** No row in this card carries a `sources` list: the renderer's per-item `Sources:` line stays empty on every RECAP bullet, DECISIONS LOGGED entry and OPEN ITEMS row, because per-line citations made the one surface the user sees after every call read as clutter. Below the widget, append the canonical `Sources:` section ONCE, the way inbox-triage and the weekly recap do (`_hq/CONVENTIONS_SOURCE_LINKS.md`): one line, one markdown link per source this call actually read (the transcript, the calendar event, each mail thread it cited), separated by commas, in exactly the shape `Sources: [label](url), [label](url)`, then the H2 brief link as the last line of the turn. **The footer and the brief link come out together, from ONE call (cr1#178 round 2):** `chat_output_renderer.recap_closing(sources, label, artifact_url, coverage=...)` composes the coverage sentences, the one `Sources:` line and the H2 brief link, in that order (Step 9d shows the call). Print its answer verbatim as the LAST thing in the turn; nothing follows it: no sentence about where the file was saved, no path, no second mention of the brief (the optional `present_files` card below Step 9d is a tool card, not text, and stays discouraged). The UAT of 2026-10-26 found the link missing in one run and replaced by a bare file path plus a further sentence in another, when the footer and the link were two separate steps. Pass the target exactly as `get_brief_artifact_url` minted it: a bare file path is refused by the composer, and an empty mint (a brief with no link this chat can open) leaves the headline out, as `doc_headline_link` already does, so the `Sources:` line closes. Coverage honesty (what was and was not read: a transcript the connector did not return, a thread it could not open) is its own sentence ABOVE the `Sources:` line, never folded into it; a link says where a fact came from, a coverage line says what the card could not see, and the reader must be able to tell them apart.
 
 **Renderer pre-flight (v2.10.9+):**
 
@@ -1142,17 +1156,18 @@ transport = render_and_persist(data_view=data_view, wrapper="fragment",
 # Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
 
+The card counts as run only when `show_widget` was called with this `transport["html"]`: then add `card` to `ran` (Step coverage, below Step 9d). Anything else (the pre-flight did not print `OK`, the transport or the widget tool refused, the card went out as text) leaves `card` out of `ran`, and the closing names it.
+
 **Step 9c-bis — DOOR 1: the meeting card's questions (ATTRIB1-B D8, 2026-09-04).** After the card, render the questions this call left open — at most 3, lowest confidence first, each a pick-list of the meeting's other parties with the likely answer first and tagged. This is the FIRST door for a counterparty the ladder could not resolve; the needs-your-call queue is no longer where the user first meets it. Rendered ONLY through the transport (every gate runs inside it); nothing when the meeting asks nothing:
 
-```python
-import sys; sys.path.insert(0, "shared/scripts")
-from attribution_doors import render_card_questions
-
-questions = render_card_questions("<WORKSPACE>", "granola:<meeting_id>",
-                                  persist_dir="<WORKSPACE>/_hq/.system/widgets")
-# None when this meeting left no question. Otherwise pass questions["html"] to
+```bash
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"persist_dir": "<WS>/_hq/.system/widgets", "source_ref": "granola:<meeting_id>", "workspace_root": "<WS>"}, "name": "attribution_doors:render_card_questions"}'
+# result null when this meeting left no question. Otherwise pass result["html"] to
 # mcp__visualize__show_widget as widget_code, verbatim, as a SECOND widget under the card.
 ```
+
+It lands the card's page and spends the week's question budget, so it is a writer and runs through the WRITE door (MNSTEPS1, cr1#550). Paste what it prints and run that; relay the envelope's `result.html` exactly as `transport["html"]` is relayed. On a seat whose files are local the same call runs in this shell, `render_card_questions("<WORKSPACE>", "granola:<meeting_id>", persist_dir="<WORKSPACE>/_hq/.system/widgets")`, and answers the same page. `ok` false means the questions were not shown: add `card_questions` to the closing's skipped steps (Step coverage, below Step 9d).
 
 **CARD1 (night 11c, 2026-09-14) — every row says WHO OWES WHOM, and a one-liner is never a question.** Two changes, both in code, both rendered by the builder above; this paragraph narrates them and is not where either lives.
 
@@ -1164,12 +1179,13 @@ A pick arrives through `apply-choices` as `{n: "<commitment id>:<person id>", ac
 
 **TTL1 (SPEC_FLOW1 Lane G, 2026-09-07) — the expiry sentence goes on EVERY card that asks anything, not only on door 1's own widget.** The v5.29.0 attended test read "no two-day sentence rendered" (B3.2) on a meeting card that was asking four questions. The sentence was not missing from the code: `card_header` composes it and the renderer renders it. It was missing from the SCREEN because it lives on door 1's SEPARATE widget, which appears only when this meeting left a `who_is_you` question — so a card whose questions came from anywhere else showed questions with no statement of what leaving them does. A promise about a question belongs to the question CLASS, not to one widget. So the sentence is RENDERED, not narrated: `build_card_questions_view` now carries it as the section's own `footer_note` on every card it builds (fix round 1, reviewer F-8 — a promise instructed in prose is a promise that goes missing the first time a model is in a hurry). **Whenever you post a card that asks the user anything about this call and the builder did NOT build it — the open-items widget, or a card you post beside them — print `attribution_doors.card_expiry_sentence("<WORKSPACE>")` verbatim beneath it.** Never type the number yourself: that helper reads the window THIS workspace actually uses (`question_ttl.class_lifetime_days('capture_card', workspace)`), so a seat configured to five days is never told "two days", which is the F-5 defect in its second spelling.
 
-```python
-import sys; sys.path.insert(0, "shared/scripts")
-from attribution_doors import card_expiry_sentence
-
-print(card_expiry_sentence("<WORKSPACE>"))  # one line, verbatim, under the card
+```bash
+# After the Rule 22 preamble + cd "$PLUGIN_ROOT"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "attribution_doors:card_expiry_sentence"}'
+# result: one line, printed verbatim under the card
 ```
+
+A read, so it runs through the READ door (MNSTEPS1, cr1#550); on a seat whose files are local the same call runs in this shell, `card_expiry_sentence("<WORKSPACE>")`. `ok` false means the line could not be read: add `expiry_line` to the closing's skipped steps (Step coverage, below Step 9d), and never type the sentence yourself.
 
 **Open-items surface — `show_widget` all-batch button widget (v2.10.9+).** Open items are M-only resolutions (a clarification needed, a decision M must make, an action with no resolved owner). They render as a `show_widget`-rendered card with per-item button rows; selections accumulate in widget local state, one "Apply all" button fires the consolidated `apply choices: [...]` payload that `apply-choices` skill catches and dispatches. See `shared/CHAT_ACTION_WIDGET.md` for the full widget spec. Probe results: `PROBE_RESULTS_past-meetings-open-items.md` (workspace root).
 
@@ -1185,17 +1201,42 @@ print(card_expiry_sentence("<WORKSPACE>"))  # one line, verbatim, under the card
 # v3.13.0+: per CONTRACT.md Rule 3 — H2 heading link is the canonical opener.
 # present_files was demoted to reveal-in-folder secondary because Cowork's
 # Windows card-click handler doesn't open .docx reliably (M's 2026-05-20 testing).
-from chat_output_renderer import doc_headline_link
+# cr1#178 round 2: the Sources footer and the H2 link come out of ONE composer.
+from chat_output_renderer import recap_closing
 from brief_path import get_brief_artifact_url
 
 label = f"{meeting_title} — Past Meeting Recap"
 artifact_url = get_brief_artifact_url(absolute_docx_path)  # native computer:// form
-h2_link = doc_headline_link(label, artifact_url)
-# Output the h2_link as the LAST line of the chat turn (after the widget, after Sources, after everything else)
-print(h2_link)
+closing = recap_closing(
+    sources,              # [{"label": ..., "url": ...}] for each source this call actually read
+    label, artifact_url,
+    coverage=coverage,    # the coverage sentences (what was and was not read), or None
+    skipped=skipped,      # MNSTEPS1: the keys of the steps that did not run (Step coverage, below), or []
+    ran=ran,              # cr1#550: the keys of the table's steps that DID run (Step coverage, below)
+)
+# Output the closing verbatim; its last line is the H2 link, which stays the LAST line of
+# the chat turn (after the widget, after Sources, after everything else)
+print(closing)
 ```
 
 `present_files` is optional and discouraged for meeting recaps — if you include it, position it AFTER the H2 link (so the user sees the opener first and the reveal-in-folder card second as a convenience). The H2 `computer://` link is the canonical clickable surface; workspace-relative paths and `file://` URLs render as plain text.
+
+**Step coverage: a step that did not run is named, and the result is never called complete (MNSTEPS1, cr1#550).** For this skill this paragraph replaces the access preamble's rule 6 sentence ("One step could not run here; what is below is complete." or "... is partial."): never print either. On a merged seat that sentence once covered eight skipped steps while promises the call had settled stayed open. Keep one list, `skipped`, through the whole run, and put EVERY step that did not run into it the moment it does not run (an `ok` false answer, a refusal, a step this seat has no form for), whatever the step: use the key below where one names it, and any other short label otherwise (for example `5f` or `claim_audit`):
+
+| Key | The step |
+|---|---|
+| `card` | Step 9c, the meeting card itself, posted through `show_widget` |
+| `closes` | Step 5e-bis, closing promises this call settled |
+| `entity_signals` | Step 5g, the entity-signal scan and the structured facts |
+| `deal_signals` | Step 5h, deal-signal detection and its proposals |
+| `objective_review` | Step 5i, the objective review harvest (no door form yet: always skipped on a merged seat) |
+| `tracker` | Step 5, the tracker view regeneration |
+| `decision_log` | Step 5b, the decision log view regeneration |
+| `follow_ups` | Step 9b, the follow-up drafts |
+| `card_questions` | Step 9c-bis, the card's questions |
+| `expiry_line` | the card's expiry line under the card |
+
+Keep a second list, `ran`: add a key from the table above the moment its step answers `ok` true (in a shell whose files are local: the moment its call returns without raising). A step that ran and found nothing to do, such as no deal change or no question to ask, still ran; so does a step this skill tells you to leave out because there is nothing for it (no decisions to log, no counterparty organisation for Step 5h, the follow-up drafts' recursion guard): add its key too. Add the card per Step 9c. Pass both to `recap_closing(..., skipped=skipped, ran=ran)` in Step 9d. Every key in the table that is not in `ran` is named as not run, so a step you did not confirm is said even when it never reached `skipped` (cr1#550: the card went unnamed in 3 of 3 runs). The composer prints one fixed plain sentence per key above, above the coverage lines, naming what did not happen and what that leaves undone, with no file, script or mechanism in it; any other label prints one general sentence saying part of the processing could not run and the result is partial (once, however many such labels), and the label itself is never printed. It leaves out a coverage line that calls the result complete beside a skipped step, and still prints the Sources line and the brief link. Do not restate those sentences anywhere else in the reply, and never add your own account of the skip: the composer's sentence is the whole of it. With `skipped` empty and every key of the table in `ran`, nothing extra prints, exactly as before.
 
 **Follow-up drafts do NOT appear in the chat output.** Per Step 9b, drafts are staged silently via `follow-up-ritual` and surface in the next Inbox / Commitments fire. The processed-meeting card is for recap + decisions + brief link + open items only. M's reasoning (Apr 29 feedback): the brief is shareable and the chat output should match — internal-only content lives elsewhere.
 

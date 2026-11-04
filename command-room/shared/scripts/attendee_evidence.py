@@ -1461,14 +1461,14 @@ def seed_people_from_participants(
 
     Returns {"created", "split", "n_created", "n_split", "n_already_on_file",
              "n_suppressed", "n_needs_confirm", "n_refused", "refused",
-             "n_rows_retired", "n_link_questions", "n_orgs_created",
-             "batch_id", "receipt_lines", "enabled"}.
+             "n_rows_retired", "n_link_questions", "n_rename_proposed",
+             "n_orgs_created", "batch_id", "receipt_lines", "enabled"}.
     """
     empty = {"created": [], "split": [], "n_created": 0, "n_split": 0,
              "n_already_on_file": 0, "n_suppressed": 0, "n_needs_confirm": 0,
              "n_refused": 0, "refused": [], "n_rows_retired": 0,
-             "n_link_questions": 0, "n_orgs_created": 0,
-             "batch_id": None, "receipt_lines": [], "enabled": True}
+             "n_link_questions": 0, "n_rename_proposed": 0,
+             "n_orgs_created": 0, "batch_id": None, "receipt_lines": [], "enabled": True}
     if origin not in INVITE_ORIGINS:
         raise ValueError(
             f"unknown participant origin {origin!r} (known: {INVITE_ORIGINS})")
@@ -1512,6 +1512,9 @@ def seed_people_from_participants(
     n_already = n_suppressed = n_needs_confirm = 0
     n_linked = 0
     n_orgs = 0
+    # cr1#195 - a split that found the record's history belongs to the person
+    # named raises a rename question instead of minting; counted, not refused.
+    n_rename_proposed = 0
 
     for cand in gated["eligible"]:
         if len(created) + len(split) >= max(0, int(cap)):
@@ -1554,6 +1557,8 @@ def seed_people_from_participants(
                 n_suppressed += 1
             elif status == "already_on_file":
                 n_already += 1
+            elif status == "rename_proposed":
+                n_rename_proposed += 1
             else:
                 refused.append({"name": cand["name"], "email": cand["email"],
                                 "bar": f"split_{status}",
@@ -1620,6 +1625,7 @@ def seed_people_from_participants(
             "n_suppressed": n_suppressed, "n_needs_confirm": n_needs_confirm,
             "n_refused": len(refused), "refused": refused,
             "n_rows_retired": n_rows, "n_link_questions": n_linked,
+            "n_rename_proposed": n_rename_proposed,
             "n_orgs_created": n_orgs,
             "batch_id": bid if (created or split) else None,
             "receipt_lines": participant_receipt_lines(created, split),

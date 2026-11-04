@@ -714,9 +714,27 @@ def compute_intent_delta(*, workspace_root, for_date: str,
     if not cid or not text:
         return {"text": "", "sentences": [], "refs": [], "renders": False}
 
+    # DAYCLOSE1 fix round 1 (REVIEW_DAYCLOSE1 F-2) — A FOLD IS NOT A SHIP.
+    # `end_of_day._CLOSE_TYPES` now carries `commitment_superseded`, so a row
+    # the duplicate check folded away (and, through `merge_row`'s type arm, a
+    # row the `split into [items]` verb broke into pieces) reaches `closures`.
+    # Neither finished anything: the survivor is still open, the split's parts
+    # are all still open. Without this clause the day's stated focus being one
+    # of those rows rendered DELTA_POS — *"it shipped"* — on the screen, over
+    # work nobody did. Reproduced end to end on a real `dedup-apply` batch,
+    # which runs on every seat. Spelled off the day-close's OWN predicate so
+    # there is one rule in the tree about what a fold is; a tree without that
+    # reader has no folds to exclude, so the fallback is honest.
+    try:
+        from end_of_day import merge_row as _merge_row
+    except Exception:  # pragma: no cover — no reader, no folds to exclude
+        def _merge_row(_row):
+            return False
+
     closed_row = next(
         (c for c in (closures or [])
-         if isinstance(c, dict) and str(c.get("commitment_id") or "") == cid),
+         if isinstance(c, dict) and str(c.get("commitment_id") or "") == cid
+         and not _merge_row(c)),
         None)
     if closed_row is not None:
         refs = [r for r in (syn.ref_commitment(cid),

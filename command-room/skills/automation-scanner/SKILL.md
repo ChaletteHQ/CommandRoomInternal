@@ -70,7 +70,7 @@ cfg = get_config(workspace_root, "automation-scanner", DEFAULTS)
 | **Detect** (default) | "automation scan" | scan with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "automation-scanner", DEFAULTS)` BEFORE rendering, then append the first-run footer after the report link. |
 | **Show settings** | "show automation-scanner settings" | render current config in plain English; no scan. |
 | **Tune** | "tune automation-scanner" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)`. |
-| **Reset** | "reset automation-scanner to defaults" | `wipe_skill_config(workspace_root, "automation-scanner")` → next fire is a first-fire again. |
+| **Reset** | "reset automation-scanner to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "automation-scanner", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "automation-scanner")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — after the report link):**
 

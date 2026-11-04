@@ -788,6 +788,12 @@ EOD_TAP_SUBITEMS_LINE = ("That one still has open steps under it, so it "
                          "stays open. Close those first.")
 EOD_TAP_GONE_LINE = ("That item is no longer on the record, so nothing "
                      "changed.")
+#: cr1#166 (owner ruling, 2026-10-26): `apply_later` refuses a push to an
+#: earlier date than the live hold on an item owed to the customer
+#: (`not_sooner`), and writes nothing.
+EOD_TAP_NOT_SOONER_LINE = ("That one is already hidden until a later date, "
+                           "and a push cannot bring it back sooner, so "
+                           "nothing changed.")
 #: EODTAP2 fix round 1 (review N-1): the caller's `source_ref` is a
 #: cross-check, never an override. When it is not the pointer the resolver
 #: answers for that row now, the list moved (or the pointer was composed),
@@ -878,11 +884,12 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
             res = cs.apply_later(workspace_root, cid, when_iso=day,
                                  actor_id=resolved_by,
                                  source_skill="apply-choices",
-                                 surface="end-of-day")
+                                 surface="end-of-day", now_iso=stamp)
             status = res.get("status")
             ack = {"deferred": EOD_TAP_DEFERRED_LINE,
                    "snoozed": EOD_TAP_SNOOZED_LINE,
-                   "not_open": EOD_TAP_ALREADY_CLOSED_LINE}.get(
+                   "not_open": EOD_TAP_ALREADY_CLOSED_LINE,
+                   cs.LATER_NOT_SOONER_STATUS: EOD_TAP_NOT_SOONER_LINE}.get(
                        status, EOD_TAP_ALREADY_CLOSED_LINE)
         else:
             dropped = verb == "drop"
@@ -959,7 +966,8 @@ SENT_KEEP_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
 #: ...of a staged raw chat message: the chat plan's `message_fields`
 #: (`chat_reconcile.CHAT_MESSAGE_FIELDS`, pinned equal).
 CHAT_KEEP_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
-                    "user_name", "text", "thread_ts", "permalink")
+                    "author_id", "user_name", "text", "thread_ts", "permalink",
+                    "counterparty_person_ids", "counterparty_names")
 
 #: One kept-field list per raw input, by staged kind.
 KEEP_FIELDS = {"sent_messages": SENT_KEEP_FIELDS,

@@ -95,7 +95,7 @@ The standard FRP1 verbs map onto the existing standard-terms file — storage un
 | "reset contract-review to defaults" | confirm first (this deletes your captured standard — AF posture, the wizard answers are the review's spine), then remove `standard-terms.md`; reviews fall back to the market-standard defaults below until the wizard runs again. |
 
 These verbs are ALIASES into the Phase 0 wizard — they exist so the whole composer family answers
-the same tune/show/reset vocabulary. The file stays the single source of truth; do NOT create
+the same tune/show/reset vocabulary. The file stays the one home of the setting; do NOT create
 `_hq/data/skill_config/contract-review.json`.
 
 **No-standard fallback (user skipped the wizard):** still assign colors against market-standard defaults — don't punt to "everything's yellow."
@@ -195,6 +195,41 @@ For each red flag, generate 1-2 questions probing the counterparty's underlying 
 - **"How it compares" is a `matrix` (SPEC OUT1 §4), not prose labels.** Pass a section whose `matrix` has `headers_row = ["Your standard", "This contract", "Flag"]`, `headers_col` = the term names (leftmost column), the cell grid = `[your-standard-summary, this-contract-summary, flag-word]` per row, and **`flag_col_idx = 2`** so the renderer shades each Flag cell with the brand tint that matches its word. Use the plain flag WORD in the flag column — `Standard` / `OK` (green tint), `Review` / `Watch` (amber tint), or `Flag` / `Risk` (red tint) — NOT the emoji dots and NOT a raw color name; the shading carries the color, the word carries the meaning for a reader who prints in grayscale or is colorblind. The per-term redline/pattern/history prose analysis stays BELOW the matrix in the Redlines section — the matrix is the scan-in-5-seconds layer, the prose is the depth.
 - Save to `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx`.
 - Append `contract_reviewed` event.
+- **Every follow-up row this review captures is BOUND to a thread before it is
+  appended (BIND1).** A review writes `commitment` rows ("raise the §2(v)
+  amendment on the terms call", "confirm the executed copy names the right
+  entity"), and until BIND1 they shipped with no `primary_thread_id` — 5 of 5
+  of them on the live book — so every grouped surface dropped them into
+  "Everything else". The binding is NOT prose here and it is not this skill's
+  to re-derive: call the one door, which reads the counterparty org this
+  skill already resolved in Phase 2 and resolves the thread through
+  `thread_resolve`:
+
+  ```python
+  import sys
+  # Rule 22 preamble REQUIRED before this runs (see Phase 2).
+  sys.path.insert(0, "shared/scripts")
+  from capture_gate import bind_capture_thread
+  from event_gate import append_event
+
+  for ev in commitment_events:          # one per follow-up row, already gated
+      ev["data"].setdefault("org_id", counterparty_org_id or "")
+      ev["data"].setdefault("org", counterparty_name_from_contract)
+      bind_capture_thread(workspace_root, ev, detector="contract-review")
+  append_event(events_path, commitment_events, holder="contract-review")
+  ```
+
+  `bind_capture_thread` takes the org ID when Phase 2 resolved one and falls
+  back to resolving the org NAME through the canonical resolver; an org with
+  exactly one live thread binds, an org with several leaves the row unbound
+  and puts ONE `thread_binding` question on `needs your call`'s **"review
+  project bindings"** door — the on-demand page the CEO opens by name, never
+  the daily "Needs your eyes" card, which it can never take a slot on
+  (`thread_resolve.propose_binding_row` carries the standing on-demand
+  demotion, and `backfill_bindings.open_binding_questions` is what reads it
+  back onto that page). An unresolvable row ships exactly as it does today.
+  **It never asks the user a question and it never adds a line to this
+  review.**
 - Surface a 1-line summary in chat: "Reviewed the Acme Co MSA. Most of it lines up with your standard — two items to push back on, and one I'd want to negotiate before signing (uncapped indemnification). Suggested language and questions are in the brief."
 - **Then end the chat turn with the H2 doc link (CONTRACT Rule 3 — link LAST in the turn, never inline).** Build it with the canonical helpers — never hand-encode a `computer:///` URL:
 
@@ -221,7 +256,7 @@ NEEDED    Approve the two suggested redlines below.
 KEY TERMS
   Parties:         Your company and Acme Co
   Term:            12 months, auto-renew
-  Fees:            $14,500/mo, net 30
+  Fees:            [amount]/mo, net 30
   IP ownership:    Work product goes to Acme  (worth pushing back — see below)
   Termination:     90 days notice              (worth pushing back — your standard is 30)
   Indemnification: Mutual, uncapped            (push back — see below)

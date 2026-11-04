@@ -70,17 +70,21 @@ DEDUPE_WINDOW_DAYS = 7
 
 
 def _load_entities(workspace_root) -> dict:
-    import json
+    from entities_io import read_entities_json
     p = Path(workspace_root) / "_hq" / "data" / "entities.json"
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except Exception:
         return {}
 
 
 def _workspace_settings(entities: dict) -> dict:
-    ws = entities.get("workspace")
-    return ws if isinstance(ws, dict) else {}
+    """SETTINGSBLOCK1 (cr1#120): the shared `workspace_block` accessor, which
+    merges the top-level and inner `workspace` blocks (inner wins, the same
+    rule the settings writer follows), so a calendar or evening setting the
+    writer put in the inner block is the one Balance reads."""
+    from connector_config import workspace_block
+    return workspace_block(entities=entities) if isinstance(entities, dict) else {}
 
 
 def personal_ties(entities: dict) -> List[dict]:

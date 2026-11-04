@@ -117,7 +117,6 @@ Background maintenance (runs quietly, no chat output):
 Available, not added yet:
   Commitments         — say `add commitments` when you're ready
   Relationship Moves  — say `add relationship moves`
-  Staff Meeting       — say `add staff meeting`
 
 Say `change my schedule` to adjust any of these.
 ```

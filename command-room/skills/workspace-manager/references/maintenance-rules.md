@@ -67,7 +67,7 @@ What the function does, per file over threshold — the semantics this rule has 
 
 **Action (on "end session"):**
 1. Threads resolved less than 30 days ago: leave in Active Threads table as-is. They might reopen and the context is still relevant.
-2. Threads resolved more than 30 days ago: compress in-place to a single-line entry in a `## Thread History` section at the bottom of the brain file. Format: `- [Thread name] — resolved [date], [outcome in ~10 words]` (e.g., "Vendor selection — resolved Apr 2, went with Option B at $45K")
+2. Threads resolved more than 30 days ago: compress in-place to a single-line entry in a `## Thread History` section at the bottom of the brain file. Format: `- [Thread name] — resolved [date], [outcome in ~10 words]` (e.g., "Vendor selection — resolved Apr 2, went with Option B at an amount")
 3. Don't touch threads that are still active, waiting, or in-progress
 4. Thread History section grows indefinitely but each entry is one line, so the cost is minimal
 

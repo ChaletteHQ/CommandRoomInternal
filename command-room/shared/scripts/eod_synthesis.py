@@ -344,7 +344,10 @@ def ref_ledger(field: str) -> str:
 # included. On 2026-09-07 the one thing End of Day said M had let go was the
 # undo chat's own drop. The old field is untouched and still read by the
 # movement line, where "the book lost one" is true whoever dropped it.
-LEDGER_COUNT_FIELDS = ("n_closed", "n_opened", "n_dropped", "n_dropped_by_you")
+# DAYCLOSE1 3.1 — `n_merged` and its machine half join the readable fields,
+# so the merge sentence cites the number it came from like every other.
+LEDGER_COUNT_FIELDS = ("n_closed", "n_opened", "n_dropped", "n_dropped_by_you",
+                       "n_merged", "n_merged_by_machine")
 LEDGER_BOOK_FIELDS = ("book_at_open", "book_now")
 
 
@@ -557,9 +560,15 @@ def machine_door_lines(ledger: Optional[dict],
     Read-only, never raises: an unreadable door vocabulary means the machine
     simply has no sentence tonight, not an evening that fails to close.
     """
-    rows = (ledger or {}).get("dropped_by_machine_doors") \
-        if isinstance(ledger, dict) else None
-    if not isinstance(rows, list) or not rows:
+    src = ledger if isinstance(ledger, dict) else {}
+    # DAYCLOSE1 3.1 — the merge's door rides the SAME list walk. The change
+    # feed has no merge category, so `compute_machine_acts` cannot narrate
+    # one; this reader is the one place a door the block did not narrate
+    # gets its sentence, which makes it the right and only home for the
+    # merge line. One act, one line, one narrator, one `undo`.
+    rows = (list(src.get("dropped_by_machine_doors") or [])
+            + list(src.get("merged_by_machine_doors") or []))
+    if not rows:
         return []
     try:
         from end_of_day import MACHINE_ACT_LINES
@@ -580,7 +589,45 @@ def machine_door_lines(ledger: Optional[dict],
             continue
         out.append(MACHINE_ACT_LINES[door].format(
             n=n, items=("item" if n == 1 else "items"),
-            them=("it" if n == 1 else "them")))
+            them=("it" if n == 1 else "them"),
+            ones=("one" if n == 1 else "ones")))
+    return out
+
+
+def machine_door_refs(ledger: Optional[dict],
+                      machine_acts: Optional[dict] = None) -> list:
+    """The ledger FIELD each `machine_door_lines` sentence counted from, in
+    the same order (DAYCLOSE1 3.1).
+
+    A drop line is supported by `ledger.n_dropped_by_machine` and a merge
+    line by `ledger.n_merged_by_machine`; before this lane one ref served
+    every line because there was only one kind of line. Walked from the same
+    two lists in the same order rather than re-derived, so a sentence can
+    never end up citing the field it did not come from.
+    """
+    src = ledger if isinstance(ledger, dict) else {}
+    try:
+        from end_of_day import MACHINE_ACT_LINES
+    except Exception:  # pragma: no cover
+        return []
+    already = {r.get("category") for r in ((machine_acts or {}).get("rows")
+                                           or []) if isinstance(r, dict)}
+    out = []
+    for rows, field in ((src.get("dropped_by_machine_doors") or [],
+                         "n_dropped_by_machine"),
+                        (src.get("merged_by_machine_doors") or [],
+                         "n_merged_by_machine")):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            door = row.get("category")
+            try:
+                n = int(row.get("n") or 0)
+            except (TypeError, ValueError):  # pragma: no cover
+                continue
+            if n <= 0 or door in already or door not in MACHINE_ACT_LINES:
+                continue
+            out.append(ref_ledger(field))
     return out
 
 
@@ -589,7 +636,8 @@ def compute_day_went(*, ledger: Optional[dict],
                      meetings: Optional[Iterable[dict]] = None,
                      decisions: Optional[Iterable[dict]] = None,
                      machine_acts: Optional[dict] = None,
-                     name_cap: int = 3) -> dict:
+                     name_cap: int = 3,
+                     render_ledger_figures: bool = True) -> dict:
     """TIER 1 — one grounded paragraph about what moved today.
 
     EDITORIAL, NOT EXHAUSTIVE. It names at most `name_cap` closes, because the
@@ -601,14 +649,64 @@ def compute_day_went(*, ledger: Optional[dict],
     handed — the rows supply NAMES and their own refs, never a count. That
     asymmetry is the fence: two counts of one thing is how the same day reads
     "closed 4" on one surface and "0 closed" on another.
+
+    `render_ledger_figures` (SPEC DAYCLOSE1 3.2, M's ruling 7 of 2026-09-18)
+    — ONE WINDOW, ONE COUNT, ON ONE SCREEN. The day-close screen already
+    opens with the plate cut's own head, *"N opened · N closed · N
+    slipped"*, measured over the day floor with those rows listed directly
+    beneath it. The two ledger sentences here — the closed count and the
+    opened count — answer the same two questions over a DIFFERENT population
+    (the ledger counts the book; the plate counts the plate), so the reader
+    was handed two answers and no way to tell which to believe. Measured on
+    the 2026-09-17 scratch copy: 2026-09-16 rendered *"12 opened · 54
+    closed"* above *"1 promise closed today … 10 new promises landed on the
+    book"*, and 2026-09-14 rendered *"20 opened · 14 closed"* above *"4
+    promises closed today"* — the *"11 closed" / "2 promises closed"* and
+    *"14 opened" / "10 new promises"* pairs the v5.31.0 attended test Part E
+    recorded, reproduced.
+
+    M ruled the DAY FLOOR survives — the count a reader can check against
+    the rows above it — and the ledger's own figure keeps its key in the
+    audit row and leaves the screen. So with `render_ledger_figures=False`
+    the two sentences are still COMPOSED, still grounded, still fenced, and
+    returned under `ledger_figures` — the receipt reads them there, exactly
+    as CUT-PLATE's `render_unmoved=False` keeps the arc read's unmoved
+    sentences as data — but they are not joined into `text` / `sentences` /
+    `refs`, so nothing prints them. `build_synthesis` passes False, because
+    it IS the screen; a direct caller keeps the pre-DAYCLOSE1 default and is
+    byte-identical.
+
+    THE HONEST EMPTY GOES WITH THEM, and that is not a loss. *"Nothing
+    closed today that I can see"* is the ledger's zero wearing words; the
+    plate cut prints *"0 closed"* and *"Nothing moved on your plate today"*
+    over the same window, which is the same truth, countable, one block
+    higher. The gate that sentence carries (fix round 2, R-1) is untouched
+    and still runs for every caller that renders it.
     """
     nums = ledger_numbers(ledger)
     rows = [c for c in (closures or []) if isinstance(c, dict)]
+    # DAYCLOSE1 3.1 — and never a MERGE either. `_CLOSE_TYPES` now
+    # carries `commitment_superseded`, so a folded duplicate reaches these
+    # rows; the count above already excludes it (`ledger.n_merged` is its
+    # own bucket), and a name in the closed sentence that the count does not
+    # include would be the two-counts defect wearing a title. Spelled off
+    # the reader's own predicate so there is one rule about what a fold is.
+    try:
+        from end_of_day import merge_row as _merge_row
+    except Exception:  # pragma: no cover — no reader, no folds to exclude
+        def _merge_row(_row):
+            return False
     named = [c for c in rows
              if str(c.get("title") or "").strip()
-             and str(c.get("resolution") or "done").lower() != "dropped"]
+             and str(c.get("resolution") or "done").lower() != "dropped"
+             and not _merge_row(c)]
 
     out: List[dict] = []
+    # DAYCLOSE1 3.2 — the ledger's own two figures are composed into THIS
+    # list, and joined into `out` only when the caller renders them. Kept
+    # separate rather than filtered out afterwards: a filter over composed
+    # prose is a second place to get the rule wrong.
+    figures: List[dict] = []
 
     n_closed = nums["n_closed"]
     if isinstance(n_closed, int) and n_closed > 0:
@@ -621,12 +719,13 @@ def compute_day_went(*, ledger: Optional[dict],
                 refs.append(r)
         if picks:
             names = _english_list([str(c["title"]).strip() for c in picks])
-            out.append(sentence(T1_CLOSED_NAMED.format(n=n_closed, noun=noun,
-                                                       names=names),
-                                refs, tier=TIER_HAPPENED, kind="closed"))
+            figures.append(sentence(T1_CLOSED_NAMED.format(
+                n=n_closed, noun=noun, names=names),
+                refs, tier=TIER_HAPPENED, kind="closed"))
         else:
-            out.append(sentence(T1_CLOSED.format(n=n_closed, noun=noun),
-                                refs, tier=TIER_HAPPENED, kind="closed"))
+            figures.append(sentence(T1_CLOSED.format(n=n_closed, noun=noun),
+                                    refs, tier=TIER_HAPPENED,
+                                    kind="closed"))
     elif isinstance(n_closed, int) and n_closed == 0 \
             and not _machine_closes(machine_acts):
         # The honest empty. It is a claim about today and it is supported by
@@ -647,15 +746,21 @@ def compute_day_went(*, ledger: Optional[dict],
         # silence-door rest is not a close and an evening that rested two
         # things and closed nothing may still say so. The block carries the
         # day's closes; this line stands down rather than contradicting it.
-        out.append(sentence(T1_NOTHING, [ref_ledger("n_closed")],
-                            tier=TIER_HAPPENED, kind="closed"))
+        figures.append(sentence(T1_NOTHING, [ref_ledger("n_closed")],
+                                tier=TIER_HAPPENED, kind="closed"))
 
     n_opened = nums["n_opened"]
     if isinstance(n_opened, int) and n_opened > 0:
-        out.append(sentence(
+        figures.append(sentence(
             T1_OPENED.format(n=n_opened,
                              noun=_plural(n_opened, "promise", "promises")),
             [ref_ledger("n_opened")], tier=TIER_HAPPENED, kind="opened"))
+
+    if render_ledger_figures:
+        # The pre-DAYCLOSE1 order, byte for byte: closed, then opened, then
+        # everything below. A caller that renders them sees exactly what it
+        # saw before this lane.
+        out.extend(figures)
 
     # ATTRIB2 — the customer's own drops. A ledger written before this lane
     # carries no such field, and then the old count is the honest best answer.
@@ -675,9 +780,22 @@ def compute_day_went(*, ledger: Optional[dict],
     # ...and the machine's share, by door (F-3). Its own `kind`, so a reader
     # counting "what the customer let go" can never pick these up, and its
     # own ref onto the field it came from.
+    # DAYCLOSE1 3.1 — each line cites the field IT counted from, and a merge
+    # line carries `kind="merged_by_machine"` of its own, so a reader
+    # counting what the machine DROPPED can no more pick up a fold than a
+    # reader counting closes can. The refs are walked in step with the lines
+    # by a counter rather than by `enumerate`, so the loop header stays the
+    # exact sentence `run_surfacefix1_test`'s M18b mutation removes.
+    _door_refs = machine_door_refs(ledger, machine_acts)
+    _door_i = 0
     for line in machine_door_lines(ledger, machine_acts):
-        out.append(sentence(line, [ref_ledger("n_dropped_by_machine")],
-                            tier=TIER_HAPPENED, kind="dropped_by_machine"))
+        _ref = (_door_refs[_door_i] if _door_i < len(_door_refs)
+                else ref_ledger("n_dropped_by_machine"))
+        _door_i += 1
+        _kind = ("merged_by_machine"
+                 if _ref == ref_ledger("n_merged_by_machine")
+                 else "dropped_by_machine")
+        out.append(sentence(line, [_ref], tier=TIER_HAPPENED, kind=_kind))
 
     mrows = [m for m in (meetings or []) if isinstance(m, dict)]
     if mrows:
@@ -703,6 +821,15 @@ def compute_day_went(*, ledger: Optional[dict],
 
     result = compose(out)
     assert_no_score(result["text"], where="day_went")
+    # DAYCLOSE1 3.2 — the ledger figures ride the return whether or not they
+    # rendered, so the receipt can carry them and a reviewer can read what
+    # the ledger said without re-deriving it. Fenced like every other
+    # sentence this composer emits.
+    kept_figures = drop_unreferenced(figures)["kept"]
+    assert_no_score(" ".join(f["text"] for f in kept_figures),
+                    where="day_went_figures")
+    result["ledger_figures"] = kept_figures
+    result["ledger_figures_rendered"] = bool(render_ledger_figures)
     return result
 
 
@@ -1611,13 +1738,25 @@ def build_synthesis(*, ledger: Optional[dict],
                     machine_acts: Optional[dict] = None,
                     workspace_root=None,
                     now_iso: Optional[str] = None,
-                    render_unmoved: bool = True) -> dict:
+                    render_unmoved: bool = True,
+                    render_ledger_figures: bool = False) -> dict:
     """Every synthesis block, composed once, fenced once.
 
     `render_unmoved` (CUT-PLATE) threads through to `compute_what_it_meant`:
     the day-close driver passes False so the "did not move" sentences stay
     on the block as data and off the screen; every other caller keeps the
     default.
+
+    `render_ledger_figures` (SPEC DAYCLOSE1 3.2, M's ruling 7 of 2026-09-18)
+    threads through to `compute_day_went`, and DEFAULTS TO FALSE here while
+    the composer itself still defaults to True. The difference is deliberate
+    and it is the difference between a composer and a screen: this function
+    assembles the day-close SCREEN, and M ruled the screen carries ONE closed
+    figure and ONE opened figure — the plate cut's, over the day floor, with
+    the rows under it. The ledger's own pair stays composed and rides the
+    block under `ledger_figures` for the receipt. A unit caller reaching for
+    `compute_day_went` directly is asking that composer what it says, not
+    what the evening shows, and is unchanged.
 
     The visibility fence (§3.6) is applied HERE, to every row set that can
     reach a sentence, rather than inside each composer — one call site is one
@@ -1650,7 +1789,8 @@ def build_synthesis(*, ledger: Optional[dict],
                                 closures=fenced_closures["rows"],
                                 meetings=meetings,
                                 decisions=fenced_decisions["rows"],
-                                machine_acts=machine_acts)
+                                machine_acts=machine_acts,
+                                render_ledger_figures=render_ledger_figures)
     what_it_meant = compute_what_it_meant(rows=fenced_arc_rows["rows"],
                                           arcs=arcs,
                                           open_rows=fenced_open_rows["rows"],
@@ -1705,7 +1845,17 @@ def synthesis_text(synthesis: Optional[dict]) -> str:
 def synthesis_refs(synthesis: Optional[dict]) -> List[str]:
     """The whole join behind the prose, deduped, in render order. This is what
     the persisted brief carries so a sentence can be checked against the row it
-    came from."""
+    came from.
+
+    DAYCLOSE1 3.2 — AND THE LEDGER'S OWN FIGURE KEEPS ITS KEY HERE. M's
+    ruling 7 is that the day-close shows one closed count and the ledger's
+    pair "keeps its key in the audit row and leaves the screen"; this IS the
+    audit row. Without this walk `ledger:n_closed` and `ledger:n_opened`
+    would have gone off the receipt along with the sentences, which is a
+    number leaving the record rather than leaving the screen — a different
+    and worse thing. Appended after the rendered refs, in the same order the
+    figures were composed in.
+    """
     src = synthesis or {}
     out: List[str] = []
     for block in SYNTHESIS_BLOCKS:
@@ -1715,6 +1865,16 @@ def synthesis_refs(synthesis: Optional[dict]) -> List[str]:
         for r in body.get("refs") or []:
             if r not in out:
                 out.append(r)
+    for block in SYNTHESIS_BLOCKS:
+        body = src.get(block)
+        if not isinstance(body, dict):
+            continue
+        for figure in body.get("ledger_figures") or []:
+            if not isinstance(figure, dict):
+                continue
+            for r in figure.get("refs") or []:
+                if r not in out:
+                    out.append(r)
     return out
 
 
@@ -1733,6 +1893,7 @@ __all__ = [
     "visible_rows",
     "compute_day_went",
     "machine_door_lines",
+    "machine_door_refs",
     "ARC_KINDS", "ARC_OBJECTIVE", "ARC_DAY_INTENT", "ARC_WORKSTREAM",
     "ARC_DEAL", "ARC_ORG", "ARC_COMMITMENT", "declared_arc", "arc_ref",
     "join_to_arcs", "ref_org", "ref_window",

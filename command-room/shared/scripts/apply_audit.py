@@ -69,6 +69,10 @@ _OK_STATUSES = frozenset({
     # written, row parked. A write that happened; the page-set stops
     # offering the row on THIS page (it re-renders under PARKED next fire).
     "disowned",
+    # DISOWNUNDO1 (cr1#162): `commitment_state.undo_disown` reversed a
+    # `not mine` — the owner handed back, or, for an item that had no owner,
+    # its question withdrawn. One commitment_updated landed either way.
+    "owner_restored", "question_cleared",
     # WATCHGATE: a weak proposal answered by a bulk gesture is PARKED on
     # watch rather than closed. That is a write that landed and a row that
     # has been dealt with — the page-set should stop offering it, exactly as
@@ -131,6 +135,9 @@ _OK_STATUSES = frozenset({
     # `turn_on_held` having gone through held_tier.enable_held_routing, which
     # is a routing write and a receipt.
     "captured", "enabled",
+    # cr1#195: `people_writer.confirm_person_rename` passes through
+    # `people_writer.rename_person`'s receipt, one person_renamed row landed.
+    "renamed",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -142,6 +149,9 @@ _NOOP_STATUSES = frozenset({
     # PLATE1 P3: a second `not mine` on an already-disowned row writes
     # nothing — an honest no-op, never a second question.
     "already_disowned",
+    # DISOWNUNDO1 (cr1#162): an undo on a row that was never disowned (or
+    # whose disown was already reversed) writes nothing — an honest no-op.
+    "not_disowned",
     # ARCHFIX: thread_archive.archive_thread on an already-archived thread
     # writes nothing — no second status_change. Without this row the honest
     # no-op maps to the unknown-status default ("error"), inflating n_errors
@@ -214,6 +224,10 @@ _NOOP_STATUSES = frozenset({
     # a queue), so it is a no-op and not a refusal. `ignored` is the same
     # shape for an empty id — nothing to object to, nothing written.
     "already_captured", "ignored",
+    # WOADD1 (cr1#520, `commitments_helpers.apply_row_action`'s `add an
+    # item`): the same person already owes the same thing on an open item,
+    # so a second send of the typed line writes nothing.
+    "already_listed",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({
@@ -234,6 +248,13 @@ _REFUSED_STATUSES = frozenset({
     # not dealt with: an error outcome, never ok, and the page-set keeps
     # showing it.
     "missing_when",
+    # cr1#166 (owner ruling, 2026-10-26): a `push to [date]` whose date is
+    # EARLIER than the live hold on an item owed to the user. The ledger keeps
+    # every unexpired mute live, so an earlier mute would bring nothing back
+    # sooner; `commitment_state.apply_later` refuses it and writes nothing.
+    # The item did not move the way the user asked, so it is an error outcome,
+    # never ok.
+    "not_sooner",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the
@@ -302,6 +323,25 @@ _REFUSED_STATUSES = frozenset({
     "declined", "not_confirmed", "touched_since_confirm", "not_a_done",
     "not_reopened", "reopened_only", "not_closed", "not_parked",
     "digest_members_missing", "partial", "open",
+    # cr1#195 (`people_writer.confirm_person_rename`): three refusals of
+    # the rename question's confirm, each writing nothing and leaving the row
+    # open:
+    #   not_on_file    the record the row names is gone.
+    #   unreadable     the roster could not be read.
+    #   shell_changed  the empty record the row would fold in has gathered
+    #     history, been archived or been renamed since the question was asked.
+    "not_on_file", "unreadable", "shell_changed",
+    # cr1#510 (`eod_helpers.close_from_eod`, the End of Day row tap, named in
+    # the dispatch table as `eod_helpers:close_from_eod`): five refusals, each
+    # answered before or instead of any write, so the row is still owed:
+    #   not_handled    the verb is not one this list applies.
+    #   no_actor       no person behind the tap; a close would credit nobody.
+    #   stale_row      the caller's pointer is not the row's pointer now; the
+    #     list moved since it was read.
+    #   unknown_id     the id no longer resolves to a commitment.
+    #   open_subitems  the item still has open steps under it, so it stays
+    #     open.
+    "not_handled", "no_actor", "stale_row", "unknown_id", "open_subitems",
 })
 
 

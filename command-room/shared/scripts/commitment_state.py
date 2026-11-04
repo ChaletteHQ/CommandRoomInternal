@@ -446,6 +446,47 @@ def _later_when(when_iso: str) -> tuple:
     return calendar_day, utc_stamp
 
 
+# cr1#166 (owner ruling, 2026-10-26): a Later… with an EARLIER date than the
+# live hold is refused, never written. The mute ledger keeps every unexpired
+# mute live, so a second, earlier mute brings nothing back sooner; writing it
+# and answering `snoozed` told the user it worked when it did not. The status
+# is its own word (classified as a refusal in `apply_audit`), and the ack is
+# the one plain sentence the surface relays.
+LATER_NOT_SOONER_STATUS = "not_sooner"
+LATER_NOT_SOONER_ACK = (
+    "That item is already hidden until a later date, and Later… cannot "
+    "bring it back sooner, so nothing moved.")
+
+
+def _live_hold_until(events_path, target_id: str, now_iso: str):
+    """The latest expiry among the LIVE mutes on `target_id` at `now_iso`,
+    as a UTC datetime, or None when nothing live hides it. Read through the
+    ledger's own liveness rule (`mute_ledger.live_mutes`: unexpired and
+    uncleared), so this writer and every surface that hides the row agree on
+    what is live."""
+    from cru_match import load_events_defensively
+    from mute_ledger import live_mutes
+    from pathlib import Path as _Path
+    p = _Path(events_path)
+    if not p.exists():
+        return None
+    events, _skipped = load_events_defensively(p)
+    latest = None
+    for row in live_mutes(events, now_iso):
+        if str(row.get("target_id") or "") != str(target_id):
+            continue
+        try:
+            exp = datetime.datetime.fromisoformat(
+                str(row.get("expires") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=datetime.timezone.utc)
+        if latest is None or exp > latest:
+            latest = exp
+    return latest
+
+
 def apply_later(
     workspace_root,
     commitment_id,
@@ -456,6 +497,7 @@ def apply_later(
     reason: str = "pushed to a later date",
     surface: str = "",
     brain_batch_id: Optional[str] = None,
+    now_iso: Optional[str] = None,
 ) -> dict:
     """THE `push to [date]` writer (APPLYAUDIT1 part 3).
 
@@ -491,6 +533,13 @@ def apply_later(
       {"status": "not_open", ...}  the commitment is closed. Deferring a
         tombstone moves nothing, so nothing is written (the same refusal
         `reassign_commitment` gives, and already never-optimistic).
+      {"status": "not_sooner", ...}  snooze leg only (cr1#166): the item is
+        already hidden by a live mute that runs PAST the date asked for.
+        Every unexpired mute keeps the row hidden, so a second, earlier mute
+        would bring nothing back sooner while the receipt said it had.
+        Nothing is written; the result carries `held_until` (the live hold's
+        expiry, UTC) and `ack`, the plain sentence the surface relays.
+        Classified as a refusal, so the receipt never books it ok.
 
     `when_iso` is REQUIRED and must already be RESOLVED — this writer does no
     date parsing, deliberately: `parse_later_when` owns the deterministic
@@ -519,6 +568,14 @@ def apply_later(
     verb whose whole content is a date the user chose, and wrong for a
     weak-evidence hold, which is why the two stay separate writers. Do not
     assume the ledger's guard applies here.
+
+    THE DIRECTION IS RULED (owner ruling on cr1#166, 2026-10-26). A repeated
+    Later with a LATER date extends the hold, as above. A Later with an
+    EARLIER date than the live hold is refused (`not_sooner`) and writes
+    nothing: the ledger keeps every unexpired mute live, so pulling a row
+    back sooner would need a ledger change, and pull-in is not wanted now.
+    The live hold is read inside the writer lock, at `now_iso` (the caller's
+    clock when it passes one, else this module's `_now_iso`).
 
     Same guard set as its sibling lifecycle writers: id normalization over
     legacy spellings, loud CommitmentIdError on no match, scan→append inside
@@ -561,6 +618,20 @@ def apply_later(
                 "data": data,
             }
         else:
+            # cr1#166: an earlier date than the live hold is refused here,
+            # inside the lock and before anything is written.
+            held = _live_hold_until(events_path, cid, now_iso or _now_iso())
+            asked = datetime.datetime.strptime(
+                utc_stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+            if held is not None and asked < held:
+                return {"status": LATER_NOT_SOONER_STATUS,
+                        "commitment_id": cid, "route": route,
+                        "when": utc_stamp,
+                        "held_until": held.astimezone(
+                            datetime.timezone.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"),
+                        "ack": LATER_NOT_SOONER_ACK}
             data = {
                 "target_id": cid,
                 "snooze_until": utc_stamp,
@@ -691,6 +762,19 @@ STATUS_HINT_PARKED = "parked"
 # A caller that KNOWS better may say so: `reason_origin` in `extra_data`
 # wins, which is how `exit_doors`' silence park stamps `product` on words it
 # composed itself.
+#
+# SWITCH2 5.4 (M's ruling 11, 2026-09-18) — AND THE READERS NOW AGREE. The
+# sentence above ("anything else is unstamped, and an unstamped reason is
+# machine text") was true of the chat gate and NOT of the plate's row line,
+# which carried a legacy arm reading a missing stamp as the customer's words.
+# That arm is gone: `plate_view._customer_typed` is the whole test on every
+# surface, and this stamp is the only thing that makes a reason the
+# customer's anywhere.
+#
+# Rows written BEFORE this stamp existed carry no origin and therefore read
+# as machine text. There is no permanent legacy arm for them and no product
+# write that backfills them: a one-shot stamp pass over the historical rows
+# is an OPERATOR act on M's word, and this lane did not build it.
 REASON_ORIGIN_KEY = "reason_origin"
 REASON_ORIGIN_CUSTOMER = "customer"
 REASON_ORIGIN_PRODUCT = "product"
@@ -1189,6 +1273,17 @@ def reconcile_is_stale(sent_reconcile_cursor: Optional[str], now_iso: str,
     cur = _parse_date(sent_reconcile_cursor)
     now = _parse_date(now_iso)
     if cur is None or now is None:
+        return True
+    if (cur - now).days > 1:
+        # CURSORCLAMP1 (cr1#149): a cursor dated well AFTER now (a bad hand
+        # edit, a corrupted write, a clock a month out) used to read as fresh
+        # forever, since the gap is negative. It says nothing true about when
+        # reconciliation last ran, so it reads as stale: the brief softens its
+        # claims rather than telling the owner nothing needs redoing. ONE day
+        # of lead is tolerated on purpose: the cursor is a UTC instant while
+        # the drivers hand this reader the workspace's LOCAL date, so an
+        # evening reconcile on a US workspace writes a cursor dated tomorrow
+        # in UTC minutes after it ran (review of cr1#149).
         return True
     return (now - cur).days > days
 
@@ -3007,14 +3102,15 @@ def close_commitment(
         credited to M, who had asked for no such thing.
       title_candidates: how many open items the caller's name match hit. Only
         read when `resolved_by_match="title"`; anything but 1 refuses.
-      title_query: the user's actual WORDS, when the caller has them. This is
-        the difference between a chokepoint and an honor system: given the
-        query, this writer re-derives the candidate set itself through
+      title_query: the user's actual WORDS. This is the difference between a
+        chokepoint and an honor system: given the query, this writer
+        re-derives the candidate set itself through
         `resolve_commitment_by_title` and refuses on what IT finds, so a caller
         that asserts "one match" while its own first-hit logic looked past a
         second one is refused anyway. That caller-asserted count is exactly the
-        shape of the prose contract that failed on 2026-08-22. Optional, and
-        strictly stricter: omit it and only `title_candidates` is consulted.
+        shape of the prose contract that failed on 2026-08-22. REQUIRED with
+        `title_candidates` since TITLEQUERY1 (cr1#154): a count with no words
+        to re-check it against is refused, never consulted on its own.
       source_ref: PROV1 — the pointer back to the thing that justified this
         close, canonicalized through Layer A4 before append
         (`gmail:<message-id>`, `granola:<meeting-id>`, either Slack spelling,
@@ -3201,6 +3297,20 @@ def close_commitment(
                     candidates=[], query="")
             derived = (resolve_commitment_by_title(index, title_query)
                        if title_query else None)
+            # TITLEQUERY1 (cr1#154): a candidate count with NO query is a
+            # count nobody here can re-check. Re-running the name search is
+            # the whole safety of this lane; a caller that passes
+            # title_candidates alone would skip it and hand the door back to
+            # the honour system. Only the user's words make a count checkable.
+            if derived is None and title_candidates is not None:
+                raise AmbiguousTargetError(
+                    f"refusing to close {cid!r}: resolved_by_match='title' "
+                    f"with title_candidates={title_candidates!r} but no "
+                    "title_query. A count without the user's words cannot be "
+                    "re-checked here — pass title_query (the words the match "
+                    "was made from) so the search runs again, or do not claim "
+                    "a title resolution.",
+                    candidates=[], query="")
             candidates = list(derived["candidates"]) if derived else []
             n_hits = (len(candidates) if derived is not None
                       else title_candidates)
@@ -3216,10 +3326,10 @@ def close_commitment(
                 raise AmbiguousTargetError(
                     f"refusing to close {cid!r}{named}: resolved_by_match="
                     "'title' but the caller reported no candidate count. Pass "
-                    "title_candidates (and title_query when you have the "
-                    "user's words) from resolve_commitment_by_title — an "
-                    "unmeasured name match is the first-hit close by another "
-                    "name.",
+                    "title_candidates AND title_query (the user's words) from "
+                    "resolve_commitment_by_title — an unmeasured name match is "
+                    "the first-hit close by another name, and a count without "
+                    "the words cannot be re-checked (cr1#154).",
                     candidates=candidates, query=title_query or "")
             if int(n_hits) != 1:
                 raise AmbiguousTargetError(
@@ -4125,8 +4235,9 @@ def disown_commitment(
     Appends ONE `commitment_updated` carrying `data.owner_cleared: true`,
     `data.question: "whose_is_this"`, `data.question_by: "user_verb"`. The
     projector folds all three (owner_id -> "", question + provenance ride the
-    projected item). `previous_owner_id` rides the event so `undo` can hand
-    the item back through `confirm_commitment_owner`.
+    projected item). `previous_owner_id` rides the event so `undo_disown` can
+    hand the item back (through `confirm_commitment_owner`), or withdraw the
+    question when there was no owner to hand it to (DISOWNUNDO1, cr1#162).
 
     Guards: id normalization over legacy spellings, loud CommitmentIdError
     on no match, refuses a CLOSED item ({"status": "not_open"}), an already
@@ -4178,6 +4289,88 @@ def disown_commitment(
         append_event(events_path, [ev], holder=source_skill)
     return {"status": "disowned", "commitment_id": cid,
             "previous_owner_id": prev_owner or "", "event": ev}
+
+
+def undo_disown(
+    workspace_root,
+    commitment_id,
+    *,
+    undone_by: str,
+    source_skill: str,
+) -> dict:
+    """DISOWNUNDO1 (cr1#162) — THE undo of `not mine`. The disown parks the
+    item with a `whose_is_this` question and records `previous_owner_id`.
+    Undo used to be "confirm_commitment_owner back to previous_owner_id",
+    which hands the item back when there was an owner and does NOTHING when
+    there was none (`confirm_commitment_owner` refuses an empty owner): the
+    marker stayed, the item stayed parked, and the reply said it was undone.
+
+    Two honest answers now:
+      * the item had an owner  -> that owner is restored through
+        `confirm_commitment_owner` (the question clears with it):
+        `{"status": "owner_restored", "owner_id": ..., "reversed": True}`;
+      * the item had no owner  -> ONE `commitment_updated` with
+        `question_cleared: true` withdraws the question; the owner stays
+        empty, the item returns to the surface it came from:
+        `{"status": "question_cleared", "reversed": True}`.
+    An item that is not currently disowned answers
+    `{"status": "not_disowned", "reversed": False}` and writes nothing, so
+    the undo reply can say so instead of claiming a reversal.
+
+    One limit, inherited from the projector's one-slot-per-item fold: a
+    Keep-both the disown overwrote is not restored by this undo (the item's
+    `pending_review` reads as the raw capture's again).
+    """
+    from pathlib import Path as _Path
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"undo_disown:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        cid = normalize_commitment_id(commitment_id, index)
+        target = index["by_id"][cid]
+        if _currently_closed(index, cid, target.get("seq")):
+            return {"status": "not_open", "commitment_id": cid, "reversed": False}
+        from cru_match import load_events_defensively, load_open_commitments
+        current = None
+        for ev in load_open_commitments(events_path):
+            if _commitment_id_of(ev) == cid:
+                current = ev
+                break
+        cur_d = (current.get("data") or {}) if current else {}
+        if not (cur_d.get("question") == QUESTION_WHOSE_IS_THIS
+                and cur_d.get("question_by") == QUESTION_BY_USER_VERB):
+            return {"status": "not_disowned", "commitment_id": cid, "reversed": False}
+        prev_owner = ""
+        events, _skipped = load_events_defensively(events_path, since_ts=None)
+        for ev in events:
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if (ev.get("type") == "commitment_updated" and d.get("owner_cleared")
+                    and str(d.get("commitment_id") or "") == cid):
+                prev_owner = str(d.get("previous_owner_id") or "")
+        if prev_owner:
+            out = confirm_commitment_owner(
+                workspace_root, cid, owner_id=prev_owner, confirmed_by=undone_by,
+                source_skill=source_skill, reason="undo of not mine: handed back to its owner")
+            return {"status": "owner_restored", "commitment_id": cid, "owner_id": prev_owner,
+                    "reversed": True, "event": out.get("event")}
+        data: dict = {
+            "commitment_id": cid,
+            "question_cleared": True,
+            "question_was": QUESTION_WHOSE_IS_THIS,
+            "undone_by": undone_by,
+            "reason": "undo of not mine: the item had no owner, so the question is withdrawn",
+        }
+        if isinstance(target.get("seq"), int):
+            data["commitment_seq"] = target["seq"]
+        ev = {
+            "type": "commitment_updated",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+        append_event(events_path, [ev], holder=source_skill)
+    return {"status": "question_cleared", "commitment_id": cid, "reversed": True, "event": ev}
 
 
 def confirm_commitment_owner(
@@ -5462,6 +5655,90 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     return {"ok": True, "status": "created", "commitment": ev}
 
 
+#: The provenance an owed-to-me item typed in the Waiting On chat carries
+#: (WOADD1, cr1#520): the user scheme, like My Plate's, so no reader takes a
+#: hand-typed line for a connector read. Each item's pointer is this prefix
+#: plus its own id, because the append path refuses a capture whose
+#: `(source_ref, title)` is already on disk (CAPTUREONCE1): one shared
+#: pointer would silently drop the same thing owed by another person, or
+#: owed again after the first was closed.
+USER_SOURCE_REF_WAITING_ON = "user:waiting_on"
+
+
+def create_owed_to_me_item(workspace_root, *, title, owner_id, user_id,
+                           source_skill="commitments") -> dict:
+    """WOADD1 (cr1#520): the owner types "Contact A owes me X" and it is
+    saved as something owed TO them.
+
+    The shape is the Waiting On one: a `commitment` of kind `promise` whose
+    owner is the OTHER person (they act next) and whose counterparty and
+    requester are the owner (`user_id`), open, with no due date. It is not
+    `create_personal_task`, which is an owner-owes task.
+
+    The same admission block every capture writer shares
+    (`capture_gate.gate_commitment_data`), and then the home rule, exactly as
+    `book_scheduling_row` asks it: a row the home rule would hold is written
+    held (`commitment_observed`), never dropped and never opened past the
+    rule. The answer says which (`held`). Refuses, writing nothing, a blank
+    title, a missing owner or user, and an owner who is the user (a person
+    cannot owe themself)."""
+    from pathlib import Path as _Path
+    from capture_gate import (classify_capture, gate_commitment_data,
+                              intake_kwargs, observed_from_commitment_event,
+                              workspace_capture_context)
+    from event_gate import append_event, new_commitment_id
+
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("an owed-to-me item needs a non-empty title")
+    owner_id = str(owner_id or "").strip()
+    user_id = str(user_id or "").strip()
+    if not owner_id or not user_id:
+        raise ValueError("an owed-to-me item needs the person who owes it "
+                         "and the user it is owed to")
+    if owner_id == user_id:
+        raise ValueError("an owed-to-me item is owed by someone else; the "
+                         "user's own item is a My Plate task")
+    cid = new_commitment_id()
+    data = {
+        "id": cid,
+        "title": title,
+        "kind": "promise",
+        "owner_id": owner_id,
+        "counterparty_id": user_id,
+        "requester_id": user_id,
+        "status": "open",
+        "no_due": True,
+        "source": "waiting_on_capture",
+        "origin": "user_stated",
+        "source_ref": f"{USER_SOURCE_REF_WAITING_ON}:{cid}",
+    }
+    gate_commitment_data(data, subject="owed-to-me item")
+    ev = {"type": "commitment", "source_skill": source_skill,
+          "person_ids": [owner_id, user_id], "data": data}
+    ctx = workspace_capture_context(workspace_root)
+    verdict = classify_capture(
+        data,
+        mode=ctx["mode"],
+        user_id=ctx["user_id"],
+        user_names=ctx["user_names"],
+        team_ids=ctx["team_ids"],
+        known_ids=ctx["known_ids"],
+        **intake_kwargs(ctx),
+    )
+    if verdict.get("tier") == "observed":
+        ev = observed_from_commitment_event(
+            ev, reason=verdict.get("reason") or "")
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    stamped = append_event(events_path, [ev], holder=source_skill)
+    if not stamped:
+        # Never answer "saved" for a row the append path did not write.
+        raise RuntimeError("the owed-to-me item was not written")
+    written = stamped[0]
+    return {"ok": True, "status": "created", "commitment": written,
+            "held": written.get("type") == "commitment_observed"}
+
+
 def book_scheduling_row(workspace_root, *, title, owner_id,
                         counterparty_id=None, counterparty_name=None,
                         due=None, source_ref=None, source_event_seq=None,
@@ -5660,6 +5937,7 @@ __all__ = [
     "reopen_commitment",
     "promote_task_to_commitment",
     "create_personal_task",
+    "create_owed_to_me_item",
     "stale_tasks",
     "commitment_kind",
     "load_open_commitments",

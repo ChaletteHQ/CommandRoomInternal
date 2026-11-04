@@ -242,9 +242,10 @@ def _soundex_tokens(s: str) -> list[str]:
 
 
 def _load_entities(workspace_root: Path) -> dict[str, Any]:
+    from entities_io import read_entities_json
     path = workspace_root / "_hq" / "data" / "entities.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return read_entities_json(path)
     except FileNotFoundError:
         raise  # fresh workspace — not corruption; pre-FS-15 behavior kept
     except (json.JSONDecodeError, OSError) as e:

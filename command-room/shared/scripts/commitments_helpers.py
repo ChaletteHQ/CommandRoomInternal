@@ -14,15 +14,16 @@ precondition). This module is the Waiting On chain's half of both.
 
 THE RULE, BY DOOR.
 
-  * Every function here EXCEPT the two writers below is a READ: it is on
+  * Every function here EXCEPT the three writers below is a READ: it is on
     `RUN_HELPER_ALLOWLIST`, it passes the seven-frame transitive write-scan,
     and it writes nothing - not through a gated writer either. A row it needs
     written is COMPOSED and handed back (`rows`, `pending_rows`, the receipt
     `row`) for the caller's `plan append_jsonl`; a page is handed back as
     `html` + `page_rel` for the caller's `plan write`.
-  * `apply_cru_writes` and `run_waiting_on_surface` are the two WRITERS. They
-    are on `RUN_WRITER_ALLOWLIST` and never on the helper list (guard G74),
-    so the door asks who is writing before either runs.
+  * `apply_cru_writes`, `run_waiting_on_surface` and `apply_row_action` are
+    the three WRITERS. They are on `RUN_WRITER_ALLOWLIST` and never on the
+    helper list (guard G74), so the door asks who is writing before any of
+    them runs.
     `apply_cru_writes` performs exactly the closes and per-person receipts a
     CRU plan names, through the single closure path (`commitment_state.
     close_commitment` / `mark_partial_received`), in the plan's order, with
@@ -32,6 +33,12 @@ THE RULE, BY DOOR.
     plate's display numbers under the writer lock - a write no read door may
     reach - and because the driver's render and its receipt are one call by
     design (FB-7).
+    `apply_row_action` (WOTAP1, cr1#513) lands one `mine`, `theirs to
+    [name]` or `drop` on a Waiting On row through the `commitment_state`
+    writer the confirm section names for it, after resolving the typed
+    number and the typed name beside the data. Its `add an item` action
+    (WOADD1, cr1#520) saves a typed `[name] owes me [thing]` as a new item
+    owed to the owner, through `commitment_state.create_owed_to_me_item`.
 
 COMPOSING IS NOT HAND-ROLLING. Every row is built by the module that owns its
 shape - `cru_match.build_pending_review_event`, `inbox_helpers.plan_fire_receipt`
@@ -522,6 +529,385 @@ def apply_cru_writes(workspace_root: str, *,
                             "status": "refused", "reason": "unknown_op"})
     return {"n_resolved": n_resolved, "n_partial": n_partial,
             "n_refused": n_refused, "results": results}
+
+
+# ---------------------------------------------------------------------------
+# WOTAP1 (cr1#513) - the Waiting On row actions, typed or clicked
+# ---------------------------------------------------------------------------
+
+#: The confirm row's verbs this writer lands, spelled as the Waiting On view
+#: offers them (`surface_drivers._REVIEW_VERBS`). `snooze 3d` is a mute, not
+#: an ownership change, and stays with its own handler. "Add an item: X owes
+#: me Y" is cr1#520 (split out by the owner's ruling on cr1#513).
+WO_ROW_ACTIONS = ("mine", "theirs to [name]", "drop")
+
+#: The one sentence each outcome posts back. Typed once, validated with the
+#: fire families on; words only, never an id. `{name}` is the person's saved
+#: name (or the name as typed, on a refusal), `{n}` the typed number and
+#: `{options}` the candidates' saved names.
+WO_ROW_MINE_LINE = "Marked that one as yours. It moves to your own list."
+WO_ROW_THEIRS_LINE = "Moved that one to {name}. It is theirs now."
+WO_ROW_DROPPED_LINE = "Dropped that one from Waiting On. It is closed."
+WO_ROW_ALREADY_CLOSED_LINE = ("That item is already closed, so nothing was "
+                              "changed.")
+#: The stale-row refusal, copied from `eod_helpers.close_from_eod` (review
+#: N-1 there): the caller's row id is a cross-check, never an override. When
+#: it is not the item the typed number belongs to, the row the owner saw is
+#: not the row the number names now (or the id was composed), so nothing is
+#: written.
+WO_ROW_STALE_ROW_LINE = ("That row is not the one I have under that number, "
+                         "so nothing was changed. Ask for Waiting On again "
+                         "and use the new list.")
+#: ...and its no-actor refusal (review N-2 there): a write with no person
+#: behind it would credit nobody, so nothing is written.
+WO_ROW_NO_ACTOR_LINE = ("I could not tell who sent that, so nothing was "
+                        "changed. Send it again.")
+WO_ROW_NOT_HANDLED_LINE = ("That answer is not one I can apply to a Waiting "
+                           "On row, so nothing was changed. Say mine, "
+                           "theirs to and a name, or drop.")
+WO_ROW_NO_SUCH_ROW_LINE = ("I don't have a row numbered {n}, so nothing was "
+                           "changed. Ask for Waiting On again to see the "
+                           "current numbers.")
+WO_ROW_NEEDS_ROW_LINE = ("Which row is that for? Say its number from the "
+                         "list. Nothing was changed.")
+WO_ROW_NEEDS_NAME_LINE = ("Whose is it? Say the name after theirs to. "
+                          "Nothing was changed.")
+WO_ROW_UNKNOWN_NAME_LINE = ("I could not find {name} among your people, so "
+                            "nothing was changed. Add them as a person "
+                            "first, or say their name as it is on file.")
+WO_ROW_AMBIGUOUS_NAME_LINE = ("Did you mean {options}? I will not guess "
+                              "who {name} is, so nothing was changed yet.")
+WO_ROW_UNKNOWN_PERSON_LINE = ("That person is not on file, so nothing was "
+                              "changed. Say the name again.")
+WO_ROW_GONE_LINE = ("That item is no longer on the record, so nothing was "
+                    "changed. Ask for Waiting On again to see what is "
+                    "still open.")
+WO_ROW_SUBITEMS_LINE = ("That one still has open steps under it, so it was "
+                        "not dropped. Close those first.")
+#: A `drop` handed a pointer the closer refuses as malformed (PROV1: garbage
+#: in `source_ref` is worse than none), so nothing is written.
+WO_ROW_BAD_POINTER_LINE = ("I could not read where that row came from, so "
+                           "nothing was changed. Ask for Waiting On again "
+                           "and tap the row on the new list.")
+
+#: WOADD1 (cr1#520): "add an item: [name] owes me [thing]" (or just "[name]
+#: owes me [thing]") typed in the Waiting On chat. Not a row verb: it makes a
+#: new item, so it takes a name and a thing and no row. It rides this same
+#: door writer, so the write list is unchanged.
+WO_ADD_ACTION = "add an item"
+#: The receipt says what the next Waiting On run does with it, and no more:
+#: the item counts under Owed to you at once, and it comes up as a row to
+#: chase on the chase rule every owed item follows (`chase_candidates`: an
+#: undated item once it has waited its chase window).
+WO_ADD_SAVED_LINE = ("Saved: {name} owes you {title}. It counts under Owed "
+                     "to you on Waiting On, and comes up to chase once it "
+                     "has waited a while.")
+WO_ADD_HELD_LINE = ("Saved: {name} owes you {title}. It is kept on file for "
+                    "a check first, so it may not count on Waiting On yet.")
+#: The honest no-op, like the already-closed one: the same person already
+#: owes the same thing on an open item, so a second send adds nothing.
+WO_ADD_ALREADY_LINE = ("{name} already owes you {title} on Waiting On, so "
+                       "nothing new was added.")
+WO_ADD_NEEDS_NAME_LINE = ("Who owes you that? Say who owes it by name. "
+                          "Nothing was saved.")
+WO_ADD_NEEDS_TITLE_LINE = ("What is it they owe? Say what they owe you after "
+                           "owes me. Nothing was saved.")
+WO_ADD_SELF_LINE = ("That name is you, so it is not something owed to you, "
+                    "and nothing was saved. Add it to My Plate instead.")
+#: The stale-row refusal's cousin: an add makes a NEW item, so a row number
+#: or a row id handed to it means the line was read as a row action. The
+#: number or id is never used to pick an item, and nothing is written.
+WO_ADD_ROW_GIVEN_LINE = ("A new item has no row number yet, so nothing was "
+                         "saved. Say it without a row number.")
+
+#: How many candidates an ambiguous name lists: the closer's own cap for its
+#: one ambiguity row (`commitment_state.MAX_AMBIGUOUS_CANDIDATES`, DD-3).
+_WO_MAX_CANDIDATES = 3
+
+
+def _wo_refusal(status: str, ack: str, **extra) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": False, "status": status}
+    out.update(extra)
+    out["ack"] = ack
+    return out
+
+
+def _wo_options(names: List[str]) -> str:
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " or " + names[-1]
+
+
+def _wo_people(workspace_root: str) -> Dict[str, str]:
+    """`{person_id: saved name}` for every person on file."""
+    from entities_io import entities_collection
+
+    path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out: Dict[str, str] = {}
+    for person in entities_collection(data, "people"):
+        pid = str((person or {}).get("id") or "")
+        if pid:
+            out[pid] = str((person or {}).get("canonical_name") or pid)
+    return out
+
+
+def _wo_resolve_owner(workspace_root: str, owner_name: Any,
+                      owner_id: Any) -> Dict[str, Any]:
+    """The person `theirs to [name]` routes to, or a refusal. Never a guess.
+
+    A picked `owner_id` (the answer to an ambiguity question) must be a
+    person on file. A typed `owner_name` goes through the standard entity path
+    (`entity_resolve.resolve_all`): it lands only when exactly ONE person
+    answers to it EXACTLY (an alias or a saved name, confidence 1.0). Two
+    exact matches, or only near matches (a typo, a sound-alike, a first
+    name shared with a fuller record), come back as `ambiguous_name` with
+    the candidates, so the owner is asked which one; nothing is written.
+    """
+    if isinstance(owner_id, str) and owner_id.strip():
+        pid = owner_id.strip()
+        people = _wo_people(workspace_root)
+        if pid not in people:
+            return _wo_refusal("unknown_person", WO_ROW_UNKNOWN_PERSON_LINE,
+                               owner_id=pid)
+        return {"ok": True, "person_id": pid, "name": people[pid]}
+    typed = owner_name.strip() if isinstance(owner_name, str) else ""
+    if not typed:
+        return _wo_refusal("needs_name", WO_ROW_NEEDS_NAME_LINE)
+    from entity_resolve import resolve_all
+
+    found: List[Any] = []
+    seen = set()
+    for r in resolve_all(workspace_root, typed):
+        if r.entity_type != "person" or not r.entity_id \
+                or r.entity_id in seen:
+            continue
+        seen.add(r.entity_id)
+        found.append(r)
+    if not found:
+        return _wo_refusal("unknown_name",
+                           WO_ROW_UNKNOWN_NAME_LINE.format(name=typed),
+                           name=typed)
+    if len(found) == 1 and found[0].confidence >= 1.0:
+        hit = found[0]
+        return {"ok": True, "person_id": hit.entity_id,
+                "name": hit.record.get("canonical_name") or typed}
+    cands = sorted(({"person_id": r.entity_id,
+                     "name": r.record.get("canonical_name") or r.entity_id}
+                    for r in found[:_WO_MAX_CANDIDATES]),
+                   key=lambda c: c["name"])
+    return _wo_refusal(
+        "ambiguous_name",
+        WO_ROW_AMBIGUOUS_NAME_LINE.format(
+            name=typed, options=_wo_options([c["name"] for c in cands])),
+        name=typed, candidates=cands)
+
+
+def _wo_title_key(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _wo_add_item(workspace_root: str, *, actor: str, title: Any,
+                 owner_name: Any, owner_id: Any, n: Any,
+                 commitment_id: Any) -> Dict[str, Any]:
+    """`add an item: [name] owes me [thing]` (WOADD1, cr1#520), reached only
+    through `apply_row_action` once its actor check has passed.
+
+    No row: a typed number or a row id handed to an add is refused
+    (`row_given`) and never used to pick anything. The person goes through
+    the same resolver `theirs to [name]` uses (`_wo_resolve_owner`): it
+    lands only on exactly one exact match, and an ambiguous or near-miss name
+    comes back `ambiguous_name` with the candidates, so the chat asks which
+    one and calls again with the picked `owner_id`. Never a guess. A name
+    that is the owner's own is refused (`owner_is_you`). The same person
+    already owing the same thing on an open item is an honest no-op
+    (`already_listed`). Otherwise ONE write through
+    `commitment_state.create_owed_to_me_item`, which gives the item its own
+    `user:waiting_on:<id>` pointer (a caller's `source_ref` is a row's, and
+    an add has no row, so it is not passed on).
+    """
+    if (n is not None and str(n).strip()) or (
+            commitment_id is not None and str(commitment_id).strip()):
+        return _wo_refusal("row_given", WO_ADD_ROW_GIVEN_LINE, n=n,
+                           commitment_id=commitment_id)
+    thing = " ".join(str(title or "").split()) if isinstance(
+        title, str) else ""
+    if not thing:
+        return _wo_refusal("needs_title", WO_ADD_NEEDS_TITLE_LINE)
+    picked = isinstance(owner_id, str) and bool(owner_id.strip())
+    typed = isinstance(owner_name, str) and bool(owner_name.strip())
+    if not picked and not typed:
+        return _wo_refusal("needs_name", WO_ADD_NEEDS_NAME_LINE)
+    owner = _wo_resolve_owner(workspace_root, owner_name, owner_id)
+    if not owner.get("ok"):
+        return owner
+    if owner["person_id"] == actor:
+        return _wo_refusal("owner_is_you", WO_ADD_SELF_LINE,
+                           owner_id=owner["person_id"])
+
+    from commitment_parties import counterparty_ids
+    from cru_match import load_open_commitments
+
+    # The same person owing the same thing TO THE OWNER: the owner must be
+    # the item's counterparty too, so the same thing owed to somebody else
+    # is never taken for this one.
+    key = _wo_title_key(thing)
+    for ev in load_open_commitments(_events_path(workspace_root),
+                                    workspace_root=workspace_root):
+        d = ev.get("data") or {}
+        if str(d.get("owner_id") or "") == owner["person_id"] \
+                and actor in {str(c) for c in counterparty_ids(d)} \
+                and _wo_title_key(d.get("title")) == key:
+            return {"ok": True, "status": "already_listed",
+                    "commitment_id": str(d.get("id") or ""),
+                    "owner_id": owner["person_id"],
+                    "ack": WO_ADD_ALREADY_LINE.format(
+                        name=owner["name"],
+                        title=" ".join(str(d.get("title")).split()))}
+
+    import commitment_state as cs
+
+    res = cs.create_owed_to_me_item(
+        workspace_root, title=thing, owner_id=owner["person_id"],
+        user_id=actor, source_skill=SOURCE_SKILL)
+    out = dict(res or {})
+    written = out.get("commitment") or {}
+    out["commitment_id"] = str((written.get("data") or {}).get("id") or "")
+    out["owner_id"] = owner["person_id"]
+    line = WO_ADD_HELD_LINE if out.get("held") else WO_ADD_SAVED_LINE
+    out["ack"] = line.format(name=owner["name"], title=thing)
+    return out
+
+
+def apply_row_action(workspace_root: str, *, action: str = "",
+                     n: Any = None, commitment_id: Optional[str] = None,
+                     resolved_by: str = "",
+                     owner_name: Optional[str] = None,
+                     owner_id: Optional[str] = None,
+                     source_ref: Optional[str] = None,
+                     title: Optional[str] = None) -> Dict[str, Any]:
+    """A WRITER (on `RUN_WRITER_ALLOWLIST` only) - `mine`, `theirs to
+    [name]` or `drop` on a Waiting On row, typed (`28 mine`) or clicked,
+    landed beside the data (WOTAP1, cr1#513). Also `add an item` (WOADD1,
+    cr1#520): a new item owed TO the owner, see `_wo_add_item`.
+
+    The row: a typed `n` resolves through PLATENUM1's map
+    (`plate_view.resolve_display_number`, the number that belongs to the
+    item, never a position); a click hands the row's `data.id` as
+    `commitment_id`. Given both, the id is a cross-check and never an
+    override, exactly as `eod_helpers.close_from_eod` treats its pointer: an
+    id that is not the item the number belongs to answers `stale_row` and
+    nothing is written. A number no row ever carried answers `no_such_row`.
+
+    The verb, through the one `commitment_state` writer the Waiting On
+    confirm section names for it, with that section's arguments:
+
+      * `mine`: `confirm_commitment_owner` (owner and confirmer are
+        `resolved_by`);
+      * `theirs to [name]`: the person named in `owner_name`, resolved
+        beside the data (`_wo_resolve_owner`: an ambiguous or near-miss name is answered
+        with its candidates, never guessed; a picked `owner_id` is checked
+        against the people on file), then `reassign_commitment(...,
+        confirmed=True)`;
+      * `drop`: `close_commitment(resolution="dropped",
+        user_confirmed=True)`, the one closure path, stamped with how the
+        row was picked (`number` or `id`). `source_ref` is the clicked
+        row's own pointer when the widget embeds one, passed through as
+        PROV1's caller ref (a malformed one answers `bad_source_ref` and
+        nothing is written); with none, the closer mints the act's own
+        `session:` pointer and marks it as minted. `mine` and `theirs to
+        [name]` are not closes and take no pointer.
+
+    `resolved_by` is the owner's person id, from the chain's setup; a
+    missing or blank one is refused before anything reads or writes. The
+    answer is the writer's own dict plus `ok` and `ack`, the one sentence to
+    post. Two domain refusals of the writers are answered, not raised (the
+    id no longer resolves; open sub-items): anything else raises, which the
+    door reports.
+    """
+    verb = str(action or "").strip().lower()
+    if verb not in WO_ROW_ACTIONS and verb != WO_ADD_ACTION:
+        return _wo_refusal("not_handled", WO_ROW_NOT_HANDLED_LINE,
+                           action=action, n=n)
+    if not isinstance(resolved_by, str) or not resolved_by.strip():
+        return _wo_refusal("no_actor", WO_ROW_NO_ACTOR_LINE, action=action,
+                           n=n)
+    actor = resolved_by.strip()
+    if verb == WO_ADD_ACTION:
+        return _wo_add_item(workspace_root, actor=actor, title=title,
+                            owner_name=owner_name, owner_id=owner_id, n=n,
+                            commitment_id=commitment_id)
+
+    given = str(commitment_id).strip() if commitment_id is not None else ""
+    if n is not None and str(n).strip():
+        from plate_view import resolve_display_number
+
+        cid = resolve_display_number(workspace_root, n)
+        if cid is None:
+            return _wo_refusal(
+                "no_such_row",
+                WO_ROW_NO_SUCH_ROW_LINE.format(
+                    n=str(n).strip().lstrip("#").strip()), n=n)
+        if given and given != str(cid):
+            return _wo_refusal("stale_row", WO_ROW_STALE_ROW_LINE,
+                               commitment_id=given, n=n)
+        picked_by = "number"
+    elif given:
+        cid = given
+        picked_by = "id"
+    else:
+        return _wo_refusal("needs_row", WO_ROW_NEEDS_ROW_LINE)
+
+    owner: Dict[str, Any] = {}
+    if verb == "theirs to [name]":
+        owner = _wo_resolve_owner(workspace_root, owner_name, owner_id)
+        if not owner.get("ok"):
+            owner.update({"commitment_id": cid, "n": n})
+            return owner
+
+    import commitment_state as cs
+
+    try:
+        if verb == "mine":
+            res = cs.confirm_commitment_owner(
+                workspace_root, cid, owner_id=actor, confirmed_by=actor,
+                source_skill=SOURCE_SKILL)
+            ack = WO_ROW_MINE_LINE
+        elif verb == "theirs to [name]":
+            res = cs.reassign_commitment(
+                workspace_root, cid, new_owner_id=owner["person_id"],
+                new_owner_name=owner["name"], reassigned_by=actor,
+                reason="confirmed: theirs", source_skill=SOURCE_SKILL,
+                confirmed=True)
+            ack = WO_ROW_THEIRS_LINE.format(name=owner["name"])
+        else:
+            res = cs.close_commitment(
+                workspace_root, cid, resolved_by=actor,
+                evidence="dropped from Waiting On",
+                source_skill=SOURCE_SKILL, resolution="dropped",
+                user_confirmed=True, resolved_by_match=picked_by,
+                source_ref=source_ref or None)
+            ack = WO_ROW_DROPPED_LINE
+    except cs.OpenSubitemsError:
+        return _wo_refusal("open_subitems", WO_ROW_SUBITEMS_LINE,
+                           commitment_id=cid, n=n)
+    except cs.CommitmentIdError:
+        return _wo_refusal("unknown_id", WO_ROW_GONE_LINE,
+                           commitment_id=cid, n=n)
+    except cs.SourceRefError:
+        return _wo_refusal("bad_source_ref", WO_ROW_BAD_POINTER_LINE,
+                           commitment_id=cid, n=n)
+    out = dict(res or {})
+    status = out.get("status")
+    if status in ("not_open", "already_resolved"):
+        ack = WO_ROW_ALREADY_CLOSED_LINE
+    out["ok"] = status in ("confirmed", "reassigned", "closed", "not_open",
+                           "already_resolved")
+    if owner:
+        out["owner_id"] = owner["person_id"]
+    out["n"] = n
+    out["ack"] = ack
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1230,6 +1616,15 @@ def render_waiting_on_text(workspace_root: str, *,
             lines.append("")
             lines.append(title)
             lines.extend(block)
+    if groups:
+        # cr1#456: the list ends with ONE sentence on how to act, the typed
+        # verbs this chat takes (cr1#513), right above the saved-page line.
+        from surface_text import act_line
+
+        act = act_line(SURFACE)
+        if act and keep(act):
+            lines.append("")
+            lines.append(act)
     closing = str(saved_line or "").strip() or WIDGET_ABSENT_LINE
     if keep(closing):
         lines.append("")
@@ -1284,7 +1679,9 @@ def plan_commitments_receipt(workspace_root: str, *,
 
 __all__ = [
     "CONFIG_DEFAULTS", "SOURCE_SKILL", "TASK_ID", "WIDGET_ABSENT_LINE",
-    "WRITE_OPS", "apply_cru_writes", "chase_candidates", "cru_window",
+    "WO_ADD_ACTION",
+    "WO_ROW_ACTIONS", "WRITE_OPS", "apply_cru_writes", "apply_row_action",
+    "chase_candidates", "cru_window",
     "filter_chase_rows",
     "fold_gate", "lateness", "meeting_today_rows", "plan_calendar_cru", "plan_commitments_receipt",
     "plan_sent_cru", "render_waiting_on_page", "render_waiting_on_text",

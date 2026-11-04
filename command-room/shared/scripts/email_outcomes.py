@@ -112,7 +112,8 @@ def load_pending_tracked_sends(
                 {
                     "sent_event_seq": seq,
                     "draft_ref": d.get("draft_event_seq"),
-                    "recipient": d.get("recipient"),
+                    # RECIPIENTALIAS1 (cr1#129): `to`-keyed rows read too
+                    "recipient": _recipient_of(d),
                     "gmail_thread_id": d.get("gmail_thread_id") or prov.get("thread_native_id"),
                     "gmail_message_id": d.get("gmail_message_id") or prov.get("native_id"),
                     "sent_ts": sent_ts,
@@ -127,6 +128,17 @@ def load_pending_tracked_sends(
 # ---------------------------------------------------------------------------
 # Pure classifier — no I/O, no clock (now is passed in)
 # ---------------------------------------------------------------------------
+
+def _recipient_of(data: dict) -> Optional[str]:
+    """`recipient`, or the `to` alias some hand-written rows carried
+    (RECIPIENTALIAS1, cr1#129), through the one reader in the adapter layer."""
+    try:
+        from connector_adapters.provenance import recipient_from_data
+    except Exception:  # noqa: BLE001 - a bare import of this module still reads
+        v = (data or {}).get("recipient") or (data or {}).get("to")
+        return v if isinstance(v, str) and v.strip() else None
+    return recipient_from_data(data)
+
 
 def _addr_is_user(sender: str, user_addrs: Sequence[str]) -> bool:
     s = (sender or "").lower()

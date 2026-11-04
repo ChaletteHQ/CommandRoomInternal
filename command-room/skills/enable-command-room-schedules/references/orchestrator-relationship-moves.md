@@ -18,21 +18,21 @@ Post exactly the line below, as the ENTIRE chat turn, then STOP.
 
 Build it from `schedule_config.retirement_line("relationship-moves")` rather than retyping it — the registry is what keeps this wording identical to the one the update bridge and `change-schedule` use, and three hand-typed copies of a sentence are three chances to describe the same retirement three ways.
 
-> *Your Relationship Moves chat is off the schedule — its Sunday outreach picks already ride the Staff Meeting as 'This week's moves', so a separate Sunday chat said the same thing a day early. Nothing is lost — say `who should I reach out to` any time and the same picks run on the spot, and the Staff Meeting still carries them every week. It comes back when you want the Sunday outreach picks as their own chat again.*
+> *Your Relationship Moves chat is off the schedule — its Sunday outreach picks are the same ones you get by asking, so a separate Sunday chat was one more chat saying what is one ask away. Nothing is lost — say `who should I reach out to` any time and the same picks run on the spot. It comes back when you want the Sunday outreach picks as their own chat again.*
 
 Do NOT offer to re-register it, do NOT propose an alternative schedule, and do NOT compute the picks, read a calendar, or draft an outreach "just this once." **Do not offer a `pause` either** — that is the ELIMINATED class's line, and here it would ask the customer to perform a tap the update has already taken.
 
-## Where the work went — the Staff Meeting, and on demand
+## Where the work went: on demand
 
-This is what separates a readiness retirement from an elimination: the surface was not replaced, it was taken off the clock, and its picks already had a second home.
+This is what separates a readiness retirement from an elimination: the surface was not replaced, it was taken off the clock. (The picks no longer ride the Staff Meeting: they left that surface in WRAPSTAFF1, 2026-09-17, and the scheduled Staff Meeting is itself retired, cr1#176. The ask below is the door.)
 
 | The Sunday chat did | Now |
 |---|---|
 | Ranked who to reach out to this week from dormancy, cadence and open threads, with the outreach pre-drafted | `skills/relationship-moves/SKILL.md`, unchanged and fully live. Say `who should I reach out to` and the identical computation runs on the spot, under the same propose-and-confirm rule — it still never sends without you. |
-| Posted the picks on Sunday evening for Monday | The Staff Meeting's "This week's moves" section (LB1 R4) carries the same picks every Monday, Wednesday and Friday, beside the confirm queue — which is why a separate Sunday chat said the same thing a day early. |
+| Posted the picks on Sunday evening for Monday | Nothing on a schedule. The same picks are one ask away, any day. |
 | Held the Sunday 5 PM slot | Nothing. The slot is empty again. |
 
-Dormancy baselines, cadence days and the people records are untouched by this retirement — they are the customer's data, they keep their meaning, and they are what both the Staff Meeting section and the on-demand surface read.
+Dormancy baselines, cadence days and the people records are untouched by this retirement. They are the customer's data, they keep their meaning, and they are what the on-demand surface reads.
 
 ## What brings it back
 

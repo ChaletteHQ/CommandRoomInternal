@@ -1,0 +1,13 @@
+{
+  "version": "3.17.1",
+  "headline": "Your people directory is rebuilt from your records every week.",
+  "items": [
+    {
+      "id": "v3171_announce_people_directory",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The people directory had drifted from your actual contacts. It is now regenerated from your records during the Sunday tidy-up, so the count and the details stay right.",
+      "action": "announce_only"
+    }
+  ]
+}

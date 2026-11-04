@@ -419,6 +419,28 @@ def build_matrix_html(
     return "".join(parts)
 
 
+#: TIMELINEMARK1 (cr1#150): the words the current-meeting marker carries.
+#: `prep_pipeline.build_relationship_timeline` appends a marker row whose
+#: LABEL is already these words when no point is marked current, and both
+#: renderers (this docx strip and `components.build_timeline_html`) appended
+#: them again after a dash, so the last row read "this meeting  — this
+#: meeting" on every brief with history. The marker is appended only when the
+#: label does not already carry it; `current_marker_label` is the one rule
+#: both renderers share.
+CURRENT_MARKER = "this meeting"
+
+
+def current_marker_label(label: str, is_current: bool) -> str:
+    """The label a timeline row renders: the point's own label, plus the
+    current-meeting marker exactly once when the row is the current one."""
+    text = str(label or "").strip()
+    if not is_current:
+        return text
+    if CURRENT_MARKER in text.lower():
+        return text
+    return text + "  \u2014 " + CURRENT_MARKER
+
+
 def build_timeline_html(points: List[Dict[str, str]]) -> str:
     """Render the relationship-timeline strip as an HTML fragment (SPEC OUT5 —
     the HTML sibling of brief_writer._add_timeline). Same validator (>= 2
@@ -428,9 +450,7 @@ def build_timeline_html(points: List[Dict[str, str]]) -> str:
     parts: List[str] = ['<ul class="cr-timeline">']
     for pt in points:
         is_current = bool(pt.get("current"))
-        label = str(pt["label"]).strip()
-        if is_current:
-            label += "  — this meeting"
+        label = current_marker_label(pt["label"], is_current)
         cls = "cr-timeline-label cr-timeline-current" if is_current else "cr-timeline-label"
         parts.append(
             f'<li><span class="cr-timeline-when">{_html.escape(str(pt["date"]).strip())}</span>'

@@ -2362,7 +2362,7 @@ def fire_close_line(envelopes, reenabled=None) -> str:
 # (`schedule_config` carries `enabled: false` for it) is never switched on.
 
 #
-# CHATSON1 (hotfix, 2026-10-06, ChaletteHQ/cr1#98): the same walk showed the
+# CHATSON1 (hotfix, 2026-10-06, chaletteholdings/cr1#98): the same walk showed the
 # Morning Brief off too, and this path only ever looked at the fire's own
 # chat - every other registered chat stayed off until somebody noticed. The
 # fire now checks EVERY chat on the live roster (`chats_state`), under the

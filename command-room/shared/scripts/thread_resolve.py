@@ -107,13 +107,13 @@ def _entities_path(workspace_root) -> Path:
 
 
 def _load_entities(workspace_root) -> dict:
-    import json
 
+    from entities_io import read_entities_json
     p = _entities_path(workspace_root)
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except (OSError, ValueError):
         return {}
 
@@ -134,6 +134,36 @@ def _txt(v) -> str:
 #: `shared/EVENT_TYPES.md` § "Thread-binding lane".
 BACKFILL_MARKER_TYPE = "prep_brief_thread_backfilled"
 BACKFILL_UNDO_TYPE = "prep_brief_thread_backfill_undone"
+
+
+#: The last org-scoped ledger read, keyed by the ledger's own identity
+#: (path, size, mtime_ns) — see `_cached_org_scoped_events`. ONE entry: the
+#: shape this closes is a batch of rows walked back to back, not a long-lived
+#: index.
+_EVENTS_CACHE: dict = {}
+
+
+def _cached_org_scoped_events(workspace_root) -> list:
+    """`events_io.load_events_org_scoped(workspace_root)[0]`, memoised on the
+    ledger's path + size + mtime for this process (REVIEW_BIND1 F8).
+
+    A single append changes both size and mtime, so a cached read can only
+    be served for a file that is byte-for-byte the one it was taken from.
+    A ledger that cannot be stat'ed is never cached."""
+    from events_io import load_events_org_scoped
+
+    path = _events_path(workspace_root)
+    try:
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return load_events_org_scoped(workspace_root)[0]
+    if _EVENTS_CACHE.get("key") == key:
+        return _EVENTS_CACHE["events"]
+    events, _skipped = load_events_org_scoped(workspace_root)
+    _EVENTS_CACHE.clear()
+    _EVENTS_CACHE.update({"key": key, "events": events})
+    return events
 
 
 def _meeting_bound_thread_id(workspace_root, *, meeting_id=None,
@@ -167,9 +197,15 @@ def _meeting_bound_thread_id(workspace_root, *, meeting_id=None,
     # personal-lane, so masking out an account-reclassified or
     # personal-tie row here is correct, not merely compliant — the same
     # posture `brain_proposals._load_events` takes.
-    from events_io import load_events_org_scoped
-
-    events, _skipped = load_events_org_scoped(workspace_root)
+    #
+    # ONE READ PER LEDGER STATE (REVIEW_BIND1 F8). This walk is a whole-
+    # ledger read and it was paid per ROW: a batch of 8 rows out of the same
+    # meeting cost 8 full reads (measured: 3.8 s for 8 rows on an 18,392-line
+    # book). The read is memoised on the ledger's own identity — path, size
+    # and mtime — so any append invalidates it and a stale answer is not
+    # reachable: the cache can only be hit by a second call against a file
+    # that has not changed a byte since the first.
+    events = _cached_org_scoped_events(workspace_root)
 
     undone_refs = set()
     for ev in events:
@@ -291,14 +327,32 @@ def resolve_thread_binding(evidence: dict, *, workspace_root) -> dict:
                 "org_id": None}
 
     org_ids = _evidence_org_ids(evidence, workspace_root)
+    from entity_resolve import linked_projects_for_org
+
     if len(org_ids) > 1:
+        # SEVERAL ORGS, AND THE THREADS THEY POINT AT (REVIEW_BIND1 F6).
+        # This branch used to return an empty candidate set, which made it
+        # unproposable by construction: two companies in the evidence went
+        # unbound AND unasked, the one outcome this lane's own posture calls
+        # "uncertain with nothing to ask" and this is not that — there IS a
+        # concrete set of threads to tap between. The candidates are the
+        # union of each org's own linked threads, deduped, in org order.
+        candidates = []
+        seen = set()
+        for oid in sorted(org_ids):
+            for c in linked_projects_for_org(workspace_root, oid) or ():
+                tid = c.get("id")
+                if tid and tid not in seen:
+                    seen.add(tid)
+                    candidates.append(
+                        {"thread_id": tid,
+                         "name": c.get("canonical_name")
+                         or c.get("display_name") or tid})
         return {"thread_id": None, "confidence": CONFIDENCE_NONE,
-                "basis": BASIS_ATTENDEE_ORG_AMBIGUOUS, "candidates": [],
-                "org_id": None}
+                "basis": BASIS_ATTENDEE_ORG_AMBIGUOUS,
+                "candidates": candidates, "org_id": None}
     if len(org_ids) == 1:
         org_id = next(iter(org_ids))
-        from entity_resolve import linked_projects_for_org
-
         candidates = linked_projects_for_org(workspace_root, org_id)
         if len(candidates) == 1:
             proj = candidates[0]
@@ -358,20 +412,31 @@ def propose_binding_row(workspace_root, evidence: dict, result: dict, *,
 
     from brain_proposals import propose
 
+    from brain_proposals import ON_DEMAND_SURFACE_HINT
+
     names = ", ".join(c["name"] for c in candidates if c.get("name"))
     subject = title or "this item"
-    render_line = (f"{subject} could belong to more than one thread "
-                   f"({names}) — which one?")
-    evidence_text = (f"the attendees' org has {len(candidates)} active "
+    if len(candidates) == 1:
+        render_line = (f"{subject} looks like it belongs to {names} — "
+                       f"is that right?")
+    else:
+        render_line = (f"{subject} could belong to more than one thread "
+                       f"({names}) — which one?")
+    evidence_text = (f"the evidence points at {len(candidates)} active "
                      f"threads and no single one is clearly the match")
-    # No `surface_hint` — a thread-binding row is exactly the kind of "needs
-    # your eyes" item the standing morning queue exists for (SPEC §0 ruling
-    # 2), so it renders on the named daily surfaces like every other confirm-
-    # tier row. `ON_DEMAND_SURFACE_HINT` ("on-demand") is a DEMOTION
-    # sentinel (STAFFCUT §3.7) that HIDES a row from every named surface —
-    # setting it here would silently suppress the very queue row this
-    # ruling requires.
-    extra = {"candidates": candidates, "title": subject}
+    # ON THE DOOR, NOT ON THE DAILY CARD (M's ruling, REVIEW_BIND1 F4).
+    # This row used to carry no `surface_hint`, which put it on the daily
+    # "Needs your eyes" card — measured, up to 5 of that card's 5 slots
+    # once three writers were routed through here, crowding out every other
+    # detector. A binding question is not the day's work; it is a question
+    # about filing, and the customer opens that door on purpose ("review
+    # project bindings"). `ON_DEMAND_SURFACE_HINT` is the standing DEMOTION
+    # sentinel (STAFFCUT §3.7): the row keeps its tier, its TTL, its
+    # fingerprint dedup and its resolution path, and simply stops competing
+    # for a daily slot. `backfill_bindings.open_binding_questions` reads it
+    # back on exactly that surface.
+    extra = {"candidates": candidates, "title": subject,
+             "surface_hint": ON_DEMAND_SURFACE_HINT}
     if result.get("org_id"):
         extra["org_id"] = result["org_id"]
     if source_event_seq is not None:

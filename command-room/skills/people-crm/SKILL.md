@@ -103,7 +103,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"a
 The branches, by the writer's own answer (`result`), each of which has written nothing:
 
 - `result.ok: false`, `reason: "ambiguous"` (step 1 or 2b): a lone first name or an alias fits a record that may or may not be this person. Render the disambiguation widget from `result.candidates` (same person, a different person with the same first name, or skip), never a first pick (Bug #19), and never show an id.
-- `reason: "duplicate"` (2b): the writer's dedup found a record step 1 did not (usually by email). Say `result.line`, then treat `result.existing_id` as the match and run 2a on it.
+- `reason: "duplicate"` (2b): the writer's dedup found a record step 1 did not (usually by email). Say `result.line`, then treat `result.existing_id` as the match and run 2a on it. **Two different people who share a name (PEOPLEDUP1, cr1#247):** when the owner says the person on file and the one they are adding are different people (a second Sam Sample at another company), re-run 2b once with `"confirmed_different_person": true` added to its args; the door then creates the second record with its own id. The flag is the owner's answer, in their words, to the duplicate refusal: never set it on your own judgement, never on a name that merely looks different, and never to make a refusal go away.
 - `reason: "single_word_name"`, `"unknown_person"`, `"identity_field"` (2a: a change never carries `id` or `suppress_lineage`), `"out_of_scope"` or `"unreadable"` (step 1: the people file could not be read, so nothing may be created): say `result.line`, verbatim, and stop. Ask for the full name on the first.
 
 Fields a change can carry are the schema's (the Writer Contract above); a field the schema refuses is a stop, never a retry with another key.
@@ -155,11 +155,26 @@ People-CRM has TWO canonical helpers that the read paths MUST invoke. Bypassing 
 > python3 -c "
 > import sys, json; sys.path.insert(0, 'shared/scripts')
 > from exit_doors import apply_fact_closes
-> print(json.dumps(apply_fact_closes('<workspace_root>', only_person_ids=['<the resolved person_id>'])))
+> from offer_gate import fact_close_lines
+> result = apply_fact_closes('<workspace_root>', only_person_ids=['<the resolved person_id>'])
+> print(json.dumps({'lines': fact_close_lines(result), 'n_closed': result['n_closed']}))
 > "
 > ```
 >
-> then render what is open. If `receipt_line` is non-empty, say it VERBATIM as its own line before the open list — one line, plain words, the `undo` in it. **NEVER write a sentence offering to close things** ("say the word and I'll close them", "want me to close these four?"): a kept promise the record already proves is closed where the product notices it, and this surface is one of the places it notices. The regression is the 2026-09-07 `pull up` that listed four mail-proved items and offered to close them instead. It writes nothing when nothing is proved, so it is safe on every render.
+> then render what is open. **The sentences about that close are COMPOSED, never typed (OFFERS1 — MANDATORY).** `fact_close_lines` returns every line this surface says about the close, and it composes all three endings so none is left to improvisation: the receipt when something closed (plain words, the `undo` in it), the held-back line when closing on evidence is off, and the honest one-liner when nothing was proved. Say them VERBATIM, each as its own line, before the open list. Then pass the whole reply through the offer fence in the block below, and print what it returns. **NEVER write a sentence offering to close things** ("say the word and I'll close them", "want me to close these four?", or a fork between closing them and leaving them): a kept promise the record already proves is closed where the product notices it, and this surface is one of the places it notices. The regression is the 2026-09-07 `pull up` that listed four mail-proved items and offered to close them instead, and the 2026-09-16 `pull up` that forked three ways over six rows the sent mail had proved dead — **prose said this on both days, so the sentences are in code now and the whole reply goes through `compose(SITE_PULL_UP, whole_reply)` before it is printed.** It writes nothing when nothing is proved, so it is safe on every render.
+>
+> ```python
+> import sys
+> sys.path.insert(0, "shared/scripts")
+> from offer_gate import compose, SITE_PULL_UP
+> # The OFFER fence, on the WHOLE reply - the three composed lines and
+> # every sentence written around them. It lived in the paragraph above
+> # in the first cut, and a call that is only described is the same
+> # prose this lane exists to replace (review round 1, F-7). Every other
+> # wired site calls it from a block; so does this one. It raises rather
+> # than returning - rewrite the sentence, never the fence.
+> print(compose(SITE_PULL_UP, whole_reply))
+> ```
 
 Why both are required: implementation exists; SKILL.md previously referenced them; runtime traces (Session 22, Phases 2D + 2G) showed the LLM substituted raw grep under time pressure. Output looked plausible because M's mature alias graph happened to make substring grep accurate enough. New customers with empty graphs hit the worst case.
 

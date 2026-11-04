@@ -98,8 +98,9 @@ def _entities_path(workspace_root) -> Path:
 
 def load_entities(workspace_root) -> Dict[str, Any]:
     """Read entities.json. Returns {} on any failure (never raises)."""
+    from entities_io import read_entities_json
     try:
-        return json.loads(_entities_path(workspace_root).read_text(encoding="utf-8"))
+        return read_entities_json(_entities_path(workspace_root))
     except Exception:
         return {}
 

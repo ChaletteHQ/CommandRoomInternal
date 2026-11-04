@@ -29,10 +29,14 @@ DESIGN RULES:
   (propose-and-confirm, adjudication-gated, never silent —
   `schedule_config.rm_supersede_plan` is the pure planner; the bridge
   executes on the user's yes).**
-- **Never both:** the Staff Meeting's moves section consumes dormancy
-  detection (as relationship-moves did), so dormant-customer-scan is offered
-  only as the LIGHTER alternative when the staff meeting doesn't land (not
-  qualified, or proposed before and still not added).
+- **Never both:** the Staff Meeting's moves section consumed dormancy
+  detection (as relationship-moves did), so dormant-customer-scan was offered
+  only as the LIGHTER alternative when the staff meeting didn't land.
+- **cr1#176 (the owner's ruling 2026-10-23): the scheduled Staff Meeting is
+  READINESS-retired and is no longer offered at all.** Its threshold row and
+  its candidate are gone, so dormant-customer-scan is the one later-add offer
+  left; a still-registered relationship-moves or staff-meeting chat still
+  keeps the scan from being offered on top of it.
 - **No nagging:** each surfaced proposal logs a `schedule_add_proposed`
   event (registered type); the same proposal is suppressed for
   REPROPOSE_SUPPRESSION_WEEKS afterward.
@@ -68,23 +72,14 @@ from event_time import event_dt  # noqa: E402
 # THE threshold table — the one place R3's numbers live.
 # ---------------------------------------------------------------------------
 PROPOSAL_THRESHOLDS = {
-    # LB1 R4 — staff-meeting inherits relationship-moves' proposal slot (its
-    # "This week's moves" section needs the same substrate the standalone
-    # chat did), plus a queue-readiness path: a workspace whose brain has a
-    # standing confirm queue earns the weekly review even before the client
-    # mix matures.
-    "staff-meeting": {
-        # org mix: prospects + clients tracked in entities.json
-        "min_prospect_plus_client_orgs": 8,
-        # substrate readiness: at least this many distinct DAYS carrying
-        # dormancy_signal events (aligned with the moves section's own
-        # dormancy baselines — it needs accumulated cadence history).
-        "min_dormancy_signal_days": 14,
-        # OR-path: open Living Brain proposals waiting on the user
-        "min_open_brain_proposals": 3,
-    },
+    # `staff-meeting` HAD a row here (LB1 R4: a client-mix path and a
+    # standing-queue path). cr1#176 removed it: the scheduled Staff Meeting is
+    # READINESS-retired (the owner's ruling 2026-10-23), and this table was
+    # its automated offer path, so the row's absence is what stops the offer,
+    # the `pipeline-digest` shape below. `staff meeting` on demand is
+    # untouched; only the offer to schedule it is gone.
     "dormant-customer-scan": {
-        # the lighter alternative when the staff meeting doesn't land
+        # the lighter weekly check; since cr1#176 the only later-add offer
         "min_client_orgs": 5,
     },
     # `pipeline-digest` HAD a row here (PIPE1 Part 2 — gated on >=1 open
@@ -179,9 +174,9 @@ def propose_later_add_tasks(
     now: Optional[_dt.datetime] = None,
 ) -> list[dict]:
     """The R3 readiness check. Returns 0 or 1 proposal dicts
-    ({task, line, reason}) — never more than one candidate in one round
-    (staff-meeting > dormant-customer-scan; the 6-week suppression window
-    rotates the round between qualifiers).
+    ({task, line, reason}) — never more than one candidate in one round.
+    Since cr1#176 the one candidate is dormant-customer-scan: the Staff
+    Meeting, which used to go first, is readiness-retired and never offered.
 
     Callers surface `line` verbatim, then log ONE `schedule_add_proposed`
     event per surfaced proposal via `log_proposal()`. This function only
@@ -191,16 +186,12 @@ def propose_later_add_tasks(
     registered = set(registered_ids or ())
     mix = _org_mix(workspace_root)
 
-    # one pass over events: dormancy-signal days + recent proposals
-    dormancy_days = set()
+    # one pass over events: recent proposals (the dormancy-day count left
+    # with the Staff Meeting candidate it gated, cr1#176)
     last_proposed: dict[str, _dt.datetime] = {}
     for ev in _iter_events(workspace_root):
         etype = ev.get("type")
-        if etype == "dormancy_signal":
-            dt = event_dt(ev)
-            if dt:
-                dormancy_days.add(dt.date())
-        elif etype == "schedule_add_proposed":
+        if etype == "schedule_add_proposed":
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             tid = data.get("taskId")
             dt = event_dt(ev)
@@ -213,63 +204,13 @@ def propose_later_add_tasks(
         prior = last_proposed.get(tid)
         return bool(prior and (now - prior) < _dt.timedelta(weeks=REPROPOSE_SUPPRESSION_WEEKS))
 
-    sm_thresholds = PROPOSAL_THRESHOLDS["staff-meeting"]
-    mix_qualified = (
-        mix["prospect"] + mix["client"] >= sm_thresholds["min_prospect_plus_client_orgs"]
-        and len(dormancy_days) >= sm_thresholds["min_dormancy_signal_days"]
-    )
-    # Queue-readiness OR-path: a standing confirm queue earns the weekly
-    # review on its own. Tolerant read — proposal machinery never blocks
-    # the Monday note.
-    #
-    # REVIEW CUTB F-4 (2026-09-06): read through the STAFF-MEETING surface,
-    # not the un-named diagnostic projection. The un-named read sees every
-    # open row — including the withheld deal question (M ruling R-B,
-    # `brain_proposals.WITHHELD_KINDS`) and deal rows about orgs that have
-    # since settled — so it could qualify "N suggestions waiting on a
-    # decision" on rows the Staff Meeting would never show. The count now
-    # comes from the same projector the card renders, so the line can never
-    # over-promise. staff-meeting is exempt from the cross-surface daily
-    # dedup and this read writes nothing (propose-never-register).
-    n_open_proposals = 0
-    try:
-        import brain_proposals
-
-        n_open_proposals = len(
-            brain_proposals.load_open_proposals(workspace_root, "staff-meeting"))
-    except Exception:
-        pass
-    queue_qualified = n_open_proposals >= sm_thresholds["min_open_brain_proposals"]
-    # A registered relationship-moves already covers the moves value (R4:
-    # existing registrations untouched) — on those workspaces only the
-    # queue path proposes the staff meeting.
-    if "relationship-moves" in registered:
-        sm_qualified = queue_qualified
-    else:
-        sm_qualified = mix_qualified or queue_qualified
-    # A recent relationship-moves offer suppresses the staff meeting too —
-    # it carries the same moves value under a new name, and re-offering it
-    # inside the window is the exact weekly nag R3's suppression exists to
-    # prevent (R4: prior RM offers count as offered-before).
-    sm_suppressed = suppressed("staff-meeting") or suppressed("relationship-moves")
-    if "staff-meeting" not in registered and sm_qualified and not sm_suppressed:
-        if queue_qualified:
-            reason = f"{n_open_proposals} proposals waiting on you"
-            line = (
-                f"Your brain has {n_open_proposals} suggestions waiting on a decision — "
-                f"a weekly Staff Meeting reviews everything in one sitting: what I did on my "
-                f"own, what's waiting on you, and this week's relationship moves. Say "
-                f"'add staff meeting' and it runs Monday mornings."
-            )
-        else:
-            reason = (f"{mix['prospect']} prospects + {mix['client']} clients, "
-                      f"{len(dormancy_days)} days of dormancy signal")
-            line = (
-                f"You're tracking {mix['prospect']} prospects and {mix['client']} clients — "
-                f"a weekly Staff Meeting keeps them warm and reviews everything waiting on "
-                f"you in one sitting. Say 'add staff meeting' and it runs Monday mornings."
-            )
-        return [{"task": "staff-meeting", "reason": reason, "line": line}]
+    # The Staff Meeting candidate USED to slot here, first in the round
+    # (LB1 R3/R4: a client-mix path, a standing-queue path, and the 6-week
+    # suppression shared with relationship-moves). cr1#176 removed it whole:
+    # the scheduled Staff Meeting is READINESS-retired (the owner's ruling
+    # 2026-10-23), so offering to add it would route the customer at a task
+    # no registration path will create. Its queue is still one ask away
+    # (`staff meeting`), and the morning brief points at it every weekday.
 
     # The PIPE1 pipeline-digest candidate USED to slot here, between the
     # staff meeting and the dormant-scan alternative. TASKRET1 removed it
@@ -280,13 +221,13 @@ def propose_later_add_tasks(
     # PIPE1 Part 2, and the `deal_state` read that gated it is gone with it —
     # nothing here needs to know about deals any more.
 
-    # Lighter alternative — only when the staff meeting did NOT land this
-    # round (unqualified, already registered, or previously proposed and
-    # still not added). Never both. Prior relationship-moves offers count
-    # as "offered before" (the CEO already passed on the moves value).
+    # The lighter weekly check. It used to be offered only when the staff
+    # meeting did NOT land this round; since cr1#176 the staff meeting is
+    # never a candidate, so this is the round's one candidate. The two
+    # registration fences stay exactly as they were: a still-registered moves
+    # or staff-meeting chat (until the update switches it off) keeps the scan
+    # from being offered on top of one.
     dcs_qualified = mix["client"] >= PROPOSAL_THRESHOLDS["dormant-customer-scan"]["min_client_orgs"]
-    sm_previously_offered = ("staff-meeting" in last_proposed
-                             or "relationship-moves" in last_proposed)
     if (
         dcs_qualified
         and not suppressed("dormant-customer-scan")
@@ -294,9 +235,6 @@ def propose_later_add_tasks(
         # offer the scan on top of one
         and "relationship-moves" not in registered
         and "staff-meeting" not in registered
-        # only when the staff meeting did NOT land this round: unqualified,
-        # or offered before and still not added (the CEO passed on it)
-        and (not sm_qualified or sm_previously_offered)
     ):
         return [{
             "task": "dormant-customer-scan",
@@ -519,7 +457,8 @@ def readback_context(task_records=None, registered_ids=None) -> dict:
     return out
 
 
-def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
+def plan_readiness_retirements(registered_ids=None, task_records=None,
+                               workspace_root=None) -> list:
     """The READINESS direction (SPEC TASKRET1) — the third sibling of
     `propose_later_add_tasks` (add) and `propose_task_retirements` (remove by
     offer). This one plans a removal the update bridge APPLIES.
@@ -549,13 +488,26 @@ def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
          whenever the readback is in hand — on the bridge path it always is.
          Without them this signal is simply unavailable, exactly as it is for
          `propose_task_retirements`.
-      2. The bridge's migration-adjudication gate, keyed on the migration id,
-         which stops the whole block re-running after it has applied once.
+      2. `workspace_root`: a task that already carries this migration's own
+         pause record (`readiness_retired_on_record`) is dropped, so the
+         one-shot is PER TASK. A seat that switched a retired chat back on
+         after its pause is never switched off a second time by this
+         migration. This fence is for the bridge's own migration, which
+         never asks first. The release action `force_readiness_retirement`
+         does NOT pass `workspace_root`: its fence is date-gated against its
+         own asks, because an old pause row is not an answer to a later ask.
 
     Either fence alone is enough; both exist because disabling is not the
-    expensive half — re-writing a `schedule_config_changed` event on every
-    update forever is, and fence 1 is what a workspace whose adjudication
-    record was lost still has.
+    expensive half: re-writing a `schedule_config_changed` event on every
+    update forever is, and fence 1 is what a workspace whose records were
+    lost still has.
+
+    THE ONE-SHOT IS PER TASK, NOT PER MIGRATION (cr1#540). This used to lean
+    on the bridge's adjudication gate, keyed on the single migration id, so a
+    seat that ran this once never ran it again: a chat added to the readiness
+    class by a LATER release (`staff-meeting`, `relationship-moves`) stayed
+    registered and kept firing on its old schedule. The bridge now runs this
+    on every full update and the two fences above are its whole gate.
 
     NEVER pass a non-readiness retirement through here. Eliminations and
     renames are PROPOSED (`propose_task_retirements`), and auto-disabling one
@@ -574,9 +526,11 @@ def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
         tid = rec.get("taskId") or rec.get("task_id") or rec.get("id")
         if tid and rec.get("enabled") is False:
             disabled.add(tid)
+    on_record = (readiness_retired_on_record(workspace_root)
+                 if workspace_root is not None else set())
     out = []
     for tid in sorted(readiness_retired_task_ids()):
-        if tid not in registered or tid in disabled:
+        if tid not in registered or tid in disabled or tid in on_record:
             continue
         if not is_readiness_retirement(tid):   # belt and braces; the set is derived
             continue
@@ -590,6 +544,41 @@ def plan_readiness_retirements(registered_ids=None, task_records=None) -> list:
             "reoffer_when": reoffer_condition(tid),
             "line": retirement_line(tid),
         })
+    return out
+
+
+def readiness_retired_on_record(workspace_root) -> set:
+    """The task ids this migration has already switched off on this seat.
+
+    One id per `schedule_config_changed` row that `log_readiness_retirement`
+    wrote (it carries this module's migration id) with `enabled: false` for
+    that task. This is the per-task one-shot (cr1#540): each retired chat is
+    switched off at most once, and a chat retired by a later release is still
+    new to a seat that already ran the migration for an earlier one. READS
+    ONLY; an unreadable log reads as no records.
+    """
+    from schedule_config import SCHEDULE_CONFIG_CHANGED
+
+    out: set = set()
+    try:
+        for ev in _iter_events(workspace_root):
+            if (ev.get("type") or ev.get("event")) != SCHEDULE_CONFIG_CHANGED:
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            mig = d.get("migration_id") or ev.get("migration_id")
+            if mig != READINESS_RETIREMENT_MIGRATION_ID:
+                continue
+            rows = d.get("changes")
+            if not isinstance(rows, list):
+                rows = [d]
+            for row in rows:
+                if not isinstance(row, dict) or row.get("enabled") is not False:
+                    continue
+                tid = str(row.get("task_id") or row.get("taskId") or "").strip()
+                if tid:
+                    out.add(tid)
+    except Exception:  # noqa: BLE001 - a read never blocks the update
+        return out
     return out
 
 
@@ -669,6 +658,7 @@ __all__ = [
     "propose_task_retirements",
     "log_retire_proposal",
     "plan_readiness_retirements",
+    "readiness_retired_on_record",
     "readback_context",
     "log_readiness_retirement",
 ]

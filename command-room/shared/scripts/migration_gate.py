@@ -101,7 +101,10 @@ def _display_name(task_id: Optional[str], orchestrator_rel: str) -> str:
     try:
         import schedule_config
 
-        return schedule_config.task_display_name(tid)
+        # RETIMENAME1 (cr1#146): the stop line is the fire speaking in its
+        # own chat, so a renamed predecessor introduces itself as the surface
+        # it serves (CUT-PLATE's rule), never by the retired name.
+        return schedule_config.serving_display_name(tid)
     except Exception:  # noqa: BLE001
         return tid.replace("-", " ").title()
 

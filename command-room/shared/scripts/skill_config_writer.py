@@ -305,6 +305,85 @@ def wipe_skill_config(workspace_root: str | Path, skill_name: str) -> bool:
     return wipe_skill_config_result(workspace_root, skill_name)["existed"]
 
 
+#: CFGRESET1 (cr1#249): the skills whose SKILL.md carries a Reset mode through
+#: `skill_config_writer`, by the name their config file takes. The door writer
+#: `reset_skill_config` accepts a name only when it is HERE, so no free file
+#: name ever crosses the door (the reason `wipe_skill_config` was taken off the
+#: write list, LOWS2). Deliberately NOT widened by `skill_config.schema.json`:
+#: that file also registers the owner's profile and voice stores (`profile`,
+#: `chat_persona`, `output_profile`, ...), which no Reset row names and which
+#: "reset <skill> to defaults" must never reach. A test pins this tuple against
+#: every Reset row in the skills tree, so a new config-aware skill reds by name
+#: until it is added, and a store that gains a row without a tuple entry reds
+#: the same way.
+CONFIGURED_SKILLS = (
+    "automation-scanner",
+    "board-pack-assembler",
+    "call-prep",
+    "decision-log",
+    "decision-memo-composer",
+    "dormant-customer-scan",
+    "email-writer",
+    "follow-up-ritual",
+    "inbox-triage",
+    "meeting-notes",
+    "memo-writer",
+    "morning-briefing",
+    "objectives",
+    "one-pager-composer",
+    "operator-report",
+    "pipeline-tracker",
+    "stalled-projects",
+    "stress-test",
+    "weekly-recap",
+)
+
+RESET_LINE_CLEARED = ("Settings reset. The next time this skill runs it uses the "
+                      "recommended settings and offers the setup options once.")
+RESET_LINE_NOTHING = "No settings to reset; you are already on defaults."
+RESET_LINE_LEFT = ("The settings file could not be cleared on this computer, so "
+                   "nothing changed.")
+RESET_LINE_UNKNOWN = ("That is not a skill with settings to reset, so nothing "
+                      "changed.")
+
+
+def known_config_skills() -> frozenset:
+    """Every config name the reset door accepts: the hand tuple above, and
+    nothing the chat types."""
+    return frozenset(CONFIGURED_SKILLS)
+
+
+def reset_skill_config(workspace_root: str | Path, skill_name: str,
+                       source_skill: str | None = None) -> dict[str, Any]:
+    """THE door route for "reset <skill> to defaults" (CFGRESET1, cr1#249).
+
+    A writer on `workspace_access.RUN_WRITER_ALLOWLIST`: on a merged seat the
+    chat cannot import `wipe_skill_config` beside the data, and that raw
+    function stayed off the write list because it takes a file name from the
+    chat (LOWS2). This one takes a SKILL name and refuses anything that is not
+    on the known list before a path is built, then clears the stored config
+    exactly as `wipe_skill_config_result` does (a rename aside on a mount that
+    refuses the delete). Nothing else is touched and no event is written: the
+    next fire of the skill is a first fire again, which is the whole point.
+
+    Returns `{ok, skill_name, existed, cleared, left_in_place, moved_to,
+    line}`; `line` is the one sentence to say. An unknown name answers
+    `{ok: False, refused: "unknown_skill", line}` and writes nothing.
+    """
+    name = skill_name if isinstance(skill_name, str) else ""
+    if not name or SKILL_NAME_RE.fullmatch(name) is None or name not in known_config_skills():
+        return {"ok": False, "refused": "unknown_skill", "skill_name": name[:80],
+                "line": RESET_LINE_UNKNOWN}
+    out = wipe_skill_config_result(workspace_root, name)
+    if not out["existed"]:
+        line = RESET_LINE_NOTHING
+    elif out["left_in_place"]:
+        line = RESET_LINE_LEFT
+    else:
+        line = RESET_LINE_CLEARED
+    return {"ok": True, "skill_name": name, "line": line, **out}
+
+
 def is_configured(workspace_root: str | Path, skill_name: str) -> bool:
     """Convenience predicate — has this skill been configured for this workspace?"""
     return _config_path(Path(workspace_root), skill_name).exists()

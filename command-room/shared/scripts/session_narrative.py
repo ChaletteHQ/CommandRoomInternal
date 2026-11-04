@@ -199,9 +199,10 @@ def sidecar_path(notes_path) -> Path:
 
 
 def _load_entities(workspace_root) -> dict:
+    from entities_io import read_entities_json
     path = Path(workspace_root) / "_hq" / "data" / "entities.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return read_entities_json(path)
     except (OSError, json.JSONDecodeError):
         return {}
 

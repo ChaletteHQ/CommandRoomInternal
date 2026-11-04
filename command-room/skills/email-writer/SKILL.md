@@ -12,7 +12,7 @@ template_version: 1.0.0
 
 # Email Writer
 
-**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="email-writer")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost.
+**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="email-writer")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost. On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}` (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "email-writer"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`, paste what it prints and run that; the envelope's `result` is the answer described above.
 
 **Learned constraints, read BEFORE composing (SPEC_SURFACES2 §1).** Once the recipient is resolved and before you write a single line, load what they have already corrected:
 
@@ -23,7 +23,9 @@ c = load_draft_constraints(workspace_root, "email-writer",
                            domain=<the draft's domain or None>)
 ```
 
-`c["lines"]` are CONSTRAINTS, not suggestions — obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. Anything the person has STATED in this request outranks all of it. When you have a draft, run it through `apply_draft_constraints(draft, c)` before you show it — that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
+On a merged seat (the folder is on the customer's computer) this read runs beside the data through the read door, `workspace_access.py plan run_helper` naming `draft_constraints:load_draft_constraints` with `{"workspace_root": "<WS>", "skill": "email-writer", "recipient_id": ..., "domain": ...}` as its args (cr1#518); the envelope's `result` is `c`.
+
+`c["lines"]` are CONSTRAINTS, not suggestions — obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. **`c["voice_block_sha256"]` is the proof you read it (VOICELOAD1, cr1#197):** put it on the draft's card row in Phase 4 (`"voice_block_sha256": c["voice_block_sha256"],` in the item), never from memory and never hashed by hand. The card carries it on the click's tuple, where apply-choices passes it to `build_email_drafted_provenance(..., voice_block_sha256=...)` and `snapshot_draft(..., voice_block_sha256=...)`; the event then records `voice_applied` and, when the workspace has a voice file this draft cannot prove it read, the ack says the one sentence `draft_constraints.voice_receipt(...)["line"]` returns. The card itself says the same sentence when its row does not carry the hash of the voice file on disk: `render_and_persist` checks it. A draft composed without this block loaded is flagged, never silently returned. Anything the person has STATED in this request outranks all of it. When you have a draft, run it through `apply_draft_constraints(draft, c)` before you show it — that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
 
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
@@ -35,7 +37,7 @@ Before resolving the recipient(s) from the trigger phrase, you MUST call `shared
 A draft is grounded in the project it is about. Once the recipient is resolved (above) and the draft's project is resolved — the `primary_thread_id` the eventual `email_drafted` event carries; resolve it from the topic / reply thread via the same `resolve_all` pass — every piece of substrate-side THREAD context this draft consumes — project identity, open commitments bound to the project, recent project activity + session-notes narrative, and decisions on the record — comes from the canonical reader, in ONE call:
 
 ```python
-# Canonical preamble — same as the required call sequence below.
+# Canonical preamble, the same as the required call sequence below.
 import sys
 from pathlib import Path
 SCRIPTS = Path(PLUGIN_ROOT) / "shared" / "scripts"
@@ -99,7 +101,7 @@ Before writing, read `shared/WORKSPACE_API.md`.
 - `_hq/voice/corrections-email-writer.jsonl` — append on detected correction.
 
 **Appends to:**
-- `_hq/data/events.jsonl` — event type `email_drafted` with `recipient`, `topic`, the draft-identity fields from `connector_adapters.provenance.build_email_drafted_provenance(draft_id=…, provider=…, server_id=…, address=…)` (EW2+T F-12 / FB-plumbing item 5 — writes the `native_draft_id` field carrying the DECLARED BACKEND's native draft id, plus the structured `provenance` block; never hand-write the field name; readers use `native_draft_id_from_data`, which still accepts the legacy `gmail_draft_id` spelling on pre-rename events), `commitment_refs[]` (open commitments with recipient surfaced into the draft), `decision_refs[]` (decisions involving recipient that informed the draft). The substrate knows the draft exists and downstream skills (`insight-generator`, `cleanup`) can detect drafted-but-not-sent — on every backend, not just Gmail.
+- `_hq/data/events.jsonl` — event type `email_drafted` with `recipient`, `topic`, the draft-identity fields from `connector_adapters.provenance.build_email_drafted_provenance(draft_id=…, provider=…, server_id=…, address=…, workspace_root=…, voice_block_sha256=<c["voice_block_sha256"] from the compose step, read off the card's tuple>)` (EW2+T F-12; VOICELOAD1 cr1#197 adds `voice_block_sha256` and `voice_applied` / FB-plumbing item 5 — writes the `native_draft_id` field carrying the DECLARED BACKEND's native draft id, plus the structured `provenance` block; never hand-write the field name; readers use `native_draft_id_from_data`, which still accepts the legacy `gmail_draft_id` spelling on pre-rename events), `commitment_refs[]` (open commitments with recipient surfaced into the draft), `decision_refs[]` (decisions involving recipient that informed the draft). The substrate knows the draft exists and downstream skills (`insight-generator`, `cleanup`) can detect drafted-but-not-sent — on every backend, not just Gmail.
 - `_hq/data/events.jsonl` — event type `email_sent` written when the user clicks Send via the widget action set (or the user marks the connector draft as sent and a future fire detects it). Carries `{recipient, topic, draft_event_seq}` PLUS the send-identity fields from `connector_adapters.provenance.build_email_sent_provenance(message_id=…, thread_id=…, provider=…, server_id=…, address=…)` — the builder dual-writes the legacy per-provider id fields (reader back-compat: email_outcomes, reconcile-sent, voice-corrections all read them today) AND the structured `provenance` block (R3 account scoping + format-proof dedup). Never hand-write the id field names; the builder owns the spelling. Links back to the original `email_drafted` event. This is the v3.7.1+ closure event — pre-v3.7.1 the substrate saw drafts but never confirmation of sends, so the drafted-but-not-sent gap couldn't be measured.
 
 **Reads (v3.7.1+ substrate enrichment; thread context payload-fed since READER1 ADOPT2):** THREAD-scoped context routes through the canonical thread payload (MANDATORY context load above) — its `"email-writer"` profile reads through `events_io.load_events_org_scoped` at the source, so the same PGUARD2 mask applies before any thread row can reach a draft. The one remaining direct events read below (recipient interaction history) goes through the SAME org-scoped load — **read via the org-scoped reader, never a raw load** (PGUARD2 — the draft reaches a recipient, an external surface): `from events_io import load_events_org_scoped; org_events, skipped = load_events_org_scoped(workspace_root)`, then filter by `type` at the call site. The reader applies the account-scope mask and drops personal-lane rows by design, so a reclassified personal account's history never enters the draft prompt.
@@ -148,9 +150,9 @@ import sys; sys.path.insert(0, "shared/scripts")  # valid because cwd == $PLUGIN
 from skill_config_writer import get_config, save_skill_config, wipe_skill_config, is_configured
 
 DEFAULTS = {
-    "draft_posture": "show_first",   # AF — show_first | auto_queue
-    "sign_off": "dash_first",        # STT — dash_first | thanks_first | first_only | custom
-    "length": "short_direct",        # STT — short_direct | fuller
+    "draft_posture": "show_first",   # AF: show_first | auto_queue
+    "sign_off": "dash_first",        # STT: dash_first | thanks_first | first_only | custom
+    "length": "short_direct",        # STT: short_direct | fuller
 }
 cfg = get_config(workspace_root, "email-writer", DEFAULTS)
 ```
@@ -179,7 +181,7 @@ write, the `email_drafted` event, AND the voice snapshot all fire **at that clic
 | **Detect** (default) | "draft an email…" | first relevant request only: ask the ONE AF posture question (below) BEFORE drafting, then `save_skill_config(workspace_root, "email-writer", DEFAULTS)`; subsequent fires skip straight to drafting with the saved posture. |
 | **Show settings** | "show email-writer settings" | render current config in plain English; no draft. |
 | **Tune** | "tune my email drafts", "tune email-writer", "change my email draft posture" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → confirm. |
-| **Reset** | "reset email-writer to defaults" | `wipe_skill_config(workspace_root, "email-writer")` → next draft is a first-fire again. |
+| **Reset** | "reset email-writer to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "email-writer", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "email-writer")`); say its `line` → next draft is a first-fire again. |
 
 **First fire — the ONE AF question (asked once, before the first draft, with a working default-escape):**
 
@@ -395,7 +397,7 @@ data_view = {
             "n": 1,
             "icon": "✉️",
             "name": recipient_display_name,
-            # metadata is a LIST OF [key, value] PAIRS (not a dict) — this is the
+            # metadata is a LIST OF [key, value] PAIRS (not a dict). This is the
             # email-shaped item shape the data-shape validator recognizes (per
             # chat_output_renderer._is_email_shaped). At minimum populate To +
             # Subject; Cc optional. Without this shape, edit-then-send opens
@@ -404,17 +406,21 @@ data_view = {
                 ["To", recipient_email],
                 ["Subject", subject],
             ],
-            "context_tag": "Ready for your review — nothing is saved to your mail until you click",
-            # v3.13.8+ — Bug #30 fix. Only prefix with `>` when this is a
+            "context_tag": "Ready for your review. Nothing is saved to your mail until you click",
+            # v3.13.8+: Bug #30 fix. Only prefix with `>` when this is a
             # REPLY to an existing thread (i.e. you have a Gmail thread_id
             # in scope). Fresh-draft bodies render WITHOUT the blockquote
-            # prefix — pre-v3.13.8 emitted `> Hi Sam — ...` on every body,
+            # prefix. Pre-v3.13.8 emitted `> Hi Sam, ...` on every body,
             # which read as "quoting myself" and broke voice calibration.
             "body_lines": (
                 [f"> {line}" for line in body_paragraphs]
                 if in_reply_to_thread_id else list(body_paragraphs)
             ),
             "actions": ["1 send", "1 draft", "1 snooze 3d"],
+            # VOICELOAD1 (cr1#197): the compose step's hash, verbatim. The
+            # card carries it on the click's tuple; a row without the hash of
+            # the voice file on disk shows the one sentence on the card.
+            "voice_block_sha256": c["voice_block_sha256"],
         }],
     }],
 }
@@ -436,7 +442,7 @@ data_view = {
             {
                 "n": i + 1,
                 "icon": "✉️",
-                "name": draft["label"],  # e.g. "Stage 1 — ask Rio about Mira"
+                "name": draft["label"],  # e.g. "Stage 1: ask Rio about Mira"
                 "metadata": [
                     ["To", draft["recipient_email"]],
                     ["Subject", draft["subject"]],
@@ -451,6 +457,7 @@ data_view = {
                     f"{i + 1} draft",
                     f"{i + 1} snooze 3d",
                 ],
+                "voice_block_sha256": draft["c"]["voice_block_sha256"],  # that draft's constraints read
             }
             for i, draft in enumerate(drafts)
         ],
@@ -523,7 +530,7 @@ transport = render_and_persist(data_view=data_view, wrapper='fragment',
 print(transport['html'])
 "
 # Pass transport["html"] (the persisted page's validated bytes, verbatim) to
-# mcp__visualize__show_widget as widget_code (T2 — shared/CHAT_ACTION_WIDGET.md
+# mcp__visualize__show_widget as widget_code (T2: shared/CHAT_ACTION_WIDGET.md
 # § Transport). Never hand-compose or post-process the HTML.
 # Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
@@ -563,10 +570,12 @@ Event shape (unchanged from v3.13.0):
     "recipient": "...@example.com",
     "topic": "[topic]",
     ...connector_adapters.provenance.build_email_drafted_provenance(
-        draft_id=<the connector's draft-create response id — Superhuman,
+        draft_id=<the connector's draft-create response id: Superhuman,
                   Gmail, or Outlook alike>,
         provider=<declared backend provider>, server_id=<its server-id>,
-        address=<the drafting account address>),
+        address=<the drafting account address>,
+        workspace_root=<abs workspace root>,
+        voice_block_sha256=<c["voice_block_sha256"] from the compose step, or None>),
     "commitment_refs": [<seqs of open commitments surfaced into the draft>],
     "decision_refs": [<seqs of decisions involving recipient that informed the draft>],
     "calibration_level": "default"
@@ -574,7 +583,7 @@ Event shape (unchanged from v3.13.0):
 }
 ```
 
-The builder writes the draft identity (EW2+T, F-12; FB-plumbing item 5): the `native_draft_id` field (the VALUE is the declared backend's native draft id — the name is backend-neutral now, no longer the misleading `gmail_draft_id`) plus the structured `provenance` block. Never hand-write the field name; the builder owns the spelling, and readers go through `native_draft_id_from_data` (which still reads the legacy `gmail_draft_id` on pre-rename events — append-only history is never rewritten). The draft id is the canonical handle for the draft itself — Phase 6 reads it to detect "drafted but not sent" patterns. `commitment_refs[]` and `decision_refs[]` close the substrate loop: when the user later sends this email and the CRU layer scans for matching commitments, it has the explicit linkage instead of having to re-infer.
+The `voice_block_sha256` above is the compose step's hash as the clicked tuple carries it off the card (VOICELOAD1, cr1#197): never taken from chat memory and never hashed at the click; a tuple without it passes None. The builder writes the draft identity (EW2+T, F-12; FB-plumbing item 5): the `native_draft_id` field (the VALUE is the declared backend's native draft id — the name is backend-neutral now, no longer the misleading `gmail_draft_id`) plus the structured `provenance` block. Never hand-write the field name; the builder owns the spelling, and readers go through `native_draft_id_from_data` (which still reads the legacy `gmail_draft_id` on pre-rename events — append-only history is never rewritten). The draft id is the canonical handle for the draft itself — Phase 6 reads it to detect "drafted but not sent" patterns. `commitment_refs[]` and `decision_refs[]` close the substrate loop: when the user later sends this email and the CRU layer scans for matching commitments, it has the explicit linkage instead of having to re-infer.
 
 If the CEO edits the draft before sending (detected on next turn or via end-session reconciliation), append the correction to `_hq/voice/corrections-email-writer.jsonl` per the schema in `shared/VOICE_CALIBRATION.md`.
 
@@ -652,7 +661,7 @@ The provenance builder DUAL-WRITES the send identity: the legacy per-provider id
 
 ### Examples
 
-**Example 1 — Short external reply:**
+**Example 1: Short external reply.**
 ```
 Tuesday 2pm works. I'll send the LOI draft by Monday EOD so you have time to
 review before the call.
@@ -660,7 +669,7 @@ review before the call.
 —Mira
 ```
 
-**Example 2 — Internal update:**
+**Example 2: Internal update.**
 ```
 Quick update on Sam:
 
@@ -670,12 +679,12 @@ customization package ready tomorrow morning.
 Mira
 ```
 
-**Example 3 — Cold outreach:**
+**Example 3: Cold outreach.**
 ```
 Hi Skyler,
 
 Came across your post on AI in PE last week. The point about deal teams
-using custom-tuned assistants resonated — that's exactly the work we're
+using custom-tuned assistants resonated. That's exactly the work we're
 doing at Chalette.
 
 Would a 20-minute call this or next week make sense? I can walk you through

@@ -200,22 +200,49 @@ to the CEO.
 
 ### Step 4 — Surface the result
 
+**THE CLOSING LINE IS COMPOSED, NEVER TYPED (OFFERS1 — MANDATORY).** All four
+endings — something flagged, warnings only, clean, nothing to read — come back
+from one composer, because the two this skill used to type are never offered
+here again: *"Say the word and I'll rewrite the flagged lines in your voice"*
+and *"Want me to smooth them?"* (attended test v5.31.0). This skill does not edit files — see
+"What this skill does NOT do" — so an offer to rewrite promises a verb that
+cannot act here, and M's rule of 2026-09-03 says the product acts or states
+plainly that it did not; it never hands the work back in a question.
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from offer_gate import deliverable_findings_line, SITE_CHECK_DELIVERABLES, compose
+
+# `res` is Step 2's return. `chat` is Step 3's and Step 3 is optional; when
+# no chat draft was scanned this session, `chat` is None and `chat_flags` is 0.
+chat = chat if "chat" in dir() else None
+chat_flags = 1 if (chat or {}).get("has_violation") else 0
+closing = deliverable_findings_line(
+    flagged=res["violation_count"] + res["error_count"] + chat_flags,
+    warned=res["warn_count"], scanned=res["scanned"])
+```
+
 - **Something flagged** (`violations > 0` or `errors > 0`, or chat text flagged):
   lead with the count, then paste the helper's `summary` string **verbatim** — it
   names each file by filename and the offending language in plain English. Add the
-  chat-draft finding (Step 3) if any. One closing line, no pressure:
-  > *"Worth a quick look before any of these go out. Say the word and I'll
-  > rewrite the flagged lines in your voice."*
-- **Only structural warnings** (`warns > 0`, no violations): a softer single line
-  — *"Nothing that would embarrass you; a couple of spots read a little
-  AI-shaped. Want me to smooth them?"*
-- **Clean** (all zero, nothing in chat): one honest line —
-  > *"Scanned [N] recent documents — all clean. Nothing reads AI-written and
-  > nothing private leaked. Good to send."*
-  (Use the real `scanned` count and pluralize naturally from it — "1 recent
-  document" / "3 recent documents", never "document(s)". If `scanned` is 0,
-  say there was nothing produced recently to check, and offer the
-  point-at-target form.)
+  chat-draft finding (Step 3) if any. Then `closing`, as its own line.
+- **Only structural warnings** (`warns > 0`, no violations): `closing` alone.
+- **Clean** (all zero, nothing in chat): `closing` alone — it uses the real
+  `scanned` count and pluralizes from it ("1 recent document" / "3 recent
+  documents", never "document(s)"), and when `scanned` is 0 it says there was
+  nothing produced recently to check. Name the point-at-target form as a
+  phrase they can type; never as a question.
+
+Pass the WHOLE reply through the offer fence before it goes out — every
+sentence you intend to print, once, and print what it returns:
+
+```python
+print(compose(SITE_CHECK_DELIVERABLES, whole_reply))
+```
+
+It raises rather than returning; a paragraph that cannot pass is a paragraph
+that should not have been written. Print `closing` on its own instead.
 
 Never include a file path, an internal token, or an event name in any line the
 CEO sees.

@@ -1176,7 +1176,15 @@ def detect_chronic_lateness(
     proposals = []
     for tid, weeks in sorted(weeks_late.items()):
         if len(weeks) >= min_late_weeks:
-            display = task_display_name(tid)
+            # RETIMENAME1 (cr1#146): this line is rendered in cleanup's Monday
+            # note (and the insight generator), not in the chat it is about.
+            # cr1#146 ruled that a renamed chat is named there by its CURRENT
+            # name (a `past-meetings` registration serves End of Day, and that
+            # is the chat the customer reads), so it takes the serving name.
+            # The watchdog's own rows in the same note keep the Scheduled
+            # sidebar's title (SPEC EOD2, task_watchdog._spoken_name); the two
+            # rules meet in one note and the owner knows it.
+            display = serving_display_name(tid)
             proposals.append({
                 "task": tid,
                 "late_weeks": len(weeks),

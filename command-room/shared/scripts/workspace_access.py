@@ -133,6 +133,14 @@ DEFAULT_TIMEOUT_S = 150
 RUN_HELPER_ALLOWLIST = frozenset({
     # reads and computes
     "data_root:resolve",
+    # DORMSCOPE1 (cr1#170): whose accounts the dormancy scan may rank
+    "dormancy:outreach_scope",
+    # DORMDOOR1 (cr1#316): the scan's required live-contact check. Discovery
+    # picks the mail and calendar tools from the run's tool list and the
+    # declared backends; the check merges the saved last touch with the live
+    # signals the model fetched. Both read or compute and write nothing.
+    "live_contact_check:discover_live_check_tools",
+    "live_contact_check:live_contact_check",
     "entity_resolve:resolve",
     "entity_resolve:resolve_all",
     "events_io:count_rows",
@@ -350,6 +358,24 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "maintenance_dispatcher:score_door_job",  # FIRE3 - the merged fire scores each script/door job beside the data (MAINTJOBS1 S-4)
     # PEOPLEWRITE2
     "people_writer:door_find_person",  # PEOPLEWRITE2 - people-crm's dedup read before a person write; an ambiguous name answered, never raised (D-W2-5)
+    # DOORHELP1 (cr1#518): three READS the drafting and triage skills name,
+    # refused on every merged seat until now. Each reads and writes nothing:
+    # the owner's person id off entities.json, the learned voice constraints
+    # off the corrections store and the voice block, and the thread payload
+    # (already reached through `morning_brief_helpers:thread_payloads`).
+    "primary_user:resolve_primary_user",  # DOORHELP1 - inbox triage's owner id
+    "draft_constraints:load_draft_constraints",  # DOORHELP1 - the drafting skills' learned constraints
+    "load_thread_knowledge:load_thread_knowledge",  # DOORHELP1 - the drafting skills' thread payload
+    # OBJDOOR1 (cr1#317): the objectives readout, the in-shell block's own
+    # composition in one read (inputs, health, due check-ins, skipped lines).
+    "objective_math:readout",
+    # MNSTEPS1 (cr1#550): two READS meeting-notes names, refused on every
+    # merged seat until now. Step 5h's scoped deal-signal detection (its
+    # proposals are written by `deal_signal_detector:propose_candidates`,
+    # on the write door) and the card's expiry sentence, composed from the
+    # workspace's own question lifetime. Both read and write nothing.
+    "deal_signal_detector:detect_deal_signals",  # MNSTEPS1 - Step 5h, detection only
+    "attribution_doors:card_expiry_sentence",  # MNSTEPS1 - Step 9c-bis, the expiry line
     "workspace_root:find_workspace_root",
 })
 
@@ -418,6 +444,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "schedule_backend:record_registration",  # SCHEDFAST1 (#101) - the trigger row AND the schedule_created receipt, one door call per created chat
     "schedule_config:write_schedule_skipped",  # SCHEDREG1 - the one refusal row a seat that cannot register writes
     "inbox_helpers:run_inbox_surface",  # INBOXDRIVE1
+    "inbox_helpers:stamp_last_triage",  # LASTTRIAGE1 (cr1#454) - the typed triage's LAST_TRIAGE.txt, stamped from the clock; it takes no time
     "maintenance_dispatcher:mark_fire_start",  # MAINTJOBS1
     "reconcile_sent_commitments:reconcile_and_receipt",  # MAINTJOBS1
     "chat_reconcile:reconcile_chat_and_receipt",  # MAINTJOBS1
@@ -448,6 +475,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "eod_helpers:reconcile_chat_staged",  # EODHARD3 - the chat leg over the chat batch staged raw, one call
     "eod_helpers:clear_fire_staging",  # EODHARD3 - the fire's staged files removed
     "eod_helpers:close_from_eod",  # EODTAP2 - a tapped mark done, drop or push on the End of Day's row list (MIGRATE3-EOD N-8)
+    "commitments_helpers:apply_row_action",  # WOTAP1 - a typed or clicked mine, theirs to [name] or drop on a Waiting On row (cr1#513)
     "friday_wrap_helpers:record_offer",  # MIGRATE3-FW - the earned door closed after the post
     "friday_wrap_helpers:plate_cut",  # MIGRATE3-FW - the wrap's plate cut (mints plate numbers)
     "friday_wrap_helpers:measure_line",  # MIGRATE3-FW - the one measure line (its plate count mints)
@@ -462,6 +490,48 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "people_writer:door_update_person",  # PEOPLEWRITE2 - people-crm's field change on a person on file
     "people_writer:door_record_person_fact",  # PEOPLEWRITE2 - people-crm's remember-a-fact, one person_fact_observed row
     "people_writer:door_auto_add_person",  # PEOPLEWRITE2 - people-crm's rich-context auto-add, the same-name gate first
+    # CFGRESET1 (cr1#249): "reset <skill> to defaults" on a merged seat. The
+    # writer takes a SKILL name checked against the known list, never a file
+    # name; `wipe_skill_config` itself stays off this list (LOWS2).
+    "skill_config_writer:reset_skill_config",
+    # DOORHELP1 (cr1#518): two WRITES the drafting skills name, refused on
+    # every merged seat until now. The card renderer lands its validated page
+    # under `_hq/.system/widgets`; the correction in passing appends to the
+    # corrections store and the ledger. Both are writers, so they are here
+    # and never on the read door's list.
+    "widget_transport:render_and_persist",  # DOORHELP1 - the card, its audit page landed
+    "correction_turn:handle_correction_turn",  # DOORHELP1 - a correction in passing recorded
+    # DECDOOR1 (cr1#315): the decision-log view's regeneration. It rewrites
+    # the decision log view, so it is a writer and refused on every merged
+    # seat without this door.
+    "render_decision_log:regenerate",  # DECDOOR1 - the decision log view rewritten
+    # OBJDOOR1 (cr1#317): the objective lifecycle writers the objectives
+    # skill and the apply-choices `cr-objectives` entry name. Each writes
+    # the objective thread and its `objective_*` row through the single
+    # objective writer, so each is refused on every merged seat without
+    # this door.
+    "objective_state:create_objective",  # OBJDOOR1 - new objective
+    "objective_state:record_report",  # OBJDOOR1 - the owner's status word
+    "objective_state:complete_objective",  # OBJDOOR1 - the completion path
+    "objective_state:archive_objective",  # OBJDOOR1 - the archive path
+    "objective_state:rebind_objective",  # OBJDOOR1 - a re-chosen tracking path
+    # MNSTEPS1 (cr1#550): meeting-notes' WRITES, refused on every merged
+    # seat until now, so the step was skipped and the reply still said the
+    # result was complete. Step 5e-bis's pass appends review proposals (and
+    # closes, when closing on evidence is on); the tracker regeneration
+    # rewrites its view; the entity-signal scan and the structured facts
+    # append proposals and fact rows; the deal proposer appends proposals;
+    # the card's questions land their page and spend the question budget.
+    "commitment_policy_pass:apply_meeting_closes",  # MNSTEPS1 - Step 5e-bis, the transcript in args_file
+    "render_master_tracker:regenerate",  # MNSTEPS1 - Step 5, the tracker view rewritten
+    "entity_signal_detector:run_entity_signal_scan",  # MNSTEPS1 - Step 5g, proposals
+    "entity_signal_detector:apply_structured_facts",  # MNSTEPS1 - Step 5g, structured facts
+    "deal_signal_detector:propose_candidates",  # MNSTEPS1 - Step 5h, proposals
+    "attribution_doors:render_card_questions",  # MNSTEPS1 - Step 9c-bis, the card's questions
+    # DRAFTREC1 (cr1#586): a Draft click's book record - the email_drafted
+    # row, the snapshot keyed to it, an edited body's corrections - which a
+    # merged seat had no door for, so a click once wrote nothing at all.
+    "voice_corrections:record_draft_click",  # DRAFTREC1 - apply-choices Step 4B, the body in args_file
     "deliverables:land",
 })
 
@@ -492,6 +562,27 @@ PLAN_ORIGIN_ENV = "CR_PLAN_ORIGIN"
 PLAN_ORIGIN_CONTAINER = "container"
 PLAN_ORIGIN_DEVICE = "device"
 RENDER_IN_CONTAINER_HINT = "render plan in the container"
+
+#: PLANID1 (cr1#518). The container's shell does not keep an `export` from one
+#: command to the next, so a `CR_DEVICE_WORKSPACE` exported for the first
+#: `plan` is gone by the second, and every later write line went out with no
+#: identity in front of it - refused at the door, 2 of 3 runs. The basename
+#: the pair is derived from is remembered in THIS SESSION'S OWN scratch
+#: (`delete_grant.session_scratch_file`: the session id or the container's
+#: temp directory, since the merged container has no `CLAUDE_CODE_TMPDIR`),
+#: never in the workspace. It is the folder's name, not the account: the uuid
+#: still never leaves this process.
+BASENAME_CACHE_NAME = "cr-workspace-basename"
+#: The verbs the door refuses without a named writer (`run_writer`, `write`,
+#: `append_jsonl`). A `plan` for one of these on a seat that should name its
+#: writer and cannot is refused HERE, so the model fixes the export and plans
+#: again instead of pasting a line the door will refuse. `remove` is not one:
+#: the door lets it through without a writer, so `plan` does too.
+PLAN_WRITE_VERBS = ("run_writer", "write", "append_jsonl")
+PLAN_IDENTITY_HINT = (
+    "export CR_DEVICE_WORKSPACE to the connectedFolders entry whose last "
+    "segment is the workspace basename, in the same command as plan, then "
+    "plan again")
 
 # How a helper child hands back a record it held rather than wrote.
 SIDECAR_MARKER = "\x00CR_SIDECARS\x00"
@@ -529,6 +620,40 @@ R_BINARY_UNSUPPORTED = "binary_unsupported"
 R_HELPER_FAILED = "helper_failed"
 R_BAD_ARGS = "bad_args"
 R_WRITE_UNVERIFIED = "write_unverified"
+R_WRITER_OWNED = "writer_owned"
+
+#: WSPLACE1 (cr1#546): the placeholder skill text carries for the anchored
+#: workspace. The run doors put the anchored workspace in for it before
+#: anything runs; the path fence refuses it anywhere it is left. It is never a
+#: folder name: the writer child's working directory is the workspace, so a
+#: literal `<WS>` used to become a stray folder inside the book, and the
+#: envelope said `ok: true` while the real settings did not change.
+WS_PLACEHOLDER = "<WS>"
+#: The one argument that names the workspace itself. On both run doors it must
+#: be the anchored workspace (or the placeholder for it); any other folder is
+#: refused before anything runs.
+WORKSPACE_ROOT_ARG = "workspace_root"
+
+#: WSPLACE1 (cr1#546): the one plain-English sentence a path refusal carries
+#: in `line`, by what the refused call would have done. It names no file,
+#: path or mechanism (preamble rule 6), and the chat says it as the answer.
+NOT_SAVED_LINE = ("Not saved: that change pointed at a folder that is not "
+                  "your Command Room folder, so nothing was written and "
+                  "nothing changed.")
+NOT_READ_LINE = ("Not read: that request pointed at a folder that is not "
+                 "your Command Room folder, so nothing was read.")
+NOT_REMOVED_LINE = ("Not removed: that request pointed at a folder that is "
+                    "not your Command Room folder, so nothing was removed.")
+
+#: Files ONE named writer owns (cr1#454). `write` refuses them and names the
+#: writer, so the only way in is that writer, which passes its own name as
+#: `owned_by` (the CLI never does). `LAST_TRIAGE.txt` is here because its
+#: time decides where the next triage's window starts, and its writer reads
+#: that time off the clock and takes none: a hand `write` was the one way a
+#: time the chat chose could still land.
+WRITER_OWNED_FILES = {
+    "_hq/inbox/LAST_TRIAGE.txt": "inbox_helpers:stamp_last_triage",
+}
 
 
 class StaleRead(RuntimeError):
@@ -543,6 +668,13 @@ class StaleRead(RuntimeError):
 # The discover block — the ONE thing that runs in the VM before the runtime is
 # installed. Stdlib only, no plugin imports, byte-identical everywhere it is
 # pasted (guard G68 pins that). Keep it at or under 40 lines.
+#
+# It writes NOTHING in the book (cr1#452, owner ruling 2026-10-27: the probe
+# leaves zero files). A delete test has to create the file it deletes, and on a
+# seat that cannot delete (the desktop bridge default) that file stays, so
+# `replace_over_existing` and `unlink` are left None (not measured). `flock` is
+# measured on the anchor file the block already found, opened read-only with a
+# shared non-blocking lock; a lock someone else holds still proves flock works.
 # ---------------------------------------------------------------------------
 
 DISCOVER_BLOCK = r"""python3 - <<'CR_DISCOVER'
@@ -566,17 +698,11 @@ if ws is not None:
         c = json.loads((rt / "current.json").read_text(encoding="utf-8")); d = str(c.get("dir") or c.get("version") or "")
         if c.get("version") and d and (rt / d).is_dir(): o["runtime_present"] = True; o["runtime_version"] = c["version"]; o["manifest_sha"] = c.get("manifest_sha"); o["staged_root"] = str(rt / d)
     except Exception: pass
-    s = ws / "_hq" / ".system"
     try:
-        s.mkdir(parents=True, exist_ok=True); a = s / ".cr-probe"; b = s / ".cr-probe.new"
-        a.write_text("1", encoding="utf-8"); b.write_text("2", encoding="utf-8"); os.replace(str(b), str(a))
-        o["probes"]["replace_over_existing"] = a.read_text(encoding="utf-8") == "2"
-    except Exception: o["probes"]["replace_over_existing"] = False
-    try:
-        u = s / ".cr-probe.u"; u.write_text("x", encoding="utf-8"); u.unlink(); o["probes"]["unlink"] = True
-    except Exception: o["probes"]["unlink"] = False
-    try:
-        import fcntl; f = open(s / ".cr-probe", "r+"); fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(f.fileno(), fcntl.LOCK_UN); f.close(); o["probes"]["flock"] = True
+        import fcntl
+        with open(ws / "_hq" / "data" / "entities.json", "rb") as f: fcntl.flock(f.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB); fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        o["probes"]["flock"] = True
+    except BlockingIOError: o["probes"]["flock"] = True
     except Exception: o["probes"]["flock"] = False
 print(json.dumps(o))
 CR_DISCOVER"""
@@ -954,6 +1080,13 @@ def fence_path(vm_path: Path, rel: str) -> Tuple[Optional[Path], Optional[str]]:
     escape fails `relative_to`), never under the runtime cache (code is not
     data), never the writer lock (its bytes must not change).
     """
+    # WSPLACE1 (cr1#546): a placeholder segment is never a folder name.
+    if isinstance(rel, str) and _has_placeholder(rel):
+        return None, R_REFUSED_PATH
+    # LEDGERPLACE1 (cr1#124): a Windows drive or share path on a host where it
+    # is not absolute would be joined onto the book as a folder name.
+    if isinstance(rel, str) and _foreign_windows_path(rel):
+        return None, R_REFUSED_PATH
     vm_path = Path(vm_path).resolve()
     try:
         target = (vm_path / rel).resolve()
@@ -971,13 +1104,143 @@ def fence_path(vm_path: Path, rel: str) -> Tuple[Optional[Path], Optional[str]]:
     return target, None
 
 
+#: LEDGERPLACE1 (cr1#124): whether this host reads a drive path as absolute.
+#: A module flag so the suite can ask the question a Linux host asks.
+_IS_WINDOWS = os.name == "nt"
+
+#: A drive path (`C:` then a slash or backslash) or a share path (two
+#: backslashes) at the start of the value.
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _foreign_windows_path(value: str) -> bool:
+    """True when `value` is spelled as a Windows drive or share path on a
+    host that does not read it as absolute. There it would resolve to a
+    folder INSIDE the book named after the drive, and a write or append would
+    create that folder (cr1#124)."""
+    return (not _IS_WINDOWS) and bool(_WINDOWS_PATH_RE.match(value.strip()))
+
+
+def _has_placeholder(value: str) -> bool:
+    """True when one path segment of `value` is the `<WS>` placeholder."""
+    return any(seg.strip() == WS_PLACEHOLDER
+               for seg in re.split(r"[\\/]", value))
+
+
+def path_refusal_line(verb: str) -> str:
+    """WSPLACE1 (cr1#546): the plain-English sentence for a path refusal on
+    `verb` - the one the chat says, so a refused save is never reported as
+    saved."""
+    if verb in ("read", "run_helper"):
+        return NOT_READ_LINE
+    if verb == "remove":
+        return NOT_REMOVED_LINE
+    return NOT_SAVED_LINE
+
+
+def _path_line(verb: str, reason: Optional[str]) -> Dict[str, str]:
+    """`{"line": ...}` for a `refused_path` refusal on `verb`, else nothing:
+    the other fence reasons are not about the folder and keep their shape."""
+    return {"line": path_refusal_line(verb)} if reason == R_REFUSED_PATH else {}
+
+
+def _placeholder_line(verb: str, rel: Any) -> Dict[str, str]:
+    """`{"line": ...}` when a path verb's `rel` was refused for a `<WS>`
+    segment, else nothing: an ordinary outside path keeps main's envelope, so
+    `deliverables` still says its own sentence for it."""
+    if isinstance(rel, str) and _has_placeholder(rel):
+        return {"line": path_refusal_line(verb)}
+    return {}
+
+
+#: The argument names that hold a path, and so may carry `<WS>` for the
+#: anchored workspace: `workspace_root`, `root_or_file`, and any name ending
+#: in one of these. Any other argument's text is content and is never
+#: rewritten (a note that happens to begin `<WS>/` keeps its words).
+PATH_ARG_SUFFIXES = ("_path", "_root", "_dir", "_file")
+PATH_ARG_NAMES = frozenset({WORKSPACE_ROOT_ARG, "root_or_file"})
+
+
+def _is_path_arg(key: Any) -> bool:
+    return isinstance(key, str) and (key in PATH_ARG_NAMES
+                                     or key.lower().endswith(PATH_ARG_SUFFIXES))
+
+
+def _fill_placeholder(value: Any, anchored: str, depth: int = 0,
+                      key: Any = None, left: Optional[List[str]] = None) -> Any:
+    """`value` with the anchored workspace put in for `<WS>` in every
+    PATH-NAMED argument: a value that IS the placeholder, or begins `<WS>/`.
+    A bare `<WS>` under any other name is collected in `left` (the door
+    refuses it); other text is content and is left as it is. A content key's
+    value (bytes in base64) is never walked, as the fence never walks it;
+    past the fence's own depth cap nothing is touched and the fence refuses."""
+    if depth > ARG_DEPTH_CAP:
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not _is_path_arg(key):
+            if text == WS_PLACEHOLDER and left is not None:
+                left.append(value)
+            return value
+        if text == WS_PLACEHOLDER:
+            return anchored
+        for sep in ("/", "\\"):
+            if text.startswith(WS_PLACEHOLDER + sep):
+                return anchored + "/" + text[len(WS_PLACEHOLDER) + 1:]
+        return value
+    if isinstance(value, dict):
+        return {k: (v if isinstance(k, str)
+                    and k.lower().endswith(CONTENT_KEY_SUFFIXES)
+                    else _fill_placeholder(v, anchored, depth + 1, k, left))
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_fill_placeholder(v, anchored, depth + 1, key, left)
+                for v in value]
+    return value
+
+
+def fill_workspace_args(vm_path: Path, args: Dict[str, Any]
+                        ) -> Tuple[Dict[str, Any], Optional[Tuple[str, str]]]:
+    """`(arguments, None)` with the anchored workspace put in for `<WS>`, or
+    `(arguments, (offending value, reason))` when `workspace_root` names a
+    folder that is not the anchored workspace, or a bare `<WS>` sits under an
+    argument that is not a path (WSPLACE1, cr1#546).
+
+    The door fills in the workspace itself instead of trusting the model to
+    have substituted it. `workspace_root` must then BE the anchored
+    workspace: a folder outside it, a folder inside it that is not its root,
+    or a bare name that would become a new folder inside it, are all refused
+    `refused_path`. A `workspace_root` that is not a string is the writer's
+    own argument error, left to it.
+    """
+    anchored = str(vm_path)
+    left: List[str] = []
+    filled = _fill_placeholder(dict(args or {}), anchored, left=left)
+    if left:
+        return filled, (left[0], R_REFUSED_PATH)
+    root = filled.get(WORKSPACE_ROOT_ARG)
+    if isinstance(root, str):
+        here = Path(anchored).resolve()
+        try:
+            named = (here / root).resolve()
+        except (OSError, ValueError):
+            named = None
+        if named != here:
+            return filled, (root, R_REFUSED_PATH)
+    return filled, None
+
+
 # ---------------------------------------------------------------------------
 # Host-face verbs
 # ---------------------------------------------------------------------------
 
 def read(rel: str, *, binary: bool = False, ctx: Optional[Dict[str, Any]] = None,
          env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """`{ok, rel, text|b64, size, mtime_ns, sha256}` for one workspace file."""
+    """`{ok, rel, text|b64, size, mtime_ns, sha256}` for one workspace file.
+
+    A text read of the rules file at the book's root (BRAIN) also carries
+    `rules_mark`, `rules_check` and `rules_missing_line` (RULESLINE1,
+    cr1#517; `rules_check_fields`)."""
     started = time.time()
     ctx = resolve(env=env) if ctx is None else ctx
     refusal = _preflight("read", ctx, started)
@@ -985,7 +1248,8 @@ def read(rel: str, *, binary: bool = False, ctx: Optional[Dict[str, Any]] = None
         return refusal
     target, reason = fence_path(Path(ctx["vm_path"]), rel)
     if reason is not None:
-        return _refuse("read", ctx, started, reason, rel=rel)
+        return _refuse("read", ctx, started, reason, rel=rel,
+                       **_placeholder_line("read", rel))
     try:
         raw = target.read_bytes()
         stat = target.stat()
@@ -1006,7 +1270,157 @@ def read(rel: str, *, binary: bool = False, ctx: Optional[Dict[str, Any]] = None
             out["text"] = raw.decode("utf-8")
         except UnicodeDecodeError:
             out["b64"] = base64.b64encode(raw).decode("ascii")
+    if "text" in out and _is_brain_target(Path(ctx["vm_path"]), target):
+        out.update(rules_check_fields(out["text"], env))
     return _envelope("read", ctx, started, ok=True, **out)
+
+
+# ---------------------------------------------------------------------------
+# RULESLINE1 (cr1#517) - is the book's always-loaded rules file in this chat?
+#
+# On a merged seat the rules file can drop out of a chat partway through (the
+# one seen trigger is a repo attached mid-chat), and every routing rule the
+# owner wrote goes with it, silently. Only the model can see its own context,
+# so the comparison is the model's; the door supplies what it compares. Every
+# skill already reads BRAIN first (preamble rule 2), so the read of the rules
+# file is the one shared place: its envelope carries a short, stable line from
+# the file, the instruction, and the one sentence to say. Detection, not
+# prevention (owner ruling on cr1#517, 2026-10-29).
+# ---------------------------------------------------------------------------
+
+#: The one sentence the chat says when the rules are missing. No file name,
+#: path or mechanism in it (preamble rule 6).
+RULES_MISSING_LINE = ("Your workspace rules are not loaded in this chat, so I "
+                      "am working without them; start a new chat to load them.")
+
+#: What the model does with `rules_mark`. Read by the model, never said.
+RULES_CHECK = (
+    "Look for the rules_mark line in the workspace rules this chat loaded when "
+    "it started, not in this reply or in any file read since. If it is not "
+    "there, or the chat was told that the rules file at the root of this "
+    "workspace folder is no longer present, say rules_missing_line once in "
+    "this chat, as its own sentence, then carry on with the task. A notice "
+    "about any other rules file, such as one inside an attached repo, does "
+    "not count. If the line is there, say nothing about it. Never quote "
+    "rules_mark."
+)
+
+#: The longest mark, in characters; a longer line is cut on a word.
+RULES_MARK_MAX = 100
+
+#: The shortest body line that may be the mark, in words and characters.
+RULES_MARK_MIN_WORDS = 3
+RULES_MARK_MIN_CHARS = 20
+
+# A line naming a path, a file or an address, or carrying a digit or a
+# currency sign (a phone number, an amount, a date), is never the mark. The
+# same reply already carries the whole file in `text`, so the mark adds no new
+# exposure; the filter keeps the one line the chat is told to look for free of
+# locations and figures.
+_RULES_MARK_SKIP_RE = re.compile(
+    r"[\\/@\d$\u00a2\u00a3\u00a5\u20ac\u20b9\u20a9\u20bd\u20ba]"
+    r"|\b[\w.-]+\.(?:md|json|jsonl|py|txt|html?|docx|xlsx|pptx|pdf|csv"
+    r"|ya?ml|sh)\b", re.I)
+_RULES_MARK_LEAD_RE = re.compile(r"^(?:>+\s*)*(?:[-*+]|\d+[.)])?\s*")
+_RULES_MARK_FENCES = ("```", "~~~")
+
+
+def _is_brain_target(ws: Path, target: Path) -> bool:
+    """True when `target` is exactly the file `discover` answers as BRAIN:
+    `CLAUDE.md` at the book's root. A project folder's file of the same name,
+    or another spelling of the name, is not it."""
+    try:
+        return target.name == "CLAUDE.md" and target.parent == Path(ws).resolve()
+    except (OSError, ValueError):
+        return False
+
+
+def _rules_mark_text(line: str) -> str:
+    """`line` with its lead marks (a quote, a list mark) and its bold, code
+    and strike marks taken off, spaces collapsed."""
+    line = _RULES_MARK_LEAD_RE.sub("", line, count=1)
+    for mark in ("**", "__", "~~", "`"):
+        line = line.replace(mark, "")
+    return " ".join(line.split())
+
+
+def _rules_mark_cut(line: str) -> str:
+    if len(line) <= RULES_MARK_MAX:
+        return line
+    cut = line[:RULES_MARK_MAX + 1].rsplit(" ", 1)[0]
+    return cut if cut else line[:RULES_MARK_MAX]
+
+
+def rules_mark(text: Any) -> Optional[str]:
+    """One short, stable line from the rules file, or None when it has none.
+
+    The first plain body line, in file order: not a heading, not a table row,
+    outside generated `LIVE-STATE` blocks, HTML comments and code fences
+    (backtick or tilde), with its quote or list mark and its bold, code and
+    strike marks taken off, at least `RULES_MARK_MIN_WORDS` words and
+    `RULES_MARK_MIN_CHARS` characters long, and naming no path, file or
+    address and carrying no digit or currency sign. Only when no body line
+    qualifies, the first heading that passes the same filter. Cut to
+    `RULES_MARK_MAX` characters on a word. A leading byte order mark is
+    dropped first. Hand-written lines come first in a book's rules file, so
+    the mark does not move when a generated register is rewritten.
+    """
+    if not isinstance(text, str):
+        return None
+    text = text.lstrip("\ufeff")
+    heading: Optional[str] = None
+    in_fence = in_comment = in_live = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if in_live:
+            if line.startswith("<!-- /LIVE-STATE"):
+                in_live = False
+            continue
+        if line.startswith(_RULES_MARK_FENCES):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        if line.startswith("<!-- LIVE-STATE"):
+            in_live = True
+            continue
+        if line.startswith("<!--"):
+            in_comment = "-->" not in line
+            continue
+        if not line or line.startswith("|"):
+            continue
+        if line.startswith("#"):
+            if heading is None:
+                text_h = _rules_mark_text(line.lstrip("#"))
+                if (len(text_h.split()) >= RULES_MARK_MIN_WORDS
+                        and not _RULES_MARK_SKIP_RE.search(text_h)):
+                    heading = _rules_mark_cut(text_h)
+            continue
+        body = _rules_mark_text(line)
+        if (len(body.split()) < RULES_MARK_MIN_WORDS
+                or len(body) < RULES_MARK_MIN_CHARS
+                or _RULES_MARK_SKIP_RE.search(body)):
+            continue
+        return _rules_mark_cut(body)
+    return heading
+
+
+def rules_check_fields(text: Any, env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """`{rules_mark, rules_check, rules_missing_line}` for a read of the rules
+    file, or `{}`: on a scheduled fire (there is no chat to start afresh) and
+    when the file has no line to mark."""
+    env = os.environ if env is None else env
+    if str(env.get("CR_FIRED_VIA", "") or "").strip().lower() == "scheduled":
+        return {}
+    mark = rules_mark(text)
+    if not mark:
+        return {}
+    return {"rules_mark": mark, "rules_check": RULES_CHECK,
+            "rules_missing_line": RULES_MISSING_LINE}
 
 
 def manifest_modules(ctx: Dict[str, Any]) -> frozenset:
@@ -1035,14 +1449,34 @@ def manifest_modules(ctx: Dict[str, Any]) -> frozenset:
     return frozenset(names)
 
 
+def _tz_reaches_the_child(ctx: Dict[str, Any], platform: str) -> bool:
+    """Whether `TZ=<IANA name>` may be handed to the helper child (DOORTZ1,
+    cr1#243). The Windows C runtime does not read IANA names in `TZ`: it
+    falls back to a fixed offset, and a naive local read inside the child
+    (`datetime.now()`, a day boundary, a due phrase) is shifted, so an evening
+    write can be dated tomorrow. A child started by a door process on a
+    Windows host therefore gets NO `TZ`, and reads the host's own clock, which
+    on a desktop seat is the owner's. The merged seat's sandbox VM is Linux
+    whatever the computer runs, so a VM-mode child keeps the zone; so does
+    every POSIX host."""
+    if ctx.get("mode") == VM:
+        return True
+    return not str(platform or "").lower().startswith("win")
+
+
 def _helper_child_env(ctx: Dict[str, Any],
-                      env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+                      env: Optional[Dict[str, str]] = None,
+                      *, platform: Optional[str] = None) -> Dict[str, str]:
     """The env block every helper process gets (gap analysis §4.2.4).
 
     `TZ` is the workspace zone, not the host's: under strategy 2 the helpers run
     in a UTC VM, and the machine-local naive reads (`late_fire`, `receipts`, the
-    lock diagnostics) would otherwise resolve to the wrong day. `CR_DATA_ROOT`
-    is REMOVED, never set — relocating the substrate is not this layer's call.
+    lock diagnostics) would otherwise resolve to the wrong day. On a Windows
+    host outside the VM the zone is withheld instead (`_tz_reaches_the_child`,
+    DOORTZ1 cr1#243): the C runtime there misreads an IANA name as a fixed
+    offset. `platform` defaults to this process's `sys.platform` and is the
+    lane suite's seam. `CR_DATA_ROOT` is REMOVED, never set — relocating the
+    substrate is not this layer's call.
     """
     base = dict(os.environ if env is None else env)
     base.pop("CR_DATA_ROOT", None)
@@ -1056,7 +1490,7 @@ def _helper_child_env(ctx: Dict[str, Any],
     # best-effort writer on a read path can hold its record; nothing else
     # changes, and an in-process or in-shell reader never sees this key.
     base[HELPER_DOOR_ENV] = "run_helper"
-    if ctx.get("tz"):
+    if ctx.get("tz") and _tz_reaches_the_child(ctx, platform or sys.platform):
         base["TZ"] = str(ctx["tz"])
     if ctx.get("runtime_version"):
         base["CR_RUNTIME_VERSION"] = str(ctx["runtime_version"])
@@ -1314,6 +1748,12 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
         return _refuse("run_helper", ctx, started, R_BAD_ARGS, name=name)
     if module not in manifest_modules(ctx):
         return _refuse("run_helper", ctx, started, R_NOT_IN_MANIFEST, name=name)
+    # DOORHELP1 (cr1#518): a WRITER asked for through the read door is still
+    # refused, and the refusal names the door that runs it, so a skill that
+    # took the wrong verb learns the route instead of a bare no.
+    if name in RUN_WRITER_ALLOWLIST:
+        return _refuse("run_helper", ctx, started, R_NOT_ALLOWED_HELPER, name=name,
+                       next="run_writer")
     if name not in RUN_HELPER_ALLOWLIST:
         return _refuse("run_helper", ctx, started, R_NOT_ALLOWED_HELPER, name=name)
     # BRIDGE3 (Train 2b §5 MUST 1): a read's payload too large or too
@@ -1331,10 +1771,16 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
             return _refuse("run_helper", ctx, started, R_BAD_ARGS, name=name,
                            detail="args_file must hold a JSON object")
         args = dict(loaded, **dict(args or {}))
+    # WSPLACE1 (cr1#546): the door puts the anchored workspace in for `<WS>`
+    # and refuses a `workspace_root` that is any other folder.
+    args, wrong_root = fill_workspace_args(Path(ctx["vm_path"]), dict(args or {}))
+    if wrong_root is not None:
+        return _refuse("run_helper", ctx, started, wrong_root[1], name=name,
+                       arg=wrong_root[0], line=path_refusal_line("run_helper"))
     offender = fence_helper_args(Path(ctx["vm_path"]), dict(args or {}))
     if offender is not None:
         return _refuse("run_helper", ctx, started, offender[1], name=name,
-                       arg=offender[0])
+                       arg=offender[0], **_path_line("run_helper", offender[1]))
 
     staged = ctx.get("staged_root")
     scripts = str(Path(staged) / "shared" / "scripts") if staged else str(_scripts_dir())
@@ -1521,10 +1967,17 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
                            detail="args_file must hold a JSON object")
         bound.update(loaded)
     bound.update(dict(args or {}))
+    # WSPLACE1 (cr1#546): the door puts the anchored workspace in for `<WS>`
+    # and refuses a `workspace_root` that is any other folder, with the one
+    # sentence that says nothing was saved. Nothing has run.
+    bound, wrong_root = fill_workspace_args(Path(ctx["vm_path"]), bound)
+    if wrong_root is not None:
+        return _refuse("run_writer", ctx, started, wrong_root[1], name=name,
+                       arg=wrong_root[0], line=path_refusal_line("run_writer"))
     offender = fence_helper_args(Path(ctx["vm_path"]), bound)
     if offender is not None:
         return _refuse("run_writer", ctx, started, offender[1], name=name,
-                       arg=offender[0])
+                       arg=offender[0], **_path_line("run_writer", offender[1]))
 
     refusal = _device_origin_refusal("run_writer", ctx, started, env)
     if refusal is not None:
@@ -1635,13 +2088,34 @@ def _is_append_only(target_name: str) -> bool:
     return target_name == "events.jsonl" or bool(_EVENTS_SHARD_RE.match(target_name))
 
 
+def _writer_owner(root: Path, target: Path) -> Optional[str]:
+    """The writer that owns `target` (`WRITER_OWNED_FILES`), or None.
+
+    Compared on the fenced, resolved target, relative to the workspace root and
+    case-folded, so a different spelling of the same file is still that file.
+    """
+    try:
+        rel = target.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    for owned, writer in WRITER_OWNED_FILES.items():
+        if rel.casefold() == owned.casefold():
+            return writer
+    return None
+
+
 def write(rel: str, data, expected_mtime: Optional[int] = None, *,
           expected_rev: Optional[int] = None,
           create_parents: Optional[bool] = None,
           holder: str = "workspace_access",
           ctx: Optional[Dict[str, Any]] = None,
-          env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+          env: Optional[Dict[str, str]] = None,
+          owned_by: Optional[str] = None) -> Dict[str, Any]:
     """Compare-and-swap one workspace file through the canonical writers.
+
+    A file on `WRITER_OWNED_FILES` is refused `writer_owned`, naming its
+    writer, unless `owned_by` is that writer (cr1#454). Only the owning writer
+    passes it; the CLI has no way to.
 
     `events.jsonl` (and its year shards) are REFUSED: an append-only ledger is
     never whole-file written, and `append_jsonl` is the door. `entities.json` /
@@ -1688,10 +2162,15 @@ def write(rel: str, data, expected_mtime: Optional[int] = None, *,
         return refusal
     target, reason = fence_path(Path(ctx["vm_path"]), rel)
     if reason is not None:
-        return _refuse("write", ctx, started, reason, rel=rel)
+        return _refuse("write", ctx, started, reason, rel=rel,
+                       **_placeholder_line("write", rel))
     if _is_append_only(target.name):
         return _refuse("write", ctx, started, R_REFUSED_APPEND_ONLY, rel=rel,
                        next="append_jsonl")
+    owner = _writer_owner(Path(ctx["vm_path"]), target)
+    if owner is not None and owned_by != owner:
+        return _refuse("write", ctx, started, R_WRITER_OWNED, rel=rel,
+                       next="run_writer", name=owner)
 
     if isinstance(data, str):
         payload = data.encode("utf-8")
@@ -1850,7 +2329,8 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
         return refusal
     target, reason = fence_path(Path(ctx["vm_path"]), rel)
     if reason is not None:
-        return _refuse("append_jsonl", ctx, started, reason, rel=rel)
+        return _refuse("append_jsonl", ctx, started, reason, rel=rel,
+                       **_placeholder_line("append_jsonl", rel))
     if not (target.name in REGISTERED_JSONL or _EVENTS_SHARD_RE.match(target.name)):
         return _refuse("append_jsonl", ctx, started, R_NOT_REGISTERED, rel=rel)
     rows = list(rows or [])
@@ -1871,8 +2351,13 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
             # A typed refusal (LeaseLost -> `lease_lost` + LEASE_LOST_LINE) answers by its
             # own reason and pinned line, the way run_helper / run_writer already do
             # (REVIEW_T2_LEASE2 N-2). Nothing was appended when it is said.
+            # LEDGERPLACE1 (cr1#124): a ledger whose folder does not exist
+            # also carries its plain "Not saved" sentence as `line`.
+            extra = ({"line": str(getattr(exc, "line", ""))}
+                     if str(typed) == R_MISSING_PARENT else {})
             return _refuse("append_jsonl", ctx, started, str(typed), rel=rel,
-                           detail=str(getattr(exc, "line", "") or f"{type(exc).__name__}: {exc}"))
+                           detail=str(getattr(exc, "line", "") or f"{type(exc).__name__}: {exc}"),
+                           **extra)
         return _refuse("append_jsonl", ctx, started, "append_refused", rel=rel,
                        detail=f"{type(exc).__name__}: {exc}")
     return _envelope("append_jsonl", ctx, started, ok=True, rel=rel,
@@ -1942,7 +2427,8 @@ def remove(rel: str, *, holder: str = "workspace_access",
         return refusal
     target, reason = fence_path(Path(ctx["vm_path"]), rel)
     if reason == R_REFUSED_PATH:
-        return _refuse("remove", ctx, started, R_REFUSED_PATH, rel=rel)
+        return _refuse("remove", ctx, started, R_REFUSED_PATH, rel=rel,
+                       **_placeholder_line("remove", rel))
     if reason is not None:
         # The runtime cache and the lock: refused one fence earlier, reported
         # here under the name the caller's own rule uses.
@@ -2334,14 +2820,14 @@ def _derived_writer_pair(ctx: Dict[str, Any],
     if not account:
         return {}
     basename = str(ctx.get("basename") or "").strip()
+    from_export = False
     if not basename:
         for key in ("CR_DEVICE_WORKSPACE", "CR_WORKSPACE"):
             raw = str(env.get(key, "")).strip().rstrip("/\\")
             if raw:
                 basename = PurePosixPath(raw.replace("\\", "/")).name
+                from_export = True
                 break
-    if not basename:
-        return {}
     try:
         _ensure_scripts_on_path()
         import writer_identity  # type: ignore
@@ -2350,6 +2836,21 @@ def _derived_writer_pair(ctx: Dict[str, Any],
             # A seat that keeps today's identities byte for byte forwards
             # nothing — the same fence `writer_id()` applies at the far end.
             return {}
+    except Exception:  # noqa: BLE001 — identity never blocks a rendered command
+        return {}
+    # PLANID1 (cr1#518): only a seat that forwards a pair remembers or
+    # recalls the basename; a legacy seat's scratch is never touched. Only an
+    # EXPORTED folder is remembered: a resolved context's basename is this
+    # host's own workspace and needs no memory, and a caller handing a ctx
+    # (a suite) must not seed the session's scratch with its folder.
+    if basename:
+        if from_export:
+            _remember_basename(basename, env)
+    else:
+        basename = _remembered_basename(env)
+    if not basename:
+        return {}
+    try:
         org = str(env.get("CLAUDE_CODE_ORGANIZATION_UUID", "")).strip() or None
         return {
             "CR_WRITER_ID": writer_identity.derive(account, basename, org),
@@ -2358,6 +2859,99 @@ def _derived_writer_pair(ctx: Dict[str, Any],
         }
     except Exception:  # noqa: BLE001 — identity never blocks a rendered command
         return {}
+
+
+def _basename_cache(env: Dict[str, str]) -> Optional[Path]:
+    """This session's own scratch file for the basename, or None when nothing
+    names the session (no scratch, no memory). Resolved by
+    `delete_grant.session_scratch_file`: the merged container has no
+    `CLAUDE_CODE_TMPDIR`, so the session id or the container's own temp
+    directory is what anchors it there. Never a path inside the workspace."""
+    try:
+        _ensure_scripts_on_path()
+        import delete_grant  # type: ignore
+
+        path, _anchor = delete_grant.session_scratch_file(
+            BASENAME_CACHE_NAME, env)
+    except Exception:  # noqa: BLE001 - no resolver, no memory
+        return None
+    return path
+
+
+def _clean_basename(value: str) -> Optional[str]:
+    value = str(value or "").strip()
+    if (not value or len(value) > 255 or value in (".", "..")
+            or any(c in value for c in "/\\\n\r\x00")):
+        return None
+    return value
+
+
+def _remember_basename(basename: str, env: Dict[str, str]) -> None:
+    """PLANID1: best effort - a scratch that cannot be written never blocks."""
+    path = _basename_cache(env)
+    clean = _clean_basename(basename)
+    if path is None or clean is None:
+        return
+    try:
+        if path.is_file() and path.read_text(encoding="utf-8").strip() == clean:
+            return
+        path.write_text(clean, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _remembered_basename(env: Dict[str, str]) -> Optional[str]:
+    path = _basename_cache(env)
+    if path is None:
+        return None
+    try:
+        return _clean_basename(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+
+
+def plan_identity_missing(verb: str, ctx: Dict[str, Any],
+                          env: Optional[Dict[str, str]] = None) -> bool:
+    """PLANID1 (cr1#518): True when `plan` is asked for a WRITE in the
+    container, which holds an account to derive from, keeps no legacy identity, and could not
+    put a writer pair in front of the line. Pasting that line can only end in
+    `writer_identity_required` at the door, so `plan` refuses it first."""
+    if verb not in PLAN_WRITE_VERBS or ctx.get("mode") != CONTAINER:
+        # Only the container: there the door can never run on this host, so
+        # the line can only go to a device that holds no account. A legacy
+        # or local seat's door derives the writer beside the data itself.
+        return False
+    env = dict(os.environ) if env is None else dict(env)
+    if not str(env.get("CLAUDE_CODE_ACCOUNT_UUID", "") or "").strip():
+        return False
+    try:
+        _ensure_scripts_on_path()
+        import writer_identity  # type: ignore
+
+        if writer_identity.detected_mode(env) in writer_identity.LEGACY_ID_MODES:
+            return False
+    except Exception:  # noqa: BLE001 - no mode read is no verdict
+        return False
+    return not forward_env(ctx, env).get("CR_WRITER_ID")
+
+
+def plan_on_device_without_identity(verb: str, ctx: Dict[str, Any],
+                                    env: Optional[Dict[str, str]] = None
+                                    ) -> bool:
+    """PLANID1 (cr1#518): True when `plan` for a WRITE runs on the DEVICE
+    (this file is the staged runtime beside the folder, VM mode) and no
+    writer can be named here. The device never holds the account uuid, so a
+    line rendered here forwards nothing, and `_device_origin_refusal` refuses
+    it on this same host; `plan` gives that verdict first, with the same
+    hint (render the plan in the container)."""
+    if verb not in PLAN_WRITE_VERBS or ctx.get("mode") != VM:
+        return False
+    if _running_from_runtime_cache() is None:
+        return False
+    env = dict(os.environ) if env is None else dict(env)
+    if forward_env(ctx, env).get("CR_WRITER_ID"):
+        return False
+    return not _identity_available(env)
 
 
 def _handed_writer_pair(env: Dict[str, str]) -> Dict[str, str]:
@@ -2626,34 +3220,24 @@ def discover(ctx: Optional[Dict[str, Any]] = None, *,
 
 
 def _run_probes(ws: Path) -> Dict[str, Any]:
-    """The three mount facts, run against `_hq/.system/` exactly as the block
-    runs them: can `os.replace` land on an existing file, does `unlink` work,
-    does `flock` raise. On the merged mount the answers are True / False / True
+    """The mount facts, run exactly as the block runs them, and like the block
+    writing nothing in the book (cr1#452: the probe leaves zero files).
+
+    `replace_over_existing` and `unlink` stay None (not measured): testing a
+    delete needs a file to delete, and on a seat that cannot delete that file
+    is what stays behind. `flock` is measured on the anchor file
+    `_hq/data/entities.json`, opened read-only with a shared non-blocking lock;
+    a lock someone else holds (`BlockingIOError`) still proves flock works.
+    The merged mount's answers for the two unmeasured facts were True / False
     (`P1_RESULT_2026-09-19.md`)."""
     probes: Dict[str, Any] = {"replace_over_existing": None, "unlink": None, "flock": None}
-    system = ws / "_hq" / ".system"
-    try:
-        system.mkdir(parents=True, exist_ok=True)
-        a = system / ".cr-probe"
-        b = system / ".cr-probe.new"
-        a.write_text("1", encoding="utf-8")
-        b.write_text("2", encoding="utf-8")
-        os.replace(str(b), str(a))
-        probes["replace_over_existing"] = a.read_text(encoding="utf-8") == "2"
-    except Exception:
-        probes["replace_over_existing"] = False
-    try:
-        u = system / ".cr-probe.u"
-        u.write_text("x", encoding="utf-8")
-        u.unlink()
-        probes["unlink"] = True
-    except Exception:
-        probes["unlink"] = False
     try:
         import fcntl  # noqa: F401 — absent on Windows, which answers the probe
-        with open(system / ".cr-probe", "r+") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with open(ws / "_hq" / "data" / "entities.json", "rb") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        probes["flock"] = True
+    except BlockingIOError:
         probes["flock"] = True
     except Exception:
         probes["flock"] = False
@@ -2788,8 +3372,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         if len(argv) < 2:
             sys.stderr.write("plan needs a verb\n")
             return 2
+        # DOORJSON1 (cr1#251): no RecursionError clause here on purpose.
+        # `plan` compacts its --json best-effort and forwards the raw text
+        # when it cannot, so a payload nested past the limit renders a
+        # command the data verb above refuses when it runs; and
+        # `ForwardRefused` subclasses ValueError, so a generic clause before
+        # it would swallow the forwarded-identity refusal and its `key`.
+        plan_ctx = resolve()
+        identity_hint = None
+        if plan_identity_missing(argv[1], plan_ctx):
+            identity_hint = PLAN_IDENTITY_HINT
+        elif plan_on_device_without_identity(argv[1], plan_ctx):
+            identity_hint = RENDER_IN_CONTAINER_HINT
+        if identity_hint:
+            # PLANID1 (cr1#518): a write line with no writer in front of it
+            # is refused at the door every time; stop here, where the fix
+            # (the export, or planning in the container) is one command away.
+            try:
+                _ensure_scripts_on_path()
+                import receipts as _receipts  # type: ignore
+
+                line = _receipts.WRITER_IDENTITY_REQUIRED_LINE
+            except Exception:  # noqa: BLE001
+                line = ""
+            return _print(_refuse("plan", plan_ctx, started,
+                                  R_WRITER_IDENTITY_REQUIRED,
+                                  planned_verb=argv[1], line=line,
+                                  hint=identity_hint))
         try:
-            rendered = plan(argv[1], _flag(argv, "--json") or "{}")
+            rendered = plan(argv[1], _flag(argv, "--json") or "{}", ctx=plan_ctx)
         except ForwardRefused as exc:
             # A forwarded value that cannot be rendered safely is a STOP, not a
             # command with the value escaped or dropped: the model pastes what
@@ -2807,8 +3418,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ctx = resolve()
     try:
         args = json.loads(_flag(argv, "--json") or "{}")
-    except ValueError as exc:
-        return _print(_refuse(verb, ctx, started, R_BAD_ARGS, detail=str(exc)))
+    except (ValueError, RecursionError) as exc:
+        # DOORJSON1 (cr1#251): a payload nested past the interpreter's limit
+        # raises RecursionError out of json.loads, not ValueError; it is the
+        # same bad argument and gets the same typed refusal, never a traceback
+        # (the args_file path already catches it: see run_writer).
+        return _print(_refuse(verb, ctx, started, R_BAD_ARGS,
+                              detail=f"--json: {type(exc).__name__}: {exc}"[:300]))
     if not isinstance(args, dict):
         return _print(_refuse(verb, ctx, started, R_BAD_ARGS,
                               detail="--json must be an object"))

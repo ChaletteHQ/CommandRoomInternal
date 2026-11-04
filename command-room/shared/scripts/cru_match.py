@@ -457,6 +457,44 @@ def score_match(query_text: Optional[str], commitment_title: Optional[str]) -> f
     return max(unigram, bigram)
 
 
+# cr1#468 - contractions are not words about the promise. `_tokenize` turns
+# the apostrophe into a space, so "won't" becomes the token "won" and "Sam's"
+# becomes "sam". A negative contraction is dropped whole; any other contraction
+# keeps its stem ("Sam's deck" still says "sam" and "deck").
+_NEG_CONTRACTION_RE = re.compile(r"\b\w+n['’]t\b", re.IGNORECASE)
+_CONTRACTION_SUFFIX_RE = re.compile(r"['’](?:s|re|ve|ll|d|m)\b", re.IGNORECASE)
+
+
+def _content_tokens(text: Optional[str]) -> set[str]:
+    if not text:
+        return set()
+    text = _NEG_CONTRACTION_RE.sub(" ", text)
+    text = _CONTRACTION_SUFFIX_RE.sub("", text)
+    return set(_tokenize(text))
+
+
+def shared_content_words(text: Optional[str], title: Optional[str], *,
+                         names: Iterable[str] = ()) -> set[str]:
+    """cr1#468 - the words a message and a commitment title really share.
+
+    `score_match` counts every shared token, and on a short chat line the
+    only shared token can be a person's name (a message to someone always
+    "mentions" them) or the stem a contraction leaves behind. Neither says
+    anything about the promise. This answers the narrower question the chat
+    leg's ruling asks ("does this line share any word with the promise?"):
+    the tokens both sides carry once contractions are set aside, minus every
+    token of every name in `names` (whole names or single tokens; each is
+    tokenized the same way the text is).
+
+    Read-only and pure. It grades nothing; the chat leg reads an empty
+    answer as "this line cannot close that item".
+    """
+    name_toks: set[str] = set()
+    for n in names or ():
+        name_toks.update(_tokenize(str(n)))
+    return (_content_tokens(text) & _content_tokens(title)) - name_toks
+
+
 def detect_completion_signal(text: Optional[str]) -> bool:
     """True if `text` contains a phrase suggesting the commitment was
     fulfilled (`sent the`, `delivered`, `as promised`, etc.).
@@ -1513,6 +1551,19 @@ def load_open_commitments(
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
+            # DISOWNUNDO1 (cr1#162) — the undo of a disown on an item that had
+            # no owner: the question is WITHDRAWN and nothing else moves.
+            # Keyed on the explicit `question_cleared` boolean. Latest wins
+            # with the other adjudications, so a later disown re-asks.
+            if target and d.get("question_cleared"):
+                confirmations[str(target)] = {
+                    "owner_id": None,
+                    "owner_name": None,
+                    "clear_flags": False,
+                    "question_cleared": True,
+                    "seq": ev.get("seq"),
+                    "idx": idx,
+                }
             # AUTOAPPLY §4c review fix — the flag-tier fallback (the additive
             # mirror of the Keep-both clear above). Keyed on the explicit
             # boolean flag_duplicate_for_review stamps, so an ordinary update
@@ -1789,6 +1840,13 @@ def load_open_commitments(
                     patch["review_reason"] = (
                         "reassigned — confirm the new owner before this is chased"
                     )
+            elif entry.get("question_cleared"):
+                # DISOWNUNDO1 (cr1#162): the question is withdrawn; the owner
+                # is whatever the raw capture carries (none, for the item
+                # this undo exists for), and nothing else on the row moves.
+                patch["question"] = None
+                patch["question_by"] = None
+                patch["question_seq"] = None
             elif entry.get("disown"):
                 # PLATE1 P3 — `not mine`: the owner is CLEARED (not routed),
                 # and the open question rides the projection with its

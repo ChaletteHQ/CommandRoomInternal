@@ -733,12 +733,34 @@ You never build, parse, or re-derive these ids; apply-choices hands them to
   it never binds. Rows the engine refuses to propose (a name match with no
   other signal, a term two projects both claim) never reach the page at all.
 
-**Typed answers.** If the user answers in chat instead of tapping ("bind 1
-and 3, not 2"), map the display numbers to the rows of the CURRENT render
-(`transport["report"]["rows"]`, in page order) and dispatch the same tuples
-through `backfill_widget.apply_choices` — never call the engine's `apply`
-directly, and never pass a seq the user did not name. `all` is NOT an answer
-here: it names no row, so it binds nothing; say so in one line.
+**Typed answers — resolve by the ROW'S OWN ID, never by position.** If the
+user answers in chat instead of tapping ("bind 1 and 3, not 2"), hand the
+numbers exactly as they said them to `backfill_widget.typed_answer_choices`
+and dispatch what it returns:
+
+```python
+from backfill_widget import apply_choices, typed_answer_choices
+
+answers = [{"number": "1", "action": "bind"},      # what the user typed
+           {"number": "3", "action": "bind"},
+           {"number": "2", "action": "not this project"}]
+resolved = typed_answer_choices(transport, answers)
+for line in resolved["lines"]:
+    print(line)                       # say every refusal out loud, verbatim
+result = apply_choices("<WORKSPACE>", resolved["choices"],
+                       applied_by="<user id>")
+```
+
+It matches each number against the number THIS PAGE PRINTED and carries
+that item's own wire id, so a row can only be adjudicated as itself. Never
+index `transport["report"]["rows"]` by position: `report` is the whole
+propose while a page is one project-slice of it, and the binding questions
+above the records are a second population numbered `Q1`, `Q2` … in their
+own space. A number that lands on a question, or on nothing, comes back in
+`refused` with a sentence to relay — it is never dispatched onto whatever
+row sits under it. Never call the engine's `apply` directly, and never pass
+a seq the user did not name. `all` is NOT an answer here: it names no row,
+so it binds nothing; say so in one line.
 
 **Ack.** Relay `result["summary"]` verbatim — it carries the counts in plain
 words, the READY change when one happened, and the `undo` offer when a batch

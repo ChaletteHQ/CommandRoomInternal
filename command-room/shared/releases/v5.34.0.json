@@ -1,0 +1,13 @@
+{
+  "version": "5.34.0",
+  "headline": "Three weeks of fixes to Waiting On, the meeting recap, drafts and the brief you ask for in chat.",
+  "items": [
+    {
+      "id": "v5340_announce_three_weeks",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "This update carries three weeks of fixes. Waiting On now understands \"[name] owes me [thing]\", and you can drop an item or say whose it is. The meeting recap says plainly which steps it could not run. Drafts carry your saved voice through to the moment you send. The brief you ask for in chat now preps every meeting on today's calendar. Nothing for you to do.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -107,7 +107,8 @@ def _events_path(ws: Path) -> Path:
 
 
 def _load_entities(ws: Path) -> dict:
-    return json.loads(_entities_path(ws).read_text(encoding="utf-8"))
+    from entities_io import read_entities_json
+    return read_entities_json(_entities_path(ws))
 
 
 def _save_entities(ws: Path, data: dict, source_skill: str) -> None:

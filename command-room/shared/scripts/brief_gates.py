@@ -286,6 +286,22 @@ POST_SAVE_GATES = ("leak",)
 
 # ---------- Audit emitters (moved from brief_writer VERBATIM; surface added) ----------
 
+def _ledger_path(workspace_root) -> Path:
+    """The live events.jsonl for `workspace_root`, the ONE path both audit
+    emitters write through (cr1#473).
+
+    A caller may pass the `_hq` folder itself as the root. A raw
+    `<root>/_hq/data/events.jsonl` join then lands in a nested
+    `_hq/_hq/data/events.jsonl` that nothing reads, and the audit event goes
+    missing from the real ledger. So a root whose last part is `_hq` is
+    stepped up to its parent first. Normalised here, not in
+    `data_root.resolve()`, so no other caller's resolution changes."""
+    root = Path(workspace_root)
+    if root.name == "_hq":
+        root = root.parent
+    return root / "_hq" / "data" / "events.jsonl"
+
+
 def emit_brief_meta_audit(
     brief_kind: str, reason: str, workspace_root: Optional[str],
     severity: str = "warn",
@@ -309,10 +325,9 @@ def emit_brief_meta_audit(
     if not workspace_root:
         return
     try:
-        from pathlib import Path as _Path
         from atomic_write import atomic_append_jsonl as _append
         from cru_match import _now_iso as _ts
-        events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        events_path = _ledger_path(workspace_root)
         # No hand-stamped seq (BUG-8330 item 7) — appender allocates in-lock.
         _append(events_path, [{
             "ts": _ts(),
@@ -365,10 +380,9 @@ def emit_gate_ran_audit(
     if not workspace_root:
         return
     try:
-        from pathlib import Path as _Path
         from atomic_write import atomic_append_jsonl as _append
         from cru_match import _now_iso as _ts
-        events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        events_path = _ledger_path(workspace_root)
         # seq + ts are auto-stamped inside atomic_append_jsonl for events.jsonl,
         # so we pass neither — the locked writer reserves the seq atomically.
         _append(events_path, [{

@@ -60,6 +60,24 @@ WIRE_PREFIX = "bind:"
 MUTE_SURFACE = "binding-review"
 MUTE_ITEM_CLASS = "binding_candidate"
 
+#: The wire-id prefix of a write-time binding QUESTION row (REVIEW_BIND1
+#: F4a). Deliberately NOT the `bind:` prefix: these rows are a different
+#: population with a different resolution path, and `parse_wire_id` refuses
+#: them so `apply_choices` can never coerce one into a bind.
+QUESTION_PREFIX = "ask:"
+#: The section a question row renders under — its own, above the derived
+#: rows, so the two populations are never read as one list.
+QUESTION_SECTION_TITLE = "Which project does this belong to?"
+#: The DISPLAY-number prefix of a question row (RE-VERIFY 1 N1). The two
+#: populations on this page must not share a numbering space. They did for
+#: one round, and the cost was exact: a question consumed display number 1,
+#: every past record below it shifted by one, and the documented typed
+#: answer ("bind 1") filed a record the customer had not named — with a
+#: success ack and an `undo` offer, so it read as having worked. The past
+#: records keep 1, 2, 3 … (what `report["rows"]` order has always meant)
+#: and a question is Q1, Q2 …, which belongs to no other list on the page.
+QUESTION_DISPLAY_PREFIX = "Q"
+
 BIND_ACTION = "bind"
 REJECT_ACTION = "not this project"
 SKIP_ACTION = "skip"
@@ -194,6 +212,34 @@ def _thread_names(workspace_root) -> dict:
         return {}
 
 
+def _question_item(q: dict, display_n: str) -> dict:
+    """One write-time binding question as a page row. READ-ONLY: it carries
+    no verbs, because on this tree a `thread_binding` proposal has no
+    confirm-side consumer in `apply-choices` (EVENT_TYPES.md's own
+    Thread-binding lane says so, and `thread_subjects.propose_split` cites
+    it as the gap it declined to repeat). Offering a verb that writes
+    nothing would be a dead tap; showing the question where every artifact
+    says it lands is the fix M ruled for. The handler is a seam.
+
+    `display_n` arrives ALREADY formatted (`Q1`, `Q2` …) and is never an
+    integer: RE-VERIFY 1 N1. A typed answer resolves against the number the
+    page printed, so a question must never print a number a past record
+    could also be printing."""
+    line = q.get("render_line") or (
+        f"{q.get('title') or 'a new row'} could belong to more than one "
+        "project.")
+    bits = [b for b in (q.get("evidence") or "",
+                        "nothing is filed either way until you say")
+            if b]
+    return {
+        "n": f"{QUESTION_PREFIX}{q.get('proposal_id') or ''}",
+        "display_n": display_n,
+        "name": line,
+        "context_tag": " \u00b7 ".join(bits),
+        "actions": [],
+    }
+
+
 def build_backfill_data_view(report: dict, *, muted_ids: Iterable[str] = (),
                              header: str | None = None,
                              thread_names: dict | None = None) -> dict:
@@ -202,7 +248,11 @@ def build_backfill_data_view(report: dict, *, muted_ids: Iterable[str] = (),
     section footer. `muted_ids` (live `skip` mutes, read upstream by the
     caller) are dropped BEFORE shaping — the mute filter runs in the view
     build, never in the transport."""
-    snapshot = int(report["snapshot_max_seq"])
+    # `snapshot_max_seq` is None on a ledger with no human-written row yet
+    # (a brand-new workspace). The page must render its all-clear there, not
+    # raise: `int(None)` is a TypeError, and 0 is the honest snapshot for a
+    # substrate nothing has been written to.
+    snapshot = int(report.get("snapshot_max_seq") or 0)
     muted = {str(m) for m in muted_ids}
     name_by_tid = dict(thread_names or {})
     name_by_tid.update({t["thread_id"]: t["thread_name"]
@@ -220,6 +270,33 @@ def build_backfill_data_view(report: dict, *, muted_ids: Iterable[str] = (),
 
     sections = []
     display_n = 0
+    # REVIEW_BIND1 F4a — the write-time questions first, in their own
+    # section: they are the newest thing on the door and the shortest to
+    # answer, and keeping them out of the per-project sections keeps the
+    # two populations (a question about a row written today; a past record
+    # the gauge matched by name) from reading as one list.
+    #
+    # AND IN THEIR OWN NUMBERING (RE-VERIFY 1 N1). `display_n` counts the
+    # PAST RECORDS only, so row N is still `report["rows"]`'s Nth row and
+    # the bottom row is still reachable by the number beside it; a question
+    # is `Q1`, `Q2` …. Sharing one counter is what let a typed "bind 1"
+    # file a record the customer never named.
+    questions = report.get("binding_questions") or []
+    if questions:
+        items = []
+        for q_n, q in enumerate(questions, start=1):
+            items.append(
+                _question_item(q, f"{QUESTION_DISPLAY_PREFIX}{q_n}"))
+        sections.append({
+            "title": QUESTION_SECTION_TITLE,
+            "count": len(items),
+            "items": items,
+            "footer_note": (
+                "These came up as rows were written — Command Room could "
+                "see the company but not which of its projects. Nothing is "
+                "filed either way. Answering them is not wired yet; for "
+                "now this is the record of what could not be filed."),
+        })
     for t in report.get("per_thread") or []:
         rows = rows_by_tid.get(t["thread_id"]) or []
         if not rows:
@@ -234,12 +311,25 @@ def build_backfill_data_view(report: dict, *, muted_ids: Iterable[str] = (),
             "items": items,
             "footer_note": _k_line(t),
         })
-    n_rows = display_n
-    default_header = (
-        f"Project bindings — {n_rows} past "
-        f"{'record names' if n_rows == 1 else 'records name'} a project "
-        "they were never filed under. Bind it, or say it's not that "
-        "project; nothing moves until you tap.")
+    n_past = display_n
+    n_q = len(questions)
+    n_rows = n_past + n_q
+    if n_q and not n_past:
+        default_header = (
+            f"Project bindings — {n_q} new "
+            f"{'row needs' if n_q == 1 else 'rows need'} a project. "
+            "Nothing is filed either way until you say which one.")
+    else:
+        default_header = (
+            f"Project bindings — {n_past} past "
+            f"{'record names' if n_past == 1 else 'records name'} a project "
+            "they were never filed under. Bind it, or say it's not that "
+            "project; nothing moves until you tap.")
+        if n_q:
+            default_header += (
+                f" Plus {n_q} new "
+                f"{'row' if n_q == 1 else 'rows'} waiting on which project "
+                "they belong to.")
     return {
         "source_skill": SOURCE_SKILL,
         "header": header or default_header,
@@ -308,8 +398,100 @@ def render_backfill_page(workspace_root, *, page: int = 1, persist_dir=None,
     transport["group_pagination"] = gp
     transport["report"] = report
     transport["n_rows"] = n_rows
+    # RE-VERIFY 1 N1 — the items THIS page rendered, in page order, each
+    # carrying the display number it PRINTED and its own wire id. A typed
+    # answer resolves against this list (`typed_answer_choices`) and never
+    # against `report["rows"]` by position: `report` is the whole propose,
+    # this page is one project-slice of it, and the binding questions are a
+    # second population with their own numbering.
+    # MF-13-2 (RE-VERIFY 2 O1): `page_view` is the GROUP page; the byte fit
+    # rendered ONE sub-page of it. `items` is the rendered window only, so a
+    # number the page did not print is refused, never dispatched.
+    _flat = [it for sec in (paged["page_view"].get("sections") or [])
+             for it in (sec.get("items") or []) if isinstance(it, dict)]
+    _start = (int(paged["sub_page"]) - 1) * int(paged["page_size"])
+    transport["items"] = _flat[_start:_start + int(paged["page_size"])]
     transport["empty"] = False
     return transport
+
+
+def _page_items(transport) -> list:
+    """The rendered items of one page, in page order. Accepts the transport
+    `render_backfill_page` returned, or a raw data view (`sections`)."""
+    if not isinstance(transport, dict):
+        return []
+    items = transport.get("items")
+    if isinstance(items, list):
+        return [it for it in items if isinstance(it, dict)]
+    secs = transport.get("sections")
+    if isinstance(secs, list):
+        return [it for sec in secs if isinstance(sec, dict)
+                for it in (sec.get("items") or []) if isinstance(it, dict)]
+    return []
+
+
+def _display_key(value) -> str:
+    """One spelling for a display number, typed or printed: `1`, `1.`, `Q1`
+    and `q1` are the same row."""
+    return str(value if value is not None else "").strip().rstrip(".").lower()
+
+
+def typed_answer_choices(transport, answers) -> dict:
+    """Turn what the user TYPED ("bind 1 and 3, not 2") into apply-choices
+    tuples, resolved BY THE ROW'S OWN ID.
+
+    `answers` = `[{"number": <what they said>, "action": <verb>,
+    "context": <optional note>}, …]`, in the order they said them. Each
+    number is looked up against the number THIS PAGE PRINTED
+    (`item["display_n"]`) and the tuple carries that item's own `n` — the
+    wire id — so a row can only ever be adjudicated as itself.
+
+    NEVER index `report["rows"]` by position (RE-VERIFY 1 N1). Two things
+    break that arithmetic: the binding questions are a separate population
+    rendered above the records, and `report` is the whole propose while a
+    page is one project-slice of it. Either one silently files a record the
+    customer did not name, with a success ack and an `undo` offer.
+
+    Returns `{"choices": [...], "refused": [{number, action, detail}],
+    "lines": [one plain sentence per refusal]}`. `choices` goes straight to
+    `apply_choices`; the lines are said out loud — a number that resolved to
+    nothing is never quietly dropped, and never guessed at."""
+    by_display: dict = {}
+    for it in _page_items(transport):
+        key = _display_key(it.get("display_n"))
+        if key and key not in by_display:
+            by_display[key] = it
+
+    choices: list = []
+    refused: list = []
+    lines: list = []
+    for a in answers or []:
+        if not isinstance(a, dict):
+            continue
+        typed = str(a.get("number") if a.get("number") is not None
+                    else "").strip()
+        action = str(a.get("action") or "").strip().lower()
+        item = by_display.get(_display_key(typed))
+        if item is None:
+            detail = (f"there's no {typed or 'row'} on this page — nothing "
+                      "was filed for it")
+        elif not (item.get("actions") or []):
+            # A question row. It has no seq and no snapshot, so there is
+            # nothing for the engine to adjudicate against; saying so is
+            # the honest answer and dispatching the row below it is not.
+            detail = (f"{typed} is a question about a row written today, "
+                      "not one of the past records this list files — "
+                      "nothing to file for it yet")
+        else:
+            choice = {"n": item["n"], "action": action}
+            note = str(a.get("context") or "").strip()
+            if note:
+                choice["context"] = note
+            choices.append(choice)
+            continue
+        refused.append({"number": typed, "action": action, "detail": detail})
+        lines.append(detail)
+    return {"choices": choices, "refused": refused, "lines": lines}
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +581,19 @@ def apply_choices(workspace_root, choices: list, *, applied_by: str,
         n = ch.get("n")
         parsed = parse_wire_id(n)
         if parsed is None:
+            if str(n or "").startswith(QUESTION_PREFIX):
+                # A write-time binding question, not a backfill row. It has
+                # no verbs on the page and it is NOT adjudicated through
+                # this rail: `backfill_bindings.apply` writes a
+                # `reclassification` against a SEQ and a snapshot, and a
+                # question has neither. Refused out loud rather than
+                # silently dropped.
+                results.append({
+                    "n": str(n), "action": str(ch.get("action") or ""),
+                    "status": "refused",
+                    "detail": "that row is a question about a new item, not "
+                              "one of the past records this list files — "
+                              "nothing was written for it"})
             continue
         seq, snap = parsed
         action = str(ch.get("action") or "").strip().lower()
@@ -574,6 +769,107 @@ def _summary(n_applied, n_rejected, n_skipped, n_refused, receipt,
     return s
 
 
+# ---------------------------------------------------------------------------
+# BIND1 4.2 - the condition of the plumbing, on the maintenance surface only
+# ---------------------------------------------------------------------------
+#
+# Ruling 8: bind at the WRITE this night; the backfill of the rows already
+# open is a bulk write over the customer's live book and is a separate pass
+# on M's word. So the open rows stay as they are, and the 2026-09-07
+# three-surfaces rule puts the condition of the plumbing on the MAINTENANCE
+# report - one line, nowhere else. Not the brief, not the day-close, not the
+# wrap: this is a number about the product, not about the customer's work.
+#
+# Counted through the PRODUCT'S OWN PROJECTION (`plate_view.build_plate`),
+# never a naive ledger roll-up: the planner's roll-up of the same copy said
+# 130 of 637 because it counted every commitment row the ledger ever carried
+# rather than the confirmed-open rows the plate actually shows. The plate's
+# own unbound signal is `NO_PROJECT_KEY` - the key `project_group` returns
+# for a row whose thread has no name on file - which is exactly the set
+# `brief_settings.group_rows` drops into `GROUP_FALLBACK`.
+
+#: The one sentence. No count in it but the two numbers, no verb the reader
+#: has to act on - the maintenance report states conditions, it does not ask.
+UNBOUND_LINE_NONE = "Every open row on the plate knows which project it belongs to."
+
+
+def unbound_open_rows(workspace_root, *, preset: str = "engaged",
+                      now_iso=None) -> dict:
+    """`{"open": n, "unbound": n, "by_project_label": {label: n}}` - open
+    plate rows that carry no project binding, through the product's own
+    projection. `by_project_label` counts EVERY open row by the group label
+    the plate itself renders it under, unbound rows included (they land
+    under `plate_view.NO_PROJECT_LABEL`).
+
+    A refused plate (an unresolvable user, D8) returns `{"open": 0,
+    "unbound": 0, "error": <the plate's own line>}` rather than a zero that
+    reads as good news. PURE READ."""
+    from plate_view import build_plate, NO_PROJECT_KEY, NO_PROJECT_LABEL
+
+    view = build_plate(workspace_root, preset=preset, now_iso=now_iso)
+    if view.get("error"):
+        return {"open": 0, "unbound": 0, "by_project_label": {},
+                "error": view["error"]}
+
+    seen: dict = {}
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "rows" and isinstance(value, list):
+                    for row in value:
+                        if isinstance(row, dict) and row.get("id"):
+                            seen[row["id"]] = row
+                else:
+                    _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(view.get("blocks") or {})
+    unbound = [r for r in seen.values()
+               if str(r.get("project_key") or "") == NO_PROJECT_KEY]
+    # REVIEW_BIND1 F9 - this key was documented and returned EMPTY, every
+    # time. It is populated now, off the plate's own group label (the same
+    # `plate_view.project_group` label every grouped surface renders), so
+    # "which projects are these rows in?" is answerable from the census
+    # rather than being a promise the return shape never kept. The
+    # maintenance sentence does not name a project and does not read it;
+    # it is here for the operator report that asks the follow-up question.
+    by_label: dict = {}
+    for row in seen.values():
+        label = str(row.get("project_label") or "").strip()
+        if not label:
+            label = (NO_PROJECT_LABEL
+                     if str(row.get("project_key") or "") == NO_PROJECT_KEY
+                     else "")
+        if not label:
+            continue
+        by_label[label] = by_label.get(label, 0) + 1
+    return {"open": len(seen), "unbound": len(unbound),
+            "by_project_label": by_label}
+
+
+def unbound_rows_maintenance_line(workspace_root, *, preset: str = "engaged",
+                                  now_iso=None) -> str:
+    """ONE plain sentence for the weekly maintenance report, or
+    `UNBOUND_LINE_NONE` when nothing is unbound. Never a question, never an
+    offer, and never rendered on a customer surface - the maintenance report
+    is the only place this sentence is allowed to appear (HEALTH1's ruling,
+    applied to this number)."""
+    counts = unbound_open_rows(workspace_root, preset=preset, now_iso=now_iso)
+    if counts.get("error"):
+        return ("The plate could not be read, so the project-binding count is "
+                "not available this run.")
+    n, total = int(counts["unbound"]), int(counts["open"])
+    if not n:
+        return UNBOUND_LINE_NONE
+    return ("%d of %d open rows on the plate carry no project binding, so they "
+            "group under \"Everything else\". New rows bind as they are "
+            "written; the rows already open are a separate backfill pass."
+            % (n, total))
+
+
 def undo_sitting(workspace_root, batch_id: str, *, undone_by: str,
                  source_skill: str = SOURCE_SKILL) -> dict:
     """Reverse one Apply's `bkf_` batch through the standing undo lane and
@@ -593,9 +889,18 @@ __all__ = [
     "ROW_ACTIONS",
     "wire_id",
     "parse_wire_id",
+    # RE-VERIFY 1 N1
+    "QUESTION_PREFIX",
+    "QUESTION_SECTION_TITLE",
+    "QUESTION_DISPLAY_PREFIX",
+    "typed_answer_choices",
     "build_backfill_data_view",
     "render_backfill_page",
     "skip_rows",
     "apply_choices",
     "undo_sitting",
+    # BIND1 4.2
+    "UNBOUND_LINE_NONE",
+    "unbound_open_rows",
+    "unbound_rows_maintenance_line",
 ]

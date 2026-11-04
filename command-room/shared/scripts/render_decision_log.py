@@ -180,10 +180,11 @@ def _load_events(events_path: Path) -> list[dict]:
 
 
 def _load_entities(entities_path: Path) -> dict[str, Any]:
+    from entities_io import read_entities_json
     if not entities_path.exists():
         return {}
     try:
-        return json.loads(entities_path.read_text(encoding="utf-8"))
+        return read_entities_json(entities_path)
     except (json.JSONDecodeError, OSError):
         return {}
 

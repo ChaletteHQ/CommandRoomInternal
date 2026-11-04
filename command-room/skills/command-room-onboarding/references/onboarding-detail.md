@@ -90,7 +90,7 @@ Use these to deliver the three-layer value proposition. Pick the language that m
 "Every project gets a context document that grows with every session. Decisions, commitments, people, status — it all accumulates in one place. Your email, calendar, and meeting transcripts feed into these docs automatically. One input, everywhere updates."
 
 **For teams:**
-"Your team can reference the same source of truth. Decisions made, commitments captured, project status — all available to anyone who needs context on your work."
+"Your team can work from the same record. Decisions made, commitments captured, project status — all available to anyone who needs context on your work."
 
 ### Layer 3: "Nothing falls through the cracks"
 
@@ -730,6 +730,6 @@ These prompts ran in earlier versions of Step 7's guided run but are no longer p
 
 - **Daily briefing prompt** (`what's going on`) — was the v2.7.18-v2.7.21 first prompt. v2.7.22 dropped it from the live run because the go-and-save loop is more important muscle memory; `what's going on` is now in FIRST_WEEK.md as a daily habit and surfaces in Step 7b's personalized handoff line ("Open this back up tomorrow morning and say `what's going on`...").
 
-If a future release re-expands the guided run, restore these from this section + the v2.7.17 / v2.7.21 history in CHANGELOG.md.
+If a future release re-expands the guided run, restore these from this section + the v2.7.17 / v2.7.21 history in the staging repo's CHANGELOG.md.
 
 The standalone `Load a project` and `End session` prompts that ran in v2.7.17 and earlier are NOT cut — they're folded into v2.7.22's Prompt 2 (the go-and-save loop) which combines `go [project]` + add + `end session` into a single muscle-memory exercise. v2.7.21 and earlier had `end session` as week-one homework via FIRST_WEEK.md; v2.7.22 promotes it to the live run because doing it once with the user's own data is dramatically more sticky than reading about it later.

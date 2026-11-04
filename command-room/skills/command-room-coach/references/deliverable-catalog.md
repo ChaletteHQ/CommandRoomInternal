@@ -208,7 +208,7 @@ These are coach's M1-fire bread-and-butter. Each one composes `go` / `tell me ab
 > *Pattern:* Deep person dossier — anytime, `tell me about [person]`.
 
 **Example (Sam Sample):**
-> **The Rio Sample 30-day operator dossier** — your most-recent COO partnership (May 13, $22k Month 1), 11 touches in your deep-scan week, no deep profile yet. Say `tell me about Rio Sample` — what's working, where the friction is, what's still unspoken.
+> **The Rio Sample 30-day operator dossier**: your most-recent operating partnership (May 13, an amount for Month 1), 11 touches in your deep-scan week, no deep profile yet. Say `tell me about Rio Sample` for what's working, where the friction is, what's still unspoken.
 
 ---
 
@@ -509,7 +509,7 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 **Target entity:** workspace
 **Signal condition:** `change_feed.changes_since(<7d ago>)` returns ≥1 line, OR `brain_proposals.card_health_counts` shows `open >= 3`. Anchor the render in the actual counts.
 **Trigger chain:** `staff meeting` (the full one-tap surface) / `what did you change` (the read-only feed) — both route to `system-health`
-**Composes with:** `system-health` (owns the surface); the weekly `staff-meeting` scheduled chat (say `add staff meeting`) is the standing version
+**Composes with:** `system-health` (owns the surface). There is no standing version: the scheduled Staff Meeting chat is retired (cr1#176), so this surface is always on demand
 **Synthesis spine:** change-feed aggregation (closures from sent mail × sweep recoveries × proposal resolutions/expiries) × the open-queue count → the week's "what ran itself" story with the queue as the ask.
 **Wow line:** The system names, with counts, what it handled without being asked — and hands over the exact list of what's waiting on a yes/no.
 **Render template:**
@@ -519,7 +519,7 @@ No precursor. Single trigger fires the deliverable. These synthesize across the 
 >
 > **To see it:** Say `staff meeting` — everything reviewable in one sitting, one tap each. Or `what did you change` for the read-only version.
 >
-> *Pattern:* Weekly review — say `add staff meeting` to make it a standing Monday chat.
+> *Pattern:* Weekly review: say `staff meeting` whenever you sit down to clear the list.
 
 ---
 

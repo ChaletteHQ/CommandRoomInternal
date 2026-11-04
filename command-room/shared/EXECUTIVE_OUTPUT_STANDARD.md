@@ -26,7 +26,7 @@ NEEDED    Approve the redline (one tap below) · nothing else.
 **THE ANTI-WASHING FLOOR (load-bearing).** Each line ≤25 words AND contains a named entity, number, or date — OR the explicit nothing-form:
 
 - `CHANGED   Nothing material since Tuesday's brief.`
-- `DECIDE    Nothing — execution day.`
+- `DECIDE    Nothing. Execution day.`
 - `NEEDED    Nothing from you.`
 
 "Nothing" being legal and *encouraged* is what makes this a contract instead of a summary-of-a-summary. Most days have no decision, and saying so is the value. Generic-summary shapes ("Several important updates," "Key developments this week," "Busy week across the board," "Lots of movement") are banned — they are listed as banned patterns in `chat_output_renderer` / `chat_output_validator` and rejected on the header lines.
@@ -48,7 +48,7 @@ Recommendation before analysis, always. Analysis exists so the reader can AUDIT 
 
 ### 3. Quantification discipline
 
-`shared/scripts/quantify.py` `money_time_tag(commitment_or_thread, entities) -> str | None` is the ONLY sanctioned source of inline dollar tags on list items. It composes a tag like `"12d late · $40K deal"` by tracing `commitment.due` (time part) and `primary_thread_id → thread → org → revenue/deal-value field` (money part).
+`shared/scripts/quantify.py` `money_time_tag(commitment_or_thread, entities) -> str | None` is the ONLY sanctioned source of inline dollar tags on list items. It composes a tag like `"12d late · <amount> deal"` by tracing `commitment.due` (time part) and `primary_thread_id → thread → org → revenue/deal-value field` (money part).
 
 **It NEVER estimates.** When the substrate lacks the field, the part is omitted; when both parts are absent it returns `None` — no fabrication path exists by construction. A client without QuickBooks (or any annotated revenue field) simply gets no dollar tag, never a fabricated figure. quantify.py makes no MCP/connector call and reads only fields already persisted on the entity.
 
@@ -221,4 +221,4 @@ Per-skill, the adoption edit appends these four binary checks (the human/agent j
 
 ## Relationship to CONTRACT.md
 
-CONTRACT.md remains the source of truth for leak patterns, canonical actions, widget format, plain-English voice, and structural data shapes. This standard adds the executive-altitude layer on top. Where they overlap (e.g. numeric-confidence is both a CONTRACT Rule 4 leak and an EXEC1 element-5 violation), CONTRACT's leak scanner is the blocking gate and EXEC1's checklist is the quality gate. Neither supersedes the other.
+CONTRACT.md remains the owner of leak patterns, canonical actions, widget format, plain-English voice, and structural data shapes. This standard adds the executive-altitude layer on top. Where they overlap (e.g. numeric-confidence is both a CONTRACT Rule 4 leak and an EXEC1 element-5 violation), CONTRACT's leak scanner is the blocking gate and EXEC1's checklist is the quality gate. Neither supersedes the other.

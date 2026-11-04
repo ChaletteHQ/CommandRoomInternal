@@ -447,6 +447,35 @@ def _resolve_marker(session_marker, environ):
     return _temp_base(environ) / _marker_filename(_pid_token()), None
 
 
+def session_scratch_file(name: str, env=None):
+    """`(path, anchor)` for a small file of THIS SESSION's own, or
+    `(None, None)` when nothing names the session.
+
+    The same chain `_resolve_marker` walks, for another file name (PLANID1,
+    cr1#518: `workspace_access.plan` remembers the workspace basename here).
+    The merged container has no `CLAUDE_CODE_TMPDIR` (env1 finding F-7), so a
+    reader that only asked for that variable remembered nothing on exactly
+    the seat that needed it. Unlike the marker, a per-process file is no use
+    to a caller that needs the NEXT command to see it, so the process-id
+    fallback answers None instead, and so does a remote container with no
+    session id: a plain machine-wide name would outlive the process on any
+    box that only looks remote (a test, a developer's shell) and be read
+    back by an unrelated session. Never inside a workspace."""
+    environ = os.environ if env is None else env
+    for var in SESSION_TMP_VARS:
+        base = (environ.get(var) or "").strip()
+        if base and Path(base).is_dir() and _marker_is_legal(base, environ):
+            return Path(base) / name, ANCHOR_SESSION_TMP
+    home = _home_dir(environ)
+    if _is_vm_session_home(home) and _marker_is_legal(home, environ):
+        return Path(home) / name, ANCHOR_VM_HOME
+    session_id = (environ.get(SESSION_ID_VAR) or "").strip()
+    if session_id:
+        return (_temp_base(environ) / "{0}.{1}".format(
+            name, _safe_token(session_id)), ANCHOR_SESSION_ID)
+    return None, None
+
+
 def _read_marker(path: Path) -> Dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

@@ -12,7 +12,7 @@ template_version: 1.0.0
 
 # Memo Writer
 
-**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="memo-writer")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost.
+**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="memo-writer")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost. On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}` (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "memo-writer"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`, paste what it prints and run that; the envelope's `result` is the answer described above.
 
 **Learned constraints, read BEFORE composing (SPEC_SURFACES2 §1).** Once the recipient is resolved and before you write a single line, load what they have already corrected:
 
@@ -100,7 +100,7 @@ direct-internal framing). `signature` controls whether the memo closes with a si
 | **Detect** (default) | "write a memo on…" | produce the memo with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "memo-writer", DEFAULTS)` BEFORE rendering, then append the first-run footer after the .docx link. |
 | **Show settings** | "show memo-writer settings" | render current config in plain English; no memo. |
 | **Tune** | "tune memo-writer" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-produce. |
-| **Reset** | "reset memo-writer to defaults" | `wipe_skill_config(workspace_root, "memo-writer")` → next fire is a first-fire again. |
+| **Reset** | "reset memo-writer to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "memo-writer", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "memo-writer")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer — memo-writer ends in a chat link to the .docx, not a widget):**
 
@@ -255,7 +255,7 @@ Render through `shared/scripts/brief_writer.py` `make_brief(brief_kind="memo", .
 **Executive Output Standard (EXEC1, v3.20.0+).** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, pass `make_brief` an `exec_header` and a **mandatory `asks` close**:
 - **exec_header.verdict** = the memo's thesis / decision in one bold sentence (the memo already leads with the thesis — this surfaces it as the 30-second contract; the Decision/Thesis section stays as detail, no restatement). **FS-13: a memo renders the VERDICT lead ONLY — the CHANGED / DECIDE / NEEDED eyebrow is a brief-family scaffold and `brief_writer` no longer renders it for `memo`; do not compose those three lines here.** The reader's asks live in the mandatory `asks` close below.
 - **asks (mandatory "The ask" close)** = derived from `memo_type`: `decision_doc` → "Ratify by [date]"; `scope_doc` → "Confirm scope by [date]"; `board_update`/`investor_update` → the one decision sought, or none. This SUBSUMES the prose "Next steps / Ask" tail — the close is now the ASK block (element 4), not a duplicate paragraph. Max 3, reader-actionable.
-- **Quantify (element 3):** when the memo's decision links to a valued deal/thread, tag its exposure via `quantify.money_time_tag(...)` ONLY when it returns non-None (never estimate). E.g. the decision header line can carry "· $340K exposure" when the thread's org has the field.
+- **Quantify (element 3):** when the memo's decision links to a valued deal/thread, tag its exposure via `quantify.money_time_tag(...)` ONLY when it returns non-None (never estimate). E.g. the decision header line can carry "· [amount] exposure" when the thread's org has the field.
 - **Ordering (element 2 — enforced):** `memo` is decision-shaped; the Decision/Thesis/Recommendation section MUST be in the first three sections or `make_brief` raises. The memo structures already lead with it.
 
 **Exemplar anchor (SPEC OUT8).** Before composing, load the kind's structural exemplar — `exemplars.get_exemplar("memo", workspace_root)` (`shared/scripts/exemplars.py`) — and anchor STRUCTURE on it: section order, visual placement, proportions. Workspace exemplar (`_hq/exemplars/memo/`) beats the shipped seed; `None` = compose on the memo-type structures above, unchanged. **Contract beats exemplar beats default** — an exemplar never licenses skipping the exec header, the decision-order check, or the asks close, and it anchors structure, never facts: no name, number, or claim from the exemplar may appear in the memo. After saving, run `exemplars.scan_docx_for_exemplar_tokens(docx_path, exemplar["text"])`; a finding means exemplar placeholder content leaked — fix the sections payload and re-save AT MOST ONCE (the visual-pass posture, warn-only). When the user gives structural feedback on a delivered memo ("make it like this", reorder/drop a section), capture it with `exemplars.append_structural_correction(workspace_root, kind="memo", direction=..., section=...)` — capture only; the exemplar itself is updated by the weekly `learning` job's exemplar leg, automatically at the shipped floors and narrated in the morning brief with a one-word undo (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The exemplar anchor").
@@ -272,7 +272,7 @@ make_brief(
     exec_header={
         "verdict": "<thesis/decision in one bold sentence>",
         "changed": "<what moved, or nothing-form>",
-        "decide": "<the decision sought, or 'Nothing — FYI memo.'>",
+        "decide": "<the decision sought, or 'Nothing. FYI memo.'>",
         "needs": "<the ask, or 'Nothing from you.'>",
     },
     sections=[
@@ -282,7 +282,7 @@ make_brief(
         {"heading": "Tradeoffs", "table": {"headers": ["Option", "Cost", "Speed"], "rows": [...]}},
         {"heading": "Rationale", "body": "..."},
     ],
-    # Mandatory "The ask" close (EXEC1 element 4) — derived from memo_type.
+    # Mandatory "The ask" close (EXEC1 element 4), derived from memo_type.
     asks=[{"text": "Ratify the pricing decision", "deadline": "Jun 20"}],
 )
 ```
@@ -298,7 +298,7 @@ import sys
 sys.path.insert(0, "shared/scripts")
 from chat_output_renderer import doc_headline_link
 from brief_path import get_brief_artifact_url
-print(doc_headline_link("Memo — <topic>", get_brief_artifact_url(output_path)))
+print(doc_headline_link("Memo: <topic>", get_brief_artifact_url(output_path)))
 ```
 
 One-line summary above the link; nothing after it.
@@ -316,7 +316,7 @@ One-line summary above the link; nothing after it.
    sys.path.insert(0, "shared/scripts")
    from atomic_write import atomic_append_jsonl
    atomic_append_jsonl(f"{workspace_root}/_hq/data/events.jsonl", {
-       # no "seq" — the append gate auto-stamps it
+       # no "seq": the append gate auto-stamps it
        "ts": "<ISO-8601 now>",
        "type": "memo_drafted",
        "topic": "<topic>",
@@ -381,30 +381,30 @@ One-line summary above the link; nothing after it.
 
 ### Examples
 
-**Example 1 — Decision doc opener:**
+**Example 1: Decision doc opener.**
 ```
 # Pricing Decision: Acme Co Product Layer
 
-We're pricing the Acme Co product at $1,250 one-time, separate from
+We're pricing the Acme Co product at a one-time price, separate from
 the customization tier. This memo explains why this structure beats the
 alternatives and what it commits us to.
 
 The reasoning is three-fold...
 ```
 
-**Example 2 — Scope memo opener:**
+**Example 2: Scope memo opener.**
 ```
-# Acme Co Customization Scope — v1
+# Acme Co Customization Scope, v1
 
-The $10K customization tier includes six specific deliverables. Anything
+The customization tier includes six specific deliverables. Anything
 outside these six moves to the monthly retainer. This memo exists so
-both parties — Acme Co and the client — know the line before work
+both parties, Acme Co and the client, know the line before work
 starts.
 
 ## In scope...
 ```
 
-**Example 3 — Strategy memo close:**
+**Example 3: Strategy memo close.**
 ```
 The play isn't to be cheaper than the incumbents. The play is to be the
 only option that actually calibrates to how the CEO works. That's a
@@ -445,7 +445,7 @@ Same universal rules.
 
 ## Output quality bar
 
-Memos are the highest-stakes writing skill's output — they frequently go to boards, investors, executive teams. Voice calibration at the $10K tier matters most for this skill. Uncalibrated default: ~55% quality (usable but generic). Calibrated: ~90%.
+Memos are the highest-stakes writing skill's output: they frequently go to boards, investors, executive teams. Voice calibration at the paid customization tier matters most for this skill. Uncalibrated default: ~55% quality (usable but generic). Calibrated: ~90%.
 
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 

@@ -512,6 +512,7 @@ the change-feed spec) are added when they read. Payload shapes in
 | `person_fact_observed` | people_writer.record_person_fact (explicit user statement, confirmed proposal, or — Part 2 — the `entity_fact_structured` auto tier via entity_signal_detector.apply_structured_facts, batch-stamped for undo; auto is limited to preference/contact/personal, S2) | render_person_history, call-prep, change_feed (auto-noted count line) |
 | `org_fact_observed` | org_writer.record_org_fact (explicit user statement, confirmed proposal, or the Part 2 structured auto tier — same S2 category limits) | render_org_history, board-pack-assembler (§1/§4 company context), change_feed (auto-noted count line) |
 | `entity_fact_retracted` | brain_undo `entity_fact_structured` reverser (Part 2 — landed in the SAME commit as the AUTO_ALLOWED entry, closing the wave-pattern registration) | render_person_history, render_org_history (suppress the retracted fact) |
+| `person_renamed` | `people_writer.rename_person` (SWITCH2 5.3, M's ruling 12 — the ONE writer). One row per rename, carrying `{person_id, canonical_name, previous_name, previous_aliases, aliases_added, aliases_dropped, reason}` plus `brain_batch_id` + `brain_change_class: person_renamed`. The class is NEW because its reverser is new too: nothing else puts a canonical name AND the aliases the rename appended back in one act. The previous name is appended to the record's `aliases`, never replaced, so every record already on file still resolves to that person | `brain_undo._changes_for_brain_batch` + the `person_renamed` reverser (the undo listing and the put-it-back), and `brain_undo._rename_new_names` (the undo receipt, which names the spelling going away and the one it goes back to). **A REVERSAL IS NOT A RENAME.** The put-back writes a second `person_renamed` row carrying `reversal_of: <seq of the row it puts back>`, `reason: "undo"`, and NEITHER `brain_batch_id` nor `brain_change_class` — additive, so the original rename stays true beside it. Any reader that counts or narrates renames MUST skip a row carrying `reversal_of`, or it will report one undone rename as two. **No surface reads it for narration yet** — said here plainly rather than claiming a reader this lane did not build |
 | `person_alias_dropped` | `identity_reconcile.apply_alias_collisions` (SPEC_FLOW1 Lane F rule 4 — the ONE writer). One row per nickname taken back, carrying `{person_id, alias, collides_with}` plus `brain_batch_id` + `brain_change_class: person_alias_dropped`. The class is NEW rather than folded into an existing one because its reverser is new too: `add_person_alias` puts the spelling back, and no other reverser could. The removal itself goes through `people_writer.remove_person_alias`, which is the inverse of `add_person_alias` write for write | `brain_undo._changes_for_brain_batch` + the `person_alias_dropped` reverser (the undo listing and the put-it-back), change_feed (the receipt's `n_aliases_dropped` count line) |
 
 Hard rules:
@@ -1243,6 +1244,18 @@ The End of Day's receipt carries an id of its own, minted by
 pointer. Receipts written before EODFIX1 carry none, and `end_of_day.choice_map`
 falls back to `session:end-of-day:<the receipt's own timestamp>` rather than a
 null pointer. No other receipt writer mints one today; nothing requires it.
+
+**`pack_run.data.sections_check` (cr1#148) - ADDITIVE and OPTIONAL.**
+The morning brief's receipt, on a fire that ran and saved a snapshot at
+`digest_path`, carries `{expected, missing}`: the org sections the brief owed
+(`brief_sections.expected_org_sections`, the same list as the pack's
+`expected_sections`) and the ones the saved snapshot does not carry. Written
+by `morning_brief_helpers.plan_combined_receipt` from the file, never from the
+composer's own `sections_rendered`. It is the record that a brief dropped an
+org section; no code reads it yet (the ledger and the receipt are where a
+person or a later health check finds it). Absent on a
+degrade-tier fire, on a receipt with no `digest_path`, and when the snapshot
+cannot be read.
 
 ### `chat_reconcile` (SPEC CHATSCAN1 §B, 2026-08-08)
 

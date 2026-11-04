@@ -60,6 +60,15 @@ class OrgActivity(NamedTuple):
     ts: datetime
 
 
+#: The "deliberately unaffiliated / personal" org sentinel (thread_writer's
+#: UNAFFILIATED_ORG_ID). PERSONALCASE1 (cr1#122): ONE rule, owned by
+#: `personal_leak` (the privacy fence) and imported here, compared
+#: case-insensitively, so a record spelled `Personal` by a hand edit or a
+#: prose-following writer is the sentinel too and never a phantom org lane in
+#: the activity map or the attribution.
+from personal_leak import PERSONAL_SENTINEL, is_personal_sentinel  # noqa: E402,F401
+
+
 def event_org_ids(ev: dict, thread_org: Optional[dict] = None) -> list[str]:
     """Every org id an event touches — direct fields first, then via the
     event's threads when a {thread_id: org_id} map is supplied.
@@ -73,7 +82,7 @@ def event_org_ids(ev: dict, thread_org: Optional[dict] = None) -> list[str]:
     seen: set[str] = set()
 
     def _add(value) -> None:
-        if isinstance(value, str) and value and value != "personal" and value not in seen:
+        if isinstance(value, str) and value and not is_personal_sentinel(value) and value not in seen:
             ids.append(value)
             seen.add(value)
 
@@ -109,7 +118,7 @@ def thread_org_map(entities: dict) -> dict[str, str]:
         if not isinstance(t, dict) or not t.get("id"):
             continue
         oid = t.get("affiliation_id") or t.get("org_id")
-        if isinstance(oid, str) and oid and oid != "personal":
+        if isinstance(oid, str) and oid and not is_personal_sentinel(oid):
             out[t["id"]] = oid
     return out
 

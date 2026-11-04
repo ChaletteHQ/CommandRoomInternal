@@ -821,7 +821,10 @@ def workspace_capture_context(workspace_root) -> dict:
         try:
             from primary_user import resolve_primary_user_from_entities
 
-            user_id = resolve_primary_user_from_entities(ent)
+            # DORMSCOPE1 (cr1#170): the RAW file, not the unwrapped
+            # container - the seam merges both shapes' settings blocks, and
+            # a split-shape pointer sits on the outer one.
+            user_id = resolve_primary_user_from_entities(raw)
         except Exception:
             user_id = None
         ws = ent.get("workspace") if isinstance(ent.get("workspace"), dict) else {}
@@ -1039,6 +1042,356 @@ def home_of(data: dict, *, known_ids=frozenset(), primary_thread_id=None,
     if counterparty_on_record(data, known_ids, owner, person_ids):
         return {"owner": owner, "home": HOME_COUNTERPARTY, "reason": ""}
     return {"owner": owner, "home": "", "reason": HOME_REASON_NO_HOME}
+
+
+# ---------------------------------------------------------------------------
+# BIND1 - THE binding call site for a capture writer
+# ---------------------------------------------------------------------------
+#
+# `thread_resolve.bind_event_thread` has existed, tested, since THREADBIND1,
+# and until this night it had exactly ONE caller in the tree
+# (`skills/meeting-notes/SKILL.md`). Every other commitment writer shipped
+# rows with `primary_thread_id` absent, and a grouped surface dropped them
+# into `brief_settings.GROUP_FALLBACK` - measured on the 2026-09-17 scratch
+# copy: 86 of 317 open plate rows unbound, of which reconcile-sent 16 of 16,
+# session-sweep 10 of 11 and contract-review 5 of 5.
+#
+# WHY THE ADAPTER LIVES HERE AND NOT IN `thread_resolve`. The resolver takes
+# EVIDENCE (ids). A capture writer holds an EVENT, and the evidence is spread
+# across the envelope and the payload in spellings that differ per writer -
+# a mail row keeps the other side as `counterparty_id`, a swept session row
+# lifts its people to the envelope's `person_ids`, and a contract review
+# holds the counterparty's org as a NAME. One adapter reads all three
+# spellings so no writer re-derives them, and `thread_resolve` stays
+# id-shaped and pure.
+#
+# THE USER IS NEVER EVIDENCE. The workspace owner is a party to every row
+# they write, and their own org has threads. Feeding their person id into the
+# org chain would bind every sent promise to the user's own org thread at
+# floor confidence - a confident WRONG bind, which is worse than the unbound
+# row this lane exists to fix. So the user's id is dropped before the
+# attendee set is built, and a row whose only person is the user resolves to
+# `no_evidence` and ships exactly as it does today.
+#
+# AND THE FILTER FAILS CLOSED (REVIEW_BIND1 F1). When the user cannot be
+# resolved at all - an unreadable registry, or a workspace with no
+# `workspace.user_id` - there is no way to tell the user apart from the
+# counterparty, so the people chain is dropped wholesale rather than run
+# unfiltered. Unfiltered is not neutral: it is the wrong bind above,
+# arrived at by the fence's own absence.
+#
+# NO NEW QUESTION (SPEC_NIGHT13 Lane 4 / ruling 8). An unresolvable binding
+# is ONE `thread_binding` proposal through the adjudication queue that
+# `needs your call`'s "review project bindings" door already reads -
+# `bind_event_thread` fires it, this adapter adds no second rail - and the
+# writers' receipts do not change shape.
+
+#: Payload/envelope keys that hold the counterparty's org as an ID.
+ORG_ID_EVIDENCE_KEYS = ("org_id", "counterparty_org_id")
+
+#: ... and as a free-text NAME (contract-review writes `data.org`). A name is
+#: resolved through the canonical resolver and is used ONLY when it resolves
+#: to exactly one org - an ambiguous name is no evidence, never a pick.
+ORG_NAME_EVIDENCE_KEYS = ("org", "org_name", "counterparty_org",
+                          "counterparty_org_name")
+
+#: ... and the counterparty as a free-text NAME. Half the mail rail's rows
+#: name the other side and resolve no person id for them (the recipient has
+#: no record yet, or the extraction only had a display name). Measured on the
+#: 2026-09-17 scratch copy: resolving the name moves 7 of the 16 unbound
+#: reconcile-sent rows onto a thread, and refuses the one name that matches
+#: five people - which is the fence doing its job, not a miss.
+COUNTERPARTY_NAME_EVIDENCE_KEYS = ("counterparty_name", "counterparty",
+                                   "counterparty_names")
+
+#: `source_ref` schemes that name a MEETING. The resolver's step 1 walks the
+#: whole ledger looking for that meeting's own binding, so a ref that cannot
+#: be a meeting (a mail message, a chat message, a local session) must not be
+#: handed to it: the answer is always None and the walk is pure cost on a
+#: batch. Anything else falls straight through to the org chain.
+MEETING_REF_SCHEMES = ("granola", "meeting", "calendar", "gcal", "zoom",
+                       "fathom", "otter", "fireflies", "transcript")
+
+
+def _meeting_shaped_ref(source_ref) -> str:
+    """`source_ref` when its scheme names a meeting, else "" - see
+    `MEETING_REF_SCHEMES`."""
+    s = str(source_ref or "").strip()
+    if ":" not in s:
+        return ""
+    scheme = s.split(":", 1)[0].strip().lower()
+    return s if scheme in MEETING_REF_SCHEMES else ""
+
+
+def _org_ids_for_name(workspace_root, name) -> list:
+    """EVERY org id a free-text org name resolves to, in resolver order.
+
+    Goes through `entity_resolve.resolve_all` - the canonical resolver the
+    contract-review skill already uses for its counterparty - never a
+    hand-rolled name match.
+
+    TWO OR MORE CANDIDATES IS NEVER A PICK (REVIEW_BIND1 F6). This returns
+    the whole set and the caller hands the whole set to the resolver as
+    ambiguity, rather than choosing one of them. The one-pick helper this
+    sentence used to live on had no caller left after F6 and was deleted
+    (RE-VERIFY 1 N3) - the rule belongs to the set, not to a picker."""
+    q = str(name or "").strip()
+    if not q or workspace_root is None:
+        return []
+    try:
+        from entity_resolve import resolve_all
+
+        matches = resolve_all(workspace_root, q)
+    except Exception:  # noqa: BLE001 - a resolver miss is not evidence
+        return []
+    org_ids: list = []
+    for m in matches or ():
+        try:
+            if getattr(m, "entity_type", "") != "org":
+                continue
+            oid = str(getattr(m, "entity_id", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if oid and oid not in org_ids:
+            org_ids.append(oid)
+    return org_ids
+
+
+def _person_ids_for_name(workspace_root, name) -> list:
+    """EVERY person id a free-text name resolves to, in resolver order, with
+    NOBODY filtered out - the user included.
+
+    This is the raw count, and it is separated from the pick on purpose
+    (REVIEW_BIND1 F7): dropping the user BEFORE counting turned a two-way
+    name collision into a one-way match and bound the row to the other
+    person. The count happens here; the rejection happens in the caller."""
+    q = str(name or "").strip()
+    if not q or workspace_root is None:
+        return []
+    try:
+        from entity_resolve import resolve_all
+
+        matches = resolve_all(workspace_root, q)
+    except Exception:  # noqa: BLE001 - a resolver miss is not evidence
+        return []
+    ids: list = []
+    for m in matches or ():
+        try:
+            if getattr(m, "entity_type", "") != "person":
+                continue
+            pid = str(getattr(m, "entity_id", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if pid and pid not in ids:
+            ids.append(pid)
+    return ids
+
+
+def _person_id_for_name(workspace_root, name, *, user_person_id=None) -> str:
+    """The ONE person id a free-text counterparty name resolves to, or "".
+
+    Same discipline as `_org_ids_for_name`: the canonical resolver, and
+    EXACTLY ONE person or nothing. A first name that matches five people is
+    ambiguity, and ambiguity is not evidence FOR THE PICK - the identity
+    fence `attendee_evidence.find_evidence` already takes this posture and
+    this module does not invent a softer one.
+
+    WHAT HAPPENS TO THE SET IS NOT "NOTHING" (RE-VERIFY 1 N4). The caller
+    (`capture_binding_evidence` below) still hands the whole matched set to
+    the resolver. When every candidate in it names ONE org, that org is the
+    answer whichever of them was meant, and the row BINDS on
+    `org_single_thread` - a reversible act rather than a question, which is
+    M's standing preference, and `undo` on the capture reverses the binding
+    with it. When the candidates name two or more orgs, the resolver has
+    nothing to pick from and the row ASKS (one `thread_binding` question on
+    the on-demand door). Neither path is a PICK of a person: the person set
+    never narrows, only the org union it implies.
+
+    COUNT FIRST, THEN REJECT (REVIEW_BIND1 F7). The ambiguity test runs on
+    the UNFILTERED set, so two people who share a name are two people even
+    when one of them is the workspace user; only after the set has proved
+    itself a single match is that match rejected for being the user.
+    Binding a row to the user's own org is the wrong-bind this whole
+    adapter exists to avoid."""
+    ids = _person_ids_for_name(workspace_root, name)
+    if len(ids) != 1:
+        return ""
+    user = str(user_person_id or "").strip()
+    return "" if ids[0] == user else ids[0]
+
+
+def _name_candidates(holder, key):
+    value = holder.get(key)
+    if isinstance(value, (list, tuple)):
+        return [str(v or "").strip() for v in value if str(v or "").strip()]
+    value = str(value or "").strip()
+    return [value] if value else []
+
+
+def capture_binding_evidence(event: dict, *, user_person_id=None,
+                             workspace_root=None) -> dict:
+    """The `thread_resolve` evidence dict a CONSTRUCTED capture event carries.
+
+    Pure except for the org-NAME branch, which reads entities.json through
+    `entity_resolve.resolve_all` and only when the row names an org by name
+    and by no id. Returns `{}` when the row carries nothing to resolve on -
+    which is the honest answer, and leaves the write exactly as it is today.
+
+    Order, strongest first: an explicit binding the writer already has, the
+    meeting this row came out of, the counterparty's org, the counterparty
+    themselves. The workspace user is dropped from the people set (see the
+    block comment above)."""
+    ev = event if isinstance(event, dict) else {}
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    out: dict = {}
+
+    explicit = str(ev.get("primary_thread_id")
+                   or data.get("primary_thread_id") or "").strip()
+    if explicit:
+        out["explicit_thread_id"] = explicit
+        return out
+
+    meeting_id = str(data.get("meeting_id") or "").strip()
+    if meeting_id:
+        out["meeting_id"] = meeting_id
+    ref = _meeting_shaped_ref(data.get("source_ref"))
+    if ref:
+        out["source_ref"] = ref
+
+    org_ids: list = []
+    for key in ORG_ID_EVIDENCE_KEYS:
+        for holder in (data, ev):
+            v = str(holder.get(key) or "").strip()
+            if v and v not in org_ids:
+                org_ids.append(v)
+    if not org_ids:
+        # AN AMBIGUOUS NAME IS EVIDENCE OF AMBIGUITY (REVIEW_BIND1 F6). A
+        # name that matches two orgs used to resolve to "" and vanish, so
+        # the row went unbound AND unasked - which is the one outcome this
+        # lane calls "uncertain with nothing to ask", and it is not that:
+        # there are two named companies and their threads to tap between.
+        # The whole set goes to the resolver, which refuses to bind on it
+        # and mints ONE question exactly as an ambiguous org ID does.
+        for key in ORG_NAME_EVIDENCE_KEYS:
+            for holder in (data, ev):
+                for oid in _org_ids_for_name(workspace_root,
+                                             holder.get(key)):
+                    if oid not in org_ids:
+                        org_ids.append(oid)
+    if org_ids:
+        out["attendee_org_ids"] = org_ids
+        return out
+
+    from commitment_parties import counterparty_ids as _cp_ids
+
+    user = str(user_person_id or "").strip()
+    people: list = []
+    for pid in list(_cp_ids(data)) + list(ev.get("person_ids") or ()):
+        p = str(pid or "").strip()
+        if not p or (user and p == user) or p in people:
+            continue
+        people.append(p)
+    if not people:
+        # The other side by NAME, when it resolved to no id at capture time.
+        for key in COUNTERPARTY_NAME_EVIDENCE_KEYS:
+            for holder in (data, ev):
+                for candidate in _name_candidates(holder, key):
+                    resolved = _person_id_for_name(
+                        workspace_root, candidate, user_person_id=user)
+                    if resolved and resolved not in people:
+                        people.append(resolved)
+                    if resolved:
+                        continue
+                    # AMBIGUITY, HANDED OVER AS AMBIGUITY (F6). The name
+                    # matched more than one person, so there is no pick -
+                    # but the people it matched have orgs, and the resolver
+                    # adjudicates on THOSE: one org across the whole set
+                    # BINDS (the answer does not depend on which of them was
+                    # meant), two or more orgs ASKS. It is not always a
+                    # question - RE-VERIFY 1 N4, pinned in [1]. TWO non-user
+                    # candidates are
+                    # required: a pair that is the user plus one other
+                    # person reduces to that other person, which is exactly
+                    # the confident wrong bind F7 closed, so it stays
+                    # silent.
+                    others = [pid for pid
+                              in _person_ids_for_name(workspace_root,
+                                                      candidate)
+                              if not user or pid != user]
+                    if len(others) < 2:
+                        continue
+                    for pid in others:
+                        if pid not in people:
+                            people.append(pid)
+    if people:
+        out["attendee_person_ids"] = people
+    return out
+
+
+def bind_capture_thread(workspace_root, event: dict, *,
+                        detector: str = "capture-gate",
+                        user_person_id=None,
+                        evidence: Optional[dict] = None) -> dict:
+    """Bind a constructed capture event to its thread AT THE WRITE, through
+    `thread_resolve.bind_event_thread`. Mutates and returns `event`.
+
+    Byte-identical when the event is already bound or when the evidence
+    resolves to nothing - the floor never drops below today's behaviour. A
+    below-floor verdict WITH candidates fires ONE `thread_binding` proposal
+    through the existing adjudication queue; nothing asks the customer a
+    question and no receipt changes shape.
+
+    `user_person_id` - resolved from `workspace_capture_context` when the
+    caller passes none. `evidence` - an explicit dict skips the adapter
+    entirely (the caller already knows what it holds)."""
+    ev = event if isinstance(event, dict) else {}
+    if str(ev.get("primary_thread_id") or "").strip():
+        return ev
+    if evidence is None:
+        user_person_id = str(user_person_id or "").strip()
+        if not user_person_id:
+            # THE SEAM, by name, not a fourth hand-spelled pointer read (G34)
+            # — and cheaper than building the whole capture context to read
+            # one field off it. An EMPTY STRING falls through to it as well as
+            # a None (REVIEW_BIND1 F1): `session_sweep` hands over the capture
+            # context's own user field, which is "" on a workspace whose
+            # context has no user, and `"" is not None` skipped the seam
+            # entirely — so the read that could have answered was never made.
+            # (Spelled in words, not in code: G34's census reads this file's
+            # TEXT, and a pointer key written out here would read as a
+            # fifth hand-rolled resolver.)
+            try:
+                from primary_user import resolve_primary_user
+
+                user_person_id = str(
+                    resolve_primary_user(workspace_root) or "").strip()
+            except Exception:  # noqa: BLE001 - an unreadable registry is survivable
+                user_person_id = ""
+        evidence = capture_binding_evidence(
+            ev, user_person_id=user_person_id, workspace_root=workspace_root)
+        if not user_person_id:
+            # THE FILTER FAILS CLOSED (REVIEW_BIND1 F1, HIGH). "The user is
+            # never evidence" was spelled `(user and p == user)`, which is a
+            # NO-OP when the user cannot be resolved - and an unresolvable
+            # user is a real, named state of this product
+            # (`commitment_backlog_sweep` aborts on it). In that state the
+            # user is a party to every row they write, so the people chain
+            # resolved their OWN org and bound every sent promise to their
+            # own org thread at floor confidence: the exact confident wrong
+            # bind the block comment above exists to prevent, arrived at by
+            # the fence's own absence. When we cannot tell the user apart
+            # from the counterparty, person evidence is not evidence. The
+            # explicit / meeting / org-id branches do not depend on knowing
+            # who the user is and are untouched.
+            evidence.pop("attendee_person_ids", None)
+    if not evidence:
+        return ev
+    try:
+        from thread_resolve import bind_event_thread
+    except ImportError:  # noqa: BLE001 - never block a write on the binder
+        return ev
+    return bind_event_thread(workspace_root, ev, evidence=evidence,
+                             detector=detector)
 
 
 def is_important_capture(data: dict, *, client_ids=frozenset(),
@@ -2242,6 +2595,13 @@ __all__ = [
     "project_binding_of",
     "counterparty_on_record",
     "home_of",
+    # BIND1 - the binding call site
+    "ORG_ID_EVIDENCE_KEYS",
+    "ORG_NAME_EVIDENCE_KEYS",
+    "MEETING_REF_SCHEMES",
+    "COUNTERPARTY_NAME_EVIDENCE_KEYS",
+    "capture_binding_evidence",
+    "bind_capture_thread",
     "is_important_capture",
     "needs_second_witness",
     "second_witness_enabled",

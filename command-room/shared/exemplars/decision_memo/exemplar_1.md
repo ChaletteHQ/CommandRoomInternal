@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | Sam Sample | $480K -->
+<!-- tokens: Acme Co | Northstar Partners | Sam Sample -->
 
 # Decision Memo — structural exemplar (kind: decision_memo)
 
@@ -30,7 +30,7 @@
 [the picked option and why, naming the tiebreaker criterion; sits ABOVE the comparison, always]
 
 ## Options
-[2–4 named options, one short bullet each — "Northstar Partners: slower, cheaper at $480K total"]
+[2–4 named options, one short bullet each, e.g. "Northstar Partners: slower, cheaper at an amount total"]
 
 ## Criteria & weights
 [table: Criterion | Weight | Why this weight — one row per criterion, weights set in the interactive flow]

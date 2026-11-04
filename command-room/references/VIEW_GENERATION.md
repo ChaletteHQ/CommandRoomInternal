@@ -436,7 +436,7 @@ If a customer reads `_hq/views/TIMELINE.md` directly between insight-generator r
 
 Projected from: `events.jsonl` (all types except `briefing`, `audit_run`, `onboarding_step`, `classification_review`, `boundary_marker`)
 
-**Regenerated when:** at the start of every `insight-generator` run (weekly Sunday fire or on-demand). Stored in `_hq/views/TIMELINE.md` as a side effect for human-readability; the canonical computation lives in insight-generator's own synthesis logic. Per `references/SOURCE_OF_TRUTH.md`, never read this file as the source of truth — it's a Tier 2 snapshot from the last insight-generator run.
+**Regenerated when:** at the start of every `insight-generator` run (weekly Sunday fire or on-demand). Stored in `_hq/views/TIMELINE.md` as a side effect for human-readability; the canonical computation lives in insight-generator's own synthesis logic. Per `references/SOURCE_OF_TRUTH.md`, never read this file as authoritative — it's a Tier 2 snapshot from the last insight-generator run.
 
 **Purpose:** Chronological "what happened" across the whole workspace, reverse-chron, grouped by day. Used by the CEO to scan recent history and by insight-generator to detect cross-thread patterns. Shows classification confidence inline so provisional/low-confidence events are visually distinct.
 

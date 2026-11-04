@@ -4,7 +4,7 @@ surfaces: both
 description: "Catch-all. Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', style: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about', 'next week is about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active)."
 ---
 
-**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="workspace-manager")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost.
+**Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="workspace-manager")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost. On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}` (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "workspace-manager"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`, paste what it prints and run that; the envelope's `result` is the answer described above.
 
 
 # Workspace Manager — Command Room
@@ -220,6 +220,74 @@ print(json.dumps(quiet.raise_preset('<workspace_root>')))   # `ask me less` -> q
 - `ran: True` (not restored) → one plain line naming the new posture in words, never the key: *"Done — I'll ask up to 15 a week now (was 5). Say `undo` to put it back."* / *"Done — down to 2 a week; the rest take their defaults and show up in your Friday wrap."* The write is a batch (`qpr_…`) with a registered reverser, so the `undo` is real (bare `undo` lists it as "set how often it asks you").
 - `ran: False` → already at the top / bottom AND not stepped: say so in one line ("Already asking as much as I can — 15 a week."). Never say this on a stepped seat — the helper restores first, so `ran: False` only ever means the stored key is already at the end of the ladder. No question back.
 - Never write the key by hand, never say "preset", "engaged", "light" or "quiet" to the customer — say how many a week.
+
+### Any "turn on …" / "turn off …" sentence — the ONE switch route (SWITCH2 5.1 — MANDATORY)
+
+**Ask the table before you do anything else.** Each switch below ships four customer phrases. The router reads this skill's frontmatter `description` and nothing else, and that description is at its byte cap — so all but two of those phrases arrive as loose input with nothing to match them. Typed in chat on 2026-09-14, an announced switch phrase got a file search and a question back (attended test v5.31.0, B2.9). A phrase the product ANNOUNCED is never answered by a search.
+
+So the phrases are registered in CODE, the way `render_router_misses.CHAT_PHRASES` registers the router-miss question. Run this FIRST on any sentence shaped like a switch — before reading a file, before opening a view, before asking anything back:
+
+```bash
+# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
+# The substrate is on the customer's machine; this process may not be. Every
+# read, helper and write goes through workspace_access ON the host that holds
+# the data. Never open, copy or tar a workspace file into this session, and
+# never write one from here.
+#  1 RESOLVE, once per call. The four lines below name the plugin root, the
+#    environment, and -- on a seat whose files are local -- the workspace. On a
+#    merged seat resolve instead with `workspace_access.py discover`, hand the
+#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
+#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
+#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
+#    before the first plan, so a saved document can name the folder the
+#    customer opens. A runtime that is absent, or a runtime_version that
+#    differs, is a STOP: run the update-bridge install step. There is no
+#    container fallback.
+#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
+#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
+#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
+#    variables in front of python3, which carry the writer identity and the
+#    run mode to the host that holds the data. The reply is one JSON
+#    envelope; ok:false is a stop, never a hand retry.
+#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
+#    redirect, an in-place edit, a heredoc into the workspace, or a python body
+#    that opens a substrate file.
+#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
+#    sandbox seat, or a Code session on the customer's own machine -- the same
+#    verbs run in this shell, and the four lines below resolve it for them.
+#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
+#    sentence with no file, script, path, variable, shell text or mechanism
+#    in it -- "One step could not run here; what is below is complete." or
+#    "... is partial." Never narrate a workaround, never say what you tried.
+#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
+#    render -- lives in this session's own scratch, never under the
+#    workspace. Nothing under `_hq/` is created, copied or removed by a
+#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
+#    removed by `plan remove`, and a removal is reported in the envelope's
+#    own words -- removed, moved aside, or still there -- never as done.
+#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
+#    `plan run_writer` naming a writer on its list -- never by importing a
+#    writer in a shell. The door forwards who you are; a writer with no
+#    identity on this seat refuses in one sentence, and that sentence is the
+#    whole answer.
+SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
+eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
+WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
+[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
+# <<< CR ACCESS PREAMBLE v6 <<<
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+from commitment_policy_pass import apply_switch_phrase
+print(json.dumps(apply_switch_phrase('<workspace_root>', '<what they typed>', origin='m_action')))
+"
+```
+
+- `null` → not a switch. Carry on with the rest of this file.
+- Anything else → say `line` from the return VERBATIM and nothing else — one line, no question back. `switch` names which switch moved, in the customer's own words; `undo` carries the batch a bare `undo` reverses, and is `null` when nothing was written because the switch was already in that state.
+- **Never** search the workspace for a switch, never re-type a phrase or a key name or a number of days into the answer, and never offer a choice — the phrase IS the act (M's ruling 2026-09-03: a reversible act beats a question, every time).
+- The sections below say what each switch governs and who reads it. Their trigger phrases are the SAME list the table builds, from the same constants — `commitment_policy_pass.announced_switch_phrases()` prints it, and a census check reds by name if the announcement and the route ever differ.
 
 ### "turn on closing on evidence" / "turn off closing on evidence" — whether promises close on meeting evidence (CUT-A, M ruling R-A 2026-09-06)
 
@@ -885,12 +953,22 @@ import sys
 sys.path.insert(0, "shared/scripts")
 from render_router_misses import chat_route, chat_answer
 from surface_composers import post
+from offer_gate import compose, SITE_ROUTER_MISSES
 
 if chat_route(what_they_typed):                   # the phrase IS the route
     answer = chat_answer(workspace_root)          # the only answer there is
-    print(post(answer, surface="router-misses",
+    print(post(compose(SITE_ROUTER_MISSES, answer), surface="router-misses",
                workspace=workspace_root, relayed=answer))
 ```
+
+**And it offers nothing (OFFERS1 — MANDATORY).** Asked this on 2026-09-16 the
+chat answered with three options — show the log, fix the routing, clear it —
+over a composer that returns one answer and asks for nothing. `compose` is the
+offer fence and it runs first, on everything you intend to print: a close, a
+capture, a merge, a repair or a rewrite the record already proves is DONE where
+the product notices it, with a receipt and an `undo`, and where the product may
+not act it says so in one sentence. It raises rather than returning; the fix is
+the sentence, never the fence.
 
 **Registered, not described (SPEC FIXTRAIN v5.31.0 6.2).** This section already said "answer from the composer" and "never open the view file" on 09-13, and on 09-16 the view file was opened and paraphrased again — the same instance, unchanged, twice. Prose that has been ignored twice is not a fence, so the phrases live in `render_router_misses.CHAT_PHRASES` and `chat_route` is what recognises them; `post` is handed the composer's own return as `relayed`, so a paraphrase of it is a refusal rather than a habit. **`_hq/views/ROUTER_MISSES.md` is a REGENERATED ARTIFACT, not an answer source** — `regenerate()` writes it from the same rows `chat_answer` reads, deleting it costs nothing, and reading it to answer this question costs the reader every path, script name and build code the paraphrase carried.
 
@@ -902,14 +980,16 @@ It gives three columns of the CEO's own record — the day, what they said they 
 import sys
 sys.path.insert(0, "shared/scripts")
 from surface_composers import post
+from offer_gate import compose, SITE_ROUTER_MISSES
 # `composed_text` is `render_router_misses.chat_answer`'s return, in this
 # same run - relay it, never retype it. The door vouches a relay LINE FOR
 # LINE against what a composer here actually returned (`chat_answer` ends
 # in `say`, which is the gate AND the stamp), so a sentence you wrote
 # yourself cannot ride in as one. Nothing here is the CEO's own typed
 # text, so no rows are named.
-print(post(whole_reply, surface="router-misses", workspace=workspace_root,
-           relayed=composed_text))
+# `compose` is the OFFER fence (OFFERS1), first, on the whole reply.
+print(post(compose(SITE_ROUTER_MISSES, whole_reply), surface="router-misses",
+           workspace=workspace_root, relayed=composed_text))
 ```
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
@@ -1485,7 +1565,7 @@ This skill's description is frozen at its budget cap, so there is NO dedicated q
 **Account value — `[Org] is a $[N] account` / `[Org] is a $[N]/yr account` and equivalents.** A loose statement attaching a recurring dollar figure to a tracked org:
 
 1. ENTITY_RESOLVE the org name first (never first-pick on ambiguity — one question on collision, standard rules above).
-2. Echo the parse in one line and confirm: *"Acme Co — $120k/yr account value, from your statement. Save it?"* (An explicit, fully-specified statement may skip the echo only when the resolver hit is tier-1 and the amount is unambiguous.)
+2. Echo the parse in one line and confirm: *"Acme Co: [amount]/yr account value, from your statement. Save it?"* (An explicit, fully-specified statement may skip the echo only when the resolver hit is tier-1 and the amount is unambiguous.)
 3. On yes (or the unambiguous case), write through the ONE sanctioned writer — never a hand edit:
 
 ```bash
@@ -1546,7 +1626,7 @@ print('OK')
 "
 ```
 
-`confirmed=True` is legal ONLY here (the user just said it) and on a confirmed proposal card — money is never estimated, never auto (the writer refuses without it). Absent money keeps rendering no dollar tag. Ack in plain English ("Got it — Acme Co carries a $120k/yr account value now; your reports will show it.").
+`confirmed=True` is legal ONLY here (the user just said it) and on a confirmed proposal card: money is never estimated, never auto (the writer refuses without it). Absent money keeps rendering no dollar tag. Ack in plain English ("Got it, Acme Co carries a [amount]/yr account value now; your reports will show it.").
 
 **Org facts — `remember [fact] about [Org]` / a loose org-news statement ("note that Acme Co raised a Series A").** Same shape: ENTITY_RESOLVE the org → `org_writer.record_org_fact(ws, org_id, fact, source_ref, category=..., source_skill='workspace-manager')` with `source_ref` naming where it came from (`chat:user-statement` for a direct statement). Facts are additive events — they never mutate the org record; the org history view (`go [org] rollup`) and board packs read them. Person-shaped facts ("remember Sam prefers Signal") are people-crm's — hand those over.
 
@@ -1913,7 +1993,8 @@ ws = '<workspace_root>'
 name = '<prospect name>'
 deal_status = '<the status the customer picked in step 2 — free text; goes in the engagement label>'
 # Resolve YOUR primary-focus org as the engagement source (from_org_id).
-ent = json.load(open(ws + '/_hq/data/entities.json')).get('entities') or {}
+raw = json.load(open(ws + '/_hq/data/entities.json'))
+ent = raw.get('entities') if isinstance(raw.get('entities'), dict) else raw  # FLATSHAPE1 (cr1#115): both file shapes, never an empty read of a flat file
 orgs = ent.get('orgs') or []
 focus = next((o for o in orgs if o.get('is_primary_focus')), None)
 assert focus, 'No is_primary_focus org set — ASK the customer which of their orgs this prospect is for, then re-run; do NOT guess from_org_id.'
@@ -2230,7 +2311,7 @@ Route to the `cleanup` skill — the on-demand form of the weekly maintenance pa
 
 ### "quick task: [description]"
 
-One-off tasks that need tracking but not full project scaffolding. **CTS1 (2026-07): this writes a REAL `kind: task` commitment event** — the old markdown "Quick Tasks" lane in MASTER_TRACKER.md is RETIRED. That lane skipped events.jsonl entirely, so quick tasks never participated in buckets, aging, or close-everywhere — exactly the "closed in one place, still open in another" bug class that hit real customer workspaces (the Jun 19 / Jul 1 tasks-vs-commitments duplication reports). One source of truth; the task lands on **My Plate · Personal** and closes through `close_commitment` like everything else — including the CLOSEID2 door: a quick-task close from this skill states `resolved_by_match` (usually `"title"` with `title_query=<what the user said>`; `"id"`/`"number"` when a surface carried it).
+One-off tasks that need tracking but not full project scaffolding. **CTS1 (2026-07): this writes a REAL `kind: task` commitment event** — the old markdown "Quick Tasks" lane in MASTER_TRACKER.md is RETIRED. That lane skipped events.jsonl entirely, so quick tasks never participated in buckets, aging, or close-everywhere — exactly the "closed in one place, still open in another" bug class that hit real customer workspaces (the Jun 19 / Jul 1 tasks-vs-commitments duplication reports). One store; the task lands on **My Plate · Personal** and closes through `close_commitment` like everything else — including the CLOSEID2 door: a quick-task close from this skill states `resolved_by_match` (usually `"title"` with `title_query=<what the user said>`; `"id"`/`"number"` when a surface carried it).
 
 1. Append ONE `commitment` event via `event_gate.append_event` (the gated path — kind is validated, `data.id` minted as `cmt_<ulid>`):
    ```python
@@ -2693,7 +2774,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Also owns the routing-correction verb (SPEC ROUTEMISS1 — body-only; the description is frozen at its budget cap and the runtime router reaches these through the catch-all): 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]' — the remainder is re-dispatched as the request and a `router_miss` is logged only when the fences in the body's "Routing corrections" section hold. Machine-matchable stems for the mechanical matcher: 'wrong skill', 'you routed that wrong', 'that should have been'. The redirect shape `no, I meant [X]` is recognised by the handler (`router_miss.split_correction`) but is NOT a stem here or anywhere — `no I meant prep me for my 2pm` belongs to call-prep, and a positive stem would collide with every such remainder. DOES NOT fire on a voice or wording correction after a draft (`no, I meant 'regards'` — the drafting skill's correction lane) or on the answer to a disambiguation question (`no, I meant the other [org]`).
 
-> Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A — D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements — a note-that phrasing whose name resolves to an ORG (e.g. a Series A announcement about Acme Co) routes here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a $120k account', 'is a $120k/yr account'. Money is confirm-only through org_writer.set_org_money — never estimated, never auto. Behavior in the body's "Org money & facts" section.
+> Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A, D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements (a note-that phrasing whose name resolves to an ORG, e.g. a Series A announcement about Acme Co) route here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a [amount] account', 'is a [amount]/yr account'. Money is confirm-only through org_writer.set_org_money: never estimated, never auto. Behavior in the body's "Org money & facts" section.
 > Also owns the WORKSPACE PROFILE and the two coaching doors (SPEC_SURFACES2 PROFILE1, absorbing SPEC_LEARN2 — the primary stems are front-loaded in the description per STYLEROUTE1; the rest live here and the runtime router reaches them through the catch-all): 'my profile', 'what do you know about me', 'what have you learned about me', 'what do you know about how I work', "show what you've learned", 'how have you adapted to me', 'what have you changed on your own', 'export my profile', 'reset [section]' said about a section of the page, a learned line deleted by saying so ('forget that' / 'that one's wrong' said about a line on the page), 'turn on coaching', 'turn off coaching', and the assessment door ('here are my scores', 'load my assessment'). Machine-matchable stems for the mechanical matcher: 'my profile', 'what do you know about me', 'what have you learned about me', 'export my profile', 'turn on coaching', 'turn off coaching'. ABSORBS 'show my style' — the phrase stays live and now renders as the profile's How you like it section, so nothing a customer already says stops working. Every write goes to the settings store through `skill_config_writer` and the coaching object through `coaching_doors` — NEVER a CLAUDE.md edit; the profile lines inside the workspace instructions are REGENERATED by `render_claude_md` on the persona precedent, which is the whole point. DOES NOT fire on 'who is Sam' (people-crm). DOES NOT fire on 'tell me about Sam' (people-crm). DOES NOT fire on 'what did you change' (system-health). DOES NOT fire on the bare two-word coaching ask with no label after it (command-room-coach - the coaching conversation itself; this skill owns the doors that turn it on and off, and the `on a label` form of that ask, which IS the earned door's yes).
 ## Narration leak scan (LEAK2 — MANDATORY on every composed line)
 

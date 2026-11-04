@@ -32,7 +32,7 @@ Core workspace memory and coordination files. Created by onboarding; maintained 
 
 ```
 _hq/
-├── MASTER_TRACKER.md              # Source of truth: all active projects, status, dates
+├── MASTER_TRACKER.md              # Regenerated view: all active projects, status, dates
 ├── BUSINESS_CONTEXT.md            # Company/situation context, goals, constraints
 ├── DECISION_LOG.md                # Decisions made + rationale + dates
 ├── PEOPLE.md                      # Key contacts, roles, relationships

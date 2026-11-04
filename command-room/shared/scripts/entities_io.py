@@ -23,6 +23,80 @@ helpers so producer and consumer agree on where the data lives.
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+
+# How often, and how long, a reader waits out a write in progress (cr1#130).
+# Five tries spread over about 0.75 seconds: long enough for a sync client or
+# a hand-rolled write to finish, short enough that a file that is really
+# broken still fails fast.
+_READ_ATTEMPTS = 5
+_READ_FIRST_DELAY_S = 0.05
+
+
+def read_entities_json(path, *, attempts: int = _READ_ATTEMPTS,
+                       first_delay_s: float = _READ_FIRST_DELAY_S):
+    """Parse entities.json, waiting out a write in progress (cr1#130).
+
+    The writers are atomic and locked; readers were not. A read that lands
+    while the file is being replaced non-atomically (a sync client, a
+    hand-rolled write) sees a half-written file and fails with a JSON error
+    such as 'Unterminated string'. This reader retries a parse error, a
+    decode error, or a Windows sharing violation, with a doubling pause, and
+    returns the parsed document.
+
+    It changes nothing else for the caller:
+      - a missing file raises FileNotFoundError at once (callers read that
+        as a fresh workspace, never as corruption);
+      - a file that is still broken after the last try raises the last
+        error, so each caller's own fallback (an empty dict, a plain-English
+        error, a read alarm) still applies;
+      - the value is returned as parsed, whatever its type; callers keep
+        their own shape checks.
+
+    The wait is paid once per broken file, not once per call: after the last
+    try fails, the file's size and modification time are remembered, and a
+    later read of the same unchanged file fails at once. A file that stays
+    broken for a long time (a stale sync cache) therefore costs a loop that
+    reads it per row nothing extra; any change to the file re-arms the wait.
+    """
+    path = Path(path)
+    key = str(path)
+    tries = max(1, attempts)
+    if key in _SETTLED_BROKEN and _stamp(path) == _SETTLED_BROKEN[key]:
+        tries = 1
+    delay = first_delay_s
+    for attempt in range(tries):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            _SETTLED_BROKEN.pop(key, None)
+            raise
+        except (ValueError, PermissionError):
+            # ValueError covers JSONDecodeError and UnicodeDecodeError.
+            if attempt >= tries - 1:
+                _SETTLED_BROKEN[key] = _stamp(path)
+                raise
+            time.sleep(delay)
+            delay *= 2
+            continue
+        _SETTLED_BROKEN.pop(key, None)
+        return data
+
+
+# {path: (mtime_ns, size)} of files that were still broken after the last
+# try, so an unchanged broken file is not waited on again.
+_SETTLED_BROKEN: dict = {}
+
+
+def _stamp(path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
 
 def unwrap_entities(data: dict) -> dict:
     """Return the dict that actually holds the entity collections — the inner

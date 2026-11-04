@@ -37,7 +37,7 @@ chart needs a compound sentence to explain ("revenue is up AND mix shifted
 AND two stages stalled"), split it or drop all but the strongest message.
 Corollaries:
 
-- **One unit per chart.** Never mix scales on one axis — a $910K series next
+- **One unit per chart.** Never mix scales on one axis: a revenue series in hundreds of thousands of dollars next
   to an NPS of 62 renders the small series invisible and the chart dishonest.
   Chart the series that share the dominant unit; the table carries the rest.
 - A title states the message context, not the mechanism ("KPIs vs targets",

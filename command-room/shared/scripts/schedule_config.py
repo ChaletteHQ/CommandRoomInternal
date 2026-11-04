@@ -307,7 +307,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # manual fire's own receipt no longer counts as a predecessor either
     # (SPEC_FIREGAP2 closing REVIEW_MAINTGAP1 F2). See
     # `maintenance_dispatcher`'s own module docstring ("THE MIN-GAP GUARD" /
-    # "THE FIRE-START MARKER") and `handoffs/REVIEW_CAPSLOT1_2026-08-27.md`
+    # "THE FIRE-START MARKER") and `docs/history/handoffs/2026-08/REVIEW_CAPSLOT1_2026-08-27.md`
     # F2/F3 for the full reasoning this guard addresses.
     #
     # `label` is `cron_to_english(cron)` verbatim (lockstep-pinned) —
@@ -377,12 +377,17 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # NEW INSTALLS ONLY. An existing registration keeps whatever cron it has:
     # the update bridge PROPOSES this change (`staff_meeting_cadence_mwf_v1`)
     # and never rewrites a customer's schedule silently.
-    "staff-meeting": {
-        "cron": "0 9 * * 1,3,5",
-        "label": "9 AM Mon, Wed, Fri",  # == cron_to_english(cron); see the
-                                        # lockstep guard in the FB-20 test
-        "enabled": True,
-    },
+    # `staff-meeting` is GONE from the default set (the owner's ruling
+    # 2026-10-23, cr1#176): the FIFTH readiness retirement. The scheduled
+    # fire leaves; the surface does not. `staff meeting` on demand is
+    # system-health Step 5, which calls the same driver
+    # (`staff_meeting_helpers.run_staff_meeting_surface`) over the same queue,
+    # and the morning brief still names every money row and points at the
+    # rest. Same mechanics as relationship-moves above: the row leaves
+    # DEFAULT_SCHEDULES and SHIPPED_CRON_HISTORY, its last cron rides its
+    # RETIRED row, the DISPLAY_NAMES row stays, the receipt vocabulary stays
+    # parseable, and the update bridge switches a registered chat off by
+    # class. Its last default was "9 AM Mon, Wed, Fri".
     # `pipeline-digest` is GONE from the default set (TASKRET1, M's ruling
     # 2026-08-17) — the second READINESS retirement. It is the only one of the
     # three that had an AUTOMATED offer path, so its removal is two edits, not
@@ -454,7 +459,8 @@ SHIPPED_CRON_HISTORY: dict[str, tuple[str, ...]] = {
     # relationship-moves left this history with its retirement (M's ruling
     # 2026-09-24): the history's keys are the default set's keys, and a retired
     # chat is never re-anchored. Its last shipped cron lives on its RETIRED row.
-    "staff-meeting": ("0 9 * * 1,3,5",),
+    # staff-meeting left it the same way (cr1#176, the owner's ruling
+    # 2026-10-23).
 }
 
 
@@ -938,18 +944,54 @@ RETIRED_TASKS: dict[str, dict] = {
         # Re-offer gate (internal): the Staff Meeting's "This week's moves"
         # section is the surface; a standalone Sunday fire returns only if
         # M asks for it again.
+        # cr1#176: the reason and replacement used to say the picks ride the
+        # Staff Meeting every week. They left that surface in WRAPSTAFF1
+        # (2026-09-17) and the scheduled Staff Meeting is itself retired, so
+        # the line now names only the door that is real: the ask.
         "reason": (
-            "its Sunday outreach picks already ride the Staff Meeting as "
-            "'This week's moves', so a separate Sunday chat said the same "
-            "thing a day early"
+            "its Sunday outreach picks are the same ones you get by asking, "
+            "so a separate Sunday chat was one more chat saying what is one "
+            "ask away"
         ),
         "reoffer_when": (
             "you want the Sunday outreach picks as their own chat again"
         ),
         "replacement": (
             "Nothing is lost — say `who should I reach out to` any time and "
-            "the same picks run on the spot, and the Staff Meeting still "
-            "carries them every week"
+            "the same picks run on the spot"
+        ),
+    },
+    "staff-meeting": {
+        "retired_in": "SMRETIRE1",
+        "retirement_class": "readiness",
+        # The last shipped default cron, kept here (not in DEFAULT_SCHEDULES),
+        # the relationship-moves shape.
+        "cron": "0 9 * * 1,3,5",
+        # Re-offer gate (internal): the owner's ruling 2026-10-23 (cr1#176)
+        # retired the scheduled fire only. The surface stays on demand
+        # (system-health Step 5, the same driver over the same queue); a
+        # standing fire returns only if the owner asks for it again.
+        #
+        # Every decision type the fire carried keeps a door (cr1#176's
+        # acceptance check): money rows are named by the morning brief, the
+        # rest of the queue is counted there with one pointer to `staff
+        # meeting`; meeting captures reach End of Day (at most two) and
+        # `needs your call`; new-person questions reach `needs your call` and
+        # `staff meeting` on demand; unanswered questions still
+        # take their default when their lifetime runs out (TTL1). The watched-item
+        # check ("still open?") and its assumed-done closes run on page one of
+        # the surface, which `staff meeting` on demand still is.
+        "reason": (
+            "the questions it collected already reach you on their own: your "
+            "morning brief names any deal signal and counts the rest, and End "
+            "of Day asks the one or two that matter"
+        ),
+        "reoffer_when": (
+            "you want the full list on a fixed day again"
+        ),
+        "replacement": (
+            "Nothing is lost: say `staff meeting` any time and the same full "
+            "list opens on the spot, one tap per answer"
         ),
     },
 }
@@ -2385,6 +2427,12 @@ def serving_display_name(task_id: str) -> str:
     `task_display_name` — the name the customer's Scheduled sidebar shows,
     which the watchdog and the health check deliberately keep (SPEC EOD2)
     — is unchanged. Every other id resolves exactly as before.
+
+    RETIMENAME1 (cr1#146): two lines spoken ABOUT a registration rather than
+    in its chat also take this name by ruling — the chronic-lateness
+    proposal in cleanup's Monday note (`late_fire.detect_chronic_lateness`)
+    and the migration gate's stop line (`migration_gate._display_name`), which
+    is the fire speaking in its own chat.
     """
     spec = RETIRED_TASKS.get(task_id) or {}
     successor = spec.get("renamed_to")
@@ -2709,6 +2757,13 @@ def rm_supersede_plan(registered_tasks: list) -> dict | None:
     (`migration_adjudication` on the marker id) — this planner holds no
     state. The RM skill, its orchestrator, and Pulse are untouched by design.
     """
+    # cr1#176: the Staff Meeting is a readiness retirement, so there is no
+    # scheduled chat left to fold Relationship Moves into. Registering it here
+    # would hand a customer back the chat the update just switched off.
+    # Relationship Moves is readiness-retired too; the readiness migration
+    # switches a live one off by class, so nothing is left behind.
+    if is_retired_task("staff-meeting"):
+        return None
     rm = None
     sm_registered = False
     for t in registered_tasks or []:

@@ -120,13 +120,13 @@ def _entities_path(workspace_root) -> Path:
 
 
 def _load_entities(workspace_root) -> dict:
-    import json
 
+    from entities_io import read_entities_json
     p = _entities_path(workspace_root)
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except (OSError, ValueError):
         return {}
 

@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | Quinn Stone | $480K | 13 days quiet -->
+<!-- tokens: Acme Co | Northstar Partners | Quinn Stone | 13 days quiet -->
 
 # Dormant Customer Scan — structural exemplar (kind: dormant_scan)
 
@@ -23,7 +23,7 @@
 
 ---
 
-**$480K of historical revenue has gone quiet — three customers worth a call this week.** [verdict]
+**An amount of historical revenue has gone quiet: three customers worth a call this week.** [verdict]
 
 CHANGED   Two accounts crossed their usual cadence since the last scan. [named or nothing-form]
 DECIDE    Which of the top three gets the first call. [≤25 words]
@@ -34,7 +34,7 @@ NEEDED    Approve the top re-engagement draft · nothing else. [≤25 words]
 
 ## Top customers to reach out to
 [scored rows, revenue × dormancy order, cap 20; each row:
- 1. Acme Co — $480K historical · 13 days quiet vs usual cadence — [why-now: one line of real evidence] — [action: draft re-engagement]
+ 1. Acme Co: [amount] historical · 13 days quiet vs usual cadence · [why-now: one line of real evidence] · [action: draft re-engagement]
  rank · name · quantify tag · why-now · action, nothing else]
 
 ## Others worth a look

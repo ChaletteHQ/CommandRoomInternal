@@ -92,6 +92,21 @@ except Exception:  # pragma: no cover — the contact pass is optional
 from commitment_policy import PROPOSAL_TTL_DAYS as REVIEW_PROPOSAL_TTL_DAYS  # noqa: E402
 
 
+#: USERPROV1 (cr1#133): the two answers to "how was the user decided".
+#: `resolver`: the caller's user IS the workspace's own person as
+#: `primary_user.resolve_primary_user` answers it. `caller_unverified`: the
+#: resolver could not name anyone (no pointer, no flag), so the caller's value
+#: stood. THE RULE, stated: a contradiction between caller and resolver STOPS
+#: the run (PrimaryUserMismatchError); an unresolvable workspace does NOT stop
+#: it — the run completes on the caller's value and is stamped so, because a
+#: workspace with no recorded owner is the case `plan_sent_window` already
+#: reports as not ready, and refusing here would silence the one receipt that
+#: says which user the gates judged. `validate_reconcile_ran` surfaces the
+#: stamp as `user_unverified`.
+USER_RESOLUTION_RESOLVER = "resolver"
+USER_RESOLUTION_CALLER = "caller_unverified"
+
+
 class PrimaryUserUnresolvedError(RuntimeError):
     """Bug #102 — `resolve_primary_user` came back None/empty.
 
@@ -109,6 +124,15 @@ class PrimaryUserUnresolvedError(RuntimeError):
     So the orchestrator ABORTS instead: no audit event, no cursor advance, a
     loud receipt on stderr, and this exception for the caller to surface.
     """
+
+
+class PrimaryUserMismatchError(PrimaryUserUnresolvedError):
+    """USERPROV1 (cr1#133) — the caller handed this run a user that is not the
+    workspace's own person as `primary_user.resolve_primary_user` answers it.
+    A guessed user would close or skip commitments against the wrong person
+    under a clean receipt, so the run stops before it reads anything. A
+    subclass of PrimaryUserUnresolvedError (below) so every clause that
+    already catches an unresolved user catches this too."""
 
 
 def _clock_now(workspace_root=None):
@@ -761,6 +785,51 @@ def reconcile_sent(
             "cursor_ts": cursor_ts, "signal_fields": signals}
 
 
+def bind_sent_items(workspace_root, items, *, user_person_id=None) -> list:
+    """BIND1 - resolve each sent-capture item's thread BEFORE `sent_capture`
+    builds and appends its events, and stamp `item["primary_thread_id"]`.
+
+    WHY HERE AND NOT IN THE BUILDER. `sent_capture.build_sent_commitment_event`
+    is pure construction and takes `primary_thread_id` as an argument the
+    caller supplies; the caller is this module. Binding here means the value
+    travels the ordinary argument the builder already has, and the builder,
+    the dedup and the append are untouched.
+
+    Each item is adapted to the shape `capture_gate.capture_binding_evidence`
+    reads (the payload it will become), handed to `bind_capture_thread`, and
+    the resolved binding is copied back onto the item. An item that already
+    names a thread, and an item with nothing to resolve on, come back
+    byte-identical. Never raises: a binder failure leaves the batch exactly
+    as it arrived, which is today's behaviour."""
+    from capture_gate import bind_capture_thread
+
+    out = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        if str(item.get("primary_thread_id") or "").strip():
+            out.append(item)
+            continue
+        shim = {"type": "commitment", "data": dict(item),
+                "person_ids": list(item.get("person_ids") or ())}
+        try:
+            shim = bind_capture_thread(
+                workspace_root, shim, detector="reconcile-sent",
+                user_person_id=user_person_id)
+        except Exception:  # noqa: BLE001 - a binder miss never sinks a batch
+            out.append(item)
+            continue
+        bound = str(shim.get("primary_thread_id") or "").strip()
+        if not bound:
+            out.append(item)
+            continue
+        item = dict(item)
+        item["primary_thread_id"] = bound
+        out.append(item)
+    return out
+
+
 def to_resolved_events(closures, *, source_skill, seq_start):
     """LEGACY shape helper — construction only, superseded by
     `commitment_state.close_commitment` (Phase 2 Stage B, F2).
@@ -828,6 +897,44 @@ def _read_cursor(workspace_root):
     return ws.get("sent_reconcile_cursor"), raw
 
 
+def clamp_cursor_to_now(new_cursor, now_iso=None):
+    """The cursor as it may be written (CURSORCLAMP1, cr1#149): a value dated
+    after now is clamped to now. The writer took whatever it was given, and a
+    future timestamp (clock skew between a fetch and this machine, a hand
+    edit, a corrupted write) made `commitment_state.reconcile_is_stale` read
+    reconciliation as current forever. A value that does not parse is passed
+    through unchanged (the reader already treats it as stale); `now_iso` is
+    the test seam."""
+    from datetime import datetime, timezone
+
+    if not isinstance(new_cursor, str) or not new_cursor.strip():
+        return new_cursor
+    text = new_cursor.strip()
+    try:
+        cur = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return new_cursor
+    if isinstance(now_iso, datetime):
+        now = now_iso
+    elif isinstance(now_iso, str) and now_iso.strip():
+        now = datetime.fromisoformat(now_iso.strip().replace("Z", "+00:00"))
+    else:
+        # CLOCK1: never a raw machine-clock read here; the module's own
+        # corroborated clock is the floor every cursor is judged against
+        floor = _clock_now()
+        now = (datetime.fromisoformat(str(floor).strip().replace("Z", "+00:00"))
+               if not isinstance(floor, datetime) else floor)
+    if cur.tzinfo is None:
+        cur = cur.replace(tzinfo=now.tzinfo or timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if cur <= now:
+        return new_cursor
+    # the house stamp: UTC to the second, Z-suffixed, so it sorts with every
+    # other cursor string the module compares lexically
+    return now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
                   contact_cursor=None):
     """Persist workspace.sent_reconcile_cursor, preserving the wrapper shape.
@@ -854,7 +961,7 @@ def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
         ws = {}
         inner["workspace"] = ws
     if new_cursor is not None:
-        ws["sent_reconcile_cursor"] = new_cursor
+        ws["sent_reconcile_cursor"] = clamp_cursor_to_now(new_cursor, now_iso=_clock_now(workspace_root))
     if contact_cursor is not None:
         from contact_capture import stamp_contact_cursor
 
@@ -864,7 +971,8 @@ def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
 
 def _record_blocked_run(workspace_root, events_path, cursor_before, *,
                         reason, source_skill, fired_via, provider=None,
-                        triggered_by=None) -> dict:
+                        triggered_by=None, user_person_id=None,
+                        user_resolution=None) -> dict:
     """MAILSEAM item 8 — the receipt for a fire whose Sent READ could not run.
 
     Writes a `sent_reconcile` audit event stamped `status: "blocked"` with the
@@ -888,6 +996,9 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
             "status": "blocked",
             "blocked_reason": reason,
             "fired_via": fired_via,
+            # USERPROV1 (cr1#133): the same provenance a completed run carries
+            "user_person_id": user_person_id,
+            "user_resolution": user_resolution,
             "cursor_from": cursor_before,
             "cursor_to": cursor_before,   # never advanced over an unread window
             "sent_scanned_count": 0,
@@ -1487,6 +1598,27 @@ def reconcile_and_receipt(
         )
         print(msg, file=sys.stderr)
         raise PrimaryUserUnresolvedError(msg)
+    # USERPROV1 (cr1#133): how the user was decided travels on the receipt,
+    # and a caller's user that contradicts the resolver stops the run. The
+    # resolver is asked here, not trusted from the caller: a run that passed
+    # a user it improvised used to complete with a clean audit.
+    try:
+        from primary_user import resolve_primary_user as _resolve_user
+        resolver_user = _resolve_user(workspace_root)
+    except Exception:  # noqa: BLE001
+        resolver_user = None
+    if resolver_user and str(resolver_user) != str(user_person_id):
+        msg = (
+            "reconcile-sent ABORTED: the caller's user does not match the "
+            "workspace's own person (primary_user.resolve_primary_user answers "
+            "a different id). Every owner gate would judge the wrong person "
+            "and this run would write a clean audit over it. No audit event "
+            "written, cursor NOT advanced. Fix: pass the resolver's answer, or "
+            "set workspace.user_id in entities.json (cr1#133)."
+        )
+        print(msg, file=sys.stderr)
+        raise PrimaryUserMismatchError(msg)
+    user_resolution = USER_RESOLUTION_RESOLVER if resolver_user else USER_RESOLUTION_CALLER
 
     # MAILSEAM: resolve the provider ONCE, here, and use it for every ref this
     # run compares or writes. An explicit argument wins; otherwise the declared
@@ -1507,6 +1639,7 @@ def reconcile_and_receipt(
             workspace_root, events_path, cursor_before,
             reason=blocked, source_skill=source_skill, fired_via=fired_via,
             provider=provider, triggered_by=asked_by,
+            user_person_id=user_person_id, user_resolution=user_resolution,
         )
 
     # BUG-8330 item 15 — ONE lock session for the whole fire. This function
@@ -1761,6 +1894,26 @@ def reconcile_and_receipt(
                         if isinstance(p.get("has_completion_signal"), bool)
                         else None),
                 )
+                # BIND1 fix round 1 (REVIEW_BIND1 F3): THE BINDER IS NOT
+                # CALLED HERE, AND THAT IS THE HONEST ANSWER. A review
+                # proposal already inherits its parent row's binding -
+                # `primary_thread_id=p.get("primary_thread_id")` a few lines
+                # up is the parent commitment's own thread - so a bound
+                # parent gives a bound proposal and the binder's first line
+                # would return the event untouched. And an UNBOUND parent
+                # gives the binder nothing to work with either: the event
+                # `build_pending_review_event` composes carries exactly
+                # `commitment_id, evidence, evidence_ts, match_score,
+                # proposed_resolution, source_ref, title` - no org, no
+                # counterparty, no person ids, and a `superhuman:` /
+                # `gmail:` source_ref the meeting-scheme gate refuses - so
+                # the evidence adapter derives `{}` and the call was
+                # unreachable by construction. It was removed rather than
+                # left in place under a pin that certified it as live.
+                # Binding the proposal off its PARENT's capture event is
+                # real work and belongs one level down, in
+                # `cru_match.build_pending_review_event` (Seam 2), with the
+                # backfill pass that gives it a population to help.
                 ev["data"].update({
                     # FS-11: only genuinely ambiguous matches reach here now
                     # (unambiguous moderate matches auto-closed above). Carry a TTL
@@ -1785,6 +1938,16 @@ def reconcile_and_receipt(
         capture = None
         if sent_commitment_items is not None:
             from sent_capture import capture_sent_items
+            # BIND1 - bind AT THE WRITE. The items are the skill's own
+            # extraction and they already carry the recipient's resolved org
+            # (`org_id` / `org_name`, passed for the per-org capture
+            # override) and the counterparty's person id; the binder reads
+            # exactly those, so a sent promise to a client lands under that
+            # client's thread instead of "Everything else". Measured unbound
+            # before this line, on the 2026-09-17 scratch copy: 16 of 16.
+            sent_commitment_items = bind_sent_items(
+                workspace_root, sent_commitment_items,
+                user_person_id=user_person_id)
             capture = capture_sent_items(
                 workspace_root,
                 sent_commitment_items,
@@ -1827,7 +1990,10 @@ def reconcile_and_receipt(
         new_ts = res.get("cursor_ts")
         sent_cursor_write = None
         if new_ts and (cursor_before is None or new_ts > cursor_before):
-            cursor_after = new_ts
+            # CURSORCLAMP1 (cr1#149): clamp HERE, so the audit row's
+            # cursor_to, the receipt's cursor_after and the stored cursor all
+            # carry the same value; the clock is the module's corroborated one
+            cursor_after = clamp_cursor_to_now(new_ts, now_iso=_clock_now(workspace_root))
             sent_cursor_write = cursor_after
         contact_cursor_write = None
         if isinstance(contacts, dict) and contacts.get("ran") and \
@@ -1880,6 +2046,12 @@ def reconcile_and_receipt(
                 # recap this run (never closed).
                 "n_confirmed_by_recap": n_recap,
                 "fired_via": fired_via,
+                # USERPROV1 (cr1#133): who the owner gates judged, and how that
+                # id was decided — `resolver` when it is the workspace's own
+                # person as the resolver answers it, `caller_unverified` when
+                # the resolver could not answer and the caller's value stood.
+                "user_person_id": user_person_id,
+                "user_resolution": user_resolution,
                 "cursor_from": cursor_before,
                 "cursor_to": cursor_after,
                 "sent_scanned_count": n_fetched,
@@ -2315,18 +2487,25 @@ def validate_reconcile_ran(workspace_root, *, since_cursor=None) -> dict:
                 "reason": f"latest audit is from a prior run (cursor_from={d.get('cursor_from')!r} "
                           f"!= expected {since_cursor!r})",
                 "cursor_to": d.get("cursor_to")}
+    # USERPROV1 (cr1#133): a run whose user the resolver could not confirm is
+    # flagged, never hidden behind a healthy-looking ok. An audit from before
+    # the field existed carries neither flag nor claim.
+    user_resolution = d.get("user_resolution")
     return {
         "ok": True, "ran": True,
         "cursor_from": d.get("cursor_from"),
         "cursor_to": d.get("cursor_to"),
         "sent_scanned_count": d.get("sent_scanned_count"),
         "n_closed": d.get("n_closed"),
+        "user_resolution": user_resolution,
+        "user_unverified": user_resolution == USER_RESOLUTION_CALLER,
     }
 
 
 __all__ = ["reconcile_sent", "to_resolved_events", "reconcile_and_receipt",
            "apply_roster_complete_closes", "validate_reconcile_ran",
-           "PrimaryUserUnresolvedError"]
+           "PrimaryUserUnresolvedError", "PrimaryUserMismatchError",
+           "USER_RESOLUTION_RESOLVER", "USER_RESOLUTION_CALLER"]
 
 
 if __name__ == "__main__":

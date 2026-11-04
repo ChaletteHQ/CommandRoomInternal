@@ -1,0 +1,13 @@
+{
+  "version": "3.16.0",
+  "headline": "Project pages refresh themselves, and new people and organisations stop going missing from lists.",
+  "items": [
+    {
+      "id": "v3160_announce_live_project_pages",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Each project's page now redraws its people and its status from your records every time you open it, instead of freezing at the moment it was written. Behind the scenes, your records are now stored the same way every time, so a newly added person or organisation shows up where it should.",
+      "action": "announce_only"
+    }
+  ]
+}

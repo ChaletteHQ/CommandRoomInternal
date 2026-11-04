@@ -251,6 +251,10 @@ _IDENTITY_KINDS = frozenset({
     # asks). person_merge is NEVER in AUTO_ALLOWED (merge_person_into has no
     # reverser — a record merge cannot be undone).
     "person_link", "person_merge",
+    # cr1#195 - the rename question: two people share one address and the
+    # record on file carries the other one's name. Confirm-tier only; the
+    # owner's answer calls people_writer.rename_person.
+    "person_rename",
     # DEALNAG1 — the auto org promotion. It is applied-then-resolved in the
     # same run, so it never renders anywhere; the shape is declared for the
     # ranking table's completeness and for any diagnostic read.
@@ -299,7 +303,13 @@ ON_DEMAND_SURFACE_HINT = "on-demand"
 # the staff meeting, which is the opposite of the ruling. Keying on kind covers
 # both rails and every row already open on a live workspace, with no event
 # rewriting and no backfill (the append-only discipline).
-ON_DEMAND_KINDS = frozenset({"dormancy"})
+# BIND1 (REVIEW_BIND1 RE-VERIFY 1 N2) — `thread_binding` joins it for
+# exactly the reason above. The binding QUESTION is on-demand by M's
+# ruling and its writer stamps the hint, but a hint stamped at MINT
+# cannot reach a row already open on a live workspace: those carry an
+# empty `surface_hint` and went on competing for a daily card slot the
+# moment they out-ranked four others. Keying on the kind covers them.
+ON_DEMAND_KINDS = frozenset({"dormancy", "thread_binding"})
 
 # LIFECYCLE1 §7a — kinds RETIRED at the projector: no NAMED surface renders one
 # any more (staff meeting, morning brief, system-health, the needs-review queue
@@ -535,7 +545,11 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             **{k: data[k] for k in ("cluster_seqs", "cluster_fingerprints",
                                     "keep_id", "duplicate_id", "alias_name",
                                     "matched_name", "parent_thread_id",
-                                    "clusters") if data.get(k)},
+                                    "clusters",
+                                    # cr1#195 - the person_rename row's
+                                    # confirm inputs, verbatim.
+                                    "new_name", "current_name",
+                                    "shell_id") if data.get(k)},
             # TTL1 F-1/F-6 — the fields the importance rule reads, carried
             # through drop-empty when the source event has them. A queue
             # row is the only thing `question_ttl.importance_hold` is

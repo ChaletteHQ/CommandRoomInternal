@@ -66,6 +66,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from capture_gate import (  # noqa: E402
+    bind_capture_thread,
     classify_capture,
     gate_commitment_data,
     intake_kwargs,
@@ -81,6 +82,17 @@ import source_ref_index  # noqa: E402
 # new vocabulary. `deliverable` is an INPUT alias the skill may use; it is stored
 # as a `note` (see _normalize_item).
 SWEEPABLE_TYPES = frozenset({"commitment", "decision", "interaction", "note"})
+
+#: BIND1 - the detector name a `thread_binding` proposal minted off a swept
+#: row is attributed to. ATTRIBUTION ONLY, and the correction matters
+#: (REVIEW_BIND1 F4): it does NOT buy this writer its own slot budget on the
+#: daily confirm card, because a binding question no longer reaches that
+#: card at all - `thread_resolve.propose_binding_row` routes it to the
+#: on-demand "review project bindings" door. Nor did it ever buy a separate
+#: ROW: `thread_resolve._fingerprint` is keyed on the org and its candidate
+#: threads and ignores the detector, so the first writer to hit an ambiguous
+#: org owns that question for all three.
+BIND_DETECTOR = "session-sweep"
 _DELIVERABLE_ALIAS = "note"
 
 # Receipt event types (registered in EVENT_TYPES.md / events.schema.json).
@@ -382,6 +394,16 @@ def _sweep(
                 event = observed_from_commitment_event(
                     event, reason=verdict["reason"]
                 )
+            # BIND1 - bind AT THE WRITE, and AFTER the relevance verdict so
+            # the open/observed split is byte-identical to the shipped one:
+            # a binding is a fact about the row, not a reason to open it.
+            # Measured unbound before this line, on the 2026-09-17 scratch
+            # copy: 10 of the 11 open session-sweep rows on the plate.
+            # `preview_items` below deliberately does NOT call this - a
+            # preview writes nothing, and a binding proposal is a write.
+            event = bind_capture_thread(
+                workspace_root, event, detector=BIND_DETECTOR,
+                user_person_id=ctx.get("user_id"))
         recovered.append(event)
         by_type[event["type"]] += 1
 

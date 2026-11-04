@@ -373,6 +373,68 @@ def prune_stale_readalarms(root: str | Path, max_age_days: int = 30,
     return deleted
 
 
+# --- TMPSWEEP1 (cr1#137): orphaned atomic-write temp files ---------------------
+#
+# `atomic_write` and `deliverables` both stage a write through
+# `tempfile.mkstemp(prefix=".<name>.tmp.", suffix=".write", dir=<target dir>)`
+# and finish with ONE `os.replace`. A write that died between the two leaves
+# that file behind, next to the data and looking like data (one was 2.4 MB),
+# and nothing swept it. The sweep below archive-MOVES them (never a delete,
+# the module's doctrine) once they are older than `TMP_WRITE_MAX_AGE_S`: a
+# write still in flight is seconds old, never a day.
+_TMP_WRITE_RE = re.compile(r"^\..+\.tmp\.[^.]+\.write$")
+TMP_WRITE_MAX_AGE_S = 24 * 3600
+_TMP_WRITE_BUCKET = "tmp-writes"
+#: Where the producers write beside their targets: the data files, the
+#: system folder, the `_hq/` root (the tracker, the people view) and the
+#: landed deliverables under `_hq/meetings/`. Non-recursive on purpose.
+_TMP_WRITE_DIRS = ("_hq", "_hq/data", "_hq/.system", "_hq/meetings")
+
+
+def sweep_tmp_write_files(root: str | Path, max_age_s: int = TMP_WRITE_MAX_AGE_S,
+                          now: float | None = None, *,
+                          left: list | None = None) -> list[str]:
+    """Archive orphaned `.<name>.tmp.<id>.write` files in `_TMP_WRITE_DIRS`
+    (`_hq/`, `_hq/data/`, `_hq/.system/`, `_hq/meetings/`, not recursive)
+    that are older than `max_age_s` (a day by default), each by ONE
+    `os.replace` into `_archive/tmp-writes/...` (mount-safe, never a
+    copy-then-unlink, never a delete). Returns the workspace-relative paths
+    moved. Only the producers' exact shape is matched (`atomic_write` and
+    `deliverables`: `mkstemp(prefix=".<name>.tmp.", suffix=".write")`): a
+    lookalike (`notes.tmp.txt`, a `.tmp` folder) is never touched, nor is
+    any live file. A move that fails is named on `left` when the caller
+    hands a list. Idempotent: the moved files live under `_archive/`.
+
+    Known misses, stated rather than hidden: a temp file beside a target in
+    any other folder (an exemplar in a project folder, a schedule config),
+    `widget_transport`'s `<name>.html.tmp.<pid>` under `_hq/.system/widgets/`
+    and `scaffold_automation`'s `.<name>.<rand>.tmp` under `automations/`
+    are other shapes in other places; this sweep does not claim them."""
+    root = Path(root)
+    cutoff_now = time.time() if now is None else now
+    archived: list[str] = []
+    for rel in _TMP_WRITE_DIRS:
+        d = root / rel
+        if not d.is_dir():
+            continue
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if not p.is_file() or not _TMP_WRITE_RE.match(p.name):
+                continue
+            try:
+                age = cutoff_now - p.stat().st_mtime
+            except OSError:
+                continue
+            if age < max_age_s:
+                continue
+            if _archive_replace(root, p, _TMP_WRITE_BUCKET, left):
+                archived.append(f"{rel}/{p.name}")
+    return archived
+
+
 def sweep_lock_litter(workspace_root, *, max_age_s: int = 3600,
                       now: float | None = None) -> dict:
     """The maintenance fire's DAILY lock-litter sweep on the merged shape
@@ -388,8 +450,11 @@ def sweep_lock_litter(workspace_root, *, max_age_s: int = 3600,
     A file that cannot be moved or removed is named in `left` and is not
     tried again in this call. The writer is named first
     (`receipts.require_writer_identity`). Returns
-    `{archived, pruned, left, n_archived, n_pruned, n_left}` - counts and
-    workspace-relative paths only."""
+    `{archived, pruned, tmp_writes, left, n_archived, n_pruned, n_tmp_writes,
+    n_left}` - counts and workspace-relative paths only.
+
+    TMPSWEEP1 (cr1#137): `sweep_tmp_write_files` runs here too, so the
+    merged seat's daily fire clears orphaned write temp files the same way."""
     from receipts import require_writer_identity
 
     require_writer_identity(workspace_root=workspace_root)
@@ -397,9 +462,10 @@ def sweep_lock_litter(workspace_root, *, max_age_s: int = 3600,
     archived = sweep_stale_locks(workspace_root, max_age_s=max_age_s, now=now,
                                  orphans=False, left=left)
     pruned = prune_stale_readalarms(workspace_root, now=now, left=left)
-    return {"archived": archived, "pruned": pruned, "left": left,
-            "n_archived": len(archived), "n_pruned": len(pruned),
-            "n_left": len(left)}
+    tmp_writes = sweep_tmp_write_files(workspace_root, now=now, left=left)
+    return {"archived": archived, "pruned": pruned, "tmp_writes": tmp_writes,
+            "left": left, "n_archived": len(archived), "n_pruned": len(pruned),
+            "n_tmp_writes": len(tmp_writes), "n_left": len(left)}
 
 
 def runtime_cache_report(root: str | Path) -> dict:

@@ -79,7 +79,7 @@ counts reproduce).
       person, no client, nothing workspace-specific. The vendor brand
       literal is GONE from it and is re-derived on the operator's own
       workspace by rule (a) below, which is why the operator's READY set is
-      unchanged (see handoffs/BUILD_GAUGECAL1 parity table).
+      unchanged (see docs/history/handoffs/2026-09/BUILD_GAUGECAL1_2026-09-02.md, parity table).
     * workspace_generic_terms(entities) — rule (a): the workspace's OWN
       org/brand name(s) are generic WITHIN that workspace. Read from the
       `workspace` block's name keys, from every org whose

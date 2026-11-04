@@ -292,6 +292,32 @@ hand-printed nine rows numbered 1..9 over a book whose real numbers were in
 the 130s. The key is fixed; this paragraph is what stops the improvisation
 from coming back on the next empty card.)
 
+**THE EMPTY CARD HAS A COMPOSED SENTENCE, AND IT OFFERS NOTHING (OFFERS1 —
+MANDATORY).** The same turn ended with two offers over rows the card was
+supposed to be showing. A paragraph that has been ignored once is not a
+fence, so the sentence is in code and the reply goes through the offer
+gate:
+
+```python
+import sys
+sys.path.insert(0, "shared/scripts")
+from offer_gate import schedule_card_line, compose, SITE_SHOW_SCHEDULING
+
+# `card` is the view `surface_drivers` returned and `widget_transport`
+# rendered; its rows are its sections' items (SCHEDVIEW1 5.1 above).
+n_items = sum(len(sec["items"]) for sec in card["sections"])
+empty_line = schedule_card_line(n_items)       # "" when the card has rows
+whole_reply = "\n".join(x for x in (whole_reply, empty_line) if x)
+print(compose(SITE_SHOW_SCHEDULING, whole_reply))
+```
+
+When the card has rows, the card IS the answer and `schedule_card_line`
+returns nothing — say no sentence at all about them. When it has none, say
+the composed line and stop. A close, a merge or a clear the record already
+proves happens where the product notices it, with a receipt and an `undo`;
+it is never put to the reader as a question. `compose` raises rather than
+returning — rewrite the sentence, never the fence.
+
 **`work my plate` — the working page.** A reply of `work my plate` on an
 open board (never a fresh trigger) re-fires the SAME driver on the
 `plate-page` surface, which is the nine-row page with the full button set,
@@ -437,8 +463,10 @@ is down to N.") and ALWAYS ends with:
 `surface_drivers.surface_for_reply`. Fire the surface the table names; never
 improvise a rebuild.
 
-`undo` (same chat) reopens every closed item via `reopen_commitment`, hands a
-disowned item back to its previous owner via `confirm_commitment_owner`,
+`undo` (same chat) reopens every closed item via `reopen_commitment`, reverses each
+`not mine` via `commitment_state.undo_disown` (the owner restored, or the
+question withdrawn when there was none; an item not disowned reverses nothing
+and the reply says so),
 reverses reclassifications, AND lifts every mute the batch wrote (via
 `mute_ledger.clear_dismissals`) — all additive; history keeps the tombstone,
 the reopen, and the clear. Never narrate event-type names (CONTRACT Rule

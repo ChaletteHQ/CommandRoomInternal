@@ -91,6 +91,7 @@ from cru_match import (  # noqa: E402
     load_open_commitments,
     split_pending_review,
 )
+from connector_config import workspace_block  # noqa: E402
 from entities_io import unwrap_entities  # noqa: E402
 from event_seq import event_seq  # noqa: E402
 
@@ -158,8 +159,9 @@ def _entities_path(workspace_root) -> Path:
 
 def load_entities(workspace_root) -> dict:
     """Parsed entities.json, or {} when missing/corrupt (callers degrade)."""
+    from entities_io import read_entities_json
     try:
-        data = json.loads(_entities_path(workspace_root).read_text(encoding="utf-8"))
+        data = read_entities_json(_entities_path(workspace_root))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
@@ -270,8 +272,13 @@ def get_coach_config(workspace_root, entities: Optional[dict] = None) -> dict:
     "defaults apply".
     """
     data = entities if entities is not None else load_entities(workspace_root)
-    ws = data.get("workspace")
-    coach = (ws or {}).get("coach") if isinstance(ws, dict) else None
+    # SETTINGSBLOCK1 (cr1#120): the ONE accessor every settings reader uses.
+    # A workspace can carry both a top-level `workspace` block and an inner
+    # `entities.workspace` block; the writer (`workspace_settings`) keeps the
+    # inner one whenever it exists, and this reader used to look only at the
+    # top, so 'turn on coaching' wrote one place and this read the other.
+    ws = workspace_block(entities=data if isinstance(data, dict) else {})
+    coach = ws.get("coach")
     return coach if isinstance(coach, dict) else {}
 
 

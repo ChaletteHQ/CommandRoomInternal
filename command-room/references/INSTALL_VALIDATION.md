@@ -40,7 +40,6 @@ Validate the customer workspace has the minimum structure.
 - [ ] `[WORKSPACE_ROOT]/_hq/insights/` directory exists.
 - [ ] `[WORKSPACE_ROOT]/_hq/audit-reports/` directory exists.
 - [ ] `[WORKSPACE_ROOT]/_hq/meetings/` directory exists (the canonical deliverable destination — `Call_Prep_*.docx`, `Past_Meeting_*.docx`, `Weekly_Recap_*.docx`).
-- [ ] `[WORKSPACE_ROOT]/_hq/logs/` directory exists.
 - [ ] `[WORKSPACE_ROOT]/CLAUDE.md` exists with at least the baseline workspace brief.
 - [ ] `[WORKSPACE_ROOT]/_hq/BUSINESS_CONTEXT.md` exists (may be a template on fresh install).
 

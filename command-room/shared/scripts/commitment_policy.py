@@ -608,7 +608,8 @@ def refuse_fixed_evidence(text, *, where: str) -> None:
 # duplicated here as a FALLBACK only — the live regex is imported when the
 # module is importable, so the two cannot drift while both exist).
 _FALLBACK_SPEAKER_RE = re.compile(
-    r"(?:(?<=\s)|^)(Me|Them|Speaker \d{1,2}|"
+    r"(?:(?<=\s)|^)(Me|Them|Microphone|System audio(?: \([^()\r\n]{1,80}\))?|"
+    r"Speaker \d{1,2}|"
     r"[A-Z][a-z]+(?: [A-Z][A-Za-z'.-]+){0,2}):\s"
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -640,6 +641,13 @@ def transcript_turns_text(transcript_text) -> list:
     if not text.strip():
         return []
     marks = list(_speaker_re().finditer(text))
+    # cr1#512: the audio-source labels are turns only when they recur (the
+    # same rule `meeting_capture._transcript_turns_sided` applies), so a lone
+    # "System audio:" in prose splits nothing, as before the labels existed.
+    n_audio = sum(1 for m in marks
+                  if m.group(1).startswith(("Microphone", "System audio")))
+    if n_audio < 2:
+        marks = [m for m in marks if not m.group(1).startswith("System audio")]
     out = []
     if marks:
         head = text[:marks[0].start()].strip()

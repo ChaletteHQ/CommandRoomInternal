@@ -93,7 +93,28 @@ REVIVE_WINDOW_DAYS = 7         # 4d — activity this recent brings a thread bac
 # The proposal's TTL and its family natural key. BOTH are wire contracts:
 # the TTL is what "expired unanswered" is measured against, and the prefix is
 # what cross-rail dedup against a pre-migration fossil row keys on.
-PROPOSAL_TTL_DAYS = 30
+#
+# SWITCH2 5.2 (M's ruling 10, carried from night 10 as CAP-F12) — WHY THIS
+# NAME IS LONGER THAN IT WAS. This constant was `PROPOSAL_TTL_DAYS`, which is
+# also the name `commitment_policy` gives a DIFFERENT number (4). Two live
+# constants, one name, no shared import: a reader of either file had to know
+# which file they were in to know which number they were reading.
+#
+# They are not one number and must not become one. They govern two
+# populations with two clocks:
+#
+#   * `commitment_policy.PROPOSAL_TTL_DAYS` = 4 — the CHIP. A suggestion
+#     about one item that resolves ITSELF four days later, applying its own
+#     evidence or retracting. Four days is M's standing window for a question
+#     the reader is expected to see this week.
+#   * this one = 30 — the DORMANT-ORG ask. "Has this gone quiet for good?"
+#     is a question about a month of silence, and it is warranted for a month
+#     (`FLIP_AUTHORITY_DAYS` below is deliberately the same number, for the
+#     reason the comment there gives).
+#
+# So: two names, one per population, and a census pin that exactly ONE
+# `PROPOSAL_TTL_DAYS` exists in the tree (`run_switch2_test.py` section [5]).
+DORMANT_PROPOSAL_TTL_DAYS = 30
 FINGERPRINT_PREFIX = "dont_forget:"
 
 # How long an UNANSWERED question keeps authorising the active->dormant flip
@@ -114,7 +135,7 @@ FINGERPRINT_PREFIX = "dont_forget:"
 # change, and the honest move is to ask again rather than act on it. Any
 # shorter and a fortnight of holiday costs the flip; any longer and "he never
 # answered" outlives the question that was never answered.
-FLIP_AUTHORITY_DAYS = PROPOSAL_TTL_DAYS
+FLIP_AUTHORITY_DAYS = DORMANT_PROPOSAL_TTL_DAYS
 
 DETECTOR = "lifecycle"
 SOURCE_SKILL = "lifecycle"
@@ -480,7 +501,7 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
             # timestamp, rather than treating the warrant as ageless.
             when = expired[pid]
             if when is None and opened_dt is not None:
-                when = opened_dt + _dt.timedelta(days=PROPOSAL_TTL_DAYS)
+                when = opened_dt + _dt.timedelta(days=DORMANT_PROPOSAL_TTL_DAYS)
             _note_expiry(slot, when)
         else:
             slot["open"] = True
@@ -510,10 +531,10 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
         if tid in retired:
             continue
         slot = _slot(tid)
-        if opened_dt is not None and (now - opened_dt).days > PROPOSAL_TTL_DAYS:
+        if opened_dt is not None and (now - opened_dt).days > DORMANT_PROPOSAL_TTL_DAYS:
             # A fossil row writes no tombstone, so its expiry is derived:
             # opened + the TTL is the moment the question stopped standing.
-            _note_expiry(slot, opened_dt + _dt.timedelta(days=PROPOSAL_TTL_DAYS))
+            _note_expiry(slot, opened_dt + _dt.timedelta(days=DORMANT_PROPOSAL_TTL_DAYS))
         else:
             slot["open"] = True
 
@@ -728,7 +749,7 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                 evidence=f"{int(row['quiet_days'])} days quiet",
                 render_line=(f"{row['title'] or 'this project'} has gone "
                              "quiet — still active, or archive it?"),
-                ttl_days=PROPOSAL_TTL_DAYS,
+                ttl_days=DORMANT_PROPOSAL_TTL_DAYS,
                 thread_id=row["thread_id"],
                 action_tuples=[{"action": "active"}, {"action": "archive"},
                                {"action": "snooze 14d"}],
@@ -841,7 +862,7 @@ __all__ = [
     "AUTO_DORMANT_DAYS",
     "AUTO_ARCHIVE_DAYS",
     "REVIVE_WINDOW_DAYS",
-    "PROPOSAL_TTL_DAYS",
+    "DORMANT_PROPOSAL_TTL_DAYS",
     "FLIP_AUTHORITY_DAYS",
     "FINGERPRINT_PREFIX",
     "DEFAULT_CAPS",

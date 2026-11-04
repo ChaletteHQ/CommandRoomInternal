@@ -770,15 +770,21 @@ MACHINE_SOURCE_SKILLS: FrozenSet[str] = frozenset({
     "calendar-close", "binding-gauge", "lifecycle", "automation-scanner",
     # SCHEDVIEW1 5.2 — the duplicate-merge apply leg inside `maintenance`.
     #
-    # DEFENCE IN DEPTH, and the word is exact: measured on 2026-09-18, no
-    # reader in this tree hands one of this job's rows to a decision that
-    # needs the entry.
-    #   * `end_of_day.machine_batch_row` is reached only from End of Day's
-    #     DROPPED-CLOSURE rows, and `end_of_day._CLOSE_TYPES` is
-    #     `("commitment_resolved", "thread_resolved")` — a merge writes
-    #     `commitment_superseded` and a `pack_run`, so the day-close never
-    #     sees this leg's work at all. (Whether it SHOULD is a widening of
-    #     `_CLOSE_TYPES` and belongs to a later night, not to this lane.)
+    # DEFENCE IN DEPTH, and the word is still exact. Re-measured at the
+    # DAYCLOSE1 tip (2026-09-18), because that lane widened
+    # `end_of_day._CLOSE_TYPES` and a widening is exactly the kind of change
+    # that can quietly make a defensive line load-bearing. It did not.
+    # Reader by reader, with the removal proof behind the claim:
+    #   * `end_of_day.machine_batch_row` IS now reached with one of this
+    #     job's rows, which it was not before: DAYCLOSE1 3.1 (M's ruling 6)
+    #     widened `_CLOSE_TYPES` with `commitment_superseded`, so the
+    #     day-close sees this leg's work. THE ENTRY STILL DOES NOT DECIDE
+    #     IT. Removal proof R7 at that tip: take this entry out and
+    #     `run_dayclose1_test` stays green, 54/54. Two independent reasons
+    #     answer first - `job_batch`, off the fire's own `pack_run`
+    #     receipt (MF-11c-5), and `is_customer_act`, which returns False on
+    #     a row naming no person whether or not this roster carries the
+    #     name (measured both ways on a real fire's row at that tip).
     #   * `change_feed._job_batches` DOES pick this fire's batch up — off the
     #     `pack_run`'s own `fired_via: "scheduled"`, its first clause, which
     #     answers before the machine-source clause is consulted.
@@ -793,10 +799,13 @@ MACHINE_SOURCE_SKILLS: FrozenSet[str] = frozenset({
     #     and
     #     `commitment_state.park_reason_origin` is not on this leg's path (the
     #     job never parks).
-    # The entry is correct, free, and keeps the answer right the day any one
-    # of those changes — a merge that writes a close row, a widened
-    # `_CLOSE_TYPES`, or a caller that ever passes a person id. None of the
-    # three is true today, and this comment must not claim otherwise.
+    # The entry was put here to keep the answer right the day any one of
+    # those changed — a merge that writes a close row, a widened
+    # `_CLOSE_TYPES`, or a caller that ever passes a person id. DAYCLOSE1
+    # 3.1 made the SECOND true and NOTHING ELSE changed: the entry is
+    # reached and is still not the reason. The other two remain untrue.
+    # This comment must not claim otherwise, and must not claim the
+    # day-close made this line load-bearing — it did not.
     "dedup-apply",
     # night 10 at merge: TTL1's question-expiry run (REVIEW_TTL1 at-merge)
     # and the update bridge that parks silent work (REVIEW_CLEANUP1 F-9)

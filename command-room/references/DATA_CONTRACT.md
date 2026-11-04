@@ -4,7 +4,7 @@
 **Companion to:** `shared/WORKSPACE_API.md` (writer rules), `shared/data-schemas/` (JSON Schemas), `references/VIEW_GENERATION.md` (how markdown views are regenerated), `references/ORG_AND_THREAD_MODEL.md` (org tree + thread kinds)
 **Supersedes:** v1.8, v2.0, v2.1 DATA_CONTRACT.md
 
-In v2.2, context is **JSON-first with a nested org tree and multi-thread events**. The source of truth for every person, thread (formerly "project"), org, decision, meeting, and commitment is a small number of structured files under `_hq/data/`. Markdown files that skills and users read (MASTER_TRACKER.md, PEOPLE.md, DECISION_LOG.md, ALIASES.md) are **regenerated views** — always current, never edited by hand.
+In v2.2, context is **JSON-first with a nested org tree and multi-thread events**. The canonical store for every person, thread (formerly "project"), org, decision, meeting, and commitment is a small number of structured files under `_hq/data/` (the rule that makes it so: `references/SOURCE_OF_TRUTH.md`). Markdown files that skills and users read (MASTER_TRACKER.md, PEOPLE.md, DECISION_LOG.md, ALIASES.md) are **regenerated views** — always current, never edited by hand.
 
 **What changed in v2.2 vs v2.0/v2.1:**
 - **Orgs are nested.** Every org has `parent_org_id`, `scope` (holding/operating/division/brand/fund/other), `relationship_type`, and `is_primary_focus`. Holdings roll up operating children. No single reserved home org — the tree replaces it.

@@ -30,7 +30,7 @@ Open with one line, no preamble:
 
 > *"On it. Quick — what were you trying to do, and what happened instead? One sentence each is fine."*
 
-Wait for the user's response. Accept any shape; don't reformat. The two answers fill `WHAT_TRYING` and `WHAT_HAPPENED` in the diagnosis payload.
+Wait for the user's response. Accept any shape; don't reformat. The two answers fill `WHAT_TRYING` and `WHAT_HAPPENED` in the diagnosis payload. **An empty answer is never filed blank (EMPTYREPORT1, cr1#135):** when the user gives nothing for a field (a next message that describes neither field: "not sure", "just send it", a shrug), that field is `(no description provided)`, spelled exactly so, and the report still goes out, because the auto-diagnosis below carries what the user could not say. Never invent a description to fill it.
 
 ### Step 2 — Auto-collect context (no user action)
 
@@ -78,9 +78,9 @@ If the user replies `still broken` (or any equivalent — "didn't work", "same i
 
 Draft to the maintainer via the **declared mail backend** (connector-agnostic-v1 parity, N9) — resolve it in ONE call with `tool_discovery.discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))` — the seam resolves the declared backend first and refuses to substitute another product's tool, and falls back to fingerprint discovery when nothing is declared (Gmail/Outlook/Superhuman all work; empty map = today's behavior). Do NOT name a provider tool directly. The draft must be saved as a draft — never sent. The user reviews and sends manually. If the backend is read-only (can't draft — e.g. a read-only Outlook, per the capability manifest), skip straight to the paste-text fallback below.
 
-**Subject:** `[Command Room bug] [last_skill or "unknown"] — [first 8 words of WHAT_HAPPENED]`
+**Subject:** `[Command Room bug] [last_skill or "unknown"] — [first 8 words of WHAT_HAPPENED]`; when `WHAT_HAPPENED` is `(no description provided)`, the subject ends `— no description, see auto-diagnosis` so the maintainer can read it in the inbox list.
 
-**Body:** verbatim template below, filled with real values. No invented details. If a field is unknown, write `"(not detected)"` — never fabricate.
+**Body:** verbatim template below (section order per the rule that follows), filled with real values. No invented details. If a field is unknown, write `"(not detected)"` — never fabricate. **When `WHAT_HAPPENED` is `(no description provided)`, the AUTO-DIAGNOSIS block moves to the top of the body**, directly under the opening line "Command Room hit something unexpected…" and before WHAT I WAS DOING, so the one thing the report has to say is the first thing the maintainer reads. Same trigger as the subject rule above, so subject and body agree.
 
 ```
 Hi,
@@ -88,10 +88,10 @@ Hi,
 Command Room hit something unexpected. Auto-diagnosis below — review and let me know.
 
 WHAT I WAS DOING
-[WHAT_TRYING from user, verbatim]
+[WHAT_TRYING from user, verbatim; "(no description provided)" when empty]
 
 WHAT HAPPENED INSTEAD
-[WHAT_HAPPENED from user, verbatim]
+[WHAT_HAPPENED from user, verbatim; "(no description provided)" when empty]
 
 AUTO-DIAGNOSIS
 • Plugin version: [version from plugin.json]

@@ -201,10 +201,25 @@ def _dotted_internal_source() -> str:
 # clean. It is not a payload key anywhere in the tree - it is an event TYPE,
 # and the type rows are matched as values, not as keys - so the same reasoning
 # that makes `dormancy_signal` safe here makes this one safe.
+# THE WORKSPACE STATE-FILE NAMES (REVIEW_LEAK4 RE-VERIFY 2 P-4, class (a)).
+# The `_hq/` path rows catch this product's substrate by its PATH, and the
+# `.jsonl` row catches any ledger by its extension. A state file the product
+# writes OUTSIDE `_hq/` — `workspace_settings.json`, `brief_settings.json`,
+# `plate_state.json` — was caught by neither: no `_hq/` prefix, and `.json`
+# alone is deliberately not a leak (a customer's own export or a
+# third-party tool carries it). The reviewer measured all three CLEAN at
+# base and at tip in every phrasing tried.
+#
+# The roster's own admission test, applied: each is underscore-joined, each
+# is at least ten characters (11, 14, 18), and none is ordinary English —
+# a customer writing about their week does not type `plate_state`. The bare
+# identifier is what the roster matches, word-bounded, so the name refuses
+# with or without its extension and cannot match inside a longer identifier.
 _VOCAB_HAND_ROSTER: frozenset = frozenset({
     "n_deduped", "source_ref", "root_repair", "dormancy_signal",
     "pattern_break_detected",
     "load_open_commitments", "past-meetings",
+    "workspace_settings", "brief_settings", "plate_state",
 })
 
 # THE GENERATED HALF (SPEC FIXTRAIN v5.31.0 6.5) — measured, then NARROWED.
@@ -1213,8 +1228,82 @@ _ENTITY_ID_RE = re.compile(
 # match inside `commitment_seq_86` (an underscore is a word character), so
 # the longer `commitment_seq_N` shape is still exactly one hit.
 NUMERIC_TAILED_ID_PREFIXES = ("cmt", "seq", "person", "project", "org", "deal")
-NUMERIC_TAILED_ID_SRC = (
-    r"\b(?:" + "|".join(NUMERIC_TAILED_ID_PREFIXES) + r")_\d+\b")
+
+# REVIEW_LEAK3 F-6 RESIDUAL, closed here (SPEC_NIGHT13 lane GATECUT1 1.3) —
+# the SPACE form. `seq_86` refuses at both doors; `seq 86` refused at the
+# BLOCKING gate only (`chat_output_renderer`'s "event seq leak" row already
+# reads `\bseq[\s_]\d+\b`) and was invisible to THIS one. The two doors do
+# different jobs: the blocking gate stops a whole surface, and this one lets
+# a composer fall back to `(no name on file)` before the sentence is built.
+# With the doors disagreeing, a display name of `seq 86` reached the blocking
+# gate and the customer got a hard refusal instead of the graceful fallback
+# the composer door exists to give.
+#
+# ONE PREFIX, NOT SIX, AND THE MEASURE IS WHY. Widening all six to the space
+# form is not free: over the 7,216 customer-authored strings on the newer
+# scratch copy it blanks **7** display names where the shipped shape blanks
+# 5, and **6** against 4 on the older copy — two more on each book. Those
+# two are the `<word> <digits>` names a person really writes ("Project 2"),
+# and the blocking gate does not refuse them, so blanking them would have
+# been this door inventing a refusal the gate never asked for. `seq` alone is
+# flat on both books (5 → 5, 4 → 4) because the blocking gate already refuses
+# that exact shape. The other five prefixes keep the underscore.
+#
+# OVER-BLOCK GUARD, unchanged in kind: the shape is `<prefix>_<digits>`, or
+# `seq` + ONE separator character + digits — the blocking gate's own `[\s_]`
+# class, kept in one constant below — and nothing else. A separator is one
+# character, never a run, so nothing wider slips in. Ordinary words that
+# carry digits have no
+# underscore and no `seq` before them, so "Q3", "v5.31.0", "2pm" and "A-Z"
+# are untouched; `seq` and `person` alone carry no digits; and the leading
+# `\b` still cannot match inside `commitment_seq_86` (an underscore is a word
+# character), so the longer `commitment_seq_N` shape is still exactly one hit.
+NUMERIC_TAILED_ID_SPACED_PREFIXES = ("seq",)
+
+# THE SEPARATOR, IN ONE PLACE (REVIEW_GATECUT1 F-2). The blocking gate's
+# `event seq leak` row reads `\bseq[\s_]\d+\b`; this door first shipped the
+# space form as `[ \t]`, a plain space and a tab. `[\s]` is those plus the
+# NON-BREAKING SPACE, which is what a row title carries when it is pasted
+# out of Outlook, Word or Google Docs — so `seq 86` was refused by the
+# blocking gate and invisible here, which is the exact disagreement this
+# lane exists to end: a hard refusal of the whole page where the graceful
+# fallback was meant to happen.
+#
+# The two doors now read ONE constant. The chat renderer imports it and
+# builds its row from it, so the separator cannot drift the way the prefix
+# list already could not. The underscore is carried here as well as in the
+# `<prefix>_<digits>` arm, which costs nothing (`seq` is on both lists) and
+# keeps this string readable as "the separator the gate uses".
+#
+# Measured before shipping, on two private copies of a real book: widening
+# `[ \t]` to `[\s_]` blanks the same 5 of 7,216 and 4 of 6,929 display-name
+# strings the narrow class blanked — flat, because the blocking gate already
+# refuses that exact shape.
+NUMERIC_TAILED_ID_SEPARATOR_SRC = r"[\s_]"
+
+
+def _build_numeric_tailed_src(underscored, spaced) -> str:
+    """The `<prefix>_<digits>` alternation, plus the space arm for the
+    prefixes that take one.
+
+    A FUNCTION, and the empty case is why. An alternation built by
+    joining an EMPTY prefix tuple is `(?:)`, which matches the empty
+    string, so a space arm built from nothing would read every
+    space-then-digits in ordinary prose as a wire id ("the 2026 plan").
+    Narrowing this list must narrow the pattern and never widen it, so
+    the arm is only built when there is a prefix to build it from. This
+    lane's own removal proof caught the trap before it shipped, and the
+    corpus suite pins it.
+    """
+    src = r"\b(?:(?:" + "|".join(underscored) + r")_\d+"
+    if spaced:
+        src += (r"|(?:" + "|".join(spaced) + r")"
+                + NUMERIC_TAILED_ID_SEPARATOR_SRC + r"\d+")
+    return src + r")\b"
+
+
+NUMERIC_TAILED_ID_SRC = _build_numeric_tailed_src(
+    NUMERIC_TAILED_ID_PREFIXES, NUMERIC_TAILED_ID_SPACED_PREFIXES)
 _NUMERIC_TAILED_ID_RE = re.compile(NUMERIC_TAILED_ID_SRC, re.IGNORECASE)
 
 # LEAK3 6.1 — the `cmt_` minimum-length floor. Two callers carried two
@@ -1260,6 +1349,8 @@ __all__ = [
     "LEAK2_LABELS",
     "LINK_TARGET_EXEMPT_NAMES",
     "NUMERIC_TAILED_ID_PREFIXES",
+    "NUMERIC_TAILED_ID_SEPARATOR_SRC",
+    "NUMERIC_TAILED_ID_SPACED_PREFIXES",
     "NUMERIC_TAILED_ID_SRC",
     "PLUMBING_VOCAB_LABELS",
     "GENERATED_VOCAB_ROSTER",

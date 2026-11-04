@@ -88,11 +88,12 @@ def _events_path(ws: Path) -> Path:
 
 
 def _load_entities_doc(ws: Path) -> dict:
+    from entities_io import read_entities_json
     p = ws / "_hq" / "data" / "entities.json"
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except (json.JSONDecodeError, OSError):
         return {}
 

@@ -873,11 +873,54 @@ def stamp_receipt_machine(events: list, env=None) -> list:
     return out
 
 
+#: LEDGERPLACE1 (cr1#124) - the one sentence an append refused because its
+#: ledger folder does not exist carries to the door. Nothing was saved.
+LEDGER_FOLDER_MISSING_LINE = ("Not saved: that change pointed at a folder that is "
+                              "not your Command Room folder, so nothing was "
+                              "written and nothing changed.")
+
+
+class LedgerFolderMissing(FileNotFoundError):
+    """LEDGERPLACE1 (cr1#124): an `events.jsonl` append whose ledger AND
+    ledger folder are both absent. Writing through it would create a brand-new
+    workspace at a wrong path (a mis-converted `/c/Users/...` spelling) and
+    report a seq the real ledger never got, so NOTHING is created. Carries
+    `cr_refusal_reason = "missing_parent"` and `line`, so a door answers
+    `ok:false` with the plain sentence. A new workspace's ledger folder is
+    made on purpose with `create_ledger=True`."""
+
+    cr_refusal_reason = "missing_parent"
+    line = LEDGER_FOLDER_MISSING_LINE
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(
+            f"refused to append: the ledger {path} does not exist and neither "
+            f"does its folder, so this is not a workspace's ledger. Nothing "
+            f"was created. Check the path; a new workspace's ledger is made "
+            f"with create_ledger=True.")
+
+
+def _refuse_missing_ledger_folder(path: Path) -> None:
+    """LEDGERPLACE1 (cr1#124): raise `LedgerFolderMissing` when `path` is an
+    `events.jsonl` that is absent in a folder that is absent too. Asked before
+    the gate, the lock or anything else touches the disk."""
+    if path.name != "events.jsonl":
+        return
+    try:
+        resolved = path.resolve()
+    except (OSError, ValueError):
+        resolved = path.absolute()
+    if not resolved.exists() and not resolved.parent.is_dir():
+        raise LedgerFolderMissing(resolved)
+
+
 def atomic_append_jsonl(
     path: str | Path,
     events: list[dict[str, Any]] | dict[str, Any],
     encoding: str = "utf-8",
     holder: str = "atomic_append_jsonl",
+    create_ledger: bool = False,
 ) -> list[dict[str, Any]]:
     """Append one or more JSON-line records to a JSONL file atomically.
 
@@ -953,7 +996,18 @@ def atomic_append_jsonl(
     For non-events.jsonl writes (staging_emissions.jsonl, classifier
     feedback, etc.), no auto-stamping happens — those files have their own
     schema contracts.
+
+    A LEDGER IN A FOLDER THAT DOES NOT EXIST (LEDGERPLACE1, cr1#124):
+    an `events.jsonl` that is absent in a folder that is absent too is
+    refused with `LedgerFolderMissing` before anything is read, locked or
+    created; the message names the resolved path. A ledger whose folder
+    exists (a fresh workspace's first row) is created as before. A new
+    workspace's ledger folder is made on purpose with `create_ledger=True`.
     """
+    # LEDGERPLACE1 (cr1#124) - first, so a refusal creates no folder, no
+    # lock file and no ledger.
+    if not create_ledger:
+        _refuse_missing_ledger_folder(Path(path))
     # LICGATE1 — the true-append fast path (INDEX1 Phase A) writes events.jsonl
     # through _append_bytes and never reaches atomic_write_text, so the gate
     # has to sit here too. Checked BEFORE the writer lock so a refusal never

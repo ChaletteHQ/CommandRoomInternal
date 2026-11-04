@@ -23,7 +23,7 @@ When drafting replies (Reply Now bucket + "draft a decision-needed response" flo
 
 Every email read during triage from an **in-scope** account emits an inbound `interaction` event to `events.jsonl` per `shared/PASSIVE_CAPTURE.md` (v3). Drafted replies (when sent) emit corresponding outbound interaction events. Dedup via source_ref hash prevents double-counting across morning-briefing, workspace-manager, and this skill.
 
-**Connector-agnostic + account-scope (connector-agnostic-v1).** Resolve mail tools through the seam in ONE call each — `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))`, `tool_discovery.discover_mail_thread_fetch_tool(tools, declared=connector_config.declared_backend("email"))`, and `tool_discovery.discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))`. The seam resolves the declared backend first — using that provider's own operation vocabulary — and refuses to substitute another product's tool; with nothing declared it falls back to fingerprint discovery (empty map = today's behavior, R4) and names both connectors in `result.mail_ambiguous` when the workspace has two. Never name a provider tool, query operator, provider field, or URL host directly — express intent (unread, in-sent, since) and let `connector_adapters/mail.py` compile it per provider. **Account scope (R1, `shared/ACCOUNT_SCOPE.md`):** an email from a `write_to_business: off` account (personal / mixed-unknown-sender) may still be *surfaced* in the triage list if its `surface` dial is on, but **no `interaction` event is written for it** — the writer wall (`account_scope_gate.enforce_scope`, enforced structurally inside the append path) rejects a provenance whose `account_id` resolves out-of-scope. Where the account map is empty, every account is in-scope (unchanged behavior).
+**Connector-agnostic + account-scope (connector-agnostic-v1).** Resolve mail tools through the seam in ONE call each — `tool_discovery.discover_mail_search_tool(tools, declared=connector_config.declared_backend("email"))`, `tool_discovery.discover_mail_thread_fetch_tool(tools, declared=connector_config.declared_backend("email"))`, and `tool_discovery.discover_mail_draft_tool(tools, declared=connector_config.declared_backend("email"))`. The seam resolves the declared backend first — using that provider's own operation vocabulary — and refuses to substitute another product's tool; with nothing declared it falls back to fingerprint discovery (empty map = today's behavior, R4) and when the workspace has two mail connectors and none declared it answers NO tool with both named in `result.mail_ambiguous` (MAILPICK1, cr1#266): nothing is read from either, and the `reason` is the one sentence to say, verbatim, then stop the mail leg. Beside it, make no claim about which connector belongs to which account (work, personal or an address) beyond what the seam itself returned (cr1#451). The owner settles it once with `set my email backend to <connector>` (workspace-manager) and the question never comes back. Never name a provider tool, query operator, provider field, or URL host directly — express intent (unread, in-sent, since) and let `connector_adapters/mail.py` compile it per provider. **Account scope (R1, `shared/ACCOUNT_SCOPE.md`):** an email from a `write_to_business: off` account (personal / mixed-unknown-sender) may still be *surfaced* in the triage list if its `surface` dial is on, but **no `interaction` event is written for it** — the writer wall (`account_scope_gate.enforce_scope`, enforced structurally inside the append path) rejects a provenance whose `account_id` resolves out-of-scope. Where the account map is empty, every account is in-scope (unchanged behavior).
 
 **Promote-queue (R8, ACCOUNT_SCOPE §8) — the mixed-account business-by-association loop.** A `mixed`-role account files by association: mail whose sender resolves to a known entity (person_ids/counterparty resolved) writes normally; a sender NOT in the entity graph is walled. For each such walled sender that *looks* business (a real human, business domain or business content — not bulk/newsletter), append ONE `person_proposal` event via `event_gate.append_event` with `data: {name, email, promote_queue: true, origin: "connector", account_address: <the mixed account>, provenance: <the read's provenance>, evidence: <one line>}` (the `promote_queue: true` flag is what makes the proposal writable despite the wall — it IS the review surface), deduped against open proposals for the same email. Surface it in the triage output as *"[Name] ([email]) on [account] looks like business — file them? (`file it` / `keep personal`)"*. On **`file it`**: hand to people-crm — it creates the person as a USER-CONFIRMED add (`create_person` WITHOUT provenance kwargs — the user is the authority; the record wall is for unconfirmed connector derivations) and future mail from that sender is in scope by association. On **`keep personal`**: write a per-sender override via `connector_config.set_sender_scope_override(root, <account>, <sender>, write_to_business=False, reason="user demoted")` so the proposal never re-fires. Never promote silently — the write dial stays fail-closed throughout (H-G).
 
@@ -74,13 +74,30 @@ first fire, which is the one gate the "Make this yours" block renders behind.
 }
 ```
 
-On the FIRST fire only, save those defaults before rendering — one write, the
-only write door, in the shape `skill_config_writer.save_skill_config` writes
-(the DEFAULTS above under a `config` key, with the origin stamp):
+**Every settings write in this skill is ONE call to the settings writer,
+`skill_config_writer:save_skill_config`, through the write door, never `write`
+(cr1#521).** That covers the first-fire save, a Tune, and a freeform tune. The
+writer adds the origin stamp and the settings event. `config` is a JSON object
+(the choices themselves), never a string. Render the call with `plan` and paste
+what it prints, verbatim, including the variables in front of `python3`: on a
+merged seat they name who is writing, and a hand-typed `run_writer` is refused.
+
+On the FIRST fire only, save those defaults before rendering:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" write --json '{"data": "<the defaults above, as JSON>", "expected_mtime": null, "rel": "_hq/data/skill_config/inbox-triage.json"}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"config": {"default_action": "draft_replies", "discard_aggressiveness": "standard", "vip_seed": []}, "skill_name": "inbox-triage", "workspace_root": "<WS>"}, "name": "skill_config_writer:save_skill_config"}'
 ```
+
+A Tune (and a freeform tune) saves the MERGED config, the `config` from the read
+above with the change applied, marked as a reconfigure:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"config": <the merged config, as a JSON object>, "is_reconfigure": true, "skill_name": "inbox-triage", "workspace_root": "<WS>"}, "name": "skill_config_writer:save_skill_config"}'
+```
+
+`ok: true` from the pasted line is the receipt: the change is saved, so say so in
+one line. `ok: false` is the answer: say its `line`, or that the change was not
+saved, and never retry by hand, with `write` or any other way.
 
 `discard_aggressiveness` shifts the Step 4 Discard-bucket threshold (`aggressive` = more into
 Discard; `conservative` = fewer). `vip_seed` augments the PEOPLE.md VIP tier with up to 5
@@ -92,10 +109,10 @@ or returns brief-only — persisting the existing "and draft the replies" / "jus
 
 | Mode | Trigger | Behavior |
 |---|---|---|
-| **Detect** (default) | "triage my inbox" | run triage with the returned `config`. On the FIRST fire only (`configured` is false): write the defaults BEFORE rendering, then append the first-run block. |
+| **Detect** (default) | "triage my inbox" | run triage with the returned `config`. On the FIRST fire only (`configured` is false): save the defaults with the first-fire call above BEFORE rendering, then append the first-run block. |
 | **Show settings** | "show inbox-triage settings" | render current config in plain English; no triage. |
-| **Tune** | "tune inbox-triage" | pre-filled re-questionnaire OR freeform (table below) → write the merged config → re-run triage. |
-| **Reset** | "reset inbox-triage to defaults" | write the defaults back over the saved config, the way `skill_config_writer.wipe_skill_config` clears it → the next fire is a first fire again. |
+| **Tune** | "tune inbox-triage" | pre-filled re-questionnaire OR freeform (table below) → save the merged config with the one Tune call above (`skill_config_writer:save_skill_config`, `is_reconfigure: true`) → re-run triage. |
+| **Reset** | "reset inbox-triage to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "inbox-triage", "workspace_root": "<WS>"}` as its args; say its `line` → the next fire is a first fire again (`configured` is false). |
 
 **The first-run block (transport):** when a Reply Now widget renders this fire, the three decisions
 ride as `fr1`/`fr2`/`fr3` items in a "Make this yours" section at the BOTTOM of that all_batch_widget
@@ -121,7 +138,7 @@ The block renders exactly once ever, behind the `configured` gate.
 | "add [name] to my VIPs" | append to `vip_seed` |
 | "drop [name] from VIPs" | remove from `vip_seed` |
 
-After applying: write the merged config, re-run triage, confirm in one line.
+After applying: save the merged config with the one Tune call above (`skill_config_writer:save_skill_config`, `is_reconfigure: true`), re-run triage, confirm in one line.
 
 ## How to Use
 
@@ -143,7 +160,7 @@ Optional modifiers:
 ## How It Works
 
 1. **Define window (v3.13.0+ — unread is the primary inclusion criterion; time window is for ranking only).**
-   - **Inclusion criterion:** the **unread-in-inbox** intent is the canonical query (compiled to the connected provider's operators by `connector_adapters/mail.py` — never a hardcoded operator string). Every unread thread is a candidate regardless of how old it is. This closes the 2026-05-20 mis-classification gap where a 28-day stale LAST_TRIAGE timestamp caused a silent collapse to a 24h window, missing an active $300K Dustin thread whose last message was 2 days old.
+   - **Inclusion criterion:** the **unread-in-inbox** intent is the canonical query (compiled to the connected provider's operators by `connector_adapters/mail.py`, never a hardcoded operator string). Every unread thread is a candidate regardless of how old it is. This closes the 2026-05-20 mis-classification gap where a 28-day stale LAST_TRIAGE timestamp caused a silent collapse to a 24h window, missing an active, high-value Dustin thread whose last message was 2 days old.
    - **Ranking criterion:** time window (the difference between now and LAST_TRIAGE) ranks recency within the candidate set. Threads with messages in the last few days rank higher; older threads rank lower. But age never excludes — that's the unread state's job.
    - **No silent window collapse.** Pre-v3.13.0: if `now - LAST_TRIAGE` was large, the skill silently shrunk the window to 24h. v3.13.0+: large gaps trigger a full **unread-in-inbox** sweep, surfacing every old-but-active unread thread in the main brief body (not in a "notes for next pass" footnote).
 2. **Pull unread / flagged email** via the declared mail connector (resolved through the seam per the Writer Contract; empty map = today's behavior).
@@ -153,7 +170,7 @@ Optional modifiers:
    - Urgency signals: deadlines mentioned in the body, explicit "need by…" phrasing
 3.5. **Fetch the full thread BEFORE classifying state (v3.13.0+ MANDATORY — closes the "stalled on you" inversion bug).**
 
-   Pre-v3.13.0 this skill derived thread state from mail-SEARCH results alone — which return a TRUNCATED, NON-LATEST slice of the thread (a snippet from an older matching message, NOT the newest message). On 2026-05-20 this produced a load-bearing failure: the Dustin / Rio Designs thread (active $300K offer cluster) was filed as *"stalled — no reply from you in 10 days"* when the actual state was that Dustin owed M the next deliverable (M replied May 18, Dustin confirmed he'd build it out — ball was in his court, not stalled on M's).
+   Pre-v3.13.0 this skill derived thread state from mail-SEARCH results alone, which return a TRUNCATED, NON-LATEST slice of the thread (a snippet from an older matching message, NOT the newest message). On 2026-05-20 this produced a load-bearing failure: the Dustin / Rio Designs thread (an active, high-value offer cluster) was filed as *"stalled, no reply from you in 10 days"* when the actual state was that Dustin owed M the next deliverable (M replied May 18, Dustin confirmed he'd build it out; the ball was in his court, not stalled on M's).
 
    **The rule:** before asserting "needs reply" / "Reply Now" / "stalled" / "no reply in N days" / "awaiting them" / who-owes-the-reply for any thread, call the resolved **thread-fetch** tool (`discover_mail_thread_fetch_tool(tools, declared=connector_config.declared_backend("email"))`) requesting FULL message content, and read the LAST message in the returned `messages` array. Do NOT infer state from mail-search snippets or the search result's partial `messages` list. (On providers whose thread-fetch returns full content by default, the full-content request is a no-op; the point is: read the newest message, not a search snippet.)
 
@@ -237,7 +254,13 @@ Optional modifiers:
    - **Rendering (SPEC TRIAGEROUTE).** Render the `.docx` via the canonical `shared/scripts/brief_writer.py` `make_brief(brief_kind="inbox_triage", ...)`, passing the sections payload and exec header in "Output Structure" below. That route is mandatory, not a preference: it is what runs the output-contract gate, the voice-tell gate and the post-render leak scanner, and it enforces canonical typography and heading hierarchy. Before this route existed, the step named a `.docx` and no way to produce one, so the brief was hand-rolled every morning — every gate skipped, on the one document in this product assembled entirely out of the CEO's mail.
      - **NEVER hand-roll the brief** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking brief (the v3.20.0 failure mode) — and this brief carries senders, subjects and quoted body text lifted straight out of real mail, which is exactly what the leak scan exists to catch.
      - **NEVER create, render, copy, upload, or update the brief — or any part, derivative, or restatement of it ("the top five", "a summary", "just the drafts") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate above, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/inbox/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so I can read it on the way in", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the triage in a Google Doc" is a request this gate refuses, not an override. Hand back the canonical file's link.
-   - Record timestamp in `_hq/inbox/LAST_TRIAGE.txt`
+   - **Stamp `_hq/inbox/LAST_TRIAGE.txt` through its writer, never by hand (cr1#454).** The time in that file decides where the next triage's window starts, so it is read off the clock beside the data, never a time this chat chooses, estimates or rounds. One call; the writer takes no time, and a call that carries one is refused:
+
+     ```bash
+     python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "name": "inbox_helpers:stamp_last_triage"}'
+     ```
+
+     Never land this file with `write`. On `ok: false` the file keeps its last clock-read time; leave it so.
 8. **Return:** file link + headline ("12 overnight emails. 3 top items flagged. 2 replies drafted. 1 decision needed: Acme pricing.") — the same sentence is the brief's exec-header verdict, written once and used twice.
 
 ## Step: Extract Commitments (MANDATORY in every triage run)

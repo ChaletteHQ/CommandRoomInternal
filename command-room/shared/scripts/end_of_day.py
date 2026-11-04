@@ -313,6 +313,89 @@ ALL_PHASES = PACK_PHASES + LEG_PHASES
 
 
 # ---------------------------------------------------------------------------
+# cr1#138 - which capture passes ran, and which were skipped and why
+# ---------------------------------------------------------------------------
+#
+# The capture leg (Phase D) runs several passes over the meetings it took in.
+# Any of them can be skipped (nothing to cross-reference, a transcript too
+# large for the run, an error swallowed as best-effort), and before this the
+# receipt carried no record of it, so a skipped pass and a pass that ran left
+# the same clean receipt. The fire now hands its record in `capture_leg`, and
+# `capture_pass_record` turns it into the receipt's `capture_passes`.
+
+#: The capture leg's passes, in the order Phase D runs them: Phase 4 step 2,
+#: 4.5, 4.6, 4.6.a, 4.6.b, 4.7 and 4.8 of the End of Day orchestrator.
+CAPTURE_PASSES = (
+    "extract", "narrative_people_sync", "commitment_cru", "own_word_closes",
+    "decision_cru", "prep_grade", "nonattendee_shadow",
+)
+
+#: Why a pass did not run. The receipt carries one of these codes, never free
+#: text, so nothing typed into a reason (a meeting title) reaches it. A code
+#: outside this list is recorded as `other`. `not_reported` is stamped by the
+#: writer for a declared pass the fire said nothing about.
+CAPTURE_PASS_NOT_REPORTED = "not_reported"
+CAPTURE_PASS_OTHER = "other"
+CAPTURE_PASS_SKIP_REASONS = (
+    "no_meetings", "nothing_open", "walk_ledger_honored", "no_prep_brief",
+    "transcript_too_large", "time_budget", "error",
+    CAPTURE_PASS_NOT_REPORTED, CAPTURE_PASS_OTHER,
+)
+
+
+def capture_pass_record(reported) -> dict:
+    """`{ran, skipped}` for the receipt, from what the fire reported.
+
+    `reported` is `{"ran": [pass, ...], "skipped": [{"pass", "reason",
+    "n_meetings"?}, ...]}`. A pass can be in both lists: it ran on some
+    meetings and was skipped on another. The answer keeps only declared pass
+    names (`CAPTURE_PASSES`), in Phase D order; a reason outside
+    `CAPTURE_PASS_SKIP_REASONS` becomes `other`; skips of one pass for one
+    reason are folded into one entry with their `n_meetings` summed (the key
+    is kept only when a positive count was reported). Every declared pass the
+    fire named in neither list is skipped with `not_reported`, so a pass the
+    fire was silent about never reads as a pass that ran. Never raises: a
+    malformed record answers every pass `not_reported`.
+    """
+    rep = reported if isinstance(reported, dict) else {}
+    ran_in = rep.get("ran")
+    ran_set = {p for p in (ran_in if isinstance(ran_in, (list, tuple)) else ())
+               if isinstance(p, str)}
+    counts: dict = {}
+    seen: set = set()
+    skipped_in = rep.get("skipped")
+    for entry in skipped_in if isinstance(skipped_in, (list, tuple)) else ():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("pass")
+        if not isinstance(name, str) or name not in CAPTURE_PASSES:
+            continue
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or reason not in CAPTURE_PASS_SKIP_REASONS:
+            reason = CAPTURE_PASS_OTHER
+        key = (name, reason)
+        seen.add(key)
+        n = entry.get("n_meetings")
+        if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+            counts[key] = counts.get(key, 0) + n
+    skipped_names = {name for name, _ in seen}
+    ran = [p for p in CAPTURE_PASSES if p in ran_set]
+    skipped = []
+    for name in CAPTURE_PASSES:
+        if name not in ran_set and name not in skipped_names:
+            skipped.append({"pass": name, "reason": CAPTURE_PASS_NOT_REPORTED})
+            continue
+        for reason in CAPTURE_PASS_SKIP_REASONS:
+            if (name, reason) not in seen:
+                continue
+            row = {"pass": name, "reason": reason}
+            if (name, reason) in counts:
+                row["n_meetings"] = counts[(name, reason)]
+            skipped.append(row)
+    return {"ran": ran, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
 # SPEC EODLEG1 — the receipt-shape guard (battery, guard tier)
 # ---------------------------------------------------------------------------
 #
@@ -1416,10 +1499,33 @@ LEDGER_DELTA_FLAT = "no net change"
 # enters the book without being "opened"; a merge retires two rows into one.
 # The residual is NAMED rather than absorbed into one of the four movements,
 # because absorbing it is how a ledger starts lying quietly.
+#
+# FIX ROUND 1 (reviewer F-4) — AND THE FIRE CAN NOW SEE THE MERGE. This
+# sentence listed "a merge" among the things it cannot see, which stopped
+# being true the day `n_merged` joined the ledger: the fold is counted, at its
+# own door, and the residual is now exactly `-n_merged` on a day whose only
+# other movement was accounted for. So there are TWO sentences. The one below
+# is the honest generic, minus the clause the tree now contradicts; the one
+# beside it is used whenever a fold was counted, and it NAMES the fold so the
+# reader can do the subtraction by hand. `reconciles` is deliberately left as
+# `residual == 0`: the four-movement line still has to add up on its own
+# terms, and a fold is a fifth movement that line does not carry.
 LEDGER_RESIDUAL_LINE = (
     "The movements above account for {accounted} of the change; {residual} "
     "came from somewhere this fire cannot see (a confirm out of the review "
-    "queue, a merge, an edit).")
+    "queue, an edit).")
+LEDGER_RESIDUAL_LINE_MERGED = (
+    "The movements above account for {accounted} of the change; {residual} "
+    "did not come from them — {merged_phrase}, and the movement line above "
+    "does not count a fold. Anything left came from somewhere this fire "
+    "cannot see (a confirm out of the review queue, an edit).")
+# MF-13-1 (RE-VERIFY_DAYCLOSE1 N-1): `n_merged` is a fold-CLASS count -- a
+# merge folds an item into a survivor, a split breaks one into parts -- so the
+# phrase is worded for the class, never for one member of it.
+LEDGER_MERGED_PHRASE_ONE = ("1 of today's items left the book without being "
+                            "finished")
+LEDGER_MERGED_PHRASE_MANY = ("{n} of today's items left the book without being "
+                             "finished")
 
 
 # ---------------------------------------------------------------------------
@@ -1832,7 +1938,49 @@ def read_morning_digest(workspace_root, morning: dict) -> dict:
 # Closures — the day's discharge, with pointers
 # ---------------------------------------------------------------------------
 
-_CLOSE_TYPES = ("commitment_resolved", "thread_resolved")
+#: SPEC DAYCLOSE1 3.1 (M's ruling 6, 2026-09-18) — A MACHINE MERGE IS NOT
+#: INVISIBLE ANY MORE. `commitment_superseded` joins the two closers this
+#: reader has always had. A duplicate-merge retires a row off the open book
+#: exactly as a close does — the projector has honoured the type as a closer
+#: since v3.14.5 — and until this line the evening could not see it: the
+#: apply leg writes `commitment_superseded` plus a `pack_run` receipt and no
+#: close-type row at all, so its work reached nothing on the day-close
+#: (REVIEW_SCHEDVIEW1 round 1 F-2 and RE-VERIFY 2 item 6, which measured it
+#: by firing a real merge). `event_types.MACHINE_SOURCE_SKILLS`' own
+#: `dedup-apply` entry was put in place for this day and now carries it.
+#:
+#: A MERGE IS NOT A CLOSE AND NOT A DROP, and `compute_ledger` keeps it in
+#: its own bucket for that reason: nothing was finished and nobody let
+#: anything go, two rows became one. That is the very residual the ledger's
+#: docstring has always named ("a merge retires two rows into one"), and it
+#: now reconciles instead of being narrated as a promise kept.
+_CLOSE_TYPES = ("commitment_resolved", "thread_resolved",
+                "commitment_superseded")
+
+#: The `resolution` a merge writes (`commitment_state.supersede_commitment`
+#: stamps `resolution: "duplicate"` on every one, the customer's own merge
+#: included). Read from there in spirit and spelled once here, because this
+#: module may not import a writer.
+MERGE_RESOLUTION = "duplicate"
+
+#: The CLOSER TYPE both fold-class writers share, and the reason fix round 1
+#: exists. `commitment_superseded` has TWO writers, not one:
+#:
+#:   * `commitment_state.supersede_commitment` — the duplicate merge, which
+#:     stamps `resolution: "duplicate"`;
+#:   * `commitment_state.split_commitment` — the shipped `split into [items]`
+#:     triage verb, which stamps `resolution: "superseded"` and
+#:     `split_into: [...]`.
+#:
+#: A SPLIT IS NOT A CLOSE AND NOT A MERGE. One item is broken into several,
+#: all of them still open — the book GREW. Counting it as a promise kept put
+#: "1 promise closed today" and a coach sentence reading "it shipped" over
+#: work nobody finished, which is the exact defect class this lane exists to
+#: remove (REVIEW_DAYCLOSE1 F-1). M's ruling for this round: a split goes in
+#: the FOLD's bucket — out of `n_closed`, out of the named closes, out of the
+#: first-move check and out of the coach's delta. Giving it a movement and a
+#: sentence of its own is a real feature and a lane of its own.
+MERGE_CLOSER_TYPE = "commitment_superseded"
 
 
 class ClosureWindow(list):
@@ -1959,6 +2107,13 @@ def closures_since(workspace_root, since_ts, *, now_iso=None,
                           or data.get("primary_thread_id")),
             "ts": ev.get("ts"),
             "resolved_by": data.get("resolved_by"),
+            # FIX ROUND 1 (reviewer F-1) — WHICH CLOSER WROTE THIS ROW. The
+            # type was deliberately not projected before this lane, and the
+            # omission is what made `merge_row` guess from `resolution` and
+            # get a SPLIT wrong (see its docstring). Projected, never
+            # derived, so every reader of a closure row decides on the same
+            # fact and a fixture can carry the shape the book does.
+            "closer_type": ev.get("type"),
             "resolution": data.get("resolution") or "done",
             "source_ref": data.get("source_ref"),
             "ref_grain": data.get("ref_grain"),
@@ -2369,14 +2524,23 @@ def unsourced_closes(closures: Iterable[dict]) -> list:
     list. The three cases, and they are one question asked three ways: the
     honest marker, no pointer at all, and a pointer the writer minted for want
     of a real one.
+
+    A FOLD IS NOT A CLOSE HERE EITHER (fix round 1, reviewer F-5). Since
+    `_CLOSE_TYPES` widened, a duplicate merge reaches this list, and the
+    customer's own `merge those two` path writes no `source_ref` — so a
+    reader counting closes that cite no artifact would count a fold, which
+    finished nothing and had no artifact to cite. `coverage.n_unsourced` is
+    the one consumer and it is COMPUTED_ONLY today, so this is stated before
+    it is discovered rather than after.
     """
     try:
         from connector_adapters.provenance import REF_GRAIN_SURFACE_MINTED
     except Exception:  # pragma: no cover — direct-path fallback
         REF_GRAIN_SURFACE_MINTED = "surface_minted"
     return [c for c in (closures or [])
-            if c.get("provenance_missing") or not c.get("source_ref")
-            or c.get("ref_grain") == REF_GRAIN_SURFACE_MINTED]
+            if not merge_row(c)
+            and (c.get("provenance_missing") or not c.get("source_ref")
+                 or c.get("ref_grain") == REF_GRAIN_SURFACE_MINTED)]
 
 
 # ---------------------------------------------------------------------------
@@ -3259,7 +3423,20 @@ def check_first_move(text, closures: Iterable[dict], *,
     if not line:
         return None
     rows = [c for c in (closures or []) if isinstance(c, dict)]
-    named = [c for c in rows if str(c.get("title") or "").strip()]
+    # DAYCLOSE1 3.1 — A FOLD DOES NOT DISCHARGE THE LINE. Since
+    # `_CLOSE_TYPES` widened, a duplicate the machine merged away reaches
+    # these rows carrying the SAME TITLE as the row it duplicates — which
+    # is the one shape `_shares_words` is guaranteed to match. The survivor
+    # is still open and the line is still the next thing to do, so a fold
+    # must never label it `stale`.
+    #
+    # AND A DAY WHOSE ONLY CLOSE WAS A FOLD READS `unverifiable`, not
+    # `open`. That follows from this list and it is the honest answer: with
+    # nothing discharged there was nothing to check the line against, and
+    # `open` here would be the guess wearing a measurement's clothes this
+    # docstring already refuses one paragraph up.
+    named = [c for c in rows if str(c.get("title") or "").strip()
+             and not merge_row(c)]
     advanced = [l.get("leg") for l in (close_legs or [])
                 if isinstance(l, dict) and l.get("advanced")]
 
@@ -3500,10 +3677,54 @@ def machine_batch_row(row: dict) -> bool:
 MACHINE_DROP_DOOR_OTHER = "machine_backlog"
 
 
+def merge_row(row: dict) -> bool:
+    """True when this closure row is FOLD-CLASS — neither a promise kept nor
+    a thing let go (DAYCLOSE1 3.1, widened by fix round 1 / reviewer F-1).
+
+    PURE, like `machine_batch_row` beside it: it reads only what
+    `closures_since` projects, so a fixture row carrying the same fields gets
+    the same answer as the book's own.
+
+    TWO arms, and both are load-bearing:
+
+      1. the CLOSER'S OWN TYPE (`closer_type`, projected since fix round 1).
+         `commitment_superseded` is written by the duplicate merge AND by the
+         `split into [items]` verb, and neither is a close. Deciding on the
+         type rather than on `resolution` is what keeps a split off the
+         closed count — the first draft guessed from `resolution` and a split
+         (`resolution: "superseded"`) fell straight through into `n_closed`.
+      2. the `resolution` the merge writer stamps. This arm stays for the
+         LEGACY rows: the live book carries 14 folds written as
+         `commitment_resolved` + `resolution: "duplicate"` from the era
+         before the supersede writer existed (`commitment_state.py`'s
+         `supersede_commitment` docstring names them), and they must keep
+         classifying as folds.
+    """
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("closer_type") or "").strip().lower() == MERGE_CLOSER_TYPE:
+        return True
+    return str(row.get("resolution") or "").strip().lower() == MERGE_RESOLUTION
+
+
+#: The merge's door (DAYCLOSE1 3.1). It is deliberately NOT in
+#: `MACHINE_ACT_ORDER` — that tuple is the order `compute_machine_acts`
+#: renders the CHANGE FEED's categories in, and the feed has no merge
+#: category. The merge reaches the screen through the ledger's own door list
+#: and `eod_synthesis.machine_door_lines`, which is the one place a door the
+#: block did not narrate gets its sentence. One act, one line, one narrator.
+#: And it is NOT in `MACHINE_CLOSE_DOORS` either: a fold is not a close, so
+#: an evening that folded two duplicates and closed nothing may still say
+#: nothing closed today and be telling the truth.
+MERGE_DOOR = "merged_duplicate"
+
+
 def machine_drop_door(row: dict) -> str:
     """The door a machine drop went out of, by the row's own markers."""
     if not isinstance(row, dict):
         return MACHINE_DROP_DOOR_OTHER
+    if merge_row(row):
+        return MERGE_DOOR
     if str(row.get("exit_route") or "").strip().lower() == "silence":
         return "let_go_quiet"
     try:
@@ -3542,10 +3763,21 @@ def compute_ledger(*, opening: dict, n_opened: int,
     stops there.
     """
     rows = [c for c in (closures or []) if isinstance(c, dict)]
-    dropped_rows = [c for c in rows
+    # SPEC DAYCLOSE1 3.1 — THE THIRD MOVEMENT. `_CLOSE_TYPES` now carries
+    # `commitment_superseded`, so a duplicate merge reaches this function.
+    # It is neither a close nor a drop: nothing was finished and nobody let
+    # anything go — two rows became one. Counting it as a close would put a
+    # promise kept on the screen that nobody kept, which is the defect class
+    # this whole lane exists to remove, so it gets its own bucket and its
+    # own door. Taken out FIRST, so the two counts below are unchanged for
+    # every row shape that existed before this lane.
+    merged_rows = [c for c in rows if merge_row(c)]
+    n_merged = len(merged_rows)
+    rows_ex_merge = [c for c in rows if not merge_row(c)]
+    dropped_rows = [c for c in rows_ex_merge
                     if str(c.get("resolution") or "").lower() == "dropped"]
     n_dropped = len(dropped_rows)
-    n_closed = len(rows) - n_dropped
+    n_closed = len(rows_ex_merge) - n_dropped
     # ATTRIB2 — the arithmetic above is the BOOK'S movement and stays exactly
     # as it was (every drop moved the book, whoever made it, and the residual
     # has to keep reconciling). This is the separate question the prose asks:
@@ -3589,6 +3821,20 @@ def compute_ledger(*, opening: dict, n_opened: int,
         {"category": door, "n": door_counts[door]}
         for door in tuple(MACHINE_ACT_ORDER) + (MACHINE_DROP_DOOR_OTHER,)
         if door_counts.get(door)]
+    # DAYCLOSE1 3.1 — the merges, split the same way and kept in their OWN
+    # list. Same two-halves proof `n_dropped_by_you` takes: a merge counts
+    # as the customer's only when the act names them AND the batch was not
+    # a job's, so the automatic apply leg can never be credited to the
+    # reader. The machine's share is the only one that earns a sentence,
+    # and it earns it BY DOOR (M's ruling 6): the customer's own merge is
+    # theirs, is on the ledger, and needs nobody to tell them they did it.
+    n_merged_by_you = sum(1 for c in merged_rows
+                          if c.get("by_customer") is True
+                          and not machine_batch_row(c))
+    n_merged_by_machine = n_merged - n_merged_by_you
+    merged_by_machine_doors = ([{"category": MERGE_DOOR,
+                                 "n": n_merged_by_machine}]
+                               if n_merged_by_machine else [])
     try:
         n_opened = max(0, int(n_opened))
     except (TypeError, ValueError):
@@ -3613,6 +3859,11 @@ def compute_ledger(*, opening: dict, n_opened: int,
         "n_dropped_by_machine": n_dropped_by_machine,
         # ...and WHICH DOORS it went out of (fix round 1, F-3).
         "dropped_by_machine_doors": dropped_by_machine_doors,
+        # DAYCLOSE1 3.1 — the day's duplicate merges, as their own movement.
+        "n_merged": n_merged,
+        "n_merged_by_you": n_merged_by_you,
+        "n_merged_by_machine": n_merged_by_machine,
+        "merged_by_machine_doors": merged_by_machine_doors,
         "book_now": book_now,
         "delta": None,
         "movement_line": None,
@@ -3636,6 +3887,16 @@ def compute_ledger(*, opening: dict, n_opened: int,
         delta_phrase = LEDGER_DELTA_UP.format(n=delta)
     else:
         delta_phrase = LEDGER_DELTA_FLAT
+    # DAYCLOSE1 3.1 — THE MERGE IS STATED, NOT ABSORBED, and the arithmetic
+    # above is deliberately left exactly as it was. `LEDGER_LINE` names four
+    # movements and a reader must be able to reconcile it BY HAND; folding a
+    # fifth movement into `accounted` without a clause for it would make the
+    # residual line unreconcilable from the sentence above it — a ledger that
+    # lies quietly, which is the one thing this function's docstring forbids.
+    # So `n_merged` joins the dict as its own stated field (the merge is what
+    # the residual has always carried, and the docstring says so), the
+    # machine's share earns one sentence at its door, and widening the
+    # movement line itself is a separate change with its own pass line.
     accounted = n_opened - n_closed - n_dropped
     residual = delta - accounted
 
@@ -3652,8 +3913,17 @@ def compute_ledger(*, opening: dict, n_opened: int,
     })
     out["line"] = out["movement_line"]
     if residual:
-        out["residual_line"] = LEDGER_RESIDUAL_LINE.format(
-            accounted=accounted, residual=residual)
+        # F-4 — say what the residual now CARRIES. A counted fold is no
+        # longer "somewhere this fire cannot see", and on a day whose only
+        # unexplained movement is one the residual is exactly `-n_merged`.
+        if n_merged:
+            phrase = (LEDGER_MERGED_PHRASE_ONE if n_merged == 1
+                      else LEDGER_MERGED_PHRASE_MANY.format(n=n_merged))
+            out["residual_line"] = LEDGER_RESIDUAL_LINE_MERGED.format(
+                accounted=accounted, residual=residual, merged_phrase=phrase)
+        else:
+            out["residual_line"] = LEDGER_RESIDUAL_LINE.format(
+                accounted=accounted, residual=residual)
     return out
 
 
@@ -3947,7 +4217,23 @@ def _resolve_win_title(ev: dict, data: dict, idx: dict, names: dict) -> tuple:
     snapshot = _snapshot_title(data)
     ref_id = None
 
-    if etype == "commitment_resolved":
+    # FIX ROUND 1 (reviewer F-3) — `commitment_superseded` RIDES THE CLOSER'S
+    # OWN LADDER. Neither fold writer stamps a `title`, so before this branch
+    # a fold reached `closures_since` nameless, the snapshot arm never fired,
+    # and the two fences that drop folds from the named closes and from the
+    # first-move check were defended only by fixtures carrying an injected
+    # title — a shape production cannot emit (measured on a real
+    # `dedup-apply` fire: `{"title": "", "title_source": None}`).
+    #
+    # WHICH title: the DUPLICATE's — the row that left the book — not the
+    # survivor's. `data.commitment_id` on both fold writers names the row
+    # that closed (the duplicate on a merge, the parent on a split), and
+    # `closures_since` projects that same id onto the row. A title naming a
+    # different row than the row's own id is exactly what a title-matching
+    # reader would then match on, which is the defect this branch closes
+    # rather than moves. `superseded_by` is deliberately NOT in
+    # `_CLOSER_ID_KEYS`, so the survivor can never be reached from here.
+    if etype in ("commitment_resolved", MERGE_CLOSER_TYPE):
         for key in _CLOSER_ID_KEYS:
             val = data.get(key)
             if val:
@@ -4096,6 +4382,15 @@ MACHINE_ACT_LINES = {
     "machine_backlog":
         "A background pass let go {n} {items} — say `undo` to put {them} "
         "back.",
+    # SPEC DAYCLOSE1 3.1 — the merge, credited to ITS DOOR and never to
+    # "you" (M's ruling 6). ONE line per batch, one `undo` for the batch,
+    # the same shape every other door here takes. The verb is "folded",
+    # not "closed": nothing was finished, two rows became one, and a
+    # sentence that said "closed" would put a promise kept on the board
+    # that nobody kept.
+    "merged_duplicate":
+        "The duplicate check folded {n} repeated {items} into the {ones} "
+        "already on your plate — say `undo` to split {them} back out.",
 }
 
 #: The order the doors render in. Fixed, so two evenings with the same day
@@ -4250,7 +4545,8 @@ def compute_machine_acts(workspace_root, since_ts, *, now_iso=None,
             continue
         line = MACHINE_ACT_LINES[category].format(
             n=n, items=("item" if n == 1 else "items"),
-            them=("it" if n == 1 else "them"))
+            them=("it" if n == 1 else "them"),
+            ones=("one" if n == 1 else "ones"))
         out["rows"].append({"category": category, "n": n, "line": line,
                             "refs": list(by_category[category].get("refs")
                                          or [])})
@@ -5916,6 +6212,15 @@ def log_end_of_day_receipt(workspace_root, pack: dict, *,
                     "held_routing", "n_held"):
             if key in capture_leg and capture_leg[key] is not None:
                 data[key] = capture_leg[key]
+        # cr1#138 - which capture passes ran and which were skipped, with a
+        # reason code. Normalized here, never copied raw: only declared pass
+        # names and reason codes reach the receipt, and a declared pass the
+        # fire did not report is stamped `not_reported`. Absent or None means
+        # the fire handed no record, and the key is omitted (the receipt
+        # shape before this change), never invented.
+        if capture_leg.get("capture_passes") is not None:
+            data["capture_passes"] = capture_pass_record(
+                capture_leg["capture_passes"])
     # PERSONLOOP1 §3-4 — the person-loop's own arithmetic, riding the SAME
     # receipt shape `capture_counts` rides and keeping the same discipline:
     # counts only, never a name. Without it the V1-style re-measure has
@@ -6440,7 +6745,9 @@ __all__ = [
     "coverage_render_lines",
     "NO_OPENING_FIGURE", "NO_OPENING_FIGURE_LINE", "LEDGER_LINE",
     "LEDGER_MOVEMENT", "LEDGER_NO_OPENING_FIGURE", "LEDGER_STATUSES",
-    "LEDGER_RESIDUAL_LINE", "OPENING_FIGURE_ORIGIN",
+    "LEDGER_RESIDUAL_LINE", "LEDGER_RESIDUAL_LINE_MERGED",
+    "LEDGER_MERGED_PHRASE_ONE", "LEDGER_MERGED_PHRASE_MANY",
+    "OPENING_FIGURE_ORIGIN",
     "opening_book", "opens_since", "compute_ledger",
     "CATCHUP_TIER", "CATCHUP_LABEL", "CATCHUP_COMPRESSED_LINE",
     "CATCHUP_CAPPED_LINE", "compute_catchup_read",

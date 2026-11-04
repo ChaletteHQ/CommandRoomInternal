@@ -1,0 +1,13 @@
+{
+  "version": "3.5.3",
+  "headline": "A saved-file message names the folder where the file actually landed.",
+  "items": [
+    {
+      "id": "v353_announce_saved_path",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "When I tell you where I saved a brief, the location is now the folder on your own computer where the file landed. Some installs were shown a folder from another machine; that is gone.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -43,7 +43,7 @@ It is **conservative by design.** It does not modify existing data, does not run
 9. **Output guard — internal tokens, paths, and event names only (re-scoped v4.6.1 S3, F-06/F-07):** no file paths, no event-type names, no internal tokens (Rule numbers, schema fields, skill mechanics) in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary. Version numbers are NOT internal tokens — the version diff and per-version recap lines are explicitly allowed (Rule 10 owns that surface; pre-4.6.1 this rule also banned version numbers, which contradicted Rule 10's mandated one-liner — F-06. Rule 10 wins).
    - BAD: "Applied claude_md_email_rule_v1 (Rule 6) — marker check passed in CLAUDE.md."
    - GOOD: "✓ Added the email rule to your preferences."
-10. **What-changed content comes from the release manifests, NEVER from CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction). **Render that line with `bridge_versions.version_sentence(<the Phase 1 struct>)` — never compose it (WALKFIX1 Item I).** It is the same struct the receipts carry, so the sentence cannot contradict the record beside it, and on an unshipped-tip install it says so explicitly ("the tree at v5.11.0-unreleased — plugin.json still stamps v5.10.0, because the version stamp is written at ship") rather than picking one member and asserting it as the whole truth. Followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the pending-migration list and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
+10. **What-changed content comes from the release manifests, NEVER from the staging repo's CHANGELOG.md. (Added v2.7.24; amended v4.6.1 S3 per F-07 P2b.)** CHANGELOG.md is dev-internal — file paths, Rule numbers, version-by-version implementation detail — and stays forbidden verbatim OR paraphrased. What the bridge DOES say: the version diff in one line — phrased as currency, not identity: "your workspace was last brought current at v[INSTALLED]; the plugin is now v[CURRENT]" (F-07 P2d: "you're on 4.2.0" right after the user clicked Update reads as a contradiction). **Render that line with `bridge_versions.version_sentence(<the Phase 1 struct>)` — never compose it (WALKFIX1 Item I).** It is the same struct the receipts carry, so the sentence cannot contradict the record beside it, and on an unshipped-tip install it says so explicitly ("the tree at v5.11.0-unreleased — plugin.json still stamps v5.10.0, because the version stamp is written at ship") rather than picking one member and asserting it as the whole truth. Followed by a plain-English recap of what's new, sourced ONLY from the release manifests' announce items (`shared/releases/v*.json` prompt/notice templates — already written for the customer; the dogfood confirmed the recap is the right product answer, F-07 P2b), then the pending-migration list and the confirmation ask. If the user asks for MORE detail than the manifests carry, link the GitHub CHANGELOG — still never paraphrase it inline.
 
 ---
 
@@ -354,12 +354,12 @@ WORKSPACE_MIGRATIONS = [
     apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
   },
   {
-    id: "readiness_retirement_v1",                             // SPEC TASKRET1 (M's ruling 2026-08-17). Read the id from `schedule_proposals.READINESS_RETIREMENT_MIGRATION_ID` — the event this migration writes carries the same constant, so the id the gate suppresses on and the id in the record can never be two strings
+    id: "readiness_retirement_v1",                             // SPEC TASKRET1 (M's ruling 2026-08-17). Read the id from `schedule_proposals.READINESS_RETIREMENT_MIGRATION_ID`: the event this migration writes carries the same constant, so the id in the record and the id the planner's per-task fence reads can never be two strings
     target_file: null,                                         // NOT a file migration — the target is the LIVE scheduler, read via the FS-16 registered-set readback
     marker: null,                                              // live schedule state — the adjudication gate + the readback's own `enabled` flag are the gates (see the section)
     type: "auto_apply",                                        // APPLIED, then NARRATED — the one migration type that acts on live schedule config without asking. M's ruling is the authority; §0 rationale lives in the class block above `schedule_config.RETIRED_TASKS`. NEVER downgrade this to calibration_question: "I will NOT manually pause" is the ruling, and a per-task question here rebuilds the register-then-nag pattern the retirement removes
     blocking: false,
-    apply_once: true                                           // one application, ever
+    apply_once: false                                          // PER TASK, not once ever (cr1#540): a chat retired by a later release still has to stop firing on a seat that already ran this. The planner's two fences are the whole gate; this id is never handed to the adjudication lookup
   },
   {
     id: "fold1a_fire_fold_v1",                                 // SPEC_FLOW1 Lane H / FOLD1A (M's ruling 2026-09-07, "lets do this then the fold builds"). Read the id from `release_actions.fold_scheduled_fires.ITEM_ID`'s sibling constant is the RECEIPT marker (`v5300_fold_scheduled_fires`); this migration id is the BRIDGE's own adjudication key, kept distinct on purpose (see the prose below)
@@ -384,14 +384,15 @@ WORKSPACE_MIGRATIONS = [
 
 **`readiness_retirement_v1` — the readiness retirement (SPEC TASKRET1, M's ruling 2026-08-17).** The one migration that switches off a chat the customer can see, without asking. Everything about it is scoped to CLASS, never to a task name.
 
-Run it on the full-update intent path, after the FS-16 registered-set readback (the same readback the proposal blocks quote). Nothing here reads or writes a workspace file:
+Run it on the full-update intent path, after the FS-16 registered-set readback (the same readback the proposal blocks quote). The plan reads the activity log for its per-task fence and writes nothing:
 
 ```python
 import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
 from schedule_proposals import plan_readiness_retirements, log_readiness_retirement
 from schedule_config import readiness_retirement_summary
 plan = plan_readiness_retirements(registered_ids=<the quoted readback>,
-                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>)
+                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>,
+                                  workspace_root=WORKSPACE_ROOT)
 ```
 
 Both arguments come from the ONE readback taken in Step 4.8a and composed by `schedule_proposals.readback_context` — the same dict handed to this item as its detector context. Do not re-read the scheduler here, and do not reach this block with neither argument: an item that was handed nothing plans nothing, and the trace it leaves says so (`outcome: "no_readback"`, one sentence on the receipt, item still armed) rather than leaving nothing at all.
@@ -411,7 +412,9 @@ summary = readiness_retirement_summary([e["task"] for e in plan])   # "" when th
 
 That line is the whole difference between this class and the silent `SUPERSEDED_BY` disable above. It names what was switched off, why it needed groundwork first, and — the clause only this class carries — what brings each chat back (`reoffer_when`). **Do not drop the comes-back clauses to shorten it, and do not paraphrase.** A retirement the customer is told about but not told the terms of is a deletion with better manners; the promise of return is what makes acting-without-asking legitimate here.
 
-**Pass `task_records`, not just the ids.** The raw records carry `enabled`, and an entry already disabled is dropped from the plan — that is the fence that stops a workspace whose adjudication record was lost from re-writing a `schedule_config_changed` event on every update forever. The adjudication gate (keyed on the migration id) is the other fence, and both are deliberate: idempotency here has to survive losing either one.
+**Pass `task_records`, not just the ids.** The raw records carry `enabled`, and an entry already disabled is dropped from the plan: that is the fence that stops a workspace from re-writing a `schedule_config_changed` event on every update forever. `workspace_root` is the other fence: a task that already carries this migration's own pause record is dropped, so each retired chat is switched off at most once per seat. Both are deliberate: idempotency here has to survive losing either one.
+
+**The one-shot is per task, so this migration runs on every full update (cr1#540).** Do not hand `readiness_retirement_v1` to the Phase 1 adjudication lookup, and do not log `workspace_migration_applied` for it: the lookup is keyed on the one migration id, and an applied record there used to stop this block forever, so a chat retired by a later release kept firing on every seat that had run it once. An `applied` record already in a seat's log for this id changes nothing. The planner's two fences above are its whole gate, and on a seat with nothing new the plan is `[]` and you say nothing.
 
 **Do NOT touch anything else.** No `schedule_config` override key is deleted (an override for a retired id is expected history, and the customer's chosen hour is theirs to keep if the surface ever returns), no on-demand skill is disabled, and no other retirement class is applied — eliminations and renames still go through the propose blocks above. If you are about to disable a task that `schedule_config.is_readiness_retirement` does not return True for, stop: that is the add-without-asking violation with the sign flipped.
 
@@ -441,6 +444,8 @@ Then surface **exactly ONE line**, built by the module, never composed here: `re
 Detection logic per migration:
 - **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
 
+  Leave `readiness_retirement_v1` out of that id list (cr1#540): its one-shot is per task, and the planner's two fences in its block are its whole gate. An `applied` record for it must never remove it from the candidates.
+
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"root_or_file": "<WS>", "migration_ids": ["<migration_id_1>", "<migration_id_2>"]}, "name": "migration_adjudication:adjudication_status"}'
 ```
@@ -451,7 +456,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"r
 - Read the `target_file`. If it doesn't exist, skip the migration silently (workspace is incomplete — not this skill's problem). EXCEPTION: for `voice_corpus_check`, file-not-found IS the trigger (the migration fires when the file is missing).
 - For string-marker migrations (DEFAULT semantics): search for the `marker` string. If found, migration is already applied — skip.
 - For string-marker migrations with `marker_semantics: "stale_marker_pending"` (INVERTED — canonical-edit-surface migrations): search for EACH string in `markers` (a list; a single `marker` string is treated as a one-item list). If ALL are ABSENT, the migration is done or never needed — skip. If a marker is FOUND, classify EACH hit line before acting (v4.8.1, F-04 — a keyword hit alone is NOT actionable):
-  - **Actionable hit → migration PENDING (full replacement flow):** the token sits in a **path/config context** — part of a filesystem path, git remote, repo slug, or URL (a `marketplaces/<token>/` segment, an `<org>/<token>` remote, a clone/push/install target) — AND the surrounding sentence still **directs the reader there**: names it as the edit surface, the push target, or the source of truth, or otherwise instructs future work against the retired location.
+  - **Actionable hit → migration PENDING (full replacement flow):** the token sits in a **path/config context** — part of a filesystem path, git remote, repo slug, or URL (a `marketplaces/<token>/` segment, an `<org>/<token>` remote, a clone/push/install target) — AND the surrounding sentence still **directs the reader there**: names it as the edit surface, the push target, or the canonical copy, or otherwise instructs future work against the retired location.
   - **Advisory hit (keyword-only / prose):** every other occurrence — retirement notes and warnings ("do not edit", "retired", "renamed", "legacy", "frozen", "dead end", "superseded"), history sections, or any sentence whose point is that the location is NOT to be used. A doc that correctly explains the old name was retired is CURRENT, not stale; auto-replacing it would swap a correct, detailed section for a generic block (the F-04 false positive — a well-maintained workspace re-flagged on every bridge run because its docs *documented the retirement*). Path-shaped tokens inside such sentences (a warning that quotes the old path verbatim) are still advisory — context wins over shape.
   - A file whose hits are ALL advisory produces **NO confirm item and NO replacement block** — at most one summary line: *"Your [file] mentions the retired plugin location in a history note — that's current, no action needed."* Do not log a migration event for advisory-only files; re-classification on future runs is cheap and stays silent-or-one-line.
   - A file with at least one actionable hit runs the normal `announce_with_replacement_block` flow for that file.
@@ -843,7 +848,7 @@ Narrate completion in one line:
 
 **Trigger gate:** fires if ANY of the stale markers `plugin-source-v3` or `commandroom1` appears in the target file (`CLAUDE.md` for the first migration, `_hq/INFRASTRUCTURE.md` for the second) **in an actionable path/config context per the v4.8.1 F-04 classification in the detection logic above** — a hit that only mentions the retired name in prose (a retirement note, a warning, a history section) downgrades to the one-line advisory and never reaches this flow. Uses the inverted `stale_marker_pending` semantics — an actionable marker means the file has stale content from a retired source-of-truth model: `plugin-source-v3` = the pre-2026-05-12 Drive-edit era; `commandroom1` = the 2026-05-12 "Option B" marketplace-clone era, retired 2026-06-22 when its remote was renamed `oldtest`. Files this migration previously "fixed" to the Option B text re-flag on the second marker by design — that text is itself stale now.
 
-**Why this migration exists:** the canonical edit surface is `~/repos/cr1-canonical/command-room/`, a dedicated working clone of `ChaletteHQ/cr1` (the cr1 model, current as of 2026-06-22). Two retired models linger in older workspace docs: the `Command Room/plugin-source-v3/` Drive-edit folder pattern, and the Option B model that named a staging marketplace clone under `~/.claude/plugins/marketplaces/` canonical. Out-of-date workspace docs cause Cowork sessions (and Code sessions) to write handoffs and ship instructions pointing at the wrong location (the 2026-06-22 stale-doc incident — see references/HISTORY.md).
+**Why this migration exists:** the canonical edit surface is `~/repos/cr1-canonical/command-room/`, a dedicated working clone of `chaletteholdings/cr1` (the cr1 model, current as of 2026-06-22). Two retired models linger in older workspace docs: the `Command Room/plugin-source-v3/` Drive-edit folder pattern, and the Option B model that named a staging marketplace clone under `~/.claude/plugins/marketplaces/` canonical. Out-of-date workspace docs cause Cowork sessions (and Code sessions) to write handoffs and ship instructions pointing at the wrong location (the 2026-06-22 stale-doc incident — see references/HISTORY.md).
 
 **Approach (bridge-applied with archive, P1.15):** the bridge surfaces a heads-up, then — on yes — applies the replacement ITSELF, archiving the replaced block in the migration event. A CEO is never asked to hand-paste markdown; the copy-paste fallback exists only for the structural-mismatch case where the section heading can't be located.
 
@@ -1021,7 +1026,7 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 **Approach (announce with replacement block — NEVER silent; a hand-edited CLAUDE.md is the customer's):**
 
-1. Build the replacement for the `## Session Rules` section from the CURRENT template's compressed bullets (read `references/claude-md-template.md` at apply time — never restate them here, one source of truth) plus every hand-authored bullet in the live section that is NOT one of the six pre-diet long-form rules. Run `claude_md_guard.report(before, after)` on the candidate: every removed line must be one of the six known long-form rules — anything else in `removed` aborts the offer for that section and keeps the live text.
+1. Build the replacement for the `## Session Rules` section from the CURRENT template's compressed bullets (read `references/claude-md-template.md` at apply time — never restate them here, one home) plus every hand-authored bullet in the live section that is NOT one of the six pre-diet long-form rules. Run `claude_md_guard.report(before, after)` on the candidate: every removed line must be one of the six known long-form rules — anything else in `removed` aborts the offer for that section and keeps the live text.
 2. If the file still carries an `## Email Exclusions` section: note in the offer that sender-shaped rules are handled by `email_exclusion_rules_to_sender_scope_v1` (run it first if pending) and that the tables can then be deleted; pattern-shaped rules stay until the customer moves them. Never delete the section yourself in the same turn as the offer.
 3. Show the before/after line counts and the replacement block; apply ONLY on the customer's yes. Then log `workspace_migration_applied` with `migration_id: "claude_md_diet_v1"`; on a decline, log the skip with `user_deferred` so `redo workspace migrations` can re-offer.
 
@@ -1109,72 +1114,11 @@ A scheduler tool you cannot see yet may only be waiting to be loaded. Load first
 
 ### Migration: `staff_meeting_cadence_mwf_v1` (SPEC FB-20 — Staff Meeting moves Mon-only → Mon/Wed/Fri, PROPOSED never imposed)
 
-**Why this is a question and not a silent write.** FB-20 made the morning brief read-only, which makes the Staff Meeting the ONLY surface where anything gets confirmed. Once a week is too slow to be the only door — so the shipped default for NEW installs moved to Mon/Wed/Fri 9:00. But an existing customer's schedule is **theirs**: they may have moved it, may guard their calendar, may want it Monday. A schedule is live config, not product text — **never rewrite it silently, and never treat "they're already on our new default" as consent.** Propose, then honor the answer, forever.
-
-**Gate (the ONLY gate — this migration has no marker; see the `marker: null` rule in the detection logic):** pending iff `migration_adjudication` reports `staff_meeting_cadence_mwf_v1` `unadjudicated`. Do NOT read the current cron to decide whether to ask. Additional pre-checks before proposing — if any fails, skip SILENTLY with no event (nothing to propose; asking would be noise):
-1. `staff-meeting` is actually REGISTERED on this workspace (a `schedule_backend.plan_list` record exists). An unregistered task has no schedule to change — the new default applies whenever they register it, no migration needed.
-2. Its live cron still parses as the old Mon-only shape (`0 9 * * 1`). **If the customer has ANY other custom cron, skip silently and log nothing** — they have already expressed a preference about this task's timing, and overwriting a considered choice with our new default is exactly the imposition this migration exists to avoid.
-
-**The ask (one question, plain English, their answer is final):**
-
-> *"One thing worth changing: your Staff Meeting runs Mondays only. Now that your morning brief is just a brief — it reads, it doesn't ask — the Staff Meeting is the only place things actually get confirmed, and once a week is a long time to sit on a deal signal. Want me to move it to Monday / Wednesday / Friday at 9? Your call — Monday-only is a perfectly good answer if that's the rhythm you want."*
-
-- **"Yes"** / *"sure"* / *"do it"* / *"mwf"* → apply (below), log `workspace_migration_applied`.
-- **"No"** / *"leave it"* / *"Monday's fine"* → change NOTHING. Log `workspace_migration_skipped` with `reason: "user_declined_cadence_change"` (a free-form reason → suppresses forever per the adjudication contract; `redo workspace migrations` is how they opt back in).
-- **A different cadence** (*"make it Tue/Thu"*, *"daily"*, *"2pm instead"*) → do NOT hand-roll it here. Log `workspace_migration_applied` (the cadence question is settled) and route them: *"Say `change my schedule` and I'll set it to exactly that."* **`change-schedule` is the only skill that mutates a live cron** — this bridge does not reimplement it.
-
-**Applying (the "yes" path only):**
-
-Hand off to `change-schedule`'s canonical path — write `workspace.schedule_config["staff-meeting"]` in entities.json AND re-anchor the live task's cron. **Do not convert the time here.** Build the cron from 9:00 in the workspace timezone — the time the customer means — and hand THAT to the seam (`backend.plan_update(cron_local=…, tz_name=<workspace timezone>)`), exactly as `change-schedule` Step 7 does. The seam owns the one conversion the live backend needs: on the merged Claude app it projects the workspace-local cron onto world time; on the older desktop app cron evaluates in the machine's own clock (R8) and the seam converts to it. Converting here as well moves the customer's 9 AM twice and stores a cron no later check can match. **If you ever need the machine-clock value yourself,** the one call is `schedule_config.workspace_time_to_machine(9, 0, WORKSPACE_ROOT, backend_id=backend.id)` — `backend` being the one `schedule_backend.select_backend(<this session's tool names>)` returns, the same selection the Phase 4.7 guard makes. Never call it without `backend_id`: on the merged app the bare call shifts the time by this container's offset and the seam then shifts it again to world time. The stored `label` stays the customer's time ("9 AM Mon, Wed, Fri"); the stored `cron` stays their workspace-local time. When the live backend is the older app and the two clocks differ, say so once.
-
-**⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK (v4.5.2 R2 / F-51 — the change-schedule doctrine, binding here too).** Re-anchoring moves the NEXT occurrence. It does not create a missed slot, and today's newly-added Wednesday slot did not exist when Wednesday 9:00 passed. Do NOT run the staff meeting "to catch up", do NOT invoke its orchestrator, do NOT compute or write lateness for any slot the change itself created, and do NOT narrate one ("you missed today's" is false). A customer who says yes to a cadence change gets a config write and a confirmation line — never a surprise staff meeting in the same turn.
-
-Log the migration:
-- On success → `workspace_migration_applied` with `migration_id: "staff_meeting_cadence_mwf_v1"`, `target_file`, `from_version`, `to_version`, `actor: "command-room-update-bridge"`.
-- On decline → `workspace_migration_skipped` with the same fields plus `reason: "user_declined_cadence_change"`.
-- On silent pre-check skip (unregistered / custom cron) → **no event at all.** Nothing was proposed, so there is nothing to adjudicate; writing a skip here would durably suppress a question the customer never got asked.
-
-Narrate completion in one line:
-
-> *"✓ Staff Meeting now runs Mon/Wed/Fri at 9 AM."*
-
-(Or, for declined): *"Kept it Mondays. Say `change my schedule` any time."*
+**RETIRED (cr1#176, the owner's ruling 2026-10-23).** The scheduled Staff Meeting is a readiness retirement, so there is no cadence left to move. This migration is a silent skip on every workspace: do not ask the question, do not change any schedule, and write no event (a skip record would durably suppress a question nobody was asked, the rule this section always had). A workspace that still has the chat registered hears about it once, from `readiness_retirement_v1` above, never from here. `staff meeting` on demand is unchanged. The migration id stays in the table above so an earlier answer keeps its meaning.
 
 ### Migration: `rm_supersede_v1` (SPEC LB2 §3d — fold a standalone Relationship Moves chat into the Staff Meeting, PROPOSED never imposed)
 
-**Why.** LB1 R4 retired the standalone relationship-moves chat from NEW installs — the Staff Meeting absorbed the moves as its "This week's moves" section — but left EXISTING registrations untouched, and R4's own suppression rule means those workspaces are never offered the staff meeting: a permanent fork where the moves never reach the one adjudication surface. This migration closes it, the `staff_meeting_cadence_mwf_v1` way: one question, their answer is final.
-
-**Gate (the ONLY gate — no marker; the `marker: null` rule above):** pending iff `migration_adjudication` reports `rm_supersede_v1` `unadjudicated`. Pre-check before proposing — run the pure planner against the LIVE registered task records from the scheduler MCP:
-
-```bash
-python3 -c "import sys, json; sys.path.insert(0,'shared/scripts'); from schedule_config import rm_supersede_plan; print(json.dumps(rm_supersede_plan(<registered task records JSON>)))"
-```
-
-A `null` plan (no standalone relationship-moves registration) → skip SILENTLY with no event — nothing to propose, and writing a skip would durably suppress a question the customer never got asked (the cadence migration's rule, binding here too).
-
-**The ask (one question, plain English):**
-
-> *"One thing worth folding together: your Relationship Moves chat and the Staff Meeting cover the same ground now — the weekly moves are a section of the meeting. Want me to fold them into one? Same moves, one surface, one less chat to keep up with. Your call — keeping them separate is a perfectly good answer."*
-
-- **"Yes"** → apply (below), log `workspace_migration_applied` with `migration_id: "rm_supersede_v1"`.
-- **"No"** / *"keep them separate"* → change NOTHING — relationship-moves runs on untouched, forever. Log `workspace_migration_skipped` with `reason: "user_declined_rm_supersede"` (free-form reason → suppresses forever; `redo workspace migrations` is the opt-back-in).
-- **A different arrangement** (*"move the meeting to Sundays instead"*) → log `workspace_migration_applied` (the fold question is settled only if they also said yes to folding; otherwise skip) and route them: *"Say `change my schedule` and I'll set it up exactly that way."*
-
-**Applying (the "yes" path only, per the planner's plan):**
-
-1. If `staff_meeting_registered` is false → register the staff meeting via the EXISTING add path (change-schedule / registration Phase 6 add — this bridge registers nothing directly). Cron: the plan's `carry_cron` when non-null (the customer had customized the RM chat's time — carry their choice), else the staff-meeting default from `load_schedule_config()`. The cron is workspace-local and the seam converts it, exactly as the cadence migration above says — this phase converts nothing itself.
-2. Remove the relationship-moves registration (`schedule_backend.plan_update(enabled=False)`, executed by this skill, or delete per the seam's `plan_delete`).
-3. Receipt BOTH steps in the confirmation line; the RM skill itself, its orchestrator, and Pulse are untouched — only the registration moves.
-
-**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment a `schedule_backend.plan_update(enabled=...)` call lands (on a legacy seat the shim spells the old verb), call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
-
-**⛔ A SCHEDULE CHANGE NEVER FIRES THE TASK** (v4.5.2 R2 / F-51 — binding here exactly as in the cadence migration): no catch-up staff meeting, no lateness math, no "you missed one" narration.
-
-Narrate completion in one line:
-
-> *"✓ Folded in — your weekly moves now run inside the Staff Meeting ([its schedule]). The separate Relationship Moves chat is retired."*
-
-(Or, for declined): *"Kept them separate. Say `change my schedule` any time."*
+**RETIRED (cr1#176, the owner's ruling 2026-10-23).** There is no scheduled Staff Meeting left to fold Relationship Moves into, and both chats are readiness retirements that `readiness_retirement_v1` switches off by class. `schedule_config.rm_supersede_plan` returns null on every workspace now, so this migration is a silent skip: do not ask, do not register anything, and write no event. `who should I reach out to` and `staff meeting` both still run on demand. The migration id stays in the table above so an earlier answer keeps its meaning.
 
 ### Migration: `connector_display_name_repin_v1` (DISC1 — point the declared connectors at the connections this session can see)
 
@@ -1352,11 +1296,7 @@ Detection logic (extracted to a helper so future "add missing canonical task" ca
 
 No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent JOB ships inside the already-authorized `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`) with no registration change at all, and a future silent TASK added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers for pre-MAINT1 workspaces; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** the maintenance task's first fire runs every job the dispatcher reports due, so the reconcile backlog clears from the stored cursor forward and stale analytical views recompute (once the workspace has ≥14 days of events) without any extra step.
 
-**Staff Meeting later-add PROPOSAL (LB1 R3 — propose with one-tap accept, NEVER silently registered):** on the full-update intent path, **run the registered-set readback FIRST and quote it (FS-16 — MANDATORY):** before deciding anything, read the live registered set from the scheduler MCP and state its verdict explicitly in your working notes for this block — the literal check, e.g. *"registered taskIds: [...13 ids...]; staff-meeting IS in the set → proposal gate CLOSED"*. The proposal fires ONLY when that quoted readback shows `staff-meeting` ABSENT. Never propose from "this feature is new in the update" — feature newness is not user absence (the FS-16 live miss proposed the Staff Meeting one sentence after confirming all chats registered, burning the 6-week suppression record on a no-op). If `staff-meeting` IS in the quoted set, this whole block is a silent no-op — no proposal, no suppression record, no mention. Then, only on a quoted-ABSENT readback: if the workspace is past M1 install (any prior `schedule_created` event exists) AND no `schedule_add_proposed` event for `staff-meeting` exists within the last 6 weeks (the `schedule_proposals` suppression window — read it before surfacing), surface exactly ONE proposal line (render the time from `load_schedule_config()`'s label):
-
-> *"New in this update: a weekly Staff Meeting — everything your workspace changed on its own, everything waiting on your eyes, and this week's relationship moves, reviewable in one sitting. Say `add staff meeting` and it runs [config label time]."*
-
-Then log the suppression record via `schedule_proposals.log_proposal(ws, "staff-meeting")`. **This deliberately breaks from the Friday-Wrap silent-add shape:** the Staff Meeting is opt-in by M ruling (2026-07-14) — an accept ("add staff meeting", or any yes-shaped reply to this line) routes through change-schedule / registration Phase 6 `add`; silence registers nothing and the proposal stays quiet for 6 weeks. Do NOT propose the standalone `relationship-moves` chat anywhere in this flow anymore (R4 — the Staff Meeting absorbs it as its "This week's moves" section); workspaces with relationship-moves ALREADY registered are handled by the `rm_supersede_v1` calibration migration (LB2 §3d — propose-and-confirm, never silent), NOT by this later-add block.
+**The Staff Meeting later-add PROPOSAL is DELETED (cr1#176, the owner's ruling 2026-10-23).** LB1 R3 shipped a propose block here offering to add the weekly Staff Meeting. The scheduled Staff Meeting is now READINESS-retired: the taskId is out of `DEFAULT_SCHEDULES` and no registration path will create it. Do not surface a Staff Meeting proposal, do not log a `schedule_add_proposed` record for it, and do not reconstruct one from older release notes. The readiness migration (`readiness_retirement_v1`) is what a workspace that still has it registered hears, if anything. `staff meeting` on demand is untouched, and it is what the morning brief points at. Do not propose the standalone `relationship-moves` chat anywhere in this flow either: it is readiness-retired too.
 
 **The Balance later-add PROPOSAL is DELETED (SPEC TASKRET1, M's ruling 2026-08-17).** BAL1 shipped a hand-written propose block here, gated on `entities.json` `workspace.personal_calendars` being declared and non-empty. Balance is now READINESS-retired, so there is nothing to propose: the taskId is out of `DEFAULT_SCHEDULES` and no registration path will create it. Do not surface a Balance proposal, do not reconstruct one from the release notes, and do not treat a workspace that has since connected a personal calendar as newly qualified — the calendar gate is not what came back. The readiness migration below is what this workspace hears about Balance, if anything. (`commitment-triage` never had an automated offer path, and `pipeline-digest`'s lived in `schedule_proposals.PROPOSAL_THRESHOLDS`, which is deleted there.)
 

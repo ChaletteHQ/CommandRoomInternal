@@ -514,7 +514,7 @@ ORCHESTRATOR_MAP = {
     "friday-wrap":       "orchestrator-friday-wrap.md",   # NEW v3.11.0. Wraps the weekly-recap skill. Registered on first install. First weekly-rhythm task.
     "relationship-moves": "orchestrator-relationship-moves.md",  # REL1 — weekly Sunday outreach pack. NOT first-install (needs accumulated substrate).
     "commitment-triage": "orchestrator-commitment-triage.md",  # RETIRED — READINESS class (TASKRET1, M's ruling 2026-08-17). NEVER register, NEVER offer, NEVER count as missing. The row stays ONLY so a workspace that registered it before the retirement still resolves its bootloader until the update reaches it; the file it points at is a retirement stub that explains itself and stops. `schedule_config.RETIRED_TASKS` is the membership test, `retirement_class` the class test — never a name you remember. The ON-DEMAND skill (`triage my commitments`) is untouched and fully live.
-    "staff-meeting":     "orchestrator-staff-meeting.md",  # LB1 R3 — weekly Monday Living Brain review. NOT first-install; propose-only later-add (never silently registered).
+    "staff-meeting":     "orchestrator-staff-meeting.md",  # RETIRED: READINESS class (cr1#176, the owner's ruling 2026-10-23). Same rules as commitment-triage above: never register, never offer, never count as missing; the file is a retirement stub. The ON-DEMAND surface (`staff meeting`, system-health Step 5) is untouched and fully live.
     "balance":           "orchestrator-balance.md",  # RETIRED — READINESS class (TASKRET1). Same rules as commitment-triage above: never register, never offer, never count as missing; the file is a retirement stub. BAL1 had already gated it on a declared personal calendar most workspaces never had, which is precisely the shape this class retires. The ON-DEMAND surface (`balance check`) is untouched and fully live.
     "pipeline-digest":   "orchestrator-pipeline-digest.md",  # RETIRED — READINESS class (TASKRET1). Same rules; the file is a retirement stub. It was the only one of the three with an automated offer path, and that path (`schedule_proposals.PROPOSAL_THRESHOLDS`) is deleted rather than gated. The ON-DEMAND pipeline report (`skills/pipeline-tracker/`) is untouched and fully live.
 }
@@ -538,7 +538,7 @@ ORCHESTRATOR_MAP = {
 
 **v2.14.24 architecture change.** Prior to v2.14.24, registration pinned the FULL canonical orchestrator body into Cowork's scheduled-tasks DB — fixing the v2.14.20 stub-improvisation bug but producing the stale-prompt drift bug (see references/HISTORY.md § v2.14.24).
 
-v2.14.24+ pins a tiny ~50-line **bootloader** instead. The bootloader resolves `$PLUGIN_ROOT` at fire time, reads the canonical `orchestrator-<name>.md` from the currently-installed plugin via `bash cat`, and executes it verbatim. Plugin upgrades propagate automatically. Drift is structurally impossible.
+v2.14.24+ pins a **bootloader** instead. It began as about 50 lines and is now several hundred, because it carries every environment shape and fire-time guard. The bootloader resolves `$PLUGIN_ROOT` at fire time, reads the canonical `orchestrator-<name>.md` from the currently-installed plugin via `bash cat`, and executes it verbatim. Plugin upgrades propagate automatically. Drift is structurally impossible.
 
 The canonical bootloader template lives at `skills/enable-command-room-schedules/references/scheduled-task-bootloader.md`. Read its top-of-file commentary for the full design rationale — the live evidence (cr-bootloader-test fire, plugin UUID stability check, frontmatter doubling test) that drove each design choice.
 
@@ -954,7 +954,7 @@ If `spec["enabled"]` is `False`, skip registration for this task entirely (or up
 - `description`: **`"Morning Brief - Command Room"`** (v2.14.25+ canonical display name format)
 - `cronExpression`: from config (default `"0 7 * * 1-5"`, 7 AM weekdays). v3.12.0 shifted the `inbox` default to 7:15 AM so there's no slot collision out of the box.
 - `notifyOnCompletion: true`
-- `prompt`: bootloader composed from template (see Phase 1.B); orchestrator body lives at `references/orchestrator-morning-brief.md` and is read fresh by the bootloader at fire time. The orchestrator wraps the existing `morning-briefing` skill — keeps the scheduled-fire output and the on-demand `morning briefing` / `brief me` / `what do I need to know today` output convergent (one source of truth for the morning-briefing format).
+- `prompt`: bootloader composed from template (see Phase 1.B); orchestrator body lives at `references/orchestrator-morning-brief.md` and is read fresh by the bootloader at fire time. The orchestrator wraps the existing `morning-briefing` skill — keeps the scheduled-fire output and the on-demand `morning briefing` / `brief me` / `what do I need to know today` output convergent (one home for the morning-briefing format).
 
 ### Schedule 1 — Upcoming Meetings — RETIRED (SPEC BRIEFMERGE, 2026-08-08)
 
@@ -1020,7 +1020,7 @@ The predecessor, for auditors recognising an existing registration — a descrip
 - `description`: **`"Friday Wrap - Command Room"`** (v2.14.25+ canonical display name format)
 - `cronExpression`: from config (default `"0 13 * * 5"`, 1 PM Fridays — Phase 3/R4 moved the default off the routinely-slept-through 4 PM slot for NEW installs; existing registrations keep their live cron per the custom-cron preservation rule). First weekly-rhythm scheduled task; all prior tasks are daily.
 - `notifyOnCompletion: true`
-- `prompt`: bootloader composed from template; orchestrator body lives at `references/orchestrator-friday-wrap.md` and is read fresh by the bootloader at fire time. The orchestrator wraps the existing `weekly-recap` skill — keeps the scheduled-fire output and the on-demand `weekly recap` / `recap last week` output convergent (one source of truth for the recap format and `.docx` save path).
+- `prompt`: bootloader composed from template; orchestrator body lives at `references/orchestrator-friday-wrap.md` and is read fresh by the bootloader at fire time. The orchestrator wraps the existing `weekly-recap` skill — keeps the scheduled-fire output and the on-demand `weekly recap` / `recap last week` output convergent (one home for the recap format and `.docx` save path).
 
 ### v2.14.25+ — Schedule 7 (Workspace Map refresh) DROPPED
 

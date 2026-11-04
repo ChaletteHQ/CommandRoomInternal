@@ -103,7 +103,7 @@ Every event carries a deterministic hash computed from:
 Before appending, the writing skill MUST:
 1. Compute the hash.
 2. Check the **source_ref dedup index** (SPEC A3): `python3 shared/scripts/source_ref_index.py check <workspace_root> --dedup-hash <hash> [--source-ref <ref>]` (or import `source_ref_index.check(workspace_root, source_ref=..., dedup_hash=...)`). This is an O(1) membership set over `_hq/data/.source_refs.idx` — it catches duplicates of ANY age, not just the last 200 events (an active workspace emits 200 events in well under a week, so the old window silently re-captured month-old sources). The index self-heals: a missing `.idx` rebuilds from events.jsonl on first check.
-3. If the check returns a hit, skip the append and emit a `dedup-hit` log line.
+3. If the check returns a hit, skip the append. Nothing is logged: a dedup hit is a silent success (`RELIABILITY.md`, Write Reliability rule 2).
 
 > **Fallback (one release only):** if the index helper is unavailable, fall back to scanning the last 200 events for the matching hash. This fallback will be removed once A3 has shipped a release.
 

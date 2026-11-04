@@ -61,7 +61,7 @@ historical revenue when True. `watch_list` keeps a persistent across-scan watch-
 | **Detect** (default) | "who went dark", "dormant customer scan" | run the scan with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "dormant-customer-scan", DEFAULTS)` BEFORE rendering, then append the first-run footer. |
 | **Show settings** | "show dormant-customer-scan settings" | render current config in plain English; no scan. |
 | **Tune** | "tune dormant-customer-scan" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-run scan. |
-| **Reset** | "reset dormant-customer-scan to defaults" | `wipe_skill_config(workspace_root, "dormant-customer-scan")` → next fire is a first-fire again. |
+| **Reset** | "reset dormant-customer-scan to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "dormant-customer-scan", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "dormant-customer-scan")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (footer of the chat surface — the widget carries the top-3 ask block per EXEC1 below; this settings footer is plain chat text under it):**
 
@@ -112,7 +112,7 @@ Before surfacing ANY dormancy flag — whether to the .docx report or the chat s
 
 > **MAILTRUST1 (2026-07-29): the live check is still a single read, and dormancy is a NEGATIVE claim.** A full-content per-thread fetch came back one message short on 2026-07-29 — any one read proves presence, never absence. Before a dormancy flag stands, corroborate the mail side with a second, differently-shaped query (a broad all-mail recency sweep — never another sender-scoped search; the sender-scoped shape went stale in the same incident), via `shared/scripts/mail_absence.py::corroborate_absence` where thread-scoped. If the two reads disagree, the customer is not flagged — report that the reads disagreed instead.
 
-**REL1 — emit the normalized dormancy signal (AFTER the live-check gate).** For every candidate that passes the live check and stays dormant, also call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<org/person id>, entity_type='org' or 'person', gap_days=<current gap>, baseline_days=<12-month median gap>, source_skill='dormant-customer-scan')`. The ranked .docx report is unchanged — this is an ADDITIVE shared signal so relationship-moves reads one normalized dormancy story per relationship. **BAL1 D1.1(3) — personal-tie skip at this emit gate:** never emit for (or report on) a PERSON whose record carries `tie: "personal"` — personal ties are the Balance surface's lane, never a customer signal. Absent `tie` = work (back-compat); only the explicit `personal` value skips. **ORGSCHEMA1 — account-owner skip at the same gate:** never emit for (or report on) an org whose `account_owner` is set to a DIFFERENT operator than this workspace's primary user (`org_writer.outreach_eligible(org, user_id)` is the canonical check) — those are someone else's accounts to chase, and ranking them produces confidently wrong outreach in any multi-operator workspace. People attached to such an org skip too. Absent `account_owner` = unclaimed, ranks normally.
+**REL1 — emit the normalized dormancy signal (AFTER the live-check gate).** For every candidate that passes the live check and stays dormant, also call `shared/scripts/dormancy.py::emit_dormancy_signal(workspace_root, entity_id=<org/person id>, entity_type='org' or 'person', gap_days=<current gap>, baseline_days=<12-month median gap>, source_skill='dormant-customer-scan')`. The ranked .docx report is unchanged — this is an ADDITIVE shared signal so relationship-moves reads one normalized dormancy story per relationship. **BAL1 D1.1(3) — personal-tie skip at this emit gate:** never emit for (or report on) a PERSON whose record carries `tie: "personal"` — personal ties are the Balance surface's lane, never a customer signal. Absent `tie` = work (back-compat); only the explicit `personal` value skips. **ORGSCHEMA1 — account-owner skip at the same gate (DORMSCOPE1, cr1#170):** before ranking, ask `dormancy:outreach_scope` once through the door (`python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "dormancy:outreach_scope"}'`, rendered by `plan run_helper`; in-shell on a seat whose files are local, `dormancy.outreach_scope(workspace_root)`). It resolves this workspace's primary user through `primary_user` and applies `org_writer.outreach_eligible` to every org, answering `eligible_org_ids`, `skipped_org_ids` and `skipped_person_ids`. Never emit for (or report on) an org or person in the skipped lists: those are someone else's accounts to chase, and ranking them produces confidently wrong outreach in any multi-operator workspace. Absent `account_owner` = unclaimed, ranks normally. When the answer's `user_resolved` is false nobody is skipped and its `line` is said once in the report, never silently. Never resolve the user yourself and never pass an empty id.
 
 This closes Bug #28 from Session-22 testing: Northstar Partners/Lyra was flagged as 44-days-dormant from substrate, while a Calendar event 31 days ago existed but had never been written to events.jsonl. Real CEO-trust miss ("you told me to chase someone I literally met with"). The helper unified dormant-customer-scan with the Pulse chat's own dormancy scan (Bug #5) — same call site, same merge math. LIFECYCLE1 retired that chat, so this skill is now the primary person-dormancy detector; the shared helper and its MUST-language are unchanged and every future detector still routes through them.
 
@@ -178,31 +178,18 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
    [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
    # <<< CR ACCESS PREAMBLE v6 <<<
-   python3 -c "
-   import sys
-   sys.path.insert(0, 'shared/scripts')
-   from live_contact_check import discover_live_check_tools, live_contact_check
    # Once per fire — resolve the mail + Calendar tool IDs. Pass workspace_root:
    # it is how the DECLARED mail backend reaches the seam (MAILSEAM2). Without
    # it, a workspace with two mail connectors live-checks the wrong inbox and
    # every candidate reads as dormant.
-   lookup = discover_live_check_tools(available_tools, workspace_root='\$WORKSPACE')
+   cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"tools": [<every tool name this run lists, deferred ones included>], "workspace_root": "<WS>"}, "name": "live_contact_check:discover_live_check_tools"}'
    # Per candidate — after invoking those MCP tools to fetch latest Gmail + Calendar touchpoints
-   result = live_contact_check(
-       workspace_root='\$WORKSPACE',
-       person_id=primary_contact_person_id,   # or representative person on the customer org
-       external_signals={
-           'gmail_last_iso':    gmail_iso_or_none,
-           'gmail_detail':      {'subject': '...', 'thread_url': '...'},
-           'calendar_last_iso': calendar_iso_or_none,
-           'calendar_detail':   {'title': '...', 'event_url': '...'},
-       },
-       window_days=baseline_days * 2,
-   )
+   cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"external_signals": {"calendar_detail": {"event_url": "<event link>", "title": "<event title>"}, "calendar_last_iso": <ISO date in quotes, or null>, "gmail_detail": {"subject": "<subject>", "thread_url": "<thread link>"}, "gmail_last_iso": <ISO date in quotes, or null>}, "person_id": "<primary contact person id>", "window_days": <baseline_days x 2>, "workspace_root": "<WS>"}, "name": "live_contact_check:live_contact_check"}'
    # If result['last_contact_iso'] is more recent than your substrate-only date,
    # DROP THE FLAG. The customer is not dormant.
-   "
    ```
+
+   Paste what each prints and run that: the read door runs `live_contact_check:discover_live_check_tools` and `live_contact_check:live_contact_check` beside the data (DORMDOOR1, cr1#316). The first `result` is the lookup (`mail_search_tool_id`, `calendar_tool_id` and their failed reasons); each later `result` is one candidate's merged answer (`last_contact_iso`, `source`, `sources_failed`). On a seat whose files are local the same two functions run in this shell, `discover_live_check_tools(tools, workspace_root=workspace_root)` and `live_contact_check(workspace_root, person_id, external_signals=..., window_days=...)`, and answer the same. `ok` false is a stop, never a hand retry.
 
    - For org-level candidates with multiple known contacts, run the helper for each primary contact and take the freshest result. Substrate is the org's last_interaction; live signals are per-person on the org. Most-recent across the org wins.
    - Record per-candidate which sources_failed; surface in the report so the user sees partial-signal vs full-signal flags.
@@ -223,13 +210,13 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    - Save to `_hq/dormant/DORMANT_SCAN_[YYYY-MM-DD].docx` (per CONTRACT Rule 27 — no .md deliverables). Route through `shared/scripts/brief_writer.py` for layout consistency — that route is mandatory, not a preference (DOCFENCE1):
      - **NEVER hand-roll the report** with the generic `anthropic-skills:docx` skill, `python-docx` directly, or docx-js. Those paths bypass every gate and ship a substandard or PII-leaking scan (the v3.20.0 failure mode) — and this report is a list of named customers with revenue attached, which is exactly what the leak scan exists to catch.
      - **NEVER create, render, copy, upload, or update the report — or any part, derivative, or restatement of it ("the top ten", "a summary") — through Claude Docs (the built-in docs / artifact page), Google Docs, Google Drive, or ANY other document/file connector** (Slides, Sheets, Notion, OneDrive, Dropbox: the ban is on the connector delivery path, not one vendor's API quirk). It fails twice at once: the connector path bypasses every gate, AND a connector-created file lands at that connector's default location with no folder control — for a Google Doc, and for a parentless Drive upload of the canonical `.docx` itself, that is My Drive root, not `_hq/dormant/` (the 2026-07-24 root-drop incident). Not exceptions: "for mobile", "for sharing", "so sales can work the list", "as a copy alongside the canonical file" — **nor a direct instruction**: "put the dormant list in a Google Sheet" is a request this gate refuses, not an override. Hand back the canonical file's link.
-   - Return file link + 1-line headline ("12 customers have gone quiet. Top 3 by revenue: Acme Co ($240K, last touch 89 days ago), Northstar Partners ($180K, 67 days), Acme Logistics ($120K, 52 days).")
+   - Return file link + 1-line headline ("12 customers have gone quiet. Top 3 by revenue: Acme Co ([amount], last touch 89 days ago), Northstar Partners ([amount], 67 days), Acme Logistics ([amount], 52 days).")
 8. **Write the scan receipt (v4.5.2 R1 — REQUIRED, every run).** The dogfood found this scan surfacing 4 dormant accounts and leaving zero substrate trace (FINDINGS F-57) — the next scan couldn't dedup its own nags and value receipts couldn't count the work. One line via the canonical helper: `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "dormant-scan", fired_via="manual", surfaced=n_flagged, extra_data={"flagged_entity_ids": [...], "live_check_dropped": n_dropped})` — `"scheduled"` for fired_via when configured as a recurring scan. The `flagged_entity_ids` list is what the next scan reads to avoid re-nagging.
 
 ## Executive Output Standard (EXEC1, v3.20.0+)
 
 Inherits `shared/EXECUTIVE_OUTPUT_STANDARD.md`. Pass `make_brief(brief_kind="dormant_scan", ...)` an `exec_header`:
-- **verdict** = the headline total at stake: *"$540K of historical revenue has gone quiet across 12 customers."* (only the dollar part that quantify can derive — never an estimate; if no revenue is annotated, verdict states the count + cadence, no fabricated dollar).
+- **verdict** = the headline total at stake: *"An amount of historical revenue has gone quiet across 12 customers."* (only the dollar part that quantify can derive, never an estimate; if no revenue is annotated, verdict states the count + cadence, no fabricated dollar).
 - **changed / decide / needs** = what shifted since the last scan · the one customer worth calling today · the one-tap re-engagement to approve.
 - **Subsumes** the old prose `## Summary` line ("Looked across [N]…") — that line is REPLACED by the exec header, not added on top (net length must not increase).
 
@@ -266,7 +253,7 @@ NEEDED    [approve the top re-engagement draft below, or "Nothing from you."]
 
 ## Top 20 to reach out to
 
-### 1. Acme Co — $240K historical — last touch 89 days ago (their usual: every 21 days)
+### 1. Acme Co: [amount] historical, last touch 89 days ago (their usual: every 21 days)
 Last touch: Feb 1 — "Pricing discussion — awaiting your response"
 Last deliverable: Q4 renewal proposal (sent Jan 15, no reply)
 Suggested angle: You owe them a pricing answer. News: they just announced a funding round Mar 12.
@@ -285,7 +272,7 @@ Contact: Aria Sample, aria@example.com, CEO
 ## How M / The CEO Uses It
 
 - **Daily operation:** Run weekly (scheduled). Open the file Monday morning. Work the top 3-5 before lunch.
-- **Demo beat:** Live in front of the CEO group — "who went dark" → list appears → "this one's worth $240K and they're 89 days late on a pricing reply" → room reacts. Universal pain, immediate value.
+- **Demo beat:** Live in front of the CEO group: "who went dark" → list appears → "this one's worth an amount and they're 89 days late on a pricing reply" → room reacts. Universal pain, immediate value.
 - **Retainer ritual:** Monthly call touchpoint — "let's walk your dormant list." Turns a retainer into a revenue conversation.
 
 ## Triggers
@@ -335,7 +322,7 @@ After first successful run, offer: "Want me to run this every Monday morning and
 
 ## Reliability
 
-When configured as a recurring scan, this skill implements `shared/RELIABILITY.md`. Key rules: skip-not-fail when no CRM connector AND no `_hq/CUSTOMERS.md` exist (log to `_hq/logs/scheduled-task-skips.log`, exit clean — never invent a customer list), OOO defers the scan, 60s aggregate scan budget across Gmail / CRM / Granola / Slack with graceful degradation, last-known-good cache at `_hq/caches/dormant-customer-scan-last-good.json` when a connector fails, dedup via `source_ref` hash makes re-running idempotent. If the .docx render fails, deliver the ranked summary INLINE in the chat turn (top 5, same content) and say the report file couldn't be written — never fall back to a `.md` file (CONTRACT Rule 27) and never write outside `_hq/dormant/`.
+When configured as a recurring scan, this skill implements `shared/RELIABILITY.md`. Key rules: skip-not-fail when no CRM connector AND no `_hq/CUSTOMERS.md` exist (there is no skip log, so the scan receipt this skill already writes is the only record; exit clean — never invent a customer list), OOO defers the scan, 60s aggregate scan budget across Gmail / CRM / Granola / Slack with graceful degradation, last-known-good cache at `_hq/caches/dormant-customer-scan-last-good.json` when a connector fails, dedup via `source_ref` hash makes re-running idempotent. If the .docx render fails, deliver the ranked summary INLINE in the chat turn (top 5, same content) and say the report file couldn't be written — never fall back to a `.md` file (CONTRACT Rule 27) and never write outside `_hq/dormant/`.
 
 ## What It Doesn't Do
 
@@ -559,20 +546,13 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-python3 -c "
-import sys, json
-sys.path.insert(0, 'shared/scripts')
-from widget_transport import render_and_persist
-data_view = json.loads('''<DATA_VIEW_JSON>''')
-transport = render_and_persist(data_view=data_view, wrapper='fragment',
-                               persist_dir='<WORKSPACE>/_hq/.system/widgets',
-                               name_hint='thread-resurrection')
-print(transport['html'])
-"
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"name_hint": "thread-resurrection", "persist_dir": "<WS>/_hq/.system/widgets", "wrapper": "fragment"}, "args_file": "<your scratch>/dormant_threads_card.json", "name": "widget_transport:render_and_persist"}'
 # Pass the rendered HTML (transport["html"]) to mcp__visualize__show_widget as widget_code (EW2+T, F-15 —
 # shared/CHAT_ACTION_WIDGET.md § Transport). Never hand-compose or post-process the HTML.
 # Load the widget tool first (shared/CHAT_ACTION_WIDGET.md § Finding the widget tool first): a listed deferred tool counts as present; ToolSearch select:mcp__visualize__show_widget,mcp__visualize__read_me, call read_me, then relay.
 ```
+
+The data view travels as `{"data_view": <the data view above>}`, written as JSON into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace) and named by `args_file`, because a card does not survive a pasted command line. Paste what the form prints and run that: the write door runs `widget_transport:render_and_persist` beside the data, because it lands the card's audit page (DORMDOOR1, cr1#316; `shared/CHAT_ACTION_WIDGET.md` § Transport). Relay the envelope's `result.html` exactly as `transport["html"]` is relayed. On a seat whose files are local the same call runs in this shell, `render_and_persist(data_view=data_view, wrapper='fragment', persist_dir='<WORKSPACE>/_hq/.system/widgets', name_hint='thread-resurrection')`, and its `transport['html']` is the same page. `ok` false is a stop, never a hand retry.
 
 **Action semantics** (per `apply-choices`):
 - `draft` — kicks off the revival-email composition. Chains to `email-writer` with the thread context + revival hook pre-filled. The email-writer widget posts as the post-Apply surface so the user can edit/send/draft inline. Writes `thread_resurrected` event with `revival_draft_event_seq` pointing at the new `email_drafted` event. **For commitment-bearing threads** (where `open_commitment` was set in the data view), apply-choices routes through `cr-commitments`'s chase-email flow instead — same `draft` verb, conditional downstream. The decision rule is in the apply-choices handler, not the user-facing widget: the user just clicks `draft`, the system picks the right flow.

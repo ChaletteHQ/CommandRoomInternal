@@ -1,0 +1,13 @@
+{
+  "version": "4.3.0",
+  "headline": "Setup asks one question fewer.",
+  "items": [
+    {
+      "id": "v430_announce_setup_shorter",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "The setup card no longer asks which email senders to leave out. You can still exclude one at any time by saying `add [domain] to my exclusion list`.",
+      "action": "announce_only"
+    }
+  ]
+}

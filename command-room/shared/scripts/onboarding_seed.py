@@ -210,7 +210,11 @@ def _emit_ingested(workspace_root: Path, seed: dict[str, Any], summary: dict[str
         "data": payload,
     }
     try:
-        atomic_append_jsonl(workspace_root.joinpath(*EVENTS_SUBPATH), event)
+        # LEDGERPLACE1 (cr1#124): the onboarding seed is the workspace
+        # bootstrap, so it makes the ledger folder on purpose; every other
+        # append to a ledger whose folder is missing is refused.
+        atomic_append_jsonl(workspace_root.joinpath(*EVENTS_SUBPATH), event,
+                            create_ledger=True)
     except Exception:
         pass
 

@@ -1,0 +1,13 @@
+{
+  "version": "4.4.0",
+  "headline": "Your writing voice is measured, not guessed, and shown back to you at the end of setup.",
+  "items": [
+    {
+      "id": "v440_announce_voice_proof",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Setup now measures how you actually write: sentence length, greetings and sign-offs, the phrases you reach for, how you say no. At the end it shows you two drafts of the same email, one generic and one in your voice, so you can see the difference.",
+      "action": "announce_only"
+    }
+  ]
+}

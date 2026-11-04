@@ -1,6 +1,6 @@
 <!-- exemplar-skeleton (SPEC OUT8): structure only. Nothing in this file is
      content — no name, number, or claim below may appear in a deliverable. -->
-<!-- tokens: Acme Co | Northstar Partners | Sam Sample | Quinn Stone | $480K | $12.5K -->
+<!-- tokens: Acme Co | Northstar Partners | Sam Sample | Quinn Stone -->
 
 # Board Pack — structural exemplar (kind: board_pack)
 
@@ -22,14 +22,14 @@
 
 ---
 
-**One decision this period: fund the second pod, sized at $480K.** [verdict]
+**One decision this period: fund the second pod, sized at an amount.** [verdict]
 
 ## 1. Executive Summary
-[synthesis lead when a real anchor exists; then "What changed" — max 6 bullets; then the page-1 Asks with dollar sizes, e.g. "Approve the $480K pod budget"]
+[synthesis lead when a real anchor exists; then "What changed", max 6 bullets; then the page-1 Asks with dollar sizes, e.g. "Approve the pod budget of an amount"]
 
 ## 2. KPIs vs Targets
 [TILE BAND first: 4–5 stat tiles, each metric + target-delta arrow]
-[then the full table: Metric | Current | Target | Vs target | Trend — no blank cells; "$12.5K MRR" style entries always trace to a source]
+[then the full table: Metric | Current | Target | Vs target | Trend, no blank cells; "[amount] MRR" style entries always trace to a source]
 
 ## 3. Wins
 [exactly 3, one short paragraph each, named entities — "Acme Co signed the pilot"]

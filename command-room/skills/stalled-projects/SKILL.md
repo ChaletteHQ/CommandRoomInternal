@@ -81,7 +81,7 @@ Before running any logic, parse which mode the user invoked:
 | **Detect** (default) | "show me stalled projects", "what's stalled", "project hygiene check" | **No questions, ever.** Load config (or use defaults if none saved). Run detection. Render widget. On FIRST fire only: auto-save defaults + append a one-time "tune this if you want" footer. |
 | **Show settings** | "show my stall settings", "what are my stall settings", "show stalled-projects config" | Load config → display current answers in a read-only widget. Do NOT run detection. Do NOT ask any questions. |
 | **Tune** | "tune stalled-projects", "change my stall settings", "change stall thresholds", "reconfigure stalled-projects", "redo stalled-projects setup" | Load current config → walk the 3 questions with current answers pre-filled as defaults → save → re-run detection + render with new settings. |
-| **Reset to defaults** | "reset stalled-projects to defaults", "reset stall settings" | Run the three-branch reset block under "Reset to defaults" below (`wipe_skill_config_result`) and say the branch's sentence. Do NOT run detection. |
+| **Reset to defaults** | "reset stalled-projects to defaults", "reset stall settings" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "stalled-projects", "workspace_root": "<WS>"}` as its args, and say its `line` (in-shell on a seat whose files are local: run the three-branch reset block under "Reset to defaults" below and say the branch's sentence). Do NOT run detection. |
 
 ### Detect mode — the "show, then tune" flow
 
@@ -231,6 +231,8 @@ No questions, no detection. Just shows the current answers + offers a one-click 
 
 ### Reset to defaults
 
+On a merged seat the reset runs through the door: `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "stalled-projects", "workspace_root": "<WS>"}` as its args. It clears the same file the block below does, and its `line` carries the same three outcomes (cleared, nothing stored, or left in place and nothing changed). On a seat whose files are local, the block below:
+
 ```python
 wipe = wipe_skill_config_result(workspace_root, "stalled-projects")
 if wipe["cleared"]:
@@ -301,7 +303,7 @@ dormancy_rows = [i for i in load_open_proposals(WORKSPACE_ROOT, "on-demand")
 
 Render flags as a widget via `render_chat_output_widget()` per CONTRACT.md Rule 1, posted via `widget_transport.render_and_persist` → `show_widget` (`transport["html"]` as `widget_code`) (`shared/CHAT_ACTION_WIDGET.md` § Transport).
 
-**Executive Output Standard (EXEC1, v3.20.0+) — queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead — **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue — $292K · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field — ONLY the figures that derive from substrate, never an estimate) · the oldest age. When building the item dict for `money_time_tag`, set its `last_activity` key from the flag's DERIVED baseline (today − `days_since_activity`) — never from the thread record's deprecated `last_activity` field, or the tile contradicts the row it sits on. Each item then carries its own quantify tag (`"47d quiet · $180K"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence — the reader's next act is triage.
+**Executive Output Standard (EXEC1, v3.20.0+): queues get triage math, NOT meaning.** Per `shared/EXECUTIVE_OUTPUT_STANDARD.md`, this is a queue/ranked list, so the synthesis-lead rule FORBIDS a narrative lead: **the lead is a quantified count line**, not a theme: *"6 stalled · 2 touch revenue ([amount]) · oldest 47d."* Compute it from the flags: total count · how many trace to a valued org · the summed dollar (via `quantify.money_time_tag` / the org's revenue field, ONLY the figures that derive from substrate, never an estimate) · the oldest age. When building the item dict for `money_time_tag`, set its `last_activity` key from the flag's DERIVED baseline (today − `days_since_activity`), never from the thread record's deprecated `last_activity` field, or the tile contradicts the row it sits on. Each item then carries its own quantify tag (`"47d quiet · [amount]"`) when `money_time_tag` returns non-None; date-only otherwise. No manufactured "what this means about your portfolio" sentence: the reader's next act is triage.
 
 Per-item action set (all canonical — P1.1 respec 2026-07-02; dispatch in apply-choices' `stalled-projects` source entry):
 - `draft re-engagement` (displays "Draft re-engagement") — opens `email-writer` or `follow-up-ritual` for that project (lazy draft — nothing sends)

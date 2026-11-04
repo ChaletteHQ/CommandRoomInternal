@@ -122,6 +122,8 @@ from capture_gate import (  # noqa: E402
 # FIX3 F3-9 — the DD-1 ladder's derivation half, from the vocabulary module
 # that owns it. One spelling, the same one `capture_gate` uses.
 from event_types import derive_primary_thread_id  # noqa: E402
+import progress_narration as _narration  # noqa: E402  INCAP2 (cr1#192)
+import settled_ask as _settled  # noqa: E402  INCAP2 DD-2 (cr1#193)
 from connector_adapters.provenance import (  # noqa: E402
     LEGACY_MAIL_PROVIDER,
     is_same_artifact,
@@ -258,6 +260,48 @@ def _parse_iso_date(value) -> bool:
         return False
 
 
+#: DUEBEFORE1 (cr1#270): the words that make a due date RELATIVE to the
+#: message's own day. Conservative on purpose (a buried real promise costs
+#: more than one junk row): a phrase here plus a due date before the
+#: message's local day is a resolution against the wrong day, never a fact.
+_RELATIVE_DUE_RE = re.compile(
+    r"\b(?:today|tonight|tomorrow|this (?:morning|afternoon|evening|week|weekend)|"
+    r"next (?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"end of (?:day|week|the week|month|the month)|eod|eow|"
+    r"in (?:a|an|\d+|two|three|four|five|six|seven) (?:hours?|days?|weeks?))\b",
+    re.IGNORECASE)
+DUE_BEFORE_SOURCE_REVIEW_REASON = ("due date is earlier than the message that made the promise — "
+                                   "check the date before anyone is chased")
+
+
+def source_local_date(ts, workspace_root=None):
+    """DUEBEFORE1: the message's own calendar day in the WORKSPACE's time zone
+    (a message sent at 23:50 local is still that day, though UTC has rolled
+    over). Falls back to the timestamp's own offset when the workspace zone
+    cannot be resolved, and to None when the stamp does not parse at all."""
+    raw = str(ts or "").strip()
+    if not raw:
+        return None
+    try:
+        from tz import to_local
+        local = to_local(raw, workspace_path=workspace_root)
+        if local is not None:
+            return local.date()
+    except Exception:  # noqa: BLE001 - no workspace zone, or an unparseable stamp
+        pass
+    try:
+        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    try:
+        # a Gmail Date header handed through un-normalised (RFC 2822): read
+        # with its own offset rather than skipping the check in silence
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(raw).date()
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def build_inbound_commitment_event(
     title: str,
     *,
@@ -281,6 +325,7 @@ def build_inbound_commitment_event(
     provider: Optional[str] = None,
     thread_id: Optional[str] = None,
     is_draft: bool = False,
+    workspace_root=None,
 ) -> dict:
     """One qualifying inbound message → one canonical `commitment` event dict,
     with the full capture block enforced in code (Stage-D kind, S2 due-nudge,
@@ -446,6 +491,31 @@ def build_inbound_commitment_event(
         classification_confidence=classification_confidence,
         error_cls=InboundItemError,
     )
+
+    # DUEBEFORE1 (cr1#270): a due date earlier than the message's own LOCAL
+    # day cannot come from a relative phrase in that message ("tomorrow at
+    # 1pm" sent on the 10th is the 11th, never the 9th); the extractor
+    # resolved it against the scan date or a UTC day. With a relative phrase
+    # in the text the capture is refused with the fix; with none (a past
+    # dated phrase, "by last Friday") it is kept, flagged for review, never
+    # written as a quietly overdue open item.
+    source_day = source_local_date(ts, workspace_root)
+    if due_str and _parse_iso_date(due_str) and source_day is not None:
+        due_day = _dt.date.fromisoformat(due_str[:10])
+        if due_day < source_day:
+            if _RELATIVE_DUE_RE.search(f"{title} {evidence or ''}"):
+                raise InboundItemError(
+                    f"inbound-mail commitment {source_ref}: data.due={due_str!r} is "
+                    f"before the message's own day ({source_day.isoformat()}) but the "
+                    f"text speaks of a relative date — resolve 'tomorrow' / 'tonight' / "
+                    f"'next week' against the message's date in the workspace's time "
+                    f"zone, not the scan date or a UTC day, then capture again")
+            data["due_before_source"] = True
+            data["pending_review"] = True
+            # the reason is APPENDED, never swallowed by one the gate stamped
+            prior = str(data.get("review_reason") or "").strip()
+            data["review_reason"] = (f"{prior}; {DUE_BEFORE_SOURCE_REVIEW_REASON}" if prior
+                                     else DUE_BEFORE_SOURCE_REVIEW_REASON)
 
     data["status"] = "open"
     if due_str and _parse_iso_date(due_str):
@@ -642,6 +712,15 @@ def capture_inbound_items(
     DEFERRED and counted. Deferred is not dropped: nothing is marked captured,
     so the next fire takes the next slice.
 
+    INCAP2 (cr1#192): after (5), a waiting-on item that reads as a progress
+    update on work already tracked with the same person is written at the
+    review tier with a stated reason (`progress_narration`), never opened.
+
+    INCAP2 DD-2 (cr1#193): after (5), a reply-owed item (someone's ask) that
+    a LATER meeting with the same person on the same topic already covered
+    gets a stated reason naming that meeting (`settled_ask`). Its tier is the
+    gate's, unchanged; it is still written, never dropped.
+
     `opens` — pass a pre-loaded `load_open_commitments` projection to pin the
     dedup baseline; None loads fresh.
 
@@ -679,6 +758,7 @@ def capture_inbound_items(
     below_bar, capped = [], []
     batch: list = []
     accepted_open_events: list = []  # in-batch restatement guard
+    meetings: Optional[list] = None  # INCAP2 DD-2: read once, only if needed
     n_candidates = 0
     n_waiting_on = n_reply_owed = 0
 
@@ -724,6 +804,7 @@ def capture_inbound_items(
                 provider=provider,
                 thread_id=item.get("thread_id"),
                 is_draft=bool(item.get("is_draft")),
+                workspace_root=workspace_root,  # DUEBEFORE1 (cr1#270): the message's day in the WORKSPACE's zone
             )
         except InboundItemError as e:
             errors.append({"title": title, "message_id": mid, "error": str(e)})
@@ -774,8 +855,30 @@ def capture_inbound_items(
         )
         if direction == DIRECTION_WAITING_ON:
             n_waiting_on += 1
+            if tier.get("tier") != "observed":
+                # INCAP2 (cr1#192): a progress update on work already tracked
+                # with this person is held for review with a stated reason,
+                # never opened as a new promise. It is still written below.
+                _narration.hold_if_narration(
+                    ev, list(opens) + accepted_open_events,
+                    user_person_id=user_person_id, user_names=user_names,
+                    workspace_root=workspace_root)
         else:
             n_reply_owed += 1
+            # INCAP2 DD-2 (cr1#193): an ask a later meeting already covered
+            # carries a reason naming that meeting, at the tier the gate
+            # gave it (an observed row keeps it as `held_review_reason`).
+            # It is still written below; the meeting records are read once.
+            # A malformed meeting record never fails the fire: no reason.
+            try:
+                if meetings is None:
+                    meetings = _settled.load_meetings(workspace_root)
+                _settled.note_if_settled(
+                    ev, meetings, asked_at=item.get("ts") or "",
+                    user_person_id=user_person_id, user_names=user_names,
+                    workspace_root=workspace_root)
+            except Exception:  # noqa: BLE001 - fail quiet: today's capture
+                meetings = meetings if meetings is not None else []
         if tier.get("tier") == "observed":
             obs = observed_from_commitment_event(ev, reason=tier.get("reason") or "")
             batch.append(obs)

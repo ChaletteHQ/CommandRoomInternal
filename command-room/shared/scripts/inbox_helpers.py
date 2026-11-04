@@ -33,12 +33,13 @@ is a gated writer with receipts of its own that `append_jsonl` cannot express.
 nothing; the reviews and the schedule-shift markers, whose builders are public,
 come back as rows the caller appends.
 
-ONE WRITER LIVES HERE, AND ONLY ON THE WRITE DOOR (INBOXDRIVE1, ruling
-R-RW3-1 (a)). `run_inbox_surface` is the chain after the fetch in one call; it
-is on `workspace_access.RUN_WRITER_ALLOWLIST` and on no read list, and it lands
-what it writes through the layer's own `write` and `append_jsonl` - the same
-two doors the rule above names, called beside the data instead of by the
-model. Every other function here keeps the rule.
+TWO WRITERS LIVE HERE, AND ONLY ON THE WRITE DOOR (INBOXDRIVE1, ruling
+R-RW3-1 (a); cr1#454). `run_inbox_surface` is the chain after the fetch in one
+call, and `stamp_last_triage` stamps the typed triage's `LAST_TRIAGE.txt` from
+the clock. Both are on `workspace_access.RUN_WRITER_ALLOWLIST` and on no read
+list, and both land what they write through the layer's own `write` (and
+`append_jsonl`) - the same two doors the rule above names, called beside the
+data instead of by the model. Every other function here keeps the rule.
 
 Every function takes `workspace_root` first and returns JSON-serialisable data.
 3.10-safe: this module ships in the runtime manifest and runs on the sandbox
@@ -628,12 +629,17 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
     locked write, exactly as the module's own writer did it.
     """
     import inbound_capture as ic
+    import progress_narration as narration
+    import settled_ask
 
     cap = getattr(ic, "DEFAULT_CAPTURE_CAP", 25)
     rows: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
+    directions: List[str] = []
     n_candidates = n_below = n_deduped = n_capped = 0
     user_names = _user_names(workspace_root, user_person_id)
+    tracked: Optional[List[Dict[str, Any]]] = None  # read once, only if needed
+    meetings: Optional[List[Dict[str, Any]]] = None  # INCAP2 DD-2, likewise
 
     for raw in items or []:
         n_candidates += 1
@@ -650,11 +656,12 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
                                    provider=provider):
                 n_deduped += 1
                 continue
-            rows.append(ic.build_inbound_commitment_event(
+            direction = str(raw.get("direction") or "")
+            row = ic.build_inbound_commitment_event(
                 title,
                 message_id=message_id,
                 kind=str(raw.get("kind") or "promise"),
-                direction=str(raw.get("direction") or ""),
+                direction=direction,
                 user_person_id=user_person_id,
                 sender_person_id=str(raw.get("sender_person_id") or ""),
                 sender_name=str(raw.get("sender_name") or ""),
@@ -669,15 +676,45 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
                 source_skill=source_skill,
                 provider=provider,
                 thread_id=raw.get("thread_id"),
-            ))
+                workspace_root=workspace_root,  # DUEBEFORE1 (cr1#270): the message's day in the WORKSPACE's zone
+            )
+            # INCAP2 (cr1#192): a progress update on work already tracked
+            # with this person is held for review with a stated reason, never
+            # composed as a new open promise. The row is still composed. The
+            # open set is read only when a row reads as narration at all.
+            if (direction == ic.DIRECTION_WAITING_ON
+                    and narration.row_narrates_progress(row.get("data") or {})):
+                if tracked is None:
+                    tracked = _open_commitments(workspace_root)
+                narration.hold_if_narration(
+                    row, tracked + rows, user_person_id=user_person_id,
+                    user_names=user_names, workspace_root=workspace_root)
+            # INCAP2 DD-2 (cr1#193): an ask a later meeting with the same
+            # person already covered carries a reason naming that meeting.
+            # The row is still composed, at the review tier it already has.
+            # A malformed meeting record never costs the row: no reason.
+            if direction == ic.DIRECTION_REPLY_OWED:
+                try:
+                    if meetings is None:
+                        meetings = settled_ask.load_meetings(workspace_root)
+                    settled_ask.note_if_settled(
+                        row, meetings, asked_at=str(raw.get("ts") or ""),
+                        user_person_id=user_person_id, user_names=user_names,
+                        workspace_root=workspace_root)
+                except Exception:  # noqa: BLE001 - fail quiet
+                    meetings = meetings if meetings is not None else []
+            rows.append(row)
+            # RECEIPTCOUNT1 (cr1#143): the direction is the ITEM's. The built
+            # row encodes it as owner and counterparty and never carries a
+            # `direction` key, so the old read of `data.direction` counted
+            # zero in both directions on every fire.
+            directions.append(direction)
         except Exception as exc:  # noqa: BLE001 — a bad item never takes the
             # fire down; it is counted and named, which is what separates a
             # quiet mailbox from a dead rail.
             errors.append({"message_id": raw.get("message_id"),
                            "reason": f"{type(exc).__name__}: {exc}"})
 
-    directions = [str((r.get("data") or {}).get("direction") or "")
-                  for r in rows]
     counters = {
         "n_candidates": n_candidates, "n_captured": len(rows),
         "n_deduped": n_deduped, "n_below_bar": n_below,
@@ -693,6 +730,19 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
     }
     return {"rows": rows, "counters": counters, "errors": errors,
             "summary": ic._summary(dict(counters), cap), "cap": cap}
+
+
+def _open_commitments(workspace_root: str) -> List[Dict[str, Any]]:
+    """The open set, for INCAP2's tracked-topic test. Any read failure gives
+    [] and so today's capture: a status line that slips through is
+    recoverable noise, a fire that fails on it is not."""
+    try:
+        from cru_match import load_open_commitments
+
+        return list(load_open_commitments(
+            str(Path(workspace_root) / "_hq" / "data" / "events.jsonl")))
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _user_names(workspace_root: str, user_person_id: str) -> List[str]:
@@ -1062,7 +1112,8 @@ def _draft_preview(item: Dict[str, Any]) -> List[str]:
     return out
 
 
-def render_inbox_text(workspace_root: str, data_view: Dict[str, Any]) -> Dict[str, Any]:
+def render_inbox_text(workspace_root: str, data_view: Dict[str, Any], *,
+                      fired_via: Optional[str] = None) -> Dict[str, Any]:
     """The inbox surface as the app's own template shapes it, for a run with
     no widget tool: `{text, groups, pending_rows}`.
 
@@ -1072,7 +1123,12 @@ def render_inbox_text(workspace_root: str, data_view: Dict[str, Any]) -> Dict[st
     subject and the one-line why; a drafted item carries its PREVIEW under the
     line (nothing touches the mailbox here). Every line goes through the gate;
     the gate audit rows the render emits come back for the caller's append,
-    exactly as the widget render's do."""
+    exactly as the widget render's do.
+
+    The list ends with ONE sentence on how to act (cr1#456): the draft line
+    when it carries a draft, else, on a fire (`fired_via`, then
+    `CR_FIRED_VIA`), the phrase that opens the hand-run chat
+    (`surface_text.act_line`)."""
     groups: Dict[str, List[Dict[str, Any]]] = {key: [] for key, _t in TEXT_GROUPS}
     for section in data_view.get("sections") or []:
         for item in section.get("items") or []:
@@ -1099,6 +1155,13 @@ def render_inbox_text(workspace_root: str, data_view: Dict[str, Any]) -> Dict[st
         if any_draft:
             lines.append("")
             lines.append(_validated(DRAFT_HINT_LINE))
+        elif any(groups.values()):
+            import surface_text as _st  # lazy: surface_text imports this module
+
+            act = _st.act_line(TASK_ID, fired_via=fired_via)
+            if act:
+                lines.append("")
+                lines.append(_validated(act))
         try:
             from chat_output_renderer import validate_chat_output as _gate
 
@@ -1966,6 +2029,34 @@ def _refusal(reason: str, lines: List[str]) -> Dict[str, Any]:
     return out
 
 
+#: RECEIPTCOUNT1 (cr1#143): the one capture counter the receipt does NOT copy
+#: under its own name. FIX3 F3-11 made the receipt count capture errors as
+#: `n_capture_errors`, so `n_errors` (kept one release for old readers) would
+#: collide with the receipt's own error count at Phase 7.
+RECEIPT_COUNTER_SKIP = frozenset({"n_errors"})
+
+
+def receipt_counters(counters) -> Dict[str, int]:
+    """Every counter the capture computed, as the fire's receipt carries it
+    (RECEIPTCOUNT1, cr1#143).
+
+    The receipt used to copy a hand-picked list of six counters, and the two
+    direction counts (`n_waiting_on`, `n_reply_owed`: how many captured items
+    are theirs to answer and how many are the owner's) were left off, so the
+    auditable record could not show the split. Now every `n_*` key the
+    capture answers rides the receipt, `n_errors` aside (see
+    `RECEIPT_COUNTER_SKIP`), and a counter added to the capture tomorrow
+    cannot be dropped in silence."""
+    out: Dict[str, int] = {}
+    for key, val in (counters or {}).items():
+        if isinstance(key, str) and key.startswith("n_") and key not in RECEIPT_COUNTER_SKIP:
+            try:
+                out[key] = int(val or 0)
+            except (TypeError, ValueError):
+                out[key] = 0
+    return out
+
+
 def run_inbox_surface(workspace_root: str, *,
                       items: Optional[List[Dict[str, Any]]] = None,
                       n_accounts: Optional[int] = None,
@@ -2079,7 +2170,10 @@ def run_inbox_surface(workspace_root: str, *,
                             fetch_blocked=fetch_blocked)
     capture = {"rows": [], "counters": {"n_candidates": 0, "n_captured": 0,
                                         "n_deduped": 0, "n_below_bar": 0,
-                                        "n_capped": 0, "n_capture_errors": 0}}
+                                        "n_capped": 0, "n_capture_errors": 0,
+                                        # RECEIPTCOUNT1 (cr1#143): the same
+                                        # key set whether or not a user resolved
+                                        "n_waiting_on": 0, "n_reply_owed": 0}}
     reconcile: Dict[str, Any] = {"rows": []}
     if user:
         capture = plan_inbound_capture(root, _capture_items(items),
@@ -2100,7 +2194,7 @@ def run_inbox_surface(workspace_root: str, *,
     # and a page carrying the row icons is longer in UTF-8 than in characters.
     # The driver measures what `write` must land, and checks exactly that.
     page["bytes_len"] = len(page["html"].encode("utf-8"))
-    text_out = render_inbox_text(root, view)
+    text_out = render_inbox_text(root, view, fired_via=fired_via)
     before = post_order(verdict, widget=False)["before_widget"] if verdict else []
     counts = dict(text_out.get("counts") or {})
 
@@ -2150,9 +2244,7 @@ def run_inbox_surface(workspace_root: str, *,
         "n_dropped_by_preference": len(selection.get("dropped") or []),
         "widget_bytes": int(page["bytes_len"]),
     }
-    for key in ("n_candidates", "n_captured", "n_below_bar", "n_capped",
-                "n_deduped", "n_capture_errors"):
-        extra[key] = int((capture.get("counters") or {}).get(key) or 0)
+    extra.update(receipt_counters(capture.get("counters")))
     extra.update(delivery.get("receipt_flags") or {})
     if rerun_of:
         extra[_rerun_field()] = rerun_of
@@ -2243,6 +2335,65 @@ def _rerun_field() -> str:
 
 
 # ---------------------------------------------------------------------------
+# The triage's window stamp (cr1#454, part (a))
+# ---------------------------------------------------------------------------
+
+#: The file whose time the next typed triage measures "since last triage"
+#: from. Spelled once so the writer and its suite agree.
+LAST_TRIAGE_REL = "_hq/inbox/LAST_TRIAGE.txt"
+
+
+def stamp_last_triage(workspace_root: str) -> Dict[str, Any]:
+    """A WRITER (on `RUN_WRITER_ALLOWLIST` only) - `LAST_TRIAGE.txt` stamped
+    from the clock beside the data, never from a time the chat chose.
+
+    The step used to say only "record timestamp", so on a seat whose clock
+    tool answered nothing the chat wrote a time it picked itself, and that
+    time decides where the next triage's window starts. This writer takes NO
+    time argument, on purpose: the door binds arguments by name, so a call
+    that carries a time under any name is refused before anything runs.
+
+    The instant is `trusted_now` - the same corroborated instant
+    `clock_policy.user_local_now` reads, so a sandbox clock that never synced
+    is floored by the ledger - spelled by `clock_policy.diagnostic_stamp`,
+    UTC-aware on every seat. A declared-untrusted host clock
+    (`CR_CLOCK_TRUST=untrusted`) changes only which ZONE the policy names,
+    never the instant, so the stamp is still this read; `clock` in the
+    answer says which clock the policy chose. The file lands through the
+    layer's own `write`, verified; that door refuses the file to every other
+    caller (`workspace_access.WRITER_OWNED_FILES`), so a hand `write` of a
+    chosen time is refused too.
+
+    It answers `{ok, rel, stamp, clock}`. On a refusal it answers
+    `{ok: false, refused, rel}` and the file is left exactly as it was:
+    `clock_unavailable` when the clock read itself failed, `not_landed` when
+    the write did not verify (its reason rides in `detail`).
+    """
+    import os as _os
+
+    import clock_policy as cp
+    import trusted_now as tn
+    import workspace_access as wa
+
+    root = str(Path(_os.path.abspath(str(workspace_root))))
+    try:
+        instant = tn.trusted_now(root)
+        stamp = cp.diagnostic_stamp(instant)
+        clock = cp.clock_fields(root)
+    except Exception:  # noqa: BLE001 - no clock read means no stamp at all
+        return {"ok": False, "refused": "clock_unavailable",
+                "rel": LAST_TRIAGE_REL}
+    landed = wa.write(LAST_TRIAGE_REL, stamp + "\n", None,
+                      ctx=wa.resolve(start=Path(root)),
+                      owned_by="inbox_helpers:stamp_last_triage")
+    if not (landed.get("ok") and landed.get("verified")):
+        return {"ok": False, "refused": "not_landed", "rel": LAST_TRIAGE_REL,
+                "detail": {k: landed.get(k) for k in ("reason", "line")
+                           if landed.get(k)}}
+    return {"ok": True, "rel": LAST_TRIAGE_REL, "stamp": stamp, "clock": clock}
+
+
+# ---------------------------------------------------------------------------
 # The phrase door, and the draft scan
 # ---------------------------------------------------------------------------
 
@@ -2306,7 +2457,8 @@ def triage_config(workspace_root: str, *,
     """`{config, configured}` — the saved first-run choices over the defaults.
 
     Read-only on purpose: the FRP1 read path never writes, and the first-fire
-    SAVE is a separate act the caller makes through `plan write`, so a fire that
+    SAVE is a separate act the caller makes through the write door's settings
+    writer (`skill_config_writer:save_skill_config`, cr1#521), so a fire that
     only reads the config cannot mint one.
     """
     from skill_config_writer import get_config, is_configured

@@ -1,0 +1,13 @@
+{
+  "version": "3.17.2",
+  "headline": "Saying new prospect records the prospect properly.",
+  "items": [
+    {
+      "id": "v3172_announce_new_prospect",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "Saying `new prospect` now creates the organisation and its deal record the same careful way every other record is created, and the deal's stage is written on that record.",
+      "action": "announce_only"
+    }
+  ]
+}

@@ -82,11 +82,12 @@ _WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ']+")
 
 
 def _load_entities(workspace_root) -> dict:
+    from entities_io import read_entities_json
     p = Path(workspace_root) / "_hq" / "data" / "entities.json"
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return read_entities_json(p)
     except Exception:
         return {}
 

@@ -152,9 +152,19 @@ _THREAD_REF_FIELDS = ("primary_thread_id", "thread_id", "project_id",
 
 # The "deliberately unaffiliated / personal" org sentinel — thread_writer's
 # UNAFFILIATED_ORG_ID and the same value org_activity.thread_org_map and
-# org_activity.event_org_ids already exclude. A thread or a row bound to it
-# is NOT a business binding.
-_UNAFFILIATED_ORG_ID = "personal"
+# org_activity.event_org_ids exclude. A thread or a row bound to it is NOT a
+# business binding. PERSONALCASE1 (cr1#122): this module owns the ONE rule
+# that decides the sentinel (casefolded and stripped, the D-3 fence rule), and
+# org_activity imports it, so the two readers can never drift apart again.
+PERSONAL_SENTINEL = "personal"
+_UNAFFILIATED_ORG_ID = PERSONAL_SENTINEL
+
+
+def is_personal_sentinel(value) -> bool:
+    """True when `value` spells the personal org sentinel in any case."""
+    return isinstance(value, str) and value.strip().casefold() == PERSONAL_SENTINEL
+
+
 # The personal thread kind (references/ORG_AND_THREAD_MODEL.md § kind enum).
 _PERSONAL_THREAD_KIND = "personal"
 
@@ -227,8 +237,7 @@ def business_thread_ids(workspace_root) -> frozenset:
                     and kind.strip().casefold() == _PERSONAL_THREAD_KIND):
                 continue
             oid = t.get("affiliation_id") or t.get("org_id")
-            if (isinstance(oid, str)
-                    and oid.strip().casefold() == _UNAFFILIATED_ORG_ID):
+            if is_personal_sentinel(oid):
                 continue
             out.add(tid)
         return frozenset(out)
@@ -244,7 +253,7 @@ def _row_org_ids(row: dict) -> set:
     Same field set as `org_activity.event_org_ids`' direct half
     (`org_ids[]`, `org_id`)."""
     def _is_sentinel(x) -> bool:
-        return x.strip().casefold() == _UNAFFILIATED_ORG_ID
+        return is_personal_sentinel(x)
     out: set = set()
     d = _data(row)
     for holder in (row, d):

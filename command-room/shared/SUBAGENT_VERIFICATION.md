@@ -1,6 +1,6 @@
 # Subagent Numeric-Verification Contract — v1 (Phase 5 / R6)
 
-**Purpose:** a subagent's output is a *delegation, not a source of truth*. Any number a subagent reports MUST be re-derived through a canonical code helper before it reaches a rendered surface. Qualitative reasoning from a subagent is welcome; the *number* is always the code's.
+**Purpose:** a subagent's output is a *delegation, not an authority*. Any number a subagent reports MUST be re-derived through a canonical code helper before it reaches a rendered surface. Qualitative reasoning from a subagent is welcome; the *number* is always the code's.
 
 **Read with:** `RELIABILITY.md`, `WORKSPACE_API.md`.
 

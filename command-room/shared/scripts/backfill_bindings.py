@@ -376,6 +376,68 @@ def _tier(bound_elsewhere: bool, n_corr: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: The proposal kind BIND1's write-time binder mints when it can see the
+#: candidate threads and cannot choose between them. This module READS them;
+#: it never writes one.
+BINDING_QUESTION_KIND = "thread_binding"
+
+
+def open_binding_questions(workspace_root, *, now_iso=None) -> list:
+    """The open write-time binding QUESTIONS, for this same door. READ-ONLY.
+
+    WHY THIS IS HERE (REVIEW_BIND1 F4a). BIND1 routes three capture writers
+    through `capture_gate.bind_capture_thread`; when a row's evidence names
+    a company whose work is split across several threads, the binder leaves
+    the row unbound and mints ONE `thread_binding` proposal. Every artifact
+    of that lane told the reader the question lands in "review project
+    bindings" — the door this module feeds — and it did not: this module
+    derives its own rows off the gauge's walk and never read the brain
+    queue, so the question went to the daily confirm card instead and the
+    door said "nothing to file". M's ruling closed the card end of that
+    (`thread_resolve.propose_binding_row` now carries the on-demand
+    demotion); this function is the other end — the door reads them.
+
+    They are a DIFFERENT population from this module's own rows and are
+    returned separately rather than folded into `rows`: a `rows` entry is a
+    past record the gauge matched by name and is adjudicated by seq against
+    a snapshot, while a question is a freshly written row whose candidate
+    threads are already known. The shapes must not be confused at the
+    apply rail, so they never share a wire id.
+
+    Returns `[{proposal_id, title, render_line, evidence, org_id, detector,
+    opened_at}]`, newest last. The candidate thread NAMES ride
+    `render_line`, which the writer composed and the projector carries
+    verbatim; the machine-readable `candidates` list stays on the event and
+    is not in `brain_proposals`' projected row (adding it there is a SEAM —
+    that module is not this lane's, and a read-only row does not need it).
+    Any failure to read the queue degrades to an empty list — the door must
+    still render its own rows."""
+    try:
+        from brain_proposals import (ON_DEMAND_SURFACE_HINT,
+                                     load_open_proposals)
+    except Exception:  # pragma: no cover - the page must still render
+        return []
+    try:
+        rows = load_open_proposals(workspace_root, ON_DEMAND_SURFACE_HINT,
+                                   now_iso=now_iso)
+    except Exception:  # pragma: no cover
+        return []
+    out = []
+    for r in rows or ():
+        if not isinstance(r, dict) or r.get("kind") != BINDING_QUESTION_KIND:
+            continue
+        out.append({
+            "proposal_id": str(r.get("id") or ""),
+            "title": str(r.get("title") or ""),
+            "render_line": str(r.get("render_line") or ""),
+            "evidence": str(r.get("evidence") or ""),
+            "org_id": str(r.get("org_id") or ""),
+            "detector": str(r.get("detector") or ""),
+            "opened_at": str(r.get("opened_at") or ""),
+        })
+    return out
+
+
 def _derive(workspace_root, *, extra_thread_ids=(),
             now_iso: Optional[str] = None):
     """(report, internal) — the full propose computation. Read-only.
@@ -525,6 +587,10 @@ def _derive(workspace_root, *, extra_thread_ids=(),
         "n_rows": len(rows),
         "refused": refused,
         "per_thread": per_thread,
+        # REVIEW_BIND1 F4a — the write-time binding questions this same door
+        # is supposed to show. Read-only, a separate population from `rows`,
+        # and never adjudicated through `apply` (see `open_binding_questions`).
+        "binding_questions": open_binding_questions(root, now_iso=now_iso),
     }
     return report, internal
 
@@ -956,6 +1022,8 @@ def main(argv=None) -> int:
 
 __all__ = [
     "BATCH_PREFIX",
+    "BINDING_QUESTION_KIND",
+    "open_binding_questions",
     "BATCH_SALT_BYTES",
     "CHANGE_CLASS",
     "RECEIPT_EVENT_TYPE",

@@ -62,7 +62,11 @@ seat where the pause did not land: the retired chats would go on firing with
 the ledger saying they had been switched off, which is the B2.9 failure this
 item exists to end, reproduced by the item meant to end it.
 
-IDEMPOTENT on its own marker, and on the planner's `enabled` fence underneath.
+IDEMPOTENT PER TASK on its own markers (cr1#540: a marker covers the task ids
+it names, so a chat retired by a later release is still planned), and on the
+planner's `enabled` fence underneath. The per-task fence is DATE-GATED: a
+task's pause record counts only when it is newer than that task's own ask
+(`answered_task_ids`), never merely because a pause row exists (F-4).
 
 Signature per references/RELEASE_MANIFEST.md "Action contract":
     fn(events_jsonl_path, workspace_root, detector_context) -> dict
@@ -199,6 +203,34 @@ def already_ran(workspace_root) -> bool:
     return False
 
 
+def marked_task_ids(workspace_root) -> set:
+    """The task ids this item's DONE markers cover (cr1#540).
+
+    The one-shot is per retired task, not per item: a marker names the ids it
+    switched off (`task_ids`), and only those are finished. A
+    `nothing_registered` marker covers no task, so a chat retired later is
+    still planned on a seat that found nothing to do the first time.
+    """
+    out: set = set()
+    try:
+        from events_io import load_events_owner_scoped
+        events, _skipped = load_events_owner_scoped(workspace_root)
+    except Exception:  # noqa: BLE001
+        return out
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != RECEIPT_TYPE:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("item_id") != ITEM_ID:
+            continue
+        if d.get("outcome") != RECEIPT_OUTCOME_APPLIED:
+            continue
+        for tid in d.get("task_ids") or []:
+            if str(tid or "").strip():
+                out.add(str(tid).strip())
+    return out
+
+
 def asked_at(workspace_root):
     """The instant this item last ASKED the bridge to pause — the `ts` of its
     newest `pause_pending` note — or None if it has never asked on this seat.
@@ -228,6 +260,58 @@ def asked_at(workspace_root):
         if inst is not None and (newest_at is None or inst > newest_at):
             newest, newest_at = ts, inst
     return newest
+
+
+def asked_at_by_task(workspace_root) -> dict:
+    """Each task id this item has ever ASKED to pause, mapped to the stamp of
+    the newest `pause_pending` note that named it (cr1#540).
+
+    This is the per-task clock. `asked_at` is the newest ask of any task; a
+    chat asked for on an earlier update has its own, older, ask, and a pause
+    answers a task only when it is newer than THAT task's ask. Newest by
+    instant, as `asked_at` is (fix round 2, N-1); the raw stamp is returned.
+    """
+    try:
+        from events_io import load_events_owner_scoped
+        events, _skipped = load_events_owner_scoped(workspace_root)
+    except Exception:  # noqa: BLE001
+        return {}
+    newest: dict = {}
+    newest_at: dict = {}
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != RECEIPT_TYPE:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if d.get("item_id") != ITEM_ID:
+            continue
+        if d.get("outcome") != RECEIPT_OUTCOME_PENDING:
+            continue
+        ts = str(ev.get("ts") or ev.get("timestamp") or "")
+        inst = _instant(ts)
+        if inst is None:
+            continue
+        for tid in d.get("task_ids") or []:
+            tid = str(tid or "").strip()
+            if tid and (tid not in newest_at or inst > newest_at[tid]):
+                newest[tid], newest_at[tid] = ts, inst
+    return newest
+
+
+def answered_task_ids(workspace_root) -> set:
+    """The task ids whose pause ANSWERS this item's ask for that task: a
+    pause record newer than the newest ask that named it (cr1#540).
+
+    THE PER-TASK FENCE IS DATE-GATED. A pause record older than a task's ask
+    is not an answer to it (F-4): a chat switched off weeks ago and switched
+    back on since still carries that old row, and counting it would mark the
+    chat done while it fires. A task never asked for has no answer at all.
+    Each task is measured by `pauses_confirmed` against its own ask.
+    """
+    out: set = set()
+    for tid, asked in asked_at_by_task(workspace_root).items():
+        if tid in pauses_confirmed(workspace_root, [tid], after=asked):
+            out.add(tid)
+    return out
 
 
 def pauses_confirmed(workspace_root, task_ids, *, after=None) -> list:
@@ -318,21 +402,50 @@ def plan(workspace_root, *, registered_ids=None, task_records=None) -> dict:
     carries each chat's comes-back clause, and this module never paraphrases
     it (that clause is what makes acting without asking legitimate).
     """
-    if already_ran(workspace_root):
-        return {"status": "already_marked", "entries": [],
-                "pause_task_ids": [], "summary": ""}
+    # THE MARKER IS PER TASK (cr1#540). This used to return `already_marked`
+    # here on any marker at all, so a chat retired by a LATER release never
+    # reached a seat that had run this item once. Now a marker covers only
+    # the task ids it names, and a newly retired chat is planned like any
+    # other. A seat with nothing new to do still answers `already_marked`
+    # and writes nothing.
+    marked = already_ran(workspace_root)
     if registered_ids is None and task_records is None:
+        if marked:
+            return {"status": "already_marked", "entries": [],
+                    "pause_task_ids": [], "summary": ""}
         return {"status": "no_readback", "entries": [],
                 "pause_task_ids": [], "summary": ""}
-    entries = sp.plan_readiness_retirements(registered_ids=registered_ids,
-                                            task_records=task_records) or []
-    ids = [e["task"] for e in entries if e.get("task")]
+    covered = marked_task_ids(workspace_root)
+    # No `workspace_root` here, on purpose (cr1#540, rebuilt). Handing it to
+    # the planner drops every task with ANY pause record, including one older
+    # than this item's ask, which is the F-4 failure. This item's per-task
+    # fence is its own markers plus `answered_task_ids`, both date-gated.
+    entries = [e for e in (sp.plan_readiness_retirements(
+                   registered_ids=registered_ids,
+                   task_records=task_records) or [])
+               if e.get("task") and e["task"] not in covered]
+    ids = [e["task"] for e in entries]
     if not ids:
-        return {"status": "nothing_registered", "entries": [],
-                "pause_task_ids": [], "summary": ""}
+        # An outstanding ask whose pause has landed: the readback shows those
+        # chats off, so the planner no longer names them, but they are the
+        # ids this update marks done. Each counts only on a pause newer than
+        # its own ask.
+        landed = answered_task_ids(workspace_root) - covered
+        if landed:
+            return {"status": "pause_confirmed", "entries": [],
+                    "pause_task_ids": [], "confirmed": sorted(landed),
+                    "summary": ""}
+        return {"status": "already_marked" if marked else "nothing_registered",
+                "entries": [], "pause_task_ids": [], "summary": ""}
     asked = asked_at(workspace_root)
     confirmed = (set(pauses_confirmed(workspace_root, ids, after=asked))
                  if asked else set())
+    # PER TASK, on top of the shared gate above (cr1#540). `asked` is the
+    # newest ask of ANY task, so a row newer than another task's ask could
+    # confirm a task this item never asked about. Once any ask is on file,
+    # a task is confirmed only by a pause newer than its own ask.
+    if asked_at_by_task(workspace_root):
+        confirmed &= answered_task_ids(workspace_root)
     if confirmed >= set(ids):
         return {"status": "pause_confirmed", "entries": entries,
                 "pause_task_ids": [], "confirmed": sorted(confirmed),
