@@ -7,7 +7,7 @@
     {
       "name": "command-room",
       "source": "./command-room",
-      "version": "5.34.0",
+      "version": "5.36.0",
       "description": "Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace. Daily loop: morning briefing, inbox triage, meeting prep, follow-up ritual. Writing: emails, Slack, memos, one-pagers, board updates — voice-calibrated to you. Memory layer: decision log, insights, weekly audit. Per-workspace skills generate from your own context."
     }
   ]

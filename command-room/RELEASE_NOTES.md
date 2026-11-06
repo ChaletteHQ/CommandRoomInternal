@@ -2,6 +2,18 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v5.36.0 (2026-11-06)
+
+The Hub can send and draft for you, and gains Review and Week tabs.
+
+- This update lets the Hub send a reply or save a draft through your mail itself, and adds two tabs. Review holds the open questions and proposed closes, each one accepted with a click. Week shows what was decided, what went quiet and the recap. Command Room now asks before it learns from your corrections and shows each change it made. Nothing for you to do.
+
+## v5.35.0 (2026-11-04)
+
+Command Room Hub: one private page with a Start button for your morning.
+
+- This update adds Command Room Hub, one private page with a Start button that preps your next meetings, drafts replies for your inbox and shows your plate, with Done, Snooze and Undo on each item. Say "set up my hub" to make yours. Your scheduled chats come down to Morning Brief and Maintenance; the work of the others moves onto the Hub. Files Command Room makes for you now come back as a file card.
+
 ## v5.34.0 (2026-11-04)
 
 Three weeks of fixes to Waiting On, the meeting recap, drafts and the brief you ask for in chat.

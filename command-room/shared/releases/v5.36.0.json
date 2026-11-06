@@ -1,0 +1,13 @@
+{
+  "version": "5.36.0",
+  "headline": "The Hub can send and draft for you, and gains Review and Week tabs.",
+  "items": [
+    {
+      "id": "v5360_announce_review_week",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "prompt_template": "This update lets the Hub send a reply or save a draft through your mail itself, and adds two tabs. Review holds the open questions and proposed closes, each one accepted with a click. Week shows what was decided, what went quiet and the recap. Command Room now asks before it learns from your corrections and shows each change it made. Nothing for you to do.",
+      "action": "announce_only"
+    }
+  ]
+}
