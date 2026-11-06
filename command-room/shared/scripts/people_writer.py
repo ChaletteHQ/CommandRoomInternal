@@ -185,6 +185,7 @@ ALLOWED_PERSON_FIELDS = {
     "needs_enrichment",    # bool — provisional record awaiting the people-crm enrichment pull (v3.16+, deep-audit #21). The ON-ENTITY enrichment flag; REPLACES the forbidden pending_review/inferred_from trigger (which this writer strips). people-crm clears it (sets false) after enriching.
     "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: the retired Pulse chat's "just busy" reply widened it (LIFECYCLE1 — read forever, never written again) so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
     "tie",                 # "work" | "personal" | absent (=> work) — SPEC BAL1 D1 partition line. tie=personal people belong to the Balance surface ONLY: Pulse/relationship-moves/team-intel/dormant-scan all skip them. NOT relationship_type (forbidden, org-level).
+    "source_identifiers",  # array of {kind, tool_id | company} | absent. cr1#825: what the person was added on: the source tool's own id for them, or the company the source stated. `identity_reconcile.sighting_against_record` compares the ids, so a later person of the same name is asked about, not filed here.
     "cadence_days",        # number | absent — SPEC BAL1 D1(b). Personal RE-SURFACE interval (date-night / call-Mom cadence), read ONLY by balance.py. Opposite meaning to cadence_override_days (a suppression widener); never fed to dormancy.effective_baseline.
 }
 
@@ -1090,6 +1091,7 @@ def create_person(
     account_address: str | None = None,
     brain_batch_id: str | None = None,
     brain_change_class: str | None = None,
+    source_identifiers: list[dict] | None = None,
 ) -> dict:
     """Create a person record. Returns the new record (with assigned id).
 
@@ -1152,6 +1154,7 @@ def create_person(
     if needs_enrichment: record["needs_enrichment"] = True
     if last_interaction: record["last_interaction"] = last_interaction
     if notes:            record["notes"] = notes
+    if source_identifiers: record["source_identifiers"] = list(source_identifiers)
 
     _validate_person(record)
 
@@ -1170,6 +1173,7 @@ def auto_add_person(
     email: str | None = None,
     email_provenance: dict | str | None = None,
     source_skill: str = "people_writer",
+    source_identifiers: list[dict] | None = None,
     **create_kwargs,
 ) -> dict:
     """FS-11 (M ruling 2026-07-15) — auto-add a person from rich context, with
@@ -1199,6 +1203,11 @@ def auto_add_person(
     or neither; `create_person` raises on one alone. An auto rail that creates
     a record `undo` cannot find is not reversible, and reversibility is the
     predicate that licenses the auto tier at all.
+
+    cr1#825: `source_identifiers` lands on the record: the source tool's id
+    or the source's company, `[{"kind", "tool_id" | "company"}]`. This
+    function holds no two-source guard, because the owner's own yes comes
+    through it; the routes a model judges take `door_auto_add_person`.
     """
     matches = list_same_name_people(workspace_root, canonical_name)
     if matches:
@@ -1216,6 +1225,7 @@ def auto_add_person(
         canonical_name=canonical_name,
         email=stored_email,
         source_skill=source_skill,
+        source_identifiers=source_identifiers,
         # provenance/source_ref for the SCOPE wall are passed through if the
         # caller supplied them via create_kwargs; the email_provenance above is
         # the capture guard, a distinct concern.
@@ -1596,12 +1606,117 @@ def _aliases_path(workspace_root: Path) -> Path:
     return Path(workspace_root) / "_hq" / "data" / "aliases.json"
 
 
+class AliasIsAnotherPersonsName(ValueError):
+    """Raised when an alias is another record's own name (cr1#768).
+
+    An alias is a permanent shortcut: `entity_resolve` reads it first, so one
+    saved under somebody else's full name sends that person's mentions to the
+    wrong record while `find_existing_person` keeps answering the right one.
+    `add_person_alias` raises this unless the caller declares why it may
+    write: `restoring=True` or `confirmed=True`.
+
+    A ValueError subclass, so every caller that already treats the adder's
+    "already maps elsewhere" refusal as a human decision treats this the same
+    way. Attributes: `person_id`, `other_id` (the record called that), `alias`.
+    """
+
+    def __init__(self, person_id: str, other_id: str, alias: str):
+        self.person_id = person_id
+        self.other_id = other_id
+        self.alias = alias
+        super().__init__(
+            f"alias {alias!r} is the name of {other_id}, so it was not saved "
+            f"on {person_id}. Surface it for a human decision.")
+
+
+def another_record_named(workspace_root: str | Path, person_id: str,
+                         name: str) -> dict | None:
+    """The OTHER record that answers to `name`, or None.
+
+    An own canonical name comes first. None when `person_id` is itself called
+    that: two people the owner confirmed as separate can share a name, and
+    each of them answering to it is not one taking the other's.
+
+    Then another record's `aliases` (cr1#824), because a rename leaves the old
+    name there and not on the map, so the adder's own "already maps elsewhere"
+    rule never sees it and a second record could take it. None when
+    `person_id` holds that spelling too: a nickname two people already share
+    is not news. Archived records count, for the reason
+    `_other_record_holding_name` gives.
+    """
+    want = _normalize_name(name or "")
+    if not want:
+        return None
+    people = entities_collection(_load_entities(Path(workspace_root)), "people")
+    others = []
+    for p in people:
+        if _normalize_name(str(p.get("canonical_name") or "")) != want:
+            continue
+        if p.get("id") == person_id:
+            return None
+        others.append(p)
+    if others:
+        return others[0]
+    holders = [p for p in people if want in {
+        _normalize_name(str(a)) for a in p.get("aliases") or []}]
+    if any(p.get("id") == person_id for p in holders):
+        return None
+    return holders[0] if holders else None
+
+
+def _validate_for_alias(record: dict, aliases: list) -> None:
+    """`_validate_person` for a write that changes only `aliases`. A record
+    older than the schema (no `first_seen`, a key since retired) takes a
+    spelling as it did by hand (cr1#824). A value that is present and wrong
+    still fails, and so does the same record on any field write through
+    `update_person`."""
+    if not all(isinstance(a, str) for a in aliases):
+        raise ValueError(f"aliases must be strings, got: {aliases!r}")
+    checked = {k: v for k, v in record.items() if k in ALLOWED_PERSON_FIELDS}
+    checked.setdefault("first_seen", "1970-01-01")
+    _validate_person(dict(checked, aliases=aliases))
+
+
+def _write_record_aliases(workspace_root: Path, person_id: str, aliases: list,
+                          source_skill: str) -> None:
+    """Save one record's `aliases` and log `person_updated`. Callers ask
+    `_validate_for_alias` before their first write. The account wall runs here
+    as it does in `update_person`."""
+    _enforce_record_scope(workspace_root, holder=source_skill)
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+    before = dict(target)
+    target["aliases"] = aliases
+    _save_entities(workspace_root, data, source_skill)
+    _log_event(workspace_root, "person_updated", target, source_skill, before=before)
+
+
+def _record_holds(workspace_root: Path, person_id: str, alias_norm: str) -> bool:
+    """Does the record on disk carry this spelling in `aliases` right now? The
+    failure path's question: `_write_record_aliases` saves and then logs, so an
+    exception does not say whether the record changed."""
+    people = entities_collection(_load_entities(workspace_root), "people")
+    record = next((p for p in people if p.get("id") == person_id), {})
+    return any(_normalize_name(str(a)) == alias_norm
+               for a in record.get("aliases") or [])
+
+
+def _people_tier(doc: dict) -> list:
+    mappings = doc["mappings"]
+    return mappings if isinstance(mappings, list) else mappings["people"]
+
+
 def add_person_alias(
     workspace_root: str | Path,
     person_id: str,
     alias: str,
     *,
     source_skill: str = "people_writer",
+    restoring: bool = False,
+    confirmed: bool = False,
 ) -> dict:
     """THE Same-as writer (v4.6.1 W4b): a raw name spelling is an existing
     person — save it as a permanent resolution improvement so every future
@@ -1614,14 +1729,31 @@ def add_person_alias(
          mappings array is appended to in place — reader-back-compat, never
          a shape rewrite). Locked atomic write.
       2. entities.json — union the spelling into the person record's
-         `aliases` array via update_person (validated, locked, logged as
-         person_updated).
+         `aliases` array via `_write_record_aliases` (locked, logged as
+         person_updated). If this write fails and the record did not change,
+         the map row comes back out and the failure raises as it came.
 
     Idempotent: an alias already mapped to this person returns
     {"status": "exists"} and writes nothing. An alias mapped to a DIFFERENT
     person raises ValueError — a raw spelling must never silently re-point
     (surface it for a human decision instead). KeyError when person_id
     doesn't exist (from update_person's lookup).
+
+    A spelling that is another record's own name raises
+    `AliasIsAnotherPersonsName` (cr1#768), unless the caller declares why it
+    may write: `restoring=True` for the `undo` put-back of an alias that stood
+    on this record, `confirmed=True` for an owner's Same as. A caller that
+    forgets gets the error, which is the safe side: a question stays open and
+    no identity moves. The record's own name is never a refusal, because two
+    people the owner confirmed as separate can share one. A spelling this
+    person already holds returns `exists` and writes nothing, unless it is
+    another record's own name, which is refused like any other.
+
+    Skill text reaches this through `add_person_aliases` or the door's
+    `add_aliases`, never by hand (cr1#824, pinned by G73).
+
+    Every check runs before the first write, so a refusal leaves both surfaces
+    as they were.
     """
     alias = (alias or "").strip()
     if not alias:
@@ -1665,6 +1797,11 @@ def add_person_alias(
          and _normalize_name(m["raw"]) == alias_norm),
         None,
     )
+    known = {_normalize_name(n) for n in get_person_display_names(target)}
+    if not (restoring or confirmed):
+        other = another_record_named(workspace_root, person_id, alias)
+        if other is not None:
+            raise AliasIsAnotherPersonsName(person_id, other.get("id"), alias)
     if existing is not None:
         if existing.get("canonical_id") != person_id:
             raise ValueError(
@@ -1672,18 +1809,33 @@ def add_person_alias(
                 f"— refusing to silently re-point it to {person_id!r}. "
                 "Surface the conflict for a human decision."
             )
-    else:
+
+    # The record write comes second. Ask its question now, or a record that
+    # fails leaves the map pointing at it.
+    new_aliases = None
+    if alias_norm not in known:
+        new_aliases = list(target.get("aliases") or []) + [alias]
+        _validate_for_alias(target, new_aliases)
+
+    if existing is None:
         tier.append({"raw": alias, "canonical_id": person_id})
         atomic_write_json_locked(apath, aliases_doc, holder=source_skill)
         mapping_written = True
 
     # --- person record aliases union ------------------------------------------
     record_written = False
-    known = {_normalize_name(n) for n in get_person_display_names(target)}
-    if alias_norm not in known:
-        new_aliases = list(target.get("aliases") or []) + [alias]
-        update_person(workspace_root, person_id, aliases=new_aliases,
-                      source_skill=source_skill)
+    if new_aliases is not None:
+        try:
+            _write_record_aliases(workspace_root, person_id, new_aliases,
+                                  source_skill)
+        except Exception as exc:
+            exc.alias_saved = _record_holds(workspace_root, person_id, alias_norm)
+            if mapping_written and not exc.alias_saved:
+                doc = json.loads(apath.read_text(encoding="utf-8"))
+                _people_tier(doc).remove(
+                    {"raw": alias, "canonical_id": person_id})
+                atomic_write_json_locked(apath, doc, holder=source_skill)
+            raise
         record_written = True
 
     status = "added" if (mapping_written or record_written) else "exists"
@@ -1694,6 +1846,152 @@ def add_person_alias(
         "mapping_written": mapping_written,
         "record_written": record_written,
     }
+
+
+#: A `person_link` answer that ends the question for good. A yes closes it as
+#: surely as a no: nothing is saved either way, so asking again asks nothing.
+_ALIAS_QUESTION_ANSWERED = ("applied", "edited", "declined", "superseded")
+
+
+def _held_fingerprint(alias: str, person_id) -> str:
+    return f"person_link:held:{_normalize_name(alias)}:{person_id}"
+
+
+def held_question_answer(workspace_root, alias: str, person_id) -> str | None:
+    """The owner's latest answer on this pair's held row: "yes", "no", or None
+    when it is unanswered, or no such row exists (cr1#824). Reads, never
+    writes. A ledger that cannot be read answers None, so the question stands."""
+    if not person_id:
+        return None
+    from proposal_ledger import load_rows
+
+    fingerprint = _held_fingerprint(alias, person_id)
+    actions = [r.get("user_action") for r in load_rows(workspace_root, "identity-reconcile")
+               if r.get("fingerprint") == fingerprint
+               and r.get("user_action") in _ALIAS_QUESTION_ANSWERED]
+    if not actions:
+        return None
+    return "yes" if actions[-1] in ("applied", "edited") else "no"
+
+
+def _ask_about_name_on_file(workspace_root, person_id: str, alias: str,
+                            evidence: str, source_skill: str) -> bool:
+    """The one question a refused alias raises (cr1#824): a `person_link` row
+    with its own fingerprint. It holds no sighting, so it must not sit on the
+    one `identity_reconcile` uses for the same pair (cr1#768): a mention would
+    then get `duplicate_open`, a yes here would leave it to be asked again and
+    a no would cool it down with nothing asked. The two meet by reading each
+    other's answer: an open or answered reconcile row means no new ask here,
+    and `held_question_answer` closes a mention this row already answered.
+
+    The spelling is taken, so a yes links nobody and the row says so. It
+    carries no `person_id`, which keeps it off the Hub's in-place accept,
+    whose answer is "Linked."; no person and no cluster is how apply-choices'
+    `person_link` handler tells it apart. `held_for_id` on the event names the
+    record the alias was going to.
+
+    True when a new row opened; False when one is open, the owner has answered
+    it, or it could not be written. No alias is written either way."""
+    try:
+        from brain_proposals import load_open_proposals, propose
+        from proposal_ledger import load_rows
+
+        detector = "identity-reconcile"
+        fingerprint = _held_fingerprint(alias, person_id)
+        same_pair = {fingerprint,
+                     f"person_link:{_normalize_name(alias)}:{person_id}"}
+        if any(r.get("fingerprint") in same_pair
+               and r.get("user_action") in _ALIAS_QUESTION_ANSWERED
+               for r in load_rows(workspace_root, detector)):
+            return False
+        if any(r.get("fingerprint") in same_pair
+               for r in load_open_proposals(workspace_root)):
+            return False
+        people = entities_collection(_load_entities(Path(workspace_root)), "people")
+        record = next((p for p in people if p.get("id") == person_id), {})
+        name = record.get("canonical_name") or "an existing record"
+        source = f" (from: {evidence})" if evidence else ""
+        res = propose(
+            workspace_root, kind="person_link", fingerprint=fingerprint,
+            evidence=evidence or source_skill,
+            action_tuples=[{"action": "confirm proposal"},
+                           {"action": "dismiss proposal"},
+                           {"action": "snooze proposal 7d"}],
+            tier="confirm", detector=detector,
+            render_line=(
+                f"'{alias}' came up as another name for {name}{source}. "
+                f"{alias} is a different person on file, so nothing was saved "
+                "and the name stays with their record. Yes closes this. If "
+                "they are one person, ask to merge the two records."),
+            extra={"title": alias, "alias_name": alias, "matched_name": name,
+                   "cluster_seqs": [], "cluster_fingerprints": [],
+                   "held_name": True, "held_for_id": person_id})
+        return res.get("status") == "proposed"
+    except Exception:
+        return False
+
+
+def add_person_aliases(
+    workspace_root: str | Path,
+    rows: list[dict],
+    *,
+    source_skill: str = "people_writer",
+    evidence: str = "",
+) -> dict:
+    """Many spellings, one call: `add_person_alias` per row (cr1#824). The
+    whole-scan form for onboarding and ingest, and what the door's
+    `add_aliases` runs, so every route meets the same refusal.
+
+    `rows` are `{"person_id", "alias"}`, with an optional `evidence` that
+    beats the call's. It declares nothing: neither `confirmed` nor `restoring`
+    is reachable from here, because a list nobody answered is not an answer.
+
+    A row that cannot be saved stops only itself, whatever stopped it: a bad
+    row, a write that failed, a lock. Only the account wall stops the call,
+    because it answers for the seat and not the row. Returns `{added, exists,
+    held}`, each a list of `{person_id, alias}`. A `held` row carries `reason`:
+    `name_on_file` (another record's own name; `other_id` is that record, and
+    `asked` says a new question opened) or `conflict` (anything else; `detail`
+    says what). Nothing is written for a held row. A row saved on both
+    surfaces whose log then failed is `added`, with the error as `log_error`."""
+    out: dict = {"added": [], "exists": [], "held": []}
+    scope_error = _account_scope_error()
+    for row in rows:
+        is_row = isinstance(row, dict)
+        person_id = row.get("person_id") if is_row else None
+        alias = row.get("alias") if is_row else None
+        entry = {"person_id": person_id, "alias": alias}
+        try:
+            if not (isinstance(person_id, str) and isinstance(alias, str)):
+                raise ValueError(f"not a person_id and alias row: {row!r}")
+            res = add_person_alias(workspace_root, person_id, alias,
+                                   source_skill=source_skill)
+        except AliasIsAnotherPersonsName as exc:
+            asked = _ask_about_name_on_file(
+                workspace_root, person_id, alias,
+                row.get("evidence") or evidence, source_skill)
+            out["held"].append(dict(entry, reason="name_on_file",
+                                    other_id=exc.other_id, asked=asked))
+        except scope_error:
+            raise
+        except Exception as exc:
+            if getattr(exc, "alias_saved", False):
+                out["added"].append(dict(entry, log_error=str(exc)))
+            else:
+                out["held"].append(dict(entry, reason="conflict", detail=str(exc)))
+        else:
+            out["added" if res["status"] == "added" else "exists"].append(entry)
+    return out
+
+
+def _put_alias_rows_back(apath: Path, removed: list, source_skill: str) -> None:
+    """Undo a map removal: `removed` is `(index, row)` in file order. Re-read
+    first, so a write that landed since the removal survives this one."""
+    doc = json.loads(apath.read_text(encoding="utf-8"))
+    tier = _people_tier(doc)
+    for index, row in removed:
+        tier.insert(index, row)
+    atomic_write_json_locked(apath, doc, holder=source_skill)
 
 
 def remove_person_alias(
@@ -1727,7 +2025,13 @@ def remove_person_alias(
     Idempotent: nothing on file returns {"status": "absent"} and writes
     nothing. The person's CANONICAL name is never removable through here —
     a record must always have a name to be called by, and removing it would
-    be a rename wearing an alias's clothes."""
+    be a rename wearing an alias's clothes.
+
+    The two surfaces end up agreeing when the second write fails (cr1#824).
+    A record that will not validate is refused before the first write. A
+    later failure raises as it came, and the map entry goes back unless the
+    record had already changed: the write saves and then logs, so a failed log
+    leaves the record without the alias and the map must stay without it too."""
     alias = (alias or "").strip()
     if not alias:
         raise ValueError("remove_person_alias needs a non-empty alias spelling")
@@ -1745,8 +2049,14 @@ def remove_person_alias(
             "removing it would leave a record with nothing to call it by; "
             "rename through update_person if that is what you mean")
 
+    current = list(target.get("aliases") or [])
+    pruned = [a for a in current if _normalize_name(str(a)) != alias_norm]
+    if len(pruned) != len(current):
+        _validate_for_alias(target, pruned)
+
     apath = _aliases_path(workspace_root)
     mapping_removed = False
+    removed_rows: list = []
     other_owner = None
     if apath.exists():
         try:
@@ -1761,11 +2071,12 @@ def remove_person_alias(
             (mappings or {}).get("people") if isinstance(mappings, dict) else None)
         if isinstance(tier, list):
             keep = []
-            for m in tier:
+            for index, m in enumerate(tier):
                 if (isinstance(m, dict) and isinstance(m.get("raw"), str)
                         and _normalize_name(m["raw"]) == alias_norm):
                     if m.get("canonical_id") == person_id:
                         mapping_removed = True
+                        removed_rows.append((index, m))
                         continue
                     other_owner = m.get("canonical_id")
                 keep.append(m)
@@ -1777,11 +2088,14 @@ def remove_person_alias(
                 atomic_write_json_locked(apath, aliases_doc, holder=source_skill)
 
     record_written = False
-    current = list(target.get("aliases") or [])
-    pruned = [a for a in current if _normalize_name(str(a)) != alias_norm]
     if len(pruned) != len(current):
-        update_person(workspace_root, person_id, aliases=pruned,
-                      source_skill=source_skill)
+        try:
+            _write_record_aliases(workspace_root, person_id, pruned, source_skill)
+        except Exception:
+            if removed_rows and _record_holds(workspace_root, person_id,
+                                              alias_norm):
+                _put_alias_rows_back(apath, removed_rows, source_skill)
+            raise
         record_written = True
 
     if mapping_removed or record_written:
@@ -1818,7 +2132,8 @@ def merge_person_into(
       - email / role / primary_org_id / notes / communication_style /
         reports_to_id: keep wins; only fill if missing
       - last_interaction: max of both
-      - aliases / affiliation_ids / project_ids: union, dedup, order preserved
+      - aliases / affiliation_ids / project_ids / source_identifiers: union,
+        dedup, order preserved
       - duplicate's canonical_name appended to keep's aliases if distinct
 
     Logs `person_merged` event with both before-records and the merged result.
@@ -1865,6 +2180,11 @@ def merge_person_into(
     _union("aliases")
     _union("affiliation_ids")
     _union("project_ids")
+    identifiers = list(keep.get("source_identifiers") or [])
+    identifiers += [i for i in dup_normalized.get("source_identifiers") or []
+                    if i not in identifiers]
+    if identifiers:
+        keep["source_identifiers"] = identifiers
 
     if dup_normalized.get("canonical_name") and dup_normalized["canonical_name"] != keep.get("canonical_name"):
         keep.setdefault("aliases", [])
@@ -2312,6 +2632,14 @@ DOOR_IDENTITY_FIELD_LINE = (
 #: The keys `door_update_person` refuses (N-1): the record's identity, and the
 #: switch that would drop the role and company lineage rows.
 DOOR_UPDATE_REFUSED_KEYS = frozenset({"id", "suppress_lineage"})
+#: `aliases` replaced the record's list, skipped the map and never met the
+#: name-on-file refusal (cr1#824). A new spelling is `add_aliases`.
+DOOR_ALIASES_FIELD_LINE = (
+    "Nothing was saved, because a person's other names are added one spelling "
+    "at a time here.")
+DOOR_ADD_ALIASES_LINE = (
+    "Nothing was saved, because the other names came in a form this cannot "
+    "read: they go as a list of spellings.")
 
 DOOR_SOURCE_SKILL = "people-crm"
 
@@ -2437,12 +2765,22 @@ def door_update_person(
     *,
     person_id: str,
     source_skill: str = DOOR_SOURCE_SKILL,
+    add_aliases: list[str] | None = None,
+    alias_evidence: str = "",
     **fields: Any,
 ) -> dict:
     """`update_person` through the writer door. Answers `{ok: true, id,
-    record}`, or `ok: false` with `reason` `identity_field`,
-    `unknown_person` or `out_of_scope`, each with nothing written. A field
-    the schema refuses still raises, as today.
+    record}`, or `ok: false` with `reason` `identity_field`, `aliases_field`,
+    `bad_add_aliases`, `unknown_person` or `out_of_scope`, each with nothing
+    written. A field the schema refuses still raises, as today, and nothing
+    is written then either: the fields go first, the spellings after.
+
+    `add_aliases` saves new spellings through `add_person_aliases`, the only
+    alias route on a merged seat (cr1#824), and the answer then also carries
+    `aliases_added` (the spellings written) and `aliases_held` (its `held`
+    rows). A held spelling is an answer, not a failure: it was not saved, the
+    one question is raised, and the caller does nothing more. `alias_evidence`
+    is the line that question shows.
 
     `id` is the record's identity and `suppress_lineage` hides a role or
     company move from the history; neither is a change a chat can carry
@@ -2452,17 +2790,40 @@ def door_update_person(
     if DOOR_UPDATE_REFUSED_KEYS & set(fields):
         return {"ok": False, "reason": "identity_field",
                 "line": DOOR_IDENTITY_FIELD_LINE}
+    if "aliases" in fields:
+        return {"ok": False, "reason": "aliases_field",
+                "line": DOOR_ALIASES_FIELD_LINE}
+    if add_aliases is not None and not (
+            isinstance(add_aliases, list)
+            and all(isinstance(a, str) for a in add_aliases)):
+        return {"ok": False, "reason": "bad_add_aliases",
+                "line": DOOR_ADD_ALIASES_LINE}
     if not _person_on_file(workspace_root, person_id):
         return {"ok": False, "reason": "unknown_person",
                 "line": DOOR_UNKNOWN_PERSON_LINE}
     scope_error = _account_scope_error()
+    answer: dict = {"ok": True, "id": person_id}
     try:
-        record = update_person(workspace_root, person_id,
-                               source_skill=source_skill, **fields)
+        if fields or add_aliases is None:
+            answer["record"] = update_person(workspace_root, person_id,
+                                             source_skill=source_skill, **fields)
+        if add_aliases is not None:
+            res = add_person_aliases(
+                workspace_root,
+                [{"person_id": person_id, "alias": a} for a in add_aliases],
+                source_skill=source_skill, evidence=alias_evidence)
+            answer["aliases_added"] = [r["alias"] for r in res["added"]]
+            answer["aliases_held"] = res["held"]
+            log_errors = [r for r in res["added"] if r.get("log_error")]
+            if log_errors:
+                answer["aliases_log_errors"] = log_errors
+            people = entities_collection(_load_entities(Path(workspace_root)),
+                                         "people")
+            answer["record"] = next(p for p in people if p.get("id") == person_id)
     except scope_error:
         return {"ok": False, "reason": "out_of_scope",
                 "line": DOOR_OUT_OF_SCOPE_LINE}
-    return {"ok": True, "id": person_id, "record": record}
+    return answer
 
 
 def door_record_person_fact(
@@ -2488,6 +2849,81 @@ def door_record_person_fact(
             "fact": data.get("fact"), "category": data.get("category")}
 
 
+def _add_on_the_guard(workspace_root, *, canonical_name, email, email_provenance,
+                      role, primary_org_id, provenance, source_ref,
+                      account_address, source_kind, source_user_id,
+                      source_company, evidence, source_skill) -> dict:
+    """The add a model judged, held to the guard the runs hold (cr1#825, on
+    cr1#754's ruling): the sighting is judged with the open rows of its name
+    by `identity_reconcile.classify_cluster`, and anything short of the auto
+    tier goes on the queue as a sighting. The refusals keep main's order and
+    come before any row, so a walled account or a one-word name writes
+    nothing. A shared inbox or an address with no source is no identifier and
+    sits on no row."""
+    from confirm_flow import person_source_kind
+    import identity_reconcile as ir
+
+    ws = Path(workspace_root)
+    name = str(canonical_name or "").strip()
+    scope = {"provenance": provenance, "source_ref": source_ref,
+             "account_address": account_address}
+    observed = email if email and email_provenance else None
+    address = None if observed and ir.is_role_address(observed) else observed
+    sighting = {
+        "name": name, "source_ref": source_ref or f"door:{source_skill}",
+        # A pointer's own scheme beats the word beside it, so one meeting
+        # cannot be called two sources. No pointer is no source.
+        "kind": (person_source_kind(source_ref)
+                 or person_source_kind(None, source_kind)) if source_ref else None,
+        "source_user_id": source_user_id, "source_company": source_company,
+        "inferred_role": role,
+        "inferred_org": ir._record_org_name(ws, {"primary_org_id": primary_org_id})
+        or None,
+        "evidence": (f"{name} <{address}>" if address else evidence)
+        or "named in a source you are working on"}
+    dropped = {"email_dropped_no_provenance": bool(email and not email_provenance)}
+
+    record, said = ir.sighting_on_file(ws, sighting)
+    if said == "same":
+        return {"status": "on_file", "person_id": record.get("id"),
+                "record": None}
+    if said == "different":
+        _enforce_record_scope(ws, holder=source_skill, **scope)
+        return {**ir.ask_about_sighting(ws, sighting, source_skill=source_skill),
+                **dropped}
+    matches = list_same_name_people(ws, name)
+    if matches:
+        return {"status": "needs_confirm", "matches": matches, "record": None}
+    refuse_single_word_name(name)
+    _enforce_record_scope(ws, holder=source_skill, **scope)
+    existing = find_existing_person(ws, name=name, email=observed)
+    if existing:
+        raise DuplicatePersonError(existing["id"], existing.get("canonical_name"))
+
+    cluster, verdict = ir.judge_sighting(ws, sighting)
+    if verdict["tier"] != "auto":
+        return {**ir.ask_about_sighting(ws, sighting, source_skill=source_skill),
+                **dropped}
+    kept = verdict.get("email")
+    seen_on = ir.cluster_observed_email(cluster)[1] or {}
+    extra = {k: v for k, v in (("role", role or cluster.get("inferred_role")),
+                               ("primary_org_id", primary_org_id),
+                               ("account_address", account_address),
+                               ("provenance", provenance),
+                               ("source_ref", source_ref)) if v}
+    answer = auto_add_person(
+        ws, canonical_name=name, email=kept, source_skill=source_skill,
+        email_provenance=(email_provenance if kept == address else
+                          {"via": "person_proposal",
+                           "proposal_seq": seen_on.get("seq"),
+                           "source_ref": seen_on.get("source_ref")}),
+        source_identifiers=ir.cluster_source_identifiers(cluster, ws), **extra)
+    if answer.get("status") == "added":
+        ir.close_sightings(ws, cluster, answer["record"]["id"],
+                           source_skill=source_skill)
+    return {**answer, **dropped}
+
+
 def door_auto_add_person(
     workspace_root: str | Path,
     *,
@@ -2499,22 +2935,38 @@ def door_auto_add_person(
     provenance: dict | None = None,
     source_ref: str | None = None,
     account_address: str | None = None,
+    source_kind: str | None = None,
+    source_user_id: str | None = None,
+    source_company: str | None = None,
+    evidence: str | None = None,
     source_skill: str = DOOR_SOURCE_SKILL,
 ) -> dict:
-    """`auto_add_person` through the writer door: the function's own status
-    dict (`added` or `needs_confirm`) with `ok: true`, or `ok: false` with
-    the create refusals `door_create_person` names, nothing written."""
+    """The add a model judged, through the writer door: the same-name gate,
+    then the two-source guard (`_add_on_the_guard`, cr1#825). Answers `ok:
+    true` with `status` `added`, `needs_confirm` (nothing written), `asked`
+    (the name went on the queue as a sighting, `already_asked` when it held
+    one like it), `already_answered` (the owner has answered this name, no
+    question is open, nothing written) or `on_file` (the source's id or an
+    address is this person's, nothing written), or `ok: false` with the create
+    refusals `door_create_person` names, nothing written.
+
+    `source_kind` is the kind of record the mention came from
+    (`confirm_flow.PERSON_SOURCE_KINDS`). A known `source_ref` scheme wins
+    over it, no `source_ref` is no source, and one pointer is one source
+    whatever kind it is called. `source_user_id` and `source_company` are the source's own fields
+    for this person. `role` and `primary_org_id` go on the record and count
+    for nothing here: a title is no identifier and the org is the model's
+    pick."""
     scope_error = _account_scope_error()
-    extra = {k: v for k, v in (("role", role),
-                               ("primary_org_id", primary_org_id),
-                               ("provenance", provenance),
-                               ("source_ref", source_ref),
-                               ("account_address", account_address))
-             if v is not None}
     try:
-        answer = auto_add_person(workspace_root, canonical_name=canonical_name,
-                                 email=email, email_provenance=email_provenance,
-                                 source_skill=source_skill, **extra)
+        answer = _add_on_the_guard(
+            workspace_root, canonical_name=canonical_name, email=email,
+            email_provenance=email_provenance, role=role,
+            primary_org_id=primary_org_id, provenance=provenance,
+            source_ref=source_ref, account_address=account_address,
+            source_kind=source_kind, source_user_id=source_user_id,
+            source_company=source_company, evidence=evidence,
+            source_skill=source_skill)
     except DuplicatePersonError as exc:
         return {"ok": False, "reason": "duplicate",
                 "existing_id": exc.person_id,

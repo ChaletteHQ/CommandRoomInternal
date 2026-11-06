@@ -1,7 +1,7 @@
 ---
 name: commitment-triage
 surfaces: both
-description: "Your plate. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate'. Every open commitment grouped by what it wants next — DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED, then by project, then Overdue / This week / Later / No date. One board, one line a row, one tap (Done); every other verb typed by the row's number. `work my plate` opens the nine-row page; 'show waiting' and 'show scheduling' answer standalone. Every write through the single closure path with undo. On demand only. Does NOT fire on 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
+description: "Your plate. Fires on: 'triage my commitments', 'commitment triage', 'review my open commitments', 'show me my commitments', 'burn down my commitments', 'what's on my plate', 'add to my priorities', 'add this to my priorities', 'make this a priority', 'high priority:'. Every open commitment grouped by what it wants next — DO IT / CHASE / WAIT / SCHEDULE / CONFIRM / PARKED, then by project, then Overdue / This week / Later / No date. One tap per row, with undo; 'show waiting' and 'show scheduling' answer standalone. On demand only. Does NOT fire on 'remind me to' (show-my-reminders), 'new objective' (objectives), 'clean up my commitments' / 'sweep my backlog' / 'commitment backlog' / 'backlog sweep' / 'commitment amnesty' (commitment-backlog-sweep — the mail-history evidence pass), 'show my list' (show-my-list — the curated discuss-later list), 'scan for commitments' (extraction backfill), or the daily Waiting On chat (the actionable subset, with chase drafts)."
 ---
 
 # commitment-triage
@@ -24,7 +24,8 @@ Read `shared/WORKSPACE_API.md` first. This skill writes events.jsonl ONLY via
 `atomic_append_jsonl` for `commitment_updated` defers — every write is an append through the Phase 1
 gate. **NO in-place mutation, ever (F4):** flipping `data.status` on an
 existing event is the forbidden write class this skill was built to replace.
-It also appends suppression rules to `_hq/config/commitment-rules.md`
+`cockpit_helpers:add_chat_priority` adds a priority said in chat, through the
+same `commitment_state.create_personal_task` the Hub page uses. It also appends suppression rules to `_hq/config/commitment-rules.md`
 (atomic write; create the file with a one-line header if absent).
 
 ## Step 1 — The plate model (ONE grouping, in code)
@@ -108,6 +109,19 @@ CONFIRM question like any other; the bite-sized batch — "fix my orphaned
 promises" / "who were these for" — still runs from this chat exactly as
 before: ~5 oldest orphan rows per bite with `reassign to [name]` / `make
 task` / `drop`, resumable by construction, never auto-demoted (Bug #103).
+
+## Add a priority from chat
+
+"add to my priorities: X", "add this to my priorities", "make this a priority", "high priority: X" (cr1#776). A priority is logged once, with its level and source, and chat and the Hub read that one record: it is the same to-do the Hub page adds, so it is on the plate and on the Hub's Priorities list, and Done on either closes it.
+
+- **Ask only if needed.** When the item cannot be acted on as said ("this" is unclear from the chat, or the words do not tell what the task is), ask one short question and wait: this path logs nothing until it is answered. A clear item is logged with no question. A missing level is not a question: it saves as Medium. A scheduled run never asks and logs nothing vague: it says so in one line.
+- **The level.** "high priority", "low priority" or "medium priority" sets it. Pass `high`, `medium` or `low`, or leave `priority` out.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"priority": "<high, medium or low, or leave this key out>", "title": "<the item, in the words used>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:add_chat_priority"}'
+```
+
+Render it with `plan run_writer` on every seat and paste what it prints: `plan` escapes the title, and a title typed into this line by hand breaks on an apostrophe. The reply is the answer's `line` and nothing else: it states the level, and that the Hub shows it after its next refresh. Said twice, the answer is `already` and no second row is written. `remind me to` stays with `show-my-reminders`, `new objective` with `objectives`, and "what are my priorities" is a read, not this path.
 
 ## Merging duplicates (chat-phrase path; the Merge verb ships in the W4b confirm flow, v4.6.1)
 

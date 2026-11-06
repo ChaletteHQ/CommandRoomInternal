@@ -34,7 +34,7 @@ Every writable context file has exactly one primary owner skill. Other skills ma
 | `_hq/data/entities.json` → `workspace.coach` block (SPEC COACH1 §4.4) | **ONE owner: `enable-coach`** (the Business Coach Pack's installer, `packs/coach/`), writing via the `shared/scripts/workspace_settings.py` setter so the `workspace_setting_changed` receipt can never separate from the write. Same additive-key posture as the connectors block above (`workspace_settings` has no `additionalProperties:false`). ABSENT on every non-coach workspace, and absence is the off switch. | All skills (read via `coach_state.get_coach_config`) |
 | `_hq/data/entities.json` → a thread's `cohort` sub-object (SPEC COACH1 §4.2) | **ONE owner: the coach pack's typed writer**, through `thread_writer.create_thread` / `update_thread` (which validate it via `_validate_cohort`). Allowed ONLY on `kind: "cohort"` threads. Nothing derived is ever stored on it — counts, tallies, windows and roster occupancy all come from `shared/scripts/coach_state.py`. | All skills (read via `coach_state.cohort_roster`) |
 | `_hq/data/events.jsonl` | Any skill may append (with source_skill tag); NEVER rewrite or mutate a prior event. Corrections use `supersedes_seq` on a new event. **F4 (Phase 2 Stage C): flipping an existing commitment event's `data.status` in place is the FORBIDDEN mutation class** — the 2026-07-01 audit found 249 commitments closed that way (growing to 251 during the audit day), correlated with substrate corruption. Closure = a `commitment_resolved` tombstone appended via `commitment_state.close_commitment()`, nothing else. Readers honor the legacy in-place `status in (closed, resolved, superseded)` values forever (those rows stay readable); no NEW write may ever produce one. SUB1: sub-item hierarchies are written ONLY via `commitment_state.add_subitems()` (children = real `commitment` events carrying `data.parent_id` = the parent's canonical id verbatim + `data.parent_seq`; the gate rejects malformed parent refs). No payload array on the parent, ever; no skill hand-builds a child event; extraction/sweep paths never mint hierarchies (user-initiated only). Closing a parent with open children goes through `close_commitment(..., close_subitems=True)` after an explicit user confirm — never child-by-child hand closes followed by an unguarded parent close from a programmatic path. | All skills (read) |
-| `_hq/data/aliases.json` | `people-crm` (people mappings), `workspace-manager` (thread mappings), `meeting-notes` (append new mappings discovered) | All skills (read) |
+| `_hq/data/aliases.json` | `people_writer` (people mappings, for every skill: `add_aliases` on `people_writer:door_update_person`, or `add_person_aliases` in-shell), `workspace-manager` (thread mappings) | All skills (read) |
 | `_hq/data/classifier_feedback.jsonl` | `insight-generator` (append-only, one row per user action in Pass 8 classification review) | `cleanup`, classifier routines (read) |
 | `CLAUDE.md` (workspace root) | `workspace-manager` (on "end session") | All skills (read) |
 | `_hq/BUSINESS_CONTEXT.md` | `command-room-onboarding` (initial); `workspace-manager` (surgical updates) | All skills (read) |
@@ -63,6 +63,8 @@ Every writable context file has exactly one primary owner skill. Other skills ma
 
 ## Write Protocol — JSON source (entities.json, aliases.json)
 
+A person's spellings are outside this protocol: only `people_writer` saves them, in `aliases.json` and on the record together, and it refuses a name that is another person's own (cr1#824).
+
 ### 1. Read current state
 
 Read the full file. Parse the JSON. Capture:
@@ -84,7 +86,7 @@ Any `person_ids`, `project_id`, `org_id`, `owner_person_id`, `reports_to_id`, `s
 
 1. Look up raw name in `aliases.json` → canonical_id.
 2. If no match, search entities.json people by canonical_name substring.
-3. If one match with high confidence (≥95% similarity), use it and append the raw-to-canonical mapping to aliases.json.
+3. If one match with high confidence (≥95% similarity), use it and save the spelling through the writer (`add_aliases` on `people_writer:door_update_person`). A spelling the writer holds was not saved: leave the reference unresolved. For `name_on_file` the writer has already raised the question.
 4. If zero matches or multiple, surface to the user.
 
 Never write a raw Gmail "From:" name or Slack @-handle into entities.json. Always canonicalize first.
@@ -320,7 +322,7 @@ No view regeneration — these files don't have views.
 3. If found, use `canonical_id`.
 4. If not found, search `entities.json` people for:
    - Exact email match → use that person.
-   - Canonical name similarity ≥95% (Levenshtein or token-sort-ratio) → use that person + append alias to aliases.json.
+   - Canonical name similarity ≥95% (Levenshtein or token-sort-ratio) → use that person and save the spelling through the writer, as in step 3 of "Canonicalize entity references".
 5. If zero matches or multiple matches, surface to the user: "I see '[raw]' — is this [candidate] or someone new?"
 
 ### Resolving a project

@@ -38,7 +38,7 @@ You are a **primary appender** for `_hq/data/events.jsonl` — every meeting you
 
 **Every event you emit carries** `primary_thread_id`, `related_thread_ids[]`, `cross_ref_reason`, and `classification_confidence` per `references/ORG_AND_THREAD_MODEL.md` (schema field names unchanged for stability; the concept is "project"). Meetings that touch multiple projects (a 1:1 that covers a deal AND a vendor issue) get one primary + N related — never forced into a single project.
 
-You also append to `_hq/data/aliases.json` when you discover new raw-to-canonical mappings (new nicknames, new email forms). After your appends, the writer helper regenerates affected views (`DECISION_LOG.md`, `PEOPLE.md`, `MASTER_TRACKER.md`).
+You never write `_hq/data/aliases.json` or a person's `aliases` yourself. A new spelling for someone on file (a nickname, a new email form) goes through the write door: `plan run_writer` naming `people_writer:door_update_person` with `{"add_aliases": ["<the spelling>"], "alias_evidence": "<the line that tied it to them>", "person_id": "<their id>", "source_skill": "meeting-notes", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `add_person_aliases(workspace_root, [{"person_id": "<their id>", "alias": "<the spelling>"}], source_skill="meeting-notes", evidence="<the line>")`). A spelling that comes back in `aliases_held` (`held` in-shell) was not saved, and you write nothing else for it: `name_on_file` means it is another person's name and the writer has raised the one question; `conflict` gets one line in your summary. After your appends, the writer helper regenerates affected views (`DECISION_LOG.md`, `PEOPLE.md`, `MASTER_TRACKER.md`).
 
 You **append** to `[Project]/SESSION_NOTES_[NAME].md` as a human-readable narrative duplicate of the events you just persisted. Both must succeed: if the events.jsonl append fails, skip the markdown append and log a conflict.
 
@@ -704,6 +704,7 @@ from event_gate import append_event
 ev = build_person_proposal_event(
     "<full name as heard>",
     source_ref="granola:<meeting_id>",
+    source_kind="meetings",
     source_skill="meeting-notes",
     primary_thread_id="<same as parent meeting event>",
     inferred_role="<role if stated, else None>",

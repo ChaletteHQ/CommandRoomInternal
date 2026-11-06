@@ -144,6 +144,8 @@ CANONICAL_TASK_IDS = frozenset({
     # exactly like closing from mail, so it needs its own job id, its own
     # receipt and its own due-ness — and NO registration of its own.
     "reconcile-chat",
+    # cr1#664 - the inbound-mail job inside `maintenance` (never a task of its own): it opens commitments from inbound mail and closes them from inbound replies; its pack_run is the dueness signal, the next window's start and the list the Inbox chat's Phase 4b yields to
+    "inbound-mail",
     "monthly-report",
     "weekly-insights",
     "session-sweep",
@@ -165,7 +167,26 @@ CANONICAL_TASK_IDS = frozenset({
     "learning",      # SPEC_LEARN1 D6 — the weekly learning job inside `maintenance` (never a task of its own; its pack_run is the dispatcher's dueness signal, and a dry run deliberately writes none so the job stays due)
     "dedup-apply",   # SCHEDVIEW1 5.2 — the daily duplicate-merge apply job inside `maintenance` (never a task of its own; its pack_run is the dueness signal, written only on a run that merged, skipped or errored on something — a fire with nothing stamped leaves no trace and stays due, the binding-gauge posture)
     "schedule-realign",  # BOOT3 (2026-09-19) — the daily daylight-saving re-projection job inside `maintenance` (never a task of its own; its pack_run is the dueness signal, written only on a fire that found a drifted offset — a day with nothing to re-project leaves no trace, the same quiet-run posture binding-gauge takes)
+    "tasks-capture",  # cr1#668 (lane 6 of cr1#609) - the tasks leg's capture half inside `maintenance` (never a task of its own): items from a declared tasks connector; its pack_run is the dueness signal and the window's resume point, written on every run, a skip too
+    "tasks-close",  # cr1#668 - the tasks leg's close half inside `maintenance` (never a task of its own): done items close on a tracking board and propose elsewhere; its pack_run is the dueness signal and the window's resume point
+    "connector-proposals",  # cr1#668 - the documents / deals / contracts leg inside `maintenance` (never a task of its own): proposes closes only and reads people and projects; its pack_run is the dueness signal and the window's resume point
     "binding-gauge",  # GAUGEJOB1 — the daily binding-gauge refresh job inside `maintenance` (never a task of its own; its pack_run is the dueness signal, written on CHANGE runs only — a quiet run leaves no trace, see binding_gauge.run_gauge_refresh_job's QUIET-RUN SEMANTICS)
+    "people-update",  # cr1#665 (lane 3 of cr1#609) - the DAILY people update job inside `maintenance` (never a task of its own): identity_reconcile.py --daily over the one maintenance window; its pack_run is the dueness signal and the window's resume point, written on every applying run, and never an identity_reconcile_run (that type implies the Sunday identity-reconcile task)
+    "project-update",  # cr1#665 (lane 3 of cr1#609) - the DAILY project update job inside `maintenance` (never a task of its own): lifecycle_pass.py --daily, the revive leg over the one maintenance window; its pack_run is the dueness signal and the window's resume point, written on every applying run, and never a lifecycle_run (the Sunday lifecycle task's own type)
+})
+
+# cr1#615: the receipts a skill's own step writes, the only ones the write door
+# takes (`receipts:log_receipt`). Every other id is a job's or a driver's, and a
+# chat writing one would say that job ran. `monthly-report`, `weekly-insights`
+# and `cleanup` are jobs too, so these receipts move their due-ness honestly.
+CHAT_RECEIPT_TASKS = frozenset({
+    "objectives",
+    "dormant-scan",
+    "stalled-projects",
+    "pipeline-tracker",
+    "monthly-report",
+    "weekly-insights",
+    "cleanup",
 })
 
 # Renames where the canonical form is NOT just a cr-strip + underscore fix.
@@ -300,6 +321,11 @@ RECEIPT_TYPES: dict[str, dict] = {
     # healthy — the two would have vouched for each other. Same shape, same
     # cadence, separate proof.
     "reconcile-chat":     {"types": frozenset({"chat_reconcile"})},
+    # cr1#664 - the inbound-mail job's receipt. `pack_run`, the standard
+    # scheduled-job shape (the meeting-capture precedent): written on every
+    # terminal state (skipped, blocked, complete), and carrying the thread id
+    # plus message id of every capture so the Inbox chat can yield to it.
+    "inbound-mail":       {"types": frozenset({"pack_run"})},
     # SPEC EODSPEED1 — the incremental capture pass's job receipt (the
     # `meeting-capture` maintenance job). `pack_run`, the standard
     # scheduled-job shape: the dispatcher's due-ness rule reads it and
@@ -308,6 +334,12 @@ RECEIPT_TYPES: dict[str, dict] = {
     # pack_run on the day-close series would arm skip_render against the
     # real 5 PM close and split the series EOD2 keeps whole.
     "meeting-capture":    {"types": frozenset({"pack_run"})},
+    # cr1#668 - the tasks leg's two halves and the propose-only kinds, each
+    # a `pack_run` under its own id on every run (a skip too), so the
+    # uniform due rule and the one maintenance window read it.
+    "tasks-capture":      {"types": frozenset({"pack_run"})},
+    "tasks-close":        {"types": frozenset({"pack_run"})},
+    "connector-proposals": {"types": frozenset({"pack_run"})},
     "monthly-report":     {"types": frozenset({"operator_report_generated", "value_receipt_generated"}),
                            "count_types": frozenset({"operator_report_generated"})},
     # weekly-insights writes a pack_run receipt from v4.5.2 (it was the one
@@ -441,6 +473,12 @@ RECEIPT_TYPES: dict[str, dict] = {
     # dispatcher's due-ness rule reads it so a fired scorecard self-limits to
     # monthly. Only ever written when the workspace opted the job in.
     "monthly-scorecard":  {"types": frozenset({"pack_run"})},
+    # cr1#665 - the two daily update jobs' receipts. `pack_run`, the standard
+    # scheduled-job shape, so the uniform due rule self-limits each to once a
+    # day; written on EVERY applying run (the receipt is also where the next
+    # run's window starts), on a run that changed nothing too.
+    "people-update":      {"types": frozenset({"pack_run"})},
+    "project-update":     {"types": frozenset({"pack_run"})},
 }
 
 # Types that identify their task by TYPE alone (exactly one writer each).

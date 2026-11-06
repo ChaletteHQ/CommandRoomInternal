@@ -960,6 +960,10 @@ def plan_fact_closes(workspace_root, *, now_iso=None, events=None,
         from calendar_close import plan as _calendar_plan
         cal = _calendar_plan(workspace_root, now_iso=now_iso)
         cands = list(cal.get("book") or []) + list(cal.get("observed") or [])
+        if cal.get("skip_reason"):
+            # cr1#667 review: the calendar connector's close dial is off, so
+            # the leg contributes no candidates and the plan says why.
+            out["calendar_skip_reason"] = str(cal["skip_reason"])
     except Exception:  # noqa: BLE001 — a missing calendar job is not a crash
         cands = []
     if only_person_ids:
@@ -1094,6 +1098,13 @@ def apply_fact_closes(workspace_root, *, now_iso=None, plan=None,
             raise _SkipCalendarLeg
         cal_out = run_calendar_close_job(workspace_root, apply=True,
                                          now_iso=now_iso, fired_via="manual")
+        if cal_out.get("status") == "skipped":
+            # cr1#667 review: the calendar connector's close dial is off.
+            # The leg did not run and says so, with the reason; it is never
+            # reported as run.
+            out["calendar_run"] = {"skipped": "dial", "ran": False,
+                                   "skip_reason": cal_out.get("skip_reason")}
+            raise _SkipCalendarLeg
         n_cal = int(cal_out.get("n_closed") or 0)
         out["calendar_run"] = {k: cal_out.get(k) for k in
                                ("n_closed", "n_planned", "n_close_withheld",

@@ -318,6 +318,9 @@ def changes_since(
     # NUMBER1 3.8 / 3.7 -- per-batch and per-event detail the renderers
     # below need in order to say ONE true sentence each.
     learned_batches: dict = {}
+    # cr1#784 - each learned change as its own record: the rule, what it
+    # changes from now on, the corrections it rests on, and its own Undo.
+    learned_changes: List[dict] = []
     promotion_evidence: List[tuple] = []
     # MF-11c-1 — which batches a JOB ran, read off the job's own receipt
     # (`pack_run` naming the batch, fired on a schedule or under a machine
@@ -375,7 +378,12 @@ def changes_since(
             if isinstance(n, (int, float)) and n > 0:
                 counts["maintenance_jobs"] += int(n)
                 refs["maintenance_jobs"].append(seq)
-        elif etype == "identity_reconcile_run":
+        elif etype == "identity_reconcile_run" or (
+                # cr1#665: the DAILY people update runs the same writers and
+                # receipts the same counts, as a `pack_run` under its own
+                # task id, so its auto-adds are narrated the same way.
+                etype == "pack_run"
+                and data.get("task_id") == "people-update"):
             # PID1 D6 — auto-applied identity creations are narrated from
             # the RECEIPT of what was actually written, never from a plan
             # (honesty rule). Same for the §0-2 exact-email links.
@@ -451,14 +459,29 @@ def changes_since(
                 # `promotion_groups` uses beside it (it was `sorted()` by
                 # batch-id string, which is chronological only because real
                 # ids happen to be timestamps).
-                _bkey = (str(data.get("brain_batch_id"))
-                         if data.get("brain_batch_id") else "seq:%s" % seq)
+                # cr1#784: each voice change is its own undo group under the
+                # pass, so the pass is the parent when there is one.
+                _batch = data.get("parent_batch_id") or data.get("brain_batch_id")
+                _bkey = str(_batch) if _batch else "seq:%s" % seq
                 learned_batches.setdefault(
                     _bkey, {"skills": [], "seqs": [], "texts": []})
                 _lb = learned_batches[_bkey]
                 _lb["seqs"].append(seq)
                 if isinstance(line, str) and line.strip():
-                    _lb["texts"].append(line.strip())
+                    _lb["texts"].append(" ".join(
+                        str(part).strip() for part in
+                        (line, data.get("effect"), data.get("rests_on"))
+                        if part))
+                learned_changes.append({
+                    "rule": data.get("rule") or (line or ""),
+                    "effect": data.get("effect") or "",
+                    "rests_on": data.get("rests_on") or "",
+                    "corrections": list(data.get("corrections") or []),
+                    "undo": ({"kind": "brain_batch",
+                              "batch_id": str(data["brain_batch_id"])}
+                             if data.get("brain_batch_id") else None),
+                    "refs": [seq],
+                })
                 if data.get("skill"):
                     _lb["skills"].append(str(data.get("skill")))
         elif etype == "brain_proposal":
@@ -936,16 +959,22 @@ def changes_since(
             text = batches[0]["texts"][0]
             if not text.rstrip().endswith("back."):
                 text = text + " Say `undo` to put it back."
-        elif nouns:
-            text = ("Picked up how you rewrite your " + _and_list(nouns)
-                    + over + " — " + undo)
         else:
-            text = ("Picked up " + str(n) + " " + _plural(n, "thing")
-                    + " from how you rewrite my drafts" + over
-                    + " — " + undo)
+            # cr1#784: one line still, by the ruling above, and that line names
+            # each rule. A change written before that carries no rule to name.
+            head = ("Picked up how you rewrite your " + _and_list(nouns)
+                    if nouns else
+                    "Picked up " + str(n) + " " + _plural(n, "thing")
+                    + " from how you rewrite my drafts")
+            if any(c["effect"] for c in learned_changes):
+                rules = " ".join(c["rule"] for c in learned_changes if c["rule"])
+                text = head + over + ": " + rules + " " + undo[0].upper() + undo[1:]
+            else:
+                text = head + over + " — " + undo
         _line("learned", text,
               refs=(latest["seqs"] if n_batches > 1
-                    else [s for b in batches for s in b["seqs"]]))
+                    else [s for b in batches for s in b["seqs"]]),
+              changes=learned_changes)
     n = counts["proposals_resolved"]
     if n:
         _line("proposals_resolved",

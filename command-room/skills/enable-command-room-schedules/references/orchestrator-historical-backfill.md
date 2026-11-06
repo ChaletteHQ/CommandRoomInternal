@@ -28,7 +28,7 @@ If a previous chunk's pack_run event in events.jsonl shows `status: in_progress`
 
 # Phase 2 — Setup
 
-- Read entities.json + aliases.json (these get extended by this chunk, not replaced).
+- Read entities.json + aliases.json. This chunk adds to entities.json and replaces nothing; a person's new spelling goes through the write door, `plan run_writer` naming `people_writer:door_update_person` with `{"add_aliases": ["<spelling>"], "alias_evidence": "historical backfill", "person_id": "<id>", "source_skill": "historical-backfill", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `add_person_aliases(workspace_root, [{"person_id": "<id>", "alias": "<spelling>"}, ...], source_skill="historical-backfill", evidence="historical backfill")`). A spelling that comes back held was not saved: go on, its question is raised when it is a `name_on_file` row.
 - Read M's primary email + first name.
 - Discover available connector MCPs:
   - Gmail OR Outlook (whichever is connected; both possible — handle both)

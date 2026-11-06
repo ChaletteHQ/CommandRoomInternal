@@ -28,6 +28,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -166,15 +168,89 @@ def _fingerprint(skill: str, original: str, corrected: str) -> str:
     return hashlib.sha256(f"{skill}\x00{original}\x00{corrected}".encode("utf-8")).hexdigest()
 
 
+#: Two snapshots of the same words this close together are one draft retried,
+#: whatever ids they carry.
+DRAFT_RETRY_WINDOW = timedelta(minutes=10)
+
+
+def _same_draft(a: dict, b: dict) -> bool:
+    """Whether two draft snapshots are one draft. A click retried mints a new
+    event seq, so the seq cannot say this: the draft's own id can, and with no
+    id on either side the words it was addressed and written with can.
+
+    A retry can also come back with a new draft id, so different ids only mean
+    different drafts outside `DRAFT_RETRY_WINDOW`. The window reads when the
+    drafts were MADE. A row's own timestamp cannot: reconcile writes a whole
+    batch of sent mail in one go, and three drafts from three days would read
+    as one retry."""
+    same_words = all(a.get(k) == b.get(k)
+                     for k in ("skill", "recipient_email", "subject", "body"))
+    id_a, id_b = a.get("native_draft_id"), b.get("native_draft_id")
+    if not (id_a and id_b):
+        return same_words
+    if id_a == id_b:
+        return True
+    made_a, made_b = _parse_ts(a.get("ts")), _parse_ts(b.get("ts"))
+    return bool(same_words and made_a and made_b
+                and abs(made_a - made_b) <= DRAFT_RETRY_WINDOW)
+
+
+def _first_of_draft(workspace_root, seq) -> tuple:
+    """`(key, drafted_at)` for the draft `seq` was logged against: the seq of
+    that draft's FIRST snapshot, which every retry and the sent-mail read all
+    resolve to, and when it was made. With no snapshot on file the seq stands
+    alone and the date is unknown."""
+    snaps = [s for s in _load_snapshots(workspace_root)
+             if s.get("draft_event_seq") is not None]
+    mine = next((s for s in snaps if s.get("draft_event_seq") == seq), None)
+    if mine is None:
+        return seq, None
+    first = next(s for s in snaps if _same_draft(s, mine))
+    return first["draft_event_seq"], _parse_ts(first.get("ts"))
+
+
+def _could_be_from_draft(row: dict, key, drafted_at, doc_notes=None) -> bool:
+    """Whether a stored row with the same words can be this draft's. A row
+    with no draft key was stored before they were written down: it can only
+    have come from a draft that already existed when it was written, so a
+    draft made after it is a new correction. Anything unknown keeps the old
+    dedupe, because counting one edit twice is the worse mistake. For a
+    document the key-less row's notes name the file it came from, so they
+    answer exactly (`doc_notes`)."""
+    if key is None:
+        return True
+    stored = row.get("draft_ref")
+    if stored is not None:
+        return stored == key
+    if doc_notes is not None:
+        return row.get("notes") == doc_notes
+    written = _parse_ts(row.get("timestamp"))
+    return drafted_at is None or written is None or drafted_at <= written
+
+
 def append_correction(
     workspace_root, *, skill: str, domain: str, recipient_id: Optional[str],
     original: str, corrected: str, correction_type: str, notes: str = "",
-    draft_event_seq=None,
+    draft_event_seq=None, draft_ref: Optional[str] = None,
 ) -> bool:
-    """Append one correction row (VOICE_CALIBRATION schema, exact keys) to
+    """Append one correction row (the VOICE_CALIBRATION row format) to
     `_hq/voice/corrections-<skill>.jsonl`. Deduped against the log tail by
-    (skill, original, corrected). Returns True if written, False if a duplicate.
-    Never raises.
+    (skill, original, corrected) and, when the caller names one, the draft.
+    Returns True if written, False if a duplicate. Never raises.
+
+    cr1#778: THE DRAFT IS PART OF WHAT MAKES A ROW A REPEAT. The dedupe exists
+    so one edit read twice (reconcile over the same sent mail, a retried click)
+    counts once. Without the draft in the key it also collapsed the same phrase
+    deleted from three different drafts into one row, so what the owner kept
+    deleting could never show as repeated. A retry mints a new seq, so the key
+    is the seq of the draft's first snapshot (`_first_of_draft`), not the seq
+    passed in. A caller whose source is not a draft passes its own stable
+    `draft_ref` instead (the deliverable sweep names the document). A caller
+    with neither (a said correction) dedupes exactly as it always did. The
+    optional `draft_ref` key is written only when there is a source. It is not
+    named `draft_event_seq` on
+    purpose: cleanup's step 3g prunes a snapshot once a correction row carries
+    that key, and a pruned snapshot would lose a later edit in the mailbox.
 
     EVGUARD (Sub-bug #14b, second half) — the dedupe scan below skips non-dict
     rows as well as unparseable ones. A top-level bare-string line (`"seq"`)
@@ -189,6 +265,10 @@ def append_correction(
         from atomic_write import atomic_append_jsonl
         path = _voice_dir(workspace_root) / f"corrections-{skill}.jsonl"
         fp = _fingerprint(skill, original, corrected)
+        key, drafted_at = draft_ref, None
+        doc_notes = notes if draft_ref is not None else None
+        if key is None and draft_event_seq is not None:
+            key, drafted_at = _first_of_draft(workspace_root, draft_event_seq)
         if path.exists():
             # LEARNFIX1 fix round 1 (REVIEW_LEARNFIX1 F-2) — A LESSON YOU TOOK
             # BACK AND SAID AGAIN IS LEARNED AGAIN. This scan used to compare
@@ -220,7 +300,8 @@ def append_correction(
                     if retracts == fp:
                         active = False
                     continue
-                if _fingerprint(skill, row.get("original_draft", ""), row.get("corrected_by_user", "")) == fp:
+                if (_fingerprint(skill, row.get("original_draft", ""), row.get("corrected_by_user", "")) == fp
+                        and _could_be_from_draft(row, key, drafted_at, doc_notes)):
                     active = True
             if active:
                 return False
@@ -234,6 +315,8 @@ def append_correction(
             "correction_type": correction_type,
             "notes": notes,
         }
+        if key is not None:
+            row["draft_ref"] = key
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_append_jsonl(path, [row])
         return True
@@ -981,10 +1064,12 @@ def write_voice_block_override(
 # keys.
 # ---------------------------------------------------------------------------
 
-# Ops a correction can express. The op — not the literal text — is the
-# "same pattern" the >=3 floor counts, because someone who deletes twelve
-# DIFFERENT filler phrases from their documents has said one thing twelve
-# times, not twelve things once.
+# Ops a correction can express. The floor counts one learned ITEM inside an op,
+# the phrase or the paragraph count (the maintainer's ruling on cr1#778): one
+# phrase deleted three times teaches that phrase, and twelve different phrases
+# deleted once each teach nothing. A shorten that named no count is its own
+# item. The job remembers the same thing it counts, so a learned item closes
+# itself and leaves the kind open.
 OP_BAN_PHRASE = "ban_phrase"
 OP_SHORTEN = "shorten"
 # A dash deletion is NOT a learned taboo: dashes-as-punctuation are banned by
@@ -1003,11 +1088,16 @@ VOICE_OP_SECTIONS = {
     OP_SHORTEN: "Structure",
 }
 
-# D5, unchanged: >=3 same-pattern corrections per skill before anything moves.
-VOICE_THRESHOLD = 3
-# The amendments' worst-case paragraph is the authority on the cap: "the
-# system can ban at most three phrases per writing skill it has seen the
-# client rewrite three or more times". Three PHRASES PER SKILL per run.
+# cr1#784, rulings C2 and C4 of 2026-11-04. The two numbers count corrections
+# of ONE item in one skill, the same phrase or the same paragraph count (the
+# ruling on cr1#778), and never the kind. At `VOICE_ASK_THRESHOLD` the owner is
+# asked; at `VOICE_THRESHOLD` the rule applies without asking. These are the
+# DEFAULTS: both are settings, read through `learning_pass.learning_thresholds`.
+VOICE_ASK_THRESHOLD = 2
+VOICE_THRESHOLD = 4
+# The amendments' worst-case paragraph is the authority on the cap: at most
+# three phrases per writing skill per run. It was written when the bar was three
+# rewrites; the bar is now the two numbers above, and the cap did not move.
 VOICE_CAP = 3
 
 # A12 — the narration noun, per skill. Never a skill name on a customer line.
@@ -1042,7 +1132,7 @@ def voice_surface_noun(skill: str) -> str:
 def normalize_correction_row(row: dict) -> Optional[dict]:
     """Fold either on-disk correction shape into one row. Pure; None-safe.
     Returns `{skill, timestamp, recipient_id, domain, original, corrected,
-    correction_type, notes}` or None for a row that is not a dict."""
+    correction_type, notes, draft_ref}` or None for a row that is not a dict."""
     if not isinstance(row, dict):
         return None
     alt = ("drafted" in row) or ("sent" in row)
@@ -1056,6 +1146,7 @@ def normalize_correction_row(row: dict) -> Optional[dict]:
             "original": row.get("drafted") or "",
             "corrected": row.get("sent") or "",
             "correction_type": row.get("field") or "",
+            "draft_ref": row.get("draft_ref"),
         }
     else:
         # The banked corpus holds FIVE on-disk shapes, not two. Three of them
@@ -1090,6 +1181,7 @@ def normalize_correction_row(row: dict) -> Optional[dict]:
             "corrected": row.get("corrected_by_user") or "",
             "correction_type": row.get("correction_type")
             or row.get("edit_type") or "",
+            "draft_ref": row.get("draft_ref"),
         }
     if isinstance(notes, list):
         notes = " ".join(str(n) for n in notes)
@@ -1172,9 +1264,10 @@ def classify_correction_op(nrow: dict):
 
 
 def group_op_patterns(rows: List[dict]) -> Dict[tuple, List[dict]]:
-    """Group raw correction rows by `(skill, op)` — the pattern key the
-    >=3 floor counts. Pure. Values are `{"op_arg", "row"}` entries in the
-    order they were read."""
+    """Group raw correction rows by `(skill, op)`. Pure. Values are
+    `{"op_arg", "row"}` entries in the order they were read; `op_arg` is the
+    item each row would teach, and `propose_voice_updates` counts the floor
+    per item inside each group."""
     groups: Dict[tuple, List[dict]] = {}
     for raw in rows or []:
         nrow = normalize_correction_row(raw)
@@ -1189,8 +1282,25 @@ def group_op_patterns(rows: List[dict]) -> Dict[tuple, List[dict]]:
 
 
 def voice_proposal_fingerprint(skill: str, op: str) -> str:
+    """The PAIR key: the whole kind of correction in one skill. Nothing new is
+    applied under it (cr1#778). It stays because deletion rows name it, where
+    it closes the kind, and because books written before that fix hold it in
+    the ledger, where it no longer does (`learning_pass._voice_exclusions`).
+    Do not change this derivation: those rows are never rewritten."""
     return "vbu_" + hashlib.sha256(
         f"{(skill or '').lower()}\x00{op}".encode("utf-8")).hexdigest()[:16]
+
+
+def voice_item_fingerprint(skill: str, op: str, item) -> str:
+    """The key one learned thing is remembered by: the phrase for
+    `ban_phrase`, the paragraph count for `shorten`, None for a shorten that
+    named no count. Applied and undone changes exclude this and nothing wider,
+    so the next phrase in the same skill stays learnable. The third field
+    keeps it from ever equalling the pair key, even for None."""
+    text = "" if item is None else str(item)
+    return "vbu_" + hashlib.sha256(
+        f"{(skill or '').lower()}\x00{op}\x00{text}".encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def _quoted_list(phrases: List[str]) -> str:
@@ -1202,8 +1312,180 @@ def _quoted_list(phrases: List[str]) -> str:
     return ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
+#: What makes a line a rule against a phrase, outside a Taboos section.
+_BAN_WORD_RE = re.compile(r"\b(?:never|avoids?|avoided|banned|don't|do not)\b",
+                          re.IGNORECASE)
+
+
+def _lines_outside_examples(block_markdown: str) -> list:
+    """`(section, line)` for the block's lines, with every `### Examples` left
+    out. An override starts as a copy of the baked block, so sample drafts sit
+    in it, and words in a sample are not a rule about those words."""
+    out: list = []
+    section = ""
+    for line in (block_markdown or "").split("\n"):
+        head = _SECTION_HEAD_RE.match(line)
+        if head:
+            section = head.group(1).lower()
+        elif "example" not in section:
+            out.append((section, line))
+    return out
+
+
+#: A learned line's label and its note about how many drafts it came from.
+#: Neither is the rule: "drafts" or "learned" in them bans nothing.
+_LEARNED_LABEL_RE = re.compile(r"^\s*[-*]\s+Learned\b[^:\n]*:\s*")
+_LEARNED_NOTE_RE = re.compile(
+    u"\\s*(?:\\(you rewrote\\b.*|\\(\\d+ drafts? cut\\b.*"
+    u"|[-\u2013\u2014] you cut \\d+ drafts?\\b.*)$")
+
+
+def _rule_text(line: str) -> str:
+    """What a block line says as a rule, without those two."""
+    return _LEARNED_NOTE_RE.sub("", _LEARNED_LABEL_RE.sub("", line))
+
+
 def _phrase_already_banned(block_markdown: str, phrase: str) -> bool:
-    return phrase.lower() in (block_markdown or "").lower()
+    """Whether a rule line in the block already bans this phrase: a bullet
+    under Taboos, or one that says never or avoid, learned or stated. A line
+    saying what to use is not a ban, and neither is a sample draft, so a phrase
+    that merely appears in either stays learnable (cr1#784). A learned line's
+    label and its note are not part of the rule."""
+    pattern = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
+    for section, line in _lines_outside_examples(block_markdown):
+        text = _rule_text(line)
+        if (line.lstrip().startswith(("- ", "* ")) and pattern.search(text)
+                and (section.startswith("taboo") or _BAN_WORD_RE.search(text))):
+            return True
+    return False
+
+
+# The two bullets `apply_voice_delta` writes for a shorten. Anchored on the
+# learned-line shape so a baked block's own wording can never read as learned.
+_LEARNED_COUNT_RE = re.compile(
+    r"^- Learned [^:\n]*: paragraph count \S+ keep it to (\d+)\b", re.MULTILINE)
+_LEARNED_SHORT_RE = re.compile(r"^- Learned [^:\n]*: keep it short\b",
+                               re.MULTILINE)
+
+
+def _length_already_learned(block_markdown: str, target) -> bool:
+    """A learned paragraph count covers every looser one: with "keep it to 2"
+    in force, a third bullet saying 3 would only contradict it. A shorten with
+    no count is its own item, covered only by its own line."""
+    text = block_markdown or ""
+    if target is None:
+        return bool(_LEARNED_SHORT_RE.search(text))
+    return any(int(n) <= target for n in _LEARNED_COUNT_RE.findall(text))
+
+
+def _item_open(skill: str, op: str, item, block: str, closed: set) -> bool:
+    """Whether one correction's item can still be learned: not excluded by its
+    own fingerprint and not already in the skill's block."""
+    if op == OP_BAN_PHRASE and not item:
+        return False
+    if voice_item_fingerprint(skill, op, item) in closed:
+        return False
+    if op == OP_BAN_PHRASE:
+        return not _phrase_already_banned(block, item)
+    return not _length_already_learned(block, item)
+
+
+_LEGACY_COUNT_RE = re.compile(r"^Kept it to (\d+)\b")
+
+
+def items_named_in_line(op: str, line: str) -> list:
+    """What a past `plain` sentence learned, read back. Pure. Changes written
+    before cr1#778 carry only the pair fingerprint, so this sentence on their
+    event is the one record of which phrases an undone change held."""
+    text = line or ""
+    if op == OP_BAN_PHRASE:
+        return [p.lower() for p in
+                _QUOTED_PHRASE_RE.findall(text.split("you rewrote")[0])]
+    if op == OP_SHORTEN:
+        m = _LEGACY_COUNT_RE.match(text)
+        if m:
+            return [int(m.group(1))]
+        return [None] if text.startswith("Started writing shorter") else []
+    return []
+
+
+def _paragraphs_word(count: int) -> str:
+    return str(count) + " " + ("paragraph" if count == 1 else "paragraphs")
+
+
+def rule_sentences(skill: str, op: str, phrases: List[str], target) -> tuple:
+    """`(rule, effect)` for one learned change, in the owner's words (cr1#784):
+    the rule in one sentence, and what it changes from now on. Pure."""
+    noun = voice_surface_noun(skill)
+    if op == OP_BAN_PHRASE:
+        pronoun = "it" if len(phrases) == 1 else "them"
+        return ("Never write " + _quoted_list(phrases) + " " + noun + ".",
+                "From now on I leave " + pronoun + " out " + noun + ".")
+    if target is None:
+        return ("Write shorter " + noun + ".",
+                "From now on my first drafts come out shorter " + noun + ".")
+    return ("Keep it to " + _paragraphs_word(target) + " " + noun + ".",
+            "From now on I stop at " + _paragraphs_word(target) + " " + noun + ".")
+
+
+def plain_sentence(skill: str, op: str, phrases: List[str], target,
+                   count: int) -> str:
+    """The past-tense sentence a learned change is narrated with. Pure."""
+    noun = voice_surface_noun(skill)
+    if op == OP_BAN_PHRASE:
+        return ("Stopped using " + _quoted_list(phrases) + " " + noun
+                + " — you rewrote " + ("that" if len(phrases) == 1 else "those")
+                + " " + str(count) + " times.")
+    if target is None:
+        return ("Started writing shorter " + noun + " — you cut " + str(count)
+                + " drafts down.")
+    return ("Kept it to " + _paragraphs_word(target) + " " + noun
+            + " — you cut longer drafts to that " + str(count) + " times.")
+
+
+def correction_ref(skill: str, op: str, entry: dict) -> dict:
+    """What a rule keeps of one correction it came from: enough to find the
+    row in the corrections log again, and no draft text, because bodies stay
+    out of the event stream."""
+    row = entry.get("row") or {}
+    return {"skill": skill, "op": op, "item": entry.get("op_arg"),
+            "timestamp": row.get("timestamp"),
+            "draft_ref": row.get("draft_ref"),
+            "fingerprint": _fingerprint(skill, row.get("original") or "",
+                                        row.get("corrected") or "")}
+
+
+def row_goes_against(op: str, item, nrow: dict) -> bool:
+    """Whether one normalized correction, made after a rule landed, is the
+    owner correcting AGAINST it (cr1#784, ruling C5): the banned phrase written
+    back in, or a draft inside the learned length made longer. Pure. A thing
+    said in passing is not an edit, and a phrase that merely sits inside a
+    longer word, or was already in the draft, proves nothing.
+
+    A length is about a WHOLE draft, and most rows hold one paragraph pair
+    (`diff_and_classify`). So a length rule counts only rows that state a
+    whole-draft count: the `paragraph count a->b` note, or the `N blocks`
+    summary shape. That note is written only when the count moves by two or
+    more, so a draft taken one paragraph over goes uncounted. A rule with no
+    count has no whole draft to read at all and stays uncounted."""
+    if not isinstance(nrow, dict) or _is_asked_row(nrow):
+        return False
+    original = nrow.get("original") or ""
+    corrected = nrow.get("corrected") or ""
+    if op == OP_BAN_PHRASE:
+        if not item:
+            return False
+        pattern = re.compile(r"(?<!\w)" + re.escape(str(item)) + r"(?!\w)",
+                             re.IGNORECASE)
+        return bool(pattern.search(corrected)) and not pattern.search(original)
+    if op != OP_SHORTEN or item is None:
+        return False
+    m = _PARA_NOTE_RE.search(nrow.get("notes") or "")
+    if m:
+        return int(m.group(1)) <= item < int(m.group(2))
+    before, after = _BLOCK_COUNT_RE.search(original), _BLOCK_COUNT_RE.search(corrected)
+    return bool(before and after
+                and int(before.group(1)) <= item < int(after.group(1)))
 
 
 def propose_voice_updates(
@@ -1213,79 +1495,233 @@ def propose_voice_updates(
     cooldown_fingerprints: Optional[set] = None,
     cap: int = VOICE_CAP,
     threshold: int = VOICE_THRESHOLD,
+    ceiling: Optional[int] = None,
 ) -> List[dict]:
     """Turn `(skill, op)` groups into at most one voice-block delta per
-    `(skill, op)`. Pure — no reads, no writes, no clock.
+    `(skill, op)` per run. Pure: no reads, no writes, no clock.
 
-    A group proposes when it holds >= `threshold` corrections AND the op has
-    a section to land in (`dash_default` never does — the ban is already the
-    product default). Phrases already present in the skill's current block
-    are dropped, and what remains is capped at `cap` PER SKILL.
+    cr1#778: the floor is per learned item, by the maintainer's ruling. An item
+    proposes when it alone holds >= `threshold` corrections, it is not already
+    learned (in the block, or excluded by its own fingerprint), and the op has
+    a section to land in (`dash_default` never does, the ban is already the
+    product default). That one comparison is the whole floor. Phrases at the
+    floor go most-repeated first and are capped at `cap` PER SKILL; a shorten
+    learns the tightest count at the floor. `count` is the rows of the items
+    named, nothing else.
+
+    cr1#784: `ceiling`, when given, leaves out an item that has reached it.
+    The job calls this twice over one set of groups: once at the apply number
+    with no ceiling, and once at the ask number with the apply number as the
+    ceiling, so an item is either applied or asked and never both.
+
+    `cooldown_fingerprints` closes at either width: an item fingerprint closes
+    that item, a pair fingerprint closes the kind (a deleted line).
 
     Each proposal: `{skill, op, section, phrases, target_blocks, count,
-    fingerprint, surface_noun, plain, evidence_rows}`."""
+    fingerprint, item_fingerprints, item_counts, surface_noun, plain, rule,
+    effect, corrections, evidence_rows}`. `item_fingerprints` holds one per
+    learned item; `fingerprint` is the first of them, the one the proposal
+    rail keys on. `item_counts` is each item's own count, and `corrections`
+    the rows those counts came from."""
     existing_overrides = existing_overrides or {}
     cooling = cooldown_fingerprints or set()
     out: List[dict] = []
     for (skill, op) in sorted(groups, key=lambda k: (-len(groups[k]), k[0], k[1])):
-        entries = groups[(skill, op)]
-        if len(entries) < threshold:
-            continue
         section = VOICE_OP_SECTIONS.get(op)
-        if not section:
-            continue
-        fingerprint = voice_proposal_fingerprint(skill, op)
-        if fingerprint in cooling:
+        if not section or voice_proposal_fingerprint(skill, op) in cooling:
             continue
         block = existing_overrides.get(skill) or ""
+        counts = Counter(e.get("op_arg") for e in groups[(skill, op)]
+                         if _item_open(skill, op, e.get("op_arg"), block, cooling))
+        # THE FLOOR: one threshold against one item's own count.
+        at_floor = [item for item, n in counts.items() if n >= threshold
+                    and (ceiling is None or n < ceiling)]
+        if not at_floor:
+            continue
         phrases: List[str] = []
         target_blocks = None
         if op == OP_BAN_PHRASE:
-            seen = set()
-            for entry in entries:
-                phrase = entry.get("op_arg")
-                if not phrase or phrase in seen:
-                    continue
-                seen.add(phrase)
-                if _phrase_already_banned(block, phrase):
-                    continue
-                phrases.append(phrase)
-            phrases = phrases[:max(0, cap)]
+            # sorted() is stable, so equal counts keep the order they were read.
+            phrases = sorted(at_floor, key=lambda p: -counts[p])[:max(0, cap)]
             if not phrases:
                 continue
-            plain = ("Stopped using " + _quoted_list(phrases) + " "
-                     + voice_surface_noun(skill) + " — you rewrote "
-                     + ("that" if len(phrases) == 1 else "those") + " "
-                     + str(len(entries)) + " times.")
+            count = sum(counts[p] for p in phrases)
+            items = phrases
         else:
-            targets = [e["op_arg"] for e in entries
-                       if isinstance(e.get("op_arg"), int)]
+            targets = [t for t in at_floor if isinstance(t, int)]
             target_blocks = min(targets) if targets else None
-            if target_blocks is None:
-                plain = ("Started writing shorter " + voice_surface_noun(skill)
-                         + " — you cut " + str(len(entries)) + " drafts down.")
-            else:
-                plain = ("Kept it to " + str(target_blocks) + " "
-                         + ("paragraph" if target_blocks == 1 else "paragraphs")
-                         + " " + voice_surface_noun(skill)
-                         + " — you cut longer drafts to that "
-                         + str(len(entries)) + " times.")
+            count = counts[target_blocks]
+            items = [target_blocks]
+        plain = plain_sentence(skill, op, phrases, target_blocks, count)
+        item_fingerprints = [voice_item_fingerprint(skill, op, i) for i in items]
+        rule, effect = rule_sentences(skill, op, phrases, target_blocks)
         out.append({
             "skill": skill,
             "op": op,
             "section": section,
             "phrases": phrases,
             "target_blocks": target_blocks,
-            "count": len(entries),
-            "fingerprint": fingerprint,
+            "count": count,
+            "fingerprint": item_fingerprints[0],
+            "item_fingerprints": item_fingerprints,
+            "item_counts": {fp: counts[i]
+                            for fp, i in zip(item_fingerprints, items)},
             "surface_noun": voice_surface_noun(skill),
             "plain": plain,
-            "evidence_rows": len(entries),
+            "rule": rule,
+            "effect": effect,
+            "corrections": [correction_ref(skill, op, e)
+                            for e in groups[(skill, op)]
+                            if e.get("op_arg") in items],
+            "evidence_rows": count,
         })
     return out
 
 
 _SECTION_HEAD_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
+
+
+def learned_bullet(proposal: dict, *, learned_on: Optional[str] = None) -> str:
+    """The one line a proposal adds to a voice block. Pure. The change's event
+    carries it, because this line is what its Undo takes back (cr1#784)."""
+    date = (learned_on or "")[:10]
+    phrases = list(proposal.get("phrases") or [])
+    if proposal.get("op") == OP_BAN_PHRASE:
+        return ("- Learned " + date + ": never " + _quoted_list(phrases)
+                + " (you rewrote " + str(proposal.get("evidence_rows", 0))
+                + " drafts to drop "
+                + ("it" if len(phrases) == 1 else "them") + ")")
+    target = proposal.get("target_blocks")
+    if target is None:
+        return ("- Learned " + date + ": keep it short — you cut "
+                + str(proposal.get("evidence_rows", 0)) + " drafts down")
+    return ("- Learned " + date + ": paragraph count — keep it to "
+            + str(target) + " (" + str(proposal.get("evidence_rows", 0))
+            + " drafts cut to that)")
+
+
+def _line_names(op: str, line: str, item) -> bool:
+    """Whether a block line says this learned item."""
+    if op == OP_BAN_PHRASE:
+        return '"' + str(item) + '"' in line.lower()
+    if item is None:
+        return "keep it short" in line
+    return "keep it to " + str(item) + " " in line
+
+
+_NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+                 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+
+
+#: Curly quotes to straight ones, and every hyphen and dash to a space.
+_NORMAL_MARKS = str.maketrans({
+    u"\u2018": "'", u"\u2019": "'", u"\u201a": "'", u"\u201b": "'", u"\u02bc": "'",
+    u"\u201c": '"', u"\u201d": '"', u"\u201e": '"', u"\u201f": '"',
+    "-": " ", u"\u2010": " ", u"\u2011": " ", u"\u2012": " ", u"\u2013": " ",
+    u"\u2014": " ", u"\u2015": " "})
+
+
+def _normal(text: str) -> str:
+    """Lower case, one kind of quote, no hyphens, single spaces."""
+    return " ".join(str(text).translate(_NORMAL_MARKS).lower().split())
+
+
+def _line_mentions(op: str, line: str, item) -> bool:
+    """Whether a line says this item in a shape a person is likely to leave it
+    in. Looser than `_line_names` on purpose: this is what stops an Undo saying
+    a rule is gone, and it never picks a line to remove. It reads known shapes,
+    so a free rewording is out of its reach, and the receipt says so. A quoted
+    phrase that merely contains this one is that other phrase."""
+    text = _normal(_rule_text(line))
+    if op == OP_BAN_PHRASE:
+        want = _normal(item)
+        text = re.sub(r'"([^"]*)"', lambda m: m.group(0) if m.group(1).strip() == want
+                      else '""', text)
+        return bool(re.search(r"(?<!\w)" + re.escape(want) + r"(?!\w)", text))
+    if item is None:
+        return "keep it short" in text or "shorter" in text
+    count = f"(?:{item}|{_NUMBER_WORDS.get(item, item)})"
+    return bool(re.search(
+        rf"\b(?:keep (?:it )?to|max|maximum|at most|no more than|never more than"
+        rf"|up to|stick to|limit(?:ed)? to) {count}\b"
+        rf"|\b{count} (?:paragraphs?|paras?)\b", text))
+
+
+def line_of_change(markdown: str, change: dict, *,
+                   baseline: str = "") -> Optional[str]:
+    """The line of `markdown` one learned change wrote, or None when it is not
+    there. A change written since cr1#784 names its line. A line edited by hand
+    since, or written by an older change, is found as the learned line that
+    neither its `previous_markdown` nor `baseline` had, naming what the change
+    learned, the newest such line first: one naming all of it, else one naming
+    part of it."""
+    lines = (markdown or "").split("\n")
+    line = change.get("learned_line")
+    if line and line in lines:
+        return line
+    op = str(change.get("op") or "")
+    items = items_named_in_line(op, str(change.get("delta") or ""))
+    if not items:
+        return None
+    before = set(((change.get("previous_markdown") or "") + "\n"
+                  + baseline).split("\n"))
+    mine = [c for c in reversed(lines)
+            if c.startswith("- Learned ") and c not in before]
+    for wanted in (all, any):
+        for candidate in mine:
+            if wanted(_line_names(op, candidate, item) for item in items):
+                return candidate
+    return None
+
+
+def items_still_named(markdown: str, change: dict, *, baseline: str = "") -> list:
+    """What this change learned that a rule line of the block still says.
+    A rule line is a line under `## Voice Block` that is no heading and no
+    sample draft, so the file's header says nothing. Lines the block had before
+    the change, or holds from `baseline`, say nothing about it either. Anything
+    returned with no `line_of_change` is a rule the owner reshaped or moved: it
+    is in force, and an Undo must not guess at it, or call it gone."""
+    op = str(change.get("op") or "")
+    before = set(((change.get("previous_markdown") or "") + "\n"
+                  + baseline).split("\n"))
+    text = markdown or ""
+    at = text.find("## Voice Block")
+    lines = [line for _section, line in
+             _lines_outside_examples(text[at:] if at >= 0 else text)
+             if line.strip() and not line.startswith("#") and line not in before]
+    return [item for item in items_named_in_line(op, str(change.get("delta") or ""))
+            if any(_line_mentions(op, line, item) for line in lines)]
+
+
+def has_owner_lines(markdown: str, baked: str) -> bool:
+    """Whether a voice file holds anything beyond its header, its section heads
+    and the baked block it was copied from."""
+    text = markdown or ""
+    at = text.find("## Voice Block")
+    copied = {line.strip() for line in (baked or "").split("\n")}
+    return any(line.strip() and not line.strip().startswith("#")
+               and line.strip() not in copied
+               for line in (text[at:] if at >= 0 else text).split("\n"))
+
+
+def without_learned_line(markdown: str, line: str, *, section: str = "",
+                         keep_heading_from: str = "") -> str:
+    """`markdown` with the last copy of `line` removed. Pure. A section left
+    empty by that loses its heading too, unless `keep_heading_from` has it, so
+    a block that gained a section for this one line goes back to not having it."""
+    lines = markdown.split("\n")
+    at = len(lines) - 1 - lines[::-1].index(line)
+    del lines[at]
+    head_at = at - 1
+    while head_at >= 0 and not lines[head_at].strip():
+        head_at -= 1
+    head = _SECTION_HEAD_RE.match(lines[head_at]) if head_at >= 0 else None
+    follows = next((ln for ln in lines[at:] if ln.strip()), "")
+    if (head and section and head.group(1).lower().startswith(section.lower())
+            and (not follows or follows.startswith("#"))
+            and lines[head_at] not in keep_heading_from.split("\n")):
+        del lines[head_at]
+    return "\n".join(lines)
 
 
 def apply_voice_delta(block_markdown: str, proposal: dict, *,
@@ -1299,23 +1735,7 @@ def apply_voice_delta(block_markdown: str, proposal: dict, *,
     A block with no matching `###` section gains one at the end."""
     text = block_markdown or "## Voice Block\n"
     section = proposal.get("section") or ""
-    date = (learned_on or "")[:10]
-    phrases = list(proposal.get("phrases") or [])
-    if proposal.get("op") == OP_BAN_PHRASE:
-        bullet = ("- Learned " + date + ": never " + _quoted_list(phrases)
-                  + " (you rewrote " + str(proposal.get("evidence_rows", 0))
-                  + " drafts to drop "
-                  + ("it" if len(phrases) == 1 else "them") + ")")
-    else:
-        target = proposal.get("target_blocks")
-        if target is None:
-            bullet = ("- Learned " + date + ": keep it short — you cut "
-                      + str(proposal.get("evidence_rows", 0)) + " drafts down")
-        else:
-            bullet = ("- Learned " + date + ": paragraph count — keep it to "
-                      + str(target) + " ("
-                      + str(proposal.get("evidence_rows", 0))
-                      + " drafts cut to that)")
+    bullet = learned_bullet(proposal, learned_on=learned_on)
     lines = text.split("\n")
     start = None
     for i, line in enumerate(lines):
@@ -1415,7 +1835,7 @@ __all__ = [
     "group_correction_patterns", "load_voice_block_override",
     "write_voice_block_override", "parse_taboos_allow", "parse_ban_dashes",
     "OP_BAN_PHRASE", "OP_SHORTEN", "OP_DASH_DEFAULT", "VOICE_OP_SECTIONS",
-    "VOICE_THRESHOLD", "VOICE_CAP", "VOICE_SURFACE_NOUNS",
+    "VOICE_THRESHOLD", "VOICE_ASK_THRESHOLD", "VOICE_CAP", "VOICE_SURFACE_NOUNS",
     "VOICE_SURFACE_NOUN_DEFAULT", "voice_surface_noun",
     "normalize_correction_row", "classify_correction_op", "group_op_patterns",
     "voice_proposal_fingerprint", "propose_voice_updates", "apply_voice_delta",

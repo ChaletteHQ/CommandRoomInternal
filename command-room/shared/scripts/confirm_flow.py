@@ -124,6 +124,35 @@ PERSON_EVIDENCE_KEYS = ("evidence", "signal", "note", "context", "reason")
 # than re-derived per caller: one loader, one answer.
 PERSON_EMAIL_KEYS = ("email", "observed_email", "address", "email_address")
 
+# cr1#754: the source of a mention is the KIND of the record it came from,
+# stamped on the proposal when it is written (`data.source_kind`) and read
+# from that stamp alone, never from a word in its text. These are the
+# connector kinds (`connector_capabilities.json`), so a task board, document,
+# deal or contract is a source of its own. A row with no stamp is no source:
+# old rows were written before the stamp, and their words prove nothing.
+PERSON_SOURCE_KINDS = ("mail", "calendar", "chat", "meetings", "tasks",
+                       "documents", "deals", "contracts")
+# The kind a pointer's own scheme states, for the writers that hold a pointer
+# and no connector record. Exact match on the part before the colon: this is
+# the pointer's shape, and prose in the same field states no kind.
+_SOURCE_REF_SCHEME_KINDS = {
+    "gmail": "mail", "superhuman": "mail", "outlook": "mail", "mail": "mail",
+    "gcal": "calendar", "calendar": "calendar",
+    "slack": "chat", "teams": "chat", "chat": "chat", "session": "chat",
+    "granola": "meetings",
+    "drive": "documents", "onedrive": "documents", "sharepoint": "documents",
+}
+_SOURCE_REF_SCHEME_RE = _re.compile(r"^([a-z][a-z0-9_-]*):\S+$")
+
+
+def person_source_kind(source_ref=None, source_kind=None) -> Optional[str]:
+    """The kind to stamp on a person proposal: the writer's own word if it is
+    a kind, else what the pointer's scheme states, else None (no stamp)."""
+    if source_kind in PERSON_SOURCE_KINDS:
+        return source_kind
+    match = _SOURCE_REF_SCHEME_RE.match(str(source_ref or "").strip().lower())
+    return _SOURCE_REF_SCHEME_KINDS.get(match.group(1)) if match else None
+
 
 def _first_str(data: dict, keys) -> Optional[str]:
     """First non-empty string value across the legacy field spellings."""
@@ -396,11 +425,97 @@ def person_name_on_file(workspace_root, name) -> bool:
         return False
 
 
+def may_surface(surface_on, today) -> bool:
+    """THE rule for "may this question come up today" (cr1#773). `surface_on`
+    is the workspace-local date a row was stamped with, `today` the same kind
+    of date. No stamp is every row but a connector's, and every old row: it
+    comes up as it always did. Both are YYYY-MM-DD, so they order as text."""
+    return not surface_on or str(surface_on) <= str(today)
+
+
+def question_clock(row: dict):
+    """When a person question started being asked: the moment the row could
+    first surface, which is its capture unless it was held back (cr1#773). A
+    lifetime or an aged default reads this, so a row waiting its turn is never
+    aged by the wait. A hand-built row with no `asked_ts` is its capture."""
+    return row.get("asked_ts") or row.get("captured_ts")
+
+
+def _surface_day(value) -> Optional[str]:
+    """A stamp the reader can trust, or None. A stamp that is not a date
+    holds nothing back: the row comes up as an unstamped one does."""
+    if not isinstance(value, str) or len(value) != 10:
+        return None
+    try:
+        return _dt.date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _workspace_zone(workspace_root):
+    """The workspace's zone, UTC when it cannot be read."""
+    try:
+        from tz import load_workspace_tz
+        return load_workspace_tz(workspace_root)
+    except Exception:
+        return _dt.timezone.utc
+
+
+def _asked_ts(captured_ts, surface_on, zone):
+    """`question_clock`'s value for one row: the start of its surface day in
+    `zone` when that is after its capture, else its capture."""
+    if not surface_on:
+        return captured_ts
+    day = _dt.date.fromisoformat(surface_on)
+    start = _dt.datetime(day.year, day.month, day.day, tzinfo=zone)
+    from event_time import parse_ts
+    when = parse_ts(captured_ts)
+    if when is not None and when >= start:
+        return captured_ts
+    return start.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def person_row_aged_out(row: dict, now) -> bool:
+    """FS-17: a name-only mention past its window never renders. `now` is an
+    aware datetime, or None for no ageing."""
+    from brain_proposals import (PERSON_LOW_CONTEXT_STALE_DAYS,
+                                 person_proposal_is_low_context)
+    from event_time import parse_ts
+
+    if now is None or not person_proposal_is_low_context(row):
+        return False
+    opened = parse_ts(question_clock(row))
+    return opened is not None and \
+        (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS
+
+
+def _row_name_key(row: dict) -> Optional[str]:
+    """`_person_name_key` for a loader row: the name a row belongs to, or None
+    for a row with no name or about a record on file, which stands alone."""
+    if row.get("person_id"):
+        return None
+    return " ".join((row.get("name") or "").lower().split()) or None
+
+
+def _surfacing_rows(rows: list[dict], today: str, now) -> list[dict]:
+    """The rows a render may show today. One person is one question (cr1#754),
+    so a name waits only while every row of it waits: a name already up keeps
+    all its sightings, a held one among them. A row past FS-17 renders nothing,
+    so it brings no name up."""
+    up = {_row_name_key(r) for r in rows
+          if may_surface(r.get("surface_on"), today)
+          and not person_row_aged_out(r, now)}
+    return [r for r in rows if (_row_name_key(r) in up if _row_name_key(r)
+                                else may_surface(r.get("surface_on"), today))]
+
+
 def load_open_person_proposals(
     events_jsonl_path,
     *,
     dismissed_target_ids: Optional[Iterable[str]] = None,
     suppress_on_file: bool = False,
+    one_row_per_name: bool = False,
+    surfacing_at: Optional[str] = None,
 ) -> list[dict]:
     """Every person_proposal / person_update_proposal event NOT yet
     adjudicated by a person_proposal_resolved tombstone. These re-surface
@@ -420,12 +535,41 @@ def load_open_person_proposals(
     Adjudication chain: a person_proposal_resolved whose data.proposal_seq
     matches the proposal's seq retires it permanently (Add person / Same as
     / Not relevant all write one — see build_person_proposal_resolved_event).
-    `dismissed_target_ids` (mute_ledger set, matched against str(seq))
-    additionally quiets a snoozed row for its TTL without adjudicating it.
+    `dismissed_target_ids` (mute_ledger set, matched against str(seq),
+    `person:<seq>` or `person:fp:<fingerprint>`, every spelling
+    `identity_reconcile.plan_reconcile` honours) additionally quiets a snoozed
+    row for its TTL without adjudicating it.
+
+    cr1#754: ONE PERSON IS ONE QUESTION. A name can hold several rows, one per
+    sighting, so the owner's answer or hold is on the name, not the row. A
+    `brain_batch_id` marks a tombstone a run wrote: a run names each row it
+    closes, and may leave one open on purpose (a different address), so its
+    tombstones stay per row.
+      * the owner's answer on any row closes the rows of that name written
+        before it, so "not relevant" leaves no second row to ask;
+      * the owner's not_relevant also closes what is written after it, so a
+        later sighting cannot add someone the owner dismissed;
+      * neither closes a row carrying an address the answered row did not:
+        that may be a different person (`contact_capture` holds the same);
+      * a hold on any row quiets every row of that name, a later one included.
+    A `person_proposal_reopened` lifts what its tombstone closed, but nothing
+    shipped writes one for the owner's own dismissal, as on main.
+    `one_row_per_name=True` is for a surface that renders these rows one by
+    one: it keeps the row the clustered surfaces take their id from
+    (`identity_reconcile._cluster_row_id`), the oldest add row with an int
+    seq. The default keeps every row, because a cluster needs each sighting.
+
+    cr1#773: `surfacing_at` (an ISO instant) is for a surface that SHOWS these
+    rows to the owner: a name whose rows are all stamped for a later day in
+    the workspace's zone (`data.surface_on`, `may_surface`) is left out until
+    that day. It waits on the ledger, so the default keeps it: dedup, the
+    people pass and a mention in chat all still see it. The filter runs last,
+    so an answer or a hold reaches a waiting row as it reaches any other.
 
     Returns rows oldest first:
       {seq, type, name, person_id, inferred_role, inferred_org, evidence,
-       review_reason, source_ref, email, captured_ts}
+       review_reason, source_ref, email, source_kind, source_user_id,
+       source_company, captured_ts, surface_on, asked_ts}
 
     name / inferred_role / inferred_org / evidence / source_ref are
     COALESCED across the legacy field spellings (PERSON_*_KEYS — FB-8): the
@@ -437,10 +581,12 @@ def load_open_person_proposals(
     if not path.exists():
         return []
     events, _skipped = load_events_defensively(path)
-    resolved_seqs: set = set()
-    resolved_fps: set = set()
+    # Each live tombstone: its key -> (place in the log, its `data`).
+    resolved_seqs: dict = {}
+    resolved_fps: dict = {}
     proposals: list[dict] = []
-    for ev in events:
+    placed: list[int] = []
+    for pos, ev in enumerate(events):
         et = ev.get("type") or ""
         d = ev.get("data") or {}
         if et in ("person_proposal_resolved", "person_proposal_reopened"):
@@ -452,28 +598,50 @@ def load_open_person_proposals(
                 # lifts the tombstone — events are in seq order, so the last
                 # writer wins; a re-resolve after a reopen re-tombstones.
                 if et == "person_proposal_resolved":
-                    resolved_seqs.add(ps)
+                    resolved_seqs[ps] = (pos, d)
                 else:
-                    resolved_seqs.discard(ps)
+                    resolved_seqs.pop(ps, None)
             else:
                 # D8 (PID1): the fingerprint tombstone path for SEQ-LESS
                 # proposals — activates only when no int seq is carried.
                 fp = d.get("proposal_fingerprint")
                 if isinstance(fp, str) and fp.strip():
                     if et == "person_proposal_resolved":
-                        resolved_fps.add(fp.strip())
+                        resolved_fps[fp.strip()] = (pos, d)
                     else:
-                        resolved_fps.discard(fp.strip())
+                        resolved_fps.pop(fp.strip(), None)
         elif et in PROPOSAL_TYPES:
             proposals.append(ev)
+            placed.append(pos)
     dismissed = set(dismissed_target_ids or ())
-    ws_root = _workspace_root_from_events_path(path) if suppress_on_file else None
+    # cr1#754: the answers and holds that reach a whole name.
+    answers: dict = {}
+    held: set = set()
+    for pos, ev in zip(placed, proposals):
+        key = _person_name_key(ev)
+        if key is None:
+            continue
+        if _is_held(ev, dismissed):
+            held.add(key)
+        tomb = _tombstone_of(ev, resolved_seqs, resolved_fps)
+        if tomb and not tomb[1].get("brain_batch_id"):
+            answers.setdefault(key, []).append(
+                (tomb[0], tomb[1].get("resolution") == "not_relevant",
+                 _row_addresses(ev)))
+    ws_root = _workspace_root_from_events_path(path)
+    # One read of the zone per load, and none on a ledger with no stamp.
+    zone = _workspace_zone(ws_root) if any(
+        (ev.get("data") or {}).get("surface_on") for ev in proposals) else None
     out: list[dict] = []
-    for ev in proposals:
+    for pos, ev in zip(placed, proposals):
         seq = ev.get("seq")
         if isinstance(seq, int) and seq in resolved_seqs:
             continue
-        if str(seq) in dismissed:
+        if _is_held(ev, dismissed):
+            continue
+        key = _person_name_key(ev)
+        if key is not None and (key in held or _closed_by_answer(
+                pos, ev, answers.get(key))):
             continue
         d = ev.get("data") or {}
         # FB-8: coalesce across the legacy field spellings — the as-heard
@@ -518,13 +686,112 @@ def load_open_person_proposals(
             # point at" has to consult BOTH, because the two shapes are written
             # by different families.
             "email": _first_str(d, PERSON_EMAIL_KEYS),
+            # cr1#754: what the writer stamped, None on an old row. Neither is
+            # derived here: a reader has no business guessing a source.
+            "source_kind": (d.get("source_kind")
+                            if d.get("source_kind") in PERSON_SOURCE_KINDS
+                            else None),
+            "source_user_id": _first_str(d, ("source_user_id",)),
+            "source_company": _first_str(d, ("source_company",)),
             "captured_ts": (ev.get("ts") or ev.get("timestamp") or ""),
+            # cr1#773: the day a held row may come up, and when its question
+            # clock starts (`question_clock`).
+            "surface_on": _surface_day(d.get("surface_on")),
+            "asked_ts": _asked_ts(ev.get("ts") or ev.get("timestamp") or "",
+                                  _surface_day(d.get("surface_on")), zone),
             # D8: present ONLY on seq-less rows (None otherwise) — the
             # tombstone key downstream writers pass back.
             "fingerprint": fingerprint,
         })
     out.sort(key=lambda r: r["captured_ts"])
-    return out
+    if surfacing_at:
+        from event_time import parse_ts
+        from tz import localize_date
+        out = _surfacing_rows(out, localize_date(surfacing_at, ws_root),
+                              parse_ts(surfacing_at))
+    return _one_row_per_name(out) if one_row_per_name else out
+
+
+def _one_row_per_name(rows: list[dict]) -> list[dict]:
+    """The row each name shows as: an add row with an int seq, else an add
+    row, else whatever there is, oldest first within each. `rows` is oldest
+    first, and a row with no name or about a record on file stands alone."""
+    def rank(row):
+        if row.get("type") != "person_proposal":
+            return 2
+        seq = row.get("seq")
+        return 0 if isinstance(seq, int) and not isinstance(seq, bool) else 1
+
+    best: dict = {}
+    for row in rows:
+        key = _row_name_key(row)
+        if key is not None and (key not in best
+                                or rank(row) < rank(best[key])):
+            best[key] = row
+    kept = {id(row) for row in best.values()}
+    return [row for row in rows if id(row) in kept or row.get("person_id")
+            or not (row.get("name") or "").strip()]
+
+
+def _person_name_key(ev: dict) -> Optional[str]:
+    """The name an answer or a hold reaches, or None: a row with no name, or
+    an update row about a record on file, stands alone."""
+    d = ev.get("data") or {}
+    if d.get("person_id"):
+        return None
+    return " ".join((_first_str(d, PERSON_NAME_KEYS) or "").lower().split()) \
+        or None
+
+
+def _fingerprint_of(ev: dict) -> str:
+    return compute_proposal_fingerprint(
+        ev.get("type"), _first_str(ev.get("data") or {}, PERSON_NAME_KEYS),
+        ev.get("ts") or ev.get("timestamp") or "")
+
+
+def _tombstone_of(ev: dict, by_seq: dict, by_fingerprint: dict):
+    """The live tombstone on this proposal, or None."""
+    seq = ev.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        return by_seq.get(seq)
+    return by_fingerprint.get(_fingerprint_of(ev))
+
+
+def _is_held(ev: dict, dismissed: set) -> bool:
+    """Is this row snoozed, in any spelling a dismissal can carry?"""
+    if not dismissed:
+        return False
+    seq = ev.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        return str(seq) in dismissed or f"person:{seq}" in dismissed
+    return f"person:fp:{_fingerprint_of(ev)}" in dismissed
+
+
+def _row_addresses(ev: dict) -> set:
+    """The addresses a proposal carries, folded: its structured field and the
+    one its text ties to the name. A shared inbox identifies nobody."""
+    from identity_reconcile import is_role_address
+    from person_backlog_sweep import _attributed_email
+
+    d = ev.get("data") or {}
+    tied = _attributed_email({
+        "name": _first_str(d, PERSON_NAME_KEYS),
+        "evidence": _first_str(d, PERSON_EVIDENCE_KEYS),
+        "source_ref": _first_str(d, ("source_ref", "source"))})
+    found = {str(a).strip().lower()
+             for a in (_first_str(d, PERSON_EMAIL_KEYS), tied) if a}
+    return {a for a in found if not is_role_address(a)}
+
+
+def _closed_by_answer(pos: int, ev: dict, answers) -> bool:
+    """Does an owner's answer on this name reach the row at `pos`? `answers`:
+    (place in the log, is a dismissal, the answered row's addresses). A row
+    carrying an address that answer did not name is left alone."""
+    if not answers:
+        return False
+    mine = _row_addresses(ev)
+    return any((pos < at or for_good) and (not mine or mine & addresses)
+               for at, for_good, addresses in answers)
 
 
 def build_person_proposal_resolved_event(
@@ -672,6 +939,9 @@ __all__ = [
     "select_unconfirmed_escalation",
     "select_promotion_proposals",
     "load_open_person_proposals",
+    "may_surface",
+    "person_row_aged_out",
+    "question_clock",
     "person_name_on_file",
     "build_person_proposal_resolved_event",
     "compute_proposal_fingerprint",

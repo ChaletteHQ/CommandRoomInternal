@@ -134,7 +134,7 @@ Historical events stay physically on disk in their original v2.0/v2.1 form. The 
 
 ### P5. Upgrade aliases[]
 
-aliases.json shape is unchanged between v2.0/v2.1 and v2.x. Pass through unchanged. Bump envelope `version` field, set `last_writer: "workspace-ingest"`.
+aliases.json shape is unchanged between v2.0/v2.1 and v2.x, so the parsed rows go into the in-memory `aliases[]` as they are. Phase 4 of the orchestrator decides where each row is saved.
 
 ### P6. Preserve people[]
 

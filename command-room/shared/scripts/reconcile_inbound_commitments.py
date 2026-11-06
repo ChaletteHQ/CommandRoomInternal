@@ -101,6 +101,142 @@ CHANGE_CLASS = "commitment_close"
 from commitment_policy import PROPOSAL_TTL_DAYS as REVIEW_PROPOSAL_TTL_DAYS  # noqa: E402
 
 
+#: cr1#664 (the cr1#609 ruling of 2026-11-03): how a matched close from
+#: inbound mail lands. `close` is the ruled default for the inbound-mail
+#: Maintenance job: the close stands only when the message CARRIES THE
+#: DELIVERABLE (`carries_deliverable`), and a reply that only acknowledges
+#: lands as a proposal. `propose` sends every matched close to the confirm
+#: list. None (every caller before cr1#664) is the rail exactly as it was.
+CLOSE_MODE_CLOSE = "close"
+CLOSE_MODE_PROPOSE = "propose"
+CLOSE_MODES = (CLOSE_MODE_CLOSE, CLOSE_MODE_PROPOSE)
+
+#: The reason a close demoted by `close_mode` carries on the confirm list.
+CLOSE_MODE_ACK_REASON = "their reply did not carry the item itself"
+CLOSE_MODE_PROPOSE_REASON = "this mail is set to ask before closing"
+
+
+def carries_deliverable(row, message, commitment, *, provider=None) -> bool:
+    """True when the inbound `message` behind a graded close IS the delivery,
+    by the sent matcher's own three evidence rules (cr1#664):
+
+      * ATTACHMENT - the connector says the message carries one
+        (`has_attachment`, the SENTMATCH signal A field);
+      * THREAD ID - the message sits in the item's own conversation: the
+        matcher's thread-anchored basis (`REPLY_BASIS`), or the commitment's
+        own thread or source refs naming the message's thread
+        (`commitment_matches_thread_ref`, the SENTMATCH signal B compare);
+      * SEND TIME - the message has a readable time, so EVORDER's layer 3
+        (a reply cannot be evidence for a promise captured after it) has
+        already run on it in the matcher.
+
+    All three are required. No new threshold and no new matcher: each rule
+    is a field the rails already compute or read. Pure, never raises."""
+    if not isinstance(message, dict) or not bool(message.get("has_attachment")):
+        return False
+    ts = message.get("ts")
+    try:
+        from cru_match import _parse_ts
+        if not ts or _parse_ts(ts) is None:
+            return False
+    except Exception:  # noqa: BLE001 - an unreadable time is not evidence
+        return False
+    if (row or {}).get("close_basis") == _REPLY_BASIS:
+        return True
+    tid = str(message.get("thread_id") or "").strip()
+    if not tid or not isinstance(commitment, dict):
+        return False
+    try:
+        from cru_match import commitment_matches_thread_ref
+        return bool(commitment_matches_thread_ref(
+            commitment, primary_artifact_key(provider, tid)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
+                     provider=None):
+    """`(kept, demoted)`: the graded closes `close_mode` lets stand, and the
+    ones it sends to the confirm list instead, each demoted row carrying its
+    reason in `close_mode_reason`. `close_mode` None keeps everything (the
+    rail before cr1#664); an unknown value is read as `close`, the ruled
+    default, because a typo must never widen what closes. Pure."""
+    rows = list(auto_close or [])
+    if close_mode is None:
+        return rows, []
+    mode = close_mode if close_mode in CLOSE_MODES else CLOSE_MODE_CLOSE
+    by_mid = {str(m.get("message_id") or ""): m
+              for m in (inbound_messages or []) if isinstance(m, dict)}
+    by_cid = {str(_commitment_id(c)): c for c in (opens or [])}
+    kept, demoted = [], []
+    for row in rows:
+        if mode == CLOSE_MODE_CLOSE and carries_deliverable(
+                row, by_mid.get(str(row.get("message_id") or "")),
+                by_cid.get(str(row.get("commitment_id") or "")),
+                provider=provider):
+            kept.append(row)
+            continue
+        out = dict(row)
+        out["recommendation"] = "pending_review"
+        out["close_mode_reason"] = (CLOSE_MODE_ACK_REASON
+                                    if mode == CLOSE_MODE_CLOSE
+                                    else CLOSE_MODE_PROPOSE_REASON)
+        demoted.append(out)
+    return kept, demoted
+
+
+def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
+                                 close_mode, provider=None):
+    """`(kept, demoted)` for the MC1 per-person receipts (cr1#664 review).
+
+    A receipt is not a close, but enough of them close the item outright
+    through the roster-complete close, so an acknowledgement that wrote a
+    receipt would become a close from an acknowledgement two steps later.
+    Under a close mode each receipt therefore passes the same rule a close
+    does: in `close` it is kept only when its message carries the deliverable
+    on the item's own thread (`carries_deliverable`), in `propose` none is
+    kept. A partial row left with no receipt becomes ONE confirm row for its
+    item (the pending shape the confirm writer takes). None keeps everything,
+    byte for byte. Pure."""
+    rows = list(partial or [])
+    if close_mode is None:
+        return rows, []
+    mode = close_mode if close_mode in CLOSE_MODES else CLOSE_MODE_CLOSE
+    by_mid = {str(m.get("message_id") or ""): m
+              for m in (inbound_messages or []) if isinstance(m, dict)}
+    by_cid = {str(_commitment_id(c)): c for c in (opens or [])}
+    kept, demoted = [], []
+    for p in rows:
+        commitment = by_cid.get(str(p.get("commitment_id") or ""))
+        ok, held = [], []
+        for r in p.get("receipts") or []:
+            if mode == CLOSE_MODE_CLOSE and carries_deliverable(
+                    {}, by_mid.get(str(r.get("message_id") or "")), commitment,
+                    provider=provider):
+                ok.append(r)
+            else:
+                held.append(r)
+        if ok:
+            kept.append(dict(p, receipts=ok))
+        if held and not ok:
+            first = held[0]
+            demoted.append({
+                "commitment_id": p.get("commitment_id"),
+                "score": p.get("score"),
+                "title": p.get("title") or "",
+                "primary_thread_id": p.get("primary_thread_id") or "",
+                "message_id": first.get("message_id") or "",
+                "ts": first.get("ts") or "",
+                "evidence": first.get("evidence") or "matched their reply",
+                "close_basis": "",
+                "recommendation": "pending_review",
+                "close_mode_reason": (CLOSE_MODE_ACK_REASON
+                                      if mode == CLOSE_MODE_CLOSE
+                                      else CLOSE_MODE_PROPOSE_REASON),
+            })
+    return kept, demoted
+
+
 def _clock_now(workspace_root=None):
     """CLOCK1 - the corroborated UTC instant this module stamps from.
 
@@ -702,6 +838,7 @@ def reconcile_inbound_and_receipt(
     uncorroborated_thread_ids=None,
     fetch_blocked=None,
     thread_participants=None,
+    close_mode=None,
 ):
     """Run inbound→commitment reconciliation end-to-end and return a receipt.
 
@@ -788,6 +925,15 @@ def reconcile_inbound_and_receipt(
     found nothing — the dead-rail shape this receipt contract exists to make
     impossible, and it was live on this rail while the sent rail was covered. A
     blocked run closes nothing and queues no confirm.
+
+    `close_mode` (cr1#664, the cr1#609 ruling of 2026-11-03) - how a graded
+    close lands: `close` keeps it only when the message carries the
+    deliverable (`carries_deliverable`) and sends an acknowledgement to the
+    confirm list; `propose` sends every graded close there. The demotion
+    runs before the policy gate and the closure path, on the matcher's own
+    grades, and moves no threshold. None (the default, and every caller
+    before cr1#664) is byte-identical: nothing is demoted and the audit and
+    the return carry no new key.
     """
     if not user_person_id:
         msg = (
@@ -921,6 +1067,20 @@ def reconcile_inbound_and_receipt(
     partial = res["partial"]
     held = res["held"]
     signal_fields = res["signal_fields"]
+
+    # cr1#664 - the close mode, on the matcher's own grades and before the
+    # policy gate: a demoted row joins the confirm list like any other.
+    n_close_mode_proposed = 0
+    if close_mode is not None:
+        auto_close, _mode_demoted = apply_close_mode(
+            auto_close, inbound_messages, opens, close_mode=close_mode,
+            provider=provider)
+        pending.extend(_mode_demoted)
+        partial, _receipts_demoted = apply_close_mode_to_receipts(
+            partial, inbound_messages, opens, close_mode=close_mode,
+            provider=provider)
+        pending.extend(_receipts_demoted)
+        n_close_mode_proposed = len(_mode_demoted) + len(_receipts_demoted)
 
     events_written = 0
     # POLICY1-A D8 — the close leg passes through `decide` (see the sent
@@ -1290,6 +1450,11 @@ def reconcile_inbound_and_receipt(
             "coverage": coverage,
         },
     }
+    if close_mode is not None:
+        # cr1#664 - only when a mode was asked for, so the default audit is
+        # byte-identical to the rail before it.
+        audit_event["data"]["close_mode"] = close_mode
+        audit_event["data"]["n_close_mode_proposed"] = n_close_mode_proposed
     try:
         # SCHED1 — the shared stamp helper, so the machine token and its
         # not-persisted flag land the same way here as on every other receipt.
@@ -1379,7 +1544,7 @@ def reconcile_inbound_and_receipt(
                  "message_id": c.get("message_id") or ""}
                 for c in items]
 
-    return {
+    out = {
         "ran": True,
         "batch_id": batch_id,
         "n_fetched": n_fetched,
@@ -1417,6 +1582,12 @@ def reconcile_inbound_and_receipt(
         "contacts": contacts_seeded,
         "summary": summary,
     }
+    if close_mode is not None:
+        # cr1#664 - the mode and how many graded closes it sent to the
+        # confirm list; absent on the default path, byte for byte.
+        out["close_mode"] = close_mode
+        out["n_close_mode_proposed"] = n_close_mode_proposed
+    return out
 
 
 def validate_inbound_reconcile_ran(workspace_root, *, since_ts=None) -> dict:
@@ -1495,4 +1666,6 @@ def validate_inbound_reconcile_ran(workspace_root, *, since_ts=None) -> dict:
 
 __all__ = ["reconcile_inbound", "reconcile_inbound_and_receipt",
            "validate_inbound_reconcile_ran", "PrimaryUserUnresolvedError",
-           "CHANGE_CLASS"]
+           "CHANGE_CLASS", "CLOSE_MODES", "CLOSE_MODE_CLOSE",
+           "CLOSE_MODE_PROPOSE", "carries_deliverable", "apply_close_mode",
+           "apply_close_mode_to_receipts"]

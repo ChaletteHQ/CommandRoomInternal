@@ -767,8 +767,9 @@ def resolve_candidate(workspace_root, *, name_key: str, action: str,
         out.update(res)
         return out
 
-    from people_writer import (DuplicatePersonError, MultipleCandidatesError,
-                              add_person_alias, create_person)
+    from people_writer import (AliasIsAnotherPersonsName, DuplicatePersonError,
+                              MultipleCandidatesError, add_person_alias,
+                              create_person)
 
     # ATTRIBUTION, MEASURED FIRST (review N-2). These are the rows provably
     # stuck on THIS name at the moment of the tap. It has to happen before the
@@ -788,8 +789,15 @@ def resolve_candidate(workspace_root, *, name_key: str, action: str,
         written = []
         for spelling in (spellings or [name]):
             try:
+                # cr1#768: the owner answered for the name on the row. A
+                # spelling collected beside it is not part of that answer, so
+                # it declares nothing and another person's name is left out.
                 res = add_person_alias(workspace_root, pid, spelling,
-                                       source_skill=source_skill)
+                                       source_skill=source_skill,
+                                       confirmed=_norm(spelling) == _norm(name))
+            except AliasIsAnotherPersonsName as exc:
+                out["detail"] = str(exc)
+                continue
             except (ValueError, KeyError) as exc:
                 out["status"] = "error"
                 out["detail"] = str(exc)

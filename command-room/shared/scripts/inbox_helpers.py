@@ -1983,6 +1983,34 @@ def _capture_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def yield_to_inbound_job(workspace_root: str,
+                         candidates: List[Dict[str, Any]], *,
+                         now: Optional[str] = None):
+    """`(kept, n_yielded)` - Phase 4b's capture candidates less every one
+    whose thread id plus message id the `inbound-mail` Maintenance job
+    receipted as captured in the last 24 hours (cr1#664 acceptance 2), so
+    one inbound promise is opened once. A candidate with no message id is
+    always kept. Any read failure yields nothing: the chat's own capture,
+    exactly as before the job existed. Writes nothing."""
+    try:
+        from inbound_mail_leg import captured_keys_since
+
+        taken = captured_keys_since(workspace_root, now=now)
+    except Exception:  # noqa: BLE001 - never block the chat's own capture
+        taken = set()
+    if not taken:
+        return list(candidates or []), 0
+    kept, n_yielded = [], 0
+    for cand in candidates or []:
+        key = (str(cand.get("thread_id") or "").strip(),
+               str(cand.get("message_id") or "").strip())
+        if key[1] and key in taken:
+            n_yielded += 1
+            continue
+        kept.append(cand)
+    return kept, n_yielded
+
+
 def _inbound_messages(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Phase 5.5's list: every fetched thread's latest INBOUND message, a
     thread whose sender did not resolve included (`sender_person_id: ''`)."""
@@ -2196,11 +2224,16 @@ def run_inbox_surface(workspace_root: str, *,
                                         # RECEIPTCOUNT1 (cr1#143): the same
                                         # key set whether or not a user resolved
                                         "n_waiting_on": 0, "n_reply_owed": 0}}
+    # cr1#664: the yield count rides every receipt, user or not.
+    capture["counters"]["n_yielded_to_maintenance"] = 0
     reconcile: Dict[str, Any] = {"rows": []}
     if user:
-        capture = plan_inbound_capture(root, _capture_items(items),
+        candidates, n_yielded = yield_to_inbound_job(
+            root, _capture_items(items), now=now)
+        capture = plan_inbound_capture(root, candidates,
                                        user_person_id=user, source_skill=TASK_ID,
                                        provider=prov or None)
+        capture["counters"]["n_yielded_to_maintenance"] = n_yielded
         reconcile = plan_inbound_reconcile(
             root, [] if fetch_blocked else _inbound_messages(items),
             user_person_id=user, source_skill=TASK_ID,

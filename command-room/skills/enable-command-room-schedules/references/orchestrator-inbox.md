@@ -288,11 +288,13 @@ The call captures inbound commitments through `inbound_capture`'s own gate (the 
 
 The fire's receipt carries every counter the capture computed — `n_candidates`, `n_captured`, `n_deduped`, `n_below_bar`, `n_capped`, `n_capture_errors`, and the two direction counts `n_waiting_on` and `n_reply_owed` (RECEIPTCOUNT1, cr1#143) — which is what separates "the lane ran and the mailbox was quiet" from "the lane did not run".
 
-The reconcile pass inside the call is the matching half of `reconcile_inbound_and_receipt`, run without its write leg: it lands review proposals and schedule-shift markers and closes nothing — the commitments chat carries the write leg, through the single closure path.
+The Maintenance `inbound-mail` job opens commitments from the same mail on its own schedule (cr1#664). A capture whose thread id plus message id that job receipted in the last 24 hours is skipped here and counted as `n_yielded_to_maintenance`, so one promise is opened once.
+
+The reconcile pass inside the call is the matching half of `reconcile_inbound_and_receipt`, run without its write leg: it lands review proposals and schedule-shift markers and closes nothing — the Maintenance `inbound-mail` job carries the write leg, through the single closure path (cr1#664).
 
 **Thresholds:** the same bar and band as every other path, read from `commitment_policy.py` (the one home; `confidence.py` re-exports them) — no number lives in this file. Calibration moves them per workspace through the Loop-4 override file, never through prose.
 
-**Direction doctrine (hard).** The CEO's OWN messages never create waiting-on-them items through this lane — the writer refuses a message whose sender resolves to, or is named as, the primary user. **This lane WRITES and never closes (EVORDER):** closing runs through the single closure path on the commitments chat's own schedule, so a reply that delivers on a promise closes it when that chat next runs. Never narrate captures, closures or event-type names to the CEO (CONTRACT.md Rule 4/9) — the visible effect is the items on the next Waiting On / My Plate fire. One fire captures at most `inbound_capture.DEFAULT_CAPTURE_CAP` items; the rest wait for the next fire — never raise the cap to clear a backlog.
+**Direction doctrine (hard).** The CEO's OWN messages never create waiting-on-them items through this lane — the writer refuses a message whose sender resolves to, or is named as, the primary user. **This lane WRITES and never closes (EVORDER):** closing runs through the single closure path in the Maintenance `inbound-mail` job, so a reply that delivers on a promise closes it at that job's next run (cr1#664). Never narrate captures, closures or event-type names to the CEO (CONTRACT.md Rule 4/9) — the visible effect is the items on the next Waiting On / My Plate fire. One fire captures at most `inbound_capture.DEFAULT_CAPTURE_CAP` items; the rest wait for the next fire — never raise the cap to clear a backlog.
 
 ## Phase 4c — Drafts, TEXT only (lazy)
 

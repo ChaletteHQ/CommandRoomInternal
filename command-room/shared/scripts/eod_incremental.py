@@ -274,11 +274,20 @@ def log_capture_pass_receipt(workspace_root, *,
                              n_processed: int = 0,
                              n_skipped: int = 0,
                              window_incomplete_before: Optional[str] = None,
-                             extra_data: Optional[dict] = None) -> dict:
+                             extra_data: Optional[dict] = None,
+                             maintenance_window: Optional[dict] = None,
+                             now=None) -> dict:
     """THE receipt for one incremental capture pass. A `pack_run` under task
     id `meeting-capture` — never under `past-meetings` (see the module
     docstring for why that would break `skip_render` and split the
     day-close series).
+
+    cr1#663: the receipt names the job's maintenance window under
+    `catchup.MAINTENANCE_WINDOW_FIELD`: the dict the plan handed in
+    (`maintenance_window`), else the helper's own answer computed here,
+    BEFORE this receipt lands, so the basis is the previous pass. `now` is
+    the plan's instant for that computation (tests pin it; production reads
+    the clock). Additive: no existing field changes shape.
 
     Carries the same window vocabulary the close's own receipt carries —
     `window_start` / `window_end` / `window_incomplete_before`
@@ -332,6 +341,15 @@ def log_capture_pass_receipt(workspace_root, *,
             pass
     for k, v in (extra_data or {}).items():
         data.setdefault(k, v)
+    try:
+        from catchup import MAINTENANCE_WINDOW_FIELD
+        from catchup import maintenance_window as _maintenance_window
+
+        data[MAINTENANCE_WINDOW_FIELD] = (
+            maintenance_window if isinstance(maintenance_window, dict)
+            else _maintenance_window(workspace_root, CAPTURE_JOB_ID, now=now))
+    except Exception:  # noqa: BLE001, the window never costs the receipt
+        pass
     return log_receipt(workspace_root, CAPTURE_JOB_ID,
                        receipt_type="pack_run",
                        # P-2 (review H-2): the seat decides when the caller

@@ -74,6 +74,7 @@ import datetime as _dt
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -145,6 +146,25 @@ SOURCE_SKILL = "lifecycle"
 # this job's own success validator, per MAINT1's "a job vouches for itself".
 RECEIPT_TASK_ID = "lifecycle"
 RECEIPT_EVENT_TYPE = "lifecycle_run"
+
+# cr1#665 (lane 3 of cr1#609) - THE DAILY PROJECT UPDATE. The Sunday
+# `lifecycle` job stays the weekly deep pass, unchanged. The daily
+# `project-update` job runs this module with a window: only the threads whose
+# derived activity landed inside the window are considered, and only the
+# REVIVE leg runs, through the same rule (`REVIVE_WINDOW_DAYS`), the same
+# writer (`_set_status`) and the same cap. A project whose meeting landed
+# yesterday is back to active this morning instead of next Sunday. The three
+# QUIET legs (ask, flip to dormant, archive) are judgements about silence,
+# and silence is a week's question, so they stay Sunday's.
+#
+# Its receipt is a `pack_run` under its OWN task id, never a
+# `lifecycle_run`, so the daily run can never mark the Sunday pass served.
+DAILY_TASK_ID = "project-update"
+DAILY_RECEIPT_TYPE = "pack_run"
+
+# cr1#738 - the detector on a `project` proposal from a connector job. One
+# name for all of them, so a decline holds whichever job sees the board next.
+SEEN_PROJECT_DETECTOR = "connector-projects"
 
 
 def _effective_fired_via(explicit):
@@ -560,9 +580,262 @@ def _flip_authorised(ask: dict, now: _dt.datetime) -> bool:
     return 0 <= (now - when).total_seconds() / 86400.0 <= FLIP_AUTHORITY_DAYS
 
 
+def daily_window(workspace_root, *, since_iso: Optional[str] = None,
+                 now_iso: Optional[str] = None) -> dict:
+    """The window the daily project update reads on this run: the one
+    maintenance window rule (`catchup.maintenance_window`, since the job's
+    own last receipt, 30 days on a first run), or, when `since_iso` is
+    handed in explicitly, the same rule over that point
+    (`catchup.window_from_cursor`). No window math of its own."""
+    import catchup
+
+    if since_iso:
+        return catchup.window_from_cursor(DAILY_TASK_ID, since_iso,
+                                          now=now_iso)
+    return catchup.maintenance_window(workspace_root, DAILY_TASK_ID,
+                                      now=now_iso)
+
+
+def _project_on_file(workspace_root, name: str):
+    """`(thread id or None, ambiguous)`: the one project an EXACT name or
+    alias lands on. A fuzzy hit is not a match here: a near name becomes a
+    question for the owner, never activity on somebody else's project."""
+    from entity_resolve import resolve_all
+
+    hits = {str(r.record.get("id")) for r in resolve_all(workspace_root, name)
+            if r.entity_type == "project"
+            and r.matched_via in ("exact_alias", "exact_canonical")}
+    # `aliases.json` is the resolver's alias table; a thread's own `aliases`
+    # are on its record, so an exact one is read there.
+    want = name.strip().lower()
+    for t in _threads(workspace_root):
+        if want in {str(a).strip().lower() for a in t.get("aliases") or []}:
+            hits.add(str(t.get("id")))
+    if len(hits) == 1:
+        return next(iter(hits)), False
+    return None, len(hits) > 1
+
+
+def project_is_on_file(workspace_root, name: str) -> bool:
+    """Does `name` land on a project in the book, one or more than one?"""
+    return any(_project_on_file(workspace_root, name))
+
+
+def note_seen_projects(workspace_root, seen, *, source_skill: str) -> dict:
+    """Bring the projects a connector job saw into the book (cr1#738).
+
+    `seen`: dicts of `{name, source_ref, ref, kind, ts}`, one per item,
+    already past the connector's `update_projects` dial and its lists.
+
+      * A project on file gets ONE activity event for this run, its latest
+        item, dated when the item moved. An `interaction` is an activity
+        type the pass already reads through THE derivation, so the daily
+        project update revives the project by the rule it already has. It
+        carries the pointer and no text from the item.
+      * A project not on file becomes a `project` proposal with the item as
+        its source pointer: the owner decides, on the brain family's own
+        verbs. `propose` drops an open repeat and a recent decline. It is
+        stamped `surface_on` from the day count the people share (cr1#773):
+        no more than `DAILY_CONNECTOR_QUESTION_CAP` new connector questions
+        come up on a day, and the rest wait with every row kept.
+
+    An item with no date is no activity: it cannot be placed on a timeline,
+    and dating it at the read would bring a quiet project back on the strength
+    of an old file. A name that lands on two projects writes nothing.
+
+    Returns the receipt fields, `n_projects_waiting` among them: every
+    project row still held for a later day, not only this read's. A refused
+    row is counted, never raised."""
+    from event_gate import append_event
+    from identity_reconcile import (CONNECTOR_SECTION_GAP_S,
+                                    CONNECTOR_SECTION_ROWS, connector_clock)
+
+    out: dict = {"projects_proposed": [], "projects_touched": [],
+                 "n_projects_undated": 0, "n_projects_unnamed": 0,
+                 "n_projects_ambiguous": 0, "project_errors": []}
+    rows = [r for r in seen or [] if isinstance(r, dict)]
+    today = connector_clock(workspace_root)[1]
+    if not rows:
+        out["n_projects_waiting"] = _projects_waiting(workspace_root, today)
+        return out
+    latest: dict = {}
+    undated: set = set()
+    new: dict = {}
+    placed: dict = {}
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            out["n_projects_unnamed"] += 1
+            continue
+        key = name.lower()
+        if key not in placed:
+            placed[key] = _project_on_file(workspace_root, name)
+        tid, ambiguous = placed[key]
+        if ambiguous:
+            out["n_projects_ambiguous"] += 1
+        elif tid is None:
+            new.setdefault(key, dict(row, name=name))
+        else:
+            when = _parse(row.get("ts"))
+            if when is None:
+                undated.add(tid)
+            elif tid not in latest or when > latest[tid][0]:
+                latest[tid] = (when, row)
+    out["n_projects_undated"] = len(undated - set(latest))
+
+    for tid, (when, row) in sorted(latest.items()):
+        try:
+            # The capture chokepoint refuses a repeat of (source_ref, summary),
+            # so the date in the summary is what lets the same item count
+            # again on a later day, and only once on any one day.
+            written = append_event(_events_path(workspace_root), [{
+                "type": "interaction",
+                "source_skill": source_skill,
+                "primary_thread_id": tid,
+                "ts": row.get("ts"),
+                "data": {"summary": (f"Moved in your {row.get('kind')} on "
+                                     f"{when.date().isoformat()}"),
+                         "direction": "connector_item",
+                         "origin": "connector",
+                         "source_ref": row.get("source_ref"),
+                         "connector_source_ref": dict(row.get("ref") or {})},
+            }], holder=source_skill)
+        except Exception as exc:  # noqa: BLE001 - one project never aborts the job
+            out["project_errors"].append({"thread_id": tid,
+                                          "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if written:
+            out["projects_touched"].append(tid)
+
+    plan, read_to = _plan_seen_projects(workspace_root, new, out)
+    for at in range(0, len(plan), CONNECTOR_SECTION_ROWS):
+        time.sleep(CONNECTOR_SECTION_GAP_S if at else 0)
+        _append_seen_projects(workspace_root, plan[at:at + CONNECTOR_SECTION_ROWS],
+                              out, today, source_skill, read_to)
+    out["n_projects_waiting"] = _projects_waiting(workspace_root, today)
+    return out
+
+
+def _plan_seen_projects(workspace_root, new: dict, out: dict) -> tuple:
+    """Which new projects may be asked about, off one read and outside any
+    lock (cr1#773). `(plan, read_to)`: each plan row carries its unstamped
+    ledger rows, and `read_to` is the newest seq that read saw."""
+    from brain_proposals import prepare_proposals
+
+    if not new:
+        return [], 0
+    rows = sorted(new.items())
+    read_to = max((e["seq"] for e in _load_events(workspace_root)
+                   if isinstance(e.get("seq"), int)), default=0)
+    specs = [dict(
+        kind="project",
+        tier="confirm",
+        fingerprint=f"project:{key}",
+        detector=SEEN_PROJECT_DETECTOR,
+        evidence=f"seen on an item in your {row.get('kind')}",
+        render_line=(f"{row['name']} showed up in your {row.get('kind')}: "
+                     "track it as a project?"),
+        action_tuples=[{"action": "confirm proposal"},
+                       {"action": "dismiss proposal"},
+                       {"action": "snooze proposal 7d"}],
+        extra={"name": row["name"], "title": row["name"],
+               "source_ref": row.get("source_ref"),
+               "connector_source_ref": dict(row.get("ref") or {})})
+        for key, row in rows]
+    plan = []
+    for (key, row), res in zip(rows, prepare_proposals(workspace_root, specs)):
+        if res.get("status") == "error":
+            out["project_errors"].append({"name": row["name"],
+                                          "error": res.get("error")})
+        elif res.get("status") == "proposed":
+            plan.append({"name": row["name"], "fingerprint": f"project:{key}",
+                         "rows": res["rows"]})
+    return plan, read_to
+
+
+def _append_seen_projects(workspace_root, plan: list, out: dict, today: str,
+                          source_skill: str, read_to: int) -> None:
+    """One short section: what a day holds is read here, so the stamps and the
+    one append land here too. A project another job proposed since `read_to`
+    is left out. A section that fails is counted against its names, and the
+    next read brings them back."""
+    from atomic_write import events_write_section
+    from event_gate import append_event
+    from events_io import iter_events_org_scoped
+    from identity_reconcile import connector_slots, next_surface_day
+
+    try:
+        with events_write_section(_events_path(workspace_root),
+                                  holder=source_skill):
+            events = list(iter_events_org_scoped(workspace_root))
+            slots = connector_slots(events)
+            since = {(e.get("data") or {}).get("fingerprint") for e in events
+                     if e.get("type") == "brain_proposal"
+                     and isinstance(e.get("seq"), int) and e["seq"] > read_to}
+            batch = []
+            for item in plan:
+                if item["fingerprint"] in since:
+                    continue
+                day = next_surface_day(slots, today)
+                item["rows"][0]["data"]["surface_on"] = day
+                slots.setdefault(day, set()).add(item["fingerprint"])
+                batch += item["rows"]
+            written = append_event(_events_path(workspace_root), batch,
+                                   holder="brain_proposals") if batch else []
+    except Exception as exc:  # noqa: BLE001 - contained per job, loud per name
+        out["project_errors"] += [{"name": item["name"],
+                                   "error": f"{type(exc).__name__}: {exc}"}
+                                  for item in plan]
+        return
+    out["projects_proposed"] += [(w.get("data") or {}).get("name")
+                                 for w in written]
+
+
+def _projects_waiting(workspace_root, today: str) -> int:
+    """How many open project rows are stamped for a later day and will still
+    ask on it: a project in the book by then does not."""
+    from brain_proposals import open_brain_proposals
+    from confirm_flow import may_surface
+
+    return sum(1 for row in open_brain_proposals(workspace_root)
+               if row.get("kind") == "project"
+               and not may_surface(row.get("surface_on"), today)
+               and not project_is_on_file(
+                   workspace_root, row.get("name") or row.get("title") or ""))
+
+
+def _window_start_utc(window) -> Optional[_dt.datetime]:
+    """The instant a window opens at, as the naive UTC this module compares
+    in. `since_aware` carries the machine's offset; a bare `since` is
+    machine-local naive and is localized first, never read as UTC. None when
+    neither parses."""
+    if not isinstance(window, dict):
+        return None
+    raw = window.get("since_aware")
+    if isinstance(raw, str) and raw.strip():
+        parsed = _parse(raw)
+        if parsed is not None:
+            return parsed
+    raw = window.get("since")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        naive = _dt.datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    aware = naive.astimezone() if naive.tzinfo is None else naive
+    return aware.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+
+
 def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
-                   caps: Optional[dict] = None) -> dict:
+                   caps: Optional[dict] = None,
+                   window: Optional[dict] = None) -> dict:
     """The full fire plan, WITHOUT writing anything.
+
+    `window` (cr1#665): a maintenance window dict (`daily_window`). Given,
+    this is the DAILY plan: only threads whose activity landed in the window
+    are considered, and only the revive leg is planned. Omitted, the weekly
+    plan exactly as before.
 
     Returns {"now", "revive": [...], "propose": [...], "dormant": [...],
              "archive": [...], "spilled": {class: n}, "considered": n}.
@@ -580,6 +853,8 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
     events = _load_events(workspace_root)
     last = _last_activity(workspace_root)
     asks = _dormancy_ask_state(events, now)
+    daily = window is not None
+    daily_start = _window_start_utc(window) if daily else None
 
     revive: list = []
     propose: list = []
@@ -591,6 +866,13 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
         if t.get("kind") in EXCLUDED_KINDS:
             continue
         tid = str(t["id"])
+        if daily:
+            # cr1#665: the daily pass considers only a thread whose activity
+            # landed in the window. No start, no activity, or activity before
+            # the window: Sunday's question, never guessed at here.
+            act = last.get(tid)
+            if daily_start is None or act is None or act < daily_start:
+                continue
         status = str(t.get("status") or "")
         title = (t.get("canonical_name") or t.get("display_name")
                  or t.get("name") or "").strip()
@@ -635,6 +917,11 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
                                "reason": "new activity since it went quiet"})
                 continue
 
+        if daily:
+            # cr1#665: the ask, the dormant flip and the archive are about
+            # silence, the weekly pass's question. The daily plan stops here.
+            continue
+
         if status in _DORMANT_STATUSES:
             if quiet > AUTO_ARCHIVE_DAYS:
                 archive.append({"thread_id": tid, "title": title,
@@ -654,6 +941,9 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
                                 "reason": f"{int(quiet)} days quiet"})
 
     plan = {"now": now_iso, "considered": considered, "spilled": {}}
+    if daily:
+        plan["daily"] = True
+        plan["maintenance_window"] = window
     for name, rows in (("revive", revive), ("propose", propose),
                        ("dormant", dormant), ("archive", archive)):
         rows.sort(key=lambda r: (-r["quiet_days"], r["thread_id"]))
@@ -706,16 +996,25 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                        caps: Optional[dict] = None,
                        write_receipt: bool = True,
                        fired_via: Optional[str] = None,
-                       triggered_by: Optional[str] = None) -> dict:
+                       triggered_by: Optional[str] = None,
+                       window: Optional[dict] = None) -> dict:
     """Execute the plan. `apply=False` (the default) is a dry run that writes
     NOTHING — not even the receipt — so the job stays due and a dry run can
     never be mistaken for a served slot (identity_reconcile's `--apply`
     lesson: the flag matters).
 
+    `window` (cr1#665): the DAILY project update. `plan_lifecycle`'s daily
+    plan (revive only, threads active in the window), the same writer, and
+    ONE `pack_run` receipt under `DAILY_TASK_ID` naming the window. Omitted,
+    the weekly pass exactly as before.
+
     Returns the plan dict plus {"applied": {class: n}, "failed": [...],
     "receipt": <event|None>}.
     """
-    plan = plan_lifecycle(workspace_root, now_iso=now_iso, caps=caps)
+    daily = window is not None
+    plan = (plan_lifecycle(workspace_root, now_iso=now_iso, caps=caps,
+                           window=window) if daily
+            else plan_lifecycle(workspace_root, now_iso=now_iso, caps=caps))
     applied = {"revive": 0, "propose": 0, "dormant": 0, "archive": 0}
     failed: list = []
     if not apply:
@@ -788,7 +1087,40 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                            "error": f"{type(exc).__name__}: {exc}"})
 
     receipt = None
-    if write_receipt:
+    if write_receipt and daily:
+        # cr1#665: the daily project update's own receipt, naming its window.
+        try:
+            from catchup import (MAINTENANCE_WINDOW_FIELD,
+                                 WINDOW_INCOMPLETE_FIELD,
+                                 receipt_window_marker)
+            from receipts import log_receipt
+            extra = {
+                "mode": "daily",
+                "considered": plan["considered"],
+                "revived": applied["revive"],
+                "spilled": plan["spilled"],
+                "errors": failed,
+                MAINTENANCE_WINDOW_FIELD: window,
+            }
+            # A capped run left revives inside the window: the batch-cap
+            # marker sends the next daily run back over the same window (a
+            # re-read is idempotent: a revived thread is active now) instead
+            # of leaving the spill to Sunday.
+            marker = receipt_window_marker(
+                {"start": window.get("since"), "end": window.get("until")},
+                incomplete=bool(plan["spilled"]))
+            if marker:
+                extra[WINDOW_INCOMPLETE_FIELD] = marker
+            receipt = log_receipt(
+                workspace_root, DAILY_TASK_ID,
+                receipt_type=DAILY_RECEIPT_TYPE,
+                fired_via=_effective_fired_via(fired_via),
+                triggered_by=triggered_by,
+                extra_data=extra)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"class": "receipt", "thread_id": "",
+                           "error": f"{type(exc).__name__}: {exc}"})
+    elif write_receipt:
         try:
             from receipts import log_receipt
             receipt = log_receipt(
@@ -844,15 +1176,30 @@ def main(argv: Optional[list] = None) -> int:
                              "when nothing is said")
     parser.add_argument("--triggered-by", default=None,
                         help="the surface that asked for this run")
+    # cr1#665: the daily project update. `--daily` reads the one maintenance
+    # window (since this job's own last receipt, 30 days on a first run);
+    # `--since <iso>` names the window's start instead, under the same rule.
+    parser.add_argument("--daily", action="store_true",
+                        help="the daily project update: revive projects "
+                             "active in the window; receipt under "
+                             "project-update")
+    parser.add_argument("--since", default=None,
+                        help="with --daily: the window's start (ISO); "
+                             "default is since this job's own last receipt")
     args = parser.parse_args(argv)
+    if args.since and not args.daily:
+        parser.error("--since needs --daily")
     # The same export the other job CLIs make, so every composer below reads
     # who asked from one place instead of a dozen signatures.
     if getattr(args, "triggered_by", None):
         os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
+    window = (daily_window(args.workspace, since_iso=args.since,
+                           now_iso=args.now) if args.daily else None)
     result = run_lifecycle_pass(args.workspace, apply=args.apply,
                                 now_iso=args.now,
                                 fired_via=args.fired_via,
-                                triggered_by=args.triggered_by)
+                                triggered_by=args.triggered_by,
+                                window=window)
     print(json.dumps(result, indent=2, default=str))
     return 0
 
@@ -869,6 +1216,11 @@ __all__ = [
     "EXCLUDED_KINDS",
     "RECEIPT_TASK_ID",
     "RECEIPT_EVENT_TYPE",
+    "DAILY_TASK_ID",
+    "DAILY_RECEIPT_TYPE",
+    "SEEN_PROJECT_DETECTOR",
+    "daily_window",
+    "note_seen_projects",
     "plan_lifecycle",
     "run_lifecycle_pass",
 ]

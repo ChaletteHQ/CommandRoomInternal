@@ -641,9 +641,13 @@ SILENT_TASKS: dict[str, dict] = {
             "evaluated. Say NOTHING to the CEO — this is exactly as silent as an "
             "ordinary empty-due fire (below), just for a different reason the receipt "
             "records. "
-            "The `due` list is ordered — that order is the contract (reconcile-sent "
-            "first at 6:45, before the 7:00 morning brief; weekly-insights after "
-            "cleanup). A due job that carries a `periods` list is PARTITIONED — obey "
+            "The `due` list is ordered — that order is the contract (the capture "
+            "legs before the close legs, so a gap opens before it closes; the whole "
+            "weekday family inside the 6:45 fire, before the 7:00 morning brief; "
+            "weekly-insights after cleanup). Each due job carries `window`, the span "
+            "it reads this fire (since its own last receipt; 30 days on a first run "
+            "or after a gap longer than 30 days, reason first_run_window): hold it "
+            "for step 4. A due job that carries a `periods` list is PARTITIONED — obey "
             "step 2b for it. If `root_repair.blocked` is false and `due` is genuinely "
             "empty (whether because nothing is due OR because `min_gap.skipped` is "
             "true), append the run receipt via "
@@ -659,8 +663,11 @@ SILENT_TASKS: dict[str, dict] = {
             "orchestrator-past-meetings.md Phases 3 through 4.8 VERBATIM — same "
             "canonical writers, same admission gates, no relaxed floors — with "
             "exactly these differences, stated in that file's EODSPEED1 section: "
-            "the window comes from catchup.catchup_window(<workspace_root>, "
-            "'meeting-capture', floor_hours=24, cap_days=30); the pass is SILENT "
+            "the window comes from eod_helpers.catchup_window(<workspace_root>, "
+            "task_id='meeting-capture'), which for this job is the one maintenance "
+            "window rule (since the last capture receipt; 30 days on a first run or "
+            "after a gap longer than 30 days), and its maintenance_window dict is "
+            "passed to the receipt call below; the pass is SILENT "
             "(no chat post, no widget, no notification — writes, briefs, and "
             "receipts only; the 5 PM close is the one narrator); and the pass "
             "ends with ONE eod_incremental.log_capture_pass_receipt call "
@@ -669,7 +676,23 @@ SILENT_TASKS: dict[str, dict] = {
             "receipt under past-meetings, which would arm skip_render against "
             "the real close). Phase C, Phase 5's day-close receipt, and Phase 6 "
             "do NOT run in this job; "
-            "session-sweep -> skills/session-sweep/SKILL.md; cleanup -> "
+            "session-sweep -> skills/session-sweep/SKILL.md; "
+            "inbound-mail (cr1#664) -> from the plugin root, "
+            "inbound_mail_leg.plan_inbound_mail(<workspace_root>); unless it "
+            "names a `skip_reason`, fetch the inbox it names (each of its "
+            "`accounts`, its `query`: inbox mail on or after `after`, read or "
+            "unread, never only unread) and fill each message's "
+            "`message_fields`, its `captures` judged exactly as "
+            "skills/enable-command-room-schedules/references/"
+            "orchestrator-inbox.md Phase 4b says; then "
+            "inbound_mail_leg.run_inbound_mail(<workspace_root>, <the "
+            "messages, none on a skip>, user_person_id=<the plan's>, "
+            "accounts=<the plan's>, close_mode=<the plan's>, "
+            "exclude_captured_since=<the plan's fire_start>, "
+            "fired_via=<fired_via>), which opens and closes from that mail "
+            "and writes its own pack_run receipt (a skip lands as a skip "
+            "receipt). Say NOTHING to the CEO here; "
+            "cleanup -> "
             "skills/cleanup/SKILL.md (every phase); weekly-insights -> "
             "skills/insight-generator/SKILL.md; learning -> run "
             "`python3 shared/scripts/learning_pass.py --workspace "
@@ -777,7 +800,9 @@ SILENT_TASKS: dict[str, dict] = {
             "root_repair_state=root_repair.get(\"state\") and "
             "skipped_min_gap=min_gap.get(\"skipped\", False) both from step 1's "
             "plan — this fire genuinely reached step 4, so min_gap.skipped is False "
-            "here in the ordinary case) and confirm it landed via "
+            "here in the ordinary case, and windows=<each due job's `window` from "
+            "step 1's plan, keyed by job_id>, so the receipt names the window every "
+            "job read) and confirm it landed via "
             "validate_maintenance_ran.\n\n"
             "Each job keeps its own skill's surfacing rules — stay silent unless a "
             "job's contract says something needs the CEO eyes (a closure line, the "
@@ -1866,9 +1891,15 @@ DISPLAY_NAMES: dict[str, str] = {
     "exit-doors": "Finished and Forgotten Check",  # EXIT1 (SPEC_FLOW1 Lane B) — the daily exit-doors job (a maintenance JOB, not a task). Names what it checks — work the record shows finished, and work nobody has touched — never the rails checking it
     "age-out": "Silent Work Cleanup",  # SWEEPSCHED1 — RETIRED 2026-09-13 (M's ruling R1: EXIT1's 45/60 door is the only silence door). The JOB is out of `maintenance_dispatcher.MAINTENANCE_JOBS`; this row stays FOREVER, exactly as `pulse` and `balance` above keep theirs — `pack_run` receipts under this id are already on disk and the watchdog, the maintenance report and every legacy render have to read them as English rather than as a bare id. "Silent Work", not "Age Out": the render is read by a CEO, and the noun has to name what was being cleared rather than the mechanism clearing it
     "meeting-capture": "Meeting Capture",  # EODSPEED1 — the incremental End of Day capture pass (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
+    "inbound-mail": "Inbound Mail",  # cr1#664 - the inbound-mail job (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id)
     "question-expiry": "Old Questions Answered",  # TTL1 (SPEC_FLOW1 Lane G) — the daily question-expiry engine (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id). "Old Questions Answered", not "Question Expiry": the render is read by a CEO, and "expiry" reads as something being deleted
     "binding-gauge": "Memory Coverage Check",  # GAUGEJOB1 — the daily binding-gauge refresh (a maintenance JOB, not a task; same reason for the row). "Memory Coverage Check", not "Binding Gauge": the render is read by a CEO, and the noun has to name what is being measured rather than the mechanism measuring it
     "daily-measure": "Flow Check",  # MEASURE1 (SPEC_FLOW1 Lane D) — the daily flow measure (a maintenance JOB, not a task; same reason for the row). Names what the CEO gets, not the mechanism: "Daily Measure" would tell a reader nothing and "Flow Measure" is a plumbing noun on its own. FIX ROUND 1 (reviewer F-6): the first cut said "Weekly Flow Measure" on a job whose nominal_cron is `0 0 * * *` — a wrong cadence claim in the ONE place that documents cadence (change-schedule's roster prose, "each runs when due"). This name makes no cadence claim at all
+    "people-update": "People Update",  # cr1#665 (lane 3 of cr1#609) - the daily people update (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id). Names what the CEO gets, and makes no cadence claim
+    "project-update": "Project Update",  # cr1#665 - the daily project update (a maintenance JOB, not a task; same reason for the row)
+    "tasks-capture": "Task Board Check",  # cr1#668 (lane 6 of cr1#609) - the tasks leg's capture half (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id). Names what is checked, makes no cadence claim
+    "tasks-close": "Task Board Done Check",  # cr1#668 - the tasks leg's close half (a maintenance JOB, not a task; same reason for the row)
+    "connector-proposals": "Document and Deal Check",  # cr1#668 - the propose-only kinds over documents, deals and contracts (a maintenance JOB, not a task; same reason for the row). Contracts are documents, so the name stays short
     "cockpit": "Cockpit",  # COCKPIT1 (cr1#608) - the cockpit page's one task (registered by cockpit-setup, never a default or first-install chat; the row exists so its trigger name, receipts and the watchdog's lines read as English, never as a bare id)
     "cockpit-prep": "Hub Prep",  # COCKPIT1 four-task shape (cr1#619): registered by cockpit-setup, never a default chat
     "cockpit-inbox": "Hub Inbox",  # cr1#619

@@ -130,6 +130,32 @@ WINDOW_INCOMPLETE_FIELD = "window_incomplete_before"
 # make one fire re-read a quarter of connector history.
 DEFAULT_CAP_DAYS = 30
 
+# THE ONE MAINTENANCE WINDOW BOUND (cr1#663, the cr1#609 rulings of
+# 2026-11-03). Every maintenance job reads since its own last receipt with
+# no day cap below this figure; a job with no receipt reads this many days;
+# a gap longer than this is treated as a first run and reads this many days,
+# the receipt saying so. It is the same figure as `DEFAULT_CAP_DAYS` on
+# purpose and named so a reader can tell the two uses apart: the cap bounds
+# a widened span, this is the first-run floor every job shares.
+MAINTENANCE_WINDOW_DAYS = DEFAULT_CAP_DAYS
+
+# The ONE spelling of the window a job receipt names, reader and writer
+# side (the `WINDOW_INCOMPLETE_FIELD` lesson). A job's own receipt carries
+# the helper's dict under `MAINTENANCE_WINDOW_FIELD`; the run-level
+# `maintenance_run` receipt carries one dict per job under
+# `MAINTENANCE_WINDOWS_FIELD`, keyed by job id. Not `window`: the session
+# sweep's receipt already carries a label string under that key, and an
+# existing field never changes shape.
+MAINTENANCE_WINDOW_FIELD = "maintenance_window"
+MAINTENANCE_WINDOWS_FIELD = "maintenance_windows"
+
+# The two reasons a maintenance window can give. `cursor`: since the job's
+# own last receipt (or its own cursor). `first_run_window`: the 30-day
+# window, because the job has no receipt at all OR its last receipt is
+# older than the bound (`gap_capped` on the dict keeps the two apart).
+WINDOW_REASON_CURSOR = "cursor"
+WINDOW_REASON_FIRST_RUN = "first_run_window"
+
 # Ceiling on how many missed periods one fire will produce deliverables for.
 DEFAULT_PERIOD_CAP = 12
 
@@ -328,6 +354,111 @@ def last_successful_point(workspace_root, task_id) -> dict:
         "receipt_dt": newest_dt,
         "incomplete_before": marker,
     }
+
+
+def _window_dict(job_id, basis, *, now: _dt.datetime,
+                 last_receipt: Optional[_dt.datetime] = None,
+                 incomplete_before: Optional[_dt.datetime] = None,
+                 error: Optional[str] = None) -> dict:
+    """The one piece of window math every maintenance job shares.
+
+    `basis` is where the job's last successful read reached (its newest
+    receipt, the batch-cap marker on it, or the leg's own cursor), machine-
+    local naive, or None for a job that has never read. The rule, in order:
+
+      no basis                      -> the last MAINTENANCE_WINDOW_DAYS,
+                                       reason `first_run_window`
+      basis older than that bound   -> the same window, the same reason,
+                                       `gap_capped` True (the gap is treated
+                                       as a first run; cr1#609 build default)
+      otherwise                     -> since the basis, reason `cursor`,
+                                       no floor and no cap
+
+    THIS IS THE FENCE. Remove the capped branch and a machine off for a
+    quarter re-reads a quarter of connector history on one fire;
+    `run_maintenance_window_test.py` section [6] removes it from a copy of
+    this file and watches section [2] go red.
+    """
+    floor_start = now - _dt.timedelta(days=MAINTENANCE_WINDOW_DAYS)
+    out = {
+        "job_id": normalize_task_id(job_id),
+        "since": floor_start.isoformat(),
+        "until": now.isoformat(),
+        # The same two instants, offset-carrying: what a connector query
+        # takes (see "THE CLOCK SEAM AT THE CONNECTOR BOUNDARY" above).
+        "since_aware": to_connector_iso(floor_start),
+        "until_aware": to_connector_iso(now),
+        "reason": WINDOW_REASON_FIRST_RUN,
+        "days": float(MAINTENANCE_WINDOW_DAYS),
+        "gap_capped": False,
+        "last_receipt": last_receipt.isoformat() if last_receipt else None,
+        "window_incomplete_before": (incomplete_before.isoformat()
+                                     if incomplete_before else None),
+        "cap_days": float(MAINTENANCE_WINDOW_DAYS),
+        "error": error,
+    }
+    if basis is None:
+        return out
+    if basis < floor_start:
+        out["gap_capped"] = True
+        return out
+    out["since"] = basis.isoformat()
+    out["since_aware"] = to_connector_iso(basis)
+    out["reason"] = WINDOW_REASON_CURSOR
+    out["days"] = round((now - basis).total_seconds() / 86400.0, 6)
+    return out
+
+
+def maintenance_window(workspace_root, job_id: str, *,
+                       now: Optional[_dt.datetime] = None) -> dict:
+    """The window ONE maintenance job reads on this fire (cr1#663): since
+    its own last receipt, no day cap; the last 30 days when it has no
+    receipt; a gap longer than 30 days treated as a first run (30 days) and
+    said so. One rule for every job, computed from the job's newest receipt
+    through the same reader `catchup_window` uses (`last_successful_point`,
+    so a batch-cap marker is honoured here too).
+
+    Returns a json-dumps-able dict:
+      since / until               machine-local naive ISO strings
+      since_aware / until_aware   the same instants carrying the machine's
+                                  UTC offset, for connector queries
+      reason                      `cursor` | `first_run_window`
+      days                        float span length
+      gap_capped                  True when a receipt exists but is older
+                                  than the bound (the two first-run cases
+                                  stay distinguishable)
+      last_receipt                the newest receipt's time, or None
+      window_incomplete_before    the batch-cap marker, when the newest
+                                  receipt carries one
+      cap_days / job_id / error   echoed, so a logged window is
+                                  self-describing
+
+    Never raises: an unreadable book falls back to the first-run window
+    with `error` set, because a fire that dies computing its window
+    produces nothing at all. Call it BEFORE the job runs (a plan, or a
+    receipt writer about to land this run's receipt); once this run's own
+    receipt is on the book the newest receipt is this run's.
+    """
+    now = _parse_iso_local(now) or _now_local()
+    try:
+        point = last_successful_point(workspace_root, job_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort by contract
+        return _window_dict(job_id, None, now=now, error=repr(exc)[:200])
+    return _window_dict(job_id, point["dt"], now=now,
+                        last_receipt=point["receipt_dt"],
+                        incomplete_before=point["incomplete_before"])
+
+
+def window_from_cursor(job_id: str, cursor, *,
+                       now: Optional[_dt.datetime] = None) -> dict:
+    """`maintenance_window` for a leg that keeps its OWN cursor (the sent
+    and chat reconcile legs): the cursor is the basis instead of the
+    receipt, under the same bound and the same reasons. `cursor` is an ISO
+    string or datetime, aware or naive; None, or anything unparseable, is a
+    first run. Reads nothing."""
+    now = _parse_iso_local(now) or _now_local()
+    basis = _parse_iso_local(cursor)
+    return _window_dict(job_id, basis, now=now, last_receipt=basis)
 
 
 def catchup_window(
@@ -601,7 +732,14 @@ __all__ = [
     "WINDOW_INCOMPLETE_FIELD",
     "DEFAULT_CAP_DAYS",
     "DEFAULT_PERIOD_CAP",
+    "MAINTENANCE_WINDOW_DAYS",
+    "MAINTENANCE_WINDOW_FIELD",
+    "MAINTENANCE_WINDOWS_FIELD",
+    "WINDOW_REASON_CURSOR",
+    "WINDOW_REASON_FIRST_RUN",
     "catchup_window",
+    "maintenance_window",
+    "window_from_cursor",
     "missed_periods",
     "last_successful_point",
     "receipt_window_marker",

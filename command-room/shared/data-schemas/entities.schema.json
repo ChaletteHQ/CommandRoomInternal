@@ -184,6 +184,19 @@
           "enum": ["work", "personal"],
           "description": "SPEC BAL1 D1. Work/personal partition line. Absent means WORK (back-compat). tie=personal people are read ONLY by the Balance surface: dormancy.emit_dormancy_signal refuses them at the shared emit chokepoint (SPEC LIFECYCLE1 moved that gate out of the retired Pulse chat's prose and into code), relationship-moves drops them at the load/score boundary, and the secondary dormancy emitters (team-intelligence, dormant-customer-scan) skip them at their emit gates. NOT `relationship_type` — that name is forbidden (org-level). Optional."
         },
+        "source_identifiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "type": "string" },
+              "tool_id": { "type": "string" },
+              "company": { "type": "string" }
+            }
+          },
+          "description": "cr1#825. What the person was added on: the source tool's own id for them (`tool_id`) or the company the source stated (`company`), with the kind of source. Written by people_writer on an add and the ids are read by identity_reconcile.sighting_against_record, so a later person of the same name is asked about and never filed here. Optional."
+        },
         "cadence_days": {
           "type": ["number", "null"],
           "description": "SPEC BAL1 D1(b). Personal RE-SURFACE interval in days (date-night cadence for a spouse, call cadence for a parent) — read ONLY by shared/scripts/balance.py. The OPPOSITE of cadence_override_days (dormancy's max-widening suppression knob): this one GENERATES a reconnect nudge when the gap exceeds it. Never routed through dormancy.effective_baseline. Meaningful only with tie=personal. Optional."

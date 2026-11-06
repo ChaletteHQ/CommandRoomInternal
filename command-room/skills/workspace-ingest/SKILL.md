@@ -29,7 +29,7 @@ You are the **one-time ingester + file migrator**. You write:
 **Data substrate (from parsed registries):**
 - `_hq/data/entities.json` (create from parsed source)
 - `_hq/data/events.jsonl` (create, one event per parsed decision / meeting / interaction / status change / commitment)
-- `_hq/data/aliases.json` (create from parsed nickname / @handle / abbreviation mappings)
+- `_hq/data/aliases.json` (org and project rows from the parsed nickname / @handle / abbreviation mappings; a person's spellings go through the writer, see **Person spellings** in Phase 4)
 
 **Migrated files (copied from source into correctly-shaped folders):**
 - `[Project]/SESSION_NOTES_[Project].md` (migrated from v1.x `_hq/sessions/` or custom session notes)
@@ -204,8 +204,9 @@ All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON fi
 
 Write in order, each atomically:
 
-1. `_hq/data/entities.json` — canonical schema shape per `shared/data-schemas/entities.schema.json`: `{version: 1, last_updated: <ingest_ts>, last_writer: "workspace-ingest", entities: {people: [...], projects: [...], orgs: [...], engagements: [...]}, aliases: [...], workspace: {...}}`
+1. `_hq/data/entities.json`: canonical schema shape per `shared/data-schemas/entities.schema.json`: `{version: 1, last_updated: <ingest_ts>, last_writer: "workspace-ingest", entities: {people: [...], projects: [...], orgs: [...], engagements: [...]}, workspace: {...}}`. Each person record leaves `aliases` out; step 3 saves them.
 2. `_hq/data/events.jsonl` — one event per line, sorted by `ts` ascending then by parse order. Use `atomic_append_jsonl` even for the initial create.
+3. `_hq/data/aliases.json`: start from `shared/data-schemas/seed/aliases.json` and add the `aliases[]` rows whose `canonical_id` is an org or a project. Then run **Person spellings** below.
 
 Validate each against `shared/data-schemas/*.schema.json` per the renderer-style validator pattern. On validation failure: roll back (restore `_hq/data/` from the Phase 3.9 snapshot), abort with full error trace. No partial writes leak. Log each created file in `_ingest-undo.jsonl` with `"action":"data_create"` so undo knows these files did not pre-exist.
 
@@ -215,13 +216,16 @@ For each parsed entity / event collection, perform an additive merge against the
 
 1. **Read the existing entities.json** via the canonical path. Use `data["entities"]` if nested per schema; else top-level (back-compat per v2.14.17).
 2. **Dedupe parsed entities against existing**. Match strategy by entity type:
-   - **People:** match on `email` (primary key), then `canonical_name` (case-insensitive), then `aliases[]` membership. New person → append. Existing person → MERGE conservatively: union `aliases[]`, union `affiliation_ids[]`, take latest non-empty `last_interaction`, preserve all other existing fields. Never overwrite a populated field with an empty one.
+   - **People:** match on `email` (primary key), then `canonical_name` (case-insensitive), then `aliases[]` membership. New person → append, leaving `aliases` out. Existing person → MERGE conservatively: union `affiliation_ids[]`, take latest non-empty `last_interaction`, preserve all other existing fields. Never overwrite a populated field with an empty one. Spellings are step 6, not this merge.
    - **Orgs:** match on `id` (canonical), then `domains[]` overlap (case-insensitive). New org → append. Existing → union `domains[]`, take latest `last_updated`.
    - **Projects (threads):** match on `id`, then `folder_name`, then `display_name` (case-insensitive). New project → append. Existing → union `stakeholder_person_ids[]`, take latest `last_activity`, preserve `status` and `stage` (don't overwrite from inferred lower-confidence values). (HYG1 note: this `last_activity` WRITE is legitimate and deliberately kept — ingest stamps the zero-event FLOOR for threads that have no event history yet, the DATA_CONTRACT carve-out. Ranking/display readers derive recency from events and use this stamp only as that floor.)
-   - **Aliases:** key on `(raw, canonical_id)` tuple. Append new tuples; skip duplicates.
+   - **Aliases:** key on `(raw, canonical_id)` tuple. For an org or project row, add new tuples to its tier and skip duplicates. A row with a `person_` id is step 6.
 3. **Append new events** to events.jsonl. Match against existing events by `data.source_ref` first (if both have it), then by `(type, ts, primary_thread_id, data.title)` fingerprint. Skip duplicates. Use `atomic_append_jsonl` for the new events. After the batch, log the appended seq range in `_ingest-undo.jsonl`: `{"action":"events_append","first_seq":N,"last_seq":M,"count":K}` — a record of what this run added, never a licence to take it back out. Undo never removes entries from the activity log, whatever this range says (CONTRACT Rule 31); it restores the records from the Phase 3.9 snapshot and tells the CEO the imported entries stay.
 4. **Bump the entities.json `version` field** (monotonic) and set `last_writer: "workspace-ingest"`, `last_updated: <ingest_ts>`. (Note: `last_writer` on a merged file means "last touched by", NOT "created by" — undo must never key on it.)
 5. **Validate** the merged result against the schema before atomic-writing. On failure: roll back to pre-merge state (restore `_hq/data/` from the Phase 3.9 snapshot), abort.
+6. **Save person spellings** once the merged `entities.json` is written: **Person spellings** below.
+
+**Person spellings (both modes, cr1#824).** Every person spelling, from each parsed person's `aliases[]` and from the `aliases[]` rows with a `person_` id, is saved by the writer and never by hand: it writes `aliases.json` and the record together and holds back a name that is another person's own. One `plan run_writer` per person, naming `people_writer:door_update_person` with `{"add_aliases": ["<each spelling>"], "alias_evidence": "<the source file's name, no folder>", "person_id": "<id>", "source_skill": "workspace-ingest", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local, one call for the whole run: `add_person_aliases(workspace_root, [{"person_id": "<id>", "alias": "<spelling>"}, ...], source_skill="workspace-ingest", evidence="<the source file's name>")`). The evidence is the file name only: a full path is outside the workspace, the door refuses the call (`refused_path`) and nothing saves. On that refusal send the call again with the evidence as `imported file`. If it is refused again a spelling is the cause: leave that spelling out and count it as held. A row that comes back held was not saved, and it stops nothing else. A `name_on_file` row already has its one question open. Report the held count in the run summary.
 
 **Idempotency:** re-running ingest on the same source folder is safe. Every parsed entity / event has a stable id or fingerprint; second run finds matches and skips. `_ingest-undo.jsonl` records what was added on each run so even if the source changes between runs, undo still works.
 

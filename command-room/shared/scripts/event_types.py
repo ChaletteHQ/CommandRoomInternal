@@ -763,6 +763,8 @@ ACT_ACTOR_FIELDS = (
 MACHINE_SOURCE_SKILLS: FrozenSet[str] = frozenset({
     # rails — the mail and chat reconcilers
     "reconcile-sent", "reconcile-chat", "reconcile-inbound",
+    # cr1#664 - the inbound-mail job: it opens and closes from inbound mail
+    "inbound-mail",
     # scheduled passes, drains and maintenance
     "maintenance", "session-sweep", "cleanup",
     "review-expiry", "age-out", "identity-reconcile",

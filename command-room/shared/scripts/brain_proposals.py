@@ -91,6 +91,11 @@ except ImportError:
 # widget keeps its own GLOBAL_PROPOSAL_CAP = 7 (unchanged — learning-loop
 # proposals ride the weekly widget, never this card).
 DAILY_CONFIRM_CAP = 5
+# cr1#773: new questions a connector read may bring up on one day, people and
+# projects together. Every one is kept; `identity_reconcile.next_surface_day`
+# stamps the rest for later days and `confirm_flow.may_surface` holds them back
+# from what renders.
+DAILY_CONNECTOR_QUESTION_CAP = 7
 DEFAULT_TTL_DAYS = 14
 ORG_PROJECT_STALE_DAYS = 30  # review F2 — org/project adapter window
 # FS-17 — TTL on LOW-CONTEXT person proposals (name-only single mentions: no
@@ -140,9 +145,10 @@ AUTO_ALLOWED: dict[str, str] = {
     # (`noise_rule`) is read by prose with no code reader to test a reverser
     # against, and loosening what auto-closes (`confidence_threshold`) or
     # muting a sender (`surface_suppression`) spends a grant nobody gave.
-    "voice_block_update": "a phrase the customer has rewritten out of their "
-        "drafts three or more times stops being written — archived prior "
-        "block, one-word undo, at most three phrases per skill per run",
+    "voice_block_update": "a phrase or length the customer has corrected "
+        "the apply number of times, four by default and never under three, "
+        "stops being written — archived prior block, one-word undo, at most "
+        "three phrases per skill per run",
     "prep_section_weight": "a prep section empty in most of the last six "
         "graded meetings of a type renders shorter for that type — the prior "
         "weight is on the event, one-word undo",
@@ -471,6 +477,8 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
     rule's four legs could never fire on the only two classes whose
     default is a drop. Additive and drop-empty: a proposal with none of
     them normalizes byte-identically to before."""
+    from confirm_flow import _asked_ts, _surface_day
+
     tombstoned: set[str] = set()
     reopened_at: dict[str, str] = {}
     for ev in events:
@@ -492,7 +500,12 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
         pid = data.get("proposal_id")
         if not pid or pid in tombstoned:
             continue
-        opened = _parse_ts(ev.get("ts"))
+        # cr1#773: a row held for a later day starts its clock that day, in
+        # UTC here (this read has no workspace), so the wait never spends its
+        # lifetime. A row with no stamp is its own `ts`, as it always was.
+        surface_on = _surface_day(data.get("surface_on"))
+        asked = _asked_ts(ev.get("ts") or "", surface_on, timezone.utc)
+        opened = _parse_ts(asked)
         ttl = data.get("ttl_days")
         ttl = int(ttl) if isinstance(ttl, (int, float)) else DEFAULT_TTL_DAYS
         # TTL1 — a proposal a person put back with `undo` starts its clock
@@ -514,12 +527,12 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             "evidence": data.get("evidence") or "",
             "action_tuples": data.get("action_tuples") or [],
             "render_line": data.get("render_line") or "",
-            "opened_at": ev.get("ts") or "",
+            "opened_at": asked,
             # TTL1 F-1 — the clock a LIFETIME is measured from. Never
             # `opened_at`: a row put back by `undo` has moved, and a
             # lifetime measured from its birthday lets it go again the
             # next morning.
-            "last_activity_at": (reopened_at.get(pid) or ev.get("ts") or ""),
+            "last_activity_at": (reopened_at.get(pid) or asked),
             "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ") if expires else "",
             "detector": data.get("detector") or "unknown",
             "seq": ev.get("seq"),
@@ -558,6 +571,7 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
             **{k: data[k] for k in ("due", "due_date", "amount",
                                     "deal_value", "value", "invoice_amount",
                                     "note") if data.get(k)},
+            **({"surface_on": surface_on} if surface_on else {}),
         })
     return out
 
@@ -609,6 +623,57 @@ def propose(
                                  fingerprint; nothing written.
     Raises BrainProposalError on illegal calls (auto tier without an
     AUTO_ALLOWED class + registered reverser; unregistered verbs)."""
+    _check_propose_call(tier=tier, kind=kind, fingerprint=fingerprint,
+                        detector=detector, change_class=change_class,
+                        extra=extra, action_tuples=action_tuples)
+
+    from proposal_ledger import active_cooldowns
+
+    now_iso = _now_iso()
+    if fingerprint in active_cooldowns(workspace_root, detector, now_iso=now_iso):
+        return {"status": "suppressed_cooldown", "fingerprint": fingerprint}
+
+    events = _load_events(workspace_root)
+    now = _parse_ts(now_iso)
+    open_fps = {p["fingerprint"] for p in _open_brain_proposals(events, now=now)}
+    if fingerprint in open_fps:
+        return {"status": "duplicate_open", "fingerprint": fingerprint}
+    # LB2 cross-rail dedup: for migrated kinds, an open PRE-migration row of
+    # the same family (adapter-read, same natural-key fingerprint) also
+    # suppresses — the queue must never show a legacy row and a bp row for
+    # the same thing. Full projection incl. autos; defensive (a broken
+    # adapter never blocks a propose — the bp-side fingerprint check above
+    # already ran).
+    if kind in MIGRATED_KINDS:
+        try:
+            legacy_fps = {
+                p.get("fingerprint")
+                for p in load_open_proposals(
+                    workspace_root, now_iso=now_iso, include_auto=True)
+                if p.get("source_family") != "brain"
+            }
+            if fingerprint in legacy_fps:
+                return {"status": "duplicate_open_legacy",
+                        "fingerprint": fingerprint}
+        except Exception:
+            pass
+
+    proposal_id, data, to_append = _proposal_rows(
+        workspace_root, kind=kind, fingerprint=fingerprint, evidence=evidence,
+        action_tuples=action_tuples, tier=tier, ttl_days=ttl_days,
+        detector=detector, render_line=render_line, thread_id=thread_id,
+        org_id=org_id, person_id=person_id, extra=extra, now_iso=now_iso,
+        n_events=len(events))
+    from event_gate import append_event
+
+    append_event(_events_path(workspace_root), to_append,
+                 holder="brain_proposals")
+    return {"status": "proposed", "proposal_id": proposal_id, "data": data}
+
+
+def _check_propose_call(*, tier, kind, fingerprint, detector, change_class,
+                        extra, action_tuples) -> None:
+    """The illegal calls `propose` refuses, raised as BrainProposalError."""
     if tier not in ("auto", "confirm"):
         raise BrainProposalError(f"tier must be auto|confirm, got {tier!r}")
     if tier == "auto":
@@ -644,37 +709,12 @@ def propose(
             "adapter rows keys on it (LB2 §3a)")
     _validate_action_tuples(action_tuples)
 
-    from proposal_ledger import active_cooldowns
 
-    now_iso = _now_iso()
-    if fingerprint in active_cooldowns(workspace_root, detector, now_iso=now_iso):
-        return {"status": "suppressed_cooldown", "fingerprint": fingerprint}
-
-    events = _load_events(workspace_root)
-    now = _parse_ts(now_iso)
-    open_fps = {p["fingerprint"] for p in _open_brain_proposals(events, now=now)}
-    if fingerprint in open_fps:
-        return {"status": "duplicate_open", "fingerprint": fingerprint}
-    # LB2 cross-rail dedup: for migrated kinds, an open PRE-migration row of
-    # the same family (adapter-read, same natural-key fingerprint) also
-    # suppresses — the queue must never show a legacy row and a bp row for
-    # the same thing. Full projection incl. autos; defensive (a broken
-    # adapter never blocks a propose — the bp-side fingerprint check above
-    # already ran).
-    if kind in MIGRATED_KINDS:
-        try:
-            legacy_fps = {
-                p.get("fingerprint")
-                for p in load_open_proposals(
-                    workspace_root, now_iso=now_iso, include_auto=True)
-                if p.get("source_family") != "brain"
-            }
-            if fingerprint in legacy_fps:
-                return {"status": "duplicate_open_legacy",
-                        "fingerprint": fingerprint}
-        except Exception:
-            pass
-
+def _proposal_rows(workspace_root, *, kind, fingerprint, evidence,
+                   action_tuples, tier, ttl_days, detector, render_line,
+                   thread_id, org_id, person_id, extra, now_iso,
+                   n_events) -> tuple:
+    """`(proposal_id, data, rows to append)` for one proposal. Writes nothing."""
     # UXR1 D3 fix — the event count salts the id. The old basis
     # (fingerprint|now_iso) collided when the same fingerprint was
     # re-proposed within one UTC second of a resolved twin (the undo
@@ -682,7 +722,7 @@ def propose(
     # new row inherited the tombstoned row's id and rendered nowhere. The
     # id is stored on the event and never re-derived, so salting is safe.
     proposal_id = "bp_" + hashlib.sha256(
-        f"{fingerprint}|{now_iso}|{len(events)}".encode("utf-8")
+        f"{fingerprint}|{now_iso}|{n_events}".encode("utf-8")
     ).hexdigest()[:12]
     data = {
         "proposal_id": proposal_id,
@@ -704,9 +744,6 @@ def propose(
         for k, v in extra.items():
             data.setdefault(k, v)
 
-    from event_gate import append_event
-
-    events_path = _events_path(workspace_root)
     to_append = [{
         "type": "brain_proposal",
         "source_skill": detector,
@@ -733,8 +770,75 @@ def propose(
             "primary_thread_id": thread_id,
             "data": legacy,
         })
-    append_event(events_path, to_append, holder="brain_proposals")
-    return {"status": "proposed", "proposal_id": proposal_id, "data": data}
+    return proposal_id, data, to_append
+
+
+def prepare_proposals(workspace_root, specs: list) -> list:
+    """`propose`'s checks for many confirm rows off ONE read of the ledger,
+    writing nothing (cr1#773). `specs` are `propose` keyword dicts. Each answer
+    is `{"status": ...}` as `propose` gives it, with `rows` to append when
+    "proposed", or "error" with `error`: one bad row never costs the others.
+
+    For a writer whose rows must land in one short write section: `propose`
+    reads the whole ledger per row, which on a large book outlives the lease
+    if it runs inside one. The caller appends `rows` itself, and re-checks
+    against anything written since."""
+    from proposal_ledger import active_cooldowns
+
+    now_iso = _now_iso()
+    now = _parse_ts(now_iso)
+    events = _load_events(workspace_root)
+    open_fps = {p["fingerprint"] for p in _open_brain_proposals(events, now=now)}
+    cooldowns: dict = {}
+    legacy_fps = None
+    out: list = []
+    for spec in specs:
+        fingerprint, kind = spec.get("fingerprint"), spec.get("kind")
+        detector = spec.get("detector")
+        try:
+            _check_propose_call(
+                tier=spec.get("tier"), kind=kind, fingerprint=fingerprint,
+                detector=detector, change_class=spec.get("change_class"),
+                extra=spec.get("extra"), action_tuples=spec.get("action_tuples"))
+            if spec.get("tier") != "confirm":
+                raise BrainProposalError("prepare_proposals is for confirm rows")
+            if detector not in cooldowns:
+                cooldowns[detector] = active_cooldowns(
+                    workspace_root, detector, now_iso=now_iso)
+            if fingerprint in cooldowns[detector]:
+                out.append({"status": "suppressed_cooldown"})
+                continue
+            if fingerprint in open_fps:
+                out.append({"status": "duplicate_open"})
+                continue
+            if kind in MIGRATED_KINDS:
+                if legacy_fps is None:
+                    try:
+                        legacy_fps = {
+                            p.get("fingerprint")
+                            for p in load_open_proposals(
+                                workspace_root, now_iso=now_iso,
+                                include_auto=True)
+                            if p.get("source_family") != "brain"}
+                    except Exception:
+                        legacy_fps = set()
+                if fingerprint in legacy_fps:
+                    out.append({"status": "duplicate_open_legacy"})
+                    continue
+            _pid, _data, rows = _proposal_rows(
+                workspace_root, kind=kind, fingerprint=fingerprint,
+                evidence=spec.get("evidence"),
+                action_tuples=spec.get("action_tuples"), tier="confirm",
+                ttl_days=spec.get("ttl_days", DEFAULT_TTL_DAYS),
+                detector=detector, render_line=spec.get("render_line", ""),
+                thread_id=spec.get("thread_id"), org_id=spec.get("org_id"),
+                person_id=spec.get("person_id"), extra=spec.get("extra"),
+                now_iso=now_iso, n_events=len(events))
+            out.append({"status": "proposed", "rows": rows})
+        except Exception as exc:  # noqa: BLE001 - one row never costs the rest
+            out.append({"status": "error",
+                        "error": f"{type(exc).__name__}: {exc}"})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1583,7 +1687,7 @@ def _org_shape_quarantine_row(row: dict) -> dict:
         "action_tuples": [{"action": "show why"}],
         "render_line": ("proposal withheld — org-shaped payload in the "
                         "person queue"),
-        "opened_at": row.get("captured_ts") or "",
+        "opened_at": row.get("asked_ts") or row.get("captured_ts") or "",
         "expires_at": "",
         "detector": "confirm-flow",
         "seq": seq,
@@ -1686,7 +1790,8 @@ def _gate_org_shaped_person_rows(workspace_root, rows: list[dict],
             continue  # re-routed — the org rail renders the open org_proposal
         if _ORG_MARKER_RE.search(name):
             if now is not None and person_proposal_is_low_context(row):
-                opened = _parse_ts(row.get("captured_ts"))
+                from confirm_flow import question_clock
+                opened = _parse_ts(question_clock(row))
                 if opened is not None and \
                         (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS:
                     continue  # aged out — never quarantine a row FS-17 retires
@@ -1697,7 +1802,8 @@ def _gate_org_shaped_person_rows(workspace_root, rows: list[dict],
 
 
 def _adapt_person_proposals(workspace_root, events: list[dict],
-                            *, now: Optional[datetime] = None) -> list[dict]:
+                            *, now: Optional[datetime] = None,
+                            surfacing_at: Optional[str] = None) -> list[dict]:
     """FS-17 enrichment + PID1 D3 identity clustering: ONE row per person.
 
     Add-type proposals group by normalized name (`identity_reconcile.
@@ -1716,7 +1822,7 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
     MERGE-WATCH (PGUARD1): this function's edits are adapter/clustering
     only — the events-LOAD seam (`load_open_person_proposals(_events_path(
     ...))`) is untouched by design."""
-    from confirm_flow import load_open_person_proposals
+    from confirm_flow import load_open_person_proposals, question_clock
     from identity_reconcile import person_queue_view
     from mute_ledger import active_dismissal_target_ids
 
@@ -1728,9 +1834,13 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
     # — existence recomputes each render, no tombstone (the reconciler's
     # merge-propose lane is what RESOLVES these; the filter stays render-side
     # truth per the proposal-adapter existence gotcha).
+    # cr1#773: `surfacing_at` holds back a connector name stamped for a later
+    # day. Set for a named surface only: the diagnostic read keeps the waiting
+    # rows, like every other filter in `load_open_proposals`.
     rows = load_open_person_proposals(_events_path(workspace_root),
                                       dismissed_target_ids=dismissed,
-                                      suppress_on_file=True)
+                                      suppress_on_file=True,
+                                      surfacing_at=surfacing_at)
     # WG1-B D-B3 — org-shape gate BEFORE clustering: an org-shaped payload
     # written as a person_proposal (the TDX-Arena row) re-routes to the org
     # rail or quarantines; it never renders as a descriptor-less person row.
@@ -1776,7 +1886,7 @@ def _adapt_person_proposals(workspace_root, events: list[dict],
                                                 consequence=consequence,
                                                 org_names=org_names,
                                                 workspace_path=workspace_root),
-            "opened_at": min((r.get("captured_ts") or "")
+            "opened_at": min((question_clock(r) or "")
                              for r in cluster["rows"]) if cluster["rows"]
                          else "",
             "expires_at": "",
@@ -2301,7 +2411,9 @@ def load_open_proposals(
         # _adapt_commitment_reviews. This call is byte-identical to its
         # pre-WATCHGATE form on purpose.
         items += _adapt_commitment_reviews(workspace_root)
-        items += _adapt_person_proposals(workspace_root, events, now=now)
+        items += _adapt_person_proposals(
+            workspace_root, events, now=now,
+            surfacing_at=now_iso if surface is not None else None)
         items += _adapt_org_project_proposals(workspace_root, events, now=now)
         items += _adapt_dont_forget(workspace_root, events, now=now)
         # STAFFCUT §3.6 — `_adapt_schedule_add` is RETIRED and returns []; the
@@ -2373,6 +2485,13 @@ def load_open_proposals(
     if surface is not None:
         items = screen_past_lifetime(items, workspace_root, now_iso=now_iso,
                                      stats=screen_stats)
+    # cr1#773: a connector's project row stamped for a later day waits, the
+    # same posture again: the un-named read keeps it for dedup and expiry.
+    if surface is not None:
+        from confirm_flow import may_surface
+        today = _localize_date(now_iso, str(workspace_root))
+        items = [i for i in items if may_surface(i.get("surface_on"), today)
+                 and not _held_project_on_file(workspace_root, i)]
     # Uniform snooze/decline gate (review F1): a chat_dismissal whose
     # target_id is a projector item id retires that item for the
     # dismissal's TTL — this is what `snooze proposal 7d` and the
@@ -2404,6 +2523,20 @@ def load_open_proposals(
             )
         ]
     return items
+
+
+def _held_project_on_file(workspace_root, item: dict) -> bool:
+    """A connector's stamped project row whose project is in the book by now:
+    nothing is left to ask. Filter only, like the org rail's existence gate,
+    and the name is read each render so it follows the book."""
+    if item.get("kind") != "project" or not item.get("surface_on"):
+        return False
+    try:
+        from lifecycle_pass import project_is_on_file
+        return project_is_on_file(workspace_root,
+                                  item.get("name") or item.get("title") or "")
+    except Exception:
+        return False
 
 
 # FB-20 — the money carve-out's prose, one sentence per kind. The brief is
@@ -3245,6 +3378,7 @@ def card_health_counts(
 
 __all__ = [
     "DAILY_CONFIRM_CAP",
+    "DAILY_CONNECTOR_QUESTION_CAP",
     "DEFAULT_TTL_DAYS",
     "MAX_SLOTS_PER_DETECTOR",
     "AUTO_ALLOWED",

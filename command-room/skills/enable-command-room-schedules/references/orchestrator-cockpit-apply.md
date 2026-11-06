@@ -24,7 +24,7 @@ Then read the choices again (step 1's `query`, for the versions the claim left),
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the documents as read>], "inbox_fire_stamp": "<feed/inbox fire_stamp, or null>", "now_iso": "<now ISO>", "run_id": "<this session id>", "used_tokens": [<the tokens list of config/sent_tokens, or []>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:plan_apply"}'
 ```
 
-Four lists come back, plus `skipped`: the choices another run holds or no run claimed. Write nothing on a skipped choice.
+Six lists come back, plus `skipped`: the choices another run holds or no run claimed. Write nothing on a skipped choice.
 
 Every result below is written on its choice as `result`, with `applied: true` and `applied_at`, as an `update` pinned by the version rule in `cockpit-shared.md`.
 
@@ -63,5 +63,21 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 ```
 
 Write each result as that choice's `result` (the whole result object, so the page can match a new item to its row; an `error` field in it stays there for the receipt). A press already in the book answers from its first write (`replayed: true`), so a retried run never writes a reminder twice. Then refresh the Today lists so the page shows them at once: `run_helper` with `cockpit_helpers:feed_mine` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/mine`. A reminder the owner added is still the owner's own: the page carries their words and their day, and this run only writes them.
+
+**`review`** (cr1#779): the Review tab's answers. One writer call, `resolved_by` again left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the review list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_review_choices"}'
+```
+
+Write each result as that choice's `result`. A result with outcome `refused` wrote nothing: a close the fence held, or a row whose answer needs a chat or a typed value. Its `line` says so, and it counts as refused. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab: `run_helper` with `cockpit_helpers:feed_review` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/review`. When one of the answers has `review_kind` `learned_rule`, also refresh the Week tab, where the new rule's Undo sits: run the step headed **Then the Week tab** in `orchestrator-cockpit-refresh.md`, both calls with their arguments as written there, and `set` the answer on `feed/week`.
+
+**`week`** (cr1#780): the Week tab's presses. One writer call, `resolved_by` again left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the week list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_week_choices"}'
+```
+
+Write each result as that choice's `result`. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. The next refresh brings the Week tab up to date.
 
 **The light says what happened (cr1#678).** Count every result written: applied, refused, and failed (outcome `error`). When nothing failed and every writer answered `ok: true`, the light is `done` with "Applied N, refused M." When anything failed, the light is `error` with "Applied N, refused M, failed K: <the first failed line>." Never `done` over a failure. When the claim's last round left `n_more` above zero, its `line` follows the counts ("Applied N, refused M. K more wait for the next run.").

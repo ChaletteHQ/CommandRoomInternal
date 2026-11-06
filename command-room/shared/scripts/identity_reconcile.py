@@ -14,10 +14,19 @@ THE THREE TIERS (computed in code, per cluster — a rule table, never a score;
 all four §0 decisions RULED by M 2026-07-18):
 
   AUTO-ADD       multi-token full name AND (an OBSERVED email in the cluster's
-                 own captured text under the F-3 attribution rules, OR ≥2
-                 independent source families, OR a calendar-attendee record —
-                 which reaches this module as an observed address in the
-                 calendar-sourced evidence, so it rides the same two branches)
+                 own captured text that the text TIES to this person
+                 (`person_backlog_sweep._attributed_email`, cr1#769), OR ≥2
+                 independent source families with an identifier on one of
+                 them (cr1#754: a family is the kind stamped on the proposal
+                 when it was written, never a word in its text, and two
+                 sightings of a bare name do not add a person; see
+                 `cluster_identifier`), OR a calendar-attendee record.
+                 A calendar attendee counts two ways: as a machine-written
+                 `calendar:<address>` source_ref, which keeps its address, or
+                 as a display name and address in the evidence ("Name
+                 <address>"), which ties under the same rule as anything else.
+                 An address merely mentioned in calendar prose does not tie:
+                 that row stays a question.)
                  AND zero same-name collision AND not already on file.
                  Applied via `people_writer.auto_add_person` (its internal
                  same-name gate is defense-in-depth: needs_confirm demotes to
@@ -53,6 +62,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -199,15 +209,13 @@ ROLE_ADDRESS_LOCAL_PARTS = frozenset({
 # silently drop).
 _NAME_ANNOTATION_RE = re.compile(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s\-'.’]")
 
-_SOURCE_FAMILY_TOKENS = (
-    # Checked in order; first family whose token hits wins. Slack/calendar
-    # before meeting/mail because their tokens are the most specific.
-    ("slack", ("slack",)),
-    ("calendar", ("calendar", "invite", "attendee")),
-    ("meeting", ("granola", "transcript", "meeting")),
-    ("mail", ("mail", "inbox", "thread", "sent", "email", "gmail",
-              "superhuman")),
-)
+# cr1#754: what an id or company field holds when it names nothing, compared
+# with the edge punctuation stripped (`_is_placeholder`).
+_PLACEHOLDERS = frozenset({
+    "", "0", "freelance", "n.a", "n/a", "na", "nil", "none", "not specified",
+    "null", "self", "tba", "tbd", "unknown", "unknown company", "user"})
+# The endings that do not tell one company from another.
+_COMPANY_ENDINGS = frozenset({"co", "corp", "llc", "ltd"})
 
 
 def _clock_now(workspace_root=None):
@@ -241,6 +249,422 @@ def _now_iso() -> str:
 
 def _events_path(ws) -> Path:
     return Path(ws) / "_hq" / "data" / "events.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# cr1#665 (lane 3 of cr1#609) - THE DAILY PEOPLE UPDATE
+# ---------------------------------------------------------------------------
+# The Sunday `identity-reconcile` job stays the weekly DEEP pass, unchanged.
+# The daily `people-update` job runs this same module with a window: only the
+# identity clusters a mention captured inside the window touches are judged,
+# through the same tier table, the same writers and the same caps, so a person
+# first seen in yesterday's meeting is added (where corroborated) or asked
+# about (the rest) the next morning instead of the next Sunday. A cluster is
+# judged WHOLE once any of its rows is in the window: corroboration from an
+# older mention still counts, which is the existing rule, not a new one.
+#
+# What the daily pass leaves to Sunday, because each is a whole-book scan or
+# a clock that runs on weeks, not days: the fourteen-day aged defaults, the
+# FS-17 expiry, the nickname-collision rule, the rename and duplicate scans
+# over existing records, and the annotation-resolution join.
+#
+# Its receipt is a `pack_run` under its OWN task id, never an
+# `identity_reconcile_run`: that type implies the Sunday task by type alone
+# (`receipts._TYPE_IMPLIES_TASK`), so a daily receipt of it would mark the
+# Sunday job served and the deep pass would never run.
+DAILY_TASK_ID = "people-update"
+DAILY_RECEIPT_TYPE = "pack_run"
+
+
+def daily_window(workspace_root, *, since_iso: Optional[str] = None,
+                 now_iso: Optional[str] = None) -> dict:
+    """The window the daily people update reads on this run: the one
+    maintenance window rule (`catchup.maintenance_window`, since the job's
+    own last receipt, 30 days on a first run), or, when `since_iso` is
+    handed in explicitly, the same rule over that point
+    (`catchup.window_from_cursor`). No window math of its own."""
+    import catchup
+
+    if since_iso:
+        return catchup.window_from_cursor(DAILY_TASK_ID, since_iso,
+                                          now=now_iso)
+    return catchup.maintenance_window(workspace_root, DAILY_TASK_ID,
+                                      now=now_iso)
+
+
+def next_surface_day(slots: dict, today: str, *, cap: Optional[int] = None) -> str:
+    """The first day from `today` with room for one more connector question
+    (cr1#773). `slots` is {YYYY-MM-DD: names stamped for it}. The stamp is the
+    whole schedule: a later day needs no second read and no second write."""
+    if cap is None:
+        from brain_proposals import DAILY_CONNECTOR_QUESTION_CAP as cap
+    day = _dt.date.fromisoformat(today)
+    while len(slots.get(day.isoformat()) or ()) >= max(1, int(cap)):
+        day += _dt.timedelta(days=1)
+    return day.isoformat()
+
+
+# cr1#773: rows one write section stamps and appends. The section reads the
+# ledger once and appends once, so it stays far inside the writer lease whatever
+# the read's size; a longer list takes more sections, and other writers get in
+# between them: the lock is not a queue, so a pause is what lets them.
+CONNECTOR_SECTION_ROWS = 100
+CONNECTOR_SECTION_GAP_S = 0.5
+
+
+def connector_clock(workspace_root) -> tuple:
+    """`(now_iso, today)` for a connector job: the instant, and its
+    workspace-local date, which is what a stamp and a day's count are in."""
+    now_iso = _clock_now(workspace_root).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return now_iso, _localize_date(now_iso, str(workspace_root))
+
+
+def connector_slots(events) -> dict:
+    """{YYYY-MM-DD: questions stamped for that day}, people and projects in
+    one count (cr1#773). Read this and write the stamp inside one
+    `events_write_section`, or two jobs at once both fill the same day. Keep
+    that section to this read, the stamps and one append: anything slower,
+    per row, outlives the lease and every later row is refused."""
+    from confirm_flow import (PERSON_NAME_KEYS, PROPOSAL_TYPES, _first_str,
+                              _surface_day)
+
+    slots: dict = {}
+    for ev in events:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        day = _surface_day(data.get("surface_on"))
+        if day and ev.get("type") in PROPOSAL_TYPES:
+            slots.setdefault(day, set()).add(
+                _norm_name(_first_str(data, PERSON_NAME_KEYS)))
+        elif day and ev.get("type") == "brain_proposal":
+            slots.setdefault(day, set()).add(str(data.get("fingerprint")))
+    return slots
+
+
+def _names_up(workspace_root, events, now_iso: str) -> set:
+    """The names a render shows the owner now. Open is not the same thing: a
+    row past FS-17, or under a snooze, is on the ledger and renders nothing."""
+    from confirm_flow import load_open_person_proposals
+    from mute_ledger import active_dismissal_target_ids
+
+    rows = load_open_person_proposals(
+        _events_path(workspace_root), surfacing_at=now_iso,
+        dismissed_target_ids=active_dismissal_target_ids(events, now_iso))
+    return {_norm_name(r.get("name"))
+            for c in person_queue_view(rows, now_iso=now_iso)["clusters"]
+            for r in c["rows"]}
+
+
+def people_waiting(workspace_root, now_iso: str) -> int:
+    """How many names on the ledger have not come up yet: stamped for a later
+    day, no row of the name up, and not on file since (a name on file never
+    comes up)."""
+    from confirm_flow import (load_open_person_proposals, may_surface,
+                              person_name_on_file)
+    from events_io import iter_events_org_scoped
+
+    path = _events_path(workspace_root)
+    today = _localize_date(now_iso, str(workspace_root))
+    held = {r["name"] for r in load_open_person_proposals(path)
+            if r.get("name") and not may_surface(r.get("surface_on"), today)}
+    if not held:
+        return 0
+    up = _names_up(workspace_root, list(iter_events_org_scoped(workspace_root)),
+                   now_iso)
+    return len({_norm_name(n) for n in held if _norm_name(n) not in up
+                and not person_name_on_file(workspace_root, n)})
+
+
+def propose_seen_people(workspace_root, seen, *, source_skill: str) -> dict:
+    """Put the people a connector job saw on the identity queue (cr1#738).
+
+    `seen`: dicts of `{name, source_ref, ref, kind}`, one per name per item,
+    already past the connector's `update_people` dial and its lists. Each new
+    name becomes ONE `person_proposal` through the builder meeting capture
+    uses, with the connector item as its source pointer. The daily people
+    update then judges it by the rules it already has: a proposal is the
+    input that pass reads, so nothing about it changes here.
+
+    A person on file is left alone, and a name the queue has held before,
+    open or answered, is never asked again: a board re-read on every fire
+    must not re-open what the owner already said. The one row still written
+    for such a name is a new sighting beside rows that are all open and
+    stamped (cr1#754): another kind, or an id or company that kind has not
+    shown, because two of those are two people and the cluster has to see
+    them. It joins the same person row, so nothing new is asked. The evidence
+    is a fixed phrase, never a board or document name.
+
+    No more than `DAILY_CONNECTOR_QUESTION_CAP` new names come up on one day
+    (cr1#773). Every row is still written, each stamped `surface_on`, the
+    workspace-local day it may come up: today while today has room, else the
+    next day that has. A name counts once, a day's count stays full after its
+    questions are answered, and the count is shared with the projects the
+    same read brings (`lifecycle_pass.note_seen_projects`). A new sighting
+    takes no room when the name is up now, and needs no stamp, or when it
+    waits, and keeps that day. A name open on the ledger that renders nothing
+    is neither: this sighting brings it back, so it takes a day like a new
+    name. An org rail row is not a person question and takes none.
+
+    `kind` is stamped as the row's source. `source_user_id` and
+    `source_company`, when a row carries them, are the connector's own id for
+    this person and the company it states for them. Only the tasks connector
+    has an id to give and none has a company field yet; a row without either
+    stays name-only.
+
+    Returns the receipt fields, `n_people_waiting` among them: every name on
+    the ledger still held for a later day, not only this read's. A refused
+    row is counted, never raised: one name never loses the job its receipt."""
+    ws = Path(workspace_root)
+    now_iso, today = connector_clock(ws)
+    out: dict = {"people_proposed": [], "n_people_known": 0,
+                 "n_people_asked_before": 0, "people_errors": []}
+    rows = [r for r in seen or [] if isinstance(r, dict)
+            and str(r.get("name") or "").strip()]
+    if rows:
+        plan, known, repeats, days, up, read_to = _plan_seen_people(
+            ws, rows, out, source_skill, now_iso)
+        ours: set = set()
+        for at in range(0, len(plan), CONNECTOR_SECTION_ROWS):
+            time.sleep(CONNECTOR_SECTION_GAP_S if at else 0)
+            _append_seen_people(ws, plan[at:at + CONNECTOR_SECTION_ROWS], out,
+                                source_skill, today, days, up, repeats, read_to,
+                                ours)
+        out["n_people_known"] = len(known)
+        out["n_people_asked_before"] = len(repeats)
+    out["n_people_waiting"] = people_waiting(ws, now_iso)
+    return out
+
+
+def _append_seen_people(ws, plan, out, source_skill, today, days, up, repeats,
+                        read_to, ours) -> None:
+    """One short section: what a day holds is read here, so the stamps and
+    the one append land here too. A row another job wrote for a name since
+    `read_to`, the plan's own read, makes this row a repeat; `ours` is the
+    seqs this job's earlier sections wrote, which are not another job's.
+    `days` and `up` change only once the append has landed, so a section that
+    fails leaves no later row believing its name is up. It is counted against
+    its names, and the next read brings them back."""
+    from atomic_write import events_write_section
+    from confirm_flow import (PERSON_NAME_KEYS, PROPOSAL_TYPES, _first_str,
+                              may_surface)
+    from event_gate import append_event
+    from events_io import iter_events_org_scoped
+
+    try:
+        with events_write_section(_events_path(ws), holder=source_skill):
+            events = list(iter_events_org_scoped(ws))
+            slots = connector_slots(events)
+            since = {_norm_name(_first_str(e.get("data") or {},
+                                           PERSON_NAME_KEYS))
+                     for e in events if e.get("type") in PROPOSAL_TYPES
+                     and isinstance(e.get("seq"), int) and e["seq"] > read_to
+                     and e["seq"] not in ours}
+            batch = []
+            new_days: dict = {}
+            new_up: set = set()
+            for item in plan:
+                key, ev = item["key"], item["ev"]
+                if key in since:
+                    repeats.add(key)
+                    continue
+                batch.append(ev)
+                if ev.get("type") == "org_proposal":
+                    continue
+                waiting = [d for d in list(days.get(key, ()))
+                           + new_days.get(key, [])
+                           if d and not may_surface(d, today)]
+                if key in up or key in new_up:
+                    surface_on = None
+                elif waiting:
+                    surface_on = min(waiting)
+                else:
+                    surface_on = next_surface_day(slots, today)
+                new_days.setdefault(key, []).append(surface_on)
+                if surface_on:
+                    ev["data"]["surface_on"] = surface_on
+                    slots.setdefault(surface_on, set()).add(key)
+                    if may_surface(surface_on, today):
+                        new_up.add(key)
+            written = append_event(_events_path(ws), batch,
+                                   holder=source_skill) if batch else []
+    except Exception as exc:  # noqa: BLE001 - contained per job, loud per name
+        out["people_errors"] += [{"name": item["name"],
+                                  "error": f"{type(exc).__name__}: {exc}"}
+                                 for item in plan]
+        return
+    landed = {_norm_name((w.get("data") or {}).get("name")) for w in written}
+    ours.update(w.get("seq") for w in written)
+    for key in landed & set(new_days):
+        days.setdefault(key, []).extend(new_days[key])
+    up |= landed & new_up
+    for item in plan:
+        if item["key"] in landed and item["name"] not in out["people_proposed"]:
+            out["people_proposed"].append(item["name"])
+
+
+def _plan_seen_people(ws, rows, out, source_skill, now_iso) -> tuple:
+    """Which rows are new, off ONE read of the ledger and outside any lock:
+    the name, dedup and gate checks are the slow part. Returns `(plan, known,
+    repeats, days, up, read_to)`. A plan row is built and gated, not stamped."""
+    from confirm_flow import (PERSON_NAME_KEYS, PROPOSAL_TYPES, _first_str,
+                              load_open_person_proposals, person_name_on_file)
+    from event_gate import gate_events
+    from events_io import iter_events_org_scoped
+    from meeting_capture import build_person_proposal_event
+
+    events = list(iter_events_org_scoped(ws))
+    read_to = max((e["seq"] for e in events if isinstance(e.get("seq"), int)),
+                  default=0)
+    up = _names_up(ws, events, now_iso)
+    asked: dict = {}
+    ever: dict = {}
+    for ev in events:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") in PROPOSAL_TYPES:
+            name_seen = _first_str(data, PERSON_NAME_KEYS)
+            key = _norm_name(name_seen)
+            asked[key] = asked.get(key, 0) + 1
+            ever.setdefault(key, set()).add(_sighting(
+                dict(data, name=name_seen), data.get("source_kind"))[:2])
+        elif ev.get("type") == "org_proposal":
+            key = _norm_name(data.get("name"))
+            asked[key] = asked.get(key, 0) + 1
+    sightings: dict = {}
+    days: dict = {}
+    for open_row in load_open_person_proposals(_events_path(ws)):
+        key = _norm_name(open_row.get("name"))
+        sightings.setdefault(key, []).append(
+            _sighting(open_row, open_row.get("source_kind")))
+        days.setdefault(key, []).append(open_row.get("surface_on"))
+
+    def asked_before(key, sighting) -> bool:
+        kind, tool_id, company = sighting
+        held = sightings.get(key) or []
+        if key not in asked:
+            return False
+        if not kind or len(held) != asked[key] or \
+                any(s[0] is None for s in held):
+            return True  # answered, an old row, or no kind to tell it apart
+        same_kind = [s for s in held if s[0] == kind]
+        return bool(same_kind) \
+            and (not tool_id or tool_id in {s[1] for s in same_kind}) \
+            and (not company or company in {s[2] for s in same_kind})
+
+    done: set = set()
+    known: set = set()
+    repeats: set = set()
+    to_org_rail: set = set()
+    plan: list = []
+    for row in rows:
+        name = str(row["name"]).strip()
+        key = _norm_name(name)
+        sighting = _sighting(dict(row, name=name), row.get("kind"))
+        if (key, sighting) in done:
+            continue
+        done.add((key, sighting))
+        if person_name_on_file(ws, name):
+            # cr1#825: the record keeps what it was added on, so a sighting
+            # that says another person is the one row a name on file gets,
+            # once. The same id, or nothing to compare, is the person on file.
+            if sighting_on_file(ws, dict(row, name=name))[1] != "different" \
+                    or sighting[:2] in ever.get(key, ()):
+                known.add(key)
+                continue
+        elif asked_before(key, sighting):
+            repeats.add(key)
+            continue
+        try:
+            ev = build_person_proposal_event(
+                name, source_ref=row.get("source_ref"),
+                source_skill=source_skill,
+                evidence=(row.get("evidence")
+                          or f"named on an item in your {row.get('kind')}"),
+                workspace_root=ws, source_kind=row.get("kind"),
+                inferred_role=row.get("inferred_role"),
+                inferred_org=row.get("inferred_org"),
+                source_user_id=row.get("source_user_id"),
+                source_company=row.get("source_company"))
+            if ev.get("type") == "org_proposal":
+                if key in to_org_rail:
+                    continue  # one question per name, whatever saw it
+                to_org_rail.add(key)
+            if "ref" in row:  # a door sighting is no connector row
+                ev["data"]["connector_source_ref"] = dict(row.get("ref") or {})
+            # A row the gate refuses is this name's, never the batch's.
+            gate_events([ev], strict_enum=True, holder=source_skill)
+        except Exception as exc:  # noqa: BLE001 - loud per item, contained per job
+            out["people_errors"].append({"name": name,
+                                         "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        asked[key] = asked.get(key, 0) + 1
+        sightings.setdefault(key, []).append(sighting)
+        plan.append({"name": name, "key": key, "ev": ev})
+    return plan, known, repeats, days, up, read_to
+
+
+def _window_start(window) -> Optional[_dt.datetime]:
+    """The aware instant a window opens at. `since_aware` carries the
+    machine's offset; a bare `since` is machine-local naive, so it is
+    localized rather than read as UTC. None when neither parses."""
+    if not isinstance(window, dict):
+        return None
+    from event_time import parse_ts
+
+    start = parse_ts(window.get("since_aware") or "")
+    if start is not None:
+        return start
+    raw = window.get("since")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        naive = _dt.datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return naive.astimezone() if naive.tzinfo is None else naive
+
+
+def _daily_spill_marker(window, spilled: bool) -> Optional[str]:
+    """The batch-cap marker for a daily run that hit a cap, through the
+    one writer of it (`catchup.receipt_window_marker`): the window's own
+    start, so the next run re-covers the span. None when nothing spilled."""
+    if not spilled or not isinstance(window, dict):
+        return None
+    from catchup import receipt_window_marker
+
+    return receipt_window_marker(
+        {"start": window.get("since"), "end": window.get("until")},
+        incomplete=True)
+
+
+def _captured_since(row: dict, start: Optional[_dt.datetime]) -> bool:
+    """True when the proposal row was captured at or after `start`. An
+    unplaceable row, or no start at all, is NOT in the window: the Sunday
+    pass still sees it, so the daily pass never guesses."""
+    if start is None:
+        return False
+    from confirm_flow import question_clock
+    from event_time import parse_ts
+
+    # cr1#773: a held row's clock is its surface day, so it is in every window
+    # that opens before that day: each daily pass re-judges it while it waits,
+    # which writes nothing unless its evidence settles it. The windows tile
+    # (each opens at the last receipt), so the first pass on or after its day
+    # is one of them, and that pass asks the link it held back. A spill keeps
+    # the window open; failing all that, Sunday's pass has no window.
+    when = parse_ts(question_clock(row) or "")
+    return when is not None and when >= start
+
+
+def _restrict_view_to_window(view: dict, start) -> dict:
+    """The clustered queue cut to what the window touched: a cluster with
+    at least one row captured in the window (judged whole), and the
+    nameless and standalone update rows captured in it."""
+    return {
+        "clusters": [c for c in view["clusters"]
+                     if any(_captured_since(r, start) for r in c["rows"])],
+        "updates": [r for r in view["updates"] if _captured_since(r, start)],
+        "nameless": [r for r in view["nameless"]
+                     if _captured_since(r, start)],
+    }
 
 
 _ROLE_TOKEN_SPLIT_RE = re.compile(r"[^a-z]+")
@@ -283,13 +707,31 @@ def _norm_name(s: str | None) -> str:
 
 def _source_family(row: dict) -> Optional[str]:
     """Which independent source FAMILY a proposal row came from (D2:
-    independence is by family, not by row count). Unknown → None (an
-    unclassifiable source never counts toward corroboration)."""
-    text = f"{row.get('source_ref') or ''} {row.get('evidence') or ''}".lower()
-    for family, tokens in _SOURCE_FAMILY_TOKENS:
-        if any(t in text for t in tokens):
-            return family
-    return None
+    independence is by family, not by row count): the kind stamped when the
+    row was written (cr1#754). No stamp → None, and neither its pointer nor
+    its evidence is read to guess one, so an old row never counts toward
+    corroboration."""
+    from confirm_flow import PERSON_SOURCE_KINDS
+
+    kind = row.get("source_kind")
+    return kind if kind in PERSON_SOURCE_KINDS else None
+
+
+def _independent_families(rows: list) -> list:
+    """The source families these rows show, sorted. One pointer is one source
+    whatever kind a row states, and a row with no pointer is none (cr1#825),
+    so two sightings count as two only when their refs differ."""
+    from connector_adapters.provenance import dedup_key_of
+
+    families: set = set()
+    seen: set = set()
+    for row in sorted(rows, key=lambda r: r.get("captured_ts") or ""):
+        ref = dedup_key_of(row.get("source_ref"))
+        family = _source_family(row)
+        if family and ref and ref not in seen:
+            families.add(family)
+        seen.add(ref)
+    return sorted(families)
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +801,7 @@ def cluster_open_proposals(rows: list[dict]) -> dict:
     out = []
     for c in clusters.values():
         c["rows"].sort(key=lambda r: r.get("captured_ts") or "", reverse=True)
-        c["source_families"] = sorted(
-            {f for f in (_source_family(r) for r in c["add_rows"]) if f})
+        c["source_families"] = _independent_families(c["add_rows"])
         c["row_id"] = _cluster_row_id(c)
         out.append(c)
     # Oldest cluster first (matches the queue's age ordering).
@@ -415,19 +856,12 @@ def person_queue_view(rows: list[dict], *, now_iso: Optional[str] = None) -> dic
     Applies the FS-17 low-context age-out per row, then clusters. Nameless
     add rows are in the view but NEVER counted/rendered (annotation tier)."""
     from event_time import parse_ts
-    from brain_proposals import (PERSON_LOW_CONTEXT_STALE_DAYS,
-                                 person_proposal_is_low_context)
+    from confirm_flow import person_row_aged_out
 
     now = parse_ts(now_iso or _now_iso())
-    kept = []
-    for row in rows:
-        if now is not None and person_proposal_is_low_context(row):
-            opened = parse_ts(row.get("captured_ts"))
-            if opened is not None and \
-                    (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS:
-                continue  # aged name-only mention — never surfaces (FS-17)
-        kept.append(row)
-    return cluster_open_proposals(kept)
+    # An aged name-only mention never surfaces (FS-17).
+    return cluster_open_proposals(
+        [row for row in rows if not person_row_aged_out(row, now)])
 
 
 def count_person_rows(rows: list[dict], *, now_iso: Optional[str] = None) -> int:
@@ -442,17 +876,14 @@ def count_person_rows(rows: list[dict], *, now_iso: Optional[str] = None) -> int
 # Classification (D2 — the rule table)
 # ---------------------------------------------------------------------------
 
-def cluster_observed_email(cluster: dict):
-    """(email, source_row) — the first OBSERVED address across the cluster's
-    add rows, newest first, under `person_backlog_sweep._observed_email`'s
-    F-3 attribution rules (ONE implementation — imported, never copied)."""
-    from person_backlog_sweep import _observed_email
-
+def _cluster_email(cluster: dict, reader):
+    """(email, source_row): the first address `reader` finds across the
+    cluster's add rows, newest first."""
     for row in sorted(cluster["add_rows"],
                       key=lambda r: r.get("captured_ts") or "", reverse=True):
         probe = dict(row)
         probe["name"] = cluster["name"]
-        email = _observed_email(probe)
+        email = reader(probe)
         if email and is_role_address(email):
             # Second-eyes F1 (2026-07-19): §0-2's own doctrine applied to
             # CAPTURE — a role-shaped local part (shared inbox) never
@@ -463,6 +894,387 @@ def cluster_observed_email(cluster: dict):
         if email:
             return email, row
     return None, None
+
+
+def cluster_observed_email(cluster: dict):
+    """(email, source_row): the first address the cluster's own text TIES to
+    this person, under `person_backlog_sweep._attributed_email` (ONE
+    implementation, imported and never copied). cr1#769: this answer may land
+    on a record and license an add, so an address that merely appears in the
+    text is not enough."""
+    from person_backlog_sweep import _attributed_email
+
+    return _cluster_email(cluster, _attributed_email)
+
+
+def cluster_mentioned_email(cluster: dict):
+    """(email, source_row): the first address the cluster's text mentions, on
+    `person_backlog_sweep._observed_email`. For routing to the link lane only:
+    nothing reads it to write an address or to add a person."""
+    from person_backlog_sweep import _observed_email
+
+    return _cluster_email(cluster, _observed_email)
+
+
+def _is_placeholder(value) -> bool:
+    return _norm_name(str(value or "")).strip(" .()-_?") in _PLACEHOLDERS
+
+
+def _tool_user_id(row: dict) -> Optional[str]:
+    """The source tool's own id on this row, or None. A connector can stage a
+    person where the id goes, so a placeholder, text with a space or an @, or
+    a spelling of the name itself is not taken as an id."""
+    raw = str(row.get("source_user_id") or "").strip()
+    if _is_placeholder(raw) or re.search(r"[\s@]", raw):
+        return None
+    words = re.findall(r"[^\W_]+", _norm_name(row.get("name")))
+    folded = "".join(re.findall(r"[^\W_]+", raw.lower()))
+    if folded in words or sorted(folded) == sorted("".join(words)):
+        return None
+    return raw
+
+
+def _company_key(value) -> str:
+    """A company name with case, punctuation and its legal ending folded
+    away, so "Acme Co." and "ACME, LLC" compare as one company."""
+    words = re.findall(r"[^\W_]+", _norm_name(str(value or "")))
+    while words and words[-1] in _COMPANY_ENDINGS:
+        words.pop()
+    return " ".join(words)
+
+
+def _source_company(row: dict) -> Optional[str]:
+    """The company the source states on this row, folded, or None. A
+    placeholder names none, and the person's own name is no company."""
+    folded = _company_key(row.get("source_company"))
+    name = _norm_name(row.get("name"))
+    if _is_placeholder(row.get("source_company")) or not folded or \
+            folded == name or folded in name.split():
+        return None
+    return folded
+
+
+def _is_owners_company(company: str, owners: set) -> bool:
+    """Does this folded company lead with an owner company's words, or the
+    other way round? Any other ending on the owner's name is still the owner,
+    and if it is not, the row only asks."""
+    return any(company == own or company.startswith(own + " ")
+               or own.startswith(company + " ") for own in owners)
+
+
+def _sighting(row: dict, kind) -> tuple:
+    """What one row says about a person: (kind, id, company)."""
+    return (kind, _tool_user_id(row), _source_company(row))
+
+
+def _owner_companies(workspace_root) -> Optional[set]:
+    """The owner's own company names, folded: self orgs and the org on the
+    owner's record. None when the book cannot say, because the owner does not
+    resolve to a record or the book is unusable: no company counts then, so
+    the row asks."""
+    if workspace_root is None:
+        return None
+    try:
+        from entities_io import entities_collection
+        from primary_user import resolve_primary_user
+
+        data = json.loads((Path(workspace_root) / "_hq" / "data" /
+                           "entities.json").read_text(encoding="utf-8"))
+        owner = resolve_primary_user(workspace_root)
+        records = [p for p in entities_collection(data, "people")
+                   if isinstance(p, dict) and p.get("id") == owner]
+        if not owner or not records:
+            return None
+        own_org_ids = {p.get("primary_org_id") or p.get("org_id")
+                       for p in records}
+        names: set = set()
+        for org in entities_collection(data, "orgs"):
+            if isinstance(org, dict) and (
+                    org.get("id") in own_org_ids or str(
+                        org.get("relationship_type") or "").strip().lower()
+                    == "self"):
+                names.update(_company_key(n) for n in
+                             [org.get("canonical_name")]
+                             + list(org.get("aliases") or []))
+        return names - {""}
+    except Exception:
+        return None
+
+
+def _cluster_rows(cluster: dict) -> list:
+    name = cluster.get("name") or ""
+    return [dict(r, name=name) for r in cluster.get("add_rows") or []]
+
+
+def _tool_ids_by_kind(rows: list) -> dict:
+    ids: dict = {}
+    for row in rows:
+        tool_id = _tool_user_id(row)
+        if tool_id and _source_family(row):
+            ids.setdefault(_source_family(row), set()).add(tool_id)
+    return ids
+
+
+def cluster_disagreement(cluster: dict) -> Optional[str]:
+    """What says this cluster may be two people, or None: two addresses its
+    text ties to the name, two ids from one kind of tool, or two companies
+    on any row. It comes before anything that could add them (cr1#754)."""
+    from person_backlog_sweep import _attributed_email
+
+    rows = _cluster_rows(cluster)
+    tied = {a.strip().lower() for a in map(_attributed_email, rows) if a}
+    if len(tied) > 1:
+        return "two addresses"
+    if any(len(found) > 1 for found in _tool_ids_by_kind(rows).values()):
+        return "two source tool user ids"
+    if len({c for c in map(_source_company, rows) if c}) > 1:
+        return "two companies"
+    return None
+
+
+def cluster_identifier(cluster: dict, workspace_root=None) -> Optional[str]:
+    """What sets this person apart from another of the same name, or None
+    (cr1#754, owner ruling 2026-11-04): an address the text ties to them, the
+    source tool's own user id, or a company name the source itself supplied
+    (`source_company`). A job title does not count, nor a word in the
+    evidence, nor `inferred_org`: that is a model's inference, and an
+    inference does not license an add (maintainer's ruling, 2026-11-05).
+
+    Only a row with a source can carry the id or the company: an old row is
+    not one of the two sightings. A cluster that disagrees with itself
+    identifies nobody (`cluster_disagreement`). The owner's own company
+    separates nobody on the owner's own board."""
+    if cluster_disagreement(cluster):
+        return None
+    if cluster_observed_email(cluster)[0]:
+        return "address"
+    rows = _cluster_rows(cluster)
+    if _tool_ids_by_kind(rows):
+        return "source tool user id"
+    companies = {c for c in map(_source_company, rows) if c}
+    if any(_source_company(r) and _source_family(r) for r in rows):
+        owners = _owner_companies(workspace_root)
+        if owners is not None and not any(
+                _is_owners_company(c, owners) for c in companies):
+            return "company name"
+    return None
+
+
+def cluster_source_identifiers(cluster: dict, workspace_root=None) -> list:
+    """What an add keeps on the record (`source_identifiers`, cr1#825): the
+    source's ids and the companies it supplied, under the rules that let them
+    count in `cluster_identifier`. A company is kept with the spelling the
+    source gave; the owner's own company identifies nobody, so it stays off."""
+    rows = _cluster_rows(cluster)
+    kept = [{"kind": kind, "tool_id": tool_id}
+            for kind, ids in sorted(_tool_ids_by_kind(rows).items())
+            for tool_id in sorted(ids)]
+    if any(_source_company(r) and _source_family(r) for r in rows):
+        owners = _owner_companies(workspace_root)
+        seen: set = set()
+        for row in rows if owners is not None else []:
+            company, kind = _source_company(row), _source_family(row)
+            if company and kind and company not in seen \
+                    and not _is_owners_company(company, owners):
+                seen.add(company)
+                kept.append({"kind": kind,
+                             "company": str(row["source_company"]).strip()})
+    return kept
+
+
+def sighting_against_record(record: dict, sighting: tuple) -> Optional[str]:
+    """Is this sighting (`_sighting`) the person on `record`? "same",
+    "different", or None when the two have nothing to compare (cr1#825). An
+    id speaks only against an id of the same kind, as in
+    `cluster_disagreement`. A company stays on the record as an identifier and
+    decides nothing here: spellings differ and people move, so a different
+    company alone asks nothing."""
+    kind, tool_id, _company = sighting
+    ids = {k.get("tool_id") for k in (record or {}).get("source_identifiers") or []
+           if isinstance(k, dict) and k.get("kind") == kind and k.get("tool_id")}
+    if not kind or not tool_id or not ids:
+        return None
+    return "same" if tool_id in ids else "different"
+
+
+def sighting_on_file(workspace_root, row: dict) -> tuple:
+    """(record, verdict) for a sighting whose name resolves to one live record
+    on file. (None, None) when it carries no id, no one record holds the name,
+    or the record is archived: an archived record is nobody's answer. The
+    row's own address on the record, or the owner's yes to this id, makes it
+    "same" whatever the id says."""
+    from people_writer import MultipleCandidatesError, find_existing_person
+
+    sighting = _sighting(row, row.get("kind"))
+    if not sighting[1]:
+        return None, None
+    try:
+        record = find_existing_person(workspace_root, name=row.get("name"))
+    except MultipleCandidatesError:
+        return None, None
+    if not record or record.get("status") == "archived":
+        return None, None
+    said = sighting_against_record(record, sighting)
+    if said == "different" and (
+            _row_holds_records_address(row, record)
+            or _owner_said_same(workspace_root, row, sighting, record)):
+        said = "same"
+    return record, said
+
+
+def _row_holds_records_address(row: dict, record) -> bool:
+    """Does this one row tie an address that is on the record? That beats a
+    different id (cr1#825). Only the row's own attributed address counts: one
+    merely mentioned in its text, or tied on another row, settles nothing."""
+    address = cluster_observed_email(
+        {"name": row.get("name"), "add_rows": [row]})[0]
+    return bool(address) and address.strip().lower() in {
+        e.strip().lower() for e in _record_emails(record or {})}
+
+
+def _owner_said_same(workspace_root, row: dict, sighting: tuple, record) -> bool:
+    """Did a row of this name with this kind and id end in `same_as` on this
+    record, read from the ledger? The tombstone is the owner's yes on every
+    surface, so no surface has to write the id back. A reopen lifts it."""
+    from confirm_flow import PERSON_NAME_KEYS, PROPOSAL_TYPES, _first_str
+    from events_io import iter_events_org_scoped
+
+    key = _norm_name(row.get("name"))
+    mine: set = set()
+    yes: set = set()
+    for ev in iter_events_org_scoped(Path(workspace_root)):
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") in PROPOSAL_TYPES:
+            name = _first_str(data, PERSON_NAME_KEYS)
+            if _norm_name(name) == key and _sighting(
+                    dict(data, name=name),
+                    data.get("source_kind"))[:2] == sighting[:2]:
+                mine.add(str(ev.get("seq")))
+        elif ev.get("type") == "person_proposal_resolved" \
+                and data.get("resolution") == "same_as" \
+                and data.get("person_id") == record.get("id"):
+            yes.add(str(data.get("proposal_seq")))
+        elif ev.get("type") == "person_proposal_reopened":
+            yes.discard(str(data.get("proposal_seq")))
+    return bool(mine & yes)
+
+
+def _kinds_saying_another_person(cluster: dict, record) -> list:
+    """The kinds of tool that list this name under another id than the
+    record's. Each row is judged on its own, so an address on one row does not
+    silence an id on another. Only a row with a source can say so."""
+    return sorted({
+        _source_family(r) for r in _cluster_rows(cluster)
+        if sighting_against_record(
+            record or {}, _sighting(r, _source_family(r))) == "different"
+        and not _row_holds_records_address(r, record)})
+
+
+def _cluster_says_another_person(cluster: dict, record) -> bool:
+    return bool(_kinds_saying_another_person(cluster, record))
+
+
+def judge_sighting(workspace_root, sighting: dict) -> tuple:
+    """(cluster, verdict): the rule table `classify_cluster` applies on the
+    runs, over the open rows of this name plus this sighting, which is not on
+    the ledger yet (cr1#825). A row on hold is left out, so a held name is
+    never added on what it holds: it needs what the new sighting brings."""
+    from confirm_flow import load_open_person_proposals, person_source_kind
+
+    ws = Path(workspace_root)
+    try:
+        import event_refs
+        from mute_ledger import active_dismissal_target_ids
+
+        held = active_dismissal_target_ids(
+            event_refs.load_events(_events_path(ws)), _now_iso()) \
+            if _events_path(ws).exists() else []
+    except Exception:
+        held = []
+    key = _norm_name(sighting.get("name"))
+    rows = [r for r in load_open_person_proposals(
+        _events_path(ws), dismissed_target_ids=[str(t) for t in held])
+        if _norm_name(r.get("name")) == key]
+    rows.append(dict(
+        sighting, type="person_proposal", seq=None, fingerprint=None,
+        source_kind=person_source_kind(sighting.get("source_ref"),
+                                       sighting.get("kind")),
+        captured_ts=_now_iso()))
+    cluster = next(c for c in cluster_open_proposals(rows)["clusters"]
+                   if c["key"] == key)
+    return cluster, classify_cluster(ws, cluster)
+
+
+def ask_about_sighting(workspace_root, sighting: dict, *,
+                       source_skill: str) -> dict:
+    """Put one door sighting on the queue: the question cr1#754 raises, by the
+    rules `propose_seen_people` holds (one person is one question, an answered
+    name stays answered, an org goes to the org rail). It takes no surface
+    day, because the daily cap is the connector rows' (cr1#773). A row that
+    lands nothing is a repeat: `asked` with `already_asked` while a row of the
+    name is open on the person or the org rail, else `already_answered`,
+    because no question exists then. A row the gate refuses raises."""
+    from brain_proposals import _open_org_proposal_names
+    from confirm_flow import load_open_person_proposals
+    from event_gate import append_event
+    from events_io import iter_events_org_scoped
+
+    ws = Path(workspace_root)
+    out: dict = {"people_errors": []}
+    plan = _plan_seen_people(ws, [sighting], out, source_skill, _now_iso())[0]
+    if out["people_errors"]:
+        raise ValueError(out["people_errors"][0]["error"])
+    landed = append_event(_events_path(ws), [item["ev"] for item in plan],
+                          holder=source_skill) if plan else []
+    if landed:
+        return {"status": "asked", "record": None}
+    key = _norm_name(sighting.get("name"))
+    if any(_norm_name(r.get("name")) == key
+           for r in load_open_person_proposals(_events_path(ws))) \
+            or key in _open_org_proposal_names(list(iter_events_org_scoped(ws))):
+        return {"status": "asked", "already_asked": True, "record": None}
+    return {"status": "already_answered", "record": None}
+
+
+def close_sightings(workspace_root, cluster: dict, person_id: str, *,
+                    source_skill: str) -> None:
+    """A door add closes the rows it used: one `person_added` tombstone each,
+    as the runs write. The sighting not yet on the ledger has none to close."""
+    from confirm_flow import build_person_proposal_resolved_event
+    from event_gate import append_event
+
+    tombs = []
+    for row in cluster["rows"]:
+        seq = row.get("seq")
+        kwargs = {}
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            if not row.get("fingerprint"):
+                continue
+            seq, kwargs = None, {"proposal_fingerprint": row["fingerprint"]}
+        tombs.append(build_person_proposal_resolved_event(
+            seq, resolution="person_added", source_skill=source_skill,
+            person_id=person_id, note="added through the door", **kwargs))
+    if tombs:
+        append_event(_events_path(workspace_root), tombs, holder=source_skill)
+
+
+def _name_is_someone_elses(workspace_root, name: str, record, *,
+                           if_unreadable: bool = True) -> bool:
+    """Is `name` another record's own name, with `record` not called that?
+    The read-side twin of `add_person_alias`'s refusal: one predicate, so the
+    plan and the writer cannot disagree. A check that cannot run answers
+    `if_unreadable`: True for routing, because the safe side of an identity
+    is a question; False for a sentence, which must not claim what it did not
+    read."""
+    if not record:
+        return False
+    try:
+        from people_writer import another_record_named
+
+        return another_record_named(workspace_root, record.get("id"),
+                                    name) is not None
+    except Exception:
+        return if_unreadable
 
 
 def classify_cluster(workspace_root, cluster: dict) -> dict:
@@ -484,23 +1296,46 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                 "email": None, "matched_person": None}
 
     email, _src = cluster_observed_email(cluster)
+    # cr1#769: two questions, two answers. `email` is the address the text
+    # ties to this person: it alone may be written or license an add.
+    # `pointing` is main's reading, any address the text mentions: it sends
+    # the row to the link lane exactly as before, where nothing writes an
+    # address. Every link branch reads `pointing`; the add tiers read `email`.
+    pointing = cluster_mentioned_email(cluster)[0] or email
 
     if person_name_on_file(workspace_root, name):
         matched = None
         try:
             matched = find_existing_person(workspace_root, name=name,
-                                           email=email)
+                                           email=pointing)
         except MultipleCandidatesError:
             matched = None
         except Exception:
             matched = None
-        return {"tier": "merge_propose", "email": email,
+        if _name_is_someone_elses(workspace_root, name, matched):
+            # cr1#768: the name is one record's and the address is another's.
+            # The email tier wins the lookup, so the two signals DISAGREE:
+            # the same human link row as F2 below, never the §0-2 silent link.
+            return {"tier": "merge_propose", "email": pointing,
+                    "matched_person": matched, "silent_link_ok": False,
+                    "why": f"{name!r} is another record's own name and "
+                           f"{pointing} belongs to "
+                           f"{matched.get('canonical_name')!r}: a human "
+                           "decides, never a silent link (D4a)"}
+        if _cluster_says_another_person(cluster, matched):
+            # cr1#825: the record keeps the id it was added on, and this
+            # sighting names another: one name, maybe two people.
+            return {"tier": "merge_propose", "email": pointing,
+                    "matched_person": matched, "silent_link_ok": False,
+                    "why": f"{name!r} is on file under another source id: a "
+                           "human decides, never a silent link (cr1#825)"}
+        return {"tier": "merge_propose", "email": pointing,
                 "matched_person": matched, "silent_link_ok": True,
                 "why": f"{name!r} confidently resolves to an existing record "
                        "— link/merge is a recorded resolution, not a render "
                        "filter (D4a)"}
 
-    if email:
+    if pointing:
         # Second-eyes F2 (2026-07-19): an observed address that EXACTLY
         # matches an existing record means the evidence points at someone
         # already on file — a duplicate add (the auto tier) is never the
@@ -510,19 +1345,19 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
         # fallible — a quoted thread's sender address can misattribute).
         matched = None
         try:
-            matched = find_existing_person(workspace_root, email=email)
+            matched = find_existing_person(workspace_root, email=pointing)
         except MultipleCandidatesError:
             return {"tier": "confirm", "email": email,
                     "matched_person": None, "silent_link_ok": False,
-                    "why": f"observed address {email} is ambiguous across "
+                    "why": f"observed address {pointing} is ambiguous across "
                            "existing records — never auto on a disputed "
                            "match"}
         except Exception:
             matched = None
         if matched is not None:
-            return {"tier": "merge_propose", "email": email,
+            return {"tier": "merge_propose", "email": pointing,
                     "matched_person": matched, "silent_link_ok": False,
-                    "why": f"observed address {email} already belongs to "
+                    "why": f"observed address {pointing} already belongs to "
                            f"{(matched.get('canonical_name') or matched.get('id'))!r}"
                            " — link it, never a duplicate add (D4a)"}
 
@@ -549,7 +1384,7 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
     except Exception:
         variants = []
     if len(variants) == 1:
-        return {"tier": "merge_propose", "email": email,
+        return {"tier": "merge_propose", "email": pointing,
                 "matched_person": variants[0], "silent_link_ok": False,
                 "why": f"{name!r} is a spelling of "
                        f"{(variants[0].get('canonical_name') or variants[0].get('id'))!r} "
@@ -574,7 +1409,7 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
         token_candidates = None
     if token_candidates is not None and len(token_candidates) == 1 and \
             _name_related(name, token_candidates[0].get("canonical_name") or ""):
-        return {"tier": "merge_propose", "email": email,
+        return {"tier": "merge_propose", "email": pointing,
                 "matched_person": token_candidates[0], "silent_link_ok": False,
                 "why": f"{name!r} names the one "
                        f"{(token_candidates[0].get('canonical_name') or token_candidates[0].get('id'))!r} "
@@ -604,13 +1439,24 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                 "why": f"same-name collision with {names} — auto-add with a "
                        "collision is Bug #19's exact shape"}
 
+    # cr1#754: a cluster that says it may be two people is a question, and no
+    # address, id or source count below can add it. No address is chosen.
+    disagreement = cluster_disagreement(cluster)
+    if disagreement:
+        return {"tier": "confirm", "email": None, "matched_person": None,
+                "why": f"{disagreement} under one name may be two people: "
+                       "a human decides (cr1#754)"}
     n_families = len(cluster.get("source_families") or [])
+    # cr1#754: two sources add a person only when one of them identifies
+    # them. A name can be seen twice and still be two people.
+    identifier = cluster_identifier(cluster, workspace_root) \
+        if n_families >= 2 else None
     # SPEC_FLOW1 `identity.auto_create` — the workspace switch on the two
     # branches below, and ONLY on them: these are the two that put a new
     # record on file without asking. Off means the row asks, which is what
     # the final branch returns anyway, so a seat that turns it off gets the
     # pre-IDENT1 behaviour and nothing else changes.
-    if (email or n_families >= 2) and not auto_create_enabled(workspace_root):
+    if (email or identifier) and not auto_create_enabled(workspace_root):
         return {"tier": "confirm", "email": email, "matched_person": None,
                 "why": "adding people automatically is turned off for this "
                        "workspace — the row asks instead"}
@@ -621,12 +1467,18 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
         return {"tier": "auto", "email": email, "matched_person": None,
                 "why": f"full name + observed address {email} + zero "
                        "collision (D2)"}
-    if n_families >= 2:
+    if identifier:
         return {"tier": "auto", "email": None, "matched_person": None,
                 "why": "full name + "
                        f"{n_families} independent source families "
-                       f"({'/'.join(cluster['source_families'])}) + zero "
-                       "collision (D2)"}
+                       f"({'/'.join(cluster['source_families'])}) + "
+                       f"{identifier} + zero collision (D2)"}
+    if n_families >= 2:
+        return {"tier": "confirm", "email": email, "matched_person": None,
+                "why": f"seen in {n_families} source families "
+                       f"({'/'.join(cluster['source_families'])}) but by name "
+                       "alone: two bare names never add a person without "
+                       "asking (cr1#754)"}
     return {"tier": "confirm", "email": email, "matched_person": None,
             "why": "full name but a single source and no observed address — "
                    "stays a human confirm (D2)"}
@@ -1194,15 +2046,17 @@ def link_refusal_is_contradiction(why: str) -> bool:
 
 def identity_question_age_days(cluster: dict, now) -> Optional[int]:
     """How long this identity question has been asked, in days, measured
-    from its OLDEST member capture. None when no member carries a readable
+    from its OLDEST member's `question_clock`: the capture, or for a row held
+    back the day it came up (cr1#773). None when no member carries a readable
     timestamp — an undated row never ages out."""
+    from confirm_flow import question_clock
     from event_time import parse_ts
 
     if now is None or not isinstance(cluster, dict):
         return None
     stamps = []
     for row in cluster.get("rows") or []:
-        ts = parse_ts(row.get("captured_ts"))
+        ts = parse_ts(question_clock(row))
         if ts is not None:
             stamps.append(ts)
     if not stamps:
@@ -1473,6 +2327,11 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
                        "workspace — the row asks instead")
     if _NAME_ANNOTATION_RE.search(name):
         return False, "name carries annotation/guess markers — never auto"
+    if _cluster_says_another_person(cluster, matched):
+        # cr1#825: "conflicting signal" is a contradiction marker, so an aged
+        # default lets this question go and never links the two.
+        return False, ("conflicting signal: the record keeps another source "
+                       "id for this name")
     # (c) observed-address scan — hoisted above (a′) because the email clause
     # reads it. RAW scan, not cluster_observed_email (that helper deliberately
     # SKIPS role-shaped addresses at capture — the F1 guard — so relying on it
@@ -1498,6 +2357,15 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
         if addr.strip().lower() not in record_emails:
             return False, ("observed address does not belong to the record "
                            "— conflicting signal, still asks")
+    # (b), first half, ahead of (a′) so no softer refusal can stand in for it
+    # and let the aged default link on it. cr1#768: `list_same_name_people`
+    # below leaves out archived records, and an archived record still answers
+    # to its name in `find_existing_person`, so a record CALLED this is a
+    # second candidate whatever its status. Only that: an archived record
+    # sharing one word with the name is not a candidate for it.
+    if _name_is_someone_elses(workspace_root, name, matched):
+        return False, (f"{name!r} is another record's own name: two "
+                       "candidates are the IDM1 class, never auto")
     # (a′) exact multi-token name match OR id-level email corroboration OR a
     # name relation that CONTEXT corroborates (STAFFCUT §3.4).
     exact_name = (_norm_name(name) == _norm_name(matched_name)
@@ -1699,13 +2567,19 @@ def count_open_annotations(workspace_root) -> int:
 # The plan (pure classify — no writes)
 # ---------------------------------------------------------------------------
 
-def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
+def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None,
+                   window: Optional[dict] = None) -> dict:
     """Classify every open person proposal into the execution plan. Pure
     over the substrate — no writes. Reads WITHOUT suppress_on_file (like the
-    sweep: on-file collisions must be SEEN to be resolved, not re-hidden)."""
+    sweep: on-file collisions must be SEEN to be resolved, not re-hidden).
+
+    `window` (cr1#665): a maintenance window dict (`daily_window`). Given,
+    this is the DAILY plan: only the clusters a row captured in the window
+    touches, no aged defaults, no FS-17 expiry, no record scans. Omitted, the
+    plan is the weekly one, byte for byte."""
     from brain_proposals import (PERSON_LOW_CONTEXT_STALE_DAYS,
                                  person_proposal_is_low_context)
-    from confirm_flow import load_open_person_proposals
+    from confirm_flow import load_open_person_proposals, question_clock
     from event_time import parse_ts
 
     ws = Path(workspace_root)
@@ -1737,6 +2611,9 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
 
     rows = load_open_person_proposals(_events_path(ws))
     view = cluster_open_proposals(rows)
+    daily = window is not None
+    if daily:
+        view = _restrict_view_to_window(view, _window_start(window))
 
     plan: dict = {"auto": [], "confirm": [], "merge_propose": [],
                   "annotations": [], "expire": [], "keep_open": [],
@@ -1747,6 +2624,9 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
                   # it saw before. `run_identity_reconcile` is what drains.
                   "aged_default": [],
                   "updates": view["updates"], "now_iso": now_iso}
+    if daily:
+        plan["daily"] = True
+        plan["maintenance_window"] = window
 
     for row in view["nameless"]:
         if row.get("seq") in snoozed_seqs or \
@@ -1771,7 +2651,8 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
         cls = classify_cluster(ws, cluster)
         # IDENT1 rule 3 — decide the aged default BEFORE the tier routing
         # below, and record it beside the row rather than instead of it.
-        if cls["tier"] in ("confirm", "merge_propose"):
+        # Weekly only (cr1#665): a fourteen-day clock is the deep pass's.
+        if cls["tier"] in ("confirm", "merge_propose") and not daily:
             aged = identity_aged_default(
                 ws, cluster, cls.get("matched_person"),
                 age_days=identity_question_age_days(cluster, now),
@@ -1796,10 +2677,12 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
         # FS-17 expiry (kept from the sweep): an AGED name-only single
         # mention expires instead of queueing forever. Only single-row
         # clusters — a second mention is corroboration, not staleness.
-        if cls["tier"] == "confirm" and len(cluster["rows"]) == 1:
+        # Weekly only (cr1#665).
+        if cls["tier"] == "confirm" and len(cluster["rows"]) == 1 \
+                and not daily:
             row = cluster["rows"][0]
             if person_proposal_is_low_context(row):
-                opened = parse_ts(row.get("captured_ts"))
+                opened = parse_ts(question_clock(row))
                 if opened is not None and now is not None and \
                         (now - opened).days > PERSON_LOW_CONTEXT_STALE_DAYS:
                     plan["expire"].append({
@@ -1810,6 +2693,13 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None) -> dict:
                     continue
         plan[cls["tier"]].append({"cluster": cluster, "email": cls["email"],
                                   "why": cls["why"]})
+
+    if daily:
+        # cr1#665: the scans over EXISTING records are the weekly deep
+        # pass's; the daily plan judges only what the window brought in.
+        plan["rename_suspects"] = []
+        plan["merge_suspects"] = []
+        return plan
 
     # cr1#195 - an empty shell beside a misnamed record is the rename
     # question, so that pair is never ALSO offered as a plain merge: the merge
@@ -2012,8 +2902,17 @@ def run_identity_reconcile(
     fired_via=None,
     triggered_by: Optional[str] = None,
     source_skill: str = "identity-reconcile",
+    window: Optional[dict] = None,
 ) -> dict:
-    """Plan and (with apply=True) execute the reconcile pass:
+    """Plan and (with apply=True) execute the reconcile pass.
+
+    `window` (cr1#665): a maintenance window dict (`daily_window`). Given,
+    this is the DAILY people update: `plan_reconcile`'s daily plan, the same
+    writers and caps below, no nickname-collision rule and no annotation-
+    resolution join, and ONE `pack_run` receipt under `DAILY_TASK_ID` naming
+    the window. Omitted, the weekly pass runs exactly as before.
+
+    The steps:
 
       - AUTO clusters   → `auto_add_person` on the existing R1 rail; every
                           member proposal tombstoned `person_added`, stamped
@@ -2048,7 +2947,9 @@ def run_identity_reconcile(
     ws = Path(workspace_root)
     caps = dict(caps or STEADY_CAPS)
     now_iso = now_iso or _now_iso()
-    plan = plan_reconcile(ws, now_iso=now_iso)
+    daily = window is not None
+    plan = (plan_reconcile(ws, now_iso=now_iso, window=window) if daily
+            else plan_reconcile(ws, now_iso=now_iso))
     batch_id = "idr_" + _clock_now(workspace_root).strftime(
         "%Y%m%dT%H%M%SZ")
     plan["batch_id"] = batch_id
@@ -2129,6 +3030,7 @@ def run_identity_reconcile(
                                   if email else None),
                 source_skill=source_skill,
                 role=cluster.get("inferred_role") or None,
+                source_identifiers=cluster_source_identifiers(cluster, ws),
             )
         except Exception as exc:  # loud per-item, contained per-batch
             results["errors"].append({"row_id": cluster["row_id"],
@@ -2167,6 +3069,10 @@ def run_identity_reconcile(
             try:
                 if _norm_name(cluster["name"]) != \
                         _norm_name(matched.get("canonical_name")):
+                    # cr1#768: nobody asked for this alias, so it declares
+                    # nothing and the writer refuses a name on file. The plan
+                    # has already routed one away; this is the same gate at
+                    # write time.
                     add_person_alias(ws, matched["id"], cluster["name"],
                                      source_skill=source_skill)
             except Exception as exc:
@@ -2248,13 +3154,14 @@ def run_identity_reconcile(
     # ---- IDENT1 rule 4: nicknames that name two people ---------------------
     # Runs before the aged defaults on purpose: an ambiguous spelling is a
     # resolution shortcut, and a default that resolves a name THROUGH one
-    # would inherit its ambiguity.
-    try:
-        results["aliases_dropped"] = apply_alias_collisions(
-            ws, batch_id=batch_id, source_skill=source_skill)
-    except Exception as exc:  # loud, contained
-        results["errors"].append({"row_id": "alias_collisions",
-                                  "error": f"{type(exc).__name__}: {exc}"})
+    # would inherit its ambiguity. A whole-book rule: weekly only (cr1#665).
+    if not daily:
+        try:
+            results["aliases_dropped"] = apply_alias_collisions(
+                ws, batch_id=batch_id, source_skill=source_skill)
+        except Exception as exc:  # loud, contained
+            results["errors"].append({"row_id": "alias_collisions",
+                                      "error": f"{type(exc).__name__}: {exc}"})
 
     # ---- IDENT1 rule 3: the aged defaults ----------------------------------
     # Runs AFTER the auto-link rail (an eligible link belongs to its own lane,
@@ -2320,9 +3227,30 @@ def run_identity_reconcile(
             "age_days": entry.get("age_days"), "why": entry["why"]})
 
     # ---- deferred confirm rows for everything the sweep left open ----------
+    from confirm_flow import may_surface
+    from people_writer import held_question_answer
+    today = _localize_date(plan["now_iso"], str(ws))
     for entry in pending_links:
         cluster, matched = entry["cluster"], entry["matched"]
         if cluster["row_id"] in swept or cluster["row_id"] in aged_done:
+            continue
+        # cr1#824: the owner already answered this pair on the writer's row,
+        # which holds no sighting, so the answer closes this one and nobody
+        # is asked twice.
+        said = held_question_answer(ws, cluster["name"], (matched or {}).get("id"))
+        if said:
+            _tombstone(cluster, person_id=matched.get("id") if said == "yes" else None,
+                       resolution="same_as" if said == "yes" else "not_relevant",
+                       note=f"identity reconcile {batch_id} - answered on the held row")
+            results.setdefault("held_answered", []).append(
+                {"row_id": cluster["row_id"], "name": cluster["name"], "answer": said})
+            continue
+        # cr1#773: a link row is a question, so a name held for a later day
+        # is not asked about here. Its day's pass asks (`_captured_since`).
+        if not any(may_surface(r.get("surface_on"), today)
+                   for r in cluster["rows"]):
+            plan["keep_open"].append({"cluster": cluster,
+                                      "why": "waiting for its day (cr1#773)"})
             continue
         if results["merge_rows_proposed"] >= merge_cap:
             results["spilled"]["merge_propose"] += 1
@@ -2399,7 +3327,9 @@ def run_identity_reconcile(
                                       "error": f"{type(exc).__name__}: {exc}"})
 
     # ---- Annotation resolution (substrate-side join) -----------------------
-    for ann in load_open_annotations(ws):
+    # A whole-book join, and the open-annotation reader only reads the
+    # weekly receipt's resolved list: weekly only (cr1#665).
+    for ann in ([] if daily else load_open_annotations(ws)):
         data = ann.get("data") if isinstance(ann.get("data"), dict) else {}
         email = (data.get("attendee_email") or "").strip()
         if not email:
@@ -2428,48 +3358,76 @@ def run_identity_reconcile(
     # ---- ONE receipt (honesty: counts from what was WRITTEN) ---------------
     from receipts import log_receipt
 
-    log_receipt(
-        ws, "identity-reconcile",
-        receipt_type="identity_reconcile_run",
-        fired_via=fired_via,
-        # FIX3 F3-6, fix pass 2 (review N-1). WHICH surface asked. The
-        # argument wins; `log_receipt` falls back to `CR_TRIGGERED_BY`, so a
-        # merged seat that forwarded the variable is covered either way, and
-        # a run nobody asked for writes no key at all.
-        triggered_by=triggered_by,
-        extra_data={
-            "batch_id": batch_id,
-            "n_auto_added": len(results["added"]),
-            "n_linked": len(results["linked"]),
-            # UXR1 D3 — the auto-link lane's own count (distinct from the
-            # §0-2 exact-email n_linked): change_feed narrates it with the
-            # undo affordance.
-            "n_auto_linked": len(results["auto_linked"]),
-            "people_auto_linked": [{"person_id": a["person_id"],
-                                    "name": a["name"]}
-                                   for a in results["auto_linked"]],
-            "n_merge_proposed": results["merge_rows_proposed"],
-            "n_clustered": len(plan["confirm"]),
-            "n_annotations": len(results["annotations"]),
-            "n_annotations_resolved": len(results["annotations_resolved"]),
-            "n_expired": len(results["expired"]),
-            # IDENT1 rule 3 — what the fourteen-day default did, counted from
-            # what was WRITTEN (the honesty rule), never from the plan.
-            "n_aged_linked": len(results["aged_linked"]),
-            "n_aged_let_go": len(results["aged_let_go"]),
-            # IDENT1 rule 4 — nicknames the collision rule took back.
-            "n_aliases_dropped": len(results.get("aliases_dropped") or []),
-            "identity_question_ttl_days": IDENTITY_QUESTION_TTL_DAYS,
-            "n_kept_open": len(plan["keep_open"]),
-            "n_errors": len(results["errors"]),
-            "caps": caps,
-            "spilled": results["spilled"],
-            "people_added": [{"person_id": a["person_id"], "name": a["name"]}
-                             for a in results["added"]],
-            "annotations_resolved": [s for s in results["annotations_resolved"]
-                                     if isinstance(s, int)],
-        },
-    )
+    receipt_data = {
+        "batch_id": batch_id,
+        "n_auto_added": len(results["added"]),
+        "n_linked": len(results["linked"]),
+        # UXR1 D3 — the auto-link lane's own count (distinct from the
+        # §0-2 exact-email n_linked): change_feed narrates it with the
+        # undo affordance.
+        "n_auto_linked": len(results["auto_linked"]),
+        "people_auto_linked": [{"person_id": a["person_id"],
+                                "name": a["name"]}
+                               for a in results["auto_linked"]],
+        "n_merge_proposed": results["merge_rows_proposed"],
+        # cr1#773: a name still waiting for its day is not a question yet.
+        "n_clustered": sum(
+            1 for e in plan["confirm"]
+            if any(may_surface(r.get("surface_on"), today)
+                   for r in e["cluster"]["rows"])),
+        "n_annotations": len(results["annotations"]),
+        "n_annotations_resolved": len(results["annotations_resolved"]),
+        "n_expired": len(results["expired"]),
+        # IDENT1 rule 3 — what the fourteen-day default did, counted from
+        # what was WRITTEN (the honesty rule), never from the plan.
+        "n_aged_linked": len(results["aged_linked"]),
+        "n_aged_let_go": len(results["aged_let_go"]),
+        # IDENT1 rule 4 — nicknames the collision rule took back.
+        "n_aliases_dropped": len(results.get("aliases_dropped") or []),
+        "identity_question_ttl_days": IDENTITY_QUESTION_TTL_DAYS,
+        "n_kept_open": len(plan["keep_open"]),
+        "n_errors": len(results["errors"]),
+        "caps": caps,
+        "spilled": results["spilled"],
+        "people_added": [{"person_id": a["person_id"], "name": a["name"]}
+                         for a in results["added"]],
+        "annotations_resolved": [s for s in results["annotations_resolved"]
+                                 if isinstance(s, int)],
+    }
+    if daily:
+        # cr1#665: the daily people update's own receipt. A `pack_run` under
+        # its own task id (see DAILY_TASK_ID for why never the weekly type),
+        # naming the window it read, so a two-day gap says two days.
+        from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD
+
+        receipt_data["mode"] = "daily"
+        receipt_data[MAINTENANCE_WINDOW_FIELD] = window
+        # A capped run left clusters unjudged inside the window: the batch-cap
+        # marker sends the next daily run back over the same window (a
+        # re-read is idempotent: what this run added or linked is no longer
+        # an open proposal) instead of leaving the spill to Sunday.
+        marker = _daily_spill_marker(window, any(results["spilled"].values()))
+        if marker:
+            receipt_data[WINDOW_INCOMPLETE_FIELD] = marker
+        log_receipt(
+            ws, DAILY_TASK_ID,
+            receipt_type=DAILY_RECEIPT_TYPE,
+            fired_via=fired_via,
+            triggered_by=triggered_by,
+            extra_data=receipt_data,
+        )
+    else:
+        log_receipt(
+            ws, "identity-reconcile",
+            receipt_type="identity_reconcile_run",
+            fired_via=fired_via,
+            # FIX3 F3-6, fix pass 2 (review N-1). WHICH surface asked. The
+            # argument wins; `log_receipt` falls back to `CR_TRIGGERED_BY`, so
+            # a merged seat that forwarded the variable is covered either way,
+            # and a run nobody asked for writes no key at all.
+            triggered_by=triggered_by,
+            extra_data=receipt_data,
+        )
     plan["applied"] = True
     plan["results"] = results
     return plan
@@ -2512,13 +3470,18 @@ def _post_link_already_on_file(ws, cluster: dict, linked: dict):
                 continue
             sole = sole_record_for_email(ws, addr)
             if sole is not None and sole.get("id") in linked:
+                # cr1#768: the address is that record's, the name is somebody
+                # else's. The link answered nothing about them.
+                if _name_is_someone_elses(ws, name, sole):
+                    continue
                 return linked[sole["id"]], (
                     f"already on file — {addr.strip().lower()} belongs to the "
                     "record linked earlier in this run")
         for pid, record in linked.items():
             canon = (record or {}).get("canonical_name") or ""
             if canon and _norm_name(name) == _norm_name(canon) \
-                    and len(_norm_name(name).split()) >= 2:
+                    and len(_norm_name(name).split()) >= 2 \
+                    and not _cluster_says_another_person(cluster, record):
                 return record, ("already on file — exact name match to the "
                                 "record linked earlier in this run")
     except Exception:
@@ -2655,7 +3618,12 @@ def person_link_ask_line(ws, name: str, matched, evidence: str) -> str:
     appeared = (evidence or "").strip() or "a captured mention"
     if (matched or {}).get("id"):
         diff = _link_differentiator(ws, matched)
-        return (f"'{name}' appeared as {appeared}. "
+        # cr1#768: a yes here saves the name onto this record, so the row says
+        # whose name it already is. The answer is the owner's to give.
+        taken = (f"{name} is already on file as someone else. "
+                 if _name_is_someone_elses(ws, name, matched,
+                                           if_unreadable=False) else "")
+        return (f"'{name}' appeared as {appeared}. {taken}"
                 f"Same as {matched_name} ({diff})? — link it?")
     # No single resolved record — count the same-name candidates so the
     # collision is named, never ranked-and-picked (IDM1).
@@ -2683,6 +3651,11 @@ def _propose_person_link(ws, cluster, matched, source_skill) -> bool:
     matched_id = (matched or {}).get("id")
     evidence = (cluster["rows"][0].get("evidence") or
                 cluster["rows"][0].get("source_ref") or "")
+    # cr1#825: the fact behind the question leads the evidence, so a surface
+    # that cuts the line keeps it. The id itself means nothing to the owner.
+    facts = [f"a different user in your {kind} tool"
+             for kind in _kinds_saying_another_person(cluster, matched)]
+    evidence = "; ".join(facts + [evidence] if evidence else facts)
     render_line = person_link_ask_line(ws, cluster["name"], matched, evidence)
     try:
         res = propose(
@@ -2750,6 +3723,10 @@ def _narrate(plan: dict) -> str:
     lines = []
     mode = "APPLIED" if plan.get("applied") else "DRY RUN — nothing written"
     lines.append(f"Identity reconcile ({mode})")
+    if plan.get("daily"):
+        win = plan.get("maintenance_window") or {}
+        lines.append(f"  daily people update: window since {win.get('since')} "
+                     f"({win.get('reason')}, {win.get('days')} days)")
     lines.append(f"  auto-add: {len(plan['auto'])}")
     for e in plan["auto"]:
         lines.append(f"    + {e['cluster']['name']!r} — {e['why']}")
@@ -2823,15 +3800,31 @@ def main() -> int:
                          "nothing is said (receipts.effective_fired_via)")
     ap.add_argument("--triggered-by", default=None,
                     help="the surface that asked for this run")
+    # cr1#665: the daily people update. `--daily` reads the one maintenance
+    # window (since this job's own last receipt, 30 days on a first run);
+    # `--since <iso>` names the window's start instead, under the same rule.
+    ap.add_argument("--daily", action="store_true",
+                    help="the daily people update: judge only what the "
+                         "window brought in; receipt under people-update")
+    ap.add_argument("--since", default=None,
+                    help="with --daily: the window's start (ISO); default "
+                         "is since this job's own last receipt")
     args = ap.parse_args()
+    if args.since and not args.daily:
+        ap.error("--since needs --daily")
+    if args.daily and args.backfill:
+        ap.error("--daily and --backfill are different passes")
     # The same export the other job CLIs make, so every composer below reads
     # who asked from one place instead of a dozen signatures.
     if getattr(args, "triggered_by", None):
         os.environ["CR_TRIGGERED_BY"] = str(args.triggered_by)
+    window = (daily_window(args.workspace, since_iso=args.since,
+                           now_iso=args.now) if args.daily else None)
     plan = run_identity_reconcile(
         args.workspace, apply=args.apply,
         caps=BACKFILL_CAPS if args.backfill else STEADY_CAPS,
         now_iso=args.now,
+        window=window,
         # The flag wins. Absent it, a backfill is still the one-time run a
         # person asked for; anything else says NOTHING and lets
         # `_effective_fired_via` decide, so a legacy seat reads `scheduled`
@@ -2846,6 +3839,10 @@ def main() -> int:
 
 
 __all__ = [
+    "DAILY_TASK_ID",
+    "DAILY_RECEIPT_TYPE",
+    "daily_window",
+    "propose_seen_people",
     "STEADY_CAPS",
     "BACKFILL_CAPS",
     "ROLE_ADDRESS_LOCAL_PARTS",
@@ -2862,7 +3859,9 @@ __all__ = [
     "cluster_open_proposals",
     "person_queue_view",
     "count_person_rows",
+    "cluster_identifier",
     "cluster_observed_email",
+    "cluster_mentioned_email",
     "classify_cluster",
     "auto_link_eligible",
     "person_link_ask_line",

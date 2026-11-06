@@ -24,7 +24,7 @@ Read this task's status document (`get` on `status/<leg>`, where `<leg>` is the 
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"leg": "<leg>", "now_iso": "<now ISO>", "run_id": "<this session id>", "state": "running", "workspace_root": "<WS>"}, "name": "cockpit_helpers:status_doc"}'
 ```
 
-`set` on `status/<leg>`, pinned by the version rule below. When the leg finishes, the same call with `done` and the one-sentence result, or `error` with the one sentence of what refused, passed as both `line` and `stop_reason` so the page keeps it as the last recorded stop. A task touches its own light only, never another task's.
+`set` on `status/<leg>`, pinned by the version rule below. When the leg finishes, the same call with `done` and the one-sentence result, or `error` with the one sentence of what refused, passed as both `line` and `stop_reason` so the page keeps it as the last recorded stop. A task touches its own light only, never another task's. `status/maintenance` is not a light: `cockpit-refresh` writes it, and no task writes it as its own (cr1#666).
 
 ## The version rule (every write to the page)
 

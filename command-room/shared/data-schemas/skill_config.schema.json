@@ -24,6 +24,7 @@
     "chat_persona": ["brevity", "explanation_depth", "formality", "encouragement", "humor_ok", "jargon_level", "language", "never_line"],
     "brain_render": ["brain_candor"],
     "binding_gauge": ["ready_min_substance", "ready_min_ratio"],
+    "learning": ["ask_at", "apply_at"],
     "commitment-policy": ["preset", "auto_close_from_transcript", "identity.auto_create", "identity.auto_merge", "intake.second_witness", "exit.own_word_closes", "exit.silence_age_out", "questions.expire_to_default", "learning.auto_apply"],
     "profile": ["regenerate_instructions", "stated_overrides", "assessment", "boundaries", "boundaries_set_at", "coaching_layer", "workstreams"]
   }

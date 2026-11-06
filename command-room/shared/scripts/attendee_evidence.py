@@ -1766,6 +1766,8 @@ def _queue_link_question(workspace_root, *, name, email, origin,
                   f"second one?"),
         review_reason="a spelling variant of a record on file, seen on an "
                       "invite or thread",
+        source_kind=("calendar" if origin == INVITE_ORIGIN_CALENDAR
+                     else "mail"),
     )
     if ev.get("type") != "person_proposal":
         # `build_person_proposal_event` re-routes a name that resolves to a

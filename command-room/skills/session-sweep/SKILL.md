@@ -120,11 +120,12 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 
    ```python
    import sys; sys.path.insert(0, "shared/scripts")
-   from session_sweep import last_sweep, validate_sweep_ran, sweep_and_receipt
+   from session_sweep import last_sweep, validate_sweep_ran, sweep_and_receipt, plan_sweep
    prior = last_sweep("<abs workspace root>")            # newest session_sweep_run, or None
    cursor_before = validate_sweep_ran("<abs workspace root>")["last_ts"]   # ISO or None
+   plan = plan_sweep("<abs workspace root>")             # after, window_desc, maintenance_window
    ```
-   Use the later of `cursor_before` and now-minus-24h as the floor (a 24h floor on a first run or a long gap; the dedup makes an over-wide window safe, so err wide).
+   The floor is `plan["after"]`: the one maintenance window rule (cr1#663, `catchup.maintenance_window`), since the last sweep receipt with no day cap, the last 30 days on a first run or after a gap longer than 30 days. Never narrow it by hand; the dedup makes an over-wide window safe. Hold `plan["window_desc"]` and `plan["maintenance_window"]` for the receipt in Step 4.
 
 2. **Resolve the session-transcript MCP at runtime and list active sessions.** The session-info server id is per-install (like the Granola and Calendar servers) — resolve it at runtime by tool-name, never hard-code it. List the sessions whose last activity is at/after the Step-1 floor. Read each session's transcript. (No session-transcript MCP available, or no sessions in the window → skip to Step 4 with an empty item list; the receipt still lands. Skip-not-fail per `shared/RELIABILITY.md`.)
 
@@ -195,10 +196,11 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 
    ```python
    receipt = sweep_and_receipt("<abs workspace root>", items,
-                               sessions_scanned=<n_sessions_read>, window_hours=24,
-                               window_desc=<"since-cursor <ISO>" when a cursor scoped
-                                            this run — the receipt records the REAL
-                                            window, not the default label (F-08 P2c)>,
+                               sessions_scanned=<n_sessions_read>,
+                               window_desc=plan["window_desc"],   # the REAL window, never
+                                                                  # the default label (F-08 P2c)
+                               maintenance_window=plan["maintenance_window"],  # cr1#663: the
+                                                                  # receipt names the window read
                                # fired_via: omit on the nightly fire or a catch-up (the
                                # seat decides); pass "manual" on a 'run session sweep'
                                # chat phrase or Run Now (v4.5.2 receipt contract)

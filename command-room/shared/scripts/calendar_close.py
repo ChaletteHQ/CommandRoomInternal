@@ -140,6 +140,34 @@ def _is_calendar_row(row) -> bool:
         return False
 
 
+def _connector_read(workspace_root, purpose: str = "close"):
+    """cr1#667: the declared calendar connector's dials and lists
+    (`connector_reads.for_category`), or None when none is declared or the
+    reader is not on the tree. Never raises."""
+    try:
+        from connector_reads import for_category
+        return for_category(workspace_root, "calendar", purpose=purpose)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _on_allowed_calendar(read, meeting) -> bool:
+    """cr1#667: a meeting on an excluded calendar is never read. A meeting
+    record that names no calendar has nothing to match on and is kept."""
+    if not read:
+        return True
+    data = meeting.get("data") if isinstance(meeting.get("data"), dict) else {}
+    names = [data.get(k) for k in ("calendar_id", "calendar", "calendar_name")
+             if isinstance(data.get(k), str) and data.get(k).strip()]
+    if not names:
+        return True
+    try:
+        from connector_reads import allowed
+        return allowed(read, *names)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def plan(workspace_root, *, now_iso=None) -> dict:
     """The candidates, no writes: {book: [...], observed: [...], n_scheduling_open,
     n_scheduling_observed}. Each candidate: {commitment_id, title, meeting_seq,
@@ -152,7 +180,14 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     uid = resolve_primary_user(workspace_root) or ""
     opens = [r for r in load_open_commitments(str(ep), events=events, workspace_root=workspace_root)
              if not _is_pending_review(r)]
-    meetings = [e for e in events if isinstance(e, dict) and e.get("type") == "meeting"]
+    read = _connector_read(workspace_root)
+    if read and read.get("skip_reason"):
+        # cr1#667 review: a calendar whose close dial is off contributes no
+        # candidates, to this job and to `exit_doors.plan_fact_closes`.
+        return {"book": [], "observed": [], "n_scheduling_open": 0,
+                "n_scheduling_observed": 0, "skip_reason": str(read["skip_reason"])}
+    meetings = [e for e in events if isinstance(e, dict) and e.get("type") == "meeting"
+                and _on_allowed_calendar(read, e)]
     # EXIT1 — WIDENED, and the widening is cited rather than the set being
     # quietly re-sized. Until tonight this closer looked at `kind:
     # scheduling` rows only, so "get on a call with Quinn" captured as a
@@ -466,11 +501,17 @@ def _log_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
     out["deduped"] = False
     try:
         from receipts import log_receipt
+        extra = {}
+        if out.get("status") == "skipped":
+            # cr1#667: the honest skip, on the receipt in the chat leg's shape.
+            extra = {"status": "skipped", "skip_reason": out.get("skip_reason")}
         log_receipt(
             workspace_root, JOB_ID, receipt_type=RECEIPT_TYPE, fired_via=fired_via,
+            status=out.get("status") or "complete",
             surfaced=int(out.get("n_planned") or 0) if out.get("mode") == MODE_PROPOSED
             else int(out.get("n_closed") or 0),
             extra_data={
+                **extra,
                 "mode": out.get("mode"),
                 "n_planned": out.get("n_planned"), "n_closed": out.get("n_closed"),
                 "n_closed_from_observed": out.get("n_closed_from_observed"),
@@ -508,6 +549,21 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
     # `scheduled`, byte for byte; a merged seat with nothing forwarded
     # reads `manual`, which is what a typed brief actually is.
     fired_via = _effective_fired_via(fired_via)
+    # cr1#667: the dial first. A calendar the owner turned off for closes
+    # is skipped honestly: nothing planned, nothing offered, and a receipt
+    # that says why, so the skip never reads as a sweep that found nothing.
+    read = _connector_read(workspace_root)
+    if read and read.get("skip_reason"):
+        out = {"ran": False, "status": "skipped", "skip_reason": str(read["skip_reason"]),
+               "applied": False, "mode": None, "n_prior_runs": prior_runs(workspace_root),
+               "n_planned": 0, "n_planned_book": 0, "n_planned_observed": 0,
+               "n_closed": 0, "n_closed_from_observed": 0, "n_refused": 0,
+               "batch_id": None, "closed": [], "refused": [], "offered": [],
+               "receipt_line": "", "n_scheduling_open": 0, "n_scheduling_observed": 0,
+               "yield": {"book": "0/0", "observed": "0/0"}}
+        if apply:
+            _log_receipt(workspace_root, out, fired_via=fired_via)
+        return out
     import commitment_policy as policy
     p = plan(workspace_root, now_iso=now_iso)
     n_book, n_obs = len(p["book"]), len(p["observed"])

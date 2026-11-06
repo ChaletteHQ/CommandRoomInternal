@@ -23,6 +23,7 @@ Every name-bearing trigger ("complete objective [name]", "archive objective [nam
 - **Directional status comes from three sources only:** a stated review in the bound meeting (`record_review`, called by meeting-notes — not by this skill), the owner's own word (`record_report`), or an unambiguous linked-deal signal (computed, never written). Everything else renders as "moving" / "quiet since [date]". Never fabricate a directional status.
 - **Config** via `skill_config_writer` (`save_skill_config` / `get_config` / `wipe_skill_config`).
 - **Scan receipt (REQUIRED, every readout fire):** `from receipts import log_receipt; log_receipt(WORKSPACE_ROOT, "objectives", fired_via="manual", surfaced=n_open, extra_data={"drifting_thread_ids": [...]})` — the drift-flag trail the monthly value receipt counts (flagged-before-stalled).
+- **A refused record is said (cr1#615).** When a receipt's write answers `ok: false`, say its `line` once, beside the readout, and keep the readout. Never reply as if the receipt saved.
 - If `load_objective_inputs` returns a non-empty `skipped` list, surface the standard banner ("I couldn't read N lines of saved history — the picture below may be missing those") — never silently swallow it.
 
 ## What It Does

@@ -133,6 +133,10 @@ DEFAULT_TIMEOUT_S = 150
 RUN_HELPER_ALLOWLIST = frozenset({
     # reads and computes
     "data_root:resolve",
+    # cr1#667: a declared connector's effective kind, dials, lists and scope
+    # (absent fields read as the kind's defaults); the setter is on the
+    # write list beside it
+    "connector_config:connector_settings",
     # FILECARD1 (cr1#611): has this seat been shown the paste-in block (walks the ledger, writes nothing)
     "claude_instructions:shown_status",
     # DORMSCOPE1 (cr1#170): whose accounts the dormancy scan may rank
@@ -318,7 +322,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "eod_helpers:unprocessed_backlog",
     "reconcile_sent_commitments:plan_sent_window",  # MAINTJOBS1
     "chat_reconcile:plan_chat_scan",  # MAINTJOBS1
+    "inbound_mail_leg:plan_inbound_mail",  # cr1#664 - the inbound-mail job, planned beside the data
     "session_sweep:plan_sweep",  # MAINTJOBS1
+    "tasks_leg:plan_tasks_capture",  # cr1#668
+    "tasks_leg:plan_tasks_close",  # cr1#668
+    "connector_proposals:plan_connector_proposals",  # cr1#668
     "maintenance_dispatcher:plan_schedule_realign",  # MAINTJOBS1
     "schedule_backend:bridge_plan",  # v5.33.0 merge-fix MF-3 (D-8): the bridge refreshes mapped chats only; a read that plans
     "schedule_backend:bridge_schedules_line",  # v5.33.0 merge-fix MF-3/MF-4 (D-5): the bridge's schedules sentence through the one producer
@@ -331,6 +339,8 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_today",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:feed_inbox",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:feed_projects",  # cr1#660 - the cockpit page's Projects tab, read only
+    "cockpit_helpers:feed_review",  # cr1#779 - the Review tab's rows
+    "cockpit_helpers:feed_week",  # cr1#780 - the Week tab's rows
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
@@ -338,6 +348,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:sent_tokens_update",  # cr1#684 - the used-token record a run writes before a send, composed not typed
     "cockpit_helpers:plan_task_registration",  # COCKPIT1 (cr1#608) - the cockpit task's registration, planned and not called
     "cockpit_helpers:plan_cockpit_registration",  # cr1#619 - all four cockpit tasks, planned and not called
+    "cockpit_helpers:maintenance_status",  # cr1#666 - the Hub's status/maintenance document, read only
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -420,6 +431,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "calendar_close:run_calendar_close_job",
     # the connector declaration and the update bridge's re-pin (I-7)
     "connector_config:set_declared_backend",
+    # cr1#667: a declared connector's kind, dials, lists and scope, set from
+    # the owner's words at set-up or by one sentence in chat
+    "connector_config:set_connector_settings",
     "release_actions.connector_display_name_repin_v1:connector_display_name_repin_v1",
     # the fire-delivery setting (I-12 (8)): `publish my scheduled pages`
     "fire_delivery:set_artifact_publish",
@@ -469,6 +483,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "chat_reconcile:reconcile_chat_and_receipt",  # MAINTJOBS1
     "eod_incremental:log_capture_pass_receipt",  # MAINTJOBS1
     "session_sweep:sweep_and_receipt",  # MAINTJOBS1
+    "tasks_leg:capture_tasks_and_receipt",  # cr1#668
+    "tasks_leg:close_tasks_and_receipt",  # cr1#668
+    "connector_proposals:propose_from_connectors_and_receipt",  # cr1#668
     "cleanup_actions:sweep_lock_litter",  # MAINTJOBS1
     "schedule_refresh:log_schedule_refreshed",  # MAINTJOBS1
     "schedule_backend:record_trigger_map",  # MAINTJOBS1
@@ -479,7 +496,11 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
+    "cockpit_helpers:add_chat_priority",  # cr1#776 - see the writer table row
+    "cockpit_helpers:apply_review_choices",  # cr1#779 - see the writer table row
+    "cockpit_helpers:apply_week_choices",  # cr1#780 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
+    "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes
@@ -499,6 +520,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "eod_helpers:record_fire_stopped",  # MIGRATE3-EOD fix round 2 - a refused step leaves a receipt
     "eod_helpers:reconcile_sent_staged",  # EODHARD3 - the mail leg over the Sent batch staged raw, one call
     "eod_helpers:reconcile_chat_staged",  # EODHARD3 - the chat leg over the chat batch staged raw, one call
+    "eod_helpers:inbound_mail_staged",  # cr1#664 - the inbound-mail job over the inbox batch staged raw, one call
     "eod_helpers:clear_fire_staging",  # EODHARD3 - the fire's staged files removed
     "eod_helpers:close_from_eod",  # EODTAP2 - a tapped mark done, drop or push on the End of Day's row list (MIGRATE3-EOD N-8)
     "commitments_helpers:apply_row_action",  # WOTAP1 - a typed or clicked mine, theirs to [name] or drop on a Waiting On row (cr1#513)
@@ -558,6 +580,11 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # row, the snapshot keyed to it, an edited body's corrections - which a
     # merged seat had no door for, so a click once wrote nothing at all.
     "voice_corrections:record_draft_click",  # DRAFTREC1 - apply-choices Step 4B, the body in args_file
+    # cr1#615: the record of a run. Every skill that logs its own receipt, and
+    # the detectors' shared signal, were refused on every merged seat, so the
+    # run left no record and the reply still read as if it had.
+    "receipts:log_receipt",  # cr1#615 - a skill's run or scan receipt
+    "dormancy:emit_dormancy_signal",  # cr1#615 - one dormancy_signal row, or nothing to record
     "deliverables:land",
 })
 
@@ -670,6 +697,22 @@ NOT_READ_LINE = ("Not read: that request pointed at a folder that is not "
                  "your Command Room folder, so nothing was read.")
 NOT_REMOVED_LINE = ("Not removed: that request pointed at a folder that is "
                     "not your Command Room folder, so nothing was removed.")
+#: cr1#615: the two writers that record a run after its work is done. A refusal
+#: of one used to answer a reason code and nothing the chat could say, so a
+#: receipt that never saved read as saved. ONLY these two: every other writer's
+#: refusal keeps its shape, because the Morning Brief and End of Day stop rules
+#: read those and many of those steps save nothing.
+RECEIPT_WRITER = "receipts:log_receipt"
+RECORD_WRITERS = frozenset({RECEIPT_WRITER, "dormancy:emit_dormancy_signal"})
+#: Said BESIDE the answer, which stands. "Could not be confirmed" because a
+#: timeout does not prove nothing landed.
+RECORD_REFUSED_LINE = ("Not saved: this run's record could not be confirmed in "
+                       "your Command Room folder, so do not count it as "
+                       "recorded.")
+#: cr1#615: a receipt that is not a skill's own. A job's receipt is what says
+#: the job ran, so a chat writing one would move that job's due-ness.
+JOB_RECEIPT_REFUSED_LINE = ("Not saved: only the job itself can record that "
+                            "run, so nothing was written.")
 
 #: Files ONE named writer owns (cr1#454). `write` refuses them and names the
 #: writer, so the only way in is that writer, which passes its own name as
@@ -1080,6 +1123,12 @@ def _envelope(verb: str, ctx: Dict[str, Any], started: float,
 
 def _refuse(verb: str, ctx: Dict[str, Any], started: float, reason: str,
             **fields: Any) -> Dict[str, Any]:
+    # cr1#615: a refused record writer carries the sentence the chat says. One
+    # with its own sentence keeps it; one with a `next` is a dropped folder or
+    # a missing workspace, which is re-requested and retried, not reported.
+    if (verb == "run_writer" and fields.get("name") in RECORD_WRITERS
+            and not fields.get("line") and "next" not in fields):
+        fields["line"] = RECORD_REFUSED_LINE
     return _envelope(verb, ctx, started, ok=False, reason=reason, **fields)
 
 
@@ -2024,6 +2073,22 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
                            cause=getattr(exc, "cause", ""))
         return _refuse("run_writer", ctx, started, R_HELPER_FAILED, name=name,
                        detail="identity check: " + type(exc).__name__)
+    # cr1#615: through this door a receipt is a skill's own, never a job's. The
+    # task is read as the writer will read it, so an alias does not get round
+    # this. It comes after the identity question, which every name answers
+    # first. `log_receipt` itself stays open to the jobs that import it.
+    if name == RECEIPT_WRITER and (_receipts.normalize_task_id(bound.get("task_id"))
+                                   not in _receipts.CHAT_RECEIPT_TASKS):
+        return _refuse("run_writer", ctx, started, R_NOT_ALLOWED_WRITER, name=name,
+                       line=JOB_RECEIPT_REFUSED_LINE)
+    # cr1#615: both receipt writers make the ledger's folder before they append,
+    # which steps round LEDGERPLACE1's refusal. Asked here, not in the writers:
+    # in-process callers start ledgers that way, and a chat never should.
+    if module == "receipts" and not (Path(ctx["vm_path"]) / "_hq" / "data").is_dir():
+        import atomic_write as _aw  # type: ignore
+
+        return _refuse("run_writer", ctx, started, R_MISSING_PARENT, name=name,
+                       line=_aw.LEDGER_FOLDER_MISSING_LINE)
 
     staged = ctx.get("staged_root")
     scripts = str(Path(staged) / "shared" / "scripts") if staged else str(_scripts_dir())

@@ -682,6 +682,7 @@ def post(text: str, *, surface: Optional[str] = None, workspace=None,
 _JOB_PHRASES = {
     "reconcile-sent": "closing things your sent mail already finished",
     "reconcile-chat": "closing things your chat already finished",
+    "inbound-mail": "picking up promises from new mail and closing what came in",
     "root-repair": "checking your workspace is where I left it",
     "question-expiry": "retiring questions nobody answered",
     "age-out": "resting items that have gone quiet",
@@ -739,8 +740,9 @@ def maintenance_answer(plan: dict, *, completed: Sequence = (),
                        workspace=None) -> str:
     """The whole customer-facing answer to "run my maintenance".
 
-    `plan` is `maintenance_dispatcher.dispatch_plan`'s return value; the rest
-    is what the fire actually did. Returns ONE gated string.
+    `plan` is `maintenance_dispatcher.dispatch_plan`'s return value, or on a
+    merged seat `catch_up_plan`'s, which names what is due `jobs` (cr1#743);
+    the rest is what the fire actually did. Returns ONE gated string.
 
     Nothing due is a first-class answer, not an error: the honest line plus
     the next slot, and nothing else. The dictionary's other keys — the
@@ -749,7 +751,8 @@ def maintenance_answer(plan: dict, *, completed: Sequence = (),
     gets told that in words, once.
     """
     plan = plan if isinstance(plan, dict) else {}
-    due = [d for d in (plan.get("due") or []) if isinstance(d, dict)]
+    due = [d for d in (plan.get("due") or plan.get("jobs") or [])
+           if isinstance(d, dict)]
 
     repair = plan.get("root_repair") or {}
     if isinstance(repair, dict) and repair.get("blocked"):

@@ -125,6 +125,25 @@ def voice_receipt(workspace_root, skill: str, voice_block_sha256_seen) -> dict:
             "line": "" if applied else VOICE_NOT_APPLIED_LINE}
 
 
+def _lookback(rows: List[dict], limit: int, vc) -> List[dict]:
+    """The most recent `limit` rows, a phrase counted once. A phrase deleted
+    from draft after draft is one row per draft (cr1#778), and those repeats
+    must not push the other phrases out of view. Shorten rows all stay:
+    `PARAGRAPH_FLOOR` is counted on their repeats."""
+    seen = set()
+    kept: List[dict] = []
+    for row in reversed(rows):
+        op, arg = vc.classify_correction_op(row)
+        if op == vc.OP_BAN_PHRASE:
+            if arg in seen:
+                continue
+            seen.add(arg)
+        kept.append(row)
+        if len(kept) >= limit:
+            break
+    return kept[::-1]
+
+
 def load_draft_constraints(
     workspace_root,
     skill: str,
@@ -173,7 +192,8 @@ def load_draft_constraints(
         bearing = [r for r in scoped[scope]
                    if vc.classify_correction_op(r)[0]
                    in (vc.OP_BAN_PHRASE, vc.OP_SHORTEN)]
-        out["corrections"] = (bearing or scoped[scope])[-max(1, int(limit)):]
+        out["corrections"] = _lookback(bearing or scoped[scope],
+                                       max(1, int(limit)), vc)
         break
     try:
         override = vc.load_voice_block_override(workspace_root, skill)

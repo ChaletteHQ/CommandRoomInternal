@@ -269,6 +269,179 @@ def is_zapier_server(server_id: Optional[str], workspace_root=None,
 
 
 # ---------------------------------------------------------------------------
+# Connector kinds, the five dials and the include/exclude lists (cr1#667)
+# ---------------------------------------------------------------------------
+#
+# Rulings of 2026-11-03 (cr1#609). Beside its server id, provider and label,
+# a declared connector row may carry:
+#
+#   kind      one of the manifest's kinds (`mail`, `calendar`, `chat`,
+#             `meetings`, `tasks`, `documents`, `deals`, `contracts`); absent,
+#             the category answers (`email` is the `mail` kind)
+#   dials     {open_commitments, close_commitments, close_mode,
+#              update_people, update_projects}; a dial the row does not set
+#             reads as the kind's default from the manifest's `kinds` table
+#   include   names at the kind's grain the jobs read (empty = everything)
+#   exclude   names at the kind's grain the jobs never read
+#   scope     `account` (reachable from a scheduled fire) or `desktop_only`
+#             (attached only in the desktop app, unreachable from a fire)
+#
+# Absent fields read as the defaults, so every existing book keeps today's
+# behaviour exactly and nothing migrates. The one writer is
+# `set_connector_settings` below; readers never carry a literal default.
+
+DIAL_NAMES = ("open_commitments", "close_commitments", "close_mode",
+              "update_people", "update_projects")
+BOOL_DIALS = ("open_commitments", "close_commitments", "update_people",
+              "update_projects")
+CLOSE_MODES = ("close", "propose")
+CONNECTOR_SCOPES = ("account", "desktop_only")
+SCOPE_ACCOUNT, SCOPE_DESKTOP_ONLY = CONNECTOR_SCOPES
+#: Keys on a declared row that `set_declared_backend` keeps across a re-pin.
+CONNECTOR_SETTING_KEYS = ("kind", "dials", "include", "exclude", "scope",
+                          "set_by", "set_at")
+#: The one key under `workspace.connectors` that is not a connector row.
+_ZAPIER_PIN_KEY = "_zapier_server_ids"
+
+
+def connector_kinds() -> Dict[str, Dict[str, Any]]:
+    """The manifest's `kinds` table (`shared/data-schemas/
+    connector_capabilities.json`): kind -> {categories, grain, dials}.
+    Commentary keys (`$...`) are dropped. {} when the manifest is unreadable:
+    then no kind resolves and every settings read answers None, which is the
+    fail-closed side (a job that cannot read its dials reads no source)."""
+    try:
+        from connector_adapters.capabilities import load_manifest
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        try:
+            from connector_adapters.capabilities import load_manifest
+        except Exception:  # noqa: BLE001
+            return {}
+    try:
+        table = load_manifest().get("kinds")
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    return {k: v for k, v in table.items()
+            if isinstance(v, dict) and not str(k).startswith("$")}
+
+
+def categories_for_kind(kind: Optional[str]) -> List[str]:
+    """The `workspace.connectors` keys that read as `kind`, from the manifest.
+    [] for an unknown kind."""
+    row = connector_kinds().get(str(kind or "").strip().lower())
+    cats = (row or {}).get("categories")
+    return [c for c in cats if isinstance(c, str)] if isinstance(cats, list) else []
+
+
+def kind_for_category(category: Optional[str],
+                      row: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Which kind a declared category is. An explicit `kind` on the row wins
+    (the owner corrected it in words); otherwise the manifest's table maps the
+    category (`email` -> `mail`); a category that is itself a kind name is
+    that kind. None when nothing answers (never a guess)."""
+    kinds = connector_kinds()
+    explicit = str((row or {}).get("kind") or "").strip().lower() if isinstance(row, dict) else ""
+    if explicit in kinds:
+        return explicit
+    cat = str(category or "").strip().lower()
+    if not cat:
+        return None
+    for kind, spec in kinds.items():
+        cats = spec.get("categories")
+        if isinstance(cats, list) and cat in [str(c).lower() for c in cats]:
+            return kind
+    return cat if cat in kinds else None
+
+
+def kind_default_dials(kind: Optional[str]) -> Optional[Dict[str, Any]]:
+    """A COPY of the kind's default dials from the manifest, or None for an
+    unknown kind. A caller may change the copy; the table never moves."""
+    row = connector_kinds().get(str(kind or "").strip().lower())
+    dials = (row or {}).get("dials")
+    if not isinstance(dials, dict):
+        return None
+    return dict(dials)
+
+
+def _read_bool_dial(value, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("on", "true", "yes", "1")
+
+
+def _read_list(value) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if isinstance(v, str) and str(v).strip()]
+
+
+def _settings_from_row(category: str, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    kind = kind_for_category(category, row)
+    defaults = kind_default_dials(kind)
+    if not kind or defaults is None:
+        return None
+    raw = row.get("dials") if isinstance(row.get("dials"), dict) else {}
+    dials: Dict[str, Any] = {}
+    for name in BOOL_DIALS:
+        dials[name] = _read_bool_dial(raw.get(name), bool(defaults.get(name)))
+    mode = str(raw.get("close_mode") or "").strip().lower()
+    dials["close_mode"] = mode if mode in CLOSE_MODES else defaults.get("close_mode")
+    scope = str(row.get("scope") or "").strip().lower()
+    return {
+        "category": category,
+        "kind": kind,
+        "server_id": row.get("server_id"),
+        "provider": row.get("provider"),
+        "label": row.get("label"),
+        "dials": dials,
+        "include": _read_list(row.get("include")),
+        "exclude": _read_list(row.get("exclude")),
+        "scope": scope if scope in CONNECTOR_SCOPES else SCOPE_ACCOUNT,
+    }
+
+
+def connector_settings(category: str, workspace_root=None,
+                       entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+    """The effective settings of one declared connector:
+    `{category, kind, server_id, provider, label, dials, include, exclude,
+    scope}`, absent fields read as the kind's defaults. None when the
+    category is undeclared (no row, or a row with no server id) or its kind
+    cannot be resolved. Never raises."""
+    try:
+        cat = str(category or "").strip()
+        if not cat or cat == _ZAPIER_PIN_KEY:
+            return None
+        row = declared_backends(workspace_root, entities).get(cat)
+        if not (isinstance(row, dict) and row.get("server_id")):
+            return None
+        return _settings_from_row(cat, row)
+    except Exception:  # noqa: BLE001 - a reader never raises
+        return None
+
+
+def declared_connector_settings(workspace_root=None,
+                                entities: Optional[dict] = None) -> List[Dict[str, Any]]:
+    """The effective settings of EVERY declared connector, in the map's
+    order. A row whose kind cannot be resolved is left out."""
+    out: List[Dict[str, Any]] = []
+    try:
+        for cat, row in declared_backends(workspace_root, entities).items():
+            if cat == _ZAPIER_PIN_KEY or not (isinstance(row, dict) and row.get("server_id")):
+                continue
+            rec = _settings_from_row(str(cat), row)
+            if rec is not None:
+                out.append(rec)
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Account map (Layer B1) + scope resolution (Layer B2)
 # ---------------------------------------------------------------------------
 
@@ -626,13 +799,175 @@ def set_declared_backend(workspace_root, category: str, server_id: str,
     else:
         prior = conn.get(category)
         prior_sid = prior.get("server_id") if isinstance(prior, dict) else None
-        conn[category] = {"server_id": server_id, "provider": provider, "label": label}
+        row = {"server_id": server_id, "provider": provider, "label": label}
+        if isinstance(prior, dict):
+            # cr1#667: a re-pin moves the server id and keeps the owner's
+            # kind, dials, lists and scope. A legacy row carries none of
+            # these, so its re-pin is byte for byte today's.
+            for key in CONNECTOR_SETTING_KEYS:
+                if key in prior:
+                    row[key] = prior[key]
+        conn[category] = row
         if not is_uuid_shaped_server_id(server_id):
             retire_uuid_bindings(ws, server_id, provider,
                                  prior_server_id=prior_sid,
                                  binding_verified=binding_verified)
     _write_entities(workspace_root, ent, holder)
     return conn
+
+
+def _list_key(name: str) -> str:
+    """One spelling for matching list entries: stripped, a leading `#`
+    dropped, lower-cased (the same key `connector_reads.allowed` uses)."""
+    return str(name or "").strip().lstrip("#").strip().lower()
+
+
+def _normalize_list(name: str, value) -> List[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a list of names, got {type(value).__name__}")
+    out: List[str] = []
+    seen = set()
+    for v in value:
+        if not isinstance(v, str):
+            raise ValueError(f"{name} entries must be strings, got {v!r}")
+        text = v.strip()
+        key = _list_key(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _merge_list(current: List[str], add: Optional[List[str]],
+                remove: Optional[List[str]]) -> List[str]:
+    """The merge form: `add` extends the list (order kept, no duplicate by
+    key), `remove` drops every entry with a matching key."""
+    out = list(current)
+    keys = {_list_key(x) for x in out}
+    for text in add or []:
+        if _list_key(text) not in keys:
+            out.append(text)
+            keys.add(_list_key(text))
+    drop = {_list_key(x) for x in (remove or [])}
+    return [x for x in out if _list_key(x) not in drop]
+
+
+def set_connector_settings(workspace_root, category: str, *,
+                           kind: Optional[str] = None,
+                           dials: Optional[Dict[str, Any]] = None,
+                           include: Optional[List[str]] = None,
+                           exclude: Optional[List[str]] = None,
+                           scope: Optional[str] = None,
+                           add_include: Optional[List[str]] = None,
+                           remove_include: Optional[List[str]] = None,
+                           add_exclude: Optional[List[str]] = None,
+                           remove_exclude: Optional[List[str]] = None,
+                           holder: str = "workspace-manager") -> Dict[str, Any]:
+    """THE one writer for a declared connector's kind, dials, lists and scope
+    (cr1#667). Workspace-manager owned; set-up (command-room-onboarding)
+    and the one-sentence change in chat both route here, through the same
+    locked entities writer `set_declared_backend` uses. Additive: only the
+    arguments given are written, the rest of the row stays; the dials given
+    merge into the dials already set.
+
+    Two forms for each list. `include=` / `exclude=` replace the whole list.
+    `add_include=` / `remove_include=` / `add_exclude=` / `remove_exclude=`
+    merge into the list already there ("also exclude the marketing board"
+    extends it; "read the ops board again" drops one entry), matched by the
+    same key the reader matches on (case and a leading `#` ignored). The
+    whole-list form and the merge form on the same list in one call are
+    refused: a replacement and an addition do not compose.
+
+    Refuses, with nothing written: an undeclared category (declare the
+    backend first); a kind outside the manifest's vocabulary; a dial name
+    outside the five; a non-boolean value on a boolean dial; a `close_mode`
+    outside `close` / `propose`; a scope outside `account` / `desktop_only`;
+    a list that is not a list of strings. A refused setting is worse than an
+    absent one: a job would read a value nothing defines.
+
+    Returns the EFFECTIVE settings record (`connector_settings`), with
+    `set_by` and `set_at` beside it."""
+    cat = str(category or "").strip()
+    kinds = connector_kinds()
+    if kind is not None:
+        kind = str(kind).strip().lower()
+        if kind not in kinds:
+            raise ValueError(f"kind must be one of {sorted(kinds)}, got {kind!r}")
+    clean_dials: Dict[str, Any] = {}
+    if dials is not None:
+        if not isinstance(dials, dict):
+            raise ValueError(f"dials must be a dict, got {type(dials).__name__}")
+        for name, value in dials.items():
+            if name not in DIAL_NAMES:
+                raise ValueError(f"unknown dial {name!r}; the dials are {DIAL_NAMES}")
+            if name == "close_mode":
+                mode = str(value).strip().lower() if isinstance(value, str) else None
+                if mode not in CLOSE_MODES:
+                    raise ValueError(f"close_mode must be one of {CLOSE_MODES}, got {value!r}")
+                clean_dials[name] = mode
+            else:
+                if not isinstance(value, bool):
+                    raise ValueError(f"dial {name!r} must be a boolean, got {value!r}")
+                clean_dials[name] = value
+    clean_include = _normalize_list("include", include) if include is not None else None
+    clean_exclude = _normalize_list("exclude", exclude) if exclude is not None else None
+    merges = {
+        "add_include": _normalize_list("add_include", add_include) if add_include is not None else None,
+        "remove_include": _normalize_list("remove_include", remove_include) if remove_include is not None else None,
+        "add_exclude": _normalize_list("add_exclude", add_exclude) if add_exclude is not None else None,
+        "remove_exclude": _normalize_list("remove_exclude", remove_exclude) if remove_exclude is not None else None,
+    }
+    if clean_include is not None and (merges["add_include"] is not None
+                                      or merges["remove_include"] is not None):
+        raise ValueError("include= replaces the whole list; it cannot be combined "
+                         "with add_include= / remove_include= in one call")
+    if clean_exclude is not None and (merges["add_exclude"] is not None
+                                      or merges["remove_exclude"] is not None):
+        raise ValueError("exclude= replaces the whole list; it cannot be combined "
+                         "with add_exclude= / remove_exclude= in one call")
+    if scope is not None:
+        scope = str(scope).strip().lower()
+        if scope not in CONNECTOR_SCOPES:
+            raise ValueError(f"scope must be one of {CONNECTOR_SCOPES}, got {scope!r}")
+    ent = _load_full(workspace_root)
+    ws = _workspace_container(ent)
+    conn = ws.get("connectors")
+    row = conn.get(cat) if isinstance(conn, dict) else None
+    if not cat or cat == _ZAPIER_PIN_KEY or not (isinstance(row, dict) and row.get("server_id")):
+        raise ValueError(f"no declared connector for category {cat!r}; declare "
+                         "its backend first (set_declared_backend)")
+    resolved = kind_for_category(cat, row if kind is None else {"kind": kind})
+    if resolved is None:
+        raise ValueError(f"category {cat!r} resolves to no kind; pass kind=")
+    # The record carries its kind and all five dials once the owner has set
+    # anything on it (acceptance 1): a dial holds, so a later change to the
+    # manifest's defaults never moves a connector the owner already set up.
+    # Only a row nobody set reads the live defaults.
+    row["kind"] = resolved
+    effective = (_settings_from_row(cat, row) or {}).get("dials") or {}
+    effective.update(clean_dials)
+    row["dials"] = effective
+    if clean_include is not None:
+        row["include"] = clean_include
+    elif merges["add_include"] is not None or merges["remove_include"] is not None:
+        row["include"] = _merge_list(_read_list(row.get("include")),
+                                     merges["add_include"], merges["remove_include"])
+    if clean_exclude is not None:
+        row["exclude"] = clean_exclude
+    elif merges["add_exclude"] is not None or merges["remove_exclude"] is not None:
+        row["exclude"] = _merge_list(_read_list(row.get("exclude")),
+                                     merges["add_exclude"], merges["remove_exclude"])
+    if scope is not None:
+        row["scope"] = scope
+    import datetime as _dt
+    row["set_by"] = holder
+    row["set_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    _write_entities(workspace_root, ent, holder)
+    out = _settings_from_row(cat, row) or {}
+    out["set_by"] = row["set_by"]
+    out["set_at"] = row["set_at"]
+    return out
 
 
 def set_account_classification(workspace_root, address: str, *, role: Optional[str] = None,
@@ -847,6 +1182,12 @@ __all__ = [
     "sender_scope_override",
     # setter (workspace-manager owned)
     "set_declared_backend", "set_account_classification",
+    # cr1#667: connector kinds, dials and lists
+    "DIAL_NAMES", "BOOL_DIALS", "CLOSE_MODES", "CONNECTOR_SCOPES",
+    "SCOPE_ACCOUNT", "SCOPE_DESKTOP_ONLY", "CONNECTOR_SETTING_KEYS",
+    "connector_kinds", "categories_for_kind", "kind_for_category",
+    "kind_default_dials", "connector_settings", "declared_connector_settings",
+    "set_connector_settings",
     "retire_uuid_bindings", "is_uuid_shaped_server_id",
     "BINDING_USER_ASSERTED", "BINDING_CONNECTOR_ASSERTED",
     "BINDING_VERIFIED_VALUES",

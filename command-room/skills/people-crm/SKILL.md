@@ -19,7 +19,7 @@ description: "Fires on: 'who is [name]', 'tell me about [name]', 'who do I know 
 - **Writer helper (v3.2+ MANDATORY):** ALL person creates / updates / merges / repairs go through `shared/scripts/people_writer.py`. Never hand-roll JSON for a person record. The helper validates against the schema, dedups against existing records, atomic-writes via `atomic_write_json`, and logs `person_created` / `person_updated` / `person_merged` / `person_repaired` events. Direct edits to `entities.json["people"]` are FORBIDDEN — they recur the v3.0/v3.1 bug class where the agent invented different shapes on different fires (`person_063` Rio Sample, `person_064` Dustin Sample duplicate of `person_004`).
 - **Dedup before create:** `find_existing_person(workspace_root, name=..., email=..., aliases=...)` is REQUIRED before `create_person`. Match order: email exact (case-insensitive) → alias case-insensitive → `canonical_name` whitespace-normalized. Existing record found → call `update_person(existing_id, ...)` instead, never create a parallel record.
 - **Regenerates:** `_hq/views/PEOPLE.md` and the backward-compat `_hq/PEOPLE.md` after every write.
-- **Appends to:** `_hq/data/aliases.json` when new person aliases are confirmed.
+- **Saves confirmed spellings** through the writer only: `add_aliases` on `people_writer:door_update_person` (it writes `aliases.json` and the record together). `aliases` is not a field that door takes.
 - **Does not write to:** `events.jsonl` directly in most flows (the writer helper logs the entity-event; passive-capture handles interaction events), `classifier_feedback.jsonl`. **EXCEPTION (v2.3):** the New Person Enrichment Pipeline appends `interaction`, `meeting`, and `note` events during initial backfill — this is the ONE declared write path to `events.jsonl`, scoped to new `person_*` records flagged for review via `events.jsonl`, gated by a 14-day `enriched_at` cooldown event, dedup'd via `source_ref` hash. Note: enrichment-state flags live in events.jsonl, NOT as fields on the person entity.
 - **Consumes from passive capture:** every inbound/outbound interaction event (v2.2 shape with `primary_thread_id` + `related_thread_ids[]` + `org_ids[]`) updates the relevant person's `last_interaction` date and associations via `update_person`. Associations inherit classification confidence — provisional and low-confidence events do not promote a project/org onto a person record until confirmed via `insight-generator` Pass 8.
 - **Conflict boundary:** team-intelligence shares the `person` entity type but scopes writes to `reports_to_id = CEO` records. No two skills write the same person record concurrently — people-crm is canonical owner, team-intelligence extends with commitment tracking (separate field namespace). Both go through `people_writer.py`.
@@ -285,21 +285,42 @@ When a person surfaces with **substance already attached** — a named attendee
 in a processed meeting, a sender on a triaged thread, a person named with role
 + org in a source the CEO is acting on — auto-add them (M: "yes, add people
 with rich context") through `people_writer:door_auto_add_person` on the write door, NOT the sparse
-elicit form. That helper enforces the two guardrails so auto-creation stays
+elicit form. That helper enforces the guardrails so auto-creation stays
 safe:
 
 1. **Same-name dedup gate runs BEFORE every auto-add.** `auto_add_person`
    calls `list_same_name_people` internally and returns a
    `needs_confirm` result (with `matches`) when any existing person
    shares a name token — auto-add DOWNGRADES to the confirm/elicit path in that
-   case (never silently forks a duplicate). Only a zero-match name auto-creates.
-2. **Capture the email — but only from an OBSERVED source (F-08 extends to
+   case (never silently forks a duplicate). Only a zero-match name goes on to
+   the guard below.
+2. **The two-source guard is the door's, in code (cr1#825, owner ruling
+   2026-11-04).** Rich context is why you call the door; it adds nobody by
+   itself. The door adds on an observed address, or on two sources of which
+   one carries the source tool's own user id for this person or a company the
+   source itself states. It holds the rules the daily people run holds. Two
+   sightings of a bare name add nobody. A job title does not count, and neither
+   does `primary_org_id`. A name that falls short goes on the queue as a
+   sighting, the question the people run raises, and the next source joins it.
+   Pass what the source gives: `source_ref`, `source_kind` (the kind of record:
+   `mail`, `calendar`, `chat`, `meetings`, `tasks`, `documents`, `deals`,
+   `contracts`), `source_user_id` only when the tool hands over its own id for
+   this person, `source_company` only when a field of the source states it,
+   never a company you inferred, and `evidence`, one line of what was seen.
+   A person added on an id or a company keeps it on the record. A later
+   sighting with the same id is that person, one with a different id is a
+   question, and an address the sighting itself observed that is already on the
+   record settles it either way. A
+   different company alone asks nothing. A `source_ref` of a known scheme states
+   the kind, whatever `source_kind` says. One `source_ref` is one source under
+   any kind, and a sighting with no `source_ref` is no source.
+3. **Capture the email — but only from an OBSERVED source (F-08 extends to
    capture).** Pass the address AND its `email_provenance` (the message /
    meeting it was observed in). An address you cannot trace to an observed
    source — a domain-pattern guess, a coworker's shape, "most likely" — is
    NEVER stored: pass no email (or expect `email_dropped_no_provenance=True`).
    The same ban that governs sending (F-08) governs what lands on the record.
-3. **Undo = archive, never delete.** The auto-add narrates in the change feed
+4. **Undo = archive, never delete.** The auto-add narrates in the change feed
    with an `undo`; undo sets the record `status: "archived"` via
    `update_person` (the R1 archive-never-delete reverser `brain_undo`
    registers), never a hard delete — history is preserved.
@@ -307,10 +328,10 @@ safe:
 Through the write door, one form (the Access preamble above resolves first; PEOPLEWRITE2):
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"account_address": "<the mailbox the mail or invite arrived through, or omit the key for a manual add>", "canonical_name": "Quinn Sample", "email": "quinn@example.com", "email_provenance": {"meeting_id": "<the meeting id>", "source": "meeting"}, "primary_org_id": "<the org id>", "role": "VP Ops", "workspace_root": "<WS>"}, "name": "people_writer:door_auto_add_person"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"account_address": "<the mailbox the mail or invite arrived through, or omit the key for a manual add>", "canonical_name": "Quinn Sample", "email": "quinn@example.com", "email_provenance": {"meeting_id": "<the meeting id>", "source": "meeting"}, "evidence": "<one line of what was seen>", "primary_org_id": "<the org id>", "role": "VP Ops", "source_kind": "meetings", "source_ref": "granola:<the meeting id>", "workspace_root": "<WS>"}, "name": "people_writer:door_auto_add_person"}'
 ```
 
-`result.status` `added`: narrate "Added Quinn Sample." and promise no `undo` (the door's auto-add stamps no undo batch, so a bare `undo` cannot find it; the reverse is the archive in rule 3, by `people_writer:door_update_person` with `"status": "archived"` when the CEO asks). `result.status` `needs_confirm`: name `result.matches` by canonical name and ask before creating; nothing was written. `result.ok: false`: the same branches as the Writer call shape (`duplicate`, `ambiguous`, `single_word_name`, `out_of_scope`), nothing written.
+`result.status` `added`: narrate "Added Quinn Sample." and promise no `undo` (the door's auto-add stamps no undo batch, so a bare `undo` cannot find it; the reverse is the archive in rule 4, by `people_writer:door_update_person` with `"status": "archived"` when the CEO asks). `result.status` `asked`: narrate "Quinn Sample is on the queue as a question." and add nobody by any other route; `result.already_asked` means the queue already held that sighting. `result.status` `already_answered`: the owner has answered this name, no question is open and nothing was written, so say that and do not promise a question. If the CEO now says to add this person, that is `people_writer:door_create_person`, the Writer call shape above, and when a record on file carries the name it takes `"confirmed_different_person": true`, only on the CEO's own word that they are a different person. `result.status` `on_file`: the source's id or an address is `result.person_id`'s, or the owner said so, nothing was written, and that record is the person. `result.status` `needs_confirm`: name `result.matches` by canonical name and ask before creating; nothing was written. `result.ok: false`: the same branches as the Writer call shape (`duplicate`, `ambiguous`, `single_word_name`, `out_of_scope`), nothing written.
 
 ### Person facts — `remember [fact] about [name]` / `note that [name] [fact]` (SPEC HIST1 D8)
 
@@ -621,7 +642,7 @@ When ANY skill (workspace-manager during "new project," meeting-notes when a new
 3. **Granola (90-day pull):**
    - Search transcripts where the person was an attendee.
    - For each hit: emit `note` event flagging "transcript available, person_[id]" — do NOT emit full `meeting` + per-decision + per-commitment events (that's meeting-notes' job; don't shadow-process). The 90-day crawl is a backfill scan, not a targeted read, so it legitimately DEFERS full capture per `shared/INGEST_SUBSTRATE_SYNC.md`'s "do not crawl beyond surfaced results" clause.
-   - **BUT do not silently lose a new person (v3.14.6+):** if a hit transcript has NO `meeting` event (`granola:<id>` `source_ref` absent from events.jsonl) AND it names a person not in `entities.json`, queue a `person_proposal` (pending_review) for that person via `shared/scripts/people_writer.py` `find_existing_person` dedup — instead of a bare `note`. The confirm queue surfaces it. This honors the don't-shadow-process rule (no full `meeting`/decision/commitment writes from the crawl) while closing the gap where an unprocessed transcript's new attendee vanishes (M, 2026-05-28).
+   - **BUT do not silently lose a new person (v3.14.6+):** if a hit transcript has NO `meeting` event (`granola:<id>` `source_ref` absent from events.jsonl) AND it names a person not in `entities.json`, queue a `person_proposal` (pending_review, `source_kind="meetings"`) for that person via `shared/scripts/people_writer.py` `find_existing_person` dedup — instead of a bare `note`. The confirm queue surfaces it. This honors the don't-shadow-process rule (no full `meeting`/decision/commitment writes from the crawl) while closing the gap where an unprocessed transcript's new attendee vanishes (M, 2026-05-28).
    - Backfill `last_granola_transcript_ref` for quick CEO access.
 
 4. **Slack (30-day pull):**

@@ -102,6 +102,9 @@ Background maintenance (runs quietly, no chat output):
   Maintenance         — 6:45 AM, 12:45 PM, 4:45 PM, and 5:45 PM daily
                         (sent-mail reconcile, chat reconcile,
                         meeting capture, session sweep,
+                        inbound mail,
+                        task board check, task board done check,
+                        document and deal check,
                         weekly cleanup, weekly insights,
                         picking up your edits, deal signals,
                         identity reconcile, project lifecycle,
@@ -110,8 +113,8 @@ Background maintenance (runs quietly, no chat output):
                         booked meeting check,
                         finished and forgotten check,
                         memory coverage check,
-                        flow check, daylight saving check,
-                        monthly report
+                        flow check, people update, project update,
+                        daylight saving check, monthly report
                         — each runs when due)
 
 Available, not added yet:

@@ -322,6 +322,7 @@ def _reason(d: dict) -> str:
 #: ATTRIB2's reader first and only falls back to this.
 _FALLBACK_MACHINE_SOURCES: frozenset = frozenset({
     "reconcile-sent", "reconcile-chat", "reconcile-inbound",
+    "inbound-mail",  # cr1#664
     "maintenance", "session-sweep", "cleanup",
     "review-expiry", "age-out", "identity-reconcile",
     "deal-signals", "dormant-customer-scan", "dormant-scan",

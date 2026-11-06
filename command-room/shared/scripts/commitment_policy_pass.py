@@ -328,8 +328,18 @@ def apply_transcript_results(
     preset: Optional[str] = None,
     now_iso=None,
     source_skill: str = SOURCE_SKILL_TRANSCRIPT,
+    close_mode: Optional[str] = None,
 ) -> dict:
     """DD-2 — the CRU pass calls policy before it builds anything.
+
+    `close_mode` (cr1#668, the cr1#609 ruling of 2026-11-03: meetings
+    propose until measured) is the declared meetings connector's dial, read
+    by the caller through `connector_reads`. `propose` holds every close
+    this pass would write exactly as the CUT-A switch does when it is off:
+    the row is judged, counted as withheld and written as a review proposal
+    in the chip shape when it scores at or above the chip band's floor,
+    with the transcript as its source pointer. `close` (or None, no meetings
+    connector declared) leaves the switch the only word, today's behaviour.
 
     `results` are `cru_match.match_transcript_to_commitments` rows for ONE
     transcript (they carry `evidence_quote`, `signal`, the three signal
@@ -380,7 +390,16 @@ def apply_transcript_results(
 
     counts = _empty_counts()
     closes_on = _closes_enabled(workspace_root)  # CUT-A: read ONCE per fire
+    if str(close_mode or "").strip().lower() == "propose":
+        # cr1#668: the meetings connector proposes. Same path as the switch
+        # being off, so the thresholds, the refusals and the chip band are
+        # the ones this pass already applies.
+        closes_on = False
     counts["closes_enabled"] = closes_on
+    if close_mode is not None:
+        # Named only when a meetings connector is declared, so the answer
+        # with none declared stays byte for byte the base's.
+        counts["close_mode"] = close_mode
     if not results:
         return counts
     # M'S RULING 6 (2026-09-07) — ONE question per row. Read the asked marks
@@ -677,6 +696,38 @@ def apply_transcript_results(
     return counts
 
 
+def _meeting_closes_held(workspace_root) -> tuple:
+    """cr1#668: `(held, provider)`. `held` is True when a `meetings`
+    connector is declared and its dials say a meeting never closes outright
+    (`close_mode: propose`, or `close_commitments` off). No meetings
+    connector declared: `(False, None)`, today's behaviour."""
+    try:
+        from connector_reads import for_category
+        read = for_category(workspace_root, "meetings", purpose="close")
+    except Exception:  # noqa: BLE001 - the leg never fails over the dials
+        return False, None
+    if not read:
+        return False, None
+    mode = str((read.get("dials") or {}).get("close_mode") or "").lower()
+    held = bool(read.get("skip_reason")) or mode == "propose"
+    return held, (str(read.get("provider") or "").strip().lower() or None)
+
+
+def _is_meeting_ref(source_ref: str, provider: Optional[str]) -> bool:
+    """A chip's source is a meeting: a meeting-shaped scheme, or the declared
+    meetings connector's own provider prefix."""
+    s = str(source_ref or "").strip().lower()
+    if ":" not in s:
+        return False
+    try:
+        from capture_gate import _meeting_shaped_ref
+        if _meeting_shaped_ref(s):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(provider) and s.split(":", 1)[0] == provider
+
+
 def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
                         batch_id: Optional[str] = None, apply: bool = True,
                         source_skill: str = RETRACT_SOURCE_SKILL) -> dict:
@@ -745,11 +796,30 @@ def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
     closes_on = _closes_enabled(workspace_root)  # CUT-A: read ONCE per fire
     out["closes_enabled"] = closes_on
     out["n_apply_withheld"] = 0
+    # cr1#668: a declared meetings connector that proposes (its default
+    # until measured) or does not close at all never lets a meeting's chip
+    # become a close at the timeout either; the chip retracts, exactly as
+    # with the switch off. Read ONCE per run.
+    meeting_hold, meeting_provider = _meeting_closes_held(workspace_root)
+    if meeting_hold:
+        out["meeting_closes_held"] = True  # absent otherwise: byte for byte the base's
     to_retract: list = []
     for c in cands:
         cid = c["commitment_id"]
         quote = str(c.get("evidence") or "").strip()
         src = str(c.get("source_ref") or "").strip()
+        if meeting_hold and _is_meeting_ref(src, meeting_provider) \
+                and c["ttl_action"] == policy.ACTION_CLOSE and quote and src:
+            # cr1#668: the meetings connector holds closes, so the chip is
+            # graded and counted exactly as under the switch-off branch
+            # below, then RETRACTS; it never closes.
+            ce = policy.close_evidence(quote, c.get("title") or "", hi=hi)
+            if ce["ok"] is not True:
+                out["n_apply_no_completion_turn"] += 1
+            else:
+                out["n_apply_withheld"] += 1
+            to_retract.append(c)
+            continue
         if c["ttl_action"] == policy.ACTION_CLOSE and quote and src \
                 and not closes_on:  # CUT-A switch: a chip never becomes a close while OFF
             # R-A — the chip's evidence is still graded so the count M

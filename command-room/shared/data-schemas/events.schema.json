@@ -266,6 +266,7 @@
         "prep_brief_backfill_run",
         "binding_backfill_run",
         "maintenance_run",
+        "maintenance_heartbeat",
         "lifecycle_run",
         "path_repair",
         "deal_created",

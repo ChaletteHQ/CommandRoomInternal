@@ -376,7 +376,7 @@ These arguments are THIS brief's, and they override the job skill's own default:
 3. **Then ONE receipt, and only because jobs ran** — the `maintenance_run` row, composed where the data is by its own writer with its append held, then landed. Never typed:
 
 ```bash
-cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=morning-brief python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"fired_via": "manual", "jobs_completed": [<job ids>], "jobs_due": [<job ids>], "jobs_failed": [<job ids>], "triggered_by": "morning-brief", "workspace_root": "<WS>"}, "name": "morning_brief_helpers:plan_maintenance_receipt"}'
+cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=morning-brief python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"fired_via": "manual", "jobs_completed": [<job ids>], "jobs_due": [<job ids>], "jobs_failed": [<job ids>], "triggered_by": "morning-brief", "windows": {<each job's `window` from the catch-up plan, keyed by its job_id>}, "workspace_root": "<WS>"}, "name": "morning_brief_helpers:plan_maintenance_receipt"}'
 ```
 
 ```bash

@@ -882,9 +882,16 @@ def plan_maintenance_receipt(workspace_root: str, *,
                              skipped_disabled: Optional[List[str]] = None,
                              skipped_min_gap: bool = False,
                              fired_via: Optional[str] = "manual",
-                             triggered_by: Optional[str] = TASK_ID
+                             triggered_by: Optional[str] = TASK_ID,
+                             windows: Optional[Dict[str, Any]] = None,
+                             completed_at: Optional[Dict[str, Any]] = None,
+                             connectors_unreachable: Optional[List[str]] = None
                              ) -> Dict[str, Any]:
     """`{rows}` — THE one `maintenance_run` row a maintenance pass owes.
+
+    `connectors_unreachable` (cr1#667): the categories whose leg answered a
+    reachability skip this run, handed through to the receipt; the receipt
+    adds the desktop-only declarations itself on a cloud fire.
 
     `maintenance_dispatcher.maintenance_receipt` runs here with its append
     held; the row it would write comes back for ONE `plan append_jsonl`. Two
@@ -892,7 +899,12 @@ def plan_maintenance_receipt(workspace_root: str, *,
     + `triggered_by: morning-brief` (R-RW-5: a catch-up rides in front of a
     surface a person typed, so it is never a scheduled fire) — and the
     scheduled maintenance fire's merged branch (M3), which passes
-    `scheduled` and `triggered_by: null`.
+    `scheduled` and `triggered_by: null`. `windows` (cr1#663) is each job's
+    `window` from the plan, keyed by job id; omitted, the row names none.
+    `completed_at` (cr1#666) is when each completed job finished, keyed by
+    job id; a completed job left out takes the receipt's own finish time.
+    The answer's `rows` are the receipt and the heartbeat that follows it,
+    in that order, for the one append.
     """
     import maintenance_dispatcher as md
     from inbox_helpers import _captured_appends
@@ -904,7 +916,13 @@ def plan_maintenance_receipt(workspace_root: str, *,
                                jobs_failed=list(jobs_failed or []),
                                skipped_disabled=list(skipped_disabled or []),
                                skipped_min_gap=bool(skipped_min_gap),
-                               fired_via=fired_via, triggered_by=triggered_by)
+                               fired_via=fired_via, triggered_by=triggered_by,
+                               windows=(dict(windows)
+                                        if isinstance(windows, dict) else None),
+                               completed_at=(dict(completed_at)
+                                             if isinstance(completed_at, dict)
+                                             else None),
+                               connectors_unreachable=list(connectors_unreachable or []))
     return {"rows": _jsonable(list(captured))}
 
 
@@ -965,7 +983,8 @@ def confirm_lines(workspace_root: str, now_iso: str = "") -> Dict[str, Any]:
     opens = load_open_commitments(events_path)
     dismissed = active_dismissal_target_ids(iter_events(workspace_root), now)
     person_rows = load_open_person_proposals(
-        events_path, dismissed_target_ids=dismissed, suppress_on_file=True)
+        events_path, dismissed_target_ids=dismissed, suppress_on_file=True,
+        surfacing_at=now)
     n_confirm = (len(select_confirm_items(opens, now, dismissed_ids=dismissed))
                  + len(select_promotion_proposals(opens, dismissed_ids=dismissed))
                  + count_person_rows(person_rows, now_iso=now))

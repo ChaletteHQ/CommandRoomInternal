@@ -575,6 +575,22 @@ def _infer_skill_from_path(path: str) -> str:
     return "deliverables"
 
 
+def _document_ref(workspace_root: str | Path, path: str) -> Optional[str]:
+    """A stable reference to one produced document: its path inside the
+    workspace, so it reads the same wherever the folder is synced to. The
+    extension is dropped because one document can render as a .docx and an
+    .html side by side, and that is still one document."""
+    if not path:
+        return None
+    root = Path(workspace_root).resolve()
+    full = (Path(path) if Path(path).is_absolute() else root / path).resolve()
+    full = full.with_suffix("")
+    try:
+        return "doc:" + full.relative_to(root).as_posix()
+    except ValueError:
+        return "doc:" + full.as_posix()
+
+
 def feed_voice_corrections(workspace_root: str | Path, result: dict) -> int:
     """Quick Win A — append each FAIL-severity voice tell found in a produced
     deliverable to the relevant `corrections-<skill>.jsonl`, giving
@@ -583,7 +599,9 @@ def feed_voice_corrections(workspace_root: str | Path, result: dict) -> int:
     CR-owned correction row under `_hq/voice/` (same class as the findings
     record). The offending phrase is stored as `original` with an empty
     `corrected` (there is no user rewrite to compare against — the signal is
-    "this tell was produced; stop using it"), so the voice leg can ban it.
+    "this tell was produced; stop using it"), so the voice leg can ban it. Each
+    row carries its document as `draft_ref`: a re-sweep of one file counts once,
+    and the same tell in three documents reaches the per-phrase floor.
     Privacy/substrate leaks are NOT fed here — they are not a voice pattern and
     stay flag-only. Returns the number of rows written. NEVER raises."""
     written = 0
@@ -597,6 +615,7 @@ def feed_voice_corrections(workspace_root: str | Path, result: dict) -> int:
         if not fails:
             continue
         skill = _infer_skill_from_path(f.get("path", ""))
+        ref = _document_ref(workspace_root, f.get("path", ""))
         seen = set()
         for x in fails:
             phrase = (x.get("match") or "").strip()
@@ -615,6 +634,7 @@ def feed_voice_corrections(workspace_root: str | Path, result: dict) -> int:
                     correction_type=ctype,
                     notes=f"check-deliverables: {x.get('rule', 'voice_tell')} "
                           f"in {Path(f.get('path', '')).name}",
+                    draft_ref=ref,
                 ):
                     written += 1
             except Exception:

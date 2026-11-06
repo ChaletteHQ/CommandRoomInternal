@@ -145,6 +145,8 @@ Example paths:
 }
 ```
 
+Optional: `draft_ref`, where the correction came from, present when the writer knows: the seq of the draft's first snapshot, or `doc:<path in the workspace, no extension>` for a row from a produced document. It is how the same edit read twice stays one row while the same deletion on another draft or document is a new one. Rows without it are valid.
+
 ### When to append
 
 Any time the user edits the skill's output before using it. Detected by comparing the skill's return value to what ends up in the downstream artifact (email draft, Slack message, etc.) at end-session.
@@ -165,7 +167,7 @@ Weekly (owner: the `learning` job's voice leg — `learning_pass.run_voice_leg`,
 2. Group corrections by `correction_type` (phrasing / structure / vocabulary / tone).
 3. Identify patterns — e.g., "user corrected 7 instances of 'circle back' to 'following up on' in the last month."
 4. Propose voice-block updates: "Add to banned openers: 'wanted to circle back'. Add to preferred openers: 'Following up on [X]'."
-5. Write the refreshed block. **This is automatic — there is no approval step and no card.** The floors ARE the safety: ≥3 same-direction corrections on one skill before anything moves, and every change is narrated in the morning brief in the past tense with a one-word `undo`. The confirm-first version of this loop asked first, was never shown, and learned nothing in months.
+5. Write the refreshed block. **Two corrections ask and four apply** (cr1#784), counting the same phrase or the same paragraph count on one skill, never the kind. Both numbers are settings (`learning_pass.learning_thresholds`). At the ask number the job raises one question on the shared proposal rail, and nothing is written unless the owner says yes. At the apply number the line is written without asking, whether or not the question was answered, unless the owner dismissed it, which holds for 60 days. Every change carries the rule, what it changes from now on, the corrections it came from and its own `undo`, and is narrated in the morning brief in the past tense. The confirm-first version of this loop only asked, was never shown, and learned nothing in months, which is why the apply number does not wait for an answer.
 6. Write the refreshed block to the **customer-side override store** `_hq/voice/voice-block-<skill>.md` (NOT the SKILL.md — the plugin directory is a managed clone overwritten on every update, so a block written into SKILL.md is lost on the next install). The override supersedes the baked-in `## Voice Block` **section-by-section** (a section present in the override replaces the same-named default; absent sections fall through to the SKILL.md default). Append a `voice_block_updated` event. Implementation: `shared/scripts/voice_corrections.py` `write_voice_block_override`.
 7. For a universal LLM tell (same pattern across 3+ skills), Chalette MAY also promote it plugin-side into this file's banned list and push a new private-plugin version — but the per-customer calibration always lives in the workspace override, never requiring a plugin push.
 

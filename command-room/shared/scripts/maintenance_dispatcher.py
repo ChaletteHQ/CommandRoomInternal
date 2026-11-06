@@ -39,11 +39,27 @@ and cleanup's Monday note can surface chronic failures.
 
 ORDER IS THE CONTRACT
 ---------------------
-`MAINTENANCE_JOBS` insertion order is execution order and is load-bearing:
-reconcile-sent runs FIRST at the 6:45 slot so the 7:00 morning brief reads an
-already-reconciled substrate (Bug #98-v3's original reason for the 6:45
-anchor), and weekly-insights runs AFTER cleanup (synthesis wants a settled
-substrate). Never parallelize the jobs.
+`MAINTENANCE_JOBS` insertion order is execution order and is load-bearing.
+CAPTURES BEFORE CLOSES (cr1#663, the cr1#609 ruling of 2026-11-03): the
+legs that open commitments (`meeting-capture`, `session-sweep`) run before
+every leg that closes them (`reconcile-sent`, `reconcile-chat`,
+`calendar-close`, `exit-doors`), so a fire over a two-day gap never closes
+something it has not yet opened. `JOB_KIND` names each row's kind and
+`job_order_violations` is the pin (`run_guard_maintenance_order_test.py`).
+The whole weekday family still runs inside the 6:45 fire, before the 7:00
+morning brief reads the substrate (Bug #98-v3's original reason for the
+6:45 anchor); only the order WITHIN the fire changed, and reconcile-sent is
+no longer its first row. weekly-insights runs AFTER cleanup (synthesis
+wants a settled substrate). Never parallelize the jobs.
+
+EVERY JOB READS ONE WINDOW (cr1#663)
+------------------------------------
+Each due dict carries `window`, `catchup.maintenance_window`'s answer for
+that job: since its own last receipt, no day cap; the last 30 days when it
+has no receipt; a gap longer than 30 days treated as a first run (30 days),
+`reason: first_run_window`. The run-level receipt names every window it was
+handed (`maintenance_windows`, keyed by job), and each job with its own
+receipt writer names its own under `maintenance_window`.
 
 A SKIPPED RECEIPT IS VOIDED BY THE CONFIG CHANGE THAT REMOVES ITS REASON
 ------------------------------------------------------------------------
@@ -201,43 +217,16 @@ from task_watchdog import (  # noqa: E402
 # `skill` names what the registered prompt executes for the job (customer copy
 # never shows these — job identity stays internal vocabulary).
 MAINTENANCE_JOBS: dict[str, dict] = {
-    # Weekday fires only (dow 1-5 in the nominal cron): due at every weekday
-    # slot, exactly the pre-MAINT1 reconcile-sent cadence (SPEC-2.4).
-    "reconcile-sent": {
-        "skill": "reconcile-sent",
-        "nominal_cron": "45 6,12,17 * * 1-5",
-        "description": "close commitments completed by mail sent outside the product",
-    },
-    # CHATSCAN1 — the chat closure leg, ordered IMMEDIATELY BESIDE the mail
-    # one and on the identical nominal cron. M's ruling 2026-08-06: closing
-    # and review from chat are wired into the maintenance cadence exactly like
-    # mail, first-class and registered, never an on-demand extra. Same slot as
-    # `reconcile-sent` and ordered after it so both legs land before the 7:00
-    # brief reads the substrate. It rides the already-authorized `maintenance`
-    # taskId, so it adds ZERO scheduled tasks on any machine. A workspace with
-    # no declared chat backend still runs it: the leg skips silently and
-    # writes its skip receipt, which is what keeps "no chat backend" readable
-    # apart from "swept and found nothing". Entry point:
-    # chat_reconcile.reconcile_chat_and_receipt.
-    "reconcile-chat": {
-        "skill": "reconcile-sent (chat leg — shared/scripts/chat_reconcile.py)",
-        "nominal_cron": "45 6,12,17 * * 1-5",
-        "description": "close commitments discharged in the declared chat backend",
-        # BRIEFFIX1 Item D — this leg's ONE skip reason is "no chat backend is
-        # declared", and declaring one is exactly the event below. A skip
-        # receipt written before that declaration is answering a question the
-        # workspace has since answered differently, so it stops serving its
-        # slot and the leg runs at the next fire instead of at the next slot.
-        "voided_by": (
-            {"type": "connector_backend_changed", "match": {"category": "chat"}},
-        ),
-        "voided_reason": ("its last run skipped because no chat backend was "
-                          "declared, and one has been declared since"),
-    },
+    # ---- CAPTURE LEGS (cr1#663): the rows that OPEN commitments run first,
+    # so a fire over a gap opens before it closes. `inbound-mail` (cr1#664,
+    # lane 2) opens AND closes, so it sits between the two groups: after
+    # both capture legs, ahead of every other close leg.
+    #
     # SPEC EODSPEED1 (2026-08-26) — the End of Day's capture leg, run
     # INCREMENTALLY during the day so the 5 PM close finds the day's meetings
-    # already captured and re-verifies instead of fetching. Ordered directly
-    # after the two reconcile legs and on their identical weekday cron:
+    # already captured and re-verifies instead of fetching. First row of the
+    # registry since cr1#663 (captures before closes); it shares the two
+    # reconcile legs' weekday cron, and
     # the 12:45 slot is the one that moves the day's fetching off the close
     # (the 6:45 slot picks up the prior evening; 17:45 drains stragglers for
     # the NEXT day's close). It rides the already-authorized `maintenance`
@@ -250,7 +239,10 @@ MAINTENANCE_JOBS: dict[str, dict] = {
     # same admission gates, no relaxed floors — under the EODSPEED1
     # incremental rules stated in that file: SILENT (writes and receipts
     # only; the close remains the one narrator), window from
-    # `catchup_window("meeting-capture", floor_hours=24)`, receipt via
+    # `eod_helpers.catchup_window(ws, task_id="meeting-capture")`, which for
+    # this job is the one maintenance window rule (cr1#663: since the last
+    # capture receipt, 30 days on a first run or a gap beyond 30 days; the
+    # close's own `past-meetings` window is untouched), receipt via
     # `eod_incremental.log_capture_pass_receipt` (a pack_run under THIS job
     # id — NEVER a receipt under `past-meetings`, which would arm
     # skip_render against the real close). A machine that never runs this
@@ -287,11 +279,130 @@ MAINTENANCE_JOBS: dict[str, dict] = {
     },
     # Nominal midnight daily -> due once per day, served at the FIRST fire of
     # the day (6:45). Evening chats sweep the next morning, still BEFORE the
-    # 7:00 brief, so the brief sees them.
+    # 7:00 brief, so the brief sees them. The second capture leg (cr1#663).
     "session-sweep": {
         "skill": "session-sweep",
         "nominal_cron": "0 0 * * *",
         "description": "promote unlogged commitments and decisions from ad-hoc chats",
+    },
+    # cr1#668 (lane 6 of cr1#609): THE TASKS CAPTURE, the third capture leg.
+    # A declared `tasks` connector is read for the owner's open items with a
+    # due date, inside its include list: assigned to the owner -> the
+    # owner's own row; created by the owner or assigned to someone else ->
+    # a waiting-on; no due date or no relation to the owner -> people and
+    # project signal only (the owner's ruling of 2026-11-03). Weekday, on
+    # the reconcile legs' cadence, so a gap opens before the close legs
+    # below run. A workspace with no tasks connector writes its skip
+    # receipt and nothing else. Entry point:
+    # tasks_leg.capture_tasks_and_receipt.
+    "tasks-capture": {
+        "skill": "tasks leg, capture half (shared/scripts/tasks_leg.py)",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "track the dated items on your task boards that are "
+                       "yours or that you are waiting on",
+    },
+    # cr1#664 (lane 2 of cr1#609) - THE INBOUND-MAIL JOB. It OPENS
+    # commitments from inbound mail (the Inbox chat's Phase 4b capture, same
+    # gate, cap and below-bar declaration) and CLOSES them from inbound
+    # replies (the write half of the inbound reconcile), every weekday fire.
+    # Until it existed, inbound promises were captured only inside the Inbox
+    # chat (a missed Inbox run was a missed capture, cr1#514), and the
+    # inbound close leg's only scheduled home was the commitments chat that
+    # cr1#618 retired.
+    #
+    # ONE ROW, BOTH HALVES, AND WHY IT SITS HERE. A capture-and-close leg
+    # placed after every capture leg and before every other close leg keeps
+    # captures-before-closes for the whole fire: its own open half runs
+    # before its own close half (inside `inbound_mail_leg.run_inbound_mail`),
+    # and both run before `reconcile-sent` can close a reply-owed item the
+    # open half just captured. `JOB_KIND` files it as a close leg (it is on
+    # the closure roster, `RECONCILE_LEGS`), so G83 keeps every capture leg
+    # ahead of it; the order guard also pins it ahead of every other close.
+    #
+    # Same weekday cadence as the two reconcile legs. A workspace with no
+    # mail connector still runs it: it writes its skip receipt, and a
+    # `connector_backend_changed` for `email` voids that receipt, exactly as
+    # the chat leg's. It rides the already-authorized `maintenance` taskId:
+    # ZERO scheduled tasks on any machine. A door job on the merged shape
+    # (`DOOR_JOBS`, `_inbound_steps`). Entry point:
+    # `eod_helpers.inbound_mail_staged` -> `inbound_mail_leg.run_inbound_mail`.
+    "inbound-mail": {
+        "skill": ("inbound-mail job (shared/scripts/inbound_mail_leg.py: "
+                  "plan_inbound_mail, then the inbox fetch it names, each "
+                  "message's Phase 4b captures judged as "
+                  "orchestrator-inbox.md says, then run_inbound_mail over "
+                  "them; it writes its own pack_run receipt and says "
+                  "nothing to the CEO)"),
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": ("open commitments from new mail and close the ones "
+                        "a reply already delivered"),
+        "voided_by": (
+            {"type": "connector_backend_changed", "match": {"category": "email"}},
+        ),
+        "voided_reason": ("its last run skipped because no mail connector was "
+                          "declared, and one has been declared since"),
+    },
+    # ---- CLOSE LEGS, the cursor-driven pair (cr1#663): after both capture
+    # legs, before everything else in the weekday fire. `inbound-mail`
+    # (cr1#664) runs just ahead of them, above.
+    #
+    # Weekday fires only (dow 1-5 in the nominal cron): due at every weekday
+    # slot, exactly the pre-MAINT1 reconcile-sent cadence (SPEC-2.4). Until
+    # cr1#663 this was the registry's first row; it still runs inside the
+    # 6:45 fire ahead of the 7:00 brief, after the two capture legs.
+    "reconcile-sent": {
+        "skill": "reconcile-sent",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "close commitments completed by mail sent outside the product",
+    },
+    # CHATSCAN1 — the chat closure leg, ordered IMMEDIATELY BESIDE the mail
+    # one and on the identical nominal cron. M's ruling 2026-08-06: closing
+    # and review from chat are wired into the maintenance cadence exactly like
+    # mail, first-class and registered, never an on-demand extra. Same slot as
+    # `reconcile-sent` and ordered after it so both legs land before the 7:00
+    # brief reads the substrate. It rides the already-authorized `maintenance`
+    # taskId, so it adds ZERO scheduled tasks on any machine. A workspace with
+    # no declared chat backend still runs it: the leg skips silently and
+    # writes its skip receipt, which is what keeps "no chat backend" readable
+    # apart from "swept and found nothing". Entry point:
+    # chat_reconcile.reconcile_chat_and_receipt.
+    "reconcile-chat": {
+        "skill": "reconcile-sent (chat leg — shared/scripts/chat_reconcile.py)",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "close commitments discharged in the declared chat backend",
+        # BRIEFFIX1 Item D — this leg's ONE skip reason is "no chat backend is
+        # declared", and declaring one is exactly the event below. A skip
+        # receipt written before that declaration is answering a question the
+        # workspace has since answered differently, so it stops serving its
+        # slot and the leg runs at the next fire instead of at the next slot.
+        "voided_by": (
+            {"type": "connector_backend_changed", "match": {"category": "chat"}},
+        ),
+        "voided_reason": ("its last run skipped because no chat backend was "
+                          "declared, and one has been declared since"),
+    },
+    # cr1#668 (lane 6 of cr1#609): THE TASKS CLOSE, after both capture legs
+    # and beside the other cursor-paced close legs. A done item on a board
+    # the owner declared as project tracking (`close_mode: close` on its
+    # connector) closes the matched row outright, the board item as its
+    # source pointer; done anywhere else, the close is proposed. Matched by
+    # the item itself first, then by the existing matchers at their own
+    # thresholds. Entry point: tasks_leg.close_tasks_and_receipt.
+    "tasks-close": {
+        "skill": "tasks leg, close half (shared/scripts/tasks_leg.py)",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "close or propose closing what your task boards show done",
+    },
+    # cr1#668: THE PROPOSE-ONLY KINDS. A declared `documents`, `deals` or
+    # `contracts` connector is read for people and projects, and a match
+    # against an open commitment is only ever PROPOSED (no capture rule for
+    # these kinds is ruled yet). Entry point:
+    # connector_proposals.propose_from_connectors_and_receipt.
+    "connector-proposals": {
+        "skill": "propose-only kinds (shared/scripts/connector_proposals.py)",
+        "nominal_cron": "45 6,12,17 * * 1-5",
+        "description": "propose closes your documents, deals and contracts "
+                       "show done, and note the people and projects in them",
     },
     # Nominal Sunday 17:00 -> due at the Sunday 17:45 fire; still due Monday
     # 6:45 if the laptop was closed (the self-heal the old fixed cron lacked).
@@ -675,6 +786,36 @@ MAINTENANCE_JOBS: dict[str, dict] = {
                        "so the plate's shrinking is a measurement and not a "
                        "claim",
     },
+    # ---- cr1#665 (lane 3 of cr1#609): THE DAILY PEOPLE AND PROJECT
+    # UPDATES, after the judging legs and before the realign row (the place
+    # cr1#663 settled). People and projects used to move only on Sunday; a
+    # person first seen in yesterday's meeting should be in the book this
+    # morning. Each runs its Sunday sibling's own script with `--daily`,
+    # which reads the one maintenance window (since the job's own last
+    # receipt, 30 days on a first run) and judges only what that window
+    # brought in, through the same writers and the same gates. The Sunday
+    # rows above stay the weekly deep pass, untouched and still due on
+    # Sunday: each daily job receipts a `pack_run` under its OWN id, never
+    # its sibling's type. After the capture legs on purpose: the morning's
+    # meeting-capture lands the mentions and the activity these two read.
+    # Kind `other` in `JOB_KIND`: neither opens nor closes a commitment.
+    # DAILY, nominal midnight -> due once a day at the day's first fire.
+    "people-update": {
+        "skill": "daily people update (shared/scripts/identity_reconcile.py "
+                 "--daily --apply - dry-run without --apply; its pack_run "
+                 "receipt names the window it read)",
+        "nominal_cron": "0 0 * * *",
+        "description": "add the people the last day brought in where the "
+                       "evidence is strong, and ask about the rest",
+    },
+    "project-update": {
+        "skill": "daily project update (shared/scripts/lifecycle_pass.py "
+                 "--daily --apply - dry-run without --apply; its pack_run "
+                 "receipt names the window it read)",
+        "nominal_cron": "0 0 * * *",
+        "description": "bring a quiet project back to active the morning "
+                       "after it moves again",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
     # with its own month. A machine closed across a 1st loses that month
@@ -736,6 +877,16 @@ OPTIONAL_JOBS: dict[str, dict] = {
 MAINTENANCE_TASK_ID = "maintenance"
 RECEIPT_EVENT_TYPE = "maintenance_run"
 
+# cr1#666 (lane 4 of cr1#609). `completed_at` on the receipt: `{job_id: UTC
+# ISO}` for each job the fire scored completed. The heartbeat: ONE row right
+# after every `maintenance_run`, a no-op fire included, saying when the fire
+# finished. It is not a receipt type (no task owns it in `receipts`), so the
+# watchdog's freshness reading, which keys on the receipt, is unchanged; the
+# Hub's `status/maintenance` document is composed from it
+# (`cockpit_helpers.maintenance_status`).
+COMPLETED_AT_FIELD = "completed_at"
+HEARTBEAT_EVENT_TYPE = "maintenance_heartbeat"
+
 # CHATSCAN1 V1b — THE CLOSURE ROSTER.
 #
 # The set of legs a maintenance fire is expected to close commitments through.
@@ -749,7 +900,11 @@ RECEIPT_EVENT_TYPE = "maintenance_run"
 # A gap is not an error — a workspace can legitimately disable a leg — but it
 # is never invisible: it lands on the receipt as `roster_gap`, and
 # `validate_maintenance_ran` refuses to call such a run complete.
-RECONCILE_LEGS: tuple = ("reconcile-sent", "reconcile-chat")
+# cr1#664: `inbound-mail` joins the roster. It is the only scheduled leg that
+# closes from an inbound reply (the commitments chat that carried that leg
+# was retired by cr1#618), so a registry without it is a gap, not a smaller
+# plan.
+RECONCILE_LEGS: tuple = ("reconcile-sent", "reconcile-chat", "inbound-mail")
 
 
 def roster_gap(jobs=None) -> list:
@@ -762,6 +917,76 @@ def roster_gap(jobs=None) -> list:
     will report it, and without this check nothing would say so."""
     registered = set(jobs if jobs is not None else MAINTENANCE_JOBS.keys())
     return [leg for leg in RECONCILE_LEGS if leg not in registered]
+
+
+# cr1#663 (cr1#609 ruling, 2026-11-03): WHAT KIND OF LEG EACH ROW IS, so the
+# order can be pinned by rule rather than by a typed list. A `capture` leg
+# opens commitments; a `close` leg closes them; a `judge` leg argues about
+# rows already on the book (the merge, the two silence drains, the two
+# measurements); `weekly` is the Sunday family; `monthly` the caboose;
+# `other` is bookkeeping that touches no commitment. Not `JOB_CLASS`: that
+# word already means script / door / skill here (`job_class`), which is HOW
+# a job runs, not WHAT it does to the book. Every registry row must have an
+# entry; `job_order_violations` refuses an unclassified row by name, so a
+# new job cannot dodge the pin by leaving this table alone.
+KIND_CAPTURE = "capture"
+KIND_CLOSE = "close"
+KIND_JUDGE = "judge"
+KIND_WEEKLY = "weekly"
+KIND_MONTHLY = "monthly"
+KIND_OTHER = "other"
+JOB_KINDS: tuple = (KIND_CAPTURE, KIND_CLOSE, KIND_JUDGE, KIND_WEEKLY,
+                    KIND_MONTHLY, KIND_OTHER)
+JOB_KIND: dict[str, str] = {
+    "meeting-capture": KIND_CAPTURE,
+    "session-sweep": KIND_CAPTURE,
+    "tasks-capture": KIND_CAPTURE,  # cr1#668: opens from the task boards
+    # cr1#664: opens and closes; filed as a close (it is on the closure
+    # roster) and placed after every capture and before every other close.
+    "inbound-mail": KIND_CLOSE,
+    "reconcile-sent": KIND_CLOSE,
+    "reconcile-chat": KIND_CLOSE,
+    "tasks-close": KIND_CLOSE,  # cr1#668: closes or proposes from done items
+    "connector-proposals": KIND_CLOSE,  # cr1#668: proposes closes only
+    "cleanup": KIND_WEEKLY,
+    "weekly-insights": KIND_WEEKLY,
+    "learning": KIND_WEEKLY,
+    "deal-signals": KIND_WEEKLY,
+    "identity-reconcile": KIND_WEEKLY,
+    "lifecycle": KIND_WEEKLY,
+    "dedup-apply": KIND_JUDGE,
+    "review-expiry": KIND_JUDGE,
+    "question-expiry": KIND_JUDGE,
+    "calendar-close": KIND_CLOSE,
+    "exit-doors": KIND_CLOSE,
+    "binding-gauge": KIND_JUDGE,
+    "daily-measure": KIND_JUDGE,
+    "people-update": KIND_OTHER,   # cr1#665: touches no commitment
+    "project-update": KIND_OTHER,  # cr1#665: touches no commitment
+    "schedule-realign": KIND_OTHER,
+    "monthly-report": KIND_MONTHLY,
+}
+
+
+def job_order_violations(jobs=None) -> list:
+    """Every (close, capture) pair where the close row precedes the capture
+    row, in registry order; empty when captures run before closes.
+
+    `jobs` defaults to the live `MAINTENANCE_JOBS` (any ordered mapping or
+    sequence of job ids). A row with no `JOB_KIND` entry raises `KeyError`
+    naming it: an unclassified row is refused, never scanned around."""
+    order = list(jobs if jobs is not None else MAINTENANCE_JOBS)
+    missing = [j for j in order if j not in JOB_KIND]
+    if missing:
+        raise KeyError(f"maintenance job(s) with no JOB_KIND entry: {missing}")
+    out = []
+    for i, close in enumerate(order):
+        if JOB_KIND[close] != KIND_CLOSE:
+            continue
+        for capture in order[i + 1:]:
+            if JOB_KIND[capture] == KIND_CAPTURE:
+                out.append((close, capture))
+    return out
 
 
 def _all_job_ids() -> list[str]:
@@ -802,6 +1027,19 @@ def _job_overrides(workspace_root) -> dict:
 
 
 SKIPPED_STATUS = "skipped"
+
+#: cr1#743. The jobs whose writer asks for proof of each read, and the rule,
+#: carried on their row of every plan as `read_proof`. It sits on the row
+#: because the row is what a typed run and a local seat hold: the merged fire
+#: has the same rule in its steps, and the local prompt has no step for these
+#: jobs at all. Without it a run that read an empty board records blocked.
+READ_PROOF_JOBS = frozenset({"tasks-capture", "tasks-close", "connector-proposals"})
+READ_PROOF_RULE = (
+    "Its writer asks for proof of each read. Pass `connectors_read`: the "
+    "`category` of each connector whose read answered, an empty answer "
+    "included, and leave out one that errored. When no read answered, pass "
+    "`fetch_blocked` saying why in plain words. Empty `items` with neither "
+    "records the job blocked.")
 
 
 def _newest_receipt(workspace_root, job_id) -> tuple:
@@ -1490,11 +1728,24 @@ def dispatch_plan(workspace_root, now: Optional[_dt.datetime] = None,
             "last_receipt": last.isoformat() if last else None,
             "slot": slot.isoformat(),
         }
+        if job_id in READ_PROOF_JOBS:
+            d["read_proof"] = READ_PROOF_RULE
         if voided_at is not None:
             # Named on the due dict so the fire's own receipt can say WHY this
             # job ran outside its slot — a job appearing off-cadence with no
             # recorded cause is the next reader's mystery.
             d["skip_voided_at"] = voided_at
+        # cr1#663: the window this job reads on this fire, computed HERE,
+        # before any job runs: once a job's own receipt for this fire lands,
+        # its newest receipt is this fire's and the window would read as
+        # empty. Best-effort like the rest of the plan: the helper never
+        # raises, and a failure to compute it must not cost the fire.
+        try:
+            from catchup import maintenance_window
+
+            d["window"] = maintenance_window(workspace_root, job_id, now=now)
+        except Exception:  # noqa: BLE001, never crash a fire
+            d["window"] = None
         if spec.get("partitioned"):
             # Each period is its own deliverable — enumerate every one that
             # went unserved, oldest first. Best-effort like everything the
@@ -1637,6 +1888,258 @@ def _job_ids(jobs: Optional[Iterable]) -> list[str]:
             jid = j
         if isinstance(jid, str) and jid.strip():
             out.append(jid.strip())
+    return out
+
+
+def _collect_windows(explicit: Optional[dict], *job_lists) -> dict:
+    """`{job_id: window}` for the run-level receipt (cr1#663): the windows
+    carried on any due dict in `job_lists`, then `explicit` on top (an
+    explicit entry wins). Only dict-shaped windows count; an id-only list
+    contributes nothing."""
+    out: dict = {}
+    for jobs in job_lists:
+        for j in jobs or ():
+            if isinstance(j, dict) and isinstance(j.get("window"), dict):
+                jid = j.get("job_id")
+                if isinstance(jid, str) and jid.strip():
+                    out.setdefault(jid.strip(), j["window"])
+    for jid, win in (explicit or {}).items():
+        if isinstance(jid, str) and jid.strip() and isinstance(win, dict):
+            out[jid.strip()] = win
+    return out
+
+
+def _utc_iso(value: _dt.datetime) -> str:
+    """An aware instant as UTC ISO with a `Z`, seconds precision."""
+    return (value.astimezone(_dt.timezone.utc).replace(microsecond=0)
+            .isoformat().replace("+00:00", "Z"))
+
+
+def _clean_instant(value) -> Optional[str]:
+    """A handed completion time as UTC ISO, or None when it does not parse.
+    A naive value is machine-local, the convention of this module."""
+    if isinstance(value, _dt.datetime):
+        when = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            when = _dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if when.tzinfo is None:
+        when = when.astimezone()
+    return _utc_iso(when)
+
+
+#: How far back before the fire's finish a job's own receipt may sit and
+#: still name that job's completion on this fire (cr1#666). A fire runs its
+#: jobs one at a time under `RUN_JOB_TIMEOUT_S` each, so a whole fire fits.
+OWN_RECEIPT_LOOKBACK = _dt.timedelta(hours=4)
+
+
+#: cr1#760. The words on a job's own receipt that say it did its run.
+#: `degraded` is the chat leg's real read over narrower cover: its validator
+#: answers ok and ran, and the receipt carries the coverage note.
+COMPLETE_RECEIPT_STATUSES = frozenset({"complete", "degraded"})
+
+
+def _receipt_outcome(status) -> str:
+    """`completed`, `due` or `failed`: what a job's own receipt says about its
+    run (cr1#760). `skipped` is a run that had nothing it could read, so it is
+    owed and not failing (the validators' own word: a mail-less workspace must
+    not read as a failing one). `blocked`, and any word this module does not
+    know, is a run that did not do its work. A row with no status at all
+    (`value_receipt_generated`, older shapes) cannot say that, and counts."""
+    if not status or (isinstance(status, str)
+                      and status in COMPLETE_RECEIPT_STATUSES):
+        return "completed"
+    return "due" if status == SKIPPED_STATUS else "failed"
+
+
+def _book_readable(workspace_root) -> bool:
+    """Does every file of the book open? (cr1#760.) `receipts.iter_receipts`
+    cannot say: its reader takes a locked or unreadable `events.jsonl` for an
+    empty one, and an empty answer is what a book with no receipts gives too.
+    A missing active file is not a readable book either."""
+    try:
+        import events_io
+
+        for path in {events_io.active_path(workspace_root),
+                     *events_io.shard_paths(workspace_root)}:
+            with open(path, "rb") as fh:
+                fh.read(1)
+    except Exception:  # noqa: BLE001 - whatever stopped it, nothing was read
+        return False
+    return True
+
+
+def _this_fire_start(workspace_root, since_iso, fired_via,
+                     fired_at_slot) -> Optional[_dt.datetime]:
+    """When THIS fire began, the window `score_door_job` reads, or None when
+    it cannot be established (cr1#760).
+
+    `since_iso` is a start the caller measured. Failing that, the start
+    marker, but only a marker that is this fire's: only a scheduled fire
+    writes one and nothing clears it, so a manual fire would otherwise read
+    an earlier fire's, and a scheduled fire whose write was lost would too.
+    The marker names its slot, and this receipt names the same slot or it is
+    another fire's. Answers an aware instant. A start that will not convert
+    is no window: a corrupt time must never stop the receipt landing."""
+    try:
+        if not since_iso:
+            if fired_via != "scheduled" or not fired_at_slot:
+                return None
+            marker = json.loads(_marker_path(workspace_root).read_text(
+                encoding="utf-8"))
+            if (not isinstance(marker, dict)
+                    or marker.get("fired_at_slot") != fired_at_slot):
+                return None
+        start = _score_since(workspace_root, since_iso)
+        return start.astimezone() if start is not None else None
+    except Exception:  # noqa: BLE001 - no marker or a bad time, no window
+        return None
+
+
+def _own_fire_receipts(workspace_root, job_ids, finished: str,
+                       start: Optional[_dt.datetime] = None) -> Optional[dict]:
+    """`{job_id: (status, UTC ISO, named)}`: each job's own newest receipt on
+    THIS fire (cr1#666), for the callers that hand no per-job times (the
+    scheduled prompt's step 4, the merged M3 line, the typed surfaces' receipt
+    lines). `named` is `(firm, unconfirmed)`, the connectors that receipt says
+    it did not read, and the ones it says nobody vouched for (cr1#743).
+
+    `start` is the fire's start (`_this_fire_start`), and a receipt at or
+    after it counts: the scorer's window, so a `maintenance_run` landing
+    mid-fire hides nothing. With no start, a receipt counts when it is newer
+    than the previous `maintenance_run` and inside `OWN_RECEIPT_LOOKBACK` of
+    `finished`, so a quiet job's old receipt never stands in for this fire.
+    A receipt found that way is evidence; not finding one proves nothing
+    (`_settle_completed`).
+
+    A book that cannot be read answers None, which says nothing either way
+    (cr1#760). A readable book with no receipts answers {}."""
+    ids = list(job_ids or [])
+    if not ids:
+        return {}
+    if not _book_readable(workspace_root):
+        return None
+    try:
+        from receipts import iter_receipts, normalize_task_id
+
+        end = _dt.datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        wanted = {normalize_task_id(j): j for j in ids}
+        prev = None
+        newest: dict = {}
+        for r in iter_receipts(workspace_root):
+            at = r.get("dt")
+            if at is None:
+                continue
+            if r.get("task_id") == MAINTENANCE_TASK_ID:
+                if r.get("type") == RECEIPT_EVENT_TYPE and (prev is None or at > prev):
+                    prev = at
+                continue
+            job = wanted.get(r.get("task_id"))
+            # `finished` has whole seconds, and a job can land in that second.
+            if (job and at.replace(microsecond=0) <= end
+                    and (job not in newest or at >= newest[job][1])):
+                newest[job] = (r.get("status"), at, _named_unread(r))
+    except Exception:  # noqa: BLE001 - nothing is proved either way
+        return None
+    floor = end - OWN_RECEIPT_LOOKBACK
+    if start is not None:
+        floor = start
+    elif prev is not None and prev > floor:
+        floor = prev
+    return {j: (status, _utc_iso(at), named)
+            for j, (status, at, named) in newest.items() if at >= floor}
+
+
+def _named_unread(row: dict) -> tuple:
+    """`(firm, unconfirmed)` sets off a job's own receipt row: what it says it
+    did not read, and the part of that nobody vouched for either way."""
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+
+    def names(key) -> set:
+        value = data.get(key)
+        return {str(c) for c in value if c} if isinstance(value, list) else set()
+
+    unsure = names("connectors_unconfirmed")
+    return names("connectors_unreachable") - unsure, unsure
+
+
+def _handed_completed_at(explicit: Optional[dict], completed) -> dict:
+    """`{job_id: UTC ISO}`: the times the caller measured, a due dict's own
+    first and `explicit` on top. One that does not parse is no time."""
+    handed: dict = {}
+    for j in completed or ():
+        if isinstance(j, dict) and isinstance(j.get("job_id"), str):
+            when = _clean_instant(j.get(COMPLETED_AT_FIELD))
+            if when:
+                handed.setdefault(j["job_id"].strip(), when)
+    for jid, value in (explicit or {}).items():
+        when = _clean_instant(value)
+        if isinstance(jid, str) and jid.strip() and when:
+            handed[jid.strip()] = when
+    return handed
+
+
+def _settle_completed(ids, own: Optional[dict], handed: dict, *,
+                      window: bool) -> tuple:
+    """`(kept, moved)` for the ids a caller listed completed (cr1#760).
+
+    `moved` is `{job_id: why}`, the jobs that did not complete: the word on
+    their own receipt, or `no_receipt`. A job's own receipt decides when it
+    has one, on every fire: a word that says it did not run is positive
+    evidence. With none, the answer needs `window`, the fire's own start: a
+    job's absence means something only over a window that is this fire's,
+    because any other floor can hide a real receipt. So with no window the job
+    stays as handed. With one it stays only when it leaves no receipt on a
+    quiet run by design, or when the caller measured its time (a caller
+    holding the job's validator's answer, `run_catch_up`). `own` None is a
+    book that could not be read: nothing is proved, and the list stands.
+
+    Moving the job, not only leaving it unstamped, is what keeps it off the
+    Hub: `cockpit_helpers._maintenance_history` gives a job in
+    `jobs_completed` with no stamp the receipt's own time."""
+    if own is None:
+        return list(ids), {}
+    kept: list = []
+    moved: dict = {}
+    for jid in ids:
+        if jid in own:
+            status = own[jid][0]
+            if _receipt_outcome(status) == "completed":
+                kept.append(jid)
+            else:
+                moved[jid] = str(status)
+        elif not window or jid in QUIET_BY_DESIGN_JOBS or jid in handed:
+            kept.append(jid)
+        else:
+            moved[jid] = "no_receipt"
+    return kept, moved
+
+
+def _collect_completed_at(handed: dict, own: Optional[dict], completed,
+                          finished: str) -> dict:
+    """`{job_id: UTC ISO}` for the jobs that completed (cr1#666): the time of
+    the job's own receipt on this fire when that receipt says it ran, with a
+    time the caller handed on top.
+
+    A job with neither has no completion time (cr1#760), with one exception:
+    a job in `QUIET_BY_DESIGN_JOBS` wrote nothing on purpose, so the fire's
+    own finish instant is its time ("completed by then"). Without a stamp it
+    would read as run only through the Hub's fallback for old receipts."""
+    out: dict = {}
+    for jid in completed:
+        status, at = (own or {}).get(jid, ("", None))[:2]
+        when = handed.get(jid) or (
+            at if _receipt_outcome(status) == "completed" else None)
+        if not when and jid in QUIET_BY_DESIGN_JOBS:
+            when = finished
+        if when:
+            out[jid] = when
     return out
 
 
@@ -1973,12 +2476,106 @@ def _weekdays_between(earlier: Optional[_dt.datetime],
     return n
 
 
+def maintenance_failing_jobs(workspace_root) -> list:
+    """The jobs whose newest word on the book is `failed`, READ ONLY (cr1#760).
+
+    `[{job_id, fires, since, last_failed}]` in run order: `fires` is how many
+    `maintenance_run` receipts filed the job in `jobs_failed` since it last
+    completed, `since` and `last_failed` the first and newest of them (UTC
+    ISO).
+
+    `connectors_unread` (cr1#743) rides a row when the job keeps completing
+    with a connector unread: `[{category, fires, since, last_unread}]`, the
+    connector's own run of fires, ended by a fire that completed the job with
+    it read. A `degraded` run scores as completed, so without this a connector
+    that died behind one that still answers would never show. It is data and
+    scores nothing: a job with only this has `fires` 0 and `since` and
+    `last_failed` None, so a reader asking what is FAILING reads `fires`.
+
+    A fire that left the job out says nothing about it: a daily job is due at
+    one fire of the day, so the fires between do not end its run of failures.
+    A fire that completed it, or that lists it switched off, does. An
+    unreadable book answers [], a malformed list counts as empty, and it
+    never raises. Only jobs still in the registry are named.
+
+    Its own read on purpose, for the Hub to call: `maintenance_staleness`
+    says whether a fire served the slot, and a fire serves it whatever its
+    jobs did, but `catch_up_plan` carries that dict and its answer is pinned.
+    """
+    def ids(value) -> set:
+        return set(_job_ids(value)) if isinstance(value, (list, tuple)) else set()
+
+    try:
+        from receipts import iter_receipts
+
+        rows = iter_receipts(workspace_root, task_ids=[MAINTENANCE_TASK_ID])
+    except Exception:  # noqa: BLE001
+        return []
+    failing: dict = {}
+    settled: set = set()
+    gaps: dict = {}  # {job: {category: its row}}
+    alive: dict = {}  # {job: categories whose run of fires has not ended}
+    for r in reversed(rows or []):  # newest fire first
+        if r.get("type") != RECEIPT_EVENT_TYPE or r.get("dt") is None:
+            continue
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        try:
+            at = _utc_iso(r["dt"])
+        except (OverflowError, ValueError, OSError):  # a date past the calendar
+            continue
+        failed_here = ids(data.get("jobs_failed"))
+        for job in failed_here - settled:
+            row = failing.setdefault(job, {"job_id": job, "fires": 0,
+                                           "since": at, "last_failed": at})
+            row["fires"] += 1
+            row["since"] = at
+        done_here = ids(data.get("jobs_completed")) - failed_here
+        settled |= (done_here | ids(data.get("skipped_disabled"))) - failed_here
+        left = _left_unread_map(data)
+        for job in ids(data.get("skipped_disabled")):
+            alive[job] = set()
+        for job in done_here:
+            here = left.get(job, set())
+            alive[job] = alive.get(job, here) & here
+            for category in alive[job]:
+                row = gaps.setdefault(job, {}).setdefault(
+                    category, {"category": category, "fires": 0, "since": at,
+                               "last_unread": at})
+                row["fires"] += 1
+                row["since"] = at
+    out = []
+    for job in MAINTENANCE_JOBS:
+        row = failing.get(job)
+        if job in gaps:
+            row = dict(row or {"job_id": job, "fires": 0, "since": None,
+                               "last_failed": None},
+                       connectors_unread=[gaps[job][c] for c in sorted(gaps[job])])
+        if row:
+            out.append(row)
+    return out
+
+
+def _left_unread_map(data: dict) -> dict:
+    """`{job_id: {category, ...}}` off a run's `connectors_left_unread`, with
+    anything malformed read as nothing."""
+    left = data.get("connectors_left_unread")
+    out: dict = {}
+    for job, cats in (left.items() if isinstance(left, dict) else ()):
+        if isinstance(job, str) and isinstance(cats, list):
+            named = {c for c in cats if isinstance(c, str) and c.strip()}
+            if named:
+                out[job] = named
+    return out
+
+
 def maintenance_staleness(workspace_root,
                           now: Optional[_dt.datetime] = None) -> dict:
     """Has this book's maintenance fallen behind? READ/COMPUTE ONLY.
 
     Returns `{"stale": bool, "slot": iso|None, "last_receipt": iso|None,
-    "weekdays_stale": int|None, "grace_minutes": int, "reason": str}`.
+    "weekdays_stale": int|None, "hours_behind": float|None,
+    "grace_minutes": int, "reason": str}`.
 
     THE RULE, and the reading it takes (recorded because the spec's sentence
     admits two). SPEC_MERGEFIX1 §4 says the surface catches up when "the
@@ -2007,15 +2604,23 @@ def maintenance_staleness(workspace_root,
         slot = None
     last = _newest_maintenance_receipt_dt(workspace_root)
     weekdays = _weekdays_between(last, now)
+    # cr1#666: how long ago the newest receipt landed, in hours (two
+    # decimals, never negative), None with no receipt. The Hub's Start runs
+    # Maintenance when this passes six; the slot rule below is the one the
+    # typed surfaces use and is unchanged.
+    hours_behind = (round(max(0.0, (now - last).total_seconds()) / 3600.0, 2)
+                    if last is not None else None)
     if slot is None:
         return {"stale": False, "slot": None,
                 "last_receipt": last.isoformat() if last else None,
                 "weekdays_stale": weekdays,
+                "hours_behind": hours_behind,
                 "grace_minutes": int(_FIRE_GRACE.total_seconds() // 60),
                 "reason": "no nominal maintenance slot on this book"}
     if last is None:
         return {"stale": True, "slot": slot.isoformat(), "last_receipt": None,
                 "weekdays_stale": None,
+                "hours_behind": None,
                 "grace_minutes": int(_FIRE_GRACE.total_seconds() // 60),
                 "reason": "no maintenance run recorded yet"}
     behind = slot - last
@@ -2025,6 +2630,7 @@ def maintenance_staleness(workspace_root,
         "slot": slot.isoformat(),
         "last_receipt": last.isoformat(),
         "weekdays_stale": weekdays,
+        "hours_behind": hours_behind,
         "grace_minutes": int(_FIRE_GRACE.total_seconds() // 60),
         "reason": ("the most recent upkeep slot went unserved"
                    if stale else "the most recent upkeep slot was served"),
@@ -2071,6 +2677,13 @@ JOB_LEGS: dict = {
                      "--workspace {root} --apply"),
     "lifecycle": ("python3 shared/scripts/lifecycle_pass.py "
                   "--workspace {root} --apply"),
+    # cr1#665: the daily siblings. No `--since` here: the script reads the
+    # one maintenance window itself, at the moment it runs and before its
+    # own receipt lands, the same answer the plan's `window` gives.
+    "people-update": ("python3 shared/scripts/identity_reconcile.py "
+                      "--workspace {root} --apply --daily"),
+    "project-update": ("python3 shared/scripts/lifecycle_pass.py "
+                       "--workspace {root} --apply --daily"),
 }
 
 
@@ -2176,6 +2789,11 @@ def run_job(workspace_root, job_id: str, *, fired_via: Optional[str] = None,
 #: form `workspace_access.py plan <verb>` prints, with `$RT` the installed
 #: runtime `discover` answered. Spelled once so the three steps cannot drift.
 _PLAN_HEAD = 'python3 "$RT/shared/scripts/workspace_access.py"'
+
+#: cr1#663: the M3 placeholder the fire fills with each M1 job entry's
+#: `window`, keyed by job id, so the run-level receipt names every window.
+#: One spelling, so a driver that fills the M3 line can name it.
+M3_WINDOWS_PLACEHOLDER = "<each M1 job entry's window, keyed by its job_id>"
 
 #: The canonical v6 Access preamble's home and its sentinels. The maintenance
 #: prompt is registered standalone — not through the bootloader — so nothing
@@ -2688,6 +3306,7 @@ MAINT_STAGE_WRITER = "eod_helpers:stage_fire_input"
 MAINT_SENT_WRITER = "eod_helpers:reconcile_sent_staged"
 MAINT_CHAT_WRITER = "eod_helpers:reconcile_chat_staged"
 MAINT_CLEAR_WRITER = "eod_helpers:clear_fire_staging"
+MAINT_INBOUND_WRITER = "eod_helpers:inbound_mail_staged"  # cr1#664
 
 
 def _stage_recipe(kind_words: str, file_name: str) -> str:
@@ -2737,12 +3356,20 @@ def _sent_steps(pair: str) -> str:
         + _m_line(pair, "run_helper",
                   '{"args": {"workspace_root": "<WS>"}, "name": '
                   '"reconcile_sent_commitments:plan_sent_window"}') +
-        "      `ready` false -> leave it due. CONNECTOR (here): load the mail "
+        "      The plan reads the connector's dials and lists first "
+        "(`connector_reads.for_job`), before any source. "
+        "`ready` false -> leave it due. `skip_reason` set -> fetch "
+        "nothing and run WRITE below with an empty batch (it lands the skip "
+        "receipt; say nothing). CONNECTOR (here): load the mail "
         "connector with the host's tool search for each of the plan's "
         "`connector_queries`; for each of the workspace's mail accounts, ONE "
         "Sent fetch with the plan's `intent` (Sent mail after `after`; `ts` "
         "is the connector's own send time, `recipient_emails` the To/CC "
-        "addresses verbatim). No connector in this run -> leave it due. "
+        "addresses verbatim, `labels` its labels or folders), reading only "
+        "the plan's `include` labels or "
+        "folders when it lists any and never its `exclude` ones. No "
+        "connector in this run -> leave it due and name its category under "
+        "`connectors_unreachable` in M3. "
         + _stage_recipe("message every account returned",
                         "cr_maint_stage_sent.json")
         + _m_line(pair, "run_writer",
@@ -2775,14 +3402,19 @@ def _chat_steps(pair: str) -> str:
         + _m_line(pair, "run_helper",
                   '{"args": {"workspace_root": "<WS>"}, "name": '
                   '"chat_reconcile:plan_chat_scan"}') +
-        "      `ready` false -> leave it due. `provider` null -> no chat "
-        "backend: stage nothing and run WRITE below with `chat_rel` null (it "
+        "      `ready` false -> leave it due. `provider` null, or "
+        "`skip_reason` set (the connector's dials, read first) -> stage "
+        "nothing and run WRITE below with `chat_rel` null (it "
         "lands the skip receipt; say nothing). Otherwise CONNECTOR (here): "
         "load the chat connector with the host's tool search for the plan's "
         "`connector_queries`, then read the messages after `after` as the "
         "plan's `scan_plan` says (its `mode`; a `per_chat_scan` is partial "
-        "and its note rides the receipt). No connector in this run -> leave "
-        "it due. "
+        "and its note rides the receipt), only the plan's `include` channels "
+        "when it lists any and never its `exclude` ones, `channel_name` the "
+        "channel's own name and `chat_name` the group chat's own name, never "
+        "a person's. No connector in "
+        "this run -> leave it due and name its category under "
+        "`connectors_unreachable` in M3. "
         + _stage_recipe("message the read returned",
                         "cr_maint_stage_chat.json")
         + _m_line(pair, "run_writer",
@@ -2810,6 +3442,64 @@ def _chat_steps(pair: str) -> str:
     )
 
 
+def _inbound_steps(pair: str) -> str:
+    """M2's inbound-mail sub-steps (cr1#664): the chat leg's shape, the
+    inbox batch staged by file and read beside the data, the Phase 4b
+    capture judgement made here in the session per message."""
+    return (
+        "    inbound-mail - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"inbound_mail_leg:plan_inbound_mail"}') +
+        "      The plan reads the connector's dials and lists first "
+        "(`connector_reads.for_job`), before any source. "
+        "`ready` false -> leave it due. `skip_reason` set (no mail "
+        "connector, no account files into the business book, or both its "
+        "open and close dials off) -> stage "
+        "nothing and run WRITE below with `inbound_rel` null (it lands the "
+        "skip receipt; say nothing). Otherwise CONNECTOR (here): load the "
+        "mail connector with the host's tool search for each of the plan's "
+        "`connector_queries`; for each entry in `accounts`, ONE inbox fetch "
+        "with the plan's `query` (inbox mail on or after `after`, read or "
+        "unread: never only unread), addressed to the entry's "
+        "`acting_email` when it names one, reading only the plan's "
+        "`include` labels or folders when it lists any and never its "
+        "`exclude` ones. No connector in this run -> leave it due and name "
+        "its category under `connectors_unreachable` in M3. For each "
+        "message fill the plan's `message_fields` (`labels` its labels or "
+        "folders): "
+        "`from_me` true when the newest message is the CEO's own, "
+        "`has_attachment` the connector's own flag, `sender_person_id` when "
+        "the sender is a person on file, and `captures`, the commitments "
+        "the message carries, judged exactly as skills/enable-command-room-"
+        "schedules/references/orchestrator-inbox.md Phase 4b says (each "
+        "with the plan's `capture_fields`; one below the floor goes in with "
+        "`below_bar` true and its reason, never dropped). "
+        + _stage_recipe("message every account returned",
+                        "cr_maint_stage_inbound.json")
+        + _m_line(pair, "run_writer",
+                  '{"args": {"fire": "' + MAINT_FIRE + '", "kind": '
+                  '"inbound_messages", "n_returned": <how many messages the '
+                  'connector returned>, "workspace_root": "<WS>"}, '
+                  '"args_file": "<your scratch>/cr_maint_stage_inbound.json", '
+                  '"name": "' + MAINT_STAGE_WRITER + '"}')
+        + _stage_refused_rule() +
+        "WRITE by the rel the stage answered (the plan's values in a JSON "
+        "file in this session's own scratch, named by `args_file`):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"fire": "' + MAINT_FIRE + '", "inbound_rel": '
+                  '"<the rel the stage answered>", "workspace_root": "<WS>"}, '
+                  '"args_file": "<your scratch>/cr_inbound_mail.json", '
+                  '"name": "' + MAINT_INBOUND_WRITER + '"}') +
+        "      the file holds {\"accounts\": <the plan's>, \"close_mode\": "
+        "<the plan's>, \"exclude_captured_since\": <the plan's fire_start>, "
+        "\"provider\": <the plan's>, \"source_skill\": \"inbound-mail\", "
+        "\"user_person_id\": <the plan's>}. Score it with score_door_job "
+        "(SCORE below).\n"
+        + _clear_line(pair)
+    )
+
+
 def _capture_steps(pair: str) -> str:
     """M2's meeting-capture sub-steps (MAINTJOBS1 MUST 2). The capture leg is
     the End of Day's Phases 3-4.8, already on the door in that file's merged
@@ -2831,7 +3521,8 @@ def _capture_steps(pair: str) -> str:
         "this run -> leave it due. Then the pass's ONE receipt (a pack_run "
         "under meeting-capture, never under past-meetings):\n"
         + _m_line(pair, "run_writer",
-                  '{"args": {"capture_leg_ms": <ms>, "n_meetings": <n>, '
+                  '{"args": {"capture_leg_ms": <ms>, "maintenance_window": '
+                  '<the plan\'s maintenance_window>, "n_meetings": <n>, '
                   '"n_processed": <n>, "n_skipped": <n>, "window": <the '
                   'plan\'s>, "workspace_root": "<WS>"}, "name": '
                   '"eod_incremental:log_capture_pass_receipt"}') +
@@ -2839,7 +3530,13 @@ def _capture_steps(pair: str) -> str:
         "not finish in this "
         "run is left DUE - in jobs_due, never in jobs_failed: on this shape "
         "meeting-capture is skill-class, and the End of Day's close captures "
-        "the same meetings.\n"
+        "the same meetings. The window carries the meetings connector's "
+        "dials (`connector_read`, read first): its "
+        "`commitment_capture_skip_reason` set -> fetch and process every "
+        "meeting exactly as the phases say (its record, people, projects, "
+        "transcript closes) but hand `meeting_capture:route_meeting_captures` "
+        "an empty `items` list, so no commitment is captured; the receipt's "
+        "window carries the skip.\n"
     )
 
 
@@ -2861,9 +3558,9 @@ def _sweep_steps(pair: str) -> str:
                   '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
                   'scratch>/cr_session_sweep.json", "name": '
                   '"session_sweep:sweep_and_receipt"}') +
-        "      the file holds {\"items\": [...], \"sessions_scanned\": "
-        "<n>, \"window_desc\": <the plan's>}. Score it with "
-        "score_door_job (SCORE below).\n"
+        "      the file holds {\"items\": [...], \"maintenance_window\": "
+        "<the plan's>, \"sessions_scanned\": <n>, \"window_desc\": <the "
+        "plan's>}. Score it with score_door_job (SCORE below).\n"
     )
 
 
@@ -2894,6 +3591,96 @@ def _realign_steps(pair: str) -> str:
     )
 
 
+def _tasks_steps(pair: str, *, job_id: str, plan: str, writer: str,
+                 intents: str, args_file: str) -> str:
+    """M2's tasks-capture / tasks-close sub-steps (cr1#668)."""
+    return (
+        f"    {job_id} - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": "' + plan + '"}') +
+        "      `ready` false -> leave it due. No `connectors`, or every "
+        "connector's `skip_reason` set (its dials, read first) and its "
+        "people and project skips set too -> read nothing and run WRITE "
+        "below with `items` empty (it lands the skip receipt; say nothing). "
+        "Otherwise CONNECTOR (here): load the tasks connector with the "
+        "host's tool search for the plan's `connector_queries`, then for "
+        "each connector entry run its `intents` (" + intents + ") for "
+        "items changed after `after`, only on its `include` boards when it "
+        "lists any and never on its `exclude` ones, one item per result "
+        "with the plan's `item_fields` and the entry's `category`. No "
+        "connector in this run -> leave it due and name its category under "
+        "`connectors_unreachable` in M3. A read that errored is not an empty "
+        "answer: leave that connector out of `connectors_read` below, and "
+        "when no read answered run WRITE with `items` empty and "
+        "`fetch_blocked` saying why in plain words. WRITE (the items in a "
+        "JSON file in this session's own scratch):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
+                  'scratch>/' + args_file + '", "name": "' + writer + '"}') +
+        "      the file holds {\"connectors_read\": [<the `category` of each "
+        "connector whose read answered, an empty answer included>], "
+        "\"fetch_blocked\": <null, or why no read answered>, "
+        "\"items\": [...], \"maintenance_window\": "
+        "<the plan's>, \"owner_ids\": [<the user's own ids on that task "
+        "tool>], \"owner_names\": [<the user's own names there>], "
+        "\"user_person_id\": <the plan's>}. Score it with score_door_job "
+        "(SCORE below).\n"
+    )
+
+
+def _tasks_capture_steps(pair: str) -> str:
+    return _tasks_steps(pair, job_id="tasks-capture",
+                        plan="tasks_leg:plan_tasks_capture",
+                        writer="tasks_leg:capture_tasks_and_receipt",
+                        intents="assigned_to_me, created_by_me",
+                        args_file="cr_tasks_capture.json")
+
+
+def _tasks_close_steps(pair: str) -> str:
+    return _tasks_steps(pair, job_id="tasks-close",
+                        plan="tasks_leg:plan_tasks_close",
+                        writer="tasks_leg:close_tasks_and_receipt",
+                        intents="done_since",
+                        args_file="cr_tasks_close.json")
+
+
+def _proposals_steps(pair: str) -> str:
+    """M2's connector-proposals sub-steps (cr1#668)."""
+    return (
+        "    connector-proposals - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"connector_proposals:plan_connector_proposals"}') +
+        "      `ready` false -> leave it due. No `connectors` -> run WRITE "
+        "below with `items` empty (it lands the skip receipt; say nothing). "
+        "Otherwise CONNECTOR (here): for each entry, load its documents "
+        "connector, deals connector or contracts connector (by the entry's "
+        "`kind`) with the host's tool search for the plan's "
+        "`connector_queries`, and read the items changed after `after`, "
+        "only in its `include` folders or pipelines when it lists any and "
+        "never in its `exclude` ones, one item per result with the plan's "
+        "`item_fields` and the entry's `category`. No connector in this run "
+        "-> leave it due and name its category under `connectors_unreachable` "
+        "in M3. A read that errored is not an empty answer: leave that "
+        "connector out of `connectors_read` below, and when no read answered "
+        "run WRITE with `items` empty and `fetch_blocked` saying why in plain "
+        "words. WRITE (the items in a JSON file in this session's own "
+        "scratch):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
+                  'scratch>/cr_connector_proposals.json", "name": '
+                  '"connector_proposals:propose_from_connectors_and_receipt"}') +
+        "      the file holds {\"connectors_read\": [<the `category` of each "
+        "connector whose read answered, an empty answer included>], "
+        "\"exclude_captured_since\": <the plan's fire_start>, "
+        "\"fetch_blocked\": <null, or why no read answered>, "
+        "\"items\": [...], \"maintenance_window\": <the plan's>, "
+        "\"owner_names\": [<the user's own names>], \"user_person_id\": "
+        "<the plan's>}. It never closes: every match is a proposal. Score it "
+        "with score_door_job (SCORE below).\n"
+    )
+
+
 DOOR_JOBS: dict = {
     "schedule-realign": {
         "plan": "maintenance_dispatcher:plan_schedule_realign",
@@ -2914,6 +3701,33 @@ DOOR_JOBS: dict = {
         "writer": "eod_incremental:log_capture_pass_receipt",
         "validator": "receipts:iter_receipts",
         "steps": _capture_steps,
+    },
+    # cr1#664: the inbound-mail job, staged like the two reconcile legs
+    "inbound-mail": {
+        "plan": "inbound_mail_leg:plan_inbound_mail",
+        "writer": MAINT_INBOUND_WRITER,
+        "writers": (MAINT_STAGE_WRITER, MAINT_INBOUND_WRITER,
+                    MAINT_CLEAR_WRITER),
+        "validator": "inbound_mail_leg:validate_inbound_mail_ran",
+        "steps": _inbound_steps,
+    },
+    "tasks-capture": {
+        "plan": "tasks_leg:plan_tasks_capture",
+        "writer": "tasks_leg:capture_tasks_and_receipt",
+        "validator": "receipts:iter_receipts",
+        "steps": _tasks_capture_steps,
+    },
+    "tasks-close": {
+        "plan": "tasks_leg:plan_tasks_close",
+        "writer": "tasks_leg:close_tasks_and_receipt",
+        "validator": "receipts:iter_receipts",
+        "steps": _tasks_close_steps,
+    },
+    "connector-proposals": {
+        "plan": "connector_proposals:plan_connector_proposals",
+        "writer": "connector_proposals:propose_from_connectors_and_receipt",
+        "validator": "receipts:iter_receipts",
+        "steps": _proposals_steps,
     },
     "reconcile-chat": {
         "plan": "chat_reconcile:plan_chat_scan",
@@ -3109,6 +3923,11 @@ def _realign_landed_since(workspace_root, since) -> bool:
 QUIET_SCRIPT_JOBS = frozenset({"question-expiry", "binding-gauge",
                                "daily-measure"})
 
+#: cr1#760. Every job that leaves no receipt on a quiet run by design: a job
+#: here listed completed with no receipt of its own stays completed. The one
+#: exception to "a job with no receipt has no completion time".
+QUIET_BY_DESIGN_JOBS = NOTHING_STAMPED_JOBS | QUIET_SCRIPT_JOBS | QUIET_RUN_JOBS
+
 
 def _ran_clean(refused, envelope, nothing_due) -> bool:
     """The call is known to have run and not been refused: its plan said
@@ -3144,9 +3963,16 @@ def score_door_job(workspace_root, job_id="", since_iso=None, *,
       * `failed` / `refused` - the door refused the job or it did not run
         (`refused` true, or an `envelope` with `ok: false` / `ran: false` /
         a non-zero exit);
-      * `completed` / `receipt` - a receipt of the job's OWN types
-        (`receipts.RECEIPT_TYPES`) landed since the fire's start
-        (`since_iso`, else the fire's start marker);
+      * `completed` / `receipt` - the newest receipt of the job's OWN types
+        (`receipts.RECEIPT_TYPES`) since the fire's start (`since_iso`, else
+        the fire's start marker) says the job did its run
+        (`_receipt_outcome`, cr1#760);
+      * `failed` / `receipt_<status>` - that receipt says it did not
+        (`blocked`, or a word this module does not know);
+      * `due` / `receipt_skipped` - that receipt says it had nothing it could
+        read: owed, not failing. A `MERGED_SKILL_CLASS_JOBS` job on a merged
+        seat is left due either way: `due` / `skill_class_left_due` with the
+        word in `detail`;
       * `completed` / `nothing_stamped` - a `NOTHING_STAMPED_JOBS` job with
         no receipt and no refusal (the registry's own words);
       * `completed` / `quiet_run` - a `QUIET_RUN_JOBS` job whose own plan or
@@ -3177,11 +4003,23 @@ def score_door_job(workspace_root, job_id="", since_iso=None, *,
             rows = iter_receipts(workspace_root, task_ids=[job])
         except Exception:  # noqa: BLE001 - an unreadable ledger proves nothing
             types, rows = frozenset(), []
-        for row in rows:
+        newest = None
+        for row in rows:  # oldest first, so the last match is the newest
             when = _to_local_naive(row.get("dt"))
             if row.get("type") in types and when is not None and when >= since:
+                newest = row
+        if newest is not None:
+            status = newest.get("status")
+            outcome = _receipt_outcome(status)
+            if outcome == "completed":
                 out.update(outcome="completed", why="receipt")
-                return out
+            elif (outcome == "failed" and job in MERGED_SKILL_CLASS_JOBS
+                  and merged_seat()):
+                out.update(outcome="due", why="skill_class_left_due",
+                           detail=str(status))
+            else:
+                out.update(outcome=outcome, why=f"receipt_{status}")
+            return out
         if job == "schedule-realign" and _realign_landed_since(workspace_root,
                                                                since):
             out.update(outcome="completed", why="receipt")
@@ -3319,8 +4157,12 @@ def merged_branch_steps(writer_id: Optional[str] = None,
         "'{\"args\": {\"fired_via\": \"scheduled\", \"jobs_completed\": "
         "[<ids>], \"jobs_due\": [<ids>], \"jobs_failed\": [<ids>], "
         "\"skipped_disabled\": [<from the plan>], \"skipped_min_gap\": false, "
-        "\"triggered_by\": null, \"workspace_root\": \"<WS>\"}, \"name\": "
+        "\"triggered_by\": null, \"windows\": " + M3_WINDOWS_PLACEHOLDER + ", "
+        "\"workspace_root\": \"<WS>\"}, \"name\": "
         "\"morning_brief_helpers:plan_maintenance_receipt\"}'\n"
+        "    When a job was left due for want of its connector in this run, "
+        "add `connectors_unreachable` to those args: the list of those "
+        "connectors' categories.\n"
         f"    {pair}{_PLAN_HEAD} append_jsonl --json "
         "'{\"holder\": \"maintenance\", \"rel\": \"_hq/data/events.jsonl\", "
         "\"rows\": [<every row in rows from the receipt answer above, in "
@@ -3408,8 +4250,13 @@ def _baked_branch_text(pair: str) -> str:
                   '{"args": {"fired_via": "scheduled", "jobs_completed": '
                   '[<ids>], "jobs_due": [<ids>], "jobs_failed": [<ids>], '
                   '"skipped_disabled": [<from the plan>], "skipped_min_gap": '
-                  'false, "triggered_by": null, "workspace_root": "<WS>"}, '
+                  'false, "triggered_by": null, "windows": '
+                  + M3_WINDOWS_PLACEHOLDER + ', '
+                  '"workspace_root": "<WS>"}, '
                   '"name": "morning_brief_helpers:plan_maintenance_receipt"}') +
+        "    When a job was left due for want of its connector in this run, "
+        "add `connectors_unreachable` to those args: the list of those "
+        "connectors' categories.\n" +
         _m_line(pair, "append_jsonl",
                 '{"holder": "maintenance", "rel": "_hq/data/events.jsonl", '
                 '"rows": [<every row in rows from the receipt answer above, in '
@@ -3814,6 +4661,11 @@ def run_catch_up(workspace_root, surface, *, runner,
     plan["receipt"] = None
     if not plan.get("catch_up"):
         return plan
+    # cr1#666: the real instant each job's runner returned, for the jobs
+    # that count as completed (the receipt's `completed_at`).
+    completed_at: dict = {}
+    # cr1#760: a catch-up writes no start marker, and it knows when it began.
+    started = _dt.datetime.now().replace(microsecond=0).isoformat()
     for job in plan["jobs"]:
         job_id = job["job_id"]
         plan["ran"].append(job_id)
@@ -3830,6 +4682,7 @@ def run_catch_up(workspace_root, surface, *, runner,
         if job_counts_as_complete(job_id, receipt_validated=validated,
                                   run_reported_nothing_due=quiet):
             plan["completed"].append(job_id)
+            completed_at[job_id] = _utc_iso(_dt.datetime.now(_dt.timezone.utc))
         else:
             plan["failed"].append(job_id)
     plan["receipt"] = maintenance_receipt(
@@ -3841,7 +4694,17 @@ def run_catch_up(workspace_root, surface, *, runner,
         fired_via="manual",
         triggered_by=plan["triggered_by"],
         now=now,
+        # cr1#663 (review finding c): a catch-up fire's receipt names each
+        # job's window exactly as the scheduled fire's does; the plan's
+        # dicts carried them, the id lists above do not.
+        windows={j["job_id"]: j.get("window") for j in plan["jobs"]},
+        completed_at=completed_at,
+        since_iso=started,
     )
+    # cr1#760: the receipt has the last word, so this answer says what it says.
+    landed = plan["receipt"].get("data") or {}
+    plan["completed"] = list(landed.get("jobs_completed") or [])
+    plan["failed"] = list(landed.get("jobs_failed") or [])
     return plan
 
 
@@ -3909,6 +4772,92 @@ def merged_rescore(jobs_due, jobs_failed, *, env: Optional[dict] = None,
         rescored
 
 
+def _fire_unread(workspace_root, listed, done_ids, own: Optional[dict]) -> tuple:
+    """`(said, unsure)`: the connectors this fire's jobs did not read
+    (cr1#743), from the book and the declarations, with nothing handed in.
+    This is what stops the names resting on the fire's own words: on the
+    merged shape a job whose tool is absent runs no writer, and the local
+    prompt has no step for these jobs.
+
+    `said` is what a job's own receipt says it did not read. `unsure` is what
+    nobody vouched for: a read may have worked and its writer died, so it is
+    never called failed.
+
+    `listed` is every job the fire's lists name, so a job that was not due is
+    never asked about, and a job that reads no connector has nothing to name
+    (`job_connectors`). Per job:
+      * its own receipt's names always count, as it words them;
+      * a receipt that says it did not run (`_receipt_outcome` failed) and
+        names nothing read nothing, so all it was meant to read is `said`;
+      * a `door` job with no receipt that nobody calls completed is `unsure`;
+      * a skip is a dial or a seat with no such connector, and names only what
+        its receipt names.
+    No receipt says nothing for a job that is not `door`-class, or that is
+    left due on purpose (`MERGED_SKILL_CLASS_JOBS`: a pass that does not finish
+    cannot be told from a tool that is not there). `own` None is a book that
+    could not be read, which proves nothing."""
+    said: set = set()
+    unsure: set = set()
+    if own is None:
+        return said, unsure
+    from connector_reads import job_connectors
+
+    for job in listed:
+        got = own.get(job)
+        if got is None:
+            if (job not in done_ids and job_class(job) == "door"
+                    and job not in MERGED_SKILL_CLASS_JOBS):
+                unsure.update(job_connectors(workspace_root, job))
+            continue
+        firm, soft = got[2]
+        said |= firm
+        unsure |= soft
+        if _receipt_outcome(got[0]) == "failed" and not (firm or soft):
+            said.update(job_connectors(workspace_root, job))
+    return said, unsure
+
+
+def _connector_fields(workspace_root, connectors_unreachable, env, *,
+                      listed=(), done_ids=(), own: Optional[dict] = None) -> dict:
+    """cr1#667: `{connectors_unreachable, connector_scope}` for the receipt.
+
+    cr1#743: the field is the caller's list, the fire's own (`_fire_unread`)
+    and the declarations a cloud fire cannot reach. Two more ride it, omitted
+    when empty: `connectors_left_unread`, `{job_id: [category]}` for a job that
+    completed with a gap (`maintenance_failing_jobs` reads it), and `summary`,
+    the owner's line. The line is narrower than the field on purpose: it names
+    only what a job on THIS fire reads with a dial on, so a handed name or a
+    desktop-only declaration no job here asked for never reaches the owner.
+
+    Import-tolerant: a receipt never fails over the connector reader; with
+    the reader absent the caller's list stands and the scope reads off
+    `merged_seat` alone."""
+    handed = sorted({str(c) for c in (connectors_unreachable or []) if c})
+    left: dict = {}
+    try:
+        from connector_reads import (connector_scope, job_connectors, unread_line,
+                                     unreachable_declared)
+        said, unsure = _fire_unread(workspace_root, listed, done_ids, own)
+        names = set(handed) | set(unreachable_declared(workspace_root, env=env))
+        names |= said | unsure
+        scope = connector_scope(env)
+        reads = {c for job in listed for c in job_connectors(workspace_root, job)}
+        line = unread_line(workspace_root, said & reads, (names - said) & reads)
+        for job in done_ids:
+            firm, soft = (own or {}).get(job, (None, None, (set(), set())))[2]
+            if firm or soft:
+                left[job] = sorted(firm | soft)
+    except Exception:  # noqa: BLE001
+        names, line = set(handed), ""
+        scope = "container" if merged_seat(env) else "computer"
+    out = {"connectors_unreachable": sorted(names), "connector_scope": scope}
+    if left:
+        out["connectors_left_unread"] = left
+    if line:
+        out["summary"] = line
+    return out
+
+
 def maintenance_receipt(
     workspace_root,
     jobs_due: Optional[Iterable] = None,
@@ -3927,9 +4876,55 @@ def maintenance_receipt(
     skipped_min_gap: bool = False,
     triggered_by: Optional[str] = None,
     env: Optional[dict] = None,
+    windows: Optional[dict] = None,
+    completed_at: Optional[dict] = None,
+    connectors_unreachable: Optional[Iterable] = None,
+    since_iso: Optional[str] = None,
 ) -> dict:
     """Append THE one `maintenance_run` audit event for this fire, via the
     locked append gate (receipts.log_receipt -> event_gate.append_event).
+
+    `completed_at` (cr1#666): `{job_id: ISO}`, when each job finished, read
+    like `windows` (a due dict's own `completed_at`, then this map on top).
+    The receipt carries `COMPLETED_AT_FIELD` for the jobs in `jobs_completed`
+    and no other; a completed job nobody handed a time takes its own
+    receipt's time on this fire (`_own_fire_receipts`), and a job quiet by
+    design (`QUIET_BY_DESIGN_JOBS`) with no such receipt this receipt's own
+    finish instant. Omitted when nothing completed.
+
+    cr1#760: `jobs_completed` is a claim, and this receipt checks it
+    (`_settle_completed`) over the scorer's window, the fire's start: the
+    fire's own start marker, or `since_iso` from a caller that measured it. A
+    job listed there whose own receipt on this fire says it did not run, or
+    with no receipt, does not stay: it is left due when skipped and goes to
+    `jobs_failed` otherwise, and `data.rescored_completed` (`{job_id: why}`,
+    omitted when nothing moved) names the move. With no window it can trust
+    (a manual fire hands none in), a job's newest own receipt since the
+    previous `maintenance_run` still moves it when it says blocked or skipped,
+    and only the absence of a receipt moves nothing. A book it cannot read
+    leaves the lists as handed.
+    Then ONE `HEARTBEAT_EVENT_TYPE` row follows the receipt, every fire, a
+    no-op fire included: `{finished_at, fired_via, jobs_completed,
+    jobs_failed}` (the two counts), plus `triggered_by` when a surface asked.
+    A heartbeat that cannot be written never takes the receipt back.
+
+    `windows` (cr1#663): `{job_id: window}` as `dispatch_plan` computed it
+    for each job BEFORE the jobs ran. Any due dict handed in through the
+    three job lists that carries `window` is collected too, so a caller that
+    passes the plan's dicts through needs no second argument; an explicit
+    entry wins over a dict's. The map lands under
+    `catchup.MAINTENANCE_WINDOWS_FIELD`, omitted when nothing was handed in
+    (an older caller's receipt is byte-identical).
+
+    cr1#667: the receipt ALWAYS carries `connectors_unreachable` (the
+    declared connectors this run did not read, never one a dial turned away:
+    the caller's list, every `desktop_only` declaration on a cloud fire and,
+    cr1#743, what this fire's own receipts show, `_fire_unread`) and
+    `connector_scope` (`container` on a cloud fire, where the connectors are
+    the container's, else `computer`). Both read `connector_reads`.
+    `summary`, omitted when there is nothing to say, is the owner's line, which
+    `run maintenance` relays, and `connectors_left_unread` feeds
+    `maintenance_failing_jobs` (`_connector_fields`).
 
     T2B FIRE3B MUST 2 (F-T2-12, the receipt half): on a merged seat a job in
     `MERGED_SKILL_CLASS_JOBS` handed in `jobs_failed` is left DUE instead
@@ -3974,13 +4969,24 @@ def maintenance_receipt(
 
     from receipts import log_receipt
 
+    finished = _utc_iso(_dt.datetime.now(_dt.timezone.utc))
+    handed = _handed_completed_at(completed_at, jobs_completed)
+    via = _effective_fired_via(fired_via)
+    start = _this_fire_start(workspace_root, since_iso, via, fired_at_slot)
+    due_in, failed_in = _job_ids(jobs_due), _job_ids(jobs_failed)
+    listed = list(dict.fromkeys(_job_ids(jobs_completed) + due_in + failed_in))
+    own = _own_fire_receipts(workspace_root, listed, finished, start)
+    done_ids, moved = _settle_completed(_job_ids(jobs_completed), own, handed,
+                                        window=start is not None)
+    due_in += [j for j in moved if j not in due_in]
+    failed_in += [j for j, why in moved.items()
+                  if why != SKIPPED_STATUS and j not in failed_in]
     due_ids, failed_ids, rescored = merged_rescore(
-        _job_ids(jobs_due), _job_ids(jobs_failed), env=env,
-        jobs_completed=_job_ids(jobs_completed))
+        due_in, failed_in, env=env, jobs_completed=done_ids)
     extra_data = {
         "fired_at_slot": fired_at_slot,
         "jobs_due": due_ids,
-        "jobs_completed": _job_ids(jobs_completed),
+        "jobs_completed": done_ids,
         "jobs_failed": failed_ids,
         "skipped_disabled": _job_ids(skipped_disabled),
         # CHATSCAN1 V1b — computed at WRITE time from the live registry,
@@ -3992,6 +4998,8 @@ def maintenance_receipt(
         "reconcile_legs": list(RECONCILE_LEGS),
         "skipped_min_gap": bool(skipped_min_gap),
     }
+    extra_data.update(_connector_fields(workspace_root, connectors_unreachable, env,
+                                        listed=listed, done_ids=done_ids, own=own))
     if root_repair_state is not None:
         extra_data["root_repair_state"] = root_repair_state
     if rescored:
@@ -3999,6 +5007,10 @@ def maintenance_receipt(
         # caller handed in as failed and this receipt left due instead.
         # Omitted when nothing moved, so no other receipt gains the field.
         extra_data["rescored"] = rescored
+    if moved:
+        # cr1#760 - the same posture: what the caller listed completed and
+        # this receipt did not take, and why. Omitted when nothing moved.
+        extra_data["rescored_completed"] = moved
     if triggered_by:
         # HEAL1 (SPEC_NIGHTM2 §4 amendment b) — ADDITIVE, and omitted on every
         # fire that was not triggered by a typed surface, so no existing
@@ -4007,17 +5019,53 @@ def maintenance_receipt(
         # the only way a later reader can tell a catch-up in front of a brief
         # apart from someone typing `run maintenance`.
         extra_data["triggered_by"] = str(triggered_by)
+    named = _collect_windows(windows, jobs_due, jobs_completed, jobs_failed)
+    if named:
+        from catchup import MAINTENANCE_WINDOWS_FIELD
 
-    return log_receipt(
+        extra_data[MAINTENANCE_WINDOWS_FIELD] = named
+    done_at = _collect_completed_at(handed, own, done_ids, finished)
+    if done_at:
+        extra_data[COMPLETED_AT_FIELD] = done_at
+
+    receipt = log_receipt(
         workspace_root,
         MAINTENANCE_TASK_ID,
         receipt_type=RECEIPT_EVENT_TYPE,
         # M-3: the parameter above defaults to `scheduled`, which is a
         # CLAIM on a seat where nothing said so. A merged seat reads
         # its environment instead; every other seat is unchanged.
-        fired_via=_effective_fired_via(fired_via),
+        fired_via=via,
         extra_data=extra_data,
     )
+    _append_heartbeat(workspace_root, receipt, finished)
+    return receipt
+
+
+def _append_heartbeat(workspace_root, receipt: dict, finished: str) -> None:
+    """The heartbeat row that follows `receipt` (cr1#666), through the same
+    locked gate. Best effort: the receipt has already landed, and the Hub's
+    `status/maintenance` reads its hours from the receipt, so a lost
+    heartbeat costs only the page's finish time until the next fire."""
+    data = receipt.get("data") if isinstance(receipt.get("data"), dict) else {}
+    beat = {
+        "finished_at": finished,
+        "fired_via": data.get("fired_via"),
+        "jobs_completed": len(data.get("jobs_completed") or []),
+        "jobs_failed": len(data.get("jobs_failed") or []),
+    }
+    if data.get("triggered_by"):
+        beat["triggered_by"] = data["triggered_by"]
+    try:
+        from event_gate import append_event
+
+        events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        append_event(events_path, {"type": HEARTBEAT_EVENT_TYPE,
+                                   "source_skill": MAINTENANCE_TASK_ID,
+                                   "data": beat},
+                     holder=f"receipt:{MAINTENANCE_TASK_ID}")
+    except Exception:  # noqa: BLE001 - never takes the receipt back
+        pass
 
 
 def validate_maintenance_ran(
@@ -4072,6 +5120,15 @@ def validate_maintenance_ran(
         # wrote it.
         "roster_gap": list(gap),
         "reconcile_legs": data.get("reconcile_legs") or list(RECONCILE_LEGS),
+        # cr1#663: the window each job read on that fire, keyed by job id;
+        # empty on a receipt written before the windows existed.
+        "maintenance_windows": (data.get("maintenance_windows")
+                                if isinstance(data.get("maintenance_windows"), dict)
+                                else {}),
+        # cr1#667: what the run could not reach, and whose connectors they
+        # were. An older receipt carries neither and reads as unknown.
+        "connectors_unreachable": data.get("connectors_unreachable"),
+        "connector_scope": data.get("connector_scope"),
     }
     if gap:
         # NOT ok. A run that closed commitments through some of its declared
@@ -4150,6 +5207,7 @@ __all__ = [
     "merged_seat",
     "merged_rescore",
     "QUIET_RUN_JOBS",
+    "QUIET_BY_DESIGN_JOBS",
     "MERGED_SKILL_CLASS_JOBS",
     "DOOR_JOB_OUTCOMES",
     "NOTHING_STAMPED_JOBS",
@@ -4172,6 +5230,7 @@ __all__ = [
     "catch_up_surface",
     "catch_up_family",
     "maintenance_staleness",
+    "maintenance_failing_jobs",
     "catch_up_plan",
     "run_catch_up",
     "run_job",

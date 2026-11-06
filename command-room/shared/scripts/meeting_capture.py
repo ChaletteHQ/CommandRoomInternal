@@ -556,6 +556,9 @@ def build_person_proposal_event(
     review_reason: str = "",
     confidence: float = 0.7,
     workspace_root=None,
+    source_kind: Optional[str] = None,
+    source_user_id: Optional[str] = None,
+    source_company: Optional[str] = None,
 ) -> dict:
     """One unknown name → one `person_proposal` event (F-46 P2b: meeting-notes
     surfaced 'say add [name]' in chat only; dismiss the chat and the proposal
@@ -574,6 +577,14 @@ def build_person_proposal_event(
     rail's own existence gate then drops it at render when the org is already
     on file — honest, actioned semantics for free. Default None keeps every
     existing caller byte-identical.
+
+    cr1#754: `source_kind` is the kind of record the mention came from
+    (`confirm_flow.PERSON_SOURCE_KINDS`). Left out, it is what `source_ref`'s
+    own scheme states (`granola:<id>` is a meeting). Neither gives one, no
+    stamp is written and the row counts as no source: it stays a question.
+    `source_user_id` is the source tool's own id for this person, only when
+    the tool hands one over. `source_company` is the company the source's own
+    field states for this person, never `inferred_org`'s inference.
     """
     if not name or not str(name).strip():
         raise ValueError("person_proposal needs a non-empty name")
@@ -611,6 +622,15 @@ def build_person_proposal_event(
         data["evidence"] = evidence
     if review_reason:
         data["review_reason"] = review_reason
+    from confirm_flow import person_source_kind
+
+    kind = person_source_kind(source_ref, source_kind)
+    if kind:
+        data["source_kind"] = kind
+    if source_user_id and str(source_user_id).strip():
+        data["source_user_id"] = str(source_user_id).strip()
+    if source_company and str(source_company).strip():
+        data["source_company"] = str(source_company).strip()
     return {
         "type": "person_proposal",
         "source_skill": source_skill,

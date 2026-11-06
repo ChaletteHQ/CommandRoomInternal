@@ -468,10 +468,6 @@ def _sweep(
     }
 
 
-#: MAINTJOBS1 MUST 2 - the nightly window's floor when no sweep is on record
-#: or the last one is older (Step 1 of `skills/session-sweep/SKILL.md`).
-SWEEP_FLOOR_HOURS = 24
-
 #: The fields one extracted item carries into the writer (Step 3).
 SWEEP_ITEM_FIELDS = ("session_id", "type", "summary", "data", "person_ids")
 
@@ -482,12 +478,20 @@ def plan_sweep(workspace_root, now=None) -> dict:
 
     Step 1 of the skill, answered where the ledger is: the cursor
     (`validate_sweep_ran`'s `last_ts`, the newest `session_sweep_run`), the
-    floor the fire reads sessions after (the later of the cursor and
-    `SWEEP_FLOOR_HOURS` ago), the window label the receipt records, the
-    primary user an item's owner is, and the item fields. A fire with no
-    session-transcript tool still runs the writer with no items: the receipt
-    lands, which is the skill's own skip-not-fail posture. Writes nothing."""
+    floor the fire reads sessions after, the window label the receipt
+    records, the primary user an item's owner is, and the item fields.
+
+    The floor is the one maintenance window (cr1#663,
+    `catchup.maintenance_window`): since the newest sweep receipt with no
+    day cap, 30 days on a first run or after a gap longer than 30 days.
+    The 24-hour floor this plan used to apply on top of the cursor was a
+    horizon: a cursor older than a day was narrowed to a day, and the
+    sessions between went unread. A fire with no session-transcript tool
+    still runs the writer with no items: the receipt lands, which is the
+    skill's own skip-not-fail posture. Writes nothing."""
     import datetime as _dtm
+
+    from catchup import MAINTENANCE_WINDOW_FIELD, maintenance_window
 
     now = now or _dtm.datetime.now(_dtm.timezone.utc)
     if isinstance(now, str):
@@ -498,17 +502,11 @@ def plan_sweep(workspace_root, now=None) -> dict:
         cursor = validate_sweep_ran(workspace_root).get("last_ts")
     except Exception:  # noqa: BLE001
         cursor = None
-    floor = now - _dtm.timedelta(hours=SWEEP_FLOOR_HOURS)
-    after = floor.astimezone(_dtm.timezone.utc).isoformat()
-    if cursor:
-        try:
-            cur = _dtm.datetime.fromisoformat(str(cursor).replace("Z", "+00:00"))
-            if cur.tzinfo is None:
-                cur = cur.replace(tzinfo=_dtm.timezone.utc)
-            if cur > floor:
-                after = cur.astimezone(_dtm.timezone.utc).isoformat()
-        except ValueError:
-            pass
+    window = maintenance_window(
+        workspace_root, "session-sweep",
+        now=now.astimezone().replace(tzinfo=None))
+    after = (_dtm.datetime.fromisoformat(window["since_aware"])
+             .astimezone(_dtm.timezone.utc).isoformat())
     try:
         from primary_user import resolve_primary_user
         user = resolve_primary_user(workspace_root)
@@ -519,6 +517,7 @@ def plan_sweep(workspace_root, now=None) -> dict:
         "cursor_before": cursor,
         "after": after,
         "window_desc": f"since-{after}",
+        MAINTENANCE_WINDOW_FIELD: window,
         "user_person_id": user,
         "item_fields": list(SWEEP_ITEM_FIELDS),
         "ready": True,
@@ -536,10 +535,16 @@ def sweep_and_receipt(
     fired_via: Optional[str] = None,
     sessions: Optional[Iterable[dict]] = None,
     triggered_by: Optional[str] = None,
+    maintenance_window: Optional[dict] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt. `items` is the skill's extraction; every write
     is idempotent, so a re-run over the same window is a clean no-op.
+
+    cr1#663: the receipt names the job's maintenance window under
+    `catchup.MAINTENANCE_WINDOW_FIELD`: the plan's dict when handed in, else
+    the helper's own answer computed here, before this receipt lands (so the
+    basis is the previous sweep). `window` (the label) keeps its shape.
 
     Pass `window_desc` when the real window is a since-cursor span — the
     default `last-Nh` label on a cursor-scoped run is the F-08 P2c / F-33
@@ -568,6 +573,16 @@ def sweep_and_receipt(
     from receipts import require_writer_identity
 
     require_writer_identity(workspace_root=workspace_root)
+    extra_receipt: dict = {"window_hours": int(window_hours)}
+    try:
+        from catchup import MAINTENANCE_WINDOW_FIELD
+        from catchup import maintenance_window as _maintenance_window
+
+        extra_receipt[MAINTENANCE_WINDOW_FIELD] = (
+            maintenance_window if isinstance(maintenance_window, dict)
+            else _maintenance_window(workspace_root, "session-sweep"))
+    except Exception:  # noqa: BLE001 - the window never costs the receipt
+        pass
     return _sweep(
         workspace_root,
         items,
@@ -575,7 +590,7 @@ def sweep_and_receipt(
         source_skill=source_skill,
         sessions_scanned=sessions_scanned,
         window_desc=window_desc or f"last-{int(window_hours)}h",
-        extra_receipt={"window_hours": int(window_hours)},
+        extra_receipt=extra_receipt,
         fired_via=fired_via,
         sessions=sessions,
         triggered_by=triggered_by,

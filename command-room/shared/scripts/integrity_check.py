@@ -255,7 +255,7 @@ def _folder_structure_findings(root: Path, threads: list[dict]) -> list[Finding]
 #: today, due yesterday, is legitimate there and is not judged.
 _SOURCE_STAMPED_PREFIXES = ("gmail:", "outlook:", "ms365_outlook:", "ms365:", "slack:", "ms365_teams:", "teams:")
 _SOURCE_STAMPED_SKILLS = frozenset({"inbox-triage", "inbound-capture", "slack-capture", "reconcile-chat",
-                                    "reconcile-sent"})
+                                    "reconcile-sent", "inbound-mail"})
 #: PROV2: a stored `source_ref` is read byte-for-byte; only Layer A4 may
 #: case-fold a pointer. The scheme match is case-insensitive on the PATTERN
 #: side, so no reader here normalizes the stored string (cr1 battery guard

@@ -901,6 +901,7 @@ def _build_prefilled_confirm_row(*, name, email, message_id, ts,
             "email": email,
             "evidence": evidence,
             "source_ref": message_id,
+            "source_kind": "mail",
             "review_reason": "same-name collision on an auto contact capture",
         },
     }

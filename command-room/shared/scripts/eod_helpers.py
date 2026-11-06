@@ -88,13 +88,79 @@ def lateness(workspace_root: str, *, fired_via: str = "manual",
 
 @answers
 def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
-                   floor_hours: int = 24, cap_days: int = 30) -> Dict[str, Any]:
+                   floor_hours: int = 24, cap_days: int = 30,
+                   now: Optional[str] = None) -> Dict[str, Any]:
     """Phase 3's window — `catchup.catchup_window(ws, 'past-meetings',
-    floor_hours=24, cap_days=30)`, the span since the last SUCCESSFUL run."""
-    from catchup import catchup_window as _window
+    floor_hours=24, cap_days=30)`, the span since the last SUCCESSFUL run.
 
-    return _jsonable(_window(workspace_root, task_id, floor_hours=floor_hours,
-                             cap_days=cap_days))
+    For task id `meeting-capture` (cr1#663) the span is the ONE maintenance
+    window rule instead, `catchup.maintenance_window`: since the last capture
+    receipt with no day cap, the last 30 days on a first run or after a gap
+    longer than 30 days. The answer keeps this shape (`start`, `end`, the
+    offset-carrying pair, `days`, `extended`, `capped`, `reason`), so the
+    orchestrator's Phases 3 to 4.8 read it unchanged, and carries the rule's
+    own dict under `maintenance_window`, so the receipt names the window the
+    pass actually read. The End of Day close's own window (`past-meetings`)
+    is untouched. `now` (ISO) pins the instant for tests.
+
+    cr1#667: when a `meetings` connector is declared, the window also
+    carries `connector_read`, that connector's dials and lists for opening
+    commitments (`connector_reads.for_category`), and
+    `commitment_capture_skip_reason` when its `open_commitments` dial is
+    off. That dial turns away COMMITMENT capture only: every meeting in the
+    window is still fetched and processed (its record, people, projects and
+    transcript closes), and the capture step hands the admission gate no
+    commitment items. The capture's receipt carries the window, skip and
+    all. Both the incremental pass (`meeting-capture`) and the End of Day
+    close (`past-meetings`) read the dial here. With no `meetings`
+    connector declared the window is byte for byte today's."""
+    from catchup import catchup_window as _window
+    from receipts import normalize_task_id
+
+    kwargs: Dict[str, Any] = {}
+    if now:
+        kwargs["now"] = now
+    out = _window(workspace_root, task_id, floor_hours=floor_hours,
+                  cap_days=cap_days, **kwargs)
+    if normalize_task_id(task_id) == "meeting-capture":
+        out = _capture_window(workspace_root, out, now=now)
+    out = _jsonable(out)
+    read = None
+    try:
+        from connector_reads import for_category
+        read = for_category(workspace_root, "meetings", purpose="open")
+    except Exception:  # noqa: BLE001 - the window never fails over the dials
+        read = None
+    if read and isinstance(out, dict):
+        out["connector_read"] = _jsonable(read)
+        out["commitment_capture_skip_reason"] = read.get("skip_reason")
+    return out
+
+
+def _capture_window(workspace_root: str, out: Dict[str, Any], *,
+                    now: Optional[str] = None) -> Dict[str, Any]:
+    """The incremental capture pass's window under the one maintenance rule
+    (cr1#663), laid over the catch-up shape the phases read."""
+    from catchup import MAINTENANCE_WINDOW_FIELD, maintenance_window
+
+    mw = maintenance_window(workspace_root, "meeting-capture", now=now)
+    floor_h = float(out.get("floor_hours") or 24)
+    out = dict(out)
+    out.update({
+        "start": mw["since"],
+        "end": mw["until"],
+        "start_aware": mw["since_aware"],
+        "end_aware": mw["until_aware"],
+        "days": mw["days"],
+        "extended": mw["days"] * 24.0 > floor_h,
+        "capped": mw["gap_capped"],
+        "last_receipt": mw["last_receipt"],
+        "window_incomplete_before": mw["window_incomplete_before"],
+        "reason": (f"the maintenance window ({mw['reason']}): since "
+                   f"{mw['since']}, the one rule every maintenance job reads"),
+    })
+    out[MAINTENANCE_WINDOW_FIELD] = mw
+    return out
 
 
 @answers
@@ -243,10 +309,36 @@ def apply_cru_pass(workspace_root: str, *, results: Optional[List[Any]] = None,
     # fresh dict per transcript would make the 25-per-fire cap per-meeting.
     budget: Dict[str, Any] = dict(review_budget or {})
     rows = list(results or [])
+    # cr1#668: the declared meetings connector's close dials, read before
+    # the pass writes. `close_commitments` off: no close and no close
+    # proposal is written for this transcript (a schedule shift is not a
+    # close and still is), and the walk is not recorded, so turning the dial
+    # back on re-walks it. `close_mode` rides into the pass (meetings propose
+    # until measured). No meetings connector declared: today's pass, unchanged.
+    read = None
+    try:
+        from connector_reads import for_category
+        read = for_category(workspace_root, "meetings", purpose="close")
+    except Exception:  # noqa: BLE001 - the pass never fails over the dials
+        read = None
+    if read and read.get("skip_reason"):
+        updates = [r for r in rows if isinstance(r, dict)
+                   and r.get("recommendation") == "commitment_updated"]
+        counts = apply_transcript_results(
+            workspace_root, updates, meeting_ref=meeting_ref,
+            transcript_ts=transcript_ts or None, already_proposed=proposed,
+            review_budget=budget, batch_id=batch_id)
+        counts["close_skip_reason"] = read.get("skip_reason")
+        counts["closes_enabled"] = False
+        return _jsonable({"counts": counts, "review_budget": budget,
+                          "walk": None, "already_proposed": sorted(proposed),
+                          "line": ("CRU past-meetings: closes skipped, "
+                                   + str(read.get("skip_reason")))})
+    close_mode = ((read or {}).get("dials") or {}).get("close_mode") if read else None
     counts = apply_transcript_results(
         workspace_root, rows, meeting_ref=meeting_ref,
         transcript_ts=transcript_ts or None, already_proposed=proposed,
-        review_budget=budget, batch_id=batch_id)
+        review_budget=budget, batch_id=batch_id, close_mode=close_mode)
     walk = record_walk(workspace_root, evidence_ref=meeting_ref,
                        evidence_ts=transcript_ts, n_stale=int(n_stale or 0),
                        n_results=len(rows))
@@ -958,16 +1050,20 @@ CALENDAR_KEEP_FIELDS = ("id", "meeting_id", "title", "summary", "start",
                         "time_label", "prep_exists")
 
 #: ...of a staged raw Sent message: the mail plan's `message_fields`
-#: (`reconcile_sent_commitments.SENT_MESSAGE_FIELDS`, pinned equal).
+#: (`reconcile_sent_commitments.SENT_MESSAGE_FIELDS`, pinned equal). The last
+#: four are the fields the include and exclude lists match on (cr1#770).
 SENT_KEEP_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
                     "recipient_person_ids", "recipient_names",
-                    "recipient_emails", "subject", "body")
+                    "recipient_emails", "subject", "body",
+                    "labels", "folder", "folders", "label")
 
 #: ...of a staged raw chat message: the chat plan's `message_fields`
-#: (`chat_reconcile.CHAT_MESSAGE_FIELDS`, pinned equal).
+#: (`chat_reconcile.CHAT_MESSAGE_FIELDS`, pinned equal). The last two are
+#: the channel's name, which the lists match on beside its id (cr1#770).
 CHAT_KEEP_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
                     "author_id", "user_name", "text", "thread_ts", "permalink",
-                    "counterparty_person_ids", "counterparty_names")
+                    "counterparty_person_ids", "counterparty_names",
+                    "channel_name", "chat_name")
 
 #: One kept-field list per raw input, by staged kind.
 KEEP_FIELDS = {"sent_messages": SENT_KEEP_FIELDS,
@@ -1015,18 +1111,29 @@ STAGE_DIRS = {"end-of-day": PACK_DIR_REL,
 
 #: The kinds each fire stages, and the only kinds `stage_fire_input` lands
 #: in that fire's folder: the End of Day every kind; the maintenance fire
-#: its two reconcile batches; the Morning Brief its chat.
+#: its two reconcile batches and the inbound-mail job's batch (cr1#664);
+#: the Morning Brief its chat.
 FIRE_KINDS = {"end-of-day": STAGED_INPUTS,
-              "maintenance": ("sent_messages", "chat_messages"),
+              "maintenance": ("sent_messages", "chat_messages",
+                              "inbound_messages"),
               "morning-brief": ("chat_messages",)}
+
+#: cr1#664: the fields the inbound-mail writer KEEPS of a staged inbound
+#: message: the plan's `message_fields` (`inbound_mail_leg.MESSAGE_FIELDS`,
+#: pinned equal), its Phase 4b `captures` included. `labels`, `folder`,
+#: `folders` and `label` are the fields the lists match on (cr1#770).
+INBOUND_KEEP_FIELDS = ("message_id", "thread_id", "ts", "sender_email",
+                       "sender_name", "sender_person_id", "subject", "body",
+                       "has_attachment", "from_me", "labels", "folder",
+                       "folders", "label", "captures")
 
 #: The maintenance fire's own words for a stage it refused (MAINTHARD2
 #: MUST 2): the job is left due for the next run, never retried by hand.
 MAINT_STAGE_TOO_LARGE_LINE = (
-    "The background check of sent mail and chat was left for the next run "
+    "The background check of mail and chat was left for the next run "
     "because the messages were more than one pass can read.")
 MAINT_STAGE_UNREAD_LINE = (
-    "The background check of sent mail and chat was left for the next run "
+    "The background check of mail and chat was left for the next run "
     "because the messages did not arrive, so none were checked.")
 
 #: The Morning Brief's own words for a chat stage it refused (MAINTHARD2
@@ -1280,6 +1387,48 @@ def reconcile_chat_staged(workspace_root: str, *,
         source_skill=source_skill, fired_via=fired_via,
         exclude_captured_since=exclude_captured_since,
         fetch_blocked=fetch_blocked))
+
+
+def inbound_mail_staged(workspace_root: str, *,
+                        inbound_rel: Optional[str] = None,
+                        user_person_id: Optional[str] = None,
+                        source_skill: str = "inbound-mail",
+                        fired_via: Optional[str] = None,
+                        provider: Optional[str] = None,
+                        exclude_captured_since: Optional[str] = None,
+                        fetch_blocked: Optional[str] = None,
+                        close_mode: Optional[str] = None,
+                        accounts: Optional[List[Any]] = None,
+                        fire: str = "maintenance") -> Dict[str, Any]:
+    """The inbound-mail job's writer, by path (cr1#664): a WRITER, on the
+    write list only, the sibling of `reconcile_chat_staged`.
+
+    The inbox batch was staged raw (`stage_fire_input`, kind
+    `inbound_messages`, the maintenance fire's own folder); this reads it
+    beside the data, keeps `INBOUND_KEEP_FIELDS` of each message in code
+    (its Phase 4b `captures` ride along), and hands it to
+    `inbound_mail_leg.run_inbound_mail` ONCE: the open half, the close half
+    and one `inbound-mail` receipt. No `inbound_rel` (a blocked fetch, or no
+    mail backend) is the empty batch. Answers the job's receipt, unchanged.
+    A batch in which no message keeps a `message_id` raises, like
+    `_read_raw`: a read that kept nothing is never a quiet day."""
+    from inbound_mail_leg import run_inbound_mail
+
+    _stage_dir(fire)
+    messages: List[Dict[str, Any]] = []
+    if inbound_rel:
+        staged = _read_staged(workspace_root, inbound_rel, "inbound_messages",
+                              fire)
+        messages = trim_to_fields(staged, INBOUND_KEEP_FIELDS)
+        if staged and (len(messages) != len(staged) or not any(
+                "message_id" in row for row in messages)):
+            raise ValueError("the staged inbound_messages keep no message_id "
+                             "after the cut")
+    return _jsonable(run_inbound_mail(
+        workspace_root, messages, user_person_id=user_person_id,
+        provider=provider, fired_via=fired_via, fetch_blocked=fetch_blocked,
+        exclude_captured_since=exclude_captured_since, close_mode=close_mode,
+        accounts=accounts, source_skill=source_skill))
 
 
 def _staged_names(fire: str = "end-of-day") -> frozenset:

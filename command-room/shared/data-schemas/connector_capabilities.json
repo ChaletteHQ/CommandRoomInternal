@@ -3,6 +3,25 @@
   "$chat_note": "SPEC CHATSCAN1 §2A (2026-08-08) — the `chat` category, authored at its first consumer exactly as the YAGNI note above invites. Two provider rows, one seam: `slack` (the native Slack connector) and `ms365_teams` (the native Microsoft 365 connector's Teams surface). Keys: `chat_search_model` (how a query is expressed), `channel_search` (can a query reach CHANNEL messages at all), `channel_list` (can channels be enumerated), `chat_resource_read` (can a matched message be fetched back in full), `send`. Consumers ask per capability and DEGRADE — they never branch on the provider name. A workspace that declares no chat backend skips every chat leg silently and RECEIPTS the skip; it never errors. The Teams row's `probed` block records facts measured against a live tenant on 2026-08-06, not documentation: they are what force the per-chat-scan path, and a consumer that ignores them will claim coverage it did not have.",
   "$version": "connector-agnostic-v1",
   "categories": ["email", "calendar", "chat"],
+  "$kinds_note": "cr1#667 (rulings of 2026-11-03). Every declared connector (`workspace.connectors.<category>`) has a KIND, which is what Maintenance keys its reads on: never a provider name, never a free-text description. The table below is the vocabulary and the defaults when the owner says nothing: `categories` are the `workspace.connectors` keys that read as this kind (`email` is the `mail` kind; existing keys are never renamed), `grain` is what the connector's include and exclude lists name, and `dials` are the five dials at their defaults. `connector_config.kind_default_dials` reads this table; a reader never carries a literal. The four kinds in use today (`mail`, `calendar`, `chat`, `meetings`) keep today's behaviour exactly: every dial on, and `close_mode` as the kind closes today (`meetings` proposes until measured). `tasks` opens and closes with `close_mode: propose` (a board declared as project tracking is set to `close` at set-up). `documents`, `deals` and `contracts` open nothing, propose closes, and are read for people and projects until a capture rule is ruled.",
+  "kinds": {
+    "mail": {"categories": ["email"], "grain": "labels or folders",
+             "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},
+    "calendar": {"categories": ["calendar"], "grain": "calendars",
+                 "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},
+    "chat": {"categories": ["chat"], "grain": "channels",
+             "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "close", "update_people": true, "update_projects": true}},
+    "meetings": {"categories": ["meetings"], "grain": "meeting sources",
+                 "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "propose", "update_people": true, "update_projects": true}},
+    "tasks": {"categories": ["tasks"], "grain": "boards and projects",
+              "dials": {"open_commitments": true, "close_commitments": true, "close_mode": "propose", "update_people": true, "update_projects": true}},
+    "documents": {"categories": ["documents"], "grain": "labels or folders",
+                  "dials": {"open_commitments": false, "close_commitments": true, "close_mode": "propose", "update_people": true, "update_projects": true}},
+    "deals": {"categories": ["deals"], "grain": "pipelines",
+              "dials": {"open_commitments": false, "close_commitments": true, "close_mode": "propose", "update_people": true, "update_projects": true}},
+    "contracts": {"categories": ["contracts"], "grain": "folders",
+                  "dials": {"open_commitments": false, "close_commitments": true, "close_mode": "propose", "update_people": true, "update_projects": true}}
+  },
   "providers": {
     "gmail": {
       "category": "email",

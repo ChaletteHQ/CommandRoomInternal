@@ -969,6 +969,19 @@ def _write_cursor(workspace_root, raw, new_cursor, *, source_skill,
     atomic_write_json_locked(_entities_path(workspace_root), raw, holder=source_skill)
 
 
+def _stamp_window(audit_event: dict, cursor_before) -> None:
+    """cr1#663: name the window this run was asked to cover on the audit,
+    from the cursor as it stood BEFORE the run (the basis is the previous
+    run, never this one). Best effort: the window never costs the audit."""
+    try:
+        from catchup import MAINTENANCE_WINDOW_FIELD
+
+        audit_event["data"][MAINTENANCE_WINDOW_FIELD] = _maintenance_window(
+            cursor_before, now=_clock_now())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _record_blocked_run(workspace_root, events_path, cursor_before, *,
                         reason, source_skill, fired_via, provider=None,
                         triggered_by=None, user_person_id=None,
@@ -1009,6 +1022,7 @@ def _record_blocked_run(workspace_root, events_path, cursor_before, *,
             "signal_fields": _empty_signal_fields(),
         },
     }
+    _stamp_window(audit_event, cursor_before)
     try:
         # SCHED1 — the shared stamp helper, so the machine token and its
         # not-persisted flag land the same way here as on every other receipt.
@@ -1367,15 +1381,94 @@ def _asked_by(explicit=None):
 #: MAINTJOBS1 MUST 2 - the fields a Sent message carries into the writer, in
 #: the order Step 2 of `skills/reconcile-sent/SKILL.md` names them. The plan
 #: hands them to the fire's connector step so the rows it builds are the rows
-#: this module scores.
+#: this module scores. The last four are every spelling `_message_labels`
+#: reads: a staged message keeps what the lists match on, and nothing but
+#: `_drop_excluded` reads them (cr1#770).
 SENT_MESSAGE_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
                        "recipient_person_ids", "recipient_names",
-                       "recipient_emails", "subject", "body")
+                       "recipient_emails", "subject", "body",
+                       "labels", "folder", "folders", "label")
 
 #: How far back a first run (no `sent_reconcile` audit yet) reads, and the
-#: overlap a normal run keeps behind its cursor (Step 1, Bug #101).
-FIRST_RUN_DAYS = 30
+#: overlap a normal run keeps behind its cursor (Step 1, Bug #101). cr1#663:
+#: the first-run figure is the one maintenance window bound every job
+#: shares, imported rather than typed, and a cursor older than it reads as
+#: a first run too (`catchup.window_from_cursor`).
+from catchup import MAINTENANCE_WINDOW_DAYS as FIRST_RUN_DAYS  # noqa: E402
 CURSOR_OVERLAP_DAYS = 1
+
+
+def _maintenance_window(cursor, *, now=None) -> dict:
+    """This leg's maintenance window from its own cursor (cr1#663): the one
+    math every job uses, `catchup.window_from_cursor`, machine-local."""
+    from catchup import window_from_cursor
+
+    local_now = None
+    if isinstance(now, _dt.datetime):
+        local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    return window_from_cursor("reconcile-sent", cursor, now=local_now)
+
+
+def _message_labels(msg) -> list:
+    """The labels or folders a staged Sent message names, if any."""
+    if not isinstance(msg, dict):
+        return []
+    out = []
+    for key in ("labels", "folder", "folders", "label"):
+        v = msg.get(key)
+        if isinstance(v, str) and v.strip():
+            out.append(v)
+        elif isinstance(v, (list, tuple)):
+            out.extend(x for x in v if isinstance(x, str) and x.strip())
+    return out
+
+
+def _newest_read_ts(sent_messages):
+    """The newest usable send time in a batch as it was handed in, before the
+    lists, or None. A message a list set aside has been read, so the cursor
+    passes it (cr1#770). One whose `ts` does not parse moves nothing."""
+    newest = None
+    for msg in sent_messages or []:
+        ts = msg.get("ts") if isinstance(msg, dict) else None
+        if (isinstance(ts, str) and _parse_ts(ts) is not None
+                and (newest is None or ts > newest)):
+            newest = ts
+    return newest
+
+
+def _drop_excluded(read, sent_messages):
+    """cr1#667: `(kept, n_excluded, excluded_ids)`. A message with any label
+    on the connector's exclude list, or with none of its labels on a
+    non-empty include list, is never read; one with no label field passes
+    through. All of a message's labels go to ONE `allowed` call: it is the
+    message that is kept or dropped, not each label (cr1#757)."""
+    msgs = list(sent_messages or [])
+    if not read or not (read.get("include") or read.get("exclude")):
+        return msgs, 0, set()
+    try:
+        from connector_reads import allowed
+    except Exception:  # noqa: BLE001
+        return msgs, 0, set()
+    kept, excluded_ids = [], set()
+    for msg in msgs:
+        if not allowed(read, *_message_labels(msg)):
+            mid = str((msg or {}).get("message_id") or "")
+            if mid:
+                excluded_ids.add(mid)
+            continue
+        kept.append(msg)
+    return kept, len(msgs) - len(kept), excluded_ids
+
+
+def _connector_read(workspace_root, purpose: str):
+    """cr1#667: the declared mail connector's dials and lists for `purpose`
+    (`connector_reads.for_category`), or None when none is declared or the
+    reader is not on the tree. Never raises."""
+    try:
+        from connector_reads import for_category
+        return for_category(workspace_root, "email", purpose=purpose)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def plan_sent_window(workspace_root, now=None) -> dict:
@@ -1410,15 +1503,22 @@ def plan_sent_window(workspace_root, now=None) -> dict:
         first_run = not validate_reconcile_ran(workspace_root).get("ran")
     except Exception:  # noqa: BLE001
         first_run = True
-    floor = now - _dt.timedelta(days=FIRST_RUN_DAYS)
-    if cursor and not first_run:
-        try:
-            cur = _dt.datetime.fromisoformat(str(cursor).replace("Z", "+00:00"))
-            if cur.tzinfo is None:
-                cur = cur.replace(tzinfo=_dt.timezone.utc)
-            floor = cur - _dt.timedelta(days=CURSOR_OVERLAP_DAYS)
-        except ValueError:
-            first_run = True
+    # cr1#663: the one maintenance window, from this leg's own cursor: the
+    # cursor when it is inside the 30-day bound, else the 30-day window with
+    # reason first_run_window (no audit yet, no cursor, or a cursor older
+    # than the bound, which is treated as a first run). The fetch floor is
+    # the window's `since`, one day of overlap behind it on a cursor run.
+    from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_REASON_CURSOR
+    window = _maintenance_window(cursor if not first_run else None, now=now)
+    since = _dt.datetime.fromisoformat(window["since_aware"])
+    if window["reason"] == WINDOW_REASON_CURSOR:
+        # The cursor branch dates in UTC, as the cursor itself is stored.
+        floor = (since.astimezone(_dt.timezone.utc)
+                 - _dt.timedelta(days=CURSOR_OVERLAP_DAYS))
+    else:
+        # The first-run branch dates in the fire's own zone, as before.
+        first_run = True
+        floor = since.astimezone(now.tzinfo)
     after = floor.date().isoformat()
     try:
         provider = resolve_mail_provider(workspace_root, None)
@@ -1434,14 +1534,31 @@ def plan_sent_window(workspace_root, now=None) -> dict:
         queries = list(connector_discovery_queries(workspace_root))
     except Exception:  # noqa: BLE001
         queries = []
+    # cr1#667: the dials and the lists are read BEFORE the source. The Sent
+    # batch serves three passes (close, open, people), each behind its own
+    # dial, so `skip_reason` is set only when all three turn it away: the
+    # connector step then fetches nothing and the writer records the three
+    # skips. `include` / `exclude` are the labels or folders the fetch
+    # reads, and the ones it never reads.
+    reads = [_connector_read(workspace_root, purpose)
+             for purpose in ("close", "open", "people")]
+    read = reads[0]
+    skip_reason = None
+    if read and all(r and r.get("skip_reason") for r in reads):
+        skip_reason = "; ".join(str(r["skip_reason"]) for r in reads)
     return {
         "job_id": "reconcile-sent",
         "cursor_before": cursor,
         "first_run": bool(first_run),
         "after": after,
+        MAINTENANCE_WINDOW_FIELD: window,
         "intent": {"in_sent": True, "after": after},
         "provider": provider,
-        "connector_queries": queries,
+        "connector_queries": [] if skip_reason else queries,
+        "connector_read": read,
+        "include": list((read or {}).get("include") or []),
+        "exclude": list((read or {}).get("exclude") or []),
+        "skip_reason": skip_reason,
         "user_person_id": user,
         "message_fields": list(SENT_MESSAGE_FIELDS),
         "fire_start": now.astimezone(_dt.timezone.utc).isoformat(),
@@ -1642,6 +1759,47 @@ def reconcile_and_receipt(
             user_person_id=user_person_id, user_resolution=user_resolution,
         )
 
+    # cr1#667: the dials first, each on its own pass, independently (the
+    # ruling makes them independent): the close dial turns away the close
+    # pass only (the batch is still scored for its cursor, nothing closes
+    # and nothing is proposed), the open dial the capture pass only, the
+    # people dial the contacts pass only. Each skip is recorded separately
+    # on the receipt and on the audit; the run is complete, never skipped.
+    read_close = _connector_read(workspace_root, "close")
+    close_skip_reason = (str(read_close["skip_reason"])
+                         if read_close and read_close.get("skip_reason") else None)
+    capture_skip_reason = None
+    if sent_commitment_items is not None:
+        read_open = _connector_read(workspace_root, "open")
+        if read_open and read_open.get("skip_reason"):
+            capture_skip_reason = str(read_open["skip_reason"])
+            sent_commitment_items = None
+    people_skip_reason = None
+    if contact_capture_items is not None:
+        read_people = _connector_read(workspace_root, "people")
+        if read_people and read_people.get("skip_reason"):
+            people_skip_reason = str(read_people["skip_reason"])
+            contact_capture_items = None
+    # The lists (labels or folders) are the belt the chat leg has: the plan
+    # hands them to the connector step so the read itself skips them; a
+    # message that reaches this call with a `labels` or `folder` field is
+    # dropped here before any match, with the capture and contact items it
+    # produced, and counted. A message with no label field passes through.
+    # `eod_helpers.SENT_KEEP_FIELDS` keeps those fields, so this belt acts on
+    # a scheduled fire as it does on a direct call (cr1#770). The cursor is
+    # taken first: mail a list set aside was read, and a cursor held behind it
+    # re-reads it every fire and leaves the brief calling reconciliation stale.
+    newest_read = _newest_read_ts(sent_messages)
+    sent_messages, n_excluded, excluded_ids = _drop_excluded(read_close, sent_messages)
+    if excluded_ids and sent_commitment_items is not None:
+        sent_commitment_items = [it for it in sent_commitment_items
+                                 if not (isinstance(it, dict)
+                                         and str(it.get("message_id") or "") in excluded_ids)]
+    if excluded_ids and contact_capture_items is not None:
+        contact_capture_items = [it for it in contact_capture_items
+                                 if not (isinstance(it, dict)
+                                         and str(it.get("message_id") or "") in excluded_ids)]
+
     # BUG-8330 item 15 — ONE lock session for the whole fire. This function
     # used to run N+1 separate lock cycles per fire (the closes, each partial
     # receipt, each pending-review append, each auto-added contact's
@@ -1670,6 +1828,10 @@ def reconcile_and_receipt(
         pending = res["pending"]
         partial = res.get("partial") or []
         signal_fields = res.get("signal_fields") or _empty_signal_fields()
+        if close_skip_reason:
+            # cr1#667: the close pass is turned away; the batch was scored
+            # only for its cursor, so nothing closes and nothing is proposed.
+            auto_close, pending, partial = [], [], []
 
         # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
         # legacy-id normalization, loud refusal of orphan tombstones, full-set
@@ -1988,6 +2150,8 @@ def reconcile_and_receipt(
         # Advance the cursor to the newest Sent ts we saw (never backwards).
         cursor_after = cursor_before
         new_ts = res.get("cursor_ts")
+        if newest_read and (not new_ts or newest_read > new_ts):
+            new_ts = newest_read  # cr1#770: the batch as read, lists aside
         sent_cursor_write = None
         if new_ts and (cursor_before is None or new_ts > cursor_before):
             # CURSORCLAMP1 (cr1#149): clamp HERE, so the audit row's
@@ -2071,8 +2235,16 @@ def reconcile_and_receipt(
                 # change. Without this, "the fix didn't fire" and "nothing was
                 # deliverable" are the same healthy-looking zero.
                 "signal_fields": signal_fields,
+                # cr1#667: which passes the connector's dials turned away this
+                # run (None when the pass ran), and the messages the lists
+                # dropped before any match.
+                "close_skip_reason": close_skip_reason,
+                "capture_skip_reason": capture_skip_reason,
+                "people_skip_reason": people_skip_reason,
+                "n_excluded": n_excluded,
             },
         }
+        _stamp_window(audit_event, cursor_before)
         try:
             # SCHED1 — the shared stamp helper, so the machine token and its
             # not-persisted flag land the same way here as everywhere else.
@@ -2138,7 +2310,12 @@ def reconcile_and_receipt(
         # dropped something, and both sentences below hang off the difference.
         n_scored = int(signal_fields.get("n_scored", n_fetched))
         n_self_skipped = int(signal_fields.get("n_self_addressed_skipped", 0))
-        if n_fetched == 0:
+        if n_fetched == 0 and n_excluded:
+            # cr1#770: mail was read, so never "no new sent mail". The list's
+            # count is added below.
+            summary = (f"Read {n_excluded} sent message{'s' if n_excluded != 1 else ''}, "
+                       "none of them checked.")
+        elif n_fetched == 0:
             summary = (f"No new sent mail since {_short_date(cursor_before, workspace_root) or 'the last check'} "
                        f"— nothing to reconcile.")
         elif n_auto == 0 and n_self_skipped and not n_scored:
@@ -2162,6 +2339,8 @@ def reconcile_and_receipt(
             tail = f", {n_pend} to confirm" if n_pend else ""
             summary = (f"Reconciled your sent mail through {_short_date(cursor_after, workspace_root)}: "
                        f"closed {n_auto} you'd already handled{tail}.")
+        if n_excluded:
+            summary += f" Your include or exclude list set aside {n_excluded}."
         n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
         if n_opened:
             summary += (f" Started tracking {n_opened} new "
@@ -2280,6 +2459,13 @@ def reconcile_and_receipt(
             "n_opened": n_opened,
             "opened": list(capture["opened"]) if isinstance(capture, dict) else [],
             "capture": capture,
+            # cr1#667: the passes the connector's dials turned away (None when
+            # a pass ran, or was never asked for), and the messages the lists
+            # dropped before any match.
+            "close_skip_reason": close_skip_reason,
+            "capture_skip_reason": capture_skip_reason,
+            "people_skip_reason": people_skip_reason,
+            "n_excluded": n_excluded,
             # CONTACT1 (additive; zeros/None when items not passed).
             "n_contacts_added": n_contacts,
             "n_contacts_gave_up": n_gave_up,

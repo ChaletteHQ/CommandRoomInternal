@@ -86,8 +86,14 @@ def emit_dormancy_signal(
 ) -> Optional[int]:
     """Append one `dormancy_signal` event. Call this at the detector's existing
     flag point, AFTER its live-check gate (so a signal in the substrate is already
-    live-verified). Returns the seq written, or None when there's no signal /
-    on any error (never raises into a detector)."""
+    live-verified). Returns the seq written, or None when there is no signal to
+    record.
+
+    A failed append RAISES (cr1#615). It used to answer None too, so behind the
+    write door a refused or failed save came back `ok: true` and read exactly
+    like "nothing to record". Every detector is a skill's step through that
+    door, which turns the raise into a refusal the chat says; no Python
+    detector calls this."""
     # BAL1 D1.1(1) — THE personal-tie source gate, now in CODE.
     #
     # It used to live as prose in the Pulse orchestrator's Phase 3: "skip every
@@ -110,23 +116,20 @@ def emit_dormancy_signal(
     score = normalize_score(gap_days, baseline_days)
     if score is None:
         return None
-    try:
-        from atomic_write import atomic_append_jsonl
-        events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-        # Seq comes back from the append (BUG-8330 item 7) — allocated
-        # inside the writer lock, never pre-computed.
-        written = atomic_append_jsonl(events_path, [{
-            "ts": _now_iso(), "type": "dormancy_signal",
-            "source_skill": source_skill,
-            "data": {
-                "entity_id": entity_id, "entity_type": entity_type,
-                "gap_days": gap_days, "baseline_days": baseline_days,
-                "score": round(score, 4),
-            },
-        }])
-        return written[0].get("seq")
-    except Exception:
-        return None
+    from atomic_write import atomic_append_jsonl
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    # Seq comes back from the append (BUG-8330 item 7) — allocated
+    # inside the writer lock, never pre-computed.
+    written = atomic_append_jsonl(events_path, [{
+        "ts": _now_iso(), "type": "dormancy_signal",
+        "source_skill": source_skill,
+        "data": {
+            "entity_id": entity_id, "entity_type": entity_type,
+            "gap_days": gap_days, "baseline_days": baseline_days,
+            "score": round(score, 4),
+        },
+    }])
+    return written[0].get("seq") if written else None
 
 
 def load_dormancy_signals(workspace_root, window_days: int = 14) -> List[dict]:

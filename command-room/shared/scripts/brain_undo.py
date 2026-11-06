@@ -495,7 +495,7 @@ def _reverse_person_alias_dropped(workspace_root, change, *, undone_by,
     from people_writer import add_person_alias
 
     res = add_person_alias(workspace_root, person_id, alias,
-                           source_skill=source_skill)
+                           source_skill=source_skill, restoring=True)
     return {"status": res.get("status"), "person_id": person_id,
             "alias": alias}
 
@@ -1371,9 +1371,9 @@ def _reverse_schedule_fold(workspace_root, change, *, undone_by, source_skill):
 # undo.
 # ---------------------------------------------------------------------------
 
-def _archive_move(path, archive_dir, stem_suffix: str):
-    """Move `path` under `archive_dir` with a timestamped name. Returns the
-    archive path, or None when there was nothing there to move."""
+def _archive_move(path, archive_dir, stem_suffix: str, *, keep: bool = False):
+    """Move `path` under `archive_dir` with a timestamped name, or copy it with
+    `keep`. Returns the archive path, or None when there was nothing there."""
     import shutil
     from pathlib import Path as _P
 
@@ -1387,7 +1387,7 @@ def _archive_move(path, archive_dir, stem_suffix: str):
     while target.exists():
         n += 1
         target = archive_dir / f"{path.stem}_{stem_suffix}-{n}{path.suffix}"
-    shutil.move(str(path), str(target))
+    (shutil.copy2 if keep else shutil.move)(str(path), str(target))
     return target
 
 
@@ -1397,21 +1397,64 @@ def _undo_stamp(undone_by: str) -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _voice_file_is_learnings(workspace_root, skill: str) -> bool:
+    """Whether the live override for `skill` came into being through the
+    learning job, rather than being there before it. Read in append order: an
+    undo that archived the file starts the question again."""
+    created = None
+    for ev in _load_events(workspace_root):
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if data.get("skill") != skill:
+            continue
+        if ev.get("type") == "voice_block_updated" and created is None:
+            created = not data.get("had_override")
+        elif ev.get("type") == "voice_block_reverted" and not data.get("restored"):
+            created = None
+    return bool(created)
+
+
 def _reverse_voice_block_update(workspace_root, change, *, undone_by,
                                 source_skill):
-    # SPEC_LEARN1 A2 — put the previous voice block back. The snapshot on the
-    # event is the WHOLE prior FILE (`previous_markdown`, header included),
-    # not the block body, so the restore is byte-for-byte rather than the
-    # content-equal-after-header-strip bar A2 settled for: writing the bytes
-    # back directly beats re-deriving them through a writer that stamps a
+    # cr1#784: ONE UNDO TAKES BACK ONE CHANGE. This used to write the change's
+    # whole prior file back, so undoing an older change wiped every line
+    # learned after it, and those lines' fingerprints then stayed closed: gone
+    # from the block and never learned again. The reversal now takes out the
+    # one line this change wrote and leaves the rest of the live file alone.
+    #
+    # SPEC_LEARN1 A2 still holds where it can. When taking the line out leaves
+    # the block the change found, the snapshot on the event (`previous_markdown`,
+    # the WHOLE prior FILE, header included) goes back byte for byte: writing
+    # the bytes directly beats re-deriving them through a writer that stamps a
     # fresh `Last refreshed:` line on every call.
     #
-    # `had_override` is the other half. When the apply CREATED the override
-    # where none existed, restoring "the previous file" means there must be
-    # NO file afterwards — `load_voice_block_override` has to return None
-    # again, because its presence is what email-writer's staleness read keys
-    # on. The file is archived, never deleted.
+    # `had_override` is the other half. When the learning job CREATED the
+    # override and it holds nothing beyond the header, the section heads and
+    # the baked block it was copied from, there must be NO file afterwards:
+    # `load_voice_block_override` has to return None again, because its
+    # presence is what email-writer's staleness read keys on. Any line of the
+    # owner's keeps the file. A file that goes is archived, never deleted.
+    #
+    # WRITE FIRST. The live file is copied to the archive and then overwritten
+    # in one atomic step, so a failed write leaves it and every other rule in
+    # it as they were. Only a file with nothing left to say is moved.
+    #
+    # A RETRY FINISHES THE JOB (UNDOMARK1). The line can be gone with no
+    # `brain_change_undone` on file, because the marker's own write failed.
+    # That answers `undone` so `undo_batch` writes the marker. `already_undone`
+    # is only for a change the book already says was undone.
+    #
+    # IT NEVER SAYS DONE WHILE THE RULE STANDS. Every line it can place goes.
+    # What a line of the block still says after that is in force in a shape
+    # this must not guess at: with nothing removed that answers `not_found`,
+    # with something removed `partial`, and neither writes a marker, so the
+    # change keeps its Undo and the receipt says so by name. Only a block with
+    # no line naming the item counts as gone.
     from pathlib import Path as _P
+
+    from event_gate import append_event
+    from learning_pass import _baked_voice_block, _block_body
+    from voice_corrections import (has_owner_lines, items_still_named,
+                                   line_of_change, without_learned_line)
 
     skill = str(change.get("skill") or "")
     if not skill:
@@ -1420,28 +1463,82 @@ def _reverse_voice_block_update(workspace_root, change, *, undone_by,
             "(learning_pass stamps it on the voice_block_updated event)")
     voice_dir = _P(workspace_root) / "_hq" / "voice"
     live = voice_dir / f"voice-block-{skill}.md"
-    stamp = _undo_stamp(undone_by)
-    archived = _archive_move(live, voice_dir / "_archive", stamp)
+    ref = change.get("change_ref")
+    events = _load_events(workspace_root)
+
+    def noted(event_type: str) -> bool:
+        return any(ev.get("type") == event_type
+                   and (ev.get("data") or {}).get("change_ref") == ref
+                   and not (ev.get("data") or {}).get("partial")
+                   for ev in events)
+
+    if noted("brain_change_undone"):
+        return {"status": "already_undone", "skill": skill}
+    if noted("voice_block_reverted"):
+        return {"status": "undone", "skill": skill, "restored": False,
+                "archived_to": None}
+    current = live.read_text(encoding="utf-8") if live.exists() else ""
+    baked = _baked_voice_block(skill)
     previous = change.get("previous_markdown")
+    previous = previous if isinstance(previous, str) else ""
+    remaining, removed = current, []
+    while True:
+        line = line_of_change(remaining, change, baseline=baked)
+        if line is None:
+            break
+        removed.append(line)
+        remaining = without_learned_line(remaining, line,
+                                         section=str(change.get("section") or ""),
+                                         keep_heading_from=previous)
+    left = items_still_named(remaining, change, baseline=baked)
     had_override = bool(change.get("had_override"))
+    if not removed:
+        if left:
+            # After a `partial`, what stands is only what is left of the rule.
+            earlier = any(ev.get("type") == "voice_block_reverted"
+                          and (ev.get("data") or {}).get("change_ref") == ref
+                          for ev in events)
+            return {"status": "not_found", "skill": skill, "left": [],
+                    "only": left if earlier else []}
+        append_event(_events_path(workspace_root), {
+            "type": "voice_block_reverted",
+            "source_skill": source_skill,
+            "data": {"skill": skill, "restored": live.exists(),
+                     "had_override": had_override, "change_ref": ref,
+                     "removed_line": None, "archived_to": None,
+                     "undone_by": undone_by},
+        }, holder="brain_undo")
+        return {"status": "undone", "skill": skill, "restored": False,
+                "archived_to": None, "gone": True}
+    if had_override and previous and (_block_body(remaining).strip()
+                                      == _block_body(previous).strip()):
+        remaining = previous
+    elif (not has_owner_lines(remaining, baked)
+          and _voice_file_is_learnings(workspace_root, skill)):
+        remaining = ""
+    stamp = _undo_stamp(undone_by)
+    archived = _archive_move(live, voice_dir / "_archive", stamp,
+                             keep=bool(remaining))
     restored = False
-    if had_override and isinstance(previous, str) and previous:
+    if remaining:
         from atomic_write import atomic_write_text
 
-        live.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(live, previous)
+        atomic_write_text(live, remaining)
         restored = True
-    from event_gate import append_event
 
     ev = append_event(_events_path(workspace_root), {
         "type": "voice_block_reverted",
         "source_skill": source_skill,
         "data": {"skill": skill, "restored": restored,
                  "had_override": had_override,
+                 "change_ref": ref,
+                 "partial": bool(left),
+                 "removed_line": "\n".join(removed),
                  "archived_to": str(archived) if archived else None,
                  "undone_by": undone_by},
     }, holder="brain_undo")
-    return {"status": "undone", "skill": skill, "restored": restored,
+    return {"status": "partial" if left else "undone", "skill": skill,
+            "restored": restored, "left": left,
             "archived_to": str(archived) if archived else None, "event": ev}
 
 
@@ -2430,6 +2527,13 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # below, since False is a value here), which exemplar
                     # kind, and the prior text/markdown snapshots themselves.
                     "skill", "previous_markdown", "kind", "previous_text",
+                    # cr1#784: a deliberate widening, on the grounds below:
+                    # `_reverse_voice_block_update` now takes out the one line
+                    # a change wrote. A new change names it (`learned_line`);
+                    # an older one is found from `op` and its sentence
+                    # (`delta`), and `section` says which heading it sat under.
+                    # `rule` is what the undo list and the receipt call it.
+                    "learned_line", "op", "delta", "section", "rule",
                     # LEARNFIX1 1.2 — the `voice_correction` reverser's only
                     # anchor besides `skill`: WHICH correction row to retract.
                     # A deliberate widening of this pinned key set, cited here
@@ -2753,6 +2857,7 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
                            "children": []})
             slot["n_changes"] += 1
             slot["classes"].add(data.get("brain_change_class"))
+            slot["rule"] = data.get("rule")
             if event_time(ev) > slot["ts"]:
                 slot["ts"] = event_time(ev)
             # DD-5 — a grouped row names its run and its group key; the run
@@ -2794,7 +2899,10 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
     for slot in batches.values():
         classes = sorted(slot.pop("classes"))
         slot["label"] = _batch_label(classes, slot["n_changes"])
-        if slot.get("group"):
+        rule = slot.pop("rule", None)
+        if rule and slot["n_changes"] == 1:  # cr1#784: a learned rule by its words
+            slot["label"] = str(rule).rstrip(".")
+        elif slot.get("group"):
             slot["label"] = f"{slot['label']} — {_group_phrase(slot['group'])}"
         out.append(slot)
     # DD-5 — nest every group under its run. A group whose run fell outside
@@ -2899,6 +3007,7 @@ _UNDO_PUT_BACK = {
     "commitment_close_from_observed": "back where it was",
     "org_promotion": "back to a prospect",
     "deal_won": "open again",
+    "voice_block_update": "taken back",
 }
 
 
@@ -3066,7 +3175,8 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
     n_ok = sum(1 for r in results if _went_back(r))
     n_marker = sum(1 for r in results
                    if r.get("status") == "error" and r.get("reversed") is True)
-    n_err = max(0, int((undo_result or {}).get("n_errors") or 0) - n_marker)
+    lost = [r for r in results if r.get("not_found")]
+    n_err = max(0, int((undo_result or {}).get("n_errors") or 0) - n_marker - len(lost))
     events = _load_events(workspace_root) if results else []
     titles = _row_titles(events)
     renamed_to = _rename_new_names(events)
@@ -3093,7 +3203,8 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
     head_n = f"{n_ok} thing{'' if n_ok == 1 else 's'}"
     head = (f"Put {head_n} back — {label}." if label
             else f"Put {head_n} back.")
-    lines.append(_gated(head, f"Put {head_n} back."))
+    if n_ok or not lost:
+        lines.append(_gated(head, f"Put {head_n} back."))
 
     name_idx = None
     # Which stage each deal went back to. It is reported by whichever leg
@@ -3113,6 +3224,8 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
         cls = str(change.get("change_class") or "")
         cid = change.get("commitment_id") or change.get("id")
         raw = titles.get(str(cid)) if cid else None
+        if cls == "voice_block_update":
+            raw = str(change.get("rule") or change.get("delta") or "").rstrip(".")
         if not raw:
             # F-2: not every reversible row is a commitment. A promotion
             # names an org and a win names a deal thread; both are on the
@@ -3125,6 +3238,10 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
                     name_idx = name_index(workspace_root)
                 raw = name_idx.get(str(ent_id))
         where = _UNDO_PUT_BACK.get(cls, "back the way it was")
+        if (r.get("result") or {}).get("gone"):
+            # cr1#784: it reads known shapes only, so it says what it knows.
+            where = ("taken back: no line says it now, but a rule you reworded "
+                     "in your own words stays until you remove it")
         tail = ""
         from chat_output_renderer import mark_field as _mark_field
         if cls == "person_renamed" and raw:
@@ -3157,6 +3274,31 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
             f"  one item — {_UNDO_PUT_BACK.get(cls, 'back the way it was')}.",
             raw_title=title))
 
+    for r in lost:
+        change = r.get("change") if isinstance(r.get("change"), dict) else {}
+        rule = str(change.get("rule") or change.get("delta") or "").rstrip(".")
+        fallback = ("One rule still stands: its line was edited and I cannot "
+                    "find it, so nothing changed.")
+        from chat_output_renderer import mark_field as _mark_field
+        title = safe_name(_never_an_id(rule), fallback="")
+        marked = _mark_field({"name": title}, "name", title, surface="widget")
+        said = (f"Could not take this back, so it still stands: {marked}. Its "
+                "line was edited and I cannot find it, so nothing changed.")
+        if r.get("left"):
+            rest = ", ".join(f'"{item}"' for item in r["left"])
+            rest = _mark_field({"name": rest}, "name", rest, surface="widget")
+            said = (f"Took back part of this: {marked}. {rest} still stands, "
+                    "because I cannot find its line.")
+            fallback = ("Took back part of one rule. The rest still stands, "
+                        "because I cannot find its line.")
+        if r.get("only"):
+            title = ", ".join(f'"{item}"' for item in r["only"])
+            rest = _mark_field({"name": title}, "name", title, surface="widget")
+            said = (f"Could not take back the rest, so it still stands: {rest}. "
+                    "Its line was edited and I cannot find it, so nothing changed.")
+            fallback = ("The rest of one rule still stands: its line was edited "
+                        "and I cannot find it, so nothing changed.")
+        lines.append(_gated(said, fallback, raw_title=title) if title else fallback)
     if n_err:
         lines.append(f"{n_err} could not go back — say `undo` again to retry.")
     if n_marker:
@@ -3575,6 +3717,16 @@ def undo_batch(
         if isinstance(st, str) and (st.startswith("already_") or st == "not_open"):
             results.append({"status": "already", "change": change, "result": reversed_result})
             n_already += 1
+            return
+        # cr1#784: the thing still stands, whole or in part, so no marker, and
+        # the receipt has to say so rather than count zero.
+        if st in ("not_found", "partial"):
+            results.append({"status": "error", "change": change, "not_found": True,
+                            "left": reversed_result.get("left") or [],
+                            "only": reversed_result.get("only") or [],
+                            "result": reversed_result,
+                            "error": "the change is no longer where it was written"})
+            n_errors += 1
             return
         # UNDOMARK1 (cr1#147): the reverser has ALREADY run by the time the
         # marker is written. A marker append that fails (a sync client holding

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="ink">
+<html lang="en" data-theme="paper">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -23,25 +23,33 @@
   every press as a choice row; starts tasks. It never writes the book and it
   never republishes itself. The four cockpit tasks do the rest.
 
-  THEME: the Ink console by default (the design system's ink stage), Paper on
-  the viewer's own switch, remembered in this browser only.
+  LOOK (cr1#731, owner ruling A1): a full-width espresso cockpit band over a
+  white page. The page is white by default, the Ink look is the viewer's own
+  switch, remembered in this browser only. Values are the design system's
+  tokens. The band keeps its own colours in either theme.
 -->
 <style>
   :root {
-    --paper: #2a1f17; --sheet: #352920; --rule: #4f4236; --ink: #f3ebdc;
-    --ink-soft: #c9bba6; --olive: #a9b67c; --olive-mark: #a9b67c; --on-olive: #2a1f17;
-    --pen: #a9bbe8; --amber: #e0b35a; --red: #e08585;
+    --paper: #ffffff; --sheet: #f8f5ef; --rule: #e6dfd3; --ink: #2a1f17;
+    --ink-soft: #62564a; --olive: #50681f; --olive-mark: #6b8f23; --on-olive: #ffffff;
+    --pen: #22397a; --red: #9b2c2c;
+    --band: #2a1f17; --band-2: #352920; --band-rule: #4f4236; --band-ink: #f3ebdc;
+    --band-soft: #c9bba6; --band-olive: #a9b67c;
     --font-sans: "Instrument Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
     --radius: 3px; --gutter: 16px;
   }
-  :root[data-theme="paper"] {
-    --paper: #ffffff; --sheet: #f8f5ef; --rule: #e6dfd3; --ink: #2a1f17;
-    --ink-soft: #62564a; --olive: #50681f; --olive-mark: #6b8f23; --on-olive: #ffffff;
-    --pen: #22397a; --amber: #a86b00; --red: #9b2c2c;
+  :root[data-theme="ink"] {
+    --paper: #2a1f17; --sheet: #352920; --rule: #4f4236; --ink: #f3ebdc;
+    --ink-soft: #c9bba6; --olive: #a9b67c; --olive-mark: #a9b67c; --on-olive: #2a1f17;
+    --pen: #a9bbe8; --red: #e08585;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.45; }
-  body { padding: 0 var(--gutter) 56px; max-width: 1120px; margin: 0 auto; }
+  body { padding: 0 0 56px; }
+  .cockpit { background: var(--band); color: var(--band-ink); }
+  .cockpit-in, .page { box-sizing: border-box; max-width: 1200px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+  .cockpit-in { padding-top: 6px; }
+  .page { padding-top: 22px; }
   button { font-family: var(--font-sans); }
   @keyframes ripple { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
   @keyframes breathe { 0%, 100% { opacity: 0; transform: scale(1); } 50% { opacity: .35; transform: scale(1.12); } }
@@ -50,62 +58,81 @@
   @keyframes rise { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: translateY(0); } }
   @keyframes caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 26px 0 18px; flex-wrap: wrap; }
+  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0 18px; flex-wrap: wrap; }
   .brand { display: flex; align-items: center; gap: 14px; }
-  .wordmark { height: 26px; width: auto; display: block; color: var(--ink); }
-  .kicker { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
-  .meta { color: var(--ink-soft); font-size: 13px; }
-  .topright { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  button.ghost { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius); color: var(--ink-soft); font: 500 12px var(--font-sans); padding: 5px 10px; cursor: pointer; }
-  button.ghost:hover { color: var(--ink); }
+  .wordmark { height: 26px; width: auto; display: block; color: var(--band-ink); }
+  .kicker { font-size: 12px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--band-soft); }
+  .meta { color: var(--band-soft); font-size: 13px; }
+  .clock { font-size: 28px; font-weight: 650; color: var(--band-ink); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .topright { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  button.ghost { background: transparent; border: 1px solid var(--band-rule); border-radius: var(--radius); color: var(--band-soft); font: 500 12px var(--font-sans); padding: 5px 10px; cursor: pointer; }
+  button.ghost:hover { color: var(--band-ink); }
 
-  .start { display: flex; align-items: center; gap: 32px; padding: 6px 0 22px; flex-wrap: wrap; }
-  .ringwrap { position: relative; width: 150px; height: 150px; flex: none; }
-  .ringwrap .halo { position: absolute; inset: 0; border-radius: 999px; border: 3px solid var(--olive); opacity: 0; pointer-events: none; }
+  .start { display: flex; align-items: center; gap: 36px; padding: 6px 0 22px; flex-wrap: wrap; }
+  .readout { flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+  .ringwrap { position: relative; width: 176px; height: 176px; flex: none; }
+  .ringwrap .halo { position: absolute; inset: 0; border-radius: 999px; border: 3px solid var(--band-olive); opacity: 0; pointer-events: none; }
   .ringwrap.idle.wired .halo { animation: breathe 3.2s ease-in-out infinite; }
   .ringwrap.rippling .halo { animation: ripple .9s ease-out forwards; }
   .ringwrap svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .ringwrap .track { stroke: var(--rule); }
-  .ringwrap .arc { stroke: var(--rule); transition: stroke-dashoffset .8s ease, stroke .4s ease; }
-  .ringwrap.running .arc { stroke: var(--amber); }
-  .ringwrap.done .arc { stroke: var(--olive); }
-  .ring { position: absolute; inset: 14px; border-radius: 999px; border: none; background: var(--sheet); color: var(--ink); font: 600 20px var(--font-sans); cursor: pointer; transition: transform .25s ease, background .4s ease, color .4s ease; }
+  .seg { stroke: var(--band-rule); transition: stroke .4s ease; }
+  .seg.done { stroke: var(--band-olive); }
+  .seg.running { stroke: var(--band-ink); animation: blink 1.2s ease-in-out infinite; }
+  .seg.waiting { stroke: var(--band-soft); }
+  .ring { position: absolute; inset: 22px; border-radius: 999px; border: 1px solid var(--band-rule); background: var(--band-olive); color: var(--band); font: 700 26px var(--font-sans); cursor: pointer; transition: transform .25s ease, background .4s ease, color .4s ease; }
   .ring:disabled { cursor: default; }
-  .ring:disabled:not(.live) { opacity: .45; }
-  .ringwrap.starting .ring { transform: scale(.94); background: var(--rule); }
-  .ringwrap.done .ring { background: var(--olive); color: var(--on-olive); }
-  .lights { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; flex: 1; min-width: min(280px, 100%); }
-  .light { background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); padding: 13px 15px; min-height: 76px; display: flex; flex-direction: column; gap: 5px; }
+  .ring:disabled:not(.live) { background: var(--band-2); color: var(--band-soft); }
+  .ringwrap.starting .ring { transform: scale(.94); }
+  .ringwrap.running .ring, .ringwrap.starting .ring { background: var(--band-2); color: var(--band-ink); }
+  .lights { display: flex; flex-wrap: wrap; row-gap: 10px; margin-left: -18px; min-width: min(280px, 100%); }
+  .light { display: flex; flex-direction: column; gap: 2px; padding: 0 18px; border-left: 1px solid var(--band-rule); min-width: 0; max-width: 300px; }
+  .light:first-child { border-left-color: transparent; }
+  .maintnote { margin-top: 10px; font-size: 13px; color: var(--band-ink); }
   .light.rise { animation: rise .45s ease both; }
-  .light .name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-  .light .dot { display: inline-block; width: 10px; height: 10px; border-radius: 999px; background: var(--rule); flex: none; transition: background .4s ease; }
-  .light.running .dot { background: var(--amber); animation: blink 1.2s ease-in-out infinite; }
-  .light.done .dot { background: var(--olive); }
-  .light.waiting .dot { background: transparent; border: 2px solid var(--amber); }
-  .light.error .dot, .light.no_answer .dot { background: transparent; border: 2px solid var(--ink-soft); width: 10px; height: 10px; }
-  .light .line { color: var(--ink-soft); font-size: 13px; }
+  .light .name { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--band-soft); }
+  .light .dot { display: inline-block; width: 8px; height: 8px; border-radius: 1px; background: var(--band-rule); flex: none; transition: background .4s ease; }
+  .light.running .dot { background: var(--band-ink); animation: blink 1.2s ease-in-out infinite; }
+  .light.done .dot { background: var(--band-olive); }
+  .light.waiting .dot { background: transparent; border: 2px solid var(--band-soft); }
+  .light.error .dot, .light.no_answer .dot { background: transparent; border: 2px solid var(--band-ink); }
+  .light .line { color: var(--band-ink); font-size: 14px; font-weight: 600; }
   .band { background: var(--olive); color: var(--on-olive); border-radius: var(--radius); padding: 14px 18px; font-size: 17px; font-weight: 600; margin: 0 0 18px; animation: rise .5s ease; display: none; }
   .band.on { display: block; }
-  .dayline { font-size: 28px; line-height: 1.2; font-weight: 500; max-width: 980px; min-height: 34px; padding: 0 0 18px; }
-  .dayline .caret { display: inline-block; width: 3px; height: 26px; background: var(--olive); margin-left: 4px; vertical-align: -4px; animation: caret .8s steps(1) infinite; }
+  .dayline { font-size: 32px; line-height: 1.12; font-weight: 650; font-stretch: 92%; letter-spacing: -.03em; max-width: 980px; min-height: 36px; }
+  .dayline .caret { display: inline-block; width: 3px; height: 28px; background: var(--band-olive); margin-left: 4px; vertical-align: -4px; animation: caret .8s steps(1) infinite; }
   .quiet { color: var(--ink-soft); font-size: 13px; padding: 10px 0; }
   .banner { background: var(--sheet); border-left: 3px solid var(--pen); padding: 8px 12px; margin: 0 0 12px; font-size: 13px; }
   .banner.err { border-left-color: var(--red); }
 
-  nav.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--rule); align-items: center; }
-  nav.tabs button { background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 10px 14px; font: 600 14px var(--font-sans); color: var(--ink-soft); cursor: pointer; }
-  nav.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--olive); }
-  nav.tabs .count { display: inline-block; margin-left: 6px; font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--rule); color: var(--ink); }
-  nav.tabs .waiting { margin-left: auto; font-size: 13px; color: var(--amber); padding: 10px 0; }
-  nav.tabs .waiting.none { color: var(--ink-soft); }
+  nav.tabs { display: flex; gap: 4px; align-items: flex-end; flex-wrap: wrap; }
+  nav.tabs button[data-tab] { background: var(--band-2); border: none; border-radius: 4px 4px 0 0; padding: 12px 20px; font: 650 15px var(--font-sans); color: var(--band-soft); cursor: pointer; }
+  nav.tabs button[data-tab][aria-selected="true"] { background: var(--paper); color: var(--ink); }
+  nav.tabs .count { margin-left: 6px; font-size: 13px; font-weight: 600; color: inherit; }
+  .tabside { margin-left: auto; display: flex; gap: 10px; align-items: center; padding-bottom: 10px; flex-wrap: wrap; }
+  nav.tabs .waiting { font-size: 13px; color: var(--band-ink); }
+  nav.tabs .waiting.none { color: var(--band-soft); }
+  .tabside button.act.primary { background: var(--band-olive); color: var(--band); border-color: var(--band-olive); }
+  .tabside button.act.primary:disabled { background: var(--band-2); color: var(--band-soft); border-color: var(--band-rule); }
   section.tab { display: none; padding-top: 18px; }
   section.tab.on { display: block; }
   .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
   .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); margin: 10px 0 2px; font-weight: 600; }
-  .row { background: var(--sheet); border-radius: var(--radius); padding: 13px 16px; display: flex; gap: 12px; align-items: center; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink); margin: 10px 0 2px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  h2:after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .row { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 12px 16px; display: flex; gap: 14px; align-items: center; }
+  .row .tm { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.02em; min-width: 58px; line-height: 1; }
+  .row.ended { background: var(--band); border-color: var(--band); color: var(--band-ink); }
+  .row.ended .tm { color: var(--band-olive); }
+  .row.ended .sub { color: var(--band-soft); }
+  .row.ended button.act { background: var(--band-olive); color: var(--band); border-color: var(--band-olive); }
+  .row.ended .tag, .row.ended .tag.ok { color: var(--band-ink); border-color: var(--band-rule); }
+  .pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .pcard { background: var(--sheet); border: 1px solid var(--rule); border-radius: 1px; box-shadow: 0 1px 0 rgba(42,31,23,0.05); padding: 18px 20px; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .pcard .pname { font-size: 18px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
+  .pcard .sub { color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
+  .pcard .pfoot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .row.rise { animation: rise .45s ease both; }
-  .row.closed { opacity: .72; }
+  .row.closed { background: var(--sheet); }
   .row .title .num { color: var(--ink-soft); font-weight: 500; margin-right: 6px; font-size: 13px; }
   .row .main { flex: 1; min-width: 0; }
   .row .title { font-weight: 500; }
@@ -116,19 +143,24 @@
   .skeleton + .skeleton { animation-delay: .2s; }
   .skeleton + .skeleton + .skeleton { animation-delay: .4s; }
   button.act { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px 12px; font: 600 13px var(--font-sans); color: var(--ink); cursor: pointer; }
-  button.act.primary { background: var(--olive); color: var(--on-olive); border-color: var(--olive); }
-  button.act.warn { border-color: var(--amber); color: var(--amber); }
+  button.act.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  button.act.warn { border-color: var(--ink); color: var(--ink); font-weight: 700; }
   button.act.undo { border-color: transparent; color: var(--ink-soft); text-decoration: underline; text-underline-offset: 3px; padding: 6px 8px; }
   button.act.undo:hover { color: var(--ink); }
   .summary { color: var(--ink-soft); font-size: 13px; padding: 2px 0 6px; }
   .summary b { color: var(--ink); font-weight: 600; }
-  button.act:disabled { opacity: .5; cursor: default; }
+  button.act:disabled { background: var(--sheet); color: var(--ink-soft); border-color: var(--rule); cursor: default; }
   a.act { font-size: 13px; font-weight: 600; text-decoration: none; padding: 6px 12px; border: 1px solid var(--olive); border-radius: var(--radius); color: var(--olive); }
-  .tag { display: inline-block; font-size: 11px; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink-soft); margin-left: 6px; vertical-align: middle; }
-  .tag.wait { border-color: var(--amber); color: var(--amber); }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border: 1px solid var(--rule); border-radius: var(--radius); color: var(--ink-soft); margin-left: 6px; vertical-align: middle; }
+  .tag.wait { border-color: var(--ink-soft); color: var(--ink); }
   .tag.ok { border-color: var(--olive); color: var(--olive); animation: rise .4s ease; }
   .tag.err { border-color: var(--red); color: var(--red); }
   textarea.note, input.when { width: 100%; font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px; margin-top: 6px; }
+  .thread { margin-top: 6px; }
+  button.act.link { border: 0; padding: 2px 0; font-weight: 600; color: var(--ink-soft); }
+  .originbox { border-left: 2px solid var(--rule); padding: 4px 0 4px 10px; margin-top: 6px; }
+  .thread .msg { border-left: 2px solid var(--rule); padding: 4px 0 4px 10px; margin-top: 6px; }
+  .thread .msgbody { white-space: pre-wrap; font-size: 13px; max-height: 220px; overflow: auto; }
   textarea.draft { width: 100%; min-height: 110px; font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 8px; margin-top: 6px; }
   .search { width: 100%; font: 14px var(--font-sans); padding: 8px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); color: var(--ink); margin: 6px 0 10px; }
   a { color: var(--olive); }
@@ -138,10 +170,11 @@
   .addrow input.when { margin-top: 0; flex: 1; min-width: 140px; }
   .addrow input[type="date"] { flex: 0 0 auto; width: auto; min-width: 0; }
   select.prio { font: 14px var(--font-sans); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 6px; }
-  .title .prio { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 8px; vertical-align: 1px; background: var(--rule); }
+  .prio-label { font-size: 13px; color: var(--ink-soft); }
+  .title .prio { display: inline-block; width: 8px; height: 8px; border-radius: 1px; margin-right: 8px; vertical-align: 1px; background: var(--rule); }
   .title .prio.p1 { background: var(--red); }
-  .title .prio.p2 { background: var(--amber); }
-  .row.pinned { border-left: 3px solid var(--amber); }
+  .title .prio.p2 { background: var(--ink-soft); }
+  .row.pinned { border-left: 3px solid var(--ink-soft); }
   .prepbox { display: none; margin: -4px 0 6px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius); padding: 14px 16px; font-size: 14px; max-height: 60vh; overflow: auto; }
   .prepbox.on { display: block; }
   .prepbox h4 { margin: 12px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-soft); }
@@ -150,30 +183,29 @@
   .prepbox li { margin: 2px 0 2px 16px; }
   .row .count-open { font-size: 13px; color: var(--ink-soft); white-space: nowrap; align-self: center; }
   .row .count-open b { color: var(--ink); font-weight: 600; }
-  .row .count-open .late { color: var(--amber); }
+  .row .count-open .late, .pcard .late { color: var(--ink); font-weight: 700; }
   .overnight { margin-top: 14px; font-size: 13px; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 12px; }
   .overnight b { color: var(--ink); font-weight: 600; }
   @media (max-width: 820px) {
     .cols { grid-template-columns: 1fr; }
-    .lights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .dayline { font-size: 22px; }
+    .dayline { font-size: 24px; }
   }
   @media (max-width: 520px) {
     body { padding-bottom: 40px; }
-    header.top { padding-top: 18px; }
+    .cockpit-in, .page { padding-left: var(--gutter); padding-right: var(--gutter); }
     .start { gap: 18px; }
-    .ringwrap { width: 118px; height: 118px; }
-    .ring { inset: 11px; font-size: 17px; }
-    .lights { grid-template-columns: 1fr 1fr; gap: 8px; }
-    .light { min-height: 0; padding: 10px 12px; }
+    .ringwrap { width: 132px; height: 132px; }
+    .ring { inset: 16px; font-size: 20px; }
+    .light { max-width: 100%; }
     .row { flex-direction: column; align-items: flex-start; }
     .row .acts { justify-content: flex-start; }
-    nav.tabs { flex-wrap: wrap; }
-    nav.tabs .waiting { margin-left: 0; width: 100%; padding-top: 4px; }
+    nav.tabs button[data-tab] { padding: 10px 12px; font-size: 14px; }
+    .tabside { margin-left: 0; width: 100%; }
   }
 </style>
 </head>
 <body>
+<section class="cockpit"><div class="cockpit-in">
 <header class="top">
   <div class="brand">
     <svg class="wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4.1225 1.3900" role="img" aria-label="chalette">
@@ -194,32 +226,43 @@
   </div>
   <div class="topright">
     <span class="meta" id="metaline">{{WORKSPACE_BASENAME}}</span>
-    <button class="ghost" id="themeBtn" type="button" title="Switch between the ink and paper looks">Paper</button>
+    <span class="clock" id="clock"></span>
+    <button class="ghost" id="themeBtn" type="button" title="Switch between the white and ink looks">Ink</button>
   </div>
 </header>
 
 <div class="start">
   <div class="ringwrap idle" id="ringwrap">
     <div class="halo"></div>
-    <svg width="150" height="150" viewBox="0 0 150 150" aria-hidden="true">
-      <circle class="track" cx="75" cy="75" r="68" fill="none" stroke-width="6"></circle>
-      <circle class="arc" id="arc" cx="75" cy="75" r="68" fill="none" stroke-width="6" stroke-linecap="round" stroke-dasharray="427" stroke-dashoffset="427" transform="rotate(-90,75,75)"></circle>
+    <svg viewBox="0 0 176 176" aria-hidden="true">
+      <circle class="seg" data-seg="prep" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="110 380" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
+      <circle class="seg" data-seg="inbox" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="0 123 110 257" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
+      <circle class="seg" data-seg="apply" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="0 246 110 134" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
+      <circle class="seg" data-seg="refresh" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="0 369 110 11" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
     </svg>
     <button class="ring" id="startBtn" disabled title="Switch every task on and run the morning">Start</button>
   </div>
-  <div class="lights" id="lights" aria-live="polite"></div>
+  <div class="readout">
+    <div class="dayline" id="dayline">Loading the day.</div>
+    <div class="lights" id="lights" aria-live="polite"></div>
+    <div class="maintnote" id="maintnote" hidden></div>
+  </div>
 </div>
-<div class="band" id="band"></div>
-<div id="banners" role="status" aria-live="polite"></div>
-<div class="dayline" id="dayline">Loading the day.</div>
 
 <nav class="tabs" role="tablist">
   <button role="tab" aria-selected="true" aria-controls="tab-today" data-tab="today">Today</button>
   <button role="tab" aria-selected="false" aria-controls="tab-inbox" tabindex="-1" data-tab="inbox">Inbox<span class="count" id="inboxCount">0</span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count" id="plateCount">0</span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-projects" tabindex="-1" data-tab="projects">Projects<span class="count" id="projectCount">0</span></button>
-  <span class="waiting none" id="waiting" aria-live="polite"></span>
+  <button role="tab" aria-selected="false" aria-controls="tab-review" tabindex="-1" data-tab="review">Review<span class="count" id="reviewCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-week" tabindex="-1" data-tab="week">Week</button>
+  <span class="tabside"><span class="waiting none" id="waiting" aria-live="polite"></span><button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply all</button></span>
 </nav>
+</div></section>
+
+<div class="page">
+<div class="band" id="band"></div>
+<div id="banners" role="status" aria-live="polite"></div>
 
 <section class="tab on" id="tab-today" role="tabpanel">
   <div class="parts">
@@ -230,7 +273,7 @@
   <div class="cols mine">
     <div class="col">
       <h2>Priorities</h2>
-      <div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><select class="prio" id="todoPrio" aria-label="Priority"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div>
+      <div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><label class="prio-label" for="todoPrio">Importance</label><select class="prio" id="todoPrio" title="How much this matters; it sets no date"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div>
       <div id="todos"></div>
     </div>
     <div class="col">
@@ -267,14 +310,30 @@
   <div id="projectrows" class="col"></div>
 </section>
 
-<section class="tab" id="tab-plate" role="tabpanel">
+<section class="tab" id="tab-review" role="tabpanel">
   <div class="parts">
-    <button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply</button>
+    <button class="act primary" data-part="apply" disabled title="Send your answers to your book">Apply</button>
   </div>
+  <div id="reviewhead" class="quiet"></div>
+  <div id="reviewrows" class="col"></div>
+</section>
+
+<section class="tab" id="tab-week" role="tabpanel">
+  <div class="parts">
+    <button class="act primary" data-part="apply" disabled title="Send your choices to your book">Apply</button>
+  </div>
+  <div id="weekhead" class="quiet"></div>
+  <div id="weekrows" class="col"></div>
+</section>
+
+<section class="tab" id="tab-plate" role="tabpanel">
   <input class="search" id="search" placeholder="Search the list" aria-label="Search the list">
+  <button class="act" id="allProjects" type="button" hidden>All projects</button>
   <div id="platehead" class="quiet"></div>
   <div id="platerows" class="col"></div>
 </section>
+
+</div>
 
 <script>
 (function () {
@@ -282,8 +341,9 @@
   var CFG = {
     server: {{TRIGGER_SERVER_JSON}},
     basename: {{WORKSPACE_BASENAME_JSON}},
-    version: {{PLUGIN_VERSION_JSON}},
-    published: {{PUBLISHED_AT_JSON}}
+    // The seat's mail connector for a direct send (cr1#710); null keeps
+    // Send on the Apply run.
+    mail: {{MAIL_DIRECT_JSON}}
   };
   var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh day"]];
   var TASKS = { prep: "Hub Prep", inbox: "Hub Inbox", apply: "Hub Apply", refresh: "Hub Refresh" };
@@ -306,11 +366,14 @@
   // a minute or two, so after this long it reads as no answer and Start is
   // free again (cr1#633: a failed run held the ring on Running for 15 minutes).
   var NO_START_MS = 8 * 60 * 1000;
-  var RING = 427;
   var S = { projects: null, pquery: "", today: null, plate: null, inbox: null, status: {}, choices: [], streak: null, pendingSend: {}, query: "",
     // What the owner has typed or opened, kept across every redraw (cr1#677,
     // cr1#679): a draft's edits, an open note or snooze box, an open brief.
-    drafts: {}, open: {}, prepOpen: {} };
+    drafts: {}, open: {}, prepOpen: {}, sending: {}, originOpen: {},
+    // cr1#714: which thread boxes are open, and what was read for them. Kept
+    // in memory only: the page's data holds no thread text, only a commitment's
+    // short source line (cr1#725).
+    threadOpen: {}, threads: {} };
   // The Start sequence's own memory: when this page pressed Start, which lights
   // have risen since, what the day line last said, what the band already said.
   var SEQ = { startedAt: null, risen: {}, dayText: "", typing: null, counted: {}, bandShown: null, settled: false, confirmRestart: false, starting: false, full: false };
@@ -351,7 +414,8 @@
   }
   function resultTag(res) {
     if (!res || !res.result) return "";
-    return '<span class="tag ' + (res.result.outcome === "applied" ? "ok" : (res.result.outcome === "already" ? "" : "err")) + '">' + esc(res.result.line || res.result.outcome) + "</span>";
+    var o = res.result.outcome;
+    return '<span class="tag ' + (o === "applied" ? "ok" : (o === "already" ? "" : (o === "sending" ? "wait" : "err"))) + '">' + esc(res.result.line || res.result.outcome) + "</span>";
   }
   function waitTag(c, text) { return '<span class="tag wait">' + esc(claimed(c) ? "being applied" : text) + "</span>"; }
   function undoBtn(c, title) {
@@ -367,10 +431,11 @@
   // ---- theme ---------------------------------------------------------------
   function setTheme(name) {
     document.documentElement.setAttribute("data-theme", name);
-    $("themeBtn").textContent = name === "ink" ? "Paper" : "Ink";
-    try { localStorage.setItem("cockpit.theme", name); } catch (e) {}
+    $("themeBtn").textContent = name === "ink" ? "White" : "Ink";
+    // A new key (cr1#731): the old one held Ink as everyone's default.
+    try { localStorage.setItem("hub.theme", name); } catch (e) {}
   }
-  try { var savedTheme = localStorage.getItem("cockpit.theme"); if (savedTheme === "paper" || savedTheme === "ink") setTheme(savedTheme); } catch (e) {}
+  try { var savedTheme = localStorage.getItem("hub.theme"); if (savedTheme === "paper" || savedTheme === "ink") setTheme(savedTheme); } catch (e) {}
   $("themeBtn").addEventListener("click", function () { setTheme(document.documentElement.getAttribute("data-theme") === "ink" ? "paper" : "ink"); });
 
   // ---- status lights -------------------------------------------------------
@@ -407,6 +472,7 @@
     var label = SEQ.starting ? "Starting" : (SEQ.confirmRestart ? "Start over?" : (allDone && !SEQ.settled ? "Done" : (anyRunning ? (full ? Math.round(100 * done / LEGS.length) + "%" : "Running") : "Start")));
     return { anyRunning: anyRunning, allDone: allDone, phase: phase, fill: fill, label: label };
   }
+  function maintLine(mt) { mt = mt || {}; return (mt.failing || []).length || (mt.unread || []).length ? String(mt.line || "") : ""; }
   function renderLights() {
     var h = "", i = 0;
     LEGS.forEach(function (l) {
@@ -418,12 +484,18 @@
       i += 1;
     });
     $("lights").innerHTML = h;
+    // Maintenance is no light of its own (cr1#682), so it speaks only when a
+    // job failed or a connector went unread (cr1#822).
+    var note = $("maintnote"), said = maintLine(S.status.maintenance);
+    note.hidden = !said; note.textContent = said;
     var view = ringView(), anyRunning = view.anyRunning, allDone = view.allDone;
     var sb = $("startBtn"), wrap = $("ringwrap");
     // "starting" only while Start's own calls are in flight; a run that ended
-    // part done and part failed rests at idle, never on a stuck amber ring.
+    // part done and part failed rests at idle, never on a stuck ring.
     wrap.className = "ringwrap " + view.phase + (wired ? " wired" : "") + (wrap.className.indexOf("rippling") >= 0 ? " rippling" : "");
-    $("arc").setAttribute("stroke-dashoffset", String(Math.round(RING - RING * view.fill)));
+    // One segment of the dial per leg, for a Start run only: a single leg press
+    // leaves the dial alone (cr1#687), and yesterday's lights show nothing.
+    LEGS.forEach(function (l) { var seg = document.querySelector('[data-seg="' + l[0] + '"]'), run = SEQ.startedAt && SEQ.full ? thisRun(l[0]) : null, st = run ? run.state : ""; if (seg) seg.setAttribute("class", "seg" + (st === "done" || st === "running" || st === "waiting" ? " " + st : "")); });
     // cr1#675: the button stays off until Start's own calls settle, so a second
     // press can never fire every task twice.
     sb.disabled = !wired || SEQ.starting;
@@ -483,7 +555,7 @@
     // The latest applied close of this row from this page, if no reopen followed it.
     var res = latestResult("commitment", cid);
     if (!res || !res.result || res.result.outcome !== "applied") return null;
-    if (res.action !== "done" && res.action !== "confirm") return null;
+    if (res.action !== "done" && res.action !== "confirm" && res.action !== "drop") return null;
     return reopenedAfter(cid, res) ? null : res;
   }
   function reopenedAfter(cid, res) {
@@ -499,7 +571,7 @@
     // leaves. `shown(cid)` says whether the lanes already list the item.
     var out = [];
     S.choices.forEach(function (c) {
-      if (c.kind !== "commitment" || !c.applied || !c.result || c.result.outcome !== "applied" || (c.action !== "done" && c.action !== "confirm")) return;
+      if (c.kind !== "commitment" || !c.applied || !c.result || c.result.outcome !== "applied" || (c.action !== "done" && c.action !== "confirm" && c.action !== "drop")) return;
       if (shown(String(c.n))) return;
       var mark = c.created_at || c.applied_at || "", waiting = null, reopened = false;
       S.choices.forEach(function (r) {
@@ -578,11 +650,19 @@
     if (t) return "Your day, as of " + fmtWhen(t.generated_at) + ".";
     return isRunning("refresh") || isRunning("prep") ? "Filling the day." : "Press Start to fill the day.";
   }
+  // The one call that just ended (A1): the newest whose end has passed, inside
+  // the hour its prep stays shown. Rows are in start order.
+  function justEnded(ms, now) {
+    var at = -1;
+    ms.forEach(function (m, i) { if (m.all_day || !m.end) return; var e = new Date(m.end).getTime(); if (e <= now && now - e < 3600000) at = i; });
+    return at;
+  }
   function renderToday() {
     var t = S.today, p = S.plate;
     setDayline(dayLine(t, p));
     var h = "";
     if (t && t.meetings && t.meetings.length) {
+      var endedAt = SEQ.endedAt = justEnded(t.meetings, Date.now());
       t.meetings.forEach(function (m, i) {
         var held = m.prep_shown_until && new Date(m.prep_shown_until) > new Date();
         var pk = (m.start || "") + "|" + (m.title || ""), open = !!S.prepOpen[pk];
@@ -590,7 +670,8 @@
         // cr1#679: an open brief stays open when the page redraws.
         var prep = (m.prep && held) ? (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Prep") + "</button>" : '<span class="tag ok">Prep ready</span>') : '<span class="tag">No prep</span>';
         var when = m.all_day ? "All day" : fmtWhen(m.start);
-        h += '<div class="row' + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><div class="main"><div class="title">' + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + "</div></div>"
+        var ended = i === endedAt;
+        h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + "</div></div>"
           + (m.prep_text && held ? '<div class="prepbox' + (open ? " on" : "") + '" id="prep-' + i + '">' + prepHtml(m.prep_text) + "</div>" : "");
       });
     } else if (!t && isRunning("prep")) h = skeletons(3);
@@ -707,9 +788,25 @@
     else if (shut) acts += '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
     if (!w && !shut) {
       acts += '<button class="act primary" data-cact="' + (r.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (r.pending ? "Confirm" : "Done") + "</button>";
-      if (!compact) acts += '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>';
+      if (!compact) acts += '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>'
+        + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your plate without marking it done">Drop</button>');
     }
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, r.horizon].filter(Boolean).join(" · ")) + '</div><div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, r.horizon].filter(Boolean).join(" · ")) + "</div>" + (compact ? "" : originBox(r)) + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+  }
+  // cr1#725: where the promise came from, from the row's own record.
+  function originBox(r) {
+    var o = r.origin; if (!o) return "";
+    var on = !!S.originOpen[r.id];
+    var h = '<div class="thread"><button class="act link" data-origin="' + esc(r.id) + '" aria-expanded="' + (on ? "true" : "false") + '">' + (on ? "Hide" : "Where this came from") + "</button>";
+    if (on) h += '<div class="originbox"><div class="sub">' + esc([o.source, o.date ? (o.captured ? "captured " : "") + fmtDate(o.date) : "", o.who].filter(Boolean).join(" · ")) + '</div><div class="msgbody">' + esc(o.line ? (o.paraphrase ? "In other words: " : "") + o.line : "No source line was kept for this one.") + "</div></div>";
+    return h + "</div>";
+  }
+  // A project's filter is the search filled in, with one way back (cr1#728).
+  function setProjectFilter(name) {
+    S.projectFilter = name || null; S.query = name || ""; $("search").value = S.query;
+    $("allProjects").hidden = !name;
+    if (name) $("allProjects").textContent = "All projects";
+    renderPlate();
   }
   function renderPlate() {
     var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading the plate." : "No plate read yet. Press Start or Refresh day."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
@@ -729,7 +826,7 @@
     var reopen = "";
     closedFromPage(function (id) { return rows.some(function (r) { return String(r.id) === id; }); }).forEach(function (e) {
       var c = e.res;
-      reopen += '<div class="row closed"><div class="main"><div class="title">' + esc(cap(c.title || c.n)) + '<span class="tag ok">closed</span>' + (e.waiting ? waitTag(e.waiting, "reopen waiting") : "") + '</div></div><div class="acts">'
+      reopen += '<div class="row closed"><div class="main"><div class="title">' + esc(cap(c.title || c.n)) + '<span class="tag ok">' + (c.action === "drop" ? "dropped" : "closed") + '</span>' + (e.waiting ? waitTag(e.waiting, "reopen waiting") : "") + '</div></div><div class="acts">'
         + (e.waiting ? undoBtn(e.waiting, "Take the reopen back before it reaches your book") : '<button class="act undo" data-cact="reopen" data-cid="' + esc(c.n) + '">Undo</button>') + "</div></div>";
     });
     if (reopen) $("platerows").innerHTML += "<h2>Closed from this page</h2>" + reopen;
@@ -737,7 +834,7 @@
   function titleOf(cid) { var p = S.plate; if (p) for (var i = 0; i < (p.rows || []).length; i++) if (String(p.rows[i].id) === String(cid)) return p.rows[i].title; return ""; }
   function onPlateAct(btn) {
     var act = btn.getAttribute("data-cact"), cid = btn.getAttribute("data-cid"), row = btn.closest(".row"), slot = row ? row.querySelector(".slot") : null;
-    if (act === "done" || act === "confirm" || act === "reopen") { saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: act, title: titleOf(cid) }); return; }
+    if (act === "done" || act === "confirm" || act === "drop" || act === "reopen") { saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: act, title: titleOf(cid) }); return; }
     if (!slot || (act !== "context" && act !== "snooze")) return;
     // The open box lives in the page's state, so a redraw keeps it and what
     // was typed in it (cr1#679).
@@ -767,14 +864,19 @@
     var h = "";
     (ib.items || []).forEach(function (it, i) {
       var w = inboxChoice(it), res = inboxResult(it), pend = S.pendingSend[ikey(it)];
-      var tag = w ? waitTag(w, w.action + " waiting") : resultTag(res);
+      var sending = S.sending[ikey(it)];
+      // A reply the page sent, or is sending, offers no second Send (cr1#710).
+      var sent = sending || (res && res.action === "send" && res.result && (res.result.outcome === "applied" || res.result.outcome === "sending"));
+      // A reply already in Drafts offers no second Draft (cr1#727).
+      var drafted = draftedAlready(res);
+      var tag = sending ? '<span class="tag wait">' + (sending === "draft" ? "Drafting." : "Sending.") + "</span>" : (w ? waitTag(w, w.action + " waiting") : resultTag(res));
       var acts = "";
       if (w) acts += undoBtn(w, "Take this back before it is applied");
-      if (!w) {
+      if (!w && !sent) {
         var blanks = it.draft && it.draft.blanks && it.draft.blanks.length ? it.draft.blanks : null;
         if (it.kind === "email_reply" && it.draft && it.draft.body && !blanks) {
           acts += '<button class="act ' + (pend ? "warn" : "primary") + '" data-iact="send" data-n="' + esc(it.n) + '">' + (pend ? "Press again to send" : "Send") + "</button>";
-          acts += '<button class="act" data-iact="draft" data-n="' + esc(it.n) + '">Draft</button>';
+          if (!drafted) acts += '<button class="act" data-iact="draft" data-n="' + esc(it.n) + '">Draft</button>';
         }
         acts += '<button class="act" data-iact="snooze" data-n="' + esc(it.n) + '">Snooze 3 days</button>';
       }
@@ -783,7 +885,7 @@
       // the original draft on a redraw.
       var typed = S.drafts[ikey(it)];
       var draft = (it.draft && it.draft.body && !w) ? fill + '<div class="sub">To: ' + esc(it.draft.to) + (it.draft.cc ? " · Cc: " + esc(it.draft.cc) : "") + "</div><textarea class=\"draft\" aria-label=\"Reply draft\" data-n=\"" + esc(it.n) + '" data-ikey="' + esc(ikey(it)) + '">' + esc(typed != null ? typed : it.draft.body) + "</textarea>" : "";
-      h += '<div class="row' + riseClass("i" + it.n + "-" + (it.fire_stamp || "")) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title"><span class="num">' + esc(it.n) + "</span>" + esc(it.name) + (it.subject ? " · " + esc(it.subject) : "") + tag + '</div><div class="sub">' + esc(it.why) + "</div>" + draft + '</div><div class="acts">' + acts + "</div></div>";
+      h += '<div class="row' + riseClass("i" + it.n + "-" + (it.fire_stamp || "")) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title"><span class="num">' + esc(it.n) + "</span>" + esc(it.name) + (it.subject ? " · " + esc(it.subject) : "") + tag + '</div><div class="sub">' + esc(it.why) + "</div>" + threadBox(it) + draft + '</div><div class="acts">' + acts + "</div></div>";
     });
     $("inboxrows").innerHTML = h || '<div class="quiet">Nothing needs you.</div>';
   }
@@ -822,10 +924,275 @@
       if (Date.now() - first < SEND_CONFIRM_MIN_MS) return;
       delete S.pendingSend[k];
       base.action = "send"; base.confirmed = true; base.token = rid() + rid();
+      // The page sends itself through the seat's mail connector (cr1#710);
+      // a seat or a row it cannot send for keeps Send on the Apply run.
+      if (canDirect(it)) { sendDirect(base, it); return; }
       saveChoice(base); return;
     }
-    if (act === "draft") { base.action = "draft"; saveChoice(base); return; }
+    if (act === "draft") { base.action = "draft"; if (canDraftDirect(it)) { draftDirect(base, it); return; } saveChoice(base); return; }
     if (act === "snooze") { base.action = "snooze"; saveChoice(base); }
+  }
+
+  // ---- direct send (cr1#710) -------------------------------------------------
+  // Owner ruling 2026-11-04: the page sends, through the seat's own declared
+  // mail connector (Superhuman, Gmail or Microsoft 365). Before it sends it
+  // re-reads the thread, and a message newer than the one the draft answered
+  // stops the send, the same rule the Apply run keeps. The press is recorded
+  // as "sending" before anything goes out, so a second click or another tab
+  // never sends twice, and Apply never sees it.
+  var MAIL = CFG.mail;
+  var NEWER_LINE = "A newer message arrived in this thread; read it first. Nothing was sent.";
+  function addrList(s) {
+    return String(s || "").split(/[,;]/).map(function (a) { var m = a.match(/<([^>]+)>/); return (m ? m[1] : a).trim(); })
+      .filter(function (a) { return a.indexOf("@") > 0; });
+  }
+  function htmlBody(t) { return String(t || "").split(/\r?\n/).map(function (l) { return esc(l); }).join("<br>"); }
+  function tsAfter(v, base) { var a = typeof v === "number" ? v : Date.parse(String(v)); return !isNaN(a) && a > base + 1000; }
+  function canDirect(it) {
+    if (!MAIL || !mcp || !db || !it) return false;
+    if (MAIL.provider === "superhuman") return !!(it.thread_id && it.message_ts);
+    if (MAIL.provider === "gmail") return !!(it.thread_id && it.message_id && it.message_ts);
+    if (MAIL.provider === "outlook") return !!(it.message_id && it.message_ts && addrList(it.draft && it.draft.to).length);
+    return false;
+  }
+  function readInput(it) {
+    if (MAIL.provider === "superhuman") return { thread_id: it.thread_id, include_comments: false, include_drafts: false, message_limit: 5 };
+    if (MAIL.provider === "gmail") return { threadId: it.thread_id, messageFormat: "METADATA_ONLY" };
+    // Microsoft 365 has no read of a whole conversation: any mail from the
+    // person this answers, received after the message it answers, is newer.
+    return { sender: addrList(it.draft.to)[0], afterDateTime: it.message_ts, limit: 5 };
+  }
+  // true: newer mail; false: none; null: the answer could not be read, so
+  // the page cannot vouch for the thread and hands the press to Apply.
+  function newerIn(p, baseIso) {
+    var base = Date.parse(baseIso || ""); if (isNaN(base)) return null;
+    p = p || {};
+    if (MAIL.provider === "superhuman") {
+      var seen = false, hit = false;
+      if (p.last_message_at) { seen = true; if (tsAfter(p.last_message_at, base)) hit = true; }
+      (p.messages || []).forEach(function (m) { if (m && m.sent_at) { seen = true; if (tsAfter(m.sent_at, base)) hit = true; } });
+      return seen ? hit : null;
+    }
+    var list = Array.isArray(p) ? p : (p.messages || p.value || p.results || p.emails || p.items || null);
+    if (!list) return null;
+    list = list.filter(function (m) { return m && typeof m === "object" && !("nextOffset" in m) && !("nextCursor" in m) && !("totalResultCount" in m && Object.keys(m).length <= 3); });
+    if (MAIL.provider === "outlook") return list.length > 0;
+    var parsed = false, newer = false;
+    list.forEach(function (m) {
+      ["date", "internalDate", "receivedDateTime", "sent_at", "ts"].forEach(function (key) {
+        var v = m[key]; if (v == null || v === "") return;
+        if (key === "internalDate") v = Number(v);
+        var a = typeof v === "number" ? v : Date.parse(String(v));
+        if (!isNaN(a)) { parsed = true; if (a > base + 1000) newer = true; }
+      });
+    });
+    return parsed ? newer : null;
+  }
+  function draftIdOf(p) {
+    p = p || {};
+    if (MAIL.provider === "superhuman") return (p.draft && (p.draft.draft_id || p.draft.id)) || p.draft_id || null;
+    return p.id || p.messageId || p.message_id || (p.draft && (p.draft.id || p.draft.messageId)) || null;
+  }
+  function sendCalls(it, d) {
+    var to = addrList(d.to), cc = addrList(d.cc);
+    if (MAIL.provider === "superhuman") {
+      var inp = { type: "reply", thread_id: it.thread_id, body: htmlBody(d.body) };
+      if (to.length) inp.to = to; if (cc.length) inp.cc = cc;
+      return mcp.callTool(MAIL.server, MAIL.draft, inp).then(function (r) {
+        var id = draftIdOf(r && r.payload);
+        if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
+        return mcp.callTool(MAIL.server, MAIL.send, { draft_id: id }).catch(function (e) { throw { stage: "send", err: e }; });
+      });
+    }
+    if (MAIL.provider === "gmail") {
+      var g = { messageId: it.message_id, body: String(d.body || "") };
+      if (to.length) g.to = to; if (cc.length) g.cc = cc;
+      return mcp.callTool(MAIL.server, MAIL.send, g).catch(function (e) { throw { stage: "send", err: e }; });
+    }
+    return mcp.callTool(MAIL.server, MAIL.draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" }).then(function (r) {
+      var id = draftIdOf(r && r.payload);
+      if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
+      return mcp.callTool(MAIL.server, MAIL.send, { messageId: id }).catch(function (e) { throw { stage: "send", err: e }; });
+    });
+  }
+  // One sentence per failure the owner can act on (cr1#685's rule): the raw
+  // code rides on the banner's hover text, never in the sentence.
+  function sendErrLine(e, stage) {
+    var code = e && e.code ? String(e.code) : "", name = MAIL.server;
+    if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors. Nothing was sent.";
+    if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors. Nothing was sent.";
+    if (code === "not_in_manifest" || code === "approval_required" || code === "consent_required") return "This page is not allowed to use " + name + " yet; allow it when the page asks, then press Send again. Nothing was sent.";
+    if (code === "blocked_by_policy") return "Your organization does not let this page send through " + name + ". Nothing was sent.";
+    if (code === "no_draft_id") return name + " made no reply to send. Check your Drafts; nothing was sent.";
+    if (stage === "send") {
+      if (code === "tool_error") return name + " did not send it" + (e.message ? ": " + String(e.message).slice(0, 160) : "") + ". Check your Drafts and Sent before pressing again.";
+      return "The send may have gone out. Check your Sent folder before pressing Send again.";
+    }
+    if (stage === "read") return "Could not read the thread in " + name + ", so nothing was sent. Press Send again.";
+    return "Could not reach " + name + "; nothing was sent. Press Send again.";
+  }
+  function sendDirect(base, it) {
+    var k = ikey(it);
+    if (S.sending[k]) return;
+    S.sending[k] = true; renderInbox();
+    var row = { id: rid(), created_at: nowIso(), applied: true, applied_at: nowIso(), by_page: true, provider: MAIL.provider };
+    for (var f in base) row[f] = base[f];
+    var ref = db.collection("choices").doc(row.id);
+    function land(outcome, line, err) {
+      row.result = { outcome: outcome, line: line }; row.applied_at = nowIso();
+      return ref.set(row).then(function () {
+        if (!S.choices.some(function (c) { return c.id === row.id; })) S.choices.push(row);
+        delete S.sending[k]; renderAll();
+        if (outcome === "error") banner(line, true, err ? errText(err) : "");
+      }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "Sent, but the page could not note it; do not press Send again." : line, true, errText(e)); });
+    }
+    mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) {
+      var newer = newerIn(r && r.payload, it.message_ts);
+      if (newer === null) {
+        // The page cannot vouch for the thread: the Apply run sends it,
+        // after its own check.
+        delete S.sending[k]; saveChoice(base);
+        return;
+      }
+      if (newer) return land("error", NEWER_LINE);
+      row.result = { outcome: "sending", line: "Sending." };
+      return ref.set(row).then(function () {
+        return sendCalls(it, base.draft || {}).then(function () { return land("applied", "Sent."); });
+      }).catch(function (x) { var e = x && x.stage ? x.err : x; return land("error", sendErrLine(e, x && x.stage === "send" ? "send" : "draft"), e); });
+    }, function (e) { return land("error", sendErrLine(e, "read"), e); });
+  }
+
+  // ---- direct draft (cr1#727) -----------------------------------------------
+  // Owner ruling 2026-11-04: Draft goes from the page too, the way Send does.
+  // It re-reads the thread, stops on a newer message, makes the reply in the
+  // thread and sends nothing. A provider with no draft tool, or a thread the
+  // page cannot vouch for, keeps Draft on the Apply run.
+  var NEWER_DRAFT_LINE = "A newer message arrived in this thread; read it first. No draft was made.";
+  function draftedAlready(res) { return !!(res && res.action === "draft" && res.result && res.result.outcome === "applied"); }
+  function canDraftDirect(it) { return !!(MAIL && MAIL.draft) && canDirect(it); }
+  function draftErrLine(e, stage) {
+    return sendErrLine(e, stage).replace("Nothing was sent", "No draft was made").replace("nothing was sent", "no draft was made").replace("Press Send again", "Press Draft again").replace("press Send again", "press Draft again");
+  }
+  function draftCall(it, d) {
+    if (MAIL.provider === "superhuman") {
+      var inp = { type: "reply", thread_id: it.thread_id, body: htmlBody(d.body) }, to = addrList(d.to), cc = addrList(d.cc);
+      if (to.length) inp.to = to; if (cc.length) inp.cc = cc;
+      return mcp.callTool(MAIL.server, MAIL.draft, inp);
+    }
+    return mcp.callTool(MAIL.server, MAIL.draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" });
+  }
+  function draftDirect(base, it) {
+    var k = ikey(it);
+    if (S.sending[k]) return;
+    S.sending[k] = "draft"; renderInbox();
+    var row = { id: rid(), created_at: nowIso(), applied: true, applied_at: nowIso(), by_page: true, provider: MAIL.provider };
+    for (var f in base) row[f] = base[f];
+    var ref = db.collection("choices").doc(row.id);
+    function land(outcome, line, err) {
+      row.result = { outcome: outcome, line: line }; row.applied_at = nowIso();
+      return ref.set(row).then(function () {
+        if (!S.choices.some(function (c) { return c.id === row.id; })) S.choices.push(row);
+        delete S.sending[k]; renderAll();
+        if (outcome === "error") banner(line, true, err ? errText(err) : "");
+      }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "The draft is made, but the page could not note it; check your Drafts before pressing Draft again." : line, true, errText(e)); });
+    }
+    mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) {
+      var newer = newerIn(r && r.payload, it.message_ts);
+      if (newer === null) { delete S.sending[k]; saveChoice(base); return; }
+      if (newer) return land("error", NEWER_DRAFT_LINE);
+      return draftCall(it, base.draft || {}).then(function (r) {
+        // The same proof Send asks for: no id back, no claim it is in Drafts.
+        if (!draftIdOf(r && r.payload)) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Draft again.");
+        return land("applied", "In your Drafts.");
+      }, function (e) { return land("error", draftErrLine(e, "draft"), e); });
+    }, function (e) { return land("error", draftErrLine(e, "read"), e); });
+  }
+
+  // ---- the thread under a draft (cr1#714) ------------------------------------
+  // Opening "Show thread" reads the thread live from the seat's mail connector
+  // and shows its newest messages as plain text. Nothing read here is saved:
+  // the page's data holds no thread text, only a commitment's short source line.
+  var NBSP = String.fromCharCode(160);
+  var QUOTE_RE = /\n\s*(On [^\n]{0,200}wrote:|-{2,}\s*Original Message\s*-{2,}|From: [^\n]+\nSent: )/i;
+  function canThread(it) {
+    if (!MAIL || !MAIL.thread || !it) return false;
+    return MAIL.provider === "outlook" ? !!it.message_id : !!it.thread_id;
+  }
+  function plainText(v, isHtml) {
+    var t = String(v || "");
+    if (isHtml || /<[a-z][\s\S]*>/i.test(t)) {
+      try {
+        var d = new DOMParser().parseFromString(t.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|tr|h\d)>/gi, "\n$&"), "text/html");
+        Array.prototype.forEach.call(d.querySelectorAll("style,script,blockquote,.gmail_quote"), function (node) { node.parentNode.removeChild(node); });
+        t = d.body ? d.body.textContent : t;
+      } catch (e) {
+        // No DOMParser in this view: the same cuts by pattern.
+        t = t.replace(/<(style|script|blockquote)\b[\s\S]*?<\/(style|script|blockquote)>/gi, "").replace(/<br\s*\/?>/gi, "\n")
+          .replace(/<\/(p|div|li|tr|h\d)>/gi, "\n").replace(/<[^>]+>/g, " ");
+      }
+    }
+    t = t.split(NBSP).join(" ").replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    var q = t.search(QUOTE_RE); if (q > 0) t = t.slice(0, q).trim();
+    return t.length > 1500 ? t.slice(0, 1500) + "..." : t;
+  }
+  function fromOf(v) {
+    if (!v) return "";
+    if (typeof v === "string") return v;
+    if (v.emailAddress) return v.emailAddress.name || v.emailAddress.address || "";
+    return v.name || v.email || v.address || "";
+  }
+  function threadMsgs(p) {
+    var out = [];
+    if (typeof p === "string") out.push({ from: "", when: "", text: plainText(p, false) });
+    else if (MAIL.provider === "superhuman") ((p && p.messages) || []).forEach(function (m) { out.push({ from: fromOf(m.from), when: m.sent_at || "", text: plainText(m.body || m.snippet, true) }); });
+    else if (MAIL.provider === "gmail") ((p && p.messages) || []).forEach(function (m) { out.push({ from: fromOf(m.sender || m.from), when: m.date || "", text: plainText(m.plaintext_body || m.snippet, false) }); });
+    else if (p) {
+      var b = p.body;
+      out.push({ from: fromOf(p.from || p.sender), when: p.receivedDateTime || p.date || "",
+        text: plainText(b && typeof b === "object" ? b.content : (b || p.text || p.bodyPreview || ""), true) });
+    }
+    out = out.filter(function (m) { return m.text; });
+    out.sort(function (a, b) { return (Date.parse(b.when) || 0) - (Date.parse(a.when) || 0); });
+    return out.slice(0, 3);
+  }
+  function threadInput(it) {
+    if (MAIL.provider === "superhuman") return { thread_id: it.thread_id, include_comments: false, include_drafts: false, message_limit: 5 };
+    if (MAIL.provider === "gmail") return { threadId: it.thread_id, messageFormat: "PLAIN_TEXT" };
+    return { uri: "mail:///messages/" + it.message_id };
+  }
+  function threadErrLine(e) {
+    var code = e && e.code ? String(e.code) : "", name = MAIL.server;
+    if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors, to see the thread.";
+    if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors, to see the thread.";
+    if (code === "not_in_manifest" || code === "approval_required" || code === "consent_required") return "Allow " + name + " for this page when it asks, then open the thread again.";
+    return "Could not read the thread from " + name + " just now. Open it again in a moment.";
+  }
+  function threadBox(it) {
+    if (!canThread(it)) return "";
+    var k = ikey(it), on = !!S.threadOpen[k];
+    var h = '<div class="thread"><button class="act link" data-thread="' + esc(it.n) + '" aria-expanded="' + (on ? "true" : "false") + '">' + (on ? "Hide thread" : "Show thread") + "</button>";
+    if (on) {
+      var t = S.threads[k];
+      if (!t || t.state === "loading") h += '<div class="sub">Reading the thread.</div>';
+      else if (t.state === "error") h += '<div class="sub">' + esc(t.line) + "</div>";
+      else if (!t.msgs.length) h += '<div class="sub">No messages came back for this thread.</div>';
+      else t.msgs.forEach(function (m) { h += '<div class="msg"><div class="sub">' + esc(m.from || "Unknown sender") + (m.when ? " · " + esc(fmtWhen(m.when)) : "") + '</div><div class="msgbody">' + esc(m.text) + "</div></div>"; });
+    }
+    return h + "</div>";
+  }
+  function toggleThread(n) {
+    var it = inboxItem(n); if (!it || !canThread(it)) return;
+    var k = ikey(it);
+    if (S.threadOpen[k]) { delete S.threadOpen[k]; renderInbox(); return; }
+    S.threadOpen[k] = true;
+    var t = S.threads[k];
+    if (t && t.state === "ok") { renderInbox(); return; }
+    if (!mcp) { S.threads[k] = { state: "error", line: "This view cannot reach your mail, so the thread cannot be shown here." }; renderInbox(); return; }
+    S.threads[k] = { state: "loading" }; renderInbox();
+    mcp.callTool(MAIL.server, MAIL.thread, threadInput(it), { cache: false }).then(function (r) {
+      var p = r && r.payload != null ? r.payload : r;
+      S.threads[k] = { state: "ok", msgs: threadMsgs(p) }; renderInbox();
+    }, function (e) { S.threads[k] = { state: "error", line: threadErrLine(e) }; renderInbox(); });
   }
 
   // ---- projects (cr1#660) ---------------------------------------------------
@@ -847,17 +1214,149 @@
     var openTotal = 0; (pj.rows || []).forEach(function (r) { openTotal += num(r.open); });
     $("projecthead").innerHTML = '<div class="summary"><b>' + num(pj.n_rows) + "</b> live projects · <b>" + openTotal + "</b> open commitments across them" + (pj.n_hidden ? " · showing the first " + (pj.rows || []).length : "") + (q ? " · " + rows.length + " match" : "") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>";
     var names = { active: "Active", scoping: "Scoping", paused: "Paused", dormant: "Dormant" };
-    var h = "", last = null, i = 0;
+    var h = "", last = null, i = 0, cards = "";
+    var flush = function () { if (cards) h += '<div class="pgrid">' + cards + "</div>"; cards = ""; };
     rows.forEach(function (r) {
-      if (r.status !== last) { last = r.status; var n = rows.filter(function (x) { return x.status === r.status; }).length; h += "<h2>" + esc(names[r.status] || r.status) + " (" + n + ")</h2>"; }
-      var counts = num(r.open) ? '<span class="count-open"><b>' + num(r.open) + "</b> open" + (num(r.overdue) ? ' · <span class="late">' + num(r.overdue) + " overdue</span>" : "") + "</span>" : '<span class="count-open">nothing open</span>';
-      var btn = r.open ? '<button class="act" data-proj="' + esc(r.name) + '" title="Show the commitments on this project">Commitments</button>' : "";
-      h += '<div class="row' + riseClass("p" + r.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(r.name) + '</div><div class="sub">' + esc([r.org, ago(r.last_activity)].filter(Boolean).join(" · ")) + '</div></div><div class="acts">' + counts + btn + "</div></div>";
+      if (r.status !== last) { flush(); last = r.status; var n = rows.filter(function (x) { return x.status === r.status; }).length; h += "<h2>" + esc(names[r.status] || r.status) + " (" + n + ")</h2>"; }
+      var counts = num(r.open) ? "<b>" + num(r.open) + "</b> open" + (num(r.overdue) ? ' · <span class="late">' + num(r.overdue) + " overdue</span>" : "") : "Nothing open";
+      var btn = r.open ? '<button class="act" data-proj="' + esc(r.name) + '" title="Show the commitments on this project">See commitments</button>' : "";
+      var nxt = r.next ? '<div class="sub">Next: ' + esc(r.next.title) + (r.next.due ? " · " + esc(fmtDate(r.next.due)) : "") + "</div>" : "";
+      var who = r.contact ? '<div class="sub">Key contact: ' + esc(r.contact) + "</div>" : "";
+      var dec = num(r.decided_week) ? '<div class="sub">Decided this week: ' + num(r.decided_week) + "</div>" : "";
+      cards += '<div class="pcard' + riseClass("p" + r.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="pname">' + esc(r.name) + '</div><div class="sub">' + esc([r.org, ago(r.last_activity)].filter(Boolean).join(" · ")) + "</div>" + nxt + who + dec + '<div class="pfoot"><span class="sub">' + counts + "</span>" + btn + "</div></div>";
       i += 1;
     });
+    flush();
     $("projectrows").innerHTML = h || '<div class="quiet">' + (q ? "Nothing matches." : "No live projects.") + "</div>";
   }
-  function renderAll() { renderLights(); renderWaiting(); renderToday(); renderInbox(); renderPlate(); renderProjects(); }
+  // ---- review (cr1#779) ------------------------------------------------------
+  // The day's open questions and proposed closes. An answer is a choice like
+  // every other press: it waits here, and the Apply run writes it through the
+  // handler for that row's kind. A proposed close shows what it rests on.
+  function reviewAsk(r) {
+    for (var k = 0; k < (r.verbs || []).length; k++) if (r.verbs[k].ask) return r.verbs[k];
+    return null;
+  }
+  function reviewRow(r, i) {
+    var w = choiceFor("review", r.id), res = latestResult("review", r.id);
+    var tag = w ? waitTag(w, "answer waiting") : resultTag(res);
+    var acts = "";
+    if (w) acts += undoBtn(w, "Take this back before it reaches your book");
+    else if (!res || !res.result || res.result.outcome !== "applied") (r.verbs || []).forEach(function (v, k) { acts += '<button class="act' + (k === 0 ? " primary" : "") + '" data-review="' + esc(r.id) + '" data-verb="' + esc(v.action) + '">' + esc(v.label) + "</button>"; });
+    var want = !w && acts && reviewAsk(r);
+    var ask = want ? '<input class="when" data-rtext="' + esc(r.id) + '" aria-label="' + esc(want.ask) + '" placeholder="' + esc(want.ask) + '" value="' + esc((S.reviewText || {})[r.id] || "") + '">' : "";
+    var sub = [r.reason, r.group === "close" ? "proposed close" : ""].filter(Boolean).join(" · ");
+    var ends = r.expires_on ? "If you do nothing by " + fmtDate(r.expires_on) + ", " + r.default_line + "." : "This one waits for your answer.";
+    return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + "</div>"
+      + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + (r.line ? '<div class="sub">' + esc(r.line) + "</div>" : (r.evidence ? '<div class="sub">' + esc(r.evidence) + "</div>" : "")) + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
+  }
+  function reviewClosed(shown) {
+    // A proposed close the owner accepted, once it has left the feed: the row
+    // stays here with an Undo that reopens it, until a reopen follows.
+    var h = "";
+    S.choices.forEach(function (c) {
+      if (c.kind !== "review" || c.group !== "close" || c.action !== "confirm" || !c.applied || !c.result || !c.commitment_id || shown[String(c.n)]) return;
+      // A close the fence held: nothing closed, and the owner is told why.
+      if (c.result.outcome === "refused") { h += '<div class="row"><div class="main"><div class="title">' + esc(cap(c.title)) + '</div><div class="sub">' + esc(c.result.line || "") + "</div></div></div>"; return; }
+      if (c.result.outcome !== "applied") return;
+      var mark = c.created_at || c.applied_at || "";
+      var back = S.choices.some(function (r) { return r.kind === "commitment" && String(r.n) === String(c.commitment_id) && r.action === "reopen" && r.applied && r.result && r.result.outcome === "applied" && (r.created_at || "") > mark; });
+      if (back) return;
+      var w = choiceFor("commitment", c.commitment_id, "reopen");
+      h += '<div class="row closed"><div class="main"><div class="title">' + esc(cap(c.title)) + '<span class="tag ok">closed</span>' + (w ? waitTag(w, "reopen waiting") : "") + '</div></div><div class="acts">'
+        + (w ? undoBtn(w, "Take the reopen back before it reaches your book") : '<button class="act undo" data-cact="reopen" data-cid="' + esc(c.commitment_id) + '" title="Open this commitment again">Undo</button>') + "</div></div>";
+    });
+    return h;
+  }
+  function renderReview() {
+    var rv = S.review;
+    $("reviewCount").textContent = rv ? num(rv.n_open) : 0;
+    if (!rv) { $("reviewhead").textContent = isRunning("refresh") ? "Reading what needs your answer." : "No review read yet. Press Refresh day."; $("reviewrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    if (rv.errors && rv.errors.length) { $("reviewhead").textContent = "Your open questions could not be read just now; the next refresh tries again."; $("reviewrows").innerHTML = ""; return; }
+    var rows = rv.rows || [], shown = {};
+    rows.forEach(function (r) { shown[String(r.id)] = true; });
+    $("reviewhead").textContent = rv.line || (num(rv.n_open) + (num(rv.n_open) === 1 ? " waits" : " wait") + " for your answer" + (rv.n_hidden ? "; showing the first " + rows.length : "") + ".");
+    var h = "", more = "", i = 0;
+    rows.forEach(function (r) { if (r.today) { h += reviewRow(r, i); i += 1; } else more += reviewRow(r, 0); });
+    var open = S.reviewMore ? " open" : "";
+    if (more) h += '<details id="reviewmore"' + open + '><summary class="quiet">More to review</summary><div class="col">' + more + "</div></details>";
+    var done = reviewClosed(shown);
+    if (done) h += "<h2>Closed from this tab</h2>" + done;
+    $("reviewrows").innerHTML = h;
+  }
+  function reviewItem(id) { var rv = S.review; if (rv) for (var i = 0; i < (rv.rows || []).length; i++) if (String(rv.rows[i].id) === String(id)) return rv.rows[i]; return null; }
+  function onReviewAct(b) {
+    var r = reviewItem(b.getAttribute("data-review")); if (!r) return;
+    var verb = b.getAttribute("data-verb"), v = (r.verbs || []).filter(function (x) { return x.action === verb; })[0] || {};
+    var text = String((S.reviewText || {})[r.id] || "").trim();
+    if (v.required && !text) { banner(v.ask + ": type it on the row first.", true); return; }
+    saveChoice({ kind: "review", src: "cr-brain", n: r.id, action: verb, input: { text: v.ask ? text : "" }, title: r.title, payload: r.data || {}, review_kind: r.kind, group: r.group, commitment_id: r.commitment_id || null, seq: r.seq == null ? null : r.seq, thread_id: r.thread_id || null });
+  }
+
+  // ---- the week (cr1#780) ----------------------------------------------------
+  // What was settled by default, what went dormant, and the recap. Each press
+  // is a choice the Apply run writes.
+  function weekActs(n, verbs, since) {
+    var w = choiceFor("week", n), res = latestResult("week", n);
+    // A press from before this row's own event is an older story (a project
+    // that went dormant again): the row is offered afresh.
+    if (res && since && (res.applied_at || "") < since) res = null;
+    if (w) return { tag: waitTag(w, "waits for Apply"), acts: undoBtn(w, "Take this back before it reaches your book") };
+    if (res && res.result && res.result.outcome === "applied") return { tag: resultTag(res), acts: "" };
+    var acts = ""; verbs.forEach(function (v) { acts += '<button class="act" data-wact="' + esc(v.action) + '" data-wn="' + esc(n) + '">' + esc(v.label) + "</button>"; });
+    return { tag: resultTag(res), acts: acts };
+  }
+  function renderWeek() {
+    var wk = S.week;
+    if (!wk) { $("weekhead").textContent = isRunning("refresh") ? "Reading your week." : "No week read yet. Press Refresh day."; $("weekrows").innerHTML = ""; return; }
+    $("weekhead").textContent = wk.errors && wk.errors.length ? "Part of your week could not be read just now; the next refresh tries again." : (wk.line || "");
+    var h = "";
+    if ((wk.decided || []).length) {
+      h += "<h2>Decided for you" + (num(wk.n_decided) > wk.decided.length ? " (first " + wk.decided.length + " of " + num(wk.n_decided) + ")" : "") + "</h2>";
+      wk.decided.forEach(function (d) {
+        var a = weekActs(d.id, d.reversible ? [{ action: "undo", label: "Put it back" }] : []);
+        h += '<div class="row"><div class="main"><div class="title">' + esc(cap(d.label)) + a.tag + '</div><div class="sub">' + esc(d.at ? fmtDate(d.at) : "") + (d.reversible ? "" : " · cannot be put back from here") + "</div>" + ((d.items || []).length ? '<div class="sub">' + esc(d.items.join(" · ")) + (d.n_more ? " and " + num(d.n_more) + " more" : "") + "</div>" : "") + '</div><div class="acts">' + a.acts + "</div></div>";
+      });
+    }
+    if ((wk.rules || []).length) {
+      h += "<h2>Rules it learned" + (num(wk.n_rules) > wk.rules.length ? " (first " + wk.rules.length + " of " + num(wk.n_rules) + ")" : "") + "</h2>";
+      wk.rules.forEach(function (d) {
+        var a = weekActs(d.id, [{ action: "undo", label: "Put it back" }]);
+        h += '<div class="row"><div class="main"><div class="title">' + esc(cap(d.label)) + a.tag + '</div><div class="sub">' + esc(d.effect) + '</div><div class="sub">' + esc(d.rests_on) + '</div></div><div class="acts">' + a.acts + "</div></div>";
+      });
+    }
+    if ((wk.dormant || []).length) {
+      h += "<h2>Went dormant</h2>";
+      wk.dormant.forEach(function (d) {
+        var a = weekActs(d.id, d.verbs || [], d.at);
+        h += '<div class="row"><div class="main"><div class="title">' + esc(d.name) + a.tag + '</div><div class="sub">' + esc(d.reason) + '</div></div><div class="acts">' + a.acts + "</div></div>";
+      });
+    }
+    if ((wk.archived || []).length) {
+      h += "<h2>Archived on its own</h2>";
+      wk.archived.forEach(function (d) { h += '<div class="row"><div class="main"><div class="title">' + esc(d.name) + '</div><div class="sub">' + esc(d.reason) + "</div></div></div>"; });
+    }
+    var rc = wk.recap || {};
+    if ((rc.changes || []).length || (rc.decided_lines || []).length || rc.still_waiting || (rc.objectives || []).length) {
+      h += "<h2>The week</h2>";
+      (rc.decided_lines || []).forEach(function (c) { h += '<div class="sub">' + esc(c) + "</div>"; });
+      (rc.changes || []).forEach(function (c) { h += '<div class="sub">' + esc(c) + "</div>"; });
+      if (rc.still_waiting) h += '<div class="sub">' + esc(rc.still_waiting) + "</div>";
+      (rc.objectives || []).forEach(function (c) { h += '<div class="sub">' + esc(c) + "</div>"; });
+    }
+    $("weekrows").innerHTML = h;
+  }
+  function weekItem(n) {
+    var wk = S.week || {}, all = (wk.decided || []).concat(wk.rules || [], wk.dormant || []);
+    for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(n)) return all[i];
+    return null;
+  }
+  function onWeekAct(b) {
+    var n = b.getAttribute("data-wn"), it = weekItem(n); if (!it) return;
+    saveChoice({ kind: "week", src: "hub", n: n, action: b.getAttribute("data-wact"), title: it.label || it.name || "", payload: it.batch_ref ? { batch_ref: it.batch_ref, n: it.n } : {} });
+  }
+
+  function renderAll() { renderLights(); renderWaiting(); renderToday(); renderInbox(); renderPlate(); renderProjects(); renderReview(); renderWeek(); }
 
   // ---- tabs and clicks -----------------------------------------------------
   document.querySelector("nav.tabs").addEventListener("keydown", function (ev) {
@@ -870,7 +1369,7 @@
   });
   document.querySelector("nav.tabs").addEventListener("click", function (ev) {
     var b = ev.target.closest("button[data-tab]"); if (!b) return;
-    var tabs = document.querySelectorAll("nav.tabs button"); for (var i = 0; i < tabs.length; i++) { tabs[i].setAttribute("aria-selected", tabs[i] === b ? "true" : "false"); tabs[i].setAttribute("tabindex", tabs[i] === b ? "0" : "-1"); }
+    var tabs = document.querySelectorAll("nav.tabs button[data-tab]"); for (var i = 0; i < tabs.length; i++) { tabs[i].setAttribute("aria-selected", tabs[i] === b ? "true" : "false"); tabs[i].setAttribute("tabindex", tabs[i] === b ? "0" : "-1"); }
     var secs = document.querySelectorAll("section.tab"); for (var j = 0; j < secs.length; j++) secs[j].className = "tab" + (secs[j].id === "tab-" + b.getAttribute("data-tab") ? " on" : "");
     try { localStorage.setItem("cockpit.tab", b.getAttribute("data-tab")); } catch (e) {}
   });
@@ -881,7 +1380,11 @@
     var sv = ev.target.closest("button[data-save]"); if (sv) { onSlotSave(sv); return; }
     var u = ev.target.closest("button[data-undo]"); if (u) { undoChoice(u.getAttribute("data-undo")); return; }
     var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
+    var og = ev.target.closest("button[data-origin]"); if (og) { var oid = og.getAttribute("data-origin"); if (S.originOpen[oid]) delete S.originOpen[oid]; else S.originOpen[oid] = true; renderPlate(); return; }
+    var th = ev.target.closest("button[data-thread]"); if (th) { toggleThread(th.getAttribute("data-thread")); return; }
     var ib = ev.target.closest("button[data-iact]"); if (ib) { onInboxAct(ib); return; }
+    var rb = ev.target.closest("button[data-review]"); if (rb) { onReviewAct(rb); return; }
+    var wb = ev.target.closest("button[data-wact]"); if (wb) { onWeekAct(wb); return; }
     var p = ev.target.closest("button[data-part]"); if (p) { runPart(p.getAttribute("data-part")); }
   });
   document.body.addEventListener("input", function (ev) {
@@ -889,14 +1392,16 @@
     if (t.matches && t.matches("textarea.draft[data-ikey]")) { S.drafts[t.getAttribute("data-ikey")] = t.value; return; }
     if (t.hasAttribute && t.hasAttribute("data-slot")) { var o = S.open[t.getAttribute("data-slot")]; if (o) o.value = t.value; }
   });
-  $("search").addEventListener("input", function () { S.query = this.value; renderPlate(); });
+  $("reviewrows").addEventListener("input", function (ev) { var id = ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
+  $("reviewrows").addEventListener("toggle", function (ev) { if (ev.target.id === "reviewmore") S.reviewMore = ev.target.open; }, true);
+  $("search").addEventListener("input", function () { S.query = this.value; S.projectFilter = null; $("allProjects").hidden = true; renderPlate(); });
+  $("allProjects").addEventListener("click", function () { setProjectFilter(null); });
   $("psearch").addEventListener("input", function () { S.pquery = this.value; renderProjects(); });
   $("tab-projects").addEventListener("click", function (ev) {
     // A project's Commitments button opens the Commitments tab searched to it.
     var b = ev.target.closest("button[data-proj]"); if (!b) return;
-    var name = b.getAttribute("data-proj"); S.query = name; $("search").value = name;
+    setProjectFilter(b.getAttribute("data-proj"));
     var tb = document.querySelector('nav.tabs button[data-tab="plate"]'); if (tb) tb.click();
-    renderPlate();
   });
   $("startBtn").addEventListener("click", function () { start(); });
 
@@ -1147,6 +1652,8 @@
       ["today", "plate", "inbox", "projects"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? snap.data() : null; if (!snap.metadata.fromCache) { dbReady = true; clearTimeout(loadTimer); } renderAll(); }, onErr); });
       db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); S.status = st; renderLights(); maybeFireRefresh(); }, onErr);
       db.collection("choices").onSnapshot(function (snap) { S.choices = snap.docs.map(function (d) { return d.data(); }).filter(withinWindow); renderAll(); }, onErr);
+      db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
+      db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); }, onErr);
       db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
       db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
       db.doc("config/streak").onSnapshot(function (snap) { S.streak = snap.exists ? snap.data() : null; renderToday(); }, onErr);
@@ -1167,7 +1674,13 @@
   }
   // The tick also checks the refresh waiting on Apply, so a light that times
   // out with no new data still drops or fires it (cr1#679).
+  function tickClock() { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+  tickClock();
   setInterval(function () { renderLights(); maybeFireRefresh(); }, 1000);
+  setInterval(tickClock, 1000);
+  // The card for the call that just ended moves on with the clock, not the feed.
+  // Only when it changes: a redraw would throw an open brief back to its top.
+  setInterval(function () { if (S.today && justEnded(S.today.meetings || [], Date.now()) !== SEQ.endedAt) renderToday(); }, 60000);
 })();
 </script>
 </body>

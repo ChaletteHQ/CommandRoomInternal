@@ -103,7 +103,7 @@ Some updates happen on a schedule, not on demand. These are the canonical cadenc
 | `PROJECT_BRAIN.md` auto-update | "end session" | `workspace-manager` |
 | `PEOPLE.md` new entry | "add [person]" OR detected during ingest | `people-crm` |
 | `DECISION_LOG.md` append | When a decision is captured (meeting-notes, workspace-manager, direct user) | `decision-log` (if standalone) OR the capturing skill |
-| `ALIASES.md` append | Whenever a new raw→canonical mapping is resolved | `meeting-notes` or `people-crm` |
+| New spelling saved | `people_writer` writes `aliases.json` and the record (`add_aliases` on `people_writer:door_update_person`). The `ALIASES.md` view is not rebuilt by this write; `refresh aliases` rebuilds it | `meeting-notes` or `people-crm` |
 | `cleanup` report | Weekly (manual trigger or scheduled) | `cleanup` |
 
 ---

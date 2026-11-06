@@ -28,9 +28,11 @@ the Hub, never the cockpit.
 ## Writer Contract
 
 Read `shared/WORKSPACE_API.md` first. This skill writes the folder only
-through the door: `cockpit_helpers:save_config` (the page address) and the
-registration writer `enable-command-room-schedules` names
-(`schedule_backend:record_registration`). It writes the page's database
+through the door: `cockpit_helpers:save_config` (the page address), the
+registration writer (`cockpit_helpers:land_registration`, which lands through
+the `schedule_backend:record_registration` that `enable-command-room-schedules`
+names) and, for a refreshed task,
+`schedule_refresh:log_schedule_refreshed`. It writes the page's database
 through the artifact database tool, never the book.
 
 ## Step 0: Run the Access preamble
@@ -75,22 +77,33 @@ Room Hub is set up for this folder yet; say `set up my hub`.") and STOP.
 
 Find the scheduler tools the way `enable-command-room-schedules` does (its
 scheduler discovery step, verbatim) and read the account's trigger listing
-once (`schedule_backend:plan_list` then `normalize`, as that skill's Step 1.B
-does). Then plan all six in one call (the four cockpit tasks, then Morning Brief and Maintenance):
+once, every page, the way that skill's Step 1.B does. Pass each row as
+`{trigger_id, name, cron_expression, enabled}` in `registered`, and nothing
+else from the row: the door refuses a computer path, and a prompt is too long
+for this line (cr1#733). The planner places each task by its exact name, or a
+renamed chat by the trigger id in the stored map, so no normalising call is
+needed. Then plan all six in one call (the four cockpit tasks, then Morning Brief and Maintenance):
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"abs_path": "<the workspace folder's absolute path on the computer>", "discover_block": "<the discovery block, as the schedules skill obtains it>", "plugin_version": "<the installed plugin version>", "registered": [<the normalised listing>], "tools": [<this session's tool names>], "tz_name": "<the workspace timezone>", "workspace_root": "<WS>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "name": "cockpit_helpers:plan_cockpit_registration"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"discover_block": "<the discovery block, as the schedules skill obtains it>", "plugin_version": "<the installed plugin version>", "registered": [<the listing rows, those four fields>], "tools": [<this session's tool names>], "tz_name": "<the workspace timezone>", "workspace_root": "<WS>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "name": "cockpit_helpers:plan_cockpit_registration"}'
 ```
 
-`ok: false` ends the turn with its `line` (no scheduler, the older desktop
+The line carries no folder path (cr1#732): the door refuses a computer path as an argument. On a merged seat the folder the tasks register is the `CR_DEVICE_WORKSPACE` the door forwards, so render the line with that export in the same command; with none forwarded, nothing is planned. On a seat whose files are local the planner uses the workspace itself.
+
+`ok: false` ends the turn with its `line` (no folder forwarded, no scheduler, the older desktop
 app's scheduler, no account, or a cron the backend refuses). Otherwise, for
-EACH of the six `plans`, in order, exactly one of three: `create` (execute its `tool`
-with its `args`, then land its `after` in ONE door call through
-`schedule_backend:record_registration` with the payload
-`schedule_backend.registration_payload(after, trigger_id=<the id the call
-returned>, source_skill="cockpit-setup")` composes, exactly as the schedules
-skill lands a create), `update` (execute it; its `after` lands the same way),
-or `current: true` (nothing to call). Keep each trigger id. The four are
+EACH of the six `plans`, in order, exactly one of three: `create` or `update`
+(execute its `tool` with its `args`, then land its `landing`), or `current:
+true` (nothing to call). **`landing` is the one landing path for both**
+(cr1#734): the door payload the plan already composed, rendered with `plan
+run_writer` and sent as it came, in ONE call. A create's names
+`cockpit_helpers:land_registration` and its `trigger_id` is the one value you
+fill in, with the id the call returned; it refuses an unfilled one, and that
+refusal is `result.ok: false` inside an envelope that says `ok: true`, so read
+the result and land it again with the id. An
+update's names
+`schedule_refresh:log_schedule_refreshed`, one receipt per refreshed task, and
+needs nothing filled in. Keep each trigger id. The four are
 `cockpit-prep` (6:45 AM weekdays), `cockpit-inbox` (7:15 AM weekdays),
 `cockpit-apply` (hourly, 8 AM to 3 PM, the one writer from the page to the
 book; the ruling asked for every half hour, and the cloud scheduler refuses
@@ -110,9 +123,10 @@ deletes these: their task ids are the Hub's own.
 
 Plans 5 and 6 are Morning Brief and Maintenance (`task_id` `morning-brief`
 and `maintenance`), the two chats of the previous version that survive the
-cockpit. They are handled exactly like the four above: a `create` is
-executed and its `after` landed, an `update` the same, a `current` needs no
-call. **Never stop after the fourth plan.** The first build asked for these
+cockpit. They are handled exactly like the four above: a `create` or an
+`update` is executed and its `landing` landed, a `current` needs no call. One already in the listing with no prompt to compare is `current` with
+`not_compared: true`: its text is unknown, so it is never rewritten and never
+created again. **Never stop after the fourth plan.** The first build asked for these
 two in a separate call, and a real set-up skipped it, leaving a seat with no
 Morning Brief and no Maintenance (cr1#631). A chat listed in
 `chats_refused` is named in the final line with its `line`; it never stops
@@ -174,7 +188,9 @@ final line; the page still works and its first run seeds the lights.
 
 One line: the page address, what Step 2 created, refreshed and left alone
 (six triggers), and "Open it on claude.ai, allow the Claude Code Remote
-connector when the page asks, and press Start." On a first set-up, also fire
+connector when the page asks, and press Start." When the answer from Step 3
+carried `mail_direct`, the line also says the page asks once to use the mail
+connector the first time Send is pressed. On a first set-up, also fire
 `cockpit-refresh` once now (the scheduler's fire call on its trigger id and
 NO text: a fire that carries text starts without the computer's device tools,
 cr1#651) so the page is filled when the owner opens
@@ -184,19 +200,30 @@ summary of what was registered.
 ## What the page does and does not do
 
 - **It never writes the book.** Done, Add context, Confirm, Snooze, Send,
-  Draft and Reopen are saved as choices in the page's database;
+  Draft, Reopen and a press on the Review or Week tab are saved as choices in the page's database;
   `cockpit-apply`, the one writer from the page to the book, sends them
-  through `cockpit_helpers:apply_commitment_choices` and apply-choices' own
-  `cr-inbox` handlers. The three producers never read a choice. Send needs a second press on
+  through `cockpit_helpers:apply_commitment_choices`,
+  `cockpit_helpers:apply_review_choices`, `cockpit_helpers:apply_week_choices`
+  and apply-choices' own `cr-inbox` handlers. The three producers never read a choice. Send needs a second press on
   the page, which mints a one-use token the run checks.
-- **Nothing reaches the mail backend until a choice is applied**, and a
-  choice older than seven days expires instead of applying.
+- **Send and Draft go out from the page itself** (cr1#710 and cr1#727, owner
+  rulings 2026-11-04), through the seat's declared mail connector: Superhuman,
+  Gmail or Microsoft 365 (`mail_direct` in `cockpit_helpers.py` picks the connector
+  and its tools; `render_page_file` declares them). The page re-reads the
+  thread first and stops on a newer message, and writes the result on the row.
+  Send keeps its second press, and is recorded as sending before anything goes
+  out. Draft makes the reply in the thread and sends nothing. A seat with no
+  such connector, or a thread the page cannot read, keeps both on
+  `cockpit-apply` exactly as before; so does Draft on Gmail, whose plan has no
+  draft tool. Snooze and every book write still wait for `cockpit-apply`, and
+  a choice older than seven days expires instead of applying.
 - **It never republishes itself.** A task writes feeds; only this skill
   republishes the page. Start fires prep, inbox and apply at once and
   refresh once apply is done, so the four lights fill side by side.
 - **Its data lives on claude.ai**, readable by the owner alone under the
-  page's rules: ids, titles, drafts, status lines and times, never original
-  mail text. A written data-custody answer precedes any client set-up.
+  page's rules: ids, titles, drafts, status lines and times, and the short
+  source line of a commitment (capped, from its own record, cr1#725), never
+  original mail text beyond that line. A written data-custody answer precedes any client set-up.
 
 ## The Access preamble this file refers to
 

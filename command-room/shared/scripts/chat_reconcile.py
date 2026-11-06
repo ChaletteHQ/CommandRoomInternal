@@ -90,10 +90,13 @@ CURSOR_KEY = "chat_reconcile_cursor"
 SOURCE_SKILL = "reconcile-sent"
 
 # First-declaration backfill horizon (§3: "a short fixed window, builder picks,
-# receipted — never full history"). Seven days matches the Slack capture leg's
-# DEFAULT_WINDOW_DAYS, so the two chat readers agree about how far back "recent
-# chat" reaches; a workspace that wants more asks for it explicitly.
-DEFAULT_BACKFILL_DAYS = 7
+# receipted, never full history"). cr1#663 (the cr1#609 ruling of
+# 2026-11-03): the one bound every maintenance job shares, 30 days, taken
+# from the one helper rather than typed here. It was seven days, matched to
+# the Slack capture leg's DEFAULT_WINDOW_DAYS; the ruling sets 30 for every
+# job, and a cursor older than the bound reads as a first run too.
+from catchup import MAINTENANCE_WINDOW_DAYS as DEFAULT_BACKFILL_DAYS  # noqa: E402
+from catchup import MAINTENANCE_WINDOW_FIELD  # noqa: E402
 
 # Volume bounds. `MESSAGE_CAP` is the fetch bound the caller is told to honor;
 # `CANDIDATE_CAP` is the bound on what may reach the matcher in one fire, which
@@ -139,6 +142,7 @@ def _empty_counts() -> Dict[str, int]:
     """
     return {
         "n_scanned": 0,
+        "n_excluded": 0,
         "n_dropped_noise": 0,
         "n_dropped_bad_ts": 0,
         "n_dropped_direction": 0,
@@ -626,16 +630,38 @@ def _write_cursor(workspace_root, new_cursor, *, source_skill: str) -> None:
 
 
 def backfill_floor(workspace_root, *, now=None, days: int = DEFAULT_BACKFILL_DAYS):
-    """The ISO instant a first-ever chat fire should read back to.
+    """The ISO instant a chat fire reads back to.
 
-    `(floor_iso, is_first_run)`. A first declaration reads a SHORT fixed
-    window and says so on its receipt — never full history, which is the
-    passive-ingestion failure mode this build is explicitly not."""
+    `(floor_iso, is_first_run)`. The stored cursor when it is inside the
+    bound; otherwise the last `days` (30, the one maintenance window bound)
+    and `is_first_run` True: a first declaration reads a fixed window and
+    says so on its receipt, never full history (the passive-ingestion
+    failure mode this build is explicitly not), and a cursor older than the
+    bound is treated as a first run the same way (cr1#663)."""
     cursor, _raw = read_cursor(workspace_root)
-    if cursor:
-        return cursor, False
     now = now or _dt.datetime.now(_dt.timezone.utc)
-    return (now - _dt.timedelta(days=days)).isoformat(), True
+    floor = now - _dt.timedelta(days=days)
+    if cursor:
+        try:
+            cur = _dt.datetime.fromisoformat(str(cursor).replace("Z", "+00:00"))
+            if cur.tzinfo is None:
+                cur = cur.replace(tzinfo=_dt.timezone.utc)
+            if cur >= floor:
+                return cursor, False
+        except ValueError:
+            pass
+    return floor.isoformat(), True
+
+
+def _window_for(cursor, *, now=None) -> dict:
+    """The chat leg's maintenance window from its own cursor (cr1#663), the
+    same math every job uses (`catchup.window_from_cursor`)."""
+    from catchup import window_from_cursor
+
+    local_now = None
+    if isinstance(now, _dt.datetime):
+        local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
+    return window_from_cursor(JOB_ID, cursor, now=local_now)
 
 
 # ---------------------------------------------------------------------------
@@ -648,10 +674,43 @@ def backfill_floor(workspace_root, *, now=None, days: int = DEFAULT_BACKFILL_DAY
 #: CHATAUTHOR1 (cr1#244): the kept shape carries both author spellings this
 #: leg reads (`user_id`, the plan's; `author_id`, the raw one) and the
 #: counterparty fields the scorer reads, so a staged message can still say
-#: who wrote it and to whom.
+#: who wrote it and to whom. The last two are the channel's name, which only
+#: `_room_names` reads, so a list written in words matches a staged message
+#: (cr1#770). `_room_names`' id spellings (`channel_id`, `channel`, `chat_id`)
+#: stay out: the normaliser reads those as the room, so keeping them would
+#: score a message the staged path drops today. So does its bare `name`: it
+#: says nothing about whose name it is, and a person's must not match a list.
 CHAT_MESSAGE_FIELDS = ("chat_or_channel_id", "message_id", "ts", "user_id",
                        "author_id", "user_name", "text", "thread_ts", "permalink",
-                       "counterparty_person_ids", "counterparty_names")
+                       "counterparty_person_ids", "counterparty_names",
+                       "channel_name", "chat_name")
+
+
+def _connector_read(workspace_root, purpose: str):
+    """cr1#667: the declared chat connector's dials and lists for `purpose`
+    (`connector_reads.for_category`), or None when none is declared or the
+    reader is not on the tree. Never raises."""
+    try:
+        from connector_reads import for_category
+        return for_category(workspace_root, _chat.CATEGORY, purpose=purpose)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _room_names(raw_msg) -> list:
+    """Every spelling of the channel a raw message sits in: its id, by the
+    same keys the normaliser reads, and the connector's display name for it
+    when the message carries one, so a channel the owner named in words
+    matches (cr1#667 review)."""
+    if not isinstance(raw_msg, dict):
+        return []
+    out = []
+    for key in ("chat_or_channel_id", "channel_id", "channel", "chat_id",
+                "channel_name", "chat_name", "name"):
+        v = raw_msg.get(key)
+        if isinstance(v, str) and v.strip():
+            out.append(v)
+    return out
 
 
 def plan_chat_scan(workspace_root, now=None) -> dict:
@@ -689,18 +748,39 @@ def plan_chat_scan(workspace_root, now=None) -> dict:
     except Exception:  # noqa: BLE001
         floor, first_run = None, True
     try:
+        cursor, _raw = read_cursor(workspace_root)
+    except Exception:  # noqa: BLE001
+        cursor = None
+    try:
         from primary_user import resolve_primary_user
         user = resolve_primary_user(workspace_root)
     except Exception:  # noqa: BLE001
         user = None
+    from catchup import MAINTENANCE_WINDOW_FIELD
+
     label = str(declared.get("label") or "").strip()
+    # cr1#667: the dials and the lists are read BEFORE the source. A
+    # `skip_reason` means the connector step stages nothing and the writer
+    # lands the skip receipt; `include` / `exclude` are the channels the
+    # connector step reads, and the ones it never reads.
+    read = _connector_read(workspace_root, "close")
+    skip_reason = (read or {}).get("skip_reason")
     return {
         "job_id": JOB_ID,
         "provider": provider,
         "scan_plan": scan,
         "after": floor,
         "first_run": bool(first_run),
-        "connector_queries": [label] if (provider and label) else [],
+        # cr1#663: the window this leg reads, from the one helper; `after`
+        # above is its `since` on the cursor branch and the 30-day floor on
+        # a first run or a capped gap.
+        MAINTENANCE_WINDOW_FIELD: _window_for(cursor, now=now),
+        "connector_queries": ([label] if (provider and label and not skip_reason)
+                              else []),
+        "connector_read": read,
+        "include": list((read or {}).get("include") or []),
+        "exclude": list((read or {}).get("exclude") or []),
+        "skip_reason": skip_reason,
         "user_person_id": user,
         "message_fields": list(CHAT_MESSAGE_FIELDS),
         "fire_start": now.astimezone(_dtm.timezone.utc).isoformat(),
@@ -760,9 +840,37 @@ def reconcile_chat_and_receipt(
     # reads `manual`, which is what a typed brief actually is.
     fired_via = _effective_fired_via(fired_via)
     provider = _chat.resolve_chat_provider(workspace_root, provider)
+    # cr1#663: the window this run was asked to cover, from the leg's own
+    # cursor, named on every terminal receipt below (skip, blocked, run).
+    # Computed BEFORE anything writes, so the basis is the previous run.
+    try:
+        _cursor_now, _raw_now = read_cursor(workspace_root)
+    except Exception:  # noqa: BLE001
+        _cursor_now = None
+    window = _window_for(_cursor_now)
     if not provider:
         receipt = _chat.skip_receipt(
             "no chat backend is declared for this workspace", leg=JOB_ID)
+        receipt.update(_empty_counts())
+        receipt["summary"] = ""      # deliberately nothing to say to the user
+        receipt["closed"] = []
+        receipt["proposed"] = []
+        receipt["cursor_before"] = None
+        receipt["cursor_after"] = None
+        receipt["cursor_advanced"] = False
+        receipt[MAINTENANCE_WINDOW_FIELD] = window
+        _log_receipt(workspace_root, receipt, fired_via=fired_via,
+                     source_skill=source_skill)
+        return receipt
+
+    # cr1#667: the dials first. A connector the owner turned off for closes
+    # is skipped the way an undeclared backend is: silently, and receipted
+    # so the two never look alike ("turned off" is not "swept and found
+    # nothing"). The exclude list is applied below, before any match.
+    read = _connector_read(workspace_root, "close")
+    if read and read.get("skip_reason"):
+        receipt = _chat.skip_receipt(str(read["skip_reason"]), provider=provider,
+                                     leg=JOB_ID)
         receipt.update(_empty_counts())
         receipt["summary"] = ""      # deliberately nothing to say to the user
         receipt["closed"] = []
@@ -798,6 +906,7 @@ def reconcile_chat_and_receipt(
             "summary": (f"Chat reconciliation did not run: {blocked}. Nothing "
                         "was read, so nothing was closed, and the window is "
                         "picked up whole on the next pass."),
+            MAINTENANCE_WINDOW_FIELD: window,
         }
         receipt.update(_empty_counts())
         _log_receipt(workspace_root, receipt, fired_via=fired_via,
@@ -806,7 +915,31 @@ def reconcile_chat_and_receipt(
 
     normalized = []
     drops: dict = {}
+    # cr1#667: a channel on the exclude list is never read. The plan hands
+    # the lists to the connector step so the read itself skips them; this is
+    # the belt for a staged message from one anyway, dropped before any
+    # match and counted on the receipt. A message a list turned away has been
+    # read, so the cursor passes it (`aside_ts`), named or not: an id-based
+    # include list or a one-to-one chat can never supply a name, and a cursor
+    # waiting for one starves everything behind it (cr1#770).
+    n_excluded = 0
+    aside_ts: List[str] = []
+    kept_messages = []
+    try:
+        from connector_reads import allowed as _allowed
+    except Exception:  # noqa: BLE001
+        _allowed = None
     for raw_msg in chat_messages or []:
+        if read and _allowed is not None and not _allowed(read, *_room_names(raw_msg)):
+            n_excluded += 1
+            seen = normalize_chat_message(raw_msg, provider=provider,
+                                          user_chat_ids=user_chat_ids,
+                                          user_names=user_names)
+            if seen is not None:
+                aside_ts.append(seen["ts"])
+            continue
+        kept_messages.append(raw_msg)
+    for raw_msg in kept_messages:
         m = normalize_chat_message(raw_msg, provider=provider,
                                    user_chat_ids=user_chat_ids,
                                    user_names=user_names, diagnostics=drops)
@@ -816,6 +949,7 @@ def reconcile_chat_and_receipt(
 
     candidates, counts, deferred = select_candidates(normalized)
     counts["n_scanned"] = n_raw
+    counts["n_excluded"] = n_excluded
     counts["n_dropped_noise"] = int(drops.get("noise", 0))
     counts["n_dropped_bad_ts"] = int(drops.get("bad_ts", 0))
 
@@ -849,13 +983,13 @@ def reconcile_chat_and_receipt(
     # words that those messages would "get picked up next time". The receipt
     # was making a promise the cursor had already foreclosed.
     cursor_after = cursor_before
-    ceiling = max((m["ts"] for m in normalized if m.get("ts")), default=None)
+    passed = [m["ts"] for m in normalized if m.get("ts")] + aside_ts
     if deferred:
-        adjudicated = [m["ts"] for m in candidates if m.get("ts")]
         # No candidate scored at all (cap 0 or every candidate deferred) →
         # the cursor does not move. A fire that adjudicated nothing has
         # earned no ground.
-        ceiling = max(adjudicated) if adjudicated else None
+        passed = [m["ts"] for m in candidates if m.get("ts")]
+    ceiling = max(passed, default=None)
     if ceiling and (cursor_before is None or ceiling > cursor_before):
         cursor_after = ceiling
         _write_cursor(workspace_root, cursor_after, source_skill=source_skill)
@@ -890,6 +1024,7 @@ def reconcile_chat_and_receipt(
         "closed": closed,
         "proposed": proposed,
         "refused_no_pointer": refused,
+        MAINTENANCE_WINDOW_FIELD: window,
     }
     receipt.update(counts)
     receipt["summary"] = _summary(receipt)
@@ -1076,11 +1211,17 @@ def _summary(receipt: dict) -> str:
     n_scanned = receipt.get("n_scanned") or 0
     n_closed = receipt.get("n_closed") or 0
     n_prop = receipt.get("n_proposed") or 0
+    n_excluded = receipt.get("n_excluded") or 0
+    n_checked = n_scanned - n_excluded
     if n_scanned == 0:
         line = "No new chat since the last check — nothing to reconcile."
+    elif n_checked <= 0:
+        # cr1#770: chat was read, so never "no new chat"; the counts follow.
+        line = (f"Read {n_scanned} chat message{'s' if n_scanned != 1 else ''}, "
+                "none of them checked.")
     elif n_closed == 0 and n_prop == 0:
-        line = (f"Checked {n_scanned} chat message"
-                f"{'s' if n_scanned != 1 else ''} — nothing matched an open "
+        line = (f"Checked {n_checked} chat message"
+                f"{'s' if n_checked != 1 else ''} — nothing matched an open "
                 "commitment.")
     else:
         bits = []
@@ -1089,6 +1230,8 @@ def _summary(receipt: dict) -> str:
         if n_prop:
             bits.append(f"{n_prop} to confirm")
         line = "Reconciled your chat: " + ", ".join(bits) + "."
+    if n_excluded:
+        line += f" Your include or exclude list set aside {n_excluded}."
     if receipt.get("n_candidates_over_cap"):
         # This sentence is only true because the cursor is held behind the
         # deferred set (see the cursor block in reconcile_chat_and_receipt).
@@ -1115,10 +1258,11 @@ _RECEIPT_KEYS = ("provider", "scan_mode", "degraded", "coverage_note",
                  "skip_reason", "blocked_reason",
                  "n_deferred", "deferred_from_ts",
                  "cursor_advanced_over_partial_sweep",
-                 "n_scanned", "n_dropped_noise", "n_dropped_bad_ts",
+                 "n_scanned", "n_excluded", "n_dropped_noise", "n_dropped_bad_ts",
                  "n_dropped_direction",
                  "n_candidates", "n_candidates_over_cap", "n_closed",
-                 "n_proposed", "n_refused_no_pointer")
+                 "n_proposed", "n_refused_no_pointer",
+                 MAINTENANCE_WINDOW_FIELD)  # cr1#663
 
 
 def _log_receipt(workspace_root, receipt: dict, *, fired_via: str,
