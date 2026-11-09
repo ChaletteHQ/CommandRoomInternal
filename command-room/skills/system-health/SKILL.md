@@ -143,6 +143,19 @@ count (the switched-off ones are named once, in `info_lines`). On a cloud seat
 each counted entry of `reports` also carries `stamp_line`: the app's own
 last-run time for that task and its next run, or that the app holds it switched off (Step 3 renders them).
 
+cr1#931: never take a field out of a record, `folders` least of all. The door
+lets this helper's `task_records` carry each record's computer folder
+(`workspace_access.LISTING_ARG_HELPERS`); every other value is fenced as
+before. If the door still refuses the call, say the one sentence for a step
+that could not run and stop; never strip the field and call again. The helper
+decides the task set from the registry, not from this text: Morning Brief and
+Maintenance, plus the four Hub tasks (Hub Prep, Hub Inbox, Hub Apply, Hub
+Refresh) on a seat whose listing, trigger map or registered ids hold any one
+of them, and never a shelved chat. A raw listing row is placed by
+`schedule_backend.place_listing_rows`, the rule the schedules planner uses.
+`duplicates` names each task this seat runs more than once; its line is
+already in `lines`.
+
 The two drift lists, as the helper computes them and as this check has always
 spelled them (the contract, not a step to run):
 
@@ -186,6 +199,14 @@ verbatim like every other verdict line — fact + the event's own quoted
 diagnostic; the R3 cause-fabrication ban applies (never guess WHY it
 failed). A failure older than the task's newest successful run is history
 and the verdict already dropped it — don't resurrect it in prose.
+
+cr1#931: every failing Maintenance pass line ends with its reason, taken from
+the pass's own record by `task_watchdog.job_receipt_reason` (its receipt's
+`blocked_reason`, `fetch_blocked`, `skip_reason`, `partial_line` and the like,
+quoted as written; else the newest Maintenance run's word about it). A pass
+the fires file as failed (`jobs_failed`, the list the Hub's banner reads) is
+named too, not only one that stopped recording. Render the line whole; never
+drop its reason or add one of your own.
 
 ## Step 3 — Render the answer
 
@@ -349,8 +370,8 @@ The Tue/Thu quiet-chased-tail sweep shipped Phase 4 (2026-07-02) as the daily co
 - **A fire can be on schedule and still half-failed (SPEC BRIEFMERGE §D).** The morning-brief fire runs TWO legs — meeting prep first, then the digest — and writes ONE receipt carrying both. `health_verdict` folds `legs` findings in the same way it folds maintenance job findings: they ride the problem lines and the attention count, and they never move the task out of its bucket, because the brief genuinely did run. "Your Morning Brief ran, but meeting prep didn't" is a real finding with a real fix; report it and say nothing when both legs ran. A receipt with no leg fields is a pre-BRIEFMERGE fire — silence, not a finding.
 - **Skipped is not failed, quiet is not broken, and waiting is not failed (T2 FIRE1, FIX-7).** A prep leg recorded as `skipped` is a decision the fire made — a typed `morning briefing` never runs the prep leg, so its receipt always says `skipped` — and it is never reported as prep failing. A quiet maintenance job (Old Questions Answered, Memory Coverage Check, the schedule realign) writes nothing on a day with nothing to do, so its missing receipt is never "hasn't recorded any work". Meeting Capture left waiting by the maintenance fire is waiting, not failed: `health_verdict` says the one waiting sentence in its `info_lines`. Only the verdict's own `lines` name a problem; never read the receipts yourself to find one.
 - **A RETIRED task is quiet too, and for a different reason** — membership is `schedule_config.RETIRED_TASKS` (`pulse`, eliminated by SPEC LIFECYCLE1; `upcoming-meetings`, merged into the morning brief by SPEC BRIEFMERGE; `past-meetings`, RENAMED to `end-of-day` by SPEC EOD2), never a name list here. A later-add is absent because the workspace hasn't added it YET; a retired task is absent because it is GONE. Both are silent, and the retired class stays silent PERMANENTLY: never report its absence, never propose adding it, never count it as a missing chat in any completeness check. If a workspace still has one REGISTERED, that is not a health finding either — the retirement offer belongs to the update bridge (propose, never silent), not to the watchdog. This is structural, not discipline: a retired id is out of `DEFAULT_SCHEDULES`, and `check_tasks` reports only what the merged config carries.
-- **A SHELVED chat is quiet too, and absent is normal (SHELVE1, cr1#618).** Membership is `schedule_config.SHELVED_TASK_IDS` (Inbox, End of Day, Friday Wrap, Waiting On, My Plate): the cockpit page shows those surfaces, the bridge's reinstall removes their triggers, and a seat that still carries one hears `schedule_config.shelved_line(task_id)` once. Never report a shelved chat as missing, late or stopped.
-- **A still-registered `past-meetings` is a HEALTHY End of Day chat, and the watchdog must never say otherwise (SPEC EOD2).** No rename is offered (`end-of-day` is shelved, cr1#847), so a seat that still holds the predecessor id runs it until it is paused or the cloud reinstall removes it, and nothing degrades. Two halves make that silence correct rather than lucky, and both are in code: `check_tasks` answers "is `end-of-day` registered?" and "when did it last fire?" over the SERVING set (`schedule_config.renamed_predecessors`), so a machine with only `past-meetings` reports End of Day as registered and on schedule; and `plain_english_lines` renders that row under the name the customer's Scheduled list shows (`served_by`), so a genuine finding about that chat says "Past Meetings" to a customer whose sidebar says Past Meetings. Never report `end-of-day` as "missing from the schedule" on a workspace that has the predecessor — the fix that sentence recommends (`set up command room schedules`) is fenced from doing it, so the customer would be sent in a circle.
+- **A SHELVED chat is quiet too, and absent is normal (SHELVE1, cr1#618).** Membership is `schedule_config.SHELVED_TASK_IDS` (Inbox, End of Day, Friday Wrap, Waiting On, My Plate): the cockpit page shows those surfaces, the bridge's reinstall removes their triggers, and a seat that still carries one hears `schedule_config.shelved_line(task_id)` once. Never report a shelved chat as missing, late or stopped. Since cr1#931 this is structural too: `check_tasks` reads `task_watchdog.seat_task_specs`, which leaves every shelved id out even when a stale `registered_taskIds` still lists it, and adds the four Hub tasks on a seat that has the Hub (a missing one says `update my hub`).
+- **A still-registered `past-meetings` is a HEALTHY End of Day chat, and the watchdog must never say otherwise (SPEC EOD2).** No rename is offered (`end-of-day` is shelved, cr1#847), so a seat that still holds the predecessor id runs it until it is paused or the cloud reinstall removes it, and nothing degrades. Two halves make that silence correct rather than lucky, and both are in code: `check_tasks` answers "is `end-of-day` registered?" and "when did it last fire?" over the SERVING set (`schedule_config.renamed_predecessors`), so a machine with only `past-meetings` reports End of Day as registered and on schedule; and `plain_english_lines` renders that row under the name the customer's Scheduled list shows (`served_by`), so a genuine finding about that chat says "Past Meetings" to a customer whose sidebar says Past Meetings. Never report `end-of-day` as "missing from the schedule" on a workspace that has the predecessor — the fix that sentence recommends (`set up command room schedules`) is fenced from doing it, so the customer would be sent in a circle. Since cr1#931 the health check reports `end-of-day` under neither id: it is shelved, so `seat_task_specs` leaves it out, and the serving-set read stays for any later rename.
 - **Don't fabricate a diagnosis.** If the watchdog returns a finding you can't explain, surface the finding and the named fix — never speculate about causes beyond the generic self-serve list (which is possibilities, not a diagnosis). "The computer was likely asleep" as an asserted cause is the exact fabricated-narrative class the 2026-07 dogfood catalogued (F-10/F-43/F-47).
 - **An empty scheduler list is a vantage question before it is a finding.** `health_verdict` checks the substrate's registration history first (F-40); trust its `vantage` verdict. A cloud/remote chat reading an empty machine-local registry and reporting "nothing is registered" is the false total-outage failure this skill exists to never repeat.
 

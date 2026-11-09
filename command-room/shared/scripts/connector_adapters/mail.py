@@ -29,6 +29,8 @@ _GMAIL_OPS = {
     "subject": "subject:{value}",
     "newer_than": "newer_than:{value}",
     "after": "after:{value}",
+    # cr1#941: the end of ONE page of a paged window (a date, exclusive).
+    "before": "before:{value}",
     "rfc822msgid": "rfc822msgid:{value}",
     # Neutral alias for the RFC 822 Message-ID header lookup — skill prose
     # uses THIS name so the provider operator spelling lives only here.
@@ -48,6 +50,7 @@ _OUTLOOK_OPS = {
     "subject": "subject:{value}",
     "newer_than": "received>={value}",
     "after": "received>={value}",
+    "before": "received<{value}",
     # RFC 822 Message-ID header lookup — Graph's internetMessageId property.
     "message_id_lookup": "internetMessageId:{value}",
 }
@@ -75,6 +78,7 @@ _SUPERHUMAN_OPS = {
     "subject": "with subject {value}",
     "newer_than": "newer than {value}",
     "after": "on or after {value}",
+    "before": "before {value}",
     "message_id_lookup": "with Message-ID header {value}",
 }
 

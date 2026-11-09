@@ -140,24 +140,38 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
 def _capture_window(workspace_root: str, out: Dict[str, Any], *,
                     now: Optional[str] = None) -> Dict[str, Any]:
     """The incremental capture pass's window under the one maintenance rule
-    (cr1#663), laid over the catch-up shape the phases read."""
-    from catchup import MAINTENANCE_WINDOW_FIELD, maintenance_window
+    (cr1#663), laid over the catch-up shape the phases read.
 
-    mw = maintenance_window(workspace_root, "meeting-capture", now=now)
+    cr1#948: ONE PAGE of that window per pass (`catchup.paged_window`), so a
+    first run or a long gap is read a few days at a time, oldest first, and
+    never stands as a 30-day read a background fire will not start. `start`
+    and `end` are the page, which is what Phases 3 to 4.8 fetch and what the
+    batch-cap marker is clamped into; the whole window, page and all, rides
+    under `maintenance_window` for the receipt
+    (`eod_incremental.log_capture_pass_receipt`), which moves the marker to
+    where the page ended. A window shorter than a page is read whole, as
+    before."""
+    from catchup import MAINTENANCE_WINDOW_FIELD, PAGE_FIELD, paged_window
+
+    mw = paged_window(workspace_root, "meeting-capture", now=now)
+    page = mw[PAGE_FIELD]
     floor_h = float(out.get("floor_hours") or 24)
     out = dict(out)
     out.update({
-        "start": mw["since"],
-        "end": mw["until"],
-        "start_aware": mw["since_aware"],
-        "end_aware": mw["until_aware"],
-        "days": mw["days"],
-        "extended": mw["days"] * 24.0 > floor_h,
+        "start": page["since"],
+        "end": page["until"],
+        "start_aware": page["since_aware"],
+        "end_aware": page["until_aware"],
+        "days": page["days"],
+        "extended": page["days"] * 24.0 > floor_h,
         "capped": mw["gap_capped"],
         "last_receipt": mw["last_receipt"],
         "window_incomplete_before": mw["window_incomplete_before"],
         "reason": (f"the maintenance window ({mw['reason']}): since "
-                   f"{mw['since']}, the one rule every maintenance job reads"),
+                   f"{mw['since']}, the one rule every maintenance job reads"
+                   + ("" if page["last"] else
+                      f"; this pass reads up to {page['until']}, and the "
+                      f"next pass carries on from there")),
     })
     out[MAINTENANCE_WINDOW_FIELD] = mw
     return out
@@ -1425,7 +1439,8 @@ def inbound_mail_staged(workspace_root: str, *,
                         close_mode: Optional[str] = None,
                         accounts: Optional[List[Any]] = None,
                         fire: str = "maintenance",
-                        read_complete: Optional[bool] = None) -> Dict[str, Any]:
+                        read_complete: Optional[bool] = None,
+                        page_until: Optional[str] = None) -> Dict[str, Any]:
     """The inbound-mail job's writer, by path (cr1#664): a WRITER, on the
     write list only, the sibling of `reconcile_chat_staged`.
 
@@ -1455,7 +1470,7 @@ def inbound_mail_staged(workspace_root: str, *,
         provider=provider, fired_via=fired_via, fetch_blocked=fetch_blocked,
         exclude_captured_since=exclude_captured_since, close_mode=close_mode,
         accounts=accounts, source_skill=source_skill,
-        read_complete=read_complete))
+        read_complete=read_complete, page_until=page_until))
 
 
 def _staged_names(fire: str = "end-of-day") -> frozenset:

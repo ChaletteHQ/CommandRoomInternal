@@ -1002,19 +1002,71 @@ REINSTALL_NOTHING_LINE = "Your scheduled chats were already the reinstalled set;
 REINSTALL_CREATED_ONLY_LINE = "Your scheduled chats are set up: {kept}."
 
 
-def reinstall_line(created_names, removed_names) -> str:
+#: cr1#942: a chat the reinstall found already on the seat is kept, never set
+#: up a second time; the line names it as kept beside the removed ones.
+REINSTALL_KEPT_LINE = ("Your scheduled chats were reinstalled: {kept} {kept_verb} kept; "
+                       "{removed} {removed_verb} removed, because the Command Room Hub shows "
+                       "{them} now ({their} typed {phrase} still {work}).")
+#: cr1#942 review: chats removed and nothing set up or kept (never "nothing is
+#: set up fresh").
+REINSTALL_REMOVED_ONLY_LINE = ("Your scheduled chats were reinstalled: {removed} {removed_verb} "
+                               "removed, because the Command Room Hub shows {them} now ({their} "
+                               "typed {phrase} still {work}).")
+#: cr1#942: a kept chat whose body this version rewrote (a prompt-only update).
+REINSTALL_REFRESHED_LINE = "{names} {verb} this version's instructions, at {its} own time."
+#: cr1#942: every chat was already on the seat and only its instructions moved.
+REINSTALL_IN_PLACE_LINE = "Your scheduled chats were already in place."
+#: cr1#942 (the owner's ruling 2026-11-09): the reinstall never deletes a copy
+#: of a surviving chat. A task the seat carries twice is named, in the health
+#: check's words (`copies_note`), and the owner deletes the extra copy.
+REINSTALL_DUPLICATE_LINE = ("{names} is set up twice, so it runs twice; delete the extra copy "
+                            "in your scheduled tasks.")
+#: cr1#942: a second copy that is paused does not fire, so it does not run twice.
+REINSTALL_PAUSED_COPY_LINE = ("{names} has a second, paused copy; delete the extra copy "
+                              "in your scheduled tasks.")
+#: cr1#942: the scheduler's listing could not be read, so nothing was checked
+#: and nothing was set up (a create here could only be a second copy).
+REINSTALL_UNCHECKED_LINE = ("Your scheduled tasks could not be checked, so nothing was set up "
+                            "or removed; say `set up command room schedules` to check them again.")
+#: cr1#942 review: the listing did not carry a survivor the stored map holds a
+#: trigger for, so the check could not confirm it and nothing was set up.
+REINSTALL_UNCONFIRMED_LINE = ("The task check could not confirm {names}, so nothing was set up "
+                              "for {them}; say `set up command room schedules` to check again.")
+
+
+def reinstall_line(created_names, removed_names, kept_names=(), updated_names=()) -> str:
     """The ONE sentence the bridge says after a reinstall, composed here so
-    the bridge never counts or names the chats itself."""
+    the bridge never counts or names the chats itself. `kept_names` are the
+    chats found already on the seat and kept (cr1#942); `updated_names` the
+    kept ones that took this version's instructions, so the line never says
+    nothing changed when a body was rewritten."""
     created = [str(n) for n in (created_names or []) if str(n).strip()]
     removed = [str(n) for n in (removed_names or []) if str(n).strip()]
+    kept = [str(n) for n in (kept_names or []) if str(n).strip()]
+    updated = [str(n) for n in (updated_names or []) if str(n).strip()]
+    refreshed = (" " + REINSTALL_REFRESHED_LINE.format(
+        names=_join_names(updated), verb="have" if len(updated) > 1 else "has",
+        its="their" if len(updated) > 1 else "its")) if updated else ""
     if not created and not removed:
-        return REINSTALL_NOTHING_LINE
+        return (REINSTALL_IN_PLACE_LINE + refreshed) if updated else REINSTALL_NOTHING_LINE
     if not removed:
-        return REINSTALL_CREATED_ONLY_LINE.format(kept=_join_names(created))
+        return REINSTALL_CREATED_ONLY_LINE.format(kept=_join_names(created)) + refreshed
+    if not created:
+        one = len(removed) == 1
+        if not kept:
+            return REINSTALL_REMOVED_ONLY_LINE.format(
+                removed=_join_names(removed), removed_verb="was" if one else "were",
+                them="it" if one else "them", their="its" if one else "their",
+                phrase="phrase" if one else "phrases", work="works" if one else "work") + refreshed
+        return REINSTALL_KEPT_LINE.format(
+            kept=_join_names(kept), kept_verb="are" if len(kept) > 1 else "is",
+            removed=_join_names(removed), removed_verb="was" if one else "were",
+            them="it" if one else "them", their="its" if one else "their",
+            phrase="phrase" if one else "phrases", work="works" if one else "work") + refreshed
     template = REINSTALL_LINE_ONE if len(removed) == 1 else REINSTALL_LINE
     return template.format(kept=_join_names(created) or "nothing",
                            kept_verb="are" if len(created) > 1 else "is",
-                           removed=_join_names(removed))
+                           removed=_join_names(removed)) + refreshed
 
 
 def record_trigger_map(workspace_root, task_id: str, row: dict,
@@ -2391,19 +2443,29 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
     the mapped ids, with every CREATE dropped (a mapped chat missing from the
     listing is the customer's to re-add, never the bridge's).
 
-    `reinstall=True` is the SHELVE1 path (cr1#618, the owner's ruling
-    2026-11-03), the cloud backend only: every Command Room chat and silent
-    task of the previous version that the listing carries for this folder is
-    planned as a DELETE (`removals`), and the first-install set is planned as
-    CREATES, fresh; the cockpit's own tasks are never touched. The answer
-    adds `removals` (one `CallPlan` per trigger, with its display name),
-    `removed_names`, `created_names` and `reinstall_line`, the one sentence
-    the bridge says, and `gone_ids`, the removed ids with no create (cr1#889:
-    a chat deleted and set up fresh is not gone, so it is neither named as
-    removed nor forgotten by `record_removals`). The creates carry the
-    customer's own times (cr1#890). A seat whose listing carries nothing of Command Room's
-    plans the creates alone; a legacy scheduler refuses with the invite line
-    as before, because it has no delete.
+    `reinstall=True` is the SHELVE1 path (cr1#618), the cloud backend only,
+    under the owner's ruling of 2026-11-09 (cr1#942), which replaced the
+    2026-11-03 delete-and-recreate rule: the reinstall never deletes a
+    surviving chat. Morning Brief and Maintenance go through
+    `plan_registration` with the listing, placed first by `place_listing_rows`
+    (exact name, or the stored trigger id): one on the seat is kept
+    (`current`, or a prompt-only `update`, its time untouched), a task carried
+    twice is named in `duplicates` and the line and never removed, and a
+    CREATE is planned only when the listing was read (`registered` a list)
+    and neither it nor the stored trigger map knows the survivor: one the map
+    holds a trigger for but the listing does not carry (an unpaged or empty
+    read) is `unconfirmed`, never created. `registered=None` plans nothing and
+    says the check could not run. A shelved or retired chat is planned as a
+    DELETE (`removals`) only when the listing's own record names it (a
+    `taskId`) and its folder path digests as this seat's; a second computer
+    at the same folder path digests the same, so its retired chat can be
+    removed too (the ruling retires it anyway). The cockpit's own
+    tasks are never touched. The answer adds `removals`, `removed_names`,
+    `created_names`, `kept_names`, `updated_names`, `copies` and
+    `reinstall_line`, the one sentence the bridge says, and `gone_ids`, the
+    removed ids, which never include a survivor (cr1#889). The creates carry
+    the customer's own times (cr1#890). A legacy scheduler refuses with the
+    invite line as before.
     """
     sc = _schedule_config()
     if reinstall:
@@ -2411,7 +2473,7 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
             tools, workspace_root=workspace_root, abs_path=abs_path,
             registered=registered, plugin_version=plugin_version, tz_name=tz_name,
             writer_pair=writer_pair, discover_block=discover_block, on_date=on_date,
-            plugin_root=plugin_root, env=env)
+            plugin_root=plugin_root, env=env, trigger_map=trigger_map)
     stored = _resolve_trigger_map(trigger_map, workspace_root or None)
     mapped = sorted(k for k, v in stored.items() if isinstance(v, dict))
     if not mapped:
@@ -2503,51 +2565,161 @@ def _reinstall_crons(workspace_root, task_ids) -> dict:
             if isinstance(merged.get(tid), dict) and merged[tid].get("cron")}
 
 
+def _reinstall_place_ids() -> list:
+    """The ids a reinstall listing row is placed under: the shipped chats and
+    silent tasks (the survivors among them). Never a cockpit task
+    (`cockpit-…`): those are `cockpit-setup`'s."""
+    sc = _schedule_config()
+    out = []
+    for tid in list(sc.DEFAULT_SCHEDULES) + list(sc.SILENT_TASKS):
+        tid = str(tid or "").strip()
+        if tid and tid not in out and not tid.startswith(COCKPIT_TASK_PREFIX):
+            out.append(tid)
+    return out
+
+
+def _survivor_copy(copies, stored_row, here=None):
+    """The one copy of a surviving chat the reinstall plans against (cr1#942):
+    one bound to this seat's folder first, then the copy whose trigger the
+    stored map holds and that fires, then any that fires, then the mapped
+    one, then the first. Nothing is ever deleted on account of the choice."""
+    if not copies:
+        return None
+    sc = _schedule_config()
+    stored_trig = str((stored_row or {}).get("trigger_id") or "") if isinstance(stored_row, dict) else ""
+
+    def rank(rec):
+        where = record_device_path(rec)
+        mine = bool(here) and bool(where) and sc.device_digest(where) == here
+        on = _rec_get(rec, "enabled") is not False
+        mapped = bool(stored_trig) and str(_rec_get(rec, "trigger_id") or "") == stored_trig
+        return (0 if mine else 1, 0 if (mapped and on) else 1 if on else 2 if mapped else 3)
+
+    return sorted(copies, key=rank)[0]
+
+
+def _all_copies(records) -> dict:
+    """`{task_id: [trigger_id, ...]}` for every task listed more than once,
+    a paused copy included (one trigger listed twice is one copy)."""
+    seen: dict = {}
+    for rec in records or []:
+        tid = _rec_get(rec, "taskId")
+        if not tid:
+            continue
+        trig = _rec_get(rec, "trigger_id")
+        copies = seen.setdefault(str(tid), [])
+        if trig is None or trig not in copies:
+            copies.append(trig)
+    return {tid: trigs for tid, trigs in seen.items() if len(trigs) > 1}
+
+
 def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
                            plugin_version, tz_name, writer_pair, discover_block,
-                           on_date, plugin_root, env) -> dict:
-    """SHELVE1: the bridge's reinstall plan (see `bridge_plan`). Pure."""
+                           on_date, plugin_root, env, trigger_map=None) -> dict:
+    """SHELVE1: the bridge's reinstall plan (see `bridge_plan`). Pure.
+
+    cr1#942 (the owner's ruling 2026-11-09): the reinstall never deletes a
+    surviving chat. Morning Brief and Maintenance are planned by
+    `plan_registration` over the listing, placed first by `place_listing_rows`
+    (exact name, or the stored trigger id): a survivor on the seat is kept
+    (`current`, or a prompt-only `update`), a duplicate is named and never
+    removed, and a create is planned only when the listing was read and the
+    survivor is not on it. `registered=None` (the readback failed) plans no
+    create: a create then could only be a second copy."""
     sc = _schedule_config()
     backend, _found = select_backend(sc._tool_names(tools))
     out: Dict[str, Any] = {"ok": False, "first_registration_needed": False,
                            "reinstall": True, "line": "", "creates": [], "updates": [],
                            "current": [], "refused": [], "removals": [],
-                           "removed_names": [], "created_names": [], "reinstall_line": "",
-                           "gone_ids": []}
+                           "removed_names": [], "created_names": [], "kept_names": [],
+                           "updated_names": [], "reinstall_line": "", "gone_ids": [],
+                           "duplicates": {}, "copies": {}, "listing_loaded": False}
     if backend is None or backend.id != "cloud":
         out["line"] = sc.setup_invite_line(
             tools, workspace_root=workspace_root, abs_path=abs_path, env=env,
             invite=FIRST_REGISTRATION_INVITE, alternative=FIRST_REGISTRATION_ALTERNATIVE)
         out["reason"] = "legacy_backend" if backend is not None else "no_scheduler"
         return out
+    # cr1#942: no listing is not an empty account. `[]` is a listing that was
+    # read and carries nothing (the readback rule: never substitute `[]` for a
+    # failed read), so its survivors are missing and are created; `None` (or
+    # anything that is not a list) is a read that did not happen, so nothing
+    # is checked, nothing is created and nothing is removed.
+    if not isinstance(registered, (list, tuple)):
+        out.update(ok=True, backend=backend.id, reason="listing_unavailable",
+                   reinstall_line=REINSTALL_UNCHECKED_LINE, lines_if_failed={})
+        return out
+    out["listing_loaded"] = True
     path = _seat_path(abs_path, env)
-    records = [r for r in (registered or []) if isinstance(r, (TaskRecord, dict))]
-    kept, _unplaced = _seat_placed(records, path, workspace_root) if records else ({}, [])
-    for rec in records:
+    basename = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    here = sc.device_digest(path) if path else None
+    try:
+        stored = _resolve_trigger_map(trigger_map, workspace_root or None)
+    except Exception:  # noqa: BLE001 - no map leaves the names to decide
+        stored = {}
+    stored = stored if isinstance(stored, dict) else {}
+    given = [r for r in registered if isinstance(r, (TaskRecord, dict))]
+    tagged = {id(r) for r in given if _rec_get(r, "taskId")}
+    # cr1#942: a raw listing row carries no `taskId`. Unplaced, a surviving
+    # chat read as missing and was set up a second time beside itself.
+    records = place_listing_rows(given, basename=basename,
+                                 task_ids=_reinstall_place_ids(), trigger_map=stored)
+    own = seat_records(records, abs_path=path, declaration={})["own"]
+    survivors = sorted(sc.FIRST_INSTALL_TASK_IDS)
+    # The shelved and retired chats of the previous version are removed only
+    # when they are certainly this seat's: the scheduler's own record names
+    # the task (a `taskId` the listing carried, never a row placed by name)
+    # and its folder is this seat's folder. A survivor is never removed.
+    # Honest limit: `device_digest` hashes the folder path alone, so a second
+    # computer whose folder sits at the same path (one synced folder, the same
+    # user path) reads as this seat, and its retired chat can be removed here
+    # too. That chat is one the ruling retires anyway; a survivor never is.
+    planned_trigs = set()
+    for rec in own:
         tid = str(_rec_get(rec, "taskId") or "").strip()
         trigger_id = _rec_get(rec, "trigger_id")
-        if not tid or not trigger_id:
+        if not tid or not trigger_id or tid in survivors or id(rec) not in tagged:
             continue
-        if tid in kept and kept[tid] is not rec:
-            continue  # another computer's registration of the same id
+        where = record_device_path(rec)
+        if not (here and where and sc.device_digest(where) == here):
+            continue  # a folder this seat cannot vouch for is not this seat's to remove
+        if str(trigger_id) in planned_trigs:
+            continue  # one trigger listed twice is one delete
         plan = backend.plan_delete(tid, trigger_id=str(trigger_id), by_bridge=True)
         if isinstance(plan, Refusal):
             continue  # a cockpit task, or an id Command Room does not know
+        planned_trigs.add(str(trigger_id))
         out["removals"].append(plan)
         if tid == ONE_TASK_COCKPIT_ID:
             # cr1#679: the one-task Hub of the first build is not a chat the
             # Hub replaced; the line says to set the Hub up instead of naming it.
             out["hub_one_task_removed"] = True
-    # cr1#890: the chats set up fresh keep the customer's own time. Without
-    # `crons` every create took the shipped default, so a moved Morning Brief
-    # or Maintenance came back at the default hour with nothing said.
+    keep, ordered = {}, []
+    for tid in survivors:
+        copies = [r for r in own if str(_rec_get(r, "taskId") or "") == tid]
+        chosen = _survivor_copy(copies, stored.get(tid), here)
+        if chosen is not None:
+            keep[tid] = chosen
+            # The planner keeps the LAST record per id: the chosen copy goes last.
+            ordered.extend([r for r in copies if r is not chosen] + [chosen])
+    # cr1#942 review: a listing is one unpaged read, and a session can read an
+    # empty store while the chats exist. A survivor the listing does not carry
+    # but the stored map holds a trigger for is UNKNOWN, never missing: no
+    # create. Only a survivor neither the listing nor the map knows is created.
+    unconfirmed = [t for t in survivors if t not in keep
+                   and isinstance(stored.get(t), dict) and stored[t].get("trigger_id")]
+    out["unconfirmed"] = unconfirmed
+    # cr1#942: the survivors go through the one planner WITH the listing, so a
+    # chat already on the seat is `current` or an `update` (its time
+    # untouched) and only a missing one is a create. cr1#890: a create keeps
+    # the customer's own time.
+    crons = _reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS)
     planned = plan_registration(
         tools, workspace_root=workspace_root, abs_path=abs_path,
-        task_ids=sorted(sc.FIRST_INSTALL_TASK_IDS), registered=[],
+        task_ids=[t for t in survivors if t not in unconfirmed], registered=ordered,
         plugin_version=plugin_version, tz_name=tz_name, writer_pair=writer_pair,
-        crons=_reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS),
-        discover_block=discover_block, on_date=on_date, plugin_root=plugin_root,
-        env=env, trigger_map={})
+        crons=crons, discover_block=discover_block, on_date=on_date,
+        plugin_root=plugin_root, env=env, trigger_map=stored, declaration={})
     if not planned.get("ok"):
         out["line"] = planned.get("line") or ""
         out["reason"] = planned.get("reason")
@@ -2555,58 +2727,57 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
         return out
     out.update(ok=True, backend=backend.id, pair=planned.get("pair"),
                creates=list(planned.get("creates") or []),
-               refused=list(planned.get("refused") or []))
+               updates=list(planned.get("updates") or []),
+               current=list(planned.get("current") or []),
+               refused=list(planned.get("refused") or []),
+               duplicates=dict(planned.get("duplicates") or {}),
+               copies=_all_copies(ordered))
     fresh = {p.task_id for p in out["creates"]}
-    # cr1#890 review: a chat the reinstall keeps whose create this scheduler
-    # refuses (the owner's own time crosses midnight in world time or fires
-    # too often, an unknown zone) is never deleted: its working chat stays as
-    # it is, at the time it runs now, and the line says so. With no chat to
-    # keep, the line says it could not be set up.
-    crons = _reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS)
     reasons = {str((r or {}).get("task_id") or ""): (r or {}).get("reason_code")
                for r in out["refused"]}
+    out["updated_names"] = [sc.task_display_name(p.task_id) for p in out["updates"]]
     tail = ""
-    for tid in sorted(sc.FIRST_INSTALL_TASK_IDS):
+    for tid in survivors:
         if tid in fresh:
             continue
         name = sc.task_display_name(tid)
-        mine = [p for p in out["removals"] if p.task_id == tid]
-        if mine:
-            out["removals"] = [p for p in out["removals"] if p.task_id != tid]
-            tail += " " + REINSTALL_KEPT_AS_WAS_LINE.format(names=name)
-            # The kept chat still gets this version's instructions: a
-            # prompt-only update, its time untouched.
-            trig = {str(p.args.get("trigger_id")) for p in mine}
-            for rec in [r for r in records if str(_rec_get(r, "trigger_id")) in trig]:
-                refresh = plan_registration(
-                    tools, workspace_root=workspace_root, abs_path=abs_path,
-                    task_ids=[tid], registered=[rec], plugin_version=plugin_version,
-                    tz_name=tz_name, writer_pair=writer_pair,
-                    discover_block=discover_block, on_date=on_date,
-                    plugin_root=plugin_root, env=env, trigger_map={})
-                if refresh.get("ok"):
-                    out["updates"].extend(refresh.get("updates") or [])
-        own = ((crons.get(tid) or "") != ((sc.DEFAULT_SCHEDULES.get(tid) or {}).get("cron") or "")
-               and reasons.get(tid) not in (None, "unknown_timezone", REASON_SHELVED))
-        if not mine:
-            tail += " " + (REINSTALL_NOT_SET_UP_BARE_LINE if own
-                           else REINSTALL_NOT_SET_UP_LINE).format(names=name)
-        if own and mine:
-            tail += REINSTALL_OWN_TIME_ADVICE
+        if tid in keep:
+            if tid in reasons:
+                # Registered, but this version's body could not be written to
+                # it: the working chat stays as it runs now.
+                tail += " " + REINSTALL_KEPT_AS_WAS_LINE.format(names=name)
+            else:
+                out["kept_names"].append(name)
+            continue
+        if tid in unconfirmed:
+            continue  # said once, below
+        # cr1#889, cr1#890: read as missing, and its create was refused.
+        own_time = ((crons.get(tid) or "") != ((sc.DEFAULT_SCHEDULES.get(tid) or {}).get("cron") or "")
+                    and reasons.get(tid) not in (None, "unknown_timezone", REASON_SHELVED))
+        tail += " " + (REINSTALL_NOT_SET_UP_BARE_LINE if own_time
+                       else REINSTALL_NOT_SET_UP_LINE).format(names=name)
+    if unconfirmed:
+        names = [sc.task_display_name(t) for t in unconfirmed]
+        tail += " " + REINSTALL_UNCONFIRMED_LINE.format(
+            names=_join_names(names), them="them" if len(names) > 1 else "it")
+    for tid in survivors:
+        if tid in out["duplicates"]:
+            tail += " " + REINSTALL_DUPLICATE_LINE.format(names=sc.task_display_name(tid))
+        elif tid in out["copies"]:
+            tail += " " + REINSTALL_PAUSED_COPY_LINE.format(names=sc.task_display_name(tid))
     out["created_names"] = [sc.task_display_name(p.task_id) for p in out["creates"]]
-    # cr1#889: a chat deleted and set up fresh in the same run is not gone.
-    # Only the ids with no create are named as removed, and only they are what
-    # the bridge's record step forgets (`gone_ids`): forgetting a chat set up
-    # fresh would drop the trigger row its create had just written.
+    # cr1#889: only the removed ids are what the bridge's record step forgets
+    # (`gone_ids`); a survivor is never among them.
     for plan in out["removals"]:
         tid = plan.task_id
-        if tid in fresh or tid in out["gone_ids"]:
+        if tid in out["gone_ids"]:
             continue
         out["gone_ids"].append(tid)
         if tid != ONE_TASK_COCKPIT_ID:
             out["removed_names"].append(sc.task_display_name(tid))
     out["reinstall_line"] = _with_tail(
-        reinstall_line(out["created_names"], out["removed_names"]), tail)
+        reinstall_line(out["created_names"], out["removed_names"], out["kept_names"],
+                       out["updated_names"]), tail)
     # cr1#889 review: a create whose CALL fails at execution is gone too. The
     # skill says, instead of `reinstall_line`, the line composed here for the
     # set of creates that failed (ids sorted, joined by commas), so a chat
@@ -2615,11 +2786,13 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     ids = sorted(fresh)
     for mask in range(1, 2 ** len(ids)):
         failed = [t for i, t in enumerate(ids) if mask & (1 << i)]
-        kept = [sc.task_display_name(p.task_id) for p in out["creates"]
+        made = [sc.task_display_name(p.task_id) for p in out["creates"]
                 if p.task_id not in failed]
-        line = _with_tail(reinstall_line(kept, out["removed_names"]), tail + "".join(
-            " " + REINSTALL_NOT_SET_UP_LINE.format(names=sc.task_display_name(t))
-            for t in failed))
+        line = _with_tail(reinstall_line(made, out["removed_names"], out["kept_names"],
+                                         out["updated_names"]),
+                          tail + "".join(
+                              " " + REINSTALL_NOT_SET_UP_LINE.format(names=sc.task_display_name(t))
+                              for t in failed))
         if out.get("hub_one_task_removed"):
             line += " " + HUB_ONE_TASK_LINE
         out["lines_if_failed"][",".join(failed)] = line

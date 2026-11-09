@@ -2,6 +2,14 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v5.38.0 (2026-11-09)
+
+A simpler Hub that leads with your own work and people, and a Maintenance that now runs every job on your setup and catches up on mail and meetings a little at a time.
+
+- The Hub's Today tab now shows only your own work and people: a one-line summary of the day, the one thing to do first, your priorities and reminders, who owes you a reply, and who you should follow up with, then your meetings. The day's questions have moved to the Review tab, which shows how many are waiting, and overdue items are a filter inside Commitments with a late count on its tab. There is one Apply button, and it says how many changes are waiting. Adding a priority or a reminder now saves it straight away when nothing else is waiting. You can also add one from any chat: say 'add to my priorities' followed by the item. Say 'rebuild my hub' to get the new page.
+- Maintenance now runs every one of its jobs when your files are on your computer and your chats run in the cloud: the weekly tidy-up, the weekly insights and the monthly report, and meeting capture, which no longer waits for an end of day chat. Mail and meetings it has never read are caught up a few days at a time, so the first runs finish and each one says how far it got. Typing 'run maintenance' now runs the same steps as the scheduled run, including your mail and chat.
+- Asking for a health check now lists the tasks your setup really runs, tells you when one has been set up twice, and gives each pass that did not finish its own reason in plain words. 'Clean up my commitments' now works on your setup too. An update no longer deletes and recreates your Morning Brief or Maintenance: it keeps them, sets up only one that is truly missing, and tells you when one has been set up twice.
+
 ## v5.37.0 (2026-11-08)
 
 The Hub gains Overdue and Settings tabs and this morning's brief; Maintenance no longer loses what it read, and a promise closes only on clear evidence.

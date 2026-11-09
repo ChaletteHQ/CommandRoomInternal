@@ -1967,7 +1967,12 @@ def _clear_lock_file(lock_path: Path, unlink_retries: int = 3,
     renamed immediately. The hold is transient (ms), so a couple of short
     retries clears almost every case without littering. The mv-aside stays as
     the backstop; cleanup Rule 9 (`cleanup_actions.sweep_stale_locks`, weekly)
-    archives whatever still lands.
+    and the maintenance fire's daily M2b (`sweep_lock_litter`) archive
+    whatever still lands.
+
+    cr1#930: the aside name never clobbers (a taken name gets `-N`), so the
+    rename needs no delete permission even for a second release in the same
+    second; only a mount that refuses the rename itself returns False.
     """
     import os as _os
     import time as _time
@@ -1983,22 +1988,75 @@ def _clear_lock_file(lock_path: Path, unlink_retries: int = 3,
             last_exc = exc
             if attempt + 1 < max(1, unlink_retries):
                 _time.sleep(retry_delay_s)
-    if last_exc is not None:
-        # Falling to the mv-aside path below. On the merged mount this is the
-        # STEADY state, not an anomaly (unlink is EPERM there), so it is said
-        # once per lock release rather than per retry.
-        left_in_place("lock release", lock_path, last_exc)
-    # Unlink keeps getting refused — mv-aside with the deterministic
-    # stale-name (`<file>.lock.stale.<epoch>.<pid>`, the exact pattern the
-    # weekly sweep archives into _archive/stale-locks/).
-    try:
-        stale_path = lock_path.with_suffix(
-            lock_path.suffix + f".stale.{int(_time.time())}.{_os.getpid()}"
-        )
-        _os.rename(str(lock_path), str(stale_path))
+    # Unlink keeps getting refused — mv-aside to the stale-name
+    # (`<file>.lock.stale.<epoch>.<pid>`, the exact pattern the daily M2b
+    # sweep and the weekly Rule 9 sweep archive into _archive/stale-locks/).
+    #
+    # cr1#930 — NEVER-CLOBBER. On the merged seat unlink is EPERM on EVERY
+    # release, so every release lands here; one process that writes
+    # entities.json twice in the same second (a Maintenance job does) asked
+    # for the SAME aside name twice. The second rename then has to replace an
+    # existing file — a delete of the target, which a no-delete mount can
+    # refuse (Windows always refuses it: FileExistsError) — so it failed,
+    # False came back, and the bare `<file>.lock` stayed live: the next writer
+    # read it as HELD and timed out behind it. A taken name now gets `-2`,
+    # `-3`, ... (the `delete_grant._free_aside` idiom), so the rename never
+    # has to remove anything. An aside never matches `<file>.lock`, the only
+    # name acquire treats as held, so a moved-aside lock cannot block.
+    base = lock_path.with_suffix(
+        lock_path.suffix + f".stale.{int(_time.time())}.{_os.getpid()}"
+    )
+    rename_exc: BaseException | None = None
+    for n in range(1, _ASIDE_TRIES + 1):
+        stale_path = base if n == 1 else base.with_name(f"{base.name}-{n}")
+        if stale_path.exists():
+            continue
+        try:
+            _os.rename(str(lock_path), str(stale_path))
+        except FileNotFoundError:
+            return True  # someone else cleared it between our tries; done
+        except FileExistsError as exc:
+            rename_exc = exc  # a racer took this name; try the next one
+            continue
+        except OSError as exc:
+            rename_exc = exc
+            break
+        if last_exc is not None:
+            # On the merged mount this is the STEADY state, not an anomaly,
+            # so it is said once per release — and it says where the lock
+            # went. (cr1#930: the old line said "left in place" BEFORE the
+            # rename was even tried, so a release that worked read as a lock
+            # that stayed.)
+            _say_lock_moved(lock_path, last_exc, stale_path)
         return True
-    except OSError:
-        return False
+    # Both the delete and the rename were refused: the lock IS still in place,
+    # and acquire's staleness reclaim (dead pid + `stale_after_s`) is the only
+    # thing that frees it. Say so, once.
+    left_in_place("lock release", lock_path,
+                  last_exc if last_exc is not None
+                  else (rename_exc or OSError("rename refused")))
+    return False
+
+
+#: How many `-N` aside names `_clear_lock_file` tries before it gives up. One
+#: process makes at most a handful of releases per second; the bound only
+#: exists so a mount that lies about `exists()` can never loop.
+_ASIDE_TRIES = 64
+
+
+def _say_lock_moved(lock_path, exc: BaseException, dest) -> None:
+    """ONE line when a refused lock delete became a rename (cr1#930). Same
+    words as `left_in_place` up to the ending, the way
+    `delete_grant._say_moved` mirrors it, so the two outcomes read alike in a
+    stderr tail and only the true one says "left in place". Never raises."""
+    try:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[atomic_write] lock release: could not remove {lock_path} "
+            f"({type(exc).__name__}: {exc}); moved aside to {Path(dest).name}\n"
+        )
+    except Exception:
+        pass
 
 
 def release_write_lock(lock_path: Path) -> None:

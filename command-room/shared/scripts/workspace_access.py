@@ -427,6 +427,12 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # workspace's own question lifetime. Both read and write nothing.
     "deal_signal_detector:detect_deal_signals",  # MNSTEPS1 - Step 5h, detection only
     "attribution_doors:card_expiry_sentence",  # MNSTEPS1 - Step 9c-bis, the expiry line
+    # cr1#928: the three skill-class maintenance jobs, planned beside the
+    # data on a merged seat. Each reads and writes nothing; its writer is on
+    # the write list.
+    "skill_jobs_door:plan_cleanup",  # cr1#928 - the cleanup passes the writer runs and the ones it does not
+    "skill_jobs_door:plan_weekly_insights",  # cr1#928 - the five projections the session composes from
+    "skill_jobs_door:plan_monthly_report",  # cr1#928 - the owed months and each month's digest
     "workspace_root:find_workspace_root",
 })
 
@@ -630,6 +636,11 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "commitment_backlog_sweep:apply_review_expiry",  # cr1#938 - the unconfirmed pile, on a yes
     "commitment_backlog_sweep:apply_ingest_kill",  # cr1#938 - one source's guesses, on a yes
     "commitment_backlog_sweep:render_digest",  # cr1#938 - the digest and its audit page
+    # cr1#928: the three skill-class maintenance jobs on a merged seat, each
+    # landing its own receipt beside the data.
+    "skill_jobs_door:cleanup_and_receipt",  # cr1#928 - see the writer table row
+    "skill_jobs_door:insights_and_receipt",  # cr1#928 - see the writer table row
+    "skill_jobs_door:monthly_report_and_receipt",  # cr1#928 - see the writer table row
     "deliverables:land",
 })
 
@@ -1787,6 +1798,39 @@ def _read_args_file(args_file: Any) -> Tuple[Any, Optional[str]]:
 #: the value is decoded by the writer and meets `land`'s fences as bytes.
 CONTENT_KEY_SUFFIXES = ("_base64",)
 
+#: cr1#931: the read helpers that take the scheduler's listing as DATA, and
+#: the argument that carries it. A listing record's `folders` (or the
+#: listing's own `derived_state.folders`) names the folder the task runs in
+#: ON THE CUSTOMER'S COMPUTER: the helper compares it with this seat's
+#: forwarded folder and never opens it, and on a merged seat it is never a
+#: path on this host. So the fence leaves exactly that value alone, and walks
+#: every other value of every record as before. The health check used to be
+#: refused here, and its chat stripped the folder to get through.
+LISTING_ARG_HELPERS = {"staff_meeting_helpers:health_report": "task_records"}
+LISTING_FOLDER_KEYS = ("folders",)
+
+
+def listing_fence_view(name: str, args: Any) -> Any:
+    """The arguments as the path fence sees them: for a helper in
+    `LISTING_ARG_HELPERS`, its listing's records without their computer
+    folders; for any other helper, the arguments unchanged. Only the fence
+    reads this view; the helper gets the arguments as they were handed."""
+    key = LISTING_ARG_HELPERS.get(name)
+    if not key or not isinstance(args, dict) or not isinstance(args.get(key), list):
+        return args
+
+    def _without_folders(rec):
+        if not isinstance(rec, dict):
+            return rec
+        out = {k: v for k, v in rec.items() if k not in LISTING_FOLDER_KEYS}
+        derived = out.get("derived_state")
+        if isinstance(derived, dict):
+            out["derived_state"] = {k: v for k, v in derived.items()
+                                    if k not in LISTING_FOLDER_KEYS}
+        return out
+
+    return dict(args, **{key: [_without_folders(r) for r in args[key]]})
+
 
 def _looks_like_path(value: str) -> bool:
     """True when a helper argument is path-shaped and must therefore be fenced.
@@ -1914,7 +1958,7 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
     if wrong_root is not None:
         return _refuse("run_helper", ctx, started, wrong_root[1], name=name,
                        arg=wrong_root[0], line=path_refusal_line("run_helper"))
-    offender = fence_helper_args(Path(ctx["vm_path"]), dict(args or {}))
+    offender = fence_helper_args(Path(ctx["vm_path"]), listing_fence_view(name, dict(args or {})))
     if offender is not None:
         return _refuse("run_helper", ctx, started, offender[1], name=name,
                        arg=offender[0], **_path_line("run_helper", offender[1]))

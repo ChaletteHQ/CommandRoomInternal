@@ -128,6 +128,7 @@ from schedule_config import (  # noqa: E402
     FIRST_INSTALL_TASK_IDS,
     SILENT_TASKS,
     CronParseError,
+    is_shelved,
     load_schedule_config,
     parse_cron,
     serving_task_ids,
@@ -1340,6 +1341,156 @@ def pick_task_records(task_records) -> tuple:
     return chosen, tied
 
 
+# ---------------------------------------------------------------------------
+# cr1#931 - the tasks THIS seat runs, read from the registry, not remembered
+# ---------------------------------------------------------------------------
+# The health check used to expect every enabled row of `DEFAULT_SCHEDULES`:
+# on a Hub seat that is the three shelved chats (reported "stopped firing")
+# and none of the four Hub tasks, which are registered beside the page and
+# are no row of the schedules registry. The expected set is now:
+#   - the enabled default rows, never a shelved one (SHELVE1: a shelved chat
+#     is never reported missing, late or stopped), later-adds still counted
+#     only when registered; and
+#   - the four Hub tasks (`cockpit_helpers.COCKPIT_TASKS`) when this seat has
+#     the Hub: any one of them in this seat's listing, its stored trigger map
+#     or `registered_taskIds`. A seat with the Hub expects all four, so a
+#     missing one is a finding; a seat without it expects none.
+
+#: The sentence for a Hub task the seat's listing does not carry. The Hub's
+#: own set-up plans all six of its tasks and creates only what is missing.
+HUB_MISSING_LINE = ("Your {name} task is missing from the schedule; say "
+                    "`update my hub` to restore it.")
+
+#: A task this seat runs more than once (cr1#923's `duplicate_tasks`). Read
+#: only: the check names the copy to delete and deletes nothing.
+DUPLICATE_TASK_LINE = ("Your {name} task is set up {times}, so it runs {times}; "
+                       "delete the extra copy from the Scheduled list in the "
+                       "Claude app.")
+
+_TIMES = {2: "twice", 3: "three times", 4: "four times"}
+
+
+def duplicate_task_line(name: str, copies: int) -> str:
+    """`DUPLICATE_TASK_LINE` for `copies` copies of the task called `name`."""
+    times = _TIMES.get(int(copies), f"{int(copies)} times")
+    return DUPLICATE_TASK_LINE.format(name=str(name or "").strip(), times=times)
+
+
+def hub_task_specs() -> dict:
+    """`{task_id: {cron, label, enabled}}` for the four Hub tasks, from
+    `cockpit_helpers.COCKPIT_TASKS` (their one home). `{}` on a tree without
+    the Hub, so the expected set there is the schedules registry alone."""
+    try:
+        from cockpit_helpers import COCKPIT_TASKS
+    except Exception:  # noqa: BLE001 - no Hub here, nothing to expect
+        return {}
+    out = {}
+    for tid, spec in COCKPIT_TASKS.items():
+        if isinstance(spec, dict) and spec.get("cron"):
+            out[tid] = {"cron": spec["cron"], "label": spec.get("label") or "",
+                        "enabled": True}
+    return out
+
+
+def _rec_task_id(rec):
+    if isinstance(rec, dict):
+        return rec.get("taskId")
+    return getattr(rec, "taskId", None)
+
+
+def seat_has_hub(task_records=None, *, registered_ids=None, trigger_map=None,
+                 device_path=None) -> bool:
+    """Does the registry say THIS seat has the Hub? With a live listing
+    (`task_records` not None), any Hub task in it, and nothing else. With
+    none, any Hub task in `registered_taskIds` or in a stored trigger row
+    that is this seat's (`stored_row_is_this_seat`). Never raises."""
+    hub = set(hub_task_specs())
+    if not hub:
+        return False
+    if task_records is not None:
+        # A live listing decides (review of cr1#931): a seat whose listing
+        # holds no Hub task does not have the Hub, whatever an older stored
+        # row or `registered_taskIds` says.
+        return any(_rec_task_id(r) in hub for r in task_records)
+    if hub & {str(t) for t in registered_ids or ()}:
+        return True
+    for tid, row in (trigger_map or {}).items():
+        if tid in hub and stored_row_is_this_seat(row, device_path):
+            return True
+    return False
+
+
+def seat_task_specs(config, *, hub: bool = False,
+                    include_shelved: bool = False) -> dict:
+    """The tasks this seat is expected to run (cr1#931): every enabled row
+    of `config` that is not shelved, plus the Hub's four when `hub`.
+    `include_shelved` keeps the shelved rows, for a caller that asks about
+    one of those chats by its id; no health surface passes it."""
+    specs = {tid: spec for tid, spec in (config or {}).items()
+             if spec.get("enabled") and (include_shelved or not is_shelved(tid))}
+    if hub:
+        for tid, spec in hub_task_specs().items():
+            specs.setdefault(tid, spec)
+    return specs
+
+
+def _seat_basename(workspace_root, device_path=None) -> str:
+    path = str(device_path or workspace_root or "").replace("\\", "/").rstrip("/")
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def place_seat_records(workspace_root, task_records, device_path=None):
+    """The listing with each raw row given its task id, by the ONE placement
+    rule the schedules planner and the Hub use
+    (`schedule_backend.place_listing_rows`, cr1#923), over every id this
+    check can expect: the default rows, the silent tasks and the Hub's four.
+    A raw row's `last_run` is carried as `lastRunAt` when that is absent.
+    `None` stays None (no scheduler here); the input is not changed; never
+    raises."""
+    if task_records is None:
+        return None
+    rows = list(task_records)
+    try:
+        import schedule_backend as _sb
+
+        ids = (list(DEFAULT_SCHEDULES)
+               + [t for t in SILENT_TASKS if t not in DEFAULT_SCHEDULES]
+               + [t for t in hub_task_specs() if t not in DEFAULT_SCHEDULES])
+        try:
+            stored = {t: r for t, r in _sb.read_trigger_map(workspace_root).items()
+                      if stored_row_is_this_seat(r, device_path)}
+        except Exception:  # noqa: BLE001 - no map leaves the names to decide
+            stored = {}
+        rows = _sb.place_listing_rows(rows, basename=_seat_basename(workspace_root, device_path),
+                                      task_ids=ids, trigger_map=stored)
+    except Exception:  # noqa: BLE001 - a health read never breaks a surface
+        return list(task_records)
+    out = []
+    for rec in rows:
+        if (isinstance(rec, dict) and rec.get("taskId") and "lastRunAt" not in rec
+                and rec.get("last_run") is not None):
+            rec = dict(rec, lastRunAt=rec.get("last_run"))
+        out.append(rec)
+    return out
+
+
+def seat_duplicates(workspace_root, task_records, device_path=None) -> dict:
+    """`{task_id: [trigger_id, ...]}` for each task THIS seat runs more than
+    once (`schedule_backend.duplicate_tasks`, cr1#923: only copies that fire,
+    one trigger listed twice is one copy, another folder's task is not this
+    one's). A shelved chat is never named (SHELVE1). `{}` with no listing."""
+    if not task_records:
+        return {}
+    try:
+        import schedule_backend as _sb
+
+        dups = _sb.duplicate_tasks(list(task_records),
+                                   basename=_seat_basename(workspace_root, device_path))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {tid: trigs for tid, trigs in dups.items() if not is_shelved(tid)}
+
+
 def check_tasks(
     workspace_root,
     *,
@@ -1348,8 +1499,11 @@ def check_tasks(
     task_records: Optional[list] = None,
     config: Optional[dict] = None,
     device_path: Optional[str] = None,
+    include_shelved: bool = False,
 ) -> list[dict]:
-    """The W1 report: one dict per enabled task.
+    """The W1 report: one dict per enabled task THIS seat runs (cr1#931:
+    never a shelved chat unless `include_shelved`, and the Hub's four on a
+    seat with the Hub; `seat_task_specs`).
 
     Args:
       device_path (HEALTH3 MUST 1): this seat's folder on the customer's
@@ -1382,6 +1536,9 @@ def check_tasks(
     if registered_ids is None:
         raw = ws_config.get("registered_taskIds")
         registered_ids = set(raw) if isinstance(raw, list) else set()
+    # cr1#931: a raw listing row is given its task id by the one placement
+    # rule (cr1#923) before anything reads `taskId`.
+    task_records = place_seat_records(workspace_root, task_records, device_path)
     if device_path:
         task_records = split_seat_records(task_records, device_path)["own"]
     records_by_id, duplicate_tied = pick_task_records(task_records)
@@ -1389,7 +1546,14 @@ def check_tasks(
         entities = Path(workspace_root) / "_hq" / "data" / "entities.json"
         config = load_schedule_config(entities)
 
-    enabled = {tid: spec for tid, spec in config.items() if spec.get("enabled")}
+    # cr1#931: the set THIS seat runs, never a shelved chat, the Hub's four
+    # when the registry says the seat has the Hub.
+    _stored_map = ws_config.get("triggers")
+    _stored_map = _stored_map if isinstance(_stored_map, dict) else {}
+    hub = seat_has_hub(task_records, registered_ids=registered_ids,
+                       trigger_map=_stored_map, device_path=device_path)
+    hub_ids = set(hub_task_specs()) if hub else set()
+    enabled = seat_task_specs(config, hub=hub, include_shelved=include_shelved)
     # EOD2 — a RENAMED task is served by whichever of its ids this machine
     # actually has registered, and its fire history spans both. So every
     # question below ("is it registered?", "when did it last fire?") is asked
@@ -1459,6 +1623,12 @@ def check_tasks(
         )
         if tid in registered_ids or records_by_id.get(tid) is not None:
             served_by = None
+        # cr1#931: a Hub task is registered by the Hub's set-up, which writes
+        # its trigger row and no `registered_taskIds` entry. With no listing
+        # to ask, this seat's stored row is the registration record.
+        if (tid in hub_ids and not is_registered and task_records is None
+                and stored_row_is_this_seat(_stored_map.get(tid), device_path)):
+            is_registered = True
         last_fired = receipts.get(tid)
         # HEALTH3 MUST 1: the app's own instant, never a date read as midnight.
         app_run = app_last_run((rec or {}).get("lastRunAt"))
@@ -1633,6 +1803,12 @@ def check_tasks(
             "status": status,
             "silent": tid in SILENT_TASKS,
             "first_install": tid in FIRST_INSTALL_TASK_IDS,
+            # cr1#931: one of the Hub's four on a seat that has the Hub. Like
+            # a first-install task it is expected, so missing it is a finding.
+            "hub": tid in hub_ids,
+            # The cron this row was scored against (the Hub's four are no row
+            # of the schedules config, so a reader cannot look it up there).
+            "cron": spec.get("cron"),
             "registered": is_registered,
             "last_fired": last_fired.isoformat() if last_fired else None,
             # IDPOLISH1 — additive, display-only (see _since_display): the
@@ -1856,14 +2032,213 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
         since = _since_display(f.get("last_receipt_raw"), f.get("last_receipt"),
                                 workspace_path=workspace_root)
         since_phrase = f" since {since}" if since else ""
+        reason = job_receipt_reason(workspace_root, f["job"])
         lines.append(
             f"Your Maintenance task is running, but its {name} pass hasn't "
             f"recorded any work{since_phrase} — "
             f"{typed_action('maintenance')} once, and check the result looks "
-            f"right."
+            f"right. {job_reason_sentence(reason)}"
         )
-        problems.append(f)
+        problems.append(dict(f, reason=reason))
+    # cr1#931: a pass the fires themselves file as FAILED (`jobs_failed`, the
+    # list the Hub's banner reads through `maintenance_failing_jobs`) is a
+    # finding too, with its own record's reason; the stale check above only
+    # sees a pass that stopped writing receipts.
+    flagged = {p["job"] for p in problems}
+    try:
+        from maintenance_dispatcher import maintenance_failing_jobs as _failing
+
+        failing = _failing(workspace_root)
+    except Exception:  # noqa: BLE001 - a health read never breaks a surface
+        failing = []
+    for row in failing:
+        job = row.get("job_id")
+        n = int(row.get("fires") or 0)
+        if not job or n < 1 or job in flagged or job in _left_due:
+            continue
+        name = task_display_name(job)
+        since = _since_display(row.get("since"), row.get("since"),
+                                workspace_path=workspace_root)
+        runs = "its last run" if n == 1 else f"its last {n} runs"
+        since_phrase = f", since {since}" if since and n > 1 else ""
+        reason = job_receipt_reason(workspace_root, job)
+        lines.append(
+            f"Your Maintenance task is running, but its {name} pass failed on "
+            f"{runs}{since_phrase} — {typed_action('maintenance')} once, and "
+            f"check the result looks right. {job_reason_sentence(reason)}"
+        )
+        problems.append({"job": job, "display_name": name, "status": "failed",
+                         "fires": n, "since": row.get("since"), "reason": reason})
     return problems, lines
+
+
+# ---------------------------------------------------------------------------
+# cr1#931 - why a Maintenance pass did not do its work, from its own record
+# ---------------------------------------------------------------------------
+
+#: The fields a pass's own receipt says why under, in the order they are read
+#: (`blocked_reason` and `fetch_blocked`: a read that could not happen;
+#: `skip_reason`: a pass with nothing it may read; `partial_line`: the paged
+#: reads' own sentence, cr1#948 and cr1#941). The words are the receipt's,
+#: quoted, never re-worded (R3: the check never guesses a cause).
+JOB_REASON_FIELDS = ("blocked_reason", "fetch_blocked", "skip_reason",
+                     "partial_line", "coverage_note")
+
+#: A code-shaped token: snake_case, or a dotted or slashed identifier. A
+#: quoted reason carrying one is a code, not the owner's words.
+_CODE_TOKEN_RE = re.compile(r"\b[A-Za-z0-9]+(?:[_./][A-Za-z0-9]+)+\b")
+
+
+def plain_reason(text) -> bool:
+    """May `text` be quoted to the owner as a pass's reason (review of
+    cr1#931)? Only plain words: more than one word, no code-shaped token
+    (`_CODE_TOKEN_RE`), and clean under the chat leak scan
+    (`chat_output_validator.validate_chat_output`). Anything else is a code
+    the owner cannot read, and the line says the run's word instead."""
+    text = str(text or "").strip()
+    if len(text.split()) < 2 or _CODE_TOKEN_RE.search(text):
+        return False
+    try:
+        from chat_output_validator import validate_chat_output
+    except Exception:  # noqa: BLE001 - without the scan, refuse to quote
+        return False
+    try:
+        return bool(validate_chat_output(text, fired_via="scheduled").ok)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+#: The plain words for a run that did not do a pass's work, whatever status
+#: word its record used (a status word is a code, never quoted).
+_RUN_DID_NOT_FINISH = "its last run did not finish its work"
+
+#: What a Maintenance run's own word about a pass means (`rescored_completed`,
+#: cr1#760), for a pass that left no reason of its own.
+_RUN_WORD_REASON = {
+    "no_receipt": "its last run was listed as done but left no record of its own",
+    "blocked": "its last run was recorded as blocked",
+    "skipped": "its last run was recorded as skipped",
+    "failed": "its last run was recorded as failed",
+    "error": "its last run was recorded as failed",
+}
+
+NO_REASON_SENTENCE = "No record it left says why."
+
+#: A pass no Maintenance run on the book has listed as due, done or failed:
+#: the runs never picked it up, which is the fact the check can state.
+NO_RUN_LISTED_REASON = "no Maintenance run on record has listed it as due"
+
+
+def _reason_text(value) -> str:
+    if isinstance(value, str):
+        return " ".join(value.split())[:240]
+    if isinstance(value, dict):
+        for key in ("line", "reason", "detail", "error"):
+            if isinstance(value.get(key), str) and value[key].strip():
+                return " ".join(value[key].split())[:240]
+    return ""
+
+
+def job_receipt_reason(workspace_root, job_id: str) -> dict:
+    """Why the pass `job_id` did not do its work, from the records it left
+    (cr1#931): `{"text", "quoted", "source", "at"}`.
+
+    Read newest first: the pass's own newest receipt, when it did NOT serve
+    the pass (a served one is history, not why the pass fails since); the
+    first `JOB_REASON_FIELDS` value on it is quoted as written, and with none
+    it says its own status word. Then the newest Maintenance run that names
+    the pass: its `rescored_completed` word, a connector it could not confirm
+    (`connectors_left_unread`), the pass filed in `jobs_failed`, or left in
+    `jobs_due` unfinished. A pass no run has listed says so
+    (`NO_RUN_LISTED_REASON`). `text` is "" when the newest run that names it
+    lists it done, or there is no run at all. Never raises.
+
+    `job_reason_sentence` turns the answer into the line's last sentence."""
+    out = {"text": "", "quoted": False, "source": None, "at": None}
+    try:
+        from receipts import iter_receipts as _iter_receipts
+
+        rows = _iter_receipts(workspace_root, task_ids=[job_id])
+    except Exception:  # noqa: BLE001
+        rows = []
+    for r in reversed(rows or []):
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        at = r["dt"].isoformat() if r.get("dt") is not None else None
+        status = str(r.get("status") or "").strip().lower()
+        if not status or status in SERVED_RECEIPT_STATUSES:
+            break  # a run that served the pass is not why it fails since
+        for key in JOB_REASON_FIELDS:
+            text = _reason_text(data.get(key))
+            if text and plain_reason(text):
+                return {"text": text, "quoted": True, "source": key, "at": at}
+        word = _RUN_WORD_REASON.get(status) or _RUN_DID_NOT_FINISH
+        return {"text": word, "quoted": False, "source": "status", "at": at}
+    try:
+        from maintenance_dispatcher import RECEIPT_EVENT_TYPE as _run_type
+        from receipts import iter_receipts as _iter_receipts
+
+        runs = _iter_receipts(workspace_root, task_ids=["maintenance"])
+    except Exception:  # noqa: BLE001
+        runs = []
+    for r in reversed(runs or []):
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        if raw.get("type") != _run_type:
+            continue
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        at = r["dt"].isoformat() if r.get("dt") is not None else None
+        moved = data.get("rescored_completed")
+        if isinstance(moved, dict) and isinstance(moved.get(job_id), str):
+            word = moved[job_id].strip().lower()
+            return {"text": _RUN_WORD_REASON.get(word) or _RUN_DID_NOT_FINISH,
+                    "quoted": False, "source": "rescored_completed", "at": at}
+        unread = data.get("connectors_left_unread")
+        cats = unread.get(job_id) if isinstance(unread, dict) else None
+        if isinstance(cats, list) and any(isinstance(c, str) and c.strip() for c in cats):
+            try:
+                import connector_reads as _cr
+
+                names = _cr._labels(workspace_root, [c for c in cats if isinstance(c, str)])
+            except Exception:  # noqa: BLE001
+                names = [c for c in cats if isinstance(c, str)]
+            # A label nobody declared is the category code itself; a code
+            # is never said to the owner (review of cr1#931).
+            plain = [n for n in names if n and not _CODE_TOKEN_RE.search(n)]
+            listed = ", ".join(plain)
+            return {"text": (f"its last run could not confirm a read of {listed}"
+                             if plain else "its last run could not confirm a "
+                             "read of one of its connectors"),
+                    "quoted": False, "source": "connectors_left_unread", "at": at}
+        listed = {}
+        for key in ("jobs_completed", "jobs_failed", "jobs_due"):
+            listed[key] = set()
+            for item in data.get(key) or []:
+                jid = item.get("job_id") if isinstance(item, dict) else item
+                if isinstance(jid, str):
+                    listed[key].add(jid)
+        if job_id in listed["jobs_failed"]:
+            return {"text": _RUN_WORD_REASON["failed"], "quoted": False,
+                    "source": "jobs_failed", "at": at}
+        if job_id in listed["jobs_due"] and job_id not in listed["jobs_completed"]:
+            return {"text": "its last run had it due and did not finish it",
+                    "quoted": False, "source": "jobs_due", "at": at}
+        if job_id in listed["jobs_completed"]:
+            return out  # the newest run that names the pass says nothing more
+    if runs:
+        return {"text": NO_RUN_LISTED_REASON, "quoted": False,
+                "source": "no_run_listed", "at": None}
+    return out
+
+
+def job_reason_sentence(reason) -> str:
+    """The one sentence a pass line ends with: the record's own words,
+    quoted, or the run's word about it, or `NO_REASON_SENTENCE`."""
+    text = _reason_text((reason or {}).get("text")) if isinstance(reason, dict) else ""
+    if not text:
+        return NO_REASON_SENTENCE
+    if reason.get("quoted"):
+        return f"Its own record says: \"{text.rstrip('.')}\"."
+    return text[0].upper() + text[1:].rstrip(".") + "."
 
 
 def nothing_stamped_jobs() -> frozenset:
@@ -2695,7 +3070,8 @@ def _foreign_writers(workspace_root) -> dict:
 
 
 def health_verdict(workspace_root, *, task_records=None, now=None,
-                   backend=None, tools=None, device_path=None) -> dict:
+                   backend=None, tools=None, device_path=None,
+                   include_shelved: bool = False) -> dict:
     """R3's one entry point for every health surface (system-health, cleanup's
     weekly pass, any future daily pass). Vantage guard first, then the
     partition: every counted task lands in exactly ONE bucket, and the
@@ -2732,6 +3108,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
     counted report carries its own line as `stamp_line` too.
     """
     now = now or _now_local()
+    # cr1#931: raw listing rows get their task ids first (cr1#923's rule).
+    task_records = place_seat_records(workspace_root, task_records, device_path)
     seat = split_seat_records(task_records, device_path)
     # TRUTH1 (§3 (a)) — `task_records` is passed through UNCHANGED, never
     # `task_records or []`: `None` ("no scheduler tool in this session") and
@@ -2769,6 +3147,7 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
             "legs": [],
             "brief_receipt": [],
             "task_failures": [],
+            "duplicates": {},
             "summary_line": vantage["line"],
             "lines": [],
             "info_lines": [],
@@ -2776,7 +3155,10 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
             "foreign_records": seat["foreign_records"],
         }
 
-    reports = check_tasks(workspace_root, now=now, task_records=seat["own"])
+    # cr1#931: the seat's own set; `include_shelved` is for a caller asking
+    # about a shelved chat by id, and no health surface passes it.
+    reports = check_tasks(workspace_root, now=now, task_records=seat["own"],
+                          include_shelved=include_shelved)
     stamp_lines = (task_stamp_lines(reports, now=now)
                    if (backend or seat_backend(workspace_root)) == "cloud" else [])
     # ...and each counted report carries its own line as `stamp_line`, so a
@@ -2792,7 +3174,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
     binding = check_workspace_binding(workspace_root)
     on_schedule, caught_up, first_run, problems = [], [], [], []
     for r in reports:
-        if r["status"] == "not_registered" and not r["first_install"]:
+        if (r["status"] == "not_registered" and not r["first_install"]
+                and not r.get("hub")):
             continue  # later-add: expected, uncounted; change-schedule renders it
         if r["status"] in ("late", "never_authorized", "not_registered",
                            "platform_declined") or r["receipt_gap"]:
@@ -2867,6 +3250,17 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
                       | {r["served_by"] for r in problems if r.get("served_by")},
     )
     lines += failure_lines
+    # cr1#931: a task THIS seat runs more than once (cr1#923's count: only
+    # copies that fire, never another folder's). Read only, like every line
+    # here: it names the copy to delete and deletes nothing. It rides the
+    # attention count and never moves the task out of its bucket.
+    expected_ids = {r["task"] for r in reports
+                    if r.get("registered") or r.get("first_install") or r.get("hub")}
+    duplicates = {tid: trigs for tid, trigs in
+                  seat_duplicates(workspace_root, seat["own"], device_path).items()
+                  if tid in expected_ids}
+    for tid in sorted(duplicates):
+        lines.append(duplicate_task_line(task_display_name(tid), len(duplicates[tid])))
     if foreign["line"]:
         lines.append(foreign["line"])
 
@@ -2920,6 +3314,7 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
             )
         n_attention = (len(problems) + len(job_problems) + len(leg_problems)
                        + len(receipt_problems) + len(failure_findings)
+                       + len(duplicates)
                        + (1 if foreign["line"] else 0))
         if n_attention:
             parts.append(
@@ -2942,8 +3337,12 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
                     + [f"leg:{f['leg']}" for f in leg_problems]
                     + [f"receipt:{f['check']}" for f in receipt_problems]
                     + [f"failure:{f['task']}" for f in failure_findings]
+                    + [f"duplicate:{t}" for t in sorted(duplicates)]
                     + (["writer:foreign"] if foreign["line"] else []),
         "foreign_writers": foreign,
+        # cr1#931: `{task_id: [trigger_id, ...]}`, each task this seat runs
+        # more than once; one line each in `lines`.
+        "duplicates": duplicates,
         "maintenance_jobs": job_problems,
         "legs": leg_problems,
         "brief_receipt": receipt_problems,
@@ -3233,6 +3632,9 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
                         f"Your {name} task hasn't run{since_phrase} — I can't tell from here why it "
                         f"stopped. {typed_action(r['task'], capital=True)} to catch it up."
                     )
+        elif r["status"] == "not_registered" and r.get("hub"):
+            # cr1#931: the Hub's set-up, not the schedules set-up, restores it.
+            lines.append(HUB_MISSING_LINE.format(name=name))
         elif r["status"] == "not_registered" and r["first_install"]:
             lines.append(missing_task_line(name, workspace_path, backend=backend))
         elif r["receipt_gap"] and r["status"] == "ok":

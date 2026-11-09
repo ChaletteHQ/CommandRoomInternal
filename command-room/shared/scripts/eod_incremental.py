@@ -257,6 +257,32 @@ def record_walk(workspace_root, *, evidence_ref: str, evidence_ts,
 # The capture-pass receipt (dispatcher due-ness + catchup resume point)
 # ---------------------------------------------------------------------------
 
+def _page_from_window(mw: dict, window) -> dict:
+    """Review F2 (cr1#948): with no maintenance window handed in any form,
+    the span the pass actually read (`window`'s start and end) is its page,
+    so a pass that read part of the window still leaves a marker at the end
+    of what it read instead of a receipt that says the window is done. A
+    window with no readable span leaves `mw` as it is."""
+    from catchup import PAGE_FIELD, _parse_iso_local
+
+    win = window if isinstance(window, dict) else {}
+    start = _parse_iso_local(win.get("start"))
+    end = _parse_iso_local(win.get("end"))
+    until = _parse_iso_local(mw.get("until"))
+    if start is None or end is None or until is None or end < start:
+        return mw
+    out = dict(mw)
+    out[PAGE_FIELD] = {
+        "since": start.isoformat(), "until": end.isoformat(),
+        "days": round((end - start).total_seconds() / 86400.0, 6),
+        "span_days": round((end - start).total_seconds() / 86400.0, 6),
+        # Within a minute of the window's end is the present.
+        "last": (until - end).total_seconds() <= 60,
+        "after_short": False,
+    }
+    return out
+
+
 def log_capture_pass_receipt(workspace_root, *,
                              # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 (review
                              # H-2): NOT `"scheduled"`. A literal default is
@@ -276,6 +302,7 @@ def log_capture_pass_receipt(workspace_root, *,
                              window_incomplete_before: Optional[str] = None,
                              extra_data: Optional[dict] = None,
                              maintenance_window: Optional[dict] = None,
+                             read_complete=None,
                              now=None) -> dict:
     """THE receipt for one incremental capture pass. A `pack_run` under task
     id `meeting-capture` — never under `past-meetings` (see the module
@@ -295,6 +322,17 @@ def log_capture_pass_receipt(workspace_root, *,
     `catchup_window("meeting-capture", ...)` resumes from exactly where this
     pass reached, including a batch-capped pass that left meetings owed.
     Counts only, never a title: the standard receipt discipline.
+
+    cr1#948: when the plan's `maintenance_window` carries a page
+    (`catchup.paged_window`, which `eod_helpers.catchup_window` hands this
+    job), the page decides the marker through `catchup.page_receipt_fields`:
+    the batch-cap or fence marker (`window_incomplete_before`) when the
+    phases left meetings unhandled, else the page's start when the meetings
+    read stopped short (`read_complete` false), else the page's end while
+    the window has not reached the present. The receipt then says the pass
+    was partial (`read_partial`, `partial_line`) and carries the page
+    (`window_page`), and the next pass opens where this one stopped. A
+    window with no page is unchanged.
 
     SPEC EODLEG1 — `capture_leg_ms`, OPTIONAL and additive. The module
     docstring's part 1 is the reason this is honest rather than redundant:
@@ -345,10 +383,33 @@ def log_capture_pass_receipt(workspace_root, *,
         from catchup import MAINTENANCE_WINDOW_FIELD
         from catchup import maintenance_window as _maintenance_window
 
-        data[MAINTENANCE_WINDOW_FIELD] = (
-            maintenance_window if isinstance(maintenance_window, dict)
-            else _maintenance_window(workspace_root, CAPTURE_JOB_ID, now=now))
+        # Review F2 (cr1#948): a caller that dropped `maintenance_window`
+        # still handed the plan's `window`, which carries the same dict, page
+        # and all. Use it, so a pass that read one page never lands an
+        # unpaged, no-marker receipt that reads as "the whole window done".
+        handed = (maintenance_window if isinstance(maintenance_window, dict)
+                  else (window or {}).get(MAINTENANCE_WINDOW_FIELD)
+                  if isinstance(window, dict) else None)
+        if not isinstance(handed, dict):
+            handed = _maintenance_window(workspace_root, CAPTURE_JOB_ID, now=now)
+            if not window_incomplete_before:
+                # A caller that names its own marker keeps it verbatim, as
+                # before; only a marker-less receipt needs the page's end.
+                handed = _page_from_window(handed, window)
+        data[MAINTENANCE_WINDOW_FIELD] = handed
     except Exception:  # noqa: BLE001, the window never costs the receipt
+        pass
+    try:
+        from catchup import PAGE_FIELD, page_receipt_fields
+
+        mw = data.get(MAINTENANCE_WINDOW_FIELD)
+        if isinstance(mw, dict) and isinstance(mw.get(PAGE_FIELD), dict):
+            paged = page_receipt_fields(
+                mw, read_complete=read_complete,
+                oldest_unhandled=window_incomplete_before)
+            data.pop(WINDOW_INCOMPLETE_FIELD, None)
+            data.update(paged)
+    except Exception:  # noqa: BLE001, the page never costs the receipt
         pass
     return log_receipt(workspace_root, CAPTURE_JOB_ID,
                        receipt_type="pack_run",

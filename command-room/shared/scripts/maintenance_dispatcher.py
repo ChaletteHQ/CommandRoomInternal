@@ -2432,6 +2432,7 @@ def _collect_completed_at(handed: dict, own: Optional[dict], completed,
 QUIET_RUN_JOBS = frozenset({"question-expiry", "binding-gauge",
                             "schedule-realign"})
 
+#: HISTORY (until cr1#948, which emptied the set; see below):
 #: T2 FIRE1 MUST 3 (FIX-7; the second computer's walk, 2026-09-26). The jobs
 #: RULED skill-class on the merged fire: the fire may try them, but one that
 #: does not finish there is left honestly DUE (in `jobs_due`, in neither
@@ -2441,7 +2442,14 @@ QUIET_RUN_JOBS = frozenset({"question-expiry", "binding-gauge",
 #: watchdog reads this set: a job here that the newest `maintenance_run`
 #: left due is never "hasn't recorded any work"; it gets the existing
 #: waiting sentence (`CONTAINER_REFUSAL_LINE`) once.
-MERGED_SKILL_CLASS_JOBS = frozenset({"meeting-capture"})
+#:
+#: cr1#948: EMPTY. Its one member, meeting-capture, was left due on the
+#: merged fire "because the End of Day's close captures the same meetings";
+#: a Hub seat has no End of Day close (#618), so nothing captured meetings
+#: at all. Meeting capture now runs on the merged fire one page of its window
+#: at a time (`catchup.paged_window`) and is scored like every door job. The
+#: set and its readers stay, for a job ruled into it later.
+MERGED_SKILL_CLASS_JOBS: frozenset = frozenset()
 
 
 def job_counts_as_complete(job_id, *, receipt_validated: bool,
@@ -3654,13 +3662,31 @@ def _inbound_unreachable_rule() -> str:
         + ": searched <each search, quoted>, found <the tool names they "
         "returned, or nothing>\", and name `email` under "
         "`connectors_unreachable` in M3. A mail tool that loaded is never "
-        "unreachable: when its read errors, refuses or times out, stage "
+        "unreachable: when its FIRST read errors, refuses or times out (no "
+        "message returned at all), stage "
         "nothing and run WRITE with `inbound_rel` null and `fetch_blocked` "
         "\"" + INBOUND_ERRORED_PREFIX + ": <the tool you called>: <the first "
         "200 characters of its error, verbatim>\" (the receipt lands blocked "
         "and the same window is read next time). The two cases are told "
         "apart by those first words. Either way the run leaves an "
-        "inbound-mail receipt that says why (cr1#941). ")
+        "inbound-mail receipt that says why (cr1#941). "
+        + INBOUND_STOPPED_RULE)
+
+
+#: cr1#941, the corrected cause. A scheduled fire read 2 pages of a 30-day
+#: first run (about 600 threads), judged the rest too big, stopped, and named
+#: `email` unreachable although the connector had answered. The window is now
+#: one page a fire (`inbound_mail_leg.plan_inbound_mail`), and a read that
+#: stops early is what it is: a partial read, staged and written.
+INBOUND_STOPPED_RULE = (
+    "A read that STOPPED before the end of the plan's page after returning "
+    "messages (pages left, a later page that errored or timed out, or time "
+    "or volume ran short) is a partial read, not an unreachable "
+    "connector and never a blocked receipt: stage every message it did read, run WRITE with "
+    "`read_complete` false, and never name `email` under "
+    "`connectors_unreachable` for it; the receipt lands and the next fire "
+    "reads that page again in a smaller piece. `email` is unreachable only "
+    "when no mail tool loaded. ")
 
 
 def _stage_refused_rule() -> str:
@@ -3798,8 +3824,10 @@ def _inbound_steps(pair: str) -> str:
         "skip receipt; say nothing). Otherwise CONNECTOR (here): load the "
         "mail connector with the host's tool search for each of the plan's "
         "`connector_queries`; for each entry in `accounts`, an inbox fetch "
-        "with the plan's `query` (inbox mail on or after `after`, read or "
-        "unread: never only unread), addressed to the entry's "
+        "with the plan's `query` (inbox mail on or after `after` and, when "
+        "the plan names a `before`, before it: ONE PAGE of the window, a first "
+        "run's 30 days read a few days per fire, never the whole window at "
+        "once; read or unread: never only unread), addressed to the entry's "
         "`acting_email` when it names one, reading only the plan's "
         "`include` labels or folders when it lists any and never its "
         "`exclude` ones" + _drain_rule() + ". "
@@ -3840,6 +3868,7 @@ def _inbound_steps(pair: str) -> str:
         "      the file holds {\"accounts\": <the plan's>, \"close_mode\": "
         "<the plan's>, \"exclude_captured_since\": <the plan's fire_start>, "
         + _READ_OUTCOME_FIELDS +
+        "\"page_until\": <the plan's>, "
         "\"provider\": <the plan's>, \"source_skill\": \"inbound-mail\", "
         "\"user_person_id\": <the plan's>}. Score it with score_door_job "
         "(SCORE below).\n"
@@ -3851,33 +3880,57 @@ def _capture_steps(pair: str) -> str:
     """M2's meeting-capture sub-steps (MAINTJOBS1 MUST 2). The capture leg is
     the End of Day's Phases 3-4.8, already on the door in that file's merged
     lines (ORCH2): this job runs THOSE lines, verbatim, over its own window,
-    and ends with its own receipt - never a second, relaxed capture path."""
+    and ends with its own receipt - never a second, relaxed capture path.
+
+    cr1#948: it runs here and is not deferred. A Hub seat has no End of Day
+    close (#618), so a pass left for "the close" was a pass nothing ran. The
+    window is one PAGE of the maintenance window (`catchup.paged_window`), so
+    a 30-day first run is read a few days per fire, and a pass that stops
+    short lands a partial receipt the next fire continues from."""
     return (
         "    meeting-capture - PLAN (the window):\n"
         + _m_line(pair, "run_helper",
                   '{"args": {"task_id": "meeting-capture", "workspace_root": '
                   '"<WS>"}, "name": "eod_helpers:catchup_window"}') +
-        "      CONNECTOR and WRITES: run skills/enable-command-room-schedules/"
+        "      Its `start` and `end` are ONE PAGE of the job's window (a first "
+        "run's 30 days are read a few days per fire, oldest first; its "
+        "`maintenance_window` carries the page under `window_page`): read "
+        "only that span, never the whole window. "
+        "CONNECTOR and WRITES: run skills/enable-command-room-schedules/"
         "references/orchestrator-past-meetings.md Phases 3 through 4.8 "
         "exactly as that file's merged-seat lines spell them - every line "
         "through the door, the same writers and admission gates "
         "(`meeting_capture:route_meeting_captures` and its rows through "
         "`append_jsonl`) - over THIS window instead of the close's, "
         "SILENTLY: no chat, no widget, no push; Phase C, Phase 5's day-close "
-        "receipt and Phase 6 do not run here. No meeting-notes connector in "
-        "this run -> leave it due. Then the pass's ONE receipt (a pack_run "
-        "under meeting-capture, never under past-meetings):\n"
+        "receipt and Phase 6 do not run here. This pass is the seat's "
+        "meeting capture: never leave it for an End of Day close, which a "
+        "seat may not have. No meeting-notes connector in this run -> leave "
+        "it due and name `meetings` under `connectors_unreachable` in M3. A "
+        "connector that answered is never unreachable: a list or transcript "
+        "read that stopped before the end of the page is a partial pass, "
+        "written below with `read_complete` false (the receipt then holds "
+        "the page's start, whatever the batch cap reached, because a short "
+        "listing never saw the older meetings). Then the pass's ONE "
+        "receipt (a pack_run under meeting-capture, never under "
+        "past-meetings), whatever it got through:\n"
         + _m_line(pair, "run_writer",
                   '{"args": {"capture_leg_ms": <ms>, "maintenance_window": '
                   '<the plan\'s maintenance_window>, "n_meetings": <n>, '
-                  '"n_processed": <n>, "n_skipped": <n>, "window": <the '
-                  'plan\'s>, "workspace_root": "<WS>"}, "name": '
+                  '"n_processed": <n>, "n_skipped": <n>, "read_complete": '
+                  '<false when a meetings read stopped before the end of the '
+                  'page, else true>, "window": <the plan\'s>, '
+                  '"window_incomplete_before": <the marker the batch cap '
+                  '(Phase 3) or the capture fence (Phase 4) computed THIS '
+                  'pass, else null: never the plan window_incomplete_before '
+                  'handed back>, '
+                  '"workspace_root": "<WS>"}, "name": '
                   '"eod_incremental:log_capture_pass_receipt"}') +
-        "      Score it with score_door_job (SCORE below). A pass that does "
-        "not finish in this "
-        "run is left DUE - in jobs_due, never in jobs_failed: on this shape "
-        "meeting-capture is skill-class, and the End of Day's close captures "
-        "the same meetings. The window carries the meetings connector's "
+        "      The receipt moves the window to where this pass stopped and "
+        "says so when the pass was partial; the next fire carries on from "
+        "there until the window reaches the present. Score it with "
+        "score_door_job (SCORE below). "
+        "The window carries the meetings connector's "
         "dials (`connector_read`, read first): its "
         "`commitment_capture_skip_reason` set -> fetch and process every "
         "meeting exactly as the phases say (its record, people, projects, "
@@ -4036,6 +4089,89 @@ def _proposals_steps(pair: str) -> str:
     )
 
 
+def _cleanup_steps(pair: str) -> str:
+    """M2's cleanup sub-steps (cr1#928). No connector and nothing to compose:
+    the writer runs the skill's code passes beside the data."""
+    return (
+        "    cleanup - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"skill_jobs_door:plan_cleanup"}') +
+        "      `ready` false -> leave it due. Otherwise nothing is read here "
+        "and nothing is asked: the writer runs the cleanup passes that are "
+        "code (the plan's `passes`) beside the data and lands the job's own "
+        "cleanup_run receipt; the passes in the plan's `not_run` are not run "
+        "on this shape. WRITE (in a JSON file in this session's own "
+        "scratch):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
+                  'scratch>/cr_cleanup.json", "name": '
+                  '"skill_jobs_door:cleanup_and_receipt"}') +
+        "      the file holds {\"maintenance_window\": <the plan's>}. Score it "
+        "with score_door_job (SCORE below).\n"
+    )
+
+
+def _insights_steps(pair: str) -> str:
+    """M2's weekly-insights sub-steps (cr1#928). The middle step composes
+    sentences in this session from the plan's projections; no connector."""
+    return (
+        "    weekly-insights - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"skill_jobs_door:plan_weekly_insights"}') +
+        "      `ready` false -> leave it due. `enough_history` false -> run "
+        "WRITE below with `items` empty (it lands the skip receipt; say "
+        "nothing). Otherwise COMPOSE (here, no connector): from the plan's "
+        "`projections` and nothing else, write at most `max_items` plain "
+        "sentences about the person's business and relationships - who has "
+        "gone quieter than usual, which commitments are past their date, "
+        "which projects have stopped moving, what keeps coming up - each "
+        "naming only what a projection names, never a file, a record or the "
+        "system. WRITE (the sentences in a JSON file in this session's own "
+        "scratch):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
+                  'scratch>/cr_weekly_insights.json", "name": '
+                  '"skill_jobs_door:insights_and_receipt"}') +
+        "      the file holds {\"items\": [<your sentences>], "
+        "\"maintenance_window\": <the plan's>}. The writer recomputes the "
+        "projections beside the data, writes the five views and the insights "
+        "document, and lands the job's own pack_run. Score it with "
+        "score_door_job (SCORE below).\n"
+    )
+
+
+def _monthly_steps(pair: str) -> str:
+    """M2's monthly-report sub-steps (cr1#928). The middle step composes one
+    paragraph per owed month in this session from the plan's digest."""
+    return (
+        "    monthly-report - PLAN:\n"
+        + _m_line(pair, "run_helper",
+                  '{"args": {"workspace_root": "<WS>"}, "name": '
+                  '"skill_jobs_door:plan_monthly_report"}') +
+        "      `ready` false or `months` empty -> leave it due. Otherwise "
+        "COMPOSE (here, no connector): for each entry in `months`, one "
+        "paragraph of three to five sentences on what that month meant, from "
+        "its `digest` and nothing else - the anchor moment (its busiest "
+        "project or a decision), the theme it set, one or two things that "
+        "followed; a digest with no clear anchor gets one sentence saying "
+        "the period was steady-state. Never a number the digest does not "
+        "carry. WRITE (the paragraphs in a JSON file in this session's own "
+        "scratch):\n"
+        + _m_line(pair, "run_writer",
+                  '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
+                  'scratch>/cr_monthly_report.json", "name": '
+                  '"skill_jobs_door:monthly_report_and_receipt"}') +
+        "      the file holds {\"maintenance_window\": <the plan's>, "
+        "\"months\": [{\"period\": <the entry's period>, \"synthesis_lead\": "
+        "<your paragraph>}, ...]}. Every number, the value receipt and both "
+        "documents are computed beside the data; one operator_report_generated "
+        "receipt lands per month. Score it with score_door_job (SCORE "
+        "below).\n"
+    )
+
+
 DOOR_JOBS: dict = {
     "schedule-realign": {
         "plan": "maintenance_dispatcher:plan_schedule_realign",
@@ -4101,6 +4237,31 @@ DOOR_JOBS: dict = {
                     MAINT_CLEAR_WRITER),
         "validator": "reconcile_sent_commitments:validate_reconcile_ran",
         "steps": _sent_steps,
+    },
+    # cr1#928: the three jobs that were skill-class, so a merged-only seat
+    # (which has no fire on a seat that holds the files) runs them at all.
+    # Each is narrower than its skill and says so on its own receipt
+    # (`skill_jobs_door`, `scope: "door"`).
+    "cleanup": {
+        "plan": "skill_jobs_door:plan_cleanup",
+        "writer": "skill_jobs_door:cleanup_and_receipt",
+        # scored by score_door_job from its own receipt; no validator
+        "validator": None,
+        "steps": _cleanup_steps,
+    },
+    "weekly-insights": {
+        "plan": "skill_jobs_door:plan_weekly_insights",
+        "writer": "skill_jobs_door:insights_and_receipt",
+        # scored by score_door_job from its own receipt; no validator
+        "validator": None,
+        "steps": _insights_steps,
+    },
+    "monthly-report": {
+        "plan": "skill_jobs_door:plan_monthly_report",
+        "writer": "skill_jobs_door:monthly_report_and_receipt",
+        # scored by score_door_job from its own receipt; no validator
+        "validator": None,
+        "steps": _monthly_steps,
     },
 }
 
@@ -4175,7 +4336,13 @@ def skill_jobs_left_due() -> list:
     seat that holds the files. The merged branch cannot run them from here,
     so on that shape they stay due (the maintenance chain is PARTIAL there:
     ORCH2 fix pass 1, ruling R-ORCH2-2). Derived from the registry, never
-    typed, so the record's list is the code's list."""
+    typed, so the record's list is the code's list.
+
+    cr1#928: EMPTY today. Cleanup, weekly-insights and the monthly report
+    were the last three; a merged-only seat has no fire on a seat that holds
+    the files, so they never ran there. Each is a `DOOR_JOBS` row now
+    (`skill_jobs_door`). A new job with no leg and no door row lands here,
+    and the merged branch's `skill` rule still says what happens to it."""
     return [job for job in MAINTENANCE_JOBS if job_class(job) == "skill"]
 
 
@@ -4419,11 +4586,13 @@ def _score_steps(pair: str, since: Optional[str] = None) -> str:
         "      `outcome` completed -> jobs_completed; due -> jobs_due only; "
         "failed -> jobs_failed.\n"
         # W2 SCORE2 MUST 1 (D-T2B-8): the scorer answers `due` for this class
-        # itself, so the fire's lists and its receipt agree.
-        "      A skill-class job ("
-        + ", ".join(sorted(MERGED_SKILL_CLASS_JOBS)) +
-        ") on this shape is left due whatever the door answered: its answer "
-        "is due, and it is filed in jobs_due, never in jobs_failed.\n"
+        # itself, so the fire's lists and its receipt agree. cr1#948: no job
+        # is in the class today, so the sentence is not said.
+        + (("      A skill-class job ("
+            + ", ".join(sorted(MERGED_SKILL_CLASS_JOBS)) +
+            ") on this shape is left due whatever the door answered: its "
+            "answer is due, and it is filed in jobs_due, never in "
+            "jobs_failed.\n") if MERGED_SKILL_CLASS_JOBS else "")
     )
 
 

@@ -987,6 +987,29 @@ def _find_recent_duplicate(events, window_str, rollup, metrics, hours_estimate):
     return latest
 
 
+def preview_value_receipt(workspace_root, window_start, window_end, *,
+                          rollup="month") -> dict:
+    """cr1#928: the value receipt's numbers and sections WITHOUT the
+    `value_receipt_generated` row. The same reads and builders
+    `compute_value_receipt` uses, in the same order; appends nothing. The
+    monthly-report door job renders the operating report from this first, so
+    nothing serves the month's slot until that report exists, and only then
+    calls `compute_value_receipt` (pinned equal by
+    tests/run_skill_jobs_door_test.py)."""
+    events, _skipped = load_events_org_scoped(workspace_root)
+    computed = compute_metrics(events, window_start, window_end)
+    metrics = computed["metrics"]
+    hours_estimate = computed["hours_estimate"]
+    per_month = computed["per_month"]
+    coaching = coaching_block(workspace_root, window_start, window_end,
+                              events=events)
+    return {"window": computed["window"], "rollup": rollup,
+            "metrics": metrics, "hours_estimate": hours_estimate,
+            "per_month": per_month,
+            "sections": _build_sections(metrics, hours_estimate, per_month,
+                                        rollup, coaching)}
+
+
 def compute_value_receipt(
     workspace_root,
     window_start,

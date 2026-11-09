@@ -195,6 +195,26 @@ WINDOW_MOVING_STATUSES = frozenset({"complete", "degraded"})
 #: Without it such a seat re-reads the same span on every fire for good.
 WINDOW_READ_FIELD = "window_read"
 
+# THE PAGED WINDOW (cr1#948, cr1#941). A first run, or a long gap, hands a
+# job a 30-day window, and a background fire cannot read 30 days of a busy
+# connector: the inbound-mail run stopped after 2 pages of about 600 threads
+# and re-opened the same 30 days on every fire, and the meeting capture would
+# not start at all. So a job reads its window ONE PAGE per fire, oldest page
+# first, and the receipt's carry-over marker (the same
+# `WINDOW_INCOMPLETE_FIELD`) moves to where the page ended. The next fire
+# opens there, until the window reaches the present. The 30-day bound stands
+# and nothing in it is dropped. `PAGE_FIELD` is the page's dict on the
+# receipt, the one spelling reader and writer side.
+PAGE_FIELD = "window_page"
+# The first page's span, and the bounds every later page is held inside. A
+# page that read to its end doubles the next one (a quiet seat reaches the
+# present in a few fires); a page whose read stopped short halves it (a busy
+# one still moves). A page after a short one keeps its span, so a busy seat
+# does not swing between a page too big and one that fits.
+PAGE_FIRST_DAYS = 3.0
+PAGE_MIN_DAYS = 0.25
+PAGE_MAX_DAYS = float(DEFAULT_CAP_DAYS)
+
 
 def read_reached_end(flag):
     """The `read_complete` a writer was handed, as True, False or None (cr1#742).
@@ -441,7 +461,7 @@ def last_successful_point(workspace_root, task_id) -> dict:
             else None)
     if newest is None:
         return {"dt": None, "receipt_dt": None, "incomplete_before": None,
-                "receipt_seq": None,
+                "receipt_seq": None, "page": None,
                 "newest_receipt_dt": any_dt, "held_by_status": held}
     raw = newest.get("raw") if isinstance(newest.get("raw"), dict) else {}
     data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
@@ -460,6 +480,10 @@ def last_successful_point(workspace_root, task_id) -> dict:
         # cr1#761: where that receipt sits in the book, so a reader can tell
         # what reached the book after it, whatever the record's own time.
         "receipt_seq": seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
+        # cr1#948: the page that receipt read, when its job pages its window
+        # (`paged_window`), so the next page is sized from how that one went.
+        "page": (data.get(PAGE_FIELD)
+                 if isinstance(data.get(PAGE_FIELD), dict) else None),
         "newest_receipt_dt": any_dt,
         "held_by_status": held,
     }
@@ -675,6 +699,183 @@ def window_from_cursor(job_id: str, cursor, *,
     now = _parse_iso_local(now) or _now_local()
     basis = _parse_iso_local(cursor)
     return _window_dict(job_id, basis, now=now, last_receipt=basis)
+
+
+def _page_days(value, fallback: float = PAGE_FIRST_DAYS) -> float:
+    return min(PAGE_MAX_DAYS, max(PAGE_MIN_DAYS, _coerce_number(value, fallback)))
+
+
+def paged_window(workspace_root, job_id: str, *, page_days=None,
+                 now: Optional[_dt.datetime] = None) -> dict:
+    """`maintenance_window`, plus the ONE page of it this fire reads
+    (cr1#948, cr1#941). The shared answer to a 30-day first run (or a long
+    gap) that one background fire cannot read.
+
+    Returns the `maintenance_window` dict unchanged, with one key added,
+    `PAGE_FIELD` ("window_page"):
+      since / until              machine-local naive ISO: the page. `since`
+                                 is the window's own start; `until` is
+                                 `since` plus the page span, or the
+                                 window's end when that comes first
+      since_aware / until_aware  the same instants with the machine's UTC
+                                 offset: what the connector query takes
+      days                       the page span actually read, in days
+      span_days                  the span this page was sized at
+      last                       True when the page reaches the window's
+                                 end (the present)
+      after_short                True when the previous page's read stopped
+                                 short (its span is kept, not doubled)
+
+    The page span: `page_days` when the caller names one, else sized from
+    the job's previous page on its newest window-moving receipt
+    (`next_days`), else `PAGE_FIRST_DAYS`; always inside `PAGE_MIN_DAYS` to
+    `PAGE_MAX_DAYS`. A window shorter than the span is one page, `last`
+    True, read exactly as before: a steady-state fire is not narrowed.
+
+    The fire reads ONLY `[since, until]` of the page, every page of the
+    connector inside it, then hands the window to `page_receipt_fields`,
+    whose answer goes on the job's receipt. That is the whole contract; a
+    job adopts paging by calling these two and changing nothing else. The
+    receipt must be one whose status moves the window
+    (`receipt_moves_window`: complete, degraded, or none), or its marker is
+    never read. Reads only; never raises (a failed read of the previous
+    page sizes this one at `PAGE_FIRST_DAYS`)."""
+    now_dt = _parse_iso_local(now) or _now_local()
+    out = maintenance_window(workspace_root, job_id, now=now_dt)
+    prev = None
+    try:
+        prev = last_successful_point(workspace_root, job_id).get("page")
+    except Exception:  # noqa: BLE001 - a page is sized best-effort
+        prev = None
+    if page_days is not None:
+        span = _page_days(page_days)
+    elif isinstance(prev, dict):
+        span = _page_days(prev.get("next_days"))
+    else:
+        span = PAGE_FIRST_DAYS
+    since = _parse_iso_local(out.get("since")) or now_dt
+    end = _parse_iso_local(out.get("until")) or now_dt
+    until = min(end, since + _dt.timedelta(days=span))
+    out[PAGE_FIELD] = {
+        "since": since.isoformat(),
+        "until": until.isoformat(),
+        "since_aware": to_connector_iso(since),
+        "until_aware": to_connector_iso(until),
+        "days": round(max(0.0, (until - since).total_seconds()) / 86400.0, 6),
+        "span_days": span,
+        "last": until >= end,
+        "after_short": bool(isinstance(prev, dict)
+                            and prev.get("read") == "short"),
+    }
+    return out
+
+
+def page_receipt_fields(window, *, read_complete=None,
+                        oldest_unhandled=None) -> dict:
+    """What a paged job's receipt carries about its page (cr1#948, cr1#941):
+    the writer half of `paged_window`. Merge the answer into the receipt's
+    data as it stands.
+
+    Args:
+      window: the dict `paged_window` returned for THIS fire (a dict with no
+        page is read as one page that is the whole window).
+      read_complete: the connector read's own word (`read_reached_end`):
+        False when the read stopped before the end of the page (more pages
+        remained unread). None or True is a read that reached the end.
+      oldest_unhandled: where an unhandled tail of the page begins, when the
+        job can name one (a batch cap or a time fence over items sorted
+        oldest first: the meeting capture can). It is IGNORED when
+        `read_complete` is False: a short read on a newest-first connector
+        left the OLDER part unlisted, so only the page's start is honest
+        there, and that is the marker (review F1).
+
+    Returns:
+      `WINDOW_INCOMPLETE_FIELD`  present when the window is not finished:
+                                 the page's start when the read stopped
+                                 short, else the oldest unhandled point when
+                                 one was named, else the page's end (the
+                                 page was read and later pages remain).
+                                 Absent once the read reached the present.
+      `PAGE_FIELD`               the page as read, with `read` ("whole",
+                                 "short" or "capped") and `next_days`, the
+                                 next page's span
+      read_partial / partial_line  present only when the window is not
+                                 finished: True, and one plain sentence that
+                                 says the read was partial and continues next
+                                 run. A partial read is never a connector
+                                 that could not be reached.
+    """
+    win = window if isinstance(window, dict) else {}
+    page = win.get(PAGE_FIELD)
+    if not isinstance(page, dict):
+        page = {"since": win.get("since"), "until": win.get("until"),
+                "span_days": win.get("days"), "last": True,
+                "after_short": False}
+    span = _page_days(page.get("span_days"))
+    short = read_reached_end(read_complete) is False
+    capped = (not short) and _parse_iso_local(oldest_unhandled) is not None
+    bounds = {"start": page.get("since"), "end": page.get("until")}
+    if short:
+        # Review F1: a read that stopped short holds the page's START,
+        # whatever `oldest_unhandled` says. A newest-first connector (the
+        # meetings search too) lists the newest items first, so an item the
+        # job processed or capped after a short listing says nothing about
+        # the older items that were never listed. Resuming past the page's
+        # start would drop them for good.
+        marker = receipt_window_marker(bounds, incomplete=True,
+                                       oldest_unhandled=page.get("since"))
+        # Review F3: halve what was actually read, not the sized span: after
+        # a quiet stretch the span can be 30 days while the page is hours.
+        read_days = _coerce_number(page.get("days"), span)
+        next_days = _page_days(min(span, read_days) / 2.0)
+        read = "short"
+    elif capped:
+        marker = receipt_window_marker(bounds, incomplete=True,
+                                       oldest_unhandled=oldest_unhandled)
+        read, next_days = "capped", span
+    else:
+        marker = (None if page.get("last") else
+                  receipt_window_marker(bounds, incomplete=True,
+                                        oldest_unhandled=page.get("until")))
+        read = "whole"
+        next_days = span if page.get("after_short") else _page_days(span * 2)
+    rec = {k: page.get(k) for k in ("since", "until", "days", "span_days",
+                                    "last")}
+    rec.update(read=read, next_days=next_days)
+    out = {PAGE_FIELD: rec}
+    if marker is None and (short or capped or not page.get("last")):
+        # No parseable page: nothing honest to resume from; the window's own
+        # start is re-read next fire (the receipt still says partial).
+        out["read_partial"] = True
+    if marker is not None:
+        out[WINDOW_INCOMPLETE_FIELD] = marker
+        out["read_partial"] = True
+    if out.get("read_partial"):
+        out["partial_line"] = page_partial_line(rec)
+    return out
+
+
+def page_partial_line(page) -> str:
+    """The one plain sentence a partial paged read says on its receipt: how
+    far it read, and that the next run carries on from there. Empty for a
+    read that reached the present."""
+    rec = page if isinstance(page, dict) else {}
+    if rec.get("read") == "whole" and rec.get("last"):
+        return ""
+    since = _parse_iso_local(rec.get("since"))
+    until = _parse_iso_local(rec.get("until"))
+    if since is None or until is None:
+        return ("Read part of the window; the next run carries on from "
+                "where this one stopped.")
+    span = f"{since.date().isoformat()} to {until.date().isoformat()}"
+    if rec.get("read") == "short":
+        return (f"Read part of {span} before stopping; the next run reads "
+                f"that span again in a smaller piece.")
+    if rec.get("read") == "capped":
+        return (f"Read {span} but handled only part of it; the next run "
+                f"carries on from the first item not handled.")
+    return (f"Caught up through {until.date().isoformat()} ({span} this "
+            f"run); the next run carries on from there until it reaches today.")
 
 
 def catchup_window(
@@ -955,6 +1156,13 @@ __all__ = [
     "WINDOW_REASON_FIRST_RUN",
     "WINDOW_MOVING_STATUSES",
     "WINDOW_READ_FIELD",
+    "PAGE_FIELD",
+    "PAGE_FIRST_DAYS",
+    "PAGE_MIN_DAYS",
+    "PAGE_MAX_DAYS",
+    "paged_window",
+    "page_receipt_fields",
+    "page_partial_line",
     "read_reached_end",
     "receipt_moves_window",
     "catchup_window",

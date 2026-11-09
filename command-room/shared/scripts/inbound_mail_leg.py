@@ -40,6 +40,13 @@ THE SHAPE (the chat leg's, `chat_reconcile.py`)
            `window_incomplete_before` when this run left part of its window
            unhandled (a capped capture, a blocked read, a skip), so a gap is
            never stepped over.
+  page     cr1#941: the fetch reads ONE page of the window
+           (`catchup.paged_window`, shared with meeting capture, cr1#948),
+           `after` to `before`, and the complete receipt moves the marker to
+           where the page ended (`_page_fields`), so a first run's 30 days
+           reach the present over a few fires. A read that stopped short is
+           a partial read on a complete receipt, never an unreachable
+           connector.
 
 ORDER. Captures before closes: the open half runs first, and the close half's
 own fences (the message that created an item never closes it; a reply older
@@ -204,13 +211,58 @@ def drop_excluded(read, items):
 
 def _window(workspace_root, now=None) -> dict:
     """This job's maintenance window (cr1#663), computed before anything this
-    run writes, so its basis is the previous run's receipt."""
-    from catchup import maintenance_window
+    run writes, so its basis is the previous run's receipt.
+
+    cr1#941: with the ONE page of it this fire reads (`catchup.paged_window`,
+    the mechanism cr1#948 built for meeting capture), under `window_page`. A
+    first run's 30 days (about 600 threads on a busy seat) are read a few
+    days per fire, oldest first, instead of standing as one read a
+    background fire stops partway through and opens again from the same
+    start on every fire. A window shorter than a page is one page, read
+    exactly as before. The page is then counted in whole UTC days
+    (`_day_page`), because the inbox fetch can only be bounded by dates."""
+    from catchup import paged_window
 
     local_now = None
     if isinstance(now, _dt.datetime):
         local_now = now.astimezone().replace(tzinfo=None) if now.tzinfo else now
-    return maintenance_window(workspace_root, JOB_ID, now=local_now)
+    return _day_page(paged_window(workspace_root, JOB_ID, now=local_now))
+
+
+def _day_page(window: dict) -> dict:
+    """The page in whole UTC days (cr1#941 review F2). The inbox fetch takes
+    dates (`fetch_floor`, `fetch_ceiling`), so a page of a quarter day still
+    fetched two or three whole days: halving after a short read never shrank
+    the query, and a seat whose few days exceeded one fire stopped short at
+    the same start on every fire. Here the page ends on a UTC midnight, the
+    page's day count (its span rounded, never under ONE day) after the start
+    of the day it opens in, or at the window's end when that comes first. So
+    the query is exactly the page's days, a halved page fetches fewer days,
+    and the smallest page is one day. The page's start is untouched: it is
+    the window's start, so nothing before it is stepped over."""
+    from catchup import PAGE_FIELD, _parse_iso_local, to_connector_iso
+
+    win = window if isinstance(window, dict) else {}
+    page = win.get(PAGE_FIELD)
+    since = _parse_iso_local((page or {}).get("since"))
+    end = _parse_iso_local(win.get("until"))
+    if not isinstance(page, dict) or since is None or end is None:
+        return window
+    try:
+        span = float(page.get("span_days") or 1.0)
+    except (TypeError, ValueError):
+        span = 1.0
+    n_days = max(1, int(span + 0.5))
+    day0 = _dt.datetime.combine(since.astimezone(_dt.timezone.utc).date(),
+                                _dt.time(), _dt.timezone.utc)
+    stop = (day0 + _dt.timedelta(days=n_days)).astimezone().replace(tzinfo=None)
+    until = min(end, stop)
+    out = dict(win)
+    out[PAGE_FIELD] = dict(
+        page, until=until.isoformat(), until_aware=to_connector_iso(until),
+        days=round(max(0.0, (until - since).total_seconds()) / 86400.0, 6),
+        span_days=float(n_days), last=until >= end)
+    return out
 
 
 def fetch_accounts(workspace_root) -> List[Dict[str, Any]]:
@@ -269,9 +321,104 @@ def fetch_floor(window) -> str:
     if since.tzinfo is None:
         since = since.astimezone()
     floor = since.astimezone(_dt.timezone.utc)
-    if win.get("reason", WINDOW_REASON_CURSOR) == WINDOW_REASON_CURSOR:
+    if (win.get("reason", WINDOW_REASON_CURSOR) == WINDOW_REASON_CURSOR
+            and not win.get("window_incomplete_before")):
+        # cr1#941: a window held at a carry-over marker opens exactly where
+        # the last read stopped, so it takes no overlap day: with one, a page
+        # halved after a short read would fetch a day more than the page.
         floor -= _dt.timedelta(days=CURSOR_OVERLAP_DAYS)
     return floor.date().isoformat()
+
+
+def _page_until(window) -> Optional[str]:
+    """The fetched page's end as an aware ISO instant, or None when the page
+    reaches the present (the fetch had no upper bound)."""
+    from catchup import PAGE_FIELD
+
+    page = (window or {}).get(PAGE_FIELD) if isinstance(window, dict) else None
+    if not isinstance(page, dict) or page.get("last") is not False:
+        return None
+    return page.get("until_aware") or None
+
+
+def _as_fetched(window: dict, page_until) -> dict:
+    """The writer's window with its page ended where the PLAN's fetch ended
+    (cr1#941 review). The writer computes the window again at its own moment,
+    and on a first run or a capped gap the window's start is "30 days ago":
+    if its UTC date rolls between the plan and the write, `_day_page` would
+    end the page a day later than the fetch did, and the marker would step
+    over a day nobody read. So:
+      `page_until` handed (the plan's) -> the page ends there, never later;
+      none handed (a prompt that predates the field), on a window whose
+        start moves with the clock (a first run or a capped gap) -> the page
+        is ended as `_day_page` would have ended it with the start an hour
+        earlier, so a UTC date that rolled while the fire ran never adds a
+        day nobody fetched (a cursor window's start is fixed: unchanged);
+      otherwise the page is as computed."""
+    from catchup import (PAGE_FIELD, WINDOW_REASON_CURSOR, _parse_iso_local,
+                         to_connector_iso)
+
+    win = window if isinstance(window, dict) else {}
+    page = win.get(PAGE_FIELD)
+    if not isinstance(page, dict):
+        return window
+    since = _parse_iso_local(page.get("since"))
+    until = _parse_iso_local(page.get("until"))
+    end = _parse_iso_local(win.get("until"))
+    if since is None or until is None or end is None:
+        return window
+    handed = _parse_iso_local(page_until)
+    if handed is not None:
+        new_until = min(max(handed, since), end)
+    elif (page.get("last") is False
+          and win.get("reason") != WINDOW_REASON_CURSOR):
+        early = (since - _dt.timedelta(hours=1)).astimezone(_dt.timezone.utc)
+        day0 = _dt.datetime.combine(early.date(), _dt.time(), _dt.timezone.utc)
+        n_days = max(1, int(float(page.get("span_days") or 1.0) + 0.5))
+        stop = (day0 + _dt.timedelta(days=n_days)).astimezone().replace(tzinfo=None)
+        new_until = max(since, min(until, stop))
+    else:
+        return window
+    out = dict(win)
+    out[PAGE_FIELD] = dict(
+        page, until=new_until.isoformat(),
+        until_aware=to_connector_iso(new_until),
+        days=round(max(0.0, (new_until - since).total_seconds()) / 86400.0, 6),
+        last=new_until >= end)
+    return out
+
+
+def fetch_ceiling(window) -> str:
+    """The date the inbox fetch reads up to, exclusive (cr1#941): the end of
+    this fire's page, which `_day_page` puts on a UTC midnight, so the date
+    is that day and the fetch reads exactly the page's days, no more. A page
+    end that is not a midnight (a window `_day_page` could not shape) is
+    rounded up to the next date, so the page's last day is still read whole.
+    Empty when the page reaches the present: the read then has no upper
+    bound, exactly as before paging.
+
+    `fetch_floor` opens the fetch at the page's start, which is always the
+    window's start; it takes its one overlap day only on a window that opens
+    at the last receipt, never on one held at a carry-over marker."""
+    from catchup import PAGE_FIELD
+
+    win = window if isinstance(window, dict) else {}
+    page = win.get(PAGE_FIELD)
+    if not isinstance(page, dict) or page.get("last") is not False:
+        return ""
+    raw = _norm(page.get("until_aware") or page.get("until"))
+    if not raw:
+        return ""
+    try:
+        until = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if until.tzinfo is None:
+        until = until.astimezone()
+    end = until.astimezone(_dt.timezone.utc)
+    if end.time() != _dt.time():
+        end += _dt.timedelta(days=1)
+    return end.date().isoformat()
 
 
 def plan_inbound_mail(workspace_root, now=None) -> dict:
@@ -297,7 +444,12 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
     reads = connector_reads_for(workspace_root)
     window = _window(workspace_root, now=now)
     after = fetch_floor(window)
+    # cr1#941: the fetch reads ONE page of the window, `after` to `before`;
+    # no `before` on the page that reaches the present.
+    before = fetch_ceiling(window)
     intent = {"in_inbox": True, "after": after}
+    if before:
+        intent["before"] = before
     try:
         from connector_adapters.provenance import resolve_mail_provider
         provider = resolve_mail_provider(workspace_root, None)
@@ -334,6 +486,11 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
         "provider": provider,
         "skip_reason": skip_reason,
         "after": after,
+        "before": before or None,
+        # cr1#941 review: the end of the page this plan fetched, handed back
+        # to the writer so its marker lands where the fetch stopped; None on
+        # the page that reaches the present.
+        "page_until": _page_until(window),
         MAINTENANCE_WINDOW_FIELD: window,
         "intent": intent,
         "query": query,
@@ -454,6 +611,47 @@ def _incomplete_marker(window: dict, oldest=None) -> Optional[str]:
                                  incomplete=True, oldest_unhandled=oldest)
 
 
+def _page_fields(window: dict, read_complete, *, hold_start: bool) -> dict:
+    """What a COMPLETE inbound-mail receipt carries about its page (cr1#941):
+    `catchup.page_receipt_fields`, the writer half of cr1#948's pager, with
+    no `oldest_unhandled`, ever. The inbox read is newest first, so a short
+    read left the OLDER mail unlisted, and a message the run did handle says
+    nothing about where the unlisted mail begins (cr1#948 review F1).
+
+    The answer, merged into the receipt as it stands:
+      read to the end of a page that is not the last -> the marker at the
+        page's end, `read_partial` and the page's own line: the next fire
+        reads the next page;
+      read short (`read_complete` false) -> the marker at the page's START,
+        the next page half the span read: the same mail is read again in a
+        smaller piece, and nothing is skipped;
+      the page read, but some of it not handled (`hold_start`: a capped
+        capture; never a message whose time could not be read, which is
+        named on the receipt and does not hold the page, review F1) -> the
+        marker at the page's start, the next page the same span, so what was
+        held is offered again (already-captured mail dedupes; the cap counts
+        writes, so the page still moves);
+      the last page read whole -> no marker: the window reached the present.
+
+    A partial read is never a connector that could not be reached: nothing
+    here names one."""
+    from catchup import (PAGE_FIELD, WINDOW_INCOMPLETE_FIELD,
+                         page_partial_line, page_receipt_fields)
+
+    out = page_receipt_fields(window, read_complete=read_complete)
+    page = dict(out.get(PAGE_FIELD) or {})
+    if hold_start and page.get("read") != "short":
+        marker = _incomplete_marker(window)
+        if marker is not None:
+            out[WINDOW_INCOMPLETE_FIELD] = marker
+        page.update(read="capped", next_days=page.get("span_days")
+                    or page.get("next_days"))
+        out[PAGE_FIELD] = page
+        out["read_partial"] = True
+        out["partial_line"] = page_partial_line(page)
+    return out
+
+
 _NO_NEW_MAIL = "No new mail to check."
 
 
@@ -467,7 +665,14 @@ def _summary(r: dict) -> str:
     line = _read_summary(r)
     if r.get("n_bad_time") and not r.get("n_fetched") and line == _NO_NEW_MAIL:
         line = ""  # mail did arrive: the next sentence says what happened to it
-    return (line + _bad_time_line(r)).strip()
+    return (line + _bad_time_line(r) + _page_line(r)).strip()
+
+
+def _page_line(r: dict) -> str:
+    """cr1#941: the page's own words (`catchup.page_partial_line`), last: how
+    far this pass read and where the next one carries on."""
+    tail = str(r.get("partial_line") or "")
+    return (" " + tail) if tail else ""
 
 
 def _bad_time_line(r: dict) -> str:
@@ -477,8 +682,8 @@ def _bad_time_line(r: dict) -> str:
         return ""
     verb = "were" if n != 1 else "was"
     return (f" {n} message{'s' if n != 1 else ''} arrived with a time that "
-            f"could not be read and {verb} set aside; the same window is "
-            "read on the next pass.")
+            f"could not be read and {verb} set aside; this run's record "
+            "names it, and the rest of the mail moves on.")
 
 
 def _read_summary(r: dict) -> str:
@@ -542,7 +747,7 @@ def _held_lines(r: dict) -> str:
         # The reasons stay on the receipt, under `capture_errors`: a writer's
         # refusal is field names and error text, not an owner's line.
         out += f" {n} item{'s' if n != 1 else ''} could not be picked up."
-    if r.get("read_partial"):
+    if r.get("read_partial") and not r.get("partial_line"):
         out += (" The mailbox had more than this pass read; the same span "
                 "is read again on the next pass.")
     return out
@@ -574,9 +779,12 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
                      provider=None, fired_via=None, fetch_blocked=None,
                      exclude_captured_since=None, close_mode=None,
                      accounts=None, source_skill: str = SOURCE_SKILL,
-                     read_complete=None) -> dict:
+                     read_complete=None, page_until=None) -> dict:
     """Run the job end to end over the fetched `items` (one dict per message,
     `MESSAGE_FIELDS`) and land its one receipt. A WRITER.
+
+    `page_until` (cr1#941): the plan's own `page_until`, where the fetch's
+    page ended; the receipt's marker never lands past it (`_as_fetched`).
 
     `read_complete` (cr1#742): did the fetch reach the end of its window?
     False is a PARTIAL read (the connector had more pages than the run
@@ -610,7 +818,9 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
 
     require_writer_identity(workspace_root=workspace_root)
     fired_via = _effective_fired_via(fired_via)
-    window = _window(workspace_root)
+    # cr1#941 review: the page ends where the plan's fetch ended
+    # (`page_until`, the plan's), never at a later page computed now.
+    window = _as_fetched(_window(workspace_root), page_until)
     reads = connector_reads_for(workspace_root)
     mode = _dial_mode(reads, close_mode)
     open_skip, close_skip = _skip_of(reads["open"]), _skip_of(reads["close"])
@@ -688,12 +898,10 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
                                     provider=provider)
               if not open_skip else {})
     thread_of = {}
-    ts_of = {}
     for cand in candidates:
         mid = _norm(cand.get("message_id"))
         if mid:
             thread_of.setdefault(mid, cand.get("thread_id"))
-            ts_of.setdefault(mid, _norm(cand.get("ts")))
     captured = []
     for row in list(opened.get("opened") or []) + list(opened.get("observed") or []):
         key = _key(thread_of.get(_norm(row.get("message_id"))), row.get("message_id"))
@@ -746,19 +954,9 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
     if bad_times:
         receipt["bad_time_messages"] = bad_times
     # The messages this run leaves for the next one: a capped capture,
-    # deferred. Compared as instants, never as strings: connectors spell one
-    # time several ways (`Z`, `+00:00`, fractions).
-    from cru_match import _parse_ts
-
-    held = []
-    untimed = False  # a held message with no readable time could be the oldest
-    for row in opened.get("capped") or []:
-        raw = ts_of.get(_norm(row.get("message_id")))
-        when = _parse_ts(raw) if raw else None
-        if when is not None:
-            held.append((when, raw))
-        else:
-            untimed = True
+    # deferred. cr1#941: the page is read again from its start, never from
+    # the oldest held message (`_page_fields`).
+    held = list(opened.get("capped") or [])
     if receipt["n_capture_errors"]:
         # The count is `n_capture_errors`; a bad batch must not bloat the book.
         receipt["capture_errors"] = [
@@ -768,24 +966,14 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
         ][:CAPTURE_ERRORS_KEPT]
     from catchup import read_reached_end
     read_complete = read_reached_end(read_complete)
-    partial = read_complete is False
     if read_complete is not None:
         receipt["read_complete"] = read_complete
-    if partial:
-        receipt["read_partial"] = True
-    if partial or bad_times:
-        # cr1#742: the unread mail can be anywhere in the window (the
-        # connector's page order is its own), and a message refused for its
-        # time has no time to resume from (cr1#767): the only honest resume
-        # point is the window's start. The cap bounds it.
-        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window)
-    elif held and not untimed:
-        # The next window starts at the oldest message this run did not
-        # get to, so a capped capture is offered again.
-        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window, min(held)[1])
-    elif receipt["n_capped"]:
-        # Held, but no message time to resume from: re-cover the window.
-        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window)
+    # cr1#941 review F1: a message whose time could not be read does NOT
+    # hold the page. It is counted and named on this receipt
+    # (`bad_time_messages`); holding for it pinned the page, since the same
+    # message came back on every re-read and the window never moved.
+    receipt.update(_page_fields(window, read_complete,
+                                hold_start=bool(held or receipt["n_capped"])))
     receipt["summary"] = _summary(receipt)
     _log(workspace_root, receipt, fired_via=fired_via)
     receipt["close"] = {k: closed.get(k) for k in

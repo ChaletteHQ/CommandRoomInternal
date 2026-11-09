@@ -376,7 +376,8 @@ def _classify_dead_root(workspace_root, *, now: _dt.datetime,
 
 def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None,
                            task_records=None, machine: Optional[str] = None,
-                           device_path: Optional[str] = None) -> list[dict]:
+                           device_path: Optional[str] = None,
+                           include_shelved: bool = False) -> list[dict]:
     """Every currently-dark task, classified — no ledger, no suppression.
     This is the ONE entry point system-health's on-demand table reads
     (ruling §0.4): a chat the customer explicitly asked must always answer
@@ -412,7 +413,8 @@ def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None
 
         device_path = str(_os.environ.get("CR_DEVICE_WORKSPACE", "") or "").strip() or None
     reports = _tw.check_tasks(workspace_root, now=now, task_records=task_records,
-                              device_path=device_path)
+                              device_path=device_path,
+                              include_shelved=include_shelved)
 
     ws_config = _tw.read_workspace_config(workspace_root)
     registered_at = _to_local_naive(parse_ts(ws_config.get("registered_at") or ""))
@@ -455,12 +457,14 @@ def classify_dark_surfaces(workspace_root, *, now: Optional[_dt.datetime] = None
             windows_missed = None
             anchor = registered_at.isoformat() if registered_at else "unregistered"
         elif cls == "late":
-            cron = (config.get(r["task"]) or {}).get("cron")
+            # cr1#931: a Hub task is no row of the schedules config; its
+            # report carries the cron it was scored against.
+            cron = (config.get(r["task"]) or {}).get("cron") or r.get("cron")
             windows_missed = _windows_missed(cron, last_receipt, now)
             line = _late_line(name, last_receipt, now, r["task"])
             anchor = last_fired_iso or "never"
         else:  # receipt_gap
-            cron = (config.get(r["task"]) or {}).get("cron")
+            cron = (config.get(r["task"]) or {}).get("cron") or r.get("cron")
             windows_missed = _windows_missed(cron, last_receipt, now)
             line = _receipt_gap_line(name, last_receipt, now, r["task"])
             anchor = last_fired_iso or (r.get("last_run_at") or "never")
@@ -485,7 +489,8 @@ def _strip_private(findings: list[dict]) -> list[dict]:
 
 def dark_surfaces(workspace_root, now: Optional[_dt.datetime] = None, *,
                   task_records=None, record: bool = True,
-                  machine: Optional[str] = None) -> list[dict]:
+                  machine: Optional[str] = None,
+                  include_shelved: bool = False) -> list[dict]:
     """SPEC TASKALARM1's public entry point:
     `dark_surfaces(workspace_root, now) -> [{task_id, class, last_receipt,
     windows_missed, line}]`.
@@ -502,7 +507,7 @@ def dark_surfaces(workspace_root, now: Optional[_dt.datetime] = None, *,
     """
     now = now or _now_local()
     findings = classify_dark_surfaces(workspace_root, now=now, task_records=task_records,
-                                      machine=machine)
+                                      machine=machine, include_shelved=include_shelved)
     if not record:
         return _strip_private(findings)
 

@@ -158,13 +158,23 @@ def health_report(workspace_root: str, *,
     # it, the verdict, the drift read and the dark table all see THIS seat's
     # records only; another computer's copies are named beside, never counted.
     device_path = str(os.environ.get("CR_DEVICE_WORKSPACE", "")).strip() or None
+    # cr1#931: the listing as the app gave it, `folders` included (the door
+    # lets this helper's listing carry them, `LISTING_ARG_HELPERS`); a raw
+    # row gets its task id by the one placement rule before it is read.
+    records = tw.place_seat_records(workspace_root, records, device_path)
     own = tw.split_seat_records(records, device_path)["own"]
     verdict = tw.health_verdict(workspace_root, task_records=records,
                                 backend=backend, now=now,
                                 device_path=device_path)
     installed = _installed_version()
     stamps = tw.check_prompt_versions(own, installed)
-    drift = sr.prompt_body_drift(own, plugin_version=installed)
+    # cr1#931: a shelved chat is never a finding here (SHELVE1). Its body is
+    # never refreshed by `set up command room schedules` either, so a drift
+    # line for it would name a fix that cannot clear it.
+    import schedule_config as _sc
+
+    drift = [t for t in sr.prompt_body_drift(own, plugin_version=installed)
+             if not _sc.is_shelved(t)]
     dark = ta._strip_private(ta.classify_dark_surfaces(
         workspace_root, now=now or ta._now_local(), task_records=own))
     return _jsonable({
@@ -173,6 +183,9 @@ def health_report(workspace_root: str, *,
         "lines": verdict["lines"],
         "info_lines": verdict["info_lines"],
         "reports": verdict["reports"],
+        # cr1#931: each task this seat runs more than once; its line is
+        # already in `lines`.
+        "duplicates": verdict.get("duplicates") or {},
         "stale_prompts": drift,
         "stale_stamps": [f for f in stamps if f.get("stale")],
         "dark_surfaces": dark,
