@@ -172,7 +172,7 @@ anyone else to.
 | "revisit the [X] decision" / "revisit" a decision | decision-log (revisit mode) |
 | "clean up my workspace" / "maintenance" / "deep clean" | cleanup |
 | "backfill commitments" / "scan for commitments" | scan-for-commitments |
-| "show my list" / "my list" | show-my-list |
+| "show my list" / "my list" | show-my-reminders (the retired list's one-line answer) |
 | "clean up my commitments" / "backlog sweep" | commitment-backlog-sweep |
 
 ### Fences
@@ -186,7 +186,7 @@ anyone else to.
   own, reversibly — so that block now reaches only rows real movement kept
   alive. This skill owns the queue itself. Neither renders the other's
   rows.
-- **Not show-my-list** (the retired discuss-later queue) and **not
+- **Not the retired discuss-later list** (show-my-reminders answers its phrases in one line) and **not
   show-my-reminders** (the pin-until-cleared personal lane). Different
   ledgers; the word "list" alone never routes here.
 - **Not commitment-backlog-sweep.** That reads months of mail for evidence
@@ -294,9 +294,12 @@ Discover the plugin root first (CONTRACT Rule 22) and run FROM `$PLUGIN_ROOT`:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

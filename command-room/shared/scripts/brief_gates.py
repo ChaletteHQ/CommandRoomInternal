@@ -223,7 +223,10 @@ VOICE_SKILL_BY_KIND = {
     "memo":          "memo-writer",
     "one_pager":     "one-pager-composer",
     "decision_memo": "decision-memo-composer",
-    "board_pack":    "board-pack-assembler",
+    # cr1#552: board-pack-assembler retired; the kind stays hard-blocking
+    # (the library still renders it) and, with no composer skill, takes the
+    # workspace-wide dash opt-out path below like the unmapped kinds.
+    "board_pack":    None,
     "followup_pack": "follow-up-ritual",
 }
 

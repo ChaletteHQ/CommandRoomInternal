@@ -318,7 +318,6 @@ def wipe_skill_config(workspace_root: str | Path, skill_name: str) -> bool:
 #: the same way.
 CONFIGURED_SKILLS = (
     "automation-scanner",
-    "board-pack-assembler",
     "call-prep",
     "decision-log",
     "decision-memo-composer",

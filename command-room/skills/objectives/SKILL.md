@@ -95,9 +95,12 @@ cfg = get_config(workspace_root, "objectives", DEFAULTS)
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -180,9 +183,12 @@ Zero open objectives + `cold_start_proposals` on → the cold start (below). Zer
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -321,7 +327,7 @@ The complete trigger family and fences for this skill. The routing metadata is b
 > DOES NOT fire on 'stalled projects' (stalled-projects — non-objective threads; it excludes objective threads by fence).
 > DOES NOT fire on 'pipeline' / 'deals' / 'show my deals' (pipeline-tracker — a deal can be a tracked signal here, but the deal record is theirs).
 > DOES NOT fire on 'log decision' / 'we decided' (decision-log).
-> DOES NOT fire on 'show my list' / 'what's on my list' (show-my-list — commitments, not objectives).
+> DOES NOT fire on 'show my list' / 'what's on my list' (show-my-reminders — the retired list's one-line answer, not objectives).
 > DOES NOT fire on 'weekly recap' / 'what happened this week' (weekly-recap — it renders the objectives section; this skill only handles the reply).
 > Never claims these bare tokens (deliberately NOT quoted triggers; each stays with its owner or unowned): goal, goals, priority, priorities, focus, milestone, OKR, key results.
 

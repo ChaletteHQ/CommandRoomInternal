@@ -206,14 +206,18 @@ def propose_from_connectors_and_receipt(workspace_root, items, *, user_person_id
     require_writer_identity(workspace_root=workspace_root)
     fired_via = _effective_fired_via(fired_via)
     window = maintenance_window or _window(workspace_root, now)
-    from catchup import MAINTENANCE_WINDOW_FIELD
+    from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD
+    from tasks_leg import hold_marker
 
     close_recs = records(workspace_root, "close")
     if not close_recs:
+        # cr1#740: a skip reads nothing, so its receipt carries the window
+        # start as its marker and the next run reads the same window.
         receipt = {"ran": False, "status": "skipped", "leg": JOB_ID,
                    "skip_reason": ("no documents, deals or contracts connector "
                                    "is declared for this workspace"),
-                   MAINTENANCE_WINDOW_FIELD: window, "summary": ""}
+                   MAINTENANCE_WINDOW_FIELD: window,
+                   WINDOW_INCOMPLETE_FIELD: hold_marker(window), "summary": ""}
         _log_receipt(workspace_root, receipt, fired_via=fired_via)
         return receipt
     if not user_person_id:
@@ -234,7 +238,9 @@ def propose_from_connectors_and_receipt(workspace_root, items, *, user_person_id
         said = "confirmed as read" if unsure else "read"
         receipt = {"ran": False, "status": "blocked", "leg": JOB_ID,
                    "blocked_reason": blocked, MAINTENANCE_WINDOW_FIELD: window,
-                   "summary": f"Documents, deals and contracts were not {said}: {blocked}."}
+                   WINDOW_INCOMPLETE_FIELD: hold_marker(window),
+                   "summary": f"Documents, deals and contracts were not {said}: "
+                              f"{blocked}. The same window is read next time."}
         receipt.update(read_fields(unread, unsure))
         _log_receipt(workspace_root, receipt, fired_via=fired_via)
         return receipt

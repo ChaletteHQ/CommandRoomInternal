@@ -317,8 +317,8 @@ def propose_task_retirements(workspace_root, registered_ids=None,
     customer ignored is not an offer to repeat next week.
 
     ALREADY-TAKEN OFFERS ARE NOT RE-OFFERED (EOD2 / REVIEW F-2). Neither
-    accept path REMOVES a task — there is no delete API, so `pause` and the
-    rename switch both DISABLE, and registration's `registered_taskIds`
+    accept path REMOVES a task — there is no delete API, so a `pause`
+    DISABLES (as the retired rename accept did), and registration's `registered_taskIds`
     preserves whatever existed. So "still in the registered set" is NOT
     evidence the customer hasn't acted, and a candidate filter that reads it
     that way re-offers forever, every six weeks. Two signals close it:

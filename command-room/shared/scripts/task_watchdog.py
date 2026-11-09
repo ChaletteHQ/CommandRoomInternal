@@ -1694,14 +1694,36 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
     from maintenance_dispatcher import MAINTENANCE_JOBS
 
     now = now or _now_local()
-    receipts = last_receipts(workspace_root, list(MAINTENANCE_JOBS))
+    # cr1#822: a receipt is the served/not-served truth, so only a receipt
+    # that SERVED the job counts. A blocked or skipped receipt records that the
+    # job did not run (cr1#760 scores it failed or due); a job whose newest
+    # receipts are all blocked used to read `ok` off their timestamps while
+    # it had not run for days. The newest served receipt decides; the newest
+    # unserved one after it rides the finding as `blocked_since` for the line.
+    served, unserved = _last_served_receipt_times(workspace_root, list(MAINTENANCE_JOBS))
+    receipts = {job: (_to_local_naive(when) if when is not None else None) for job, when in served.items()}
+    # A job whose freshness also reads off a view's mtime (weekly-insights,
+    # pre-v4.5.2 fires left no event) keeps that fallback: a view written is
+    # a served signal. Only the view's own mtime is folded in, never a
+    # receipt of any status (the review's finding: `last_receipts` would have
+    # carried a blocked receipt's time back in through this door).
+    views_dir = Path(workspace_root) / "_hq" / "views"
+    for job in MAINTENANCE_JOBS:
+        for name in RECEIPT_SPECS.get(job, {}).get("views") or ():
+            p = views_dir / name
+            if not p.exists():
+                continue
+            try:
+                mtime = _dt.datetime.fromtimestamp(p.stat().st_mtime)
+            except OSError:
+                continue
+            if receipts.get(job) is None or mtime > receipts[job]:
+                receipts[job] = mtime
+                unserved[job] = None
     # IDPOLISH1 — raw (tz-aware) twin of `receipts`, additive and display-
     # only (see _since_display); never consulted by the never/stale/ok
     # decision below.
-    try:
-        raw_receipts = _last_receipt_times(workspace_root, list(MAINTENANCE_JOBS))
-    except Exception:
-        raw_receipts = {}
+    raw_receipts = dict(served)
     findings = []
     for job_id, spec in MAINTENANCE_JOBS.items():
         try:
@@ -1716,16 +1738,56 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
         else:
             status = "ok"
         raw_last = raw_receipts.get(job_id)
+        blocked = unserved.get(job_id)
         findings.append({
             "job": job_id,
             "display_name": task_display_name(job_id),
             "status": status,
             "last_receipt": last.isoformat() if last else None,
             "last_receipt_raw": raw_last.isoformat() if raw_last else None,
+            "blocked_since": blocked.isoformat() if blocked else None,
             "expected": recent[0].isoformat() if recent else None,
             "second_expected": recent[1].isoformat() if len(recent) >= 2 else None,
         })
     return findings
+
+
+#: The receipt statuses that served a job (cr1#822), the words cr1#760's
+#: scorer counts as done, plus `partial` (a run that wrote its work and could
+#: not reach the page). A receipt with no status is a legacy shape and served.
+#: Any other word (blocked, skipped, failed, error) did not serve the job.
+SERVED_RECEIPT_STATUSES = frozenset({"complete", "degraded", "empty", "partial"})
+
+
+def _last_served_receipt_times(workspace_root, job_ids) -> tuple:
+    """`(served, unserved)`: per job, the newest receipt that served it (aware
+    datetime, None when none did), and the newest unserved receipt written
+    AFTER that (None when the newest word is a served one). One pass over the
+    shared receipt reader, so every legacy shape is read as `last_receipts`
+    reads it. An unreadable book answers nothing served, never raises."""
+    from receipts import iter_receipts
+
+    ids = list(job_ids)
+    served: dict = {tid: None for tid in ids}
+    unserved: dict = {tid: None for tid in ids}
+    try:
+        rows = iter_receipts(workspace_root, task_ids=ids)
+    except Exception:
+        return served, unserved
+    for r in rows:  # oldest first
+        tid = r.get("task_id")
+        if tid not in served or r.get("dt") is None:
+            continue
+        status = str(r.get("status") or "").strip().lower()
+        if status and status not in SERVED_RECEIPT_STATUSES:
+            if served[tid] is None or r["dt"] > served[tid]:
+                if unserved[tid] is None or r["dt"] > unserved[tid]:
+                    unserved[tid] = r["dt"]
+            continue
+        if served[tid] is None or r["dt"] > served[tid]:
+            served[tid] = r["dt"]
+            unserved[tid] = None
+    return served, unserved
 
 
 def _maintenance_job_problems(workspace_root, reports, *, now=None):
@@ -1836,6 +1898,8 @@ def honestly_due_jobs(workspace_root) -> frozenset:
             raw = r.get("raw") if isinstance(r, dict) else None
             if not isinstance(raw, dict) or raw.get("type") != _run_type:
                 continue
+            if (raw.get("data") or {}).get("in_flight") is True:
+                continue  # cr1#772: a fire that stood down lists nothing
             when = r.get("dt")
             if when is None:
                 continue
@@ -2582,6 +2646,45 @@ def foreign_writer_count(workspace_root, since=None) -> dict:
     return out
 
 
+def _last_stop_after(workspace_path, report: dict) -> str:
+    """cr1#603: the plain words of the newest recorded stop for this task when
+    it is newer than the task's last real fire, else ''. Never raises."""
+    if not workspace_path:
+        return ""
+    try:
+        from receipts import fire_stop_reason_words, last_fire_stop
+
+        stop = last_fire_stop(workspace_path, report.get("task"))
+    except Exception:  # noqa: BLE001
+        return ""
+    if not stop or not stop.get("at"):
+        return ""
+    try:
+        at = parse_ts(stop["at"])
+        last = parse_ts(report["last_fired_raw"]) if report.get("last_fired_raw") else None
+    except Exception:  # noqa: BLE001
+        return ""
+    if at is None or (last is not None and at <= last):
+        return ""
+    return fire_stop_reason_words(stop.get("abort_code"))
+
+
+def scheduled_writer_lines(workspace_root) -> list:
+    """cr1#605: the one sentence naming the computer that holds the schedules,
+    read from the DECLARATION (`workspace.scheduled_writer`), never from
+    `_hq/.system/writer_identity.json`, which any seat's cache can rewrite.
+    Empty when nothing is declared. Never raises."""
+    try:
+        from schedule_config import held_by_line, scheduled_writer
+
+        decl = scheduled_writer(workspace_root)
+    except Exception:  # noqa: BLE001
+        return []
+    if not decl:
+        return []
+    return [held_by_line(decl.get("device"))]
+
+
 def _foreign_writers(workspace_root) -> dict:
     """`foreign_writer_count` for the verdict — never raises into it."""
     try:
@@ -2716,6 +2819,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
     _off_line = foreign_switched_off_line(seat["foreign_disabled"])
     if _off_line:
         info_lines.append(_off_line)
+    # cr1#605: which computer holds the schedules, from the declaration.
+    info_lines += scheduled_writer_lines(workspace_root)
 
     # MAINT1 (D8): per-JOB receipt gaps inside a healthy maintenance task —
     # the task fired, a job chronically wrote nothing. Job findings ride the
@@ -3110,12 +3215,24 @@ def plain_english_lines(reports, *, binding=None, include_ok: bool = False,
                     f"check the result looks right."
                 )
             else:
-                # What is KNOWN: no record since <date>. The cause is not
-                # knowable from here — never assert one (R3).
-                lines.append(
-                    f"Your {name} task hasn't run{since_phrase} — I can't tell from here why it "
-                    f"stopped. {typed_action(r['task'], capital=True)} to catch it up."
-                )
+                # cr1#603: a fire that reached the computer and stopped before
+                # its surface left one `fire_stopped` row; when the newest one
+                # is newer than the last real fire, the sentence says that
+                # reason instead of "I can't tell".
+                stop = _last_stop_after(workspace_path, r)
+                if stop:
+                    lines.append(
+                        f"Your {name} task hasn't run{since_phrase} — its last run stopped "
+                        f"before it started because {stop}. "
+                        f"{typed_action(r['task'], capital=True)} to catch it up."
+                    )
+                else:
+                    # What is KNOWN: no record since <date>. The cause is not
+                    # knowable from here — never assert one (R3).
+                    lines.append(
+                        f"Your {name} task hasn't run{since_phrase} — I can't tell from here why it "
+                        f"stopped. {typed_action(r['task'], capital=True)} to catch it up."
+                    )
         elif r["status"] == "not_registered" and r["first_install"]:
             lines.append(missing_task_line(name, workspace_path, backend=backend))
         elif r["receipt_gap"] and r["status"] == "ok":

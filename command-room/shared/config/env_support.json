@@ -44,18 +44,6 @@
       "claude_code_local": "full",
       "unknown": "refuse"
     },
-    "balance": {
-      "legacy_cowork": "full",
-      "merged_cloud": "full",
-      "claude_code_local": "full",
-      "unknown": "degraded"
-    },
-    "board-pack-assembler": {
-      "legacy_cowork": "full",
-      "merged_cloud": "full",
-      "claude_code_local": "full",
-      "unknown": "refuse"
-    },
     "boardroom": {
       "legacy_cowork": "full",
       "merged_cloud": "full",
@@ -337,12 +325,6 @@
       "merged_cloud": "full",
       "claude_code_local": "full",
       "unknown": "refuse"
-    },
-    "show-my-list": {
-      "legacy_cowork": "full",
-      "merged_cloud": "full",
-      "claude_code_local": "full",
-      "unknown": "degraded"
     },
     "show-my-reminders": {
       "legacy_cowork": "full",

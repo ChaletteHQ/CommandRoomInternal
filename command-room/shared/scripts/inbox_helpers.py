@@ -662,11 +662,15 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
         try:
             title = str(raw.get("title") or "")
             message_id = str(raw.get("message_id") or "")
-            if ic.already_captured(workspace_root, message_id, title,
-                                   provider=provider):
+            direction = str(raw.get("direction") or "")
+            if ic.already_captured(
+                    workspace_root, message_id, title, provider=provider,
+                    owner=ic.candidate_owner(
+                        direction, user_person_id=user_person_id,
+                        sender_person_id=str(raw.get("sender_person_id") or ""),
+                        sender_name=str(raw.get("sender_name") or ""))):
                 n_deduped += 1
                 continue
-            direction = str(raw.get("direction") or "")
             row = ic.build_inbound_commitment_event(
                 title,
                 message_id=message_id,
@@ -804,6 +808,7 @@ def plan_inbound_reconcile(workspace_root: str,
     """
     from cru_match import (build_pending_review_event, cru_eligible,
                            load_open_commitments)
+    from connector_adapters.provenance import primary_artifact_key
     from reconcile_inbound_commitments import reconcile_inbound
 
     if fetch_blocked:
@@ -815,12 +820,19 @@ def plan_inbound_reconcile(workspace_root: str,
     events_path = str(Path(workspace_root) / "_hq" / "data" /
                       "events.jsonl")
     opens = cru_eligible(load_open_commitments(events_path))
+    # cr1#763 - what the owner has answered is not raised again here either.
+    try:
+        from evidence_answered import answered_evidence
+        answered = answered_evidence(workspace_root)
+    except Exception:  # noqa: BLE001 - the ledger of answers never takes the pass down
+        answered = set()
     matched = reconcile_inbound(
         opens, inbound_messages or [],
         user_person_id=user_person_id,
         provider=provider,
         exclude_captured_since=exclude_captured_since,
         workspace_root=workspace_root,
+        answered_evidence=answered,
     )
     rows: List[Dict[str, Any]] = []
     for proposal in matched.get("pending") or []:
@@ -836,6 +848,11 @@ def plan_inbound_reconcile(workspace_root: str,
             evidence_ts=proposal.get("ts") or None,
             has_completion_signal=proposal.get("has_completion_signal"),
         )
+        # cr1#763 - the message it rests on (never `source_ref`, which arms
+        # the chip timeout), so the owner's dismissal holds.
+        if proposal.get("message_id"):
+            row["data"]["evidence_ref"] = primary_artifact_key(
+                provider, proposal.get("message_id"))
         rows.append(row)
     for shifted in matched.get("updated") or []:
         rows.append(_updated_row(shifted, source_skill))
@@ -1415,11 +1432,26 @@ TOOLS_NOT_LOADED_REASON = ("tools not loaded: the connector tools were never "
                            "loaded in this run, so nothing could be resolved")
 
 
+def _provider_tool_query(provider: str) -> str:
+    """The provider's own tool names, as one search (cr1#941): a connector
+    whose tool ids carry a server id and no product word (Superhuman's
+    `mcp__<id>__query_email_and_calendar`) is found by its tool names, never
+    by its label. The names are the capability manifest's fingerprint, the
+    one source of provider identity. Empty when the manifest has none."""
+    try:
+        from connector_adapters import capabilities
+
+        row = capabilities.provider_row(provider) or {}
+    except Exception:  # noqa: BLE001 - no manifest, the label alone
+        return ""
+    return " ".join(str(t) for t in (row.get("fingerprint") or []) if t)
+
+
 def connector_discovery_queries(workspace_root: str) -> List[str]:
     """The words to load the connectors by: each declared backend's LABEL
-    (the product's name, e.g. "Superhuman"), else the fallback provider
-    names. Derived from the declaration, so a re-declared connector changes
-    the step by itself."""
+    (the product's name, e.g. "Superhuman") and its own tool names
+    (cr1#941), else the fallback provider names. Derived from the
+    declaration, so a re-declared connector changes the step by itself."""
     out: List[str] = []
     try:
         import connector_config as cc
@@ -1427,8 +1459,10 @@ def connector_discovery_queries(workspace_root: str) -> List[str]:
         for category in CONNECTOR_DISCOVERY_CATEGORIES:
             row = cc.declared_backend(category, entities=cc.load_entities(workspace_root))
             label = str((row or {}).get("label") or "").split(" (")[0].strip()
-            if label and label not in out:
-                out.append(label)
+            tools = _provider_tool_query(str((row or {}).get("provider") or ""))
+            for query in (label, tools):
+                if query and query not in out:
+                    out.append(query)
     except Exception:  # noqa: BLE001 - an unreadable declaration falls back
         out = []
     return out or list(CONNECTOR_DISCOVERY_QUERIES)
@@ -2014,6 +2048,7 @@ def yield_to_inbound_job(workspace_root: str,
 def _inbound_messages(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Phase 5.5's list: every fetched thread's latest INBOUND message, a
     thread whose sender did not resolve included (`sender_person_id: ''`)."""
+    from reconcile_inbound_commitments import attachment_names as _attachment_names
     out = []
     for item in items or []:
         if not isinstance(item, dict) or item.get("from_me"):
@@ -2027,7 +2062,9 @@ def _inbound_messages(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "subject": str(item.get("subject") or ""),
                     "body": str(item.get("body") or ""),
                     "thread_id": str(item.get("thread_id") or ""),
-                    "has_attachment": bool(item.get("has_attachment"))})
+                    "has_attachment": bool(item.get("has_attachment")),
+                    # cr1#764: an attachment with no name is only a proposal.
+                    "attachment_names": _attachment_names(item)})
     return out
 
 

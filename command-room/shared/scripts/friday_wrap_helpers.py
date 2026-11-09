@@ -947,12 +947,10 @@ def _item_parties(item: Dict[str, Any], data: Dict[str, Any],
 
 def _resolved_source_keys(workspace_root: str) -> set:
     """The identity (`connector_adapters.provenance.dedup_key_of`) of every
-    source a `commitment_resolved` or `thread_resolved` row already covers,
-    read through `events_io.load_events_org_scoped` (PGUARD1: the wrap is an
-    org surface and reads no raw ledger), with the same identity comparison
-    the codified capture legs use (`slack_capture.already_captured`,
-    `sent_capture.already_captured`) for the scan's Step 4 rule, "no point
-    creating a commitment that's already known to be done"."""
+    source a `commitment_resolved` or `thread_resolved` row names, read
+    through `events_io.load_events_org_scoped` (PGUARD1: the wrap is an org
+    surface and reads no raw ledger). A cheap first sieve: only an item from
+    one of these sources is asked `_known_done`."""
     from connector_adapters.provenance import dedup_key_of
     from events_io import load_events_org_scoped
 
@@ -966,6 +964,29 @@ def _resolved_source_keys(workspace_root: str) -> set:
         if key:
             keys.add(key)
     return keys
+
+
+def _known_done(events: list, source_ref: str, title: str, owner=None) -> bool:
+    """The scan's Step 4 rule, "no point creating a commitment that's already
+    known to be done", in the one answer the codified capture legs give
+    (`capture_gate.capture_cover`): a closure on the source covers it, except
+    that a closure of another source's row covers only that row, so a
+    different promise on a message that closed a row is captured (cr1#884),
+    and covers it only by the same words (cr1#909), owed by the same person
+    when the item names its owner by id (`owner`, cr1#912; an item naming
+    none is compared on the words alone, as before). `events` come through `events_io.load_events_org_scoped` (PGUARD1), read
+    once per batch."""
+    from capture_gate import capture_cover
+    from connector_adapters.provenance import dedup_key_of
+
+    want = dedup_key_of(source_ref.strip())
+
+    def on_source(ev: dict) -> bool:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ref = str(data.get("source_ref") or "").strip()
+        return bool(ref) and dedup_key_of(ref) == want
+
+    return capture_cover(events, on_source, title, owner=owner)
 
 
 #: The party context `classify_capture` takes off `workspace_capture_context`:
@@ -1010,14 +1031,14 @@ def plan_commitment_captures(workspace_root: str, *,
     taught never-track rule describes (by its source, title, person, email or
     company, NEVERTRACK2; `_never_track_hit`) is skipped (the scan's Step 3,
     read through `commitment_noise.load_never_track_rules`), and an item
-    whose `source_ref` a `commitment_resolved` or `thread_resolved` row
-    already covers is skipped (the scan's Step 4). Both come back in
+    a closure on its `source_ref` covers is skipped (the scan's Step 4; a
+    closure of another source's row covers only that row, cr1#884). Both come back in
     `skipped` with the reason and the `kind` of match, never written, and
     `left_out` counts the never-track skips: `never_track` for a sure match,
     `unsure` for a one-word rule found only inside the title (D-W2-2)."""
     from capture_gate import (DEFAULT_MODE, CaptureGateError,
                               build_observed_event, classify_capture,
-                              gate_commitment_data, intake_kwargs,
+                              cover_owner, gate_commitment_data, intake_kwargs,
                               resolve_capture_mode, workspace_capture_context)
 
     batch = list(items or [])
@@ -1029,6 +1050,7 @@ def plan_commitment_captures(workspace_root: str, *,
     ctx = workspace_capture_context(workspace_root)
     targets = _never_track_targets(workspace_root)
     resolved = _resolved_source_keys(workspace_root)
+    ledger = None  # read once, only when an item's source carries a closure
     book = _party_context(workspace_root) if targets else {}
     rows: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
@@ -1053,7 +1075,14 @@ def plan_commitment_captures(workspace_root: str, *,
                 left_out["unsure" if kind == "unsure" else "never_track"] += 1
                 continue
         key = dedup_key_of(source_ref.strip()) if source_ref.strip() else None
-        if key and key in resolved:
+        if ledger is None and key and key in resolved:
+            from events_io import load_events_org_scoped
+            ledger = list(load_events_org_scoped(workspace_root)[0])
+        if key and key in resolved and _known_done(
+                ledger, source_ref,
+                str(data.get("title") or data.get("summary") or ""),
+                owner=(cover_owner(data.get("owner_id"))
+                       if str(data.get("owner_id") or "").strip() else None)):
             skipped.append({"index": index, "reason": "already_resolved",
                             "kind": "resolved_source"})
             continue

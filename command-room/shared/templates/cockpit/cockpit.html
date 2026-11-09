@@ -166,6 +166,7 @@
   a { color: var(--olive); }
   .parts { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
   .mine { margin-bottom: 26px; }
+  .brief { margin-bottom: 26px; }
   .addrow { display: flex; gap: 6px; align-items: center; margin: 2px 0 6px; flex-wrap: wrap; }
   .addrow input.when { margin-top: 0; flex: 1; min-width: 140px; }
   .addrow input[type="date"] { flex: 0 0 auto; width: auto; min-width: 0; }
@@ -184,8 +185,22 @@
   .row .count-open { font-size: 13px; color: var(--ink-soft); white-space: nowrap; align-self: center; }
   .row .count-open b { color: var(--ink); font-weight: 600; }
   .row .count-open .late, .pcard .late { color: var(--ink); font-weight: 700; }
+  /* cr1#946: Today's summary line, its first action, the late count on
+     Commitments and the Apply count. */
+  .todaysum { font-size: 16px; color: var(--ink-soft); margin: 4px 0 14px; }
+  .todaysum b { color: var(--ink); font-weight: 600; }
+  .firstcard { border: 1px solid var(--olive); border-left: 4px solid var(--olive); border-radius: 0 var(--radius) var(--radius) 0; padding: 12px 16px; margin-bottom: 6px; }
+  .firstcard .k { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--olive); }
+  .firstcard .t { font-size: 17px; font-weight: 600; margin-top: 2px; }
+  .lanehint { color: var(--ink-soft); font-size: 13px; margin: -4px 0 4px; }
+  nav.tabs .count.late { color: #f0b4a8; }
+  nav.tabs .count:empty { display: none; }
+  .applyn { font-weight: 500; opacity: .85; margin-left: 4px; }
+  .overdueswitch { display: flex; gap: 8px; align-items: center; margin: 4px 0 10px; }
+  .overdueswitch button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .overnight { margin-top: 14px; font-size: 13px; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 12px; }
   .overnight b { color: var(--ink); font-weight: 600; }
+  footer.foot { max-width: 1200px; margin: 28px auto 0; padding: 12px 24px 0; border-top: 1px solid var(--rule); color: var(--ink-soft); font-size: 12px; }
   @media (max-width: 820px) {
     .cols { grid-template-columns: 1fr; }
     .dayline { font-size: 24px; }
@@ -252,11 +267,12 @@
 <nav class="tabs" role="tablist">
   <button role="tab" aria-selected="true" aria-controls="tab-today" data-tab="today">Today</button>
   <button role="tab" aria-selected="false" aria-controls="tab-inbox" tabindex="-1" data-tab="inbox">Inbox<span class="count" id="inboxCount">0</span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count" id="plateCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count" id="plateCount">0</span><span class="count late" id="lateCount"></span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-projects" tabindex="-1" data-tab="projects">Projects<span class="count" id="projectCount">0</span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-review" tabindex="-1" data-tab="review">Review<span class="count" id="reviewCount">0</span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-week" tabindex="-1" data-tab="week">Week</button>
-  <span class="tabside"><span class="waiting none" id="waiting" aria-live="polite"></span><button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply all</button></span>
+  <button role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="settings">Settings</button>
+  <span class="tabside"><span class="waiting none" id="waiting" aria-live="polite"></span><button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply<span class="applyn" id="applyN"></span></button></span>
 </nav>
 </div></section>
 
@@ -268,8 +284,10 @@
   <div class="parts">
     <button class="act" data-part="prep" disabled>Prep next 4 meetings</button>
     <button class="act" data-part="refresh" disabled>Refresh day</button>
-    <button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply</button>
   </div>
+  <div class="todaysum" id="todaysum"></div>
+  <div id="brieffirst"></div>
+  <div id="overnight" class="overnight"></div>
   <div class="cols mine">
     <div class="col">
       <h2>Priorities</h2>
@@ -282,15 +300,22 @@
       <div id="reminders"></div>
     </div>
   </div>
+  <div class="cols people">
+    <div class="col">
+      <h2>Waiting on</h2>
+      <div class="lanehint">They owe you a reply</div>
+      <div id="waitingon"></div>
+    </div>
+    <div class="col">
+      <h2>Follow up with</h2>
+      <div class="lanehint">They owe you and it is late</div>
+      <div id="followup"></div>
+    </div>
+  </div>
   <div class="cols">
     <div class="col">
       <h2>Upcoming</h2>
       <div id="meetings"></div>
-    </div>
-    <div class="col">
-      <h2>Move these today</h2>
-      <div id="focus"></div>
-      <div id="overnight" class="overnight"></div>
     </div>
   </div>
 </section>
@@ -326,13 +351,29 @@
   <div id="weekrows" class="col"></div>
 </section>
 
+<section class="tab" id="tab-settings" role="tabpanel">
+  <div class="parts">
+    <button class="act primary" data-part="apply" disabled title="Send your changes to your book">Apply</button>
+  </div>
+  <div id="settingshead" class="quiet"></div>
+  <div id="settingsrows" class="col"></div>
+</section>
+
 <section class="tab" id="tab-plate" role="tabpanel">
+  <div class="overdueswitch"><button class="act on" id="showAll" type="button">All open</button><button class="act" id="showOverdue" type="button">Overdue <span id="overdueCount">0</span></button></div>
+  <div id="platewrap">
   <input class="search" id="search" placeholder="Search the list" aria-label="Search the list">
   <button class="act" id="allProjects" type="button" hidden>All projects</button>
   <div id="platehead" class="quiet"></div>
   <div id="platerows" class="col"></div>
+  </div>
+  <div id="overduewrap" hidden>
+  <div id="overduehead" class="quiet"></div>
+  <div id="overduerows" class="col"></div>
+  </div>
 </section>
 
+<footer class="foot" id="foot">Command Room {{PLUGIN_VERSION}}{{RUNTIME_VERSION_LINE}} · published {{PUBLISHED_AT}}</footer>
 </div>
 
 <script>
@@ -343,7 +384,10 @@
     basename: {{WORKSPACE_BASENAME_JSON}},
     // The seat's mail connector for a direct send (cr1#710); null keeps
     // Send on the Apply run.
-    mail: {{MAIL_DIRECT_JSON}}
+    mail: {{MAIL_DIRECT_JSON}},
+    // The seat's calendar connector for Accept and Decline on a meeting row
+    // (cr1#723); null shows no calendar answers.
+    calendar: {{CALENDAR_DIRECT_JSON}}
   };
   var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh day"]];
   var TASKS = { prep: "Hub Prep", inbox: "Hub Inbox", apply: "Hub Apply", refresh: "Hub Refresh" };
@@ -369,7 +413,7 @@
   var S = { projects: null, pquery: "", today: null, plate: null, inbox: null, status: {}, choices: [], streak: null, pendingSend: {}, query: "",
     // What the owner has typed or opened, kept across every redraw (cr1#677,
     // cr1#679): a draft's edits, an open note or snooze box, an open brief.
-    drafts: {}, open: {}, prepOpen: {}, sending: {}, originOpen: {},
+    drafts: {}, open: {}, prepOpen: {}, sending: {}, originOpen: {}, answering: {},
     // cr1#714: which thread boxes are open, and what was read for them. Kept
     // in memory only: the page's data holds no thread text, only a commitment's
     // short source line (cr1#725).
@@ -472,7 +516,18 @@
     var label = SEQ.starting ? "Starting" : (SEQ.confirmRestart ? "Start over?" : (allDone && !SEQ.settled ? "Done" : (anyRunning ? (full ? Math.round(100 * done / LEGS.length) + "%" : "Running") : "Start")));
     return { anyRunning: anyRunning, allDone: allDone, phase: phase, fill: fill, label: label };
   }
-  function maintLine(mt) { mt = mt || {}; return (mt.failing || []).length || (mt.unread || []).length ? String(mt.line || "") : ""; }
+  function maintLine(mt) {
+    mt = mt || {};
+    if (!((mt.failing || []).length || (mt.unread || []).length)) return "";
+    // cr1#743: the fire that left the note, scheduled or typed, with its time
+    // in the viewer's own words; the line's own clause stays as the record wrote it.
+    var line = String(mt.line || "");
+    if (mt.fired_at) {
+      var who = mt.fired_via === "scheduled" ? "the scheduled run" : (mt.fired_via === "manual" ? "the run you typed" : "the last run");
+      line += " After " + who + " " + (fmtWhen(mt.fired_at) || mt.fired_at) + ".";
+    }
+    return line;
+  }
   function renderLights() {
     var h = "", i = 0;
     LEGS.forEach(function (l) {
@@ -536,6 +591,7 @@
   }
   function renderWaiting() {
     var w = waitingChoices(), el = $("waiting");
+    $("applyN").textContent = w.length ? " (" + w.length + ")" : "";
     if (!w.length) { el.textContent = dbMissing ? "This view cannot reach the page's data." : (dbReady ? "Nothing waiting." : "Connecting to the page's data."); el.className = "waiting none"; return; }
     var oldest = w.map(function (c) { return c.created_at || ""; }).sort()[0];
     el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". Apply or Start sends them to your book.";
@@ -584,12 +640,13 @@
     return out;
   }
   function saveChoice(doc) {
-    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); return Promise.resolve(); }
+    if (!db) { banner("The page cannot reach its data right now, so nothing was saved.", true); return Promise.resolve(null); }
     var row = { id: rid(), applied: false, created_at: nowIso() };
     for (var k in doc) row[k] = doc[k];
     return db.collection("choices").doc(row.id).set(row).then(function () {
       var exists = S.choices.some(function (c) { return c.id === row.id; }); if (!exists) S.choices.push(row); renderAll();
-    }, function (e) { banner("That press was not saved; try again.", true, errText(e)); });
+      return row;
+    }, function (e) { banner("That press was not saved; try again.", true, errText(e)); return null; });
   }
 
   // ---- the day line, typed in when a run brings a new one ------------------
@@ -671,17 +728,12 @@
         var prep = (m.prep && held) ? (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Prep") + "</button>" : '<span class="tag ok">Prep ready</span>') : '<span class="tag">No prep</span>';
         var when = m.all_day ? "All day" : fmtWhen(m.start);
         var ended = i === endedAt;
-        h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + "</div></div>"
+        h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + calendarActs(m, ended) + "</div></div>"
           + (m.prep_text && held ? '<div class="prepbox' + (open ? " on" : "") + '" id="prep-' + i + '">' + prepHtml(m.prep_text) + "</div>" : "");
       });
     } else if (!t && isRunning("prep")) h = skeletons(3);
     else h = '<div class="quiet">' + (t ? "Nothing in the next 24 hours." : "No calendar read yet.") + "</div>";
     $("meetings").innerHTML = h;
-    var f = "";
-    if (p && p.focus && p.focus.length) p.focus.forEach(function (r, i) { f += plateRow(r, true, i); });
-    else if (!p && isRunning("refresh")) f = skeletons(3);
-    else f = '<div class="quiet">' + (p ? "Nothing to move today." : "No plate read yet.") + "</div>";
-    $("focus").innerHTML = f;
     var o = p && p.overnight, ov = $("overnight");
     if (o) {
       var parts = []; (o.by || []).forEach(function (b) { parts.push(b.n + " " + b.how); });
@@ -690,6 +742,61 @@
     } else ov.textContent = isRunning("refresh") ? "Counting what closed overnight." : (S.streak && S.streak.count ? "While you were away: not read yet. Mornings started in a row: " + S.streak.count + "." : "");
     $("plateCount").textContent = p && p.rows ? p.rows.length : 0;
     renderMine();
+    renderBrief();
+  }
+
+  // ---- the morning brief, folded into the Hub (cr1#782) ----------------------
+  // Owner ruling D2 of 2026-11-04: the brief's view is a section of the Hub,
+  // built from the feeds the page already holds: the calendar (Upcoming), the
+  // important mail (the inbox feed), the overdue commitments (the plate) and
+  // one first action. Since cr1#946 the questions are answered in Review
+  // only; Today counts them. The Morning Brief chat
+  // keeps its settings and its text: nothing here reads or resets them.
+  var BRIEF_MAIL = 3, BRIEF_ASK = 3;
+  function briefModel(t, p, ib, rv) {
+    var rows = p && p.rows ? p.rows : [], focus = p && p.focus ? p.focus : [];
+    var overdue = rows.filter(function (r) { return r.horizon === "overdue"; });
+    var ms = t && t.meetings ? t.meetings : [];
+    var first = null;
+    if (overdue.length) first = { kind: "commitment", id: overdue[0].id, line: "Clear the overdue one: " + cap(overdue[0].title) };
+    else if (focus.length) first = { kind: "commitment", id: focus[0].id, line: "Move this first: " + cap(focus[0].title) };
+    else {
+      var prepped = null;
+      for (var i = 0; i < ms.length; i++) if (ms[i].prep) { prepped = ms[i]; break; }
+      if (prepped) first = { kind: "meeting", id: prepped.meeting_id, line: "Read the prep for " + prepped.title };
+      else if (ms.length) first = { kind: "meeting", id: ms[0].meeting_id, line: "Next up: " + ms[0].title };
+    }
+    var items = ib && ib.items ? ib.items : [];
+    var ask = (rv && rv.rows ? rv.rows : []).filter(function (r) { return r.today; }).slice(0, BRIEF_ASK);
+    return { first: first, n_overdue: overdue.length, mail: items.slice(0, BRIEF_MAIL), n_mail: items.length, ask: ask };
+  }
+  // cr1#946 (owner request, 2026-11-08): Today shows the owner's own work and
+  // people. The questions live in Review and the mail in Inbox; Today keeps a
+  // one-line count of both. Waiting on and Follow up with are the plate's own
+  // Wait and Chase lanes, the same rows with the same presses.
+  var PEOPLE_N = 5;
+  function laneRows(p, lane) { return (p && p.rows ? p.rows : []).filter(function (r) { return r.lane === lane; }); }
+  function renderLane(el, rows, empty) {
+    var h = "";
+    var when = { overdue: "late", this_week: "this week", later: "later", no_date: "" };
+    rows.slice(0, PEOPLE_N).forEach(function (r, i) { var v = {}; for (var k in r) v[k] = r[k]; if (r.horizon in when) v.horizon = when[r.horizon]; h += plateRow(v, true, i); });
+    if (rows.length > PEOPLE_N) h += '<div class="parts"><button class="act" data-goto="plate">See all ' + rows.length + " in Commitments</button></div>";
+    $(el).innerHTML = h || '<div class="quiet">' + empty + "</div>";
+  }
+  function renderBrief() {
+    var t = S.today, p = S.plate, ib = S.inbox, rv = S.review, b = briefModel(t, p, ib, rv);
+    var wait = laneRows(p, "wait"), chase = laneRows(p, "chase");
+    var nq = rv && rv.rows ? rv.rows.length : 0;
+    var bits = [];
+    if (p) bits.push("<b>" + b.n_overdue + "</b> overdue", "<b>" + wait.length + "</b> waiting on a reply", "<b>" + chase.length + "</b> to follow up");
+    if (t) bits.push("<b>" + (t.meetings || []).length + "</b> " + ((t.meetings || []).length === 1 ? "meeting" : "meetings") + " ahead");
+    if (ib) bits.push("<b>" + b.n_mail + "</b> in Inbox");
+    if (rv) bits.push("<b>" + nq + "</b> " + (nq === 1 ? "question" : "questions") + " in Review");
+    $("todaysum").innerHTML = bits.length ? bits.join(" · ") : esc(isRunning("refresh") || isRunning("prep") ? "Filling the morning." : "Press Start to fill the morning.");
+    $("brieffirst").innerHTML = b.first ? '<div class="firstcard"><div class="k">Do this first</div><div class="t">' + esc(b.first.line) + "</div></div>" : "";
+    var none = p ? "" : (isRunning("refresh") ? "Reading the plate." : "Shows after the next refresh.");
+    renderLane("waitingon", wait, none || "Nobody owes you a reply.");
+    renderLane("followup", chase, none || "Nobody to follow up with.");
   }
 
   // ---- priorities and reminders on Today (cr1#662) --------------------------
@@ -719,7 +826,7 @@
   }
   function renderMine() {
     var m = S.mine, h = "", ids = {};
-    pendingAdds("todo").forEach(function (c) { h += waitRow(c, PRIO[(c.input || {}).priority] + " · waits for Apply"); });
+    pendingAdds("todo").forEach(function (c) { h += waitRow(c, PRIO[(c.input || {}).priority] + addState(c)); });
     var todos = m && m.todos ? m.todos : [];
     todos.forEach(function (t, i) {
       ids[t.id] = true;
@@ -732,7 +839,7 @@
     if (errs.indexOf("todos") >= 0) h += '<div class="quiet">Your priorities could not be read just now; the next refresh tries again.</div>';
     $("todos").innerHTML = h || '<div class="quiet">' + (m ? "No priorities yet. Add one above." : "Your priorities show after the next refresh.") + "</div>";
     h = ""; ids = {};
-    pendingAdds("reminder").forEach(function (c) { h += waitRow(c, fmtDate((c.input || {}).when) + " · waits for Apply"); });
+    pendingAdds("reminder").forEach(function (c) { h += waitRow(c, fmtDate((c.input || {}).when) + addState(c)); });
     (m && m.reminders ? m.reminders : []).forEach(function (r, i) {
       ids[r.id] = true;
       var w = choiceFor("reminder", r.id), res = latestResult("reminder", r.id);
@@ -747,18 +854,41 @@
     else if (m && num(m.n_reminders) > (m.reminders || []).length) h += '<div class="quiet">Showing ' + (m.reminders || []).length + " of " + num(m.n_reminders) + " reminders.</div>";
     $("reminders").innerHTML = h || '<div class="quiet">' + (m ? "No reminders. Add one above." : "Your reminders show after the next refresh.") + "</div>";
   }
+  // cr1#946: an add is the owner's own list, so it need not wait for an
+  // Apply press: it starts the apply run (and the refresh after it) itself.
+  // The apply run applies EVERY waiting choice, so it is started only when
+  // the owner's own adds are all that waits (review of #946: an add must
+  // never carry a pending send or close to the book). Anything else waiting
+  // keeps the add on the Apply button, and the row says so. It never starts
+  // while Start is starting, while an apply or refresh runs, or twice inside
+  // a minute; it never starts for a press that was not saved.
+  S.addSent = {};
+  var ADD_KINDS = { todo: true, reminder: true };
+  function onlyAddsWait() { return waitingChoices().every(function (c) { return ADD_KINDS[c.kind] && c.action === "add"; }); }
+  function addState(c) { return S.addSent[c.id] ? " · on its way to your book" : " · waits for Apply"; }
+  function saveNow(row) {
+    if (!row || !row.id) return;
+    if (!wired) { banner("Saved here; press Apply when the page is connected to send it to your book."); return; }
+    if (!onlyAddsWait()) { banner("Saved here; press Apply to send it to your book with your other changes."); return; }
+    var last = S.addFiredAt || 0;
+    if (SEQ.starting || isRunning("apply") || isRunning("refresh") || Date.now() - last < 60000) { banner("Saved here; press Apply once the run in progress finishes."); return; }
+    S.addFiredAt = Date.now();
+    waitingChoices().forEach(function (c) { S.addSent[c.id] = true; });
+    runPart("confirm");
+    renderMine();
+  }
   function reminderTitle(rid) { var m = S.mine; if (m) for (var i = 0; i < (m.reminders || []).length; i++) if (m.reminders[i].id === rid) return m.reminders[i].summary; return ""; }
   $("tab-today").addEventListener("click", function (ev) {
     var b = ev.target.closest("button"); if (!b) return;
     if (b.id === "todoAdd") {
       var t = $("todoText").value.trim(); if (!t) { $("todoText").focus(); return; }
       var p = Number($("todoPrio").value) || 2;
-      saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: t, priority: p }, title: t });
+      saveChoice({ kind: "todo", src: "hub", n: "new", action: "add", input: { title: t, priority: p }, title: t }).then(saveNow);
       $("todoText").value = ""; return;
     }
     if (b.id === "remAdd") {
       var s = $("remText").value.trim(), d = $("remDate").value || todayIso(); if (!s) { $("remText").focus(); return; }
-      saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: { summary: s, when: d }, title: s });
+      saveChoice({ kind: "reminder", src: "hub", n: "new", action: "add", input: { summary: s, when: d }, title: s }).then(saveNow);
       $("remText").value = ""; return;
     }
     var ra = b.getAttribute("data-ract"), rid = b.getAttribute("data-rid");
@@ -780,7 +910,7 @@
   $("tab-today").addEventListener("input", function (ev) { if (ev.target.hasAttribute("data-pushday")) PUSH.day = ev.target.value; });
   ["todoText", "remText"].forEach(function (k) { $(k).addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); $(k === "todoText" ? "todoAdd" : "remAdd").click(); } }); });
   // ---- commitments ---------------------------------------------------------
-  function plateRow(r, compact, i) {
+  function plateRow(r, compact, i, overdue) {
     var cid = r.id, w = choiceFor("commitment", cid), res = latestResult("commitment", cid), shut = closedHere(cid);
     var tag = w ? waitTag(w, w.action === "context" ? "note waiting" : w.action + " waiting") : resultTag(res);
     var acts = "";
@@ -791,7 +921,7 @@
       if (!compact) acts += '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>'
         + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your plate without marking it done">Drop</button>');
     }
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, r.horizon].filter(Boolean).join(" · ")) + "</div>" + (compact ? "" : originBox(r)) + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, r.horizon].filter(Boolean).join(" · ")) + "</div>" + (compact ? "" : originBox(r)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   // cr1#725: where the promise came from, from the row's own record.
   function originBox(r) {
@@ -803,13 +933,14 @@
   }
   // A project's filter is the search filled in, with one way back (cr1#728).
   function setProjectFilter(name) {
+    if (typeof showOverdue === "function") showOverdue(false);
     S.projectFilter = name || null; S.query = name || ""; $("search").value = S.query;
     $("allProjects").hidden = !name;
     if (name) $("allProjects").textContent = "All projects";
     renderPlate();
   }
   function renderPlate() {
-    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading the plate." : "No plate read yet. Press Start or Refresh day."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading the plate." : "No plate read yet. Press Start or Refresh day."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; renderOverdue(); return; }
     var q = S.query.toLowerCase();
     var rows = (p.rows || []).filter(function (r) { return !q || (r.title + " " + r.project + " " + r.context).toLowerCase().indexOf(q) >= 0; });
     var total = num(p.n_rows) || ((p.rows || []).length + num(p.n_hidden));
@@ -830,8 +961,34 @@
         + (e.waiting ? undoBtn(e.waiting, "Take the reopen back before it reaches your book") : '<button class="act undo" data-cact="reopen" data-cid="' + esc(c.n) + '">Undo</button>') + "</div></div>";
     });
     if (reopen) $("platerows").innerHTML += "<h2>Closed from this page</h2>" + reopen;
+    renderOverdue();
   }
-  function titleOf(cid) { var p = S.plate; if (p) for (var i = 0; i < (p.rows || []).length; i++) if (String(p.rows[i].id) === String(cid)) return p.rows[i].title; return ""; }
+  function plateRowOf(cid) { var p = S.plate, all = p ? (p.rows || []).concat(p.late_rows || []) : []; for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i]; return null; }
+  // ---- overdue (cr1#877) ---------------------------------------------------
+  // The same feed as Commitments, cut to what is past its date, oldest first.
+  // `late_rows` are the late ones the Commitments list left out; the rows are
+  // the same rows, with the same presses.
+  function overdueRows(p) {
+    if (!p) return [];
+    return (p.rows || []).concat(p.late_rows || []).filter(function (r) { return r.late && !r.snoozed; })
+      .sort(function (a, b) { var x = String(a.due || ""), y = String(b.due || ""); return x < y ? -1 : x > y ? 1 : num(a.order) - num(b.order); });
+  }
+  function renderOverdue() {
+    var p = S.plate, rows = p && p.overdue_ok ? overdueRows(p) : [], hidden = p && p.overdue_ok ? num(p.n_late_hidden) : 0, total = rows.length + hidden;
+    $("overdueCount").textContent = total;
+    $("lateCount").textContent = total ? total + " late" : "";
+    if (!p) { $("overduehead").textContent = isRunning("refresh") ? "Reading the plate." : "No plate read yet. Press Start or Refresh day."; $("overduerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    // A feed written before this tab, or a book the run could not read: the
+    // rows carry no direction, so the tab says that rather than sort them.
+    if (!p.overdue_ok) { $("overduehead").textContent = "This list could not be read on the last run. Press Refresh day."; $("overduerows").innerHTML = ""; return; }
+    var parts = [["you_owe", "You owe"], ["owed_to_you", "Owed to you"], ["", "Needs your call"]];
+    var of = function (k) { return rows.filter(function (r) { return k ? r.bucket === k : r.bucket !== "you_owe" && r.bucket !== "owed_to_you"; }); };
+    $("overduehead").innerHTML = '<div class="summary"><b>' + total + "</b> past " + (total === 1 ? "its" : "their") + " date · " + of("you_owe").length + " you owe · " + of("owed_to_you").length + " owed to you" + (of("").length ? " · " + of("").length + " need your call" : "") + (hidden ? " · showing the oldest " + rows.length : "") + "</div>";
+    var h = "", i = 0;
+    parts.forEach(function (g) { var list = of(g[0]); if (!list.length) return; h += "<h2>" + g[1] + " (" + list.length + ")</h2>"; list.forEach(function (r) { h += plateRow(r, false, i, true); i += 1; }); });
+    $("overduerows").innerHTML = h || '<div class="quiet">Nothing is past its date.</div>';
+  }
+  function titleOf(cid) { var p = S.plate; if (p) { var all = (p.rows || []).concat(p.late_rows || []); for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i].title; } return ""; }
   function onPlateAct(btn) {
     var act = btn.getAttribute("data-cact"), cid = btn.getAttribute("data-cid"), row = btn.closest(".row"), slot = row ? row.querySelector(".slot") : null;
     if (act === "done" || act === "confirm" || act === "drop" || act === "reopen") { saveChoice({ kind: "commitment", src: "commitment-triage", n: cid, action: act, title: titleOf(cid) }); return; }
@@ -1001,18 +1158,18 @@
       return mcp.callTool(MAIL.server, MAIL.draft, inp).then(function (r) {
         var id = draftIdOf(r && r.payload);
         if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
-        return mcp.callTool(MAIL.server, MAIL.send, { draft_id: id }).catch(function (e) { throw { stage: "send", err: e }; });
+        return mcp.callTool(MAIL.server, MAIL.send, { draft_id: id }).then(function () { return id; }, function (e) { throw { stage: "send", err: e }; });
       });
     }
     if (MAIL.provider === "gmail") {
       var g = { messageId: it.message_id, body: String(d.body || "") };
       if (to.length) g.to = to; if (cc.length) g.cc = cc;
-      return mcp.callTool(MAIL.server, MAIL.send, g).catch(function (e) { throw { stage: "send", err: e }; });
+      return mcp.callTool(MAIL.server, MAIL.send, g).then(function (r) { return draftIdOf(r && r.payload); }, function (e) { throw { stage: "send", err: e }; });
     }
     return mcp.callTool(MAIL.server, MAIL.draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" }).then(function (r) {
       var id = draftIdOf(r && r.payload);
       if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
-      return mcp.callTool(MAIL.server, MAIL.send, { messageId: id }).catch(function (e) { throw { stage: "send", err: e }; });
+      return mcp.callTool(MAIL.server, MAIL.send, { messageId: id }).then(function () { return id; }, function (e) { throw { stage: "send", err: e }; });
     });
   }
   // One sentence per failure the owner can act on (cr1#685's rule): the raw
@@ -1022,6 +1179,9 @@
     if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors. Nothing was sent.";
     if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors. Nothing was sent.";
     if (code === "not_in_manifest" || code === "approval_required" || code === "consent_required") return "This page is not allowed to use " + name + " yet; allow it when the page asks, then press Send again. Nothing was sent.";
+    // cr1#723: a send refused for want of the admin's switch gets the provider's
+    // one admin line; a read or a draft that fails says what it did not do, as before.
+    if (stage === "send" && (code === "blocked_by_policy" || /forbidden|insufficient|not authorized|AADSTS/i.test(e && e.message ? String(e.message) : "")) && CFG.mail && CFG.mail.admin_line) return CFG.mail.admin_line;
     if (code === "blocked_by_policy") return "Your organization does not let this page send through " + name + ". Nothing was sent.";
     if (code === "no_draft_id") return name + " made no reply to send. Check your Drafts; nothing was sent.";
     if (stage === "send") {
@@ -1057,9 +1217,73 @@
       if (newer) return land("error", NEWER_LINE);
       row.result = { outcome: "sending", line: "Sending." };
       return ref.set(row).then(function () {
-        return sendCalls(it, base.draft || {}).then(function () { return land("applied", "Sent."); });
+        // The connector's own id for the message rides the row (cr1#817), so
+        // the next Apply run can write the book's record of this send.
+        return sendCalls(it, base.draft || {}).then(function (id) { if (id) row.native_id = String(id); return land("applied", "Sent."); });
       }).catch(function (x) { var e = x && x.stage ? x.err : x; return land("error", sendErrLine(e, x && x.stage === "send" ? "send" : "draft"), e); });
     }, function (e) { return land("error", sendErrLine(e, "read"), e); });
+  }
+
+  // ---- calendar answers (cr1#723) ---------------------------------------------
+  // Owner ruling 2026-11-04: the Hub's instant actions work the same on a
+  // Google Workspace or Microsoft 365 seat. Accept, Decline and Tentative on
+  // a meeting row go through the seat's declared calendar connector, one map
+  // like the mail one (CALENDAR_DIRECT). The answer is recorded on the page
+  // as a row like a sent reply; the book learns nothing from it (the next
+  // calendar read shows the RSVP). A seat whose admin has not switched
+  // writing on sees one plain line naming the admin step, never a failure.
+  var CAL = CFG.calendar;
+  function canAnswer(m) { return !!(CAL && mcp && db && m && m.meeting_id && !m.all_day && m.calendar !== "personal"); }
+  function calKey(m) { return "cal|" + (m.meeting_id || "") + "|" + (m.start || ""); }
+  function calResult(m) {
+    var best = null;
+    S.choices.forEach(function (c) { if (c.kind === "calendar" && c.n === m.meeting_id && c.applied && (!best || (c.applied_at || "") > (best.applied_at || ""))) best = c; });
+    return best;
+  }
+  function calendarTag(m) {
+    if (!canAnswer(m)) return "";
+    var k = calKey(m); if (S.answering[k]) return '<span class="tag wait">Answering.</span>';
+    var res = calResult(m); if (!res || !res.result) return "";
+    return '<span class="tag ' + (res.result.outcome === "applied" ? "ok" : "err") + '">' + esc(res.result.line || "") + "</span>";
+  }
+  function calendarActs(m, ended) {
+    if (!canAnswer(m) || ended) return "";
+    var res = calResult(m);
+    if (S.answering[calKey(m)] || (res && res.result && res.result.outcome === "applied")) return "";
+    return '<button class="act" data-cal="accept" data-mid="' + esc(m.meeting_id) + '">Accept</button><button class="act" data-cal="tentative" data-mid="' + esc(m.meeting_id) + '">Maybe</button><button class="act" data-cal="decline" data-mid="' + esc(m.meeting_id) + '">Decline</button>';
+  }
+  function calErrLine(e) {
+    var code = e && e.code ? String(e.code) : "", msg = e && e.message ? String(e.message) : "", name = CAL.server;
+    if (code === "blocked_by_policy" || code === "consent_required" || /forbidden|insufficient|not authorized|unauthorized|AADSTS|access denied/i.test(msg)) return CAL.admin_line;
+    if (code === "needs_reauth") return "Reconnect " + name + " in claude.ai Settings, Connectors. Nothing was changed.";
+    if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") return "Add the " + name + " connector in claude.ai Settings, Connectors. Nothing was changed.";
+    if (code === "not_in_manifest" || code === "approval_required") return "This page is not allowed to use " + name + " yet; allow it when the page asks, then press again. Nothing was changed.";
+    if (code === "tool_error" && /organizer/i.test(msg)) return "You organise this meeting, so there is no invitation to answer. Nothing was changed.";
+    return "Could not reach " + name + "; nothing was changed. Press again.";
+  }
+  function meetingById(mid) { var t = S.today; if (t) for (var i = 0; i < (t.meetings || []).length; i++) if (t.meetings[i].meeting_id === mid) return t.meetings[i]; return null; }
+  function respondInput(m, answer) {
+    var inp = {}; inp[CAL.event_key] = m.meeting_id; inp[CAL.answer_key] = (CAL.answers || {})[answer] || answer;
+    var extra = CAL.extra || {}; for (var k in extra) inp[k] = extra[k];
+    return inp;
+  }
+  function answerDirect(m, answer) {
+    var k = calKey(m);
+    if (S.answering[k] || !canAnswer(m)) return;
+    S.answering[k] = answer; renderToday();
+    var row = { id: rid(), kind: "calendar", src: "hub", n: m.meeting_id, action: answer, title: m.title, start: m.start || null, created_at: nowIso(), applied: true, applied_at: nowIso(), by_page: true, provider: CAL.provider };
+    var ref = db.collection("choices").doc(row.id);
+    function land(outcome, line, err) {
+      row.result = { outcome: outcome, line: line }; row.applied_at = nowIso();
+      return ref.set(row).then(function () {
+        if (!S.choices.some(function (c) { return c.id === row.id; })) S.choices.push(row);
+        delete S.answering[k]; renderToday();
+        if (outcome === "error") banner(line, true, err ? errText(err) : "");
+      }, function (e) { delete S.answering[k]; renderToday(); banner(outcome === "applied" ? "Answered, but the page could not note it." : line, true, errText(e)); });
+    }
+    mcp.callTool(CAL.server, CAL.respond, respondInput(m, answer)).then(function () {
+      return land("applied", answer === "accept" ? "Accepted." : (answer === "decline" ? "Declined." : "Marked tentative."));
+    }, function (e) { return land("error", calErrLine(e), e); });
   }
 
   // ---- direct draft (cr1#727) -----------------------------------------------
@@ -1102,10 +1326,58 @@
       if (newer) return land("error", NEWER_DRAFT_LINE);
       return draftCall(it, base.draft || {}).then(function (r) {
         // The same proof Send asks for: no id back, no claim it is in Drafts.
-        if (!draftIdOf(r && r.payload)) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Draft again.");
+        var id = draftIdOf(r && r.payload);
+        if (!id) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Draft again.");
+        row.native_id = String(id);
         return land("applied", "In your Drafts.");
       }, function (e) { return land("error", draftErrLine(e, "draft"), e); });
     }, function (e) { return land("error", draftErrLine(e, "read"), e); });
+  }
+
+  // ---- the chase (cr1#219) ---------------------------------------------------
+  // Owner ruling 2026-11-07: a chase is one press on a late row owed to the
+  // owner. The feed holds the text; nothing reaches the mail connector until
+  // this press, and the press drafts: it never sends. Same proof and same
+  // record as Draft (cr1#727, cr1#817). It answers no thread, so there is no
+  // thread to re-read; the feed already held back anyone just heard from.
+  // A press the book recorded before this feed was read is the feed's to judge.
+  function chaseChoice(cid) { var hit = null, read = S.plate && S.plate.generated_at; S.choices.forEach(function (c) { if (c.kind === "chase" && String(c.n) === String(cid) && c.result && c.result.outcome === "applied" && !(c.book_recorded && read && after(read, c.book_recorded_at))) hit = c; }); return hit; }
+  function canChase() { return !!(MAIL && MAIL.new_draft && mcp && db); }
+  function chaseBox(r) {
+    if (r.chase_note) return '<div class="sub">' + esc(r.chase_note) + "</div>";
+    if (!r.chase) return "";
+    if (chaseChoice(r.id)) return '<div class="sub"><span class="tag ok">Chase in your Drafts</span></div>';
+    if (S.sending["chase:" + r.id]) return '<div class="sub"><span class="tag wait">Drafting.</span></div>';
+    if (!canChase()) return "";
+    return '<div class="parts"><button class="act" data-chase="' + esc(r.id) + '" title="Make a draft to ' + esc(r.chase.to) + ' in your Drafts. Nothing is sent.">Chase</button></div>';
+  }
+  function chaseCall(d) {
+    var to = addrList(d.to);
+    if (MAIL.provider === "superhuman") return mcp.callTool(MAIL.server, MAIL.new_draft, { type: "new", to: to, subject: d.subject, body: htmlBody(d.body) });
+    if (MAIL.provider === "outlook") return mcp.callTool(MAIL.server, MAIL.new_draft, { to: to, subject: d.subject, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" });
+    return mcp.callTool(MAIL.server, MAIL.new_draft, { to: to, subject: d.subject, body: String(d.body || "") });
+  }
+  function chaseDirect(r) {
+    var k = "chase:" + r.id, c = r.chase;
+    if (S.sending[k] || !c || chaseChoice(r.id) || !canChase()) return;
+    S.sending[k] = "draft"; renderPlate();
+    var row = { id: rid(), kind: "chase", src: "cr-chase", n: r.id, action: "draft", title: r.title, created_at: nowIso(), applied: true, applied_at: nowIso(), by_page: true, provider: MAIL.provider,
+      draft: { to: c.to, cc: "", subject: c.subject, body: c.body } };
+    var ref = db.collection("choices").doc(row.id);
+    function land(outcome, line, err) {
+      row.result = { outcome: outcome, line: line }; row.applied_at = nowIso();
+      return ref.set(row).then(function () {
+        if (!S.choices.some(function (x) { return x.id === row.id; })) S.choices.push(row);
+        delete S.sending[k]; renderAll();
+        if (outcome === "error") banner(line, true, err ? errText(err) : "");
+      }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "The draft is made, but the page could not note it; check your Drafts before pressing Chase again." : line, true, errText(e)); });
+    }
+    return chaseCall(row.draft).then(function (res) {
+      var id = draftIdOf(res && res.payload);
+      if (!id) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Chase again.");
+      row.native_id = String(id);
+      return land("applied", "In your Drafts.");
+    }, function (e) { return land("error", draftErrLine(e, "draft").replace("Press Draft again", "Press Chase again").replace("press Draft again", "press Chase again"), e); });
   }
 
   // ---- the thread under a draft (cr1#714) ------------------------------------
@@ -1245,7 +1517,8 @@
     else if (!res || !res.result || res.result.outcome !== "applied") (r.verbs || []).forEach(function (v, k) { acts += '<button class="act' + (k === 0 ? " primary" : "") + '" data-review="' + esc(r.id) + '" data-verb="' + esc(v.action) + '">' + esc(v.label) + "</button>"; });
     var want = !w && acts && reviewAsk(r);
     var ask = want ? '<input class="when" data-rtext="' + esc(r.id) + '" aria-label="' + esc(want.ask) + '" placeholder="' + esc(want.ask) + '" value="' + esc((S.reviewText || {})[r.id] || "") + '">' : "";
-    var sub = [r.reason, r.group === "close" ? "proposed close" : ""].filter(Boolean).join(" · ");
+    // cr1#775: where the question came from, so a project question reads beside the people from the same read.
+    var sub = [r.reason, r.group === "close" ? "proposed close" : "", r.board ? "from " + String(r.board).replace(/-/g, " ") : ""].filter(Boolean).join(" · ");
     var ends = r.expires_on ? "If you do nothing by " + fmtDate(r.expires_on) + ", " + r.default_line + "." : "This one waits for your answer.";
     return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + "</div>"
       + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + (r.line ? '<div class="sub">' + esc(r.line) + "</div>" : (r.evidence ? '<div class="sub">' + esc(r.evidence) + "</div>" : "")) + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
@@ -1334,7 +1607,10 @@
     }
     if ((wk.archived || []).length) {
       h += "<h2>Archived on its own</h2>";
-      wk.archived.forEach(function (d) { h += '<div class="row"><div class="main"><div class="title">' + esc(d.name) + '</div><div class="sub">' + esc(d.reason) + "</div></div></div>"; });
+      wk.archived.forEach(function (d) {
+        var a = weekActs(d.id, d.verbs || [], d.at);
+        h += '<div class="row"><div class="main"><div class="title">' + esc(d.name) + a.tag + '</div><div class="sub">' + esc(d.reason) + '</div></div><div class="acts">' + a.acts + "</div></div>";
+      });
     }
     var rc = wk.recap || {};
     if ((rc.changes || []).length || (rc.decided_lines || []).length || rc.still_waiting || (rc.objectives || []).length) {
@@ -1347,7 +1623,7 @@
     $("weekrows").innerHTML = h;
   }
   function weekItem(n) {
-    var wk = S.week || {}, all = (wk.decided || []).concat(wk.rules || [], wk.dormant || []);
+    var wk = S.week || {}, all = (wk.decided || []).concat(wk.rules || [], wk.dormant || [], wk.archived || []);
     for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(n)) return all[i];
     return null;
   }
@@ -1356,7 +1632,96 @@
     saveChoice({ kind: "week", src: "hub", n: n, action: b.getAttribute("data-wact"), title: it.label || it.name || "", payload: it.batch_ref ? { batch_ref: it.batch_ref, n: it.n } : {} });
   }
 
-  function renderAll() { renderLights(); renderWaiting(); renderToday(); renderInbox(); renderPlate(); renderProjects(); renderReview(); renderWeek(); }
+  // ---- settings (cr1#781) -----------------------------------------------------
+  // Everything learned and every setting, each with its source, from the
+  // stores the skills read. A learned rule's wording, Switch off and Delete,
+  // and the question budget, are choices the Apply run writes; the rest is
+  // read-only in this version (owner ruling D3 of 2026-11-04).
+  function settingsVal(v) { return v === true ? "on" : (v === false ? "off" : (v == null || v === "" ? "not set" : String(v))); }
+  function settingsRow(title, sub, source, acts) {
+    return '<div class="row"><div class="main"><div class="title">' + esc(title) + '</div>' + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + '<div class="sub">From: ' + esc(source || "a default") + "</div></div>" + (acts ? '<div class="acts">' + acts + "</div>" : "") + "</div>";
+  }
+  function ruleRow(r) {
+    var w = choiceFor("settings", r.id), res = latestResult("settings", r.id);
+    var tag = w ? waitTag(w, w.action.replace("rule ", "") + " waiting") : resultTag(res);
+    var acts = "", ask = "";
+    if (w) acts += undoBtn(w, "Take this back before it reaches your book");
+    else if (r.editable && !(res && res.result && res.result.outcome === "applied")) {
+      (r.verbs || []).forEach(function (v, k) { acts += '<button class="act' + (k === 0 ? " primary" : "") + '" data-setting="' + esc(r.id) + '" data-verb="' + esc(v.action) + '">' + esc(v.label) + "</button>"; });
+      ask = '<input class="when" data-stext="' + esc(r.id) + '" aria-label="The rule in your words" placeholder="The rule in your words" value="' + esc((S.settingsText || {})[r.id] || "") + '">';
+    }
+    var when = [r.confirmed_at ? "confirmed " + fmtDate(r.confirmed_at) : "", r.last_used ? "last used " + fmtDate(r.last_used) : "not used since", r.status === "reversed" ? "switched off" : ""].filter(Boolean).join(" · ");
+    return '<div class="row' + riseClass("s" + r.id) + '"><div class="main"><div class="title">' + esc(cap(r.rule)) + tag + '</div>' + (r.effect ? '<div class="sub">' + esc(r.effect) + "</div>" : "") + '<div class="sub">' + esc([r.why, "applies to " + String(r.where || "").replace(/-/g, " ")].filter(Boolean).join(" · ")) + '</div><div class="sub">' + esc(when) + " · From: " + esc(r.source) + "</div>" + ask + '</div><div class="acts">' + acts + "</div></div>";
+  }
+  function budgetRow(b) {
+    var id = "budget", w = choiceFor("settings", id), res = latestResult("settings", id);
+    var tag = w ? waitTag(w, "change waiting") : resultTag(res);
+    var acts = w ? undoBtn(w, "Take this back before it reaches your book") : "";
+    var opts = "";
+    (b.options || []).forEach(function (o) { opts += '<option value="' + esc(o.n) + '"' + (num(o.n) === num(b.n) ? " selected" : "") + ">" + esc(o.n) + " a week</option>"; });
+    var pick = w ? "" : '<div class="addrow"><select class="prio" id="budgetPick" aria-label="Questions a week">' + opts + '</select><button class="act primary" data-setting="budget" data-verb="budget">Change</button></div>';
+    return '<div class="row"><div class="main"><div class="title">Question budget: ' + esc(b.n) + " a week" + tag + '</div><div class="sub">How many questions the system may ask you in a week. It is the posture it works to (' + esc(b.preset || "") + '), so changing it also sets how much it writes on its own.' + (b.stepped_down ? " Stepped down for now because questions went unanswered." : "") + '</div><div class="sub">From: ' + esc(b.source) + "</div>" + pick + '</div><div class="acts">' + acts + "</div></div>";
+  }
+  function renderSettings() {
+    var st = S.settings;
+    if (!st) { $("settingshead").textContent = isRunning("refresh") ? "Reading your settings." : "No settings read yet. Press Refresh day."; $("settingsrows").innerHTML = ""; return; }
+    var errs = st.errors || [];
+    $("settingshead").textContent = (errs.length ? "Part of this could not be read just now; the next refresh tries again. " : "") + "Read " + fmtWhen(st.generated_at) + ".";
+    var h = "<h2>Rules it learned" + (num(st.n_rules) > (st.rules || []).length ? " (first " + st.rules.length + " of " + num(st.n_rules) + ")" : "") + "</h2>";
+    if ((st.rules || []).length) st.rules.forEach(function (r) { h += ruleRow(r); });
+    else h += '<div class="quiet">' + (errs.indexOf("rules") >= 0 ? "The rules could not be read just now." : "Nothing learned yet.") + "</div>";
+    h += "<h2>Questions</h2>";
+    if (st.budget && st.budget.n != null) h += budgetRow(st.budget);
+    var c = st.caps || {};
+    if (c.questions_a_day) h += settingsRow("At most " + num(c.questions_a_day.n) + " questions a day on the Review tab", "", c.questions_a_day.source);
+    if (c.connector_questions_a_day) h += settingsRow("At most " + num(c.connector_questions_a_day.n) + " new people and project questions a day from the connectors", "", c.connector_questions_a_day.source);
+    if (c.people_added_a_run) h += settingsRow("At most " + num(c.people_added_a_run.n) + " people added on their own per run, " + num((c.merges_proposed_a_run || {}).n) + " merges proposed", "", c.people_added_a_run.source);
+    h += "<h2>Connectors</h2>";
+    if ((st.connectors || []).length) st.connectors.forEach(function (cn) {
+      var d = cn.dials || {}, dials = Object.keys(d).map(function (k) { return k.replace(/_/g, " ") + " " + settingsVal(d[k]); }).join(" · ");
+      var lists = [(cn.include || []).length ? "only: " + cn.include.join(", ") : "", (cn.exclude || []).length ? "never: " + cn.exclude.join(", ") : ""].filter(Boolean).join(" · ");
+      h += settingsRow(cap(String(cn.category || "")) + ": " + (cn.label || "") + " (" + (cn.kind || "") + ")", [dials, lists, cn.scope === "desktop_only" ? "this computer only" : ""].filter(Boolean).join(" · "), cn.source);
+    });
+    else h += '<div class="quiet">' + (errs.indexOf("connectors") >= 0 ? "The connectors could not be read just now." : "No connector declared yet.") + "</div>";
+    if ((st.accounts || []).length) { h += "<h2>Mail accounts</h2>"; st.accounts.forEach(function (a) { var d = a.dials || {}; h += settingsRow(a.address + ": " + a.role_line, "shown " + settingsVal(d.surface) + " · written to the book " + settingsVal(d.write_to_business), a.source); }); }
+    h += "<h2>Commitments</h2>";
+    var x = st.exits || {};
+    if (x.rests_after_days) h += settingsRow("An item nobody touches rests after " + num(x.rests_after_days) + " days and is let go after " + num(x.let_go_after_days), "parking items nobody touches " + settingsVal(x.silence_age_out) + " · closing when you say it is done " + settingsVal(x.own_word_closes), x.source);
+    h += "<h2>Learning</h2>";
+    var l = st.learning || {};
+    if (l.ask_at != null) h += settingsRow("Learning from your edits " + settingsVal(l.on), "asks after " + num(l.ask_at) + " corrections of the same thing, applies on its own after " + num(l.apply_at), l.source);
+    (st.voice || []).forEach(function (v) { h += settingsRow("Voice block for " + String(v.skill || "").replace(/-/g, " "), [v.calibration_level, v.sample_count != null ? v.sample_count + " samples" : "", v.last_refreshed ? "refreshed " + fmtDate(v.last_refreshed) : ""].filter(Boolean).join(" · "), v.source); });
+    (st.prep || []).forEach(function (pw) { h += settingsRow("Prep weight: " + pw.section + " in " + pw.meeting_type + " prep is " + settingsVal(pw.weight), "", pw.source); });
+    if ((st.persona || []).length) { h += "<h2>How it talks to you</h2>"; st.persona.forEach(function (k) { h += settingsRow(String(k.knob || "").replace(/_/g, " ") + ": " + settingsVal(k.value), "", k.source); }); }
+    h += guideHtml(st.guide);
+    $("settingsrows").innerHTML = h;
+  }
+  // cr1#187: the usage guide, from the feed, the same text a typed "how do I use this" says.
+  function guideHtml(g) {
+    if (!g || !(g.ways || []).length) return "";
+    var h = "<h2>How to use this</h2>";
+    g.ways.forEach(function (w) { h += '<div class="row"><div class="main"><div class="title">' + esc(w.way) + '</div><div class="sub">' + esc(w.habit) + '</div><div class="sub">Try: ' + (w.phrases || []).map(function (p) { return "&quot;" + esc(p) + "&quot;"; }).join(" · ") + "</div></div></div>"; });
+    if (g.loop) h += '<div class="row"><div class="main"><div class="title">' + esc(g.loop_title) + '</div><div class="sub">' + esc(g.loop) + '</div><div class="sub">' + esc(g.ask_why) + "</div></div></div>";
+    if ((g.known || []).length) h += '<div class="row"><div class="main"><div class="title">' + esc(g.known_title) + "</div>" + g.known.map(function (k) { return '<div class="sub">' + esc(k.title) + ": " + esc(k.line) + "</div>"; }).join("") + "</div></div>";
+    return h;
+  }
+  // end guideHtml
+  function settingsItem(id) { var st = S.settings; if (st) for (var i = 0; i < (st.rules || []).length; i++) if (String(st.rules[i].id) === String(id)) return st.rules[i]; return null; }
+  function onSettingsAct(b) {
+    var id = b.getAttribute("data-setting"), verb = b.getAttribute("data-verb");
+    if (verb === "budget") {
+      var pick = $("budgetPick"), n = pick ? pick.value : "";
+      if (!n || !S.settings || num(n) === num((S.settings.budget || {}).n)) return;
+      saveChoice({ kind: "settings", src: "hub", n: "budget", action: "budget", input: { text: String(n) }, title: "Question budget " + n + " a week" });
+      return;
+    }
+    var r = settingsItem(id); if (!r) return;
+    var text = String((S.settingsText || {})[r.id] || "").trim();
+    if (verb === "rule edit" && !text) { banner("Type the rule in your words on its row first.", true); return; }
+    saveChoice({ kind: "settings", src: "hub", n: r.id, action: verb, input: { text: verb === "rule edit" ? text : "" }, title: r.rule });
+  }
+
+  function renderAll() { renderLights(); renderWaiting(); renderToday(); renderInbox(); renderPlate(); renderProjects(); renderReview(); renderWeek(); renderSettings(); }
 
   // ---- tabs and clicks -----------------------------------------------------
   document.querySelector("nav.tabs").addEventListener("keydown", function (ev) {
@@ -1380,11 +1745,15 @@
     var sv = ev.target.closest("button[data-save]"); if (sv) { onSlotSave(sv); return; }
     var u = ev.target.closest("button[data-undo]"); if (u) { undoChoice(u.getAttribute("data-undo")); return; }
     var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
+    var ch = ev.target.closest("button[data-chase]"); if (ch) { var cr = plateRowOf(ch.getAttribute("data-chase")); if (cr) chaseDirect(cr); return; }
     var og = ev.target.closest("button[data-origin]"); if (og) { var oid = og.getAttribute("data-origin"); if (S.originOpen[oid]) delete S.originOpen[oid]; else S.originOpen[oid] = true; renderPlate(); return; }
     var th = ev.target.closest("button[data-thread]"); if (th) { toggleThread(th.getAttribute("data-thread")); return; }
+    var cb = ev.target.closest("button[data-cal]"); if (cb) { var cm = meetingById(cb.getAttribute("data-mid")); if (cm) answerDirect(cm, cb.getAttribute("data-cal")); return; }
     var ib = ev.target.closest("button[data-iact]"); if (ib) { onInboxAct(ib); return; }
     var rb = ev.target.closest("button[data-review]"); if (rb) { onReviewAct(rb); return; }
     var wb = ev.target.closest("button[data-wact]"); if (wb) { onWeekAct(wb); return; }
+    var go = ev.target.closest("button[data-goto]"); if (go) { var gt = document.querySelector('nav.tabs button[data-tab="' + go.getAttribute("data-goto") + '"]'); if (gt) gt.click(); return; }
+    var sb = ev.target.closest("button[data-setting]"); if (sb) { onSettingsAct(sb); return; }
     var p = ev.target.closest("button[data-part]"); if (p) { runPart(p.getAttribute("data-part")); }
   });
   document.body.addEventListener("input", function (ev) {
@@ -1392,8 +1761,16 @@
     if (t.matches && t.matches("textarea.draft[data-ikey]")) { S.drafts[t.getAttribute("data-ikey")] = t.value; return; }
     if (t.hasAttribute && t.hasAttribute("data-slot")) { var o = S.open[t.getAttribute("data-slot")]; if (o) o.value = t.value; }
   });
-  $("reviewrows").addEventListener("input", function (ev) { var id = ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
+  // A review row's typed value, on the Review tab or in the morning section (cr1#782).
+  document.body.addEventListener("input", function (ev) { var id = ev.target.getAttribute && ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
+  $("settingsrows").addEventListener("input", function (ev) { var id = ev.target.getAttribute("data-stext"); if (id) { S.settingsText = S.settingsText || {}; S.settingsText[id] = ev.target.value; } });
   $("reviewrows").addEventListener("toggle", function (ev) { if (ev.target.id === "reviewmore") S.reviewMore = ev.target.open; }, true);
+  function showOverdue(on) {
+    $("overduewrap").hidden = !on; $("platewrap").hidden = !!on;
+    $("showOverdue").classList.toggle("on", !!on); $("showAll").classList.toggle("on", !on);
+  }
+  $("showAll").addEventListener("click", function () { showOverdue(false); });
+  $("showOverdue").addEventListener("click", function () { showOverdue(true); });
   $("search").addEventListener("input", function () { S.query = this.value; S.projectFilter = null; $("allProjects").hidden = true; renderPlate(); });
   $("allProjects").addEventListener("click", function () { setProjectFilter(null); });
   $("psearch").addEventListener("input", function () { S.pquery = this.value; renderProjects(); });
@@ -1653,7 +2030,8 @@
       db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); S.status = st; renderLights(); maybeFireRefresh(); }, onErr);
       db.collection("choices").onSnapshot(function (snap) { S.choices = snap.docs.map(function (d) { return d.data(); }).filter(withinWindow); renderAll(); }, onErr);
       db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
-      db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); }, onErr);
+      db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
+      db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); }, onErr);
       db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
       db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
       db.doc("config/streak").onSnapshot(function (snap) { S.streak = snap.exists ? snap.data() : null; renderToday(); }, onErr);

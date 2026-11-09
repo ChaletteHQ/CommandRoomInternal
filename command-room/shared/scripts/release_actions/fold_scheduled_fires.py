@@ -29,8 +29,8 @@ reasoning. In one line: a readiness retirement is permanent and refuses
 are fully working; this is a deliberate simplification the customer can
 reverse. So this class carries a real `undo` (a registered `brain_undo`
 reverser, `schedule_fold_disable`) and `DEFAULT_SCHEDULES` keeps both rows'
-cron/label forever — `add waiting on` / `add my plate` always has real
-metadata to register from, on this seat or a fresh one.
+cron/label, so `undo` has real metadata to put back. Both ids are shelved
+now (cr1#847): `add` is refused, and the Hub and the typed ask hold the answer.
 
 WHAT THIS MODULE WRITES, AND WHAT IT DOES NOT
 ------------------------------------------------

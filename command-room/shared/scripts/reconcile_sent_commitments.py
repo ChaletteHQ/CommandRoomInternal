@@ -36,6 +36,7 @@ enables simply does not fire (never a guess).
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import sys
 from pathlib import Path
 
@@ -892,9 +893,28 @@ def _read_cursor(workspace_root):
     import json
     p = _entities_path(workspace_root)
     raw = json.loads(p.read_text(encoding="utf-8"))
+    return _readable_cursor(_stored_cursor(raw)), raw
+
+
+def _stored_cursor(raw):
     inner = raw["entities"] if isinstance(raw.get("entities"), dict) else raw
     ws = inner.get("workspace") if isinstance(inner.get("workspace"), dict) else {}
-    return ws.get("sent_reconcile_cursor"), raw
+    return ws.get("sent_reconcile_cursor")
+
+
+def _readable_cursor(stored):
+    """The stored cursor as the instant it names (cr1#767). A seat can already
+    hold a cursor written raw, before the times were read: a mail-header date
+    or a millisecond count is read as its instant, and one nothing can read
+    is no cursor at all, so the first readable message replaces it. An
+    extended ISO spelling is answered as stored."""
+    if isinstance(stored, str) and re.match(r"\s*\d{4}-\d{2}-\d{2}T", stored):
+        return stored
+    if stored is None or stored == "":
+        return stored
+    from message_time import normalize_message_ts
+
+    return normalize_message_ts(stored)
 
 
 def clamp_cursor_to_now(new_cursor, now_iso=None):
@@ -1423,6 +1443,18 @@ def _message_labels(msg) -> list:
     return out
 
 
+def _is_later(candidate, current) -> bool:
+    """Is `candidate` after `current`, as instants? The strings cannot say:
+    one time has several spellings, and a cursor stored as a mail-header date
+    sorted after every ISO date there is, so it never moved again (cr1#767).
+    A `current` nothing can read is passed by anything readable."""
+    new = _parse_ts(candidate) if candidate else None
+    if new is None:
+        return False
+    old = _parse_ts(current) if current else None
+    return old is None or new > old
+
+
 def _newest_read_ts(sent_messages):
     """The newest usable send time in a batch as it was handed in, before the
     lists, or None. A message a list set aside has been read, so the cursor
@@ -1431,7 +1463,7 @@ def _newest_read_ts(sent_messages):
     for msg in sent_messages or []:
         ts = msg.get("ts") if isinstance(msg, dict) else None
         if (isinstance(ts, str) and _parse_ts(ts) is not None
-                and (newest is None or ts > newest)):
+                and (newest is None or _is_later(ts, newest))):
             newest = ts
     return newest
 
@@ -1582,9 +1614,17 @@ def reconcile_and_receipt(
     fetch_blocked=None,
     contact_capture_items=None,
     triggered_by=None,
+    read_complete=None,
 ):
     """Run Sent→commitment reconciliation end-to-end and return a tamper-proof
     receipt. Does the I/O the brief used to do by hand (Bug #98).
+
+    `read_complete` (cr1#742): did the Sent fetch reach the end of its
+    window? False is a PARTIAL read (the connector had more pages than the
+    run read): the batch is still scored, but the cursor does NOT advance
+    (a cursor at the newest page's time would step over the pages never
+    read), and the receipt and the audit say `read_partial`. True, or None
+    from a caller that predates the flag, is a read of the whole window.
 
     The caller's ONLY job before this: fetch the Gmail "Sent" batch since the
     cursor and resolve recipient person_ids (an MCP call a script can't make).
@@ -1789,8 +1829,31 @@ def reconcile_and_receipt(
     # a scheduled fire as it does on a direct call (cr1#770). The cursor is
     # taken first: mail a list set aside was read, and a cursor held behind it
     # re-reads it every fire and leaves the brief calling reconciliation stale.
+    # cr1#767: one spelling of each message's time first, so the cursor only
+    # ever holds an ISO instant. A header date or an epoch number becomes
+    # the house form; a message whose time nothing can read is set aside
+    # (the matcher refuses it anyway: RECONFENCE), counted on the receipt
+    # and the audit with its raw text, and holds the cursor below. A
+    # commissive read off such a message goes with it, and one whose own
+    # time cannot be read is refused the same way.
+    # A message a list turned away is never read, so its time holds nothing.
+    from message_time import normalize_messages
+    clock = _clock_now(workspace_root)
+    _, n_excluded, excluded_ids = _drop_excluded(read_close, sent_messages)
+    sent_messages, bad_times = normalize_messages(sent_messages, now=clock)
+    bad_times = [b for b in bad_times if b["message_id"] not in excluded_ids]
+    if sent_commitment_items is not None:
+        bad_ids = {b["message_id"] for b in bad_times if b.get("message_id")}
+        sent_commitment_items = [it for it in sent_commitment_items
+                                 if not (isinstance(it, dict)
+                                         and str(it.get("message_id") or "") in bad_ids)]
+        sent_commitment_items, bad_items = normalize_messages(
+            sent_commitment_items, keep_non_dicts=True, now=clock)
+        bad_times = bad_times + [b for b in bad_items
+                                 if b["message_id"] not in excluded_ids]
+    n_bad_time = len(bad_times)
     newest_read = _newest_read_ts(sent_messages)
-    sent_messages, n_excluded, excluded_ids = _drop_excluded(read_close, sent_messages)
+    sent_messages = _drop_excluded(read_close, sent_messages)[0]
     if excluded_ids and sent_commitment_items is not None:
         sent_commitment_items = [it for it in sent_commitment_items
                                  if not (isinstance(it, dict)
@@ -1832,6 +1895,28 @@ def reconcile_and_receipt(
             # cr1#667: the close pass is turned away; the batch was scored
             # only for its cursor, so nothing closes and nothing is proposed.
             auto_close, pending, partial = [], [], []
+        # cr1#756 - the mail connector's close mode. Under `propose` every
+        # matched close joins the confirm list with its reason. A per-person
+        # receipt is not a close and is written as it always is below: the
+        # whole item is asked about only once its roster is complete, and the
+        # roster close never runs under this mode (`inbound_mail_leg`).
+        close_mode = str(((read_close or {}).get("dials") or {}).get("close_mode")
+                         or "").strip().lower() or None
+        n_close_mode_proposed = 0
+        close_mode_refused: list = []
+        _propose_reason = None
+        if close_mode == "propose" and not close_skip_reason:
+            try:
+                from close_mode_dial import PROPOSE_REASON as _propose_reason
+            except Exception:  # noqa: BLE001
+                _propose_reason = "this connector is set to ask before closing"
+            pending = list(pending)
+            for _row in auto_close:
+                _out = dict(_row)
+                _out["recommendation"] = "pending_review"
+                _out["close_mode_reason"] = _propose_reason
+                pending.append(_out)
+            auto_close = []
 
         # Write the HIGH-confidence closers through THE closure path (Stage B, F2):
         # legacy-id normalization, loud refusal of orphan tombstones, full-set
@@ -1944,7 +2029,7 @@ def reconcile_and_receipt(
             for p in partial:
                 already = already_by_cid.get(str(p["commitment_id"]), set())
                 recorded_cps = []
-                proposed = False
+                proposed = None      # the receipt that completed the roster
                 for r in p["receipts"]:
                     cp_id = r["counterparty_id"]
                     if cp_id in already:
@@ -1978,7 +2063,7 @@ def reconcile_and_receipt(
                         recorded_cps.append(cp_id)
                         already.add(cp_id)
                         if result.get("propose_closure"):
-                            proposed = True
+                            proposed = r
                 for nm in p.get("skipped_names") or []:
                     partial_skipped_names.append(
                         {"commitment_id": p["commitment_id"], "name": nm}
@@ -1994,6 +2079,22 @@ def reconcile_and_receipt(
                         "commitment_id": p["commitment_id"],
                         "title": p.get("title") or "",
                     })
+                    if _propose_reason:
+                        # cr1#756 - the roster is complete: the whole item is
+                        # now what the dial asks about, on the send that
+                        # finished it.
+                        pending.append({
+                            "commitment_id": p["commitment_id"],
+                            "score": p.get("score"),
+                            "title": p.get("title") or "",
+                            "primary_thread_id": p.get("primary_thread_id") or "",
+                            "message_id": proposed.get("message_id") or "",
+                            "ts": proposed.get("ts") or "",
+                            "evidence": "everyone on this item has received it",
+                            "close_basis": "",
+                            "recommendation": "pending_review",
+                            "close_mode_reason": _propose_reason,
+                        })
 
         # Stage E (F5): the 0.30–0.55 pending band MUST NOT evaporate. Persist
         # each pending proposal as a commitment_review_proposed event so the next
@@ -2021,71 +2122,100 @@ def reconcile_and_receipt(
                 (p.get("data") or {}).get("commitment_id")
                 for p in load_open_review_proposals(str(events_path))
             }
+            asked: set = set()
+            if close_mode == "propose":
+                from close_mode_dial import asked_evidence
+                asked = asked_evidence(workspace_root)
             for p in pending:
                 if p["commitment_id"] in already_proposed:
                     continue
-                ev = build_pending_review_event(
-                    commitment_id=p["commitment_id"],
-                    primary_thread_id=p.get("primary_thread_id") or "",
-                    source_skill=source_skill,
-                    proposed_resolution="auto_resolve",
-                    score=p.get("score") or 0,
-                    evidence=p.get("evidence") or "matched an outbound send",
-                    # None: the gate auto-stamps seq inside the writer lock.
-                    next_seq=None,
-                    # FB-19: the row's own name. Without it the LB1 adapter has no
-                    # title, `_row_name` falls back to the shape label, and the card
-                    # renders a bare shape name with nothing to identify WHAT
-                    # matched (the live 2026-07-16 render).
-                    title=p.get("title") or "",
-                    # The send's own time. A reply/send cannot be evidence for a
-                    # promise captured after it, and the fence checks exactly that
-                    # at apply time — but only if the timestamp was persisted.
-                    evidence_ts=p.get("ts") or None,
-                    # CLOSETRUTH1 3.1 — ASSESSED. This used to pass `None`
-                    # ("the caller could not judge"), which was true only
-                    # because nobody had asked: the sent matcher reads the
-                    # same completion phrases the transcript rail does, and
-                    # since 3.1 it reads them on every message it scores. The
-                    # bulk-accept fence weighs a confirm by what the evidence
-                    # actually said, and a question-shaped mail that reports
-                    # nothing must not screen as strong. `None` survives only
-                    # for a proposal minted before this field existed.
-                    has_completion_signal=(
-                        p["has_completion_signal"]
-                        if isinstance(p.get("has_completion_signal"), bool)
-                        else None),
-                )
-                # BIND1 fix round 1 (REVIEW_BIND1 F3): THE BINDER IS NOT
-                # CALLED HERE, AND THAT IS THE HONEST ANSWER. A review
-                # proposal already inherits its parent row's binding -
-                # `primary_thread_id=p.get("primary_thread_id")` a few lines
-                # up is the parent commitment's own thread - so a bound
-                # parent gives a bound proposal and the binder's first line
-                # would return the event untouched. And an UNBOUND parent
-                # gives the binder nothing to work with either: the event
-                # `build_pending_review_event` composes carries exactly
-                # `commitment_id, evidence, evidence_ts, match_score,
-                # proposed_resolution, source_ref, title` - no org, no
-                # counterparty, no person ids, and a `superhuman:` /
-                # `gmail:` source_ref the meeting-scheme gate refuses - so
-                # the evidence adapter derives `{}` and the call was
-                # unreachable by construction. It was removed rather than
-                # left in place under a pin that certified it as live.
-                # Binding the proposal off its PARENT's capture event is
-                # real work and belongs one level down, in
-                # `cru_match.build_pending_review_event` (Seam 2), with the
-                # backfill pass that gives it a population to help.
-                ev["data"].update({
-                    # FS-11: only genuinely ambiguous matches reach here now
-                    # (unambiguous moderate matches auto-closed above). Carry a TTL
-                    # so an un-adjudicated proposal expires instead of accumulating;
-                    # the LB1 review adapter drops expired ones.
-                    "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
-                    "ambiguous": True,
-                })
-                append_event(events_path, [ev], holder=source_skill)
-                reviews_written += 1
+                # cr1#756 - under `propose` the batch is the owner's whole
+                # confirm list: one row the builder or the gate refuses is
+                # counted and costs only itself, as `propose_closes` does.
+                try:
+                    # cr1#756 - a row a `propose` dial demoted points at its send
+                    # (the same key a close cites), so the owner's answer holds:
+                    # one proposal per (commitment, message), ever.
+                    dial_ref = None
+                    if p.get("close_mode_reason"):
+                        dial_ref = primary_artifact_key(provider, p.get("message_id"))
+                        if (str(p["commitment_id"]), str(dial_ref or "")) in asked:
+                            continue
+                    ev = build_pending_review_event(
+                        commitment_id=p["commitment_id"],
+                        primary_thread_id=p.get("primary_thread_id") or "",
+                        source_skill=source_skill,
+                        proposed_resolution="auto_resolve",
+                        score=p.get("score") or 0,
+                        evidence=p.get("evidence") or "matched an outbound send",
+                        # None: the gate auto-stamps seq inside the writer lock.
+                        next_seq=None,
+                        # FB-19: the row's own name. Without it the LB1 adapter has no
+                        # title, `_row_name` falls back to the shape label, and the card
+                        # renders a bare shape name with nothing to identify WHAT
+                        # matched (the live 2026-07-16 render).
+                        title=p.get("title") or "",
+                        # The send's own time. A reply/send cannot be evidence for a
+                        # promise captured after it, and the fence checks exactly that
+                        # at apply time — but only if the timestamp was persisted.
+                        evidence_ts=p.get("ts") or None,
+                        # CLOSETRUTH1 3.1 — ASSESSED. This used to pass `None`
+                        # ("the caller could not judge"), which was true only
+                        # because nobody had asked: the sent matcher reads the
+                        # same completion phrases the transcript rail does, and
+                        # since 3.1 it reads them on every message it scores. The
+                        # bulk-accept fence weighs a confirm by what the evidence
+                        # actually said, and a question-shaped mail that reports
+                        # nothing must not screen as strong. `None` survives only
+                        # for a proposal minted before this field existed.
+                        has_completion_signal=(
+                            p["has_completion_signal"]
+                            if isinstance(p.get("has_completion_signal"), bool)
+                            else None),
+                        source_ref=dial_ref,
+                    )
+                    # BIND1 fix round 1 (REVIEW_BIND1 F3): THE BINDER IS NOT
+                    # CALLED HERE, AND THAT IS THE HONEST ANSWER. A review
+                    # proposal already inherits its parent row's binding -
+                    # `primary_thread_id=p.get("primary_thread_id")` a few lines
+                    # up is the parent commitment's own thread - so a bound
+                    # parent gives a bound proposal and the binder's first line
+                    # would return the event untouched. And an UNBOUND parent
+                    # gives the binder nothing to work with either: the event
+                    # `build_pending_review_event` composes carries exactly
+                    # `commitment_id, evidence, evidence_ts, match_score,
+                    # proposed_resolution, source_ref, title` - no org, no
+                    # counterparty, no person ids, and a `superhuman:` /
+                    # `gmail:` source_ref the meeting-scheme gate refuses - so
+                    # the evidence adapter derives `{}` and the call was
+                    # unreachable by construction. It was removed rather than
+                    # left in place under a pin that certified it as live.
+                    # Binding the proposal off its PARENT's capture event is
+                    # real work and belongs one level down, in
+                    # `cru_match.build_pending_review_event` (Seam 2), with the
+                    # backfill pass that gives it a population to help.
+                    ev["data"].update({
+                        # FS-11: only genuinely ambiguous matches reach here now
+                        # (unambiguous moderate matches auto-closed above). Carry a TTL
+                        # so an un-adjudicated proposal expires instead of accumulating;
+                        # the LB1 review adapter drops expired ones.
+                        "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
+                        "ambiguous": True,
+                    })
+                    if p.get("close_mode_reason"):
+                        # The reason, and the stamp that keeps the timeout from
+                        # closing what the owner asked to be asked about.
+                        ev["data"]["close_mode_reason"] = p["close_mode_reason"]
+                        ev["data"]["auto_close_blocked"] = True
+                    append_event(events_path, [ev], holder=source_skill)
+                    reviews_written += 1
+                    if p.get("close_mode_reason"):
+                        n_close_mode_proposed += 1
+                except Exception as exc:  # noqa: BLE001
+                    if close_mode != "propose":
+                        raise
+                    close_mode_refused.append({"commitment_id": str(p.get("commitment_id")),
+                                               "error": type(exc).__name__})
 
         # BUG-3719 (v4.6.2): OPEN commitments from the user's own sent commissives
         # that match nothing open — the rescue path for promises the unread-gated
@@ -2150,16 +2280,37 @@ def reconcile_and_receipt(
         # Advance the cursor to the newest Sent ts we saw (never backwards).
         cursor_after = cursor_before
         new_ts = res.get("cursor_ts")
-        if newest_read and (not new_ts or newest_read > new_ts):
+        if newest_read and (not new_ts or _is_later(newest_read, new_ts)):
             new_ts = newest_read  # cr1#770: the batch as read, lists aside
+        if bad_times:
+            # cr1#767: the window is held. A message set aside for its time
+            # is read again next run; it stops holding when it ages past the
+            # 30-day floor and the fetch no longer returns it.
+            new_ts = None
         sent_cursor_write = None
-        if new_ts and (cursor_before is None or new_ts > cursor_before):
+        from catchup import read_reached_end
+        read_partial = read_reached_end(read_complete) is False
+        if read_partial:
+            # cr1#742: a partial read earns no ground. The pages the run
+            # never saw sit behind the newest message it did see, so the
+            # cursor stays and the next run reads the same window.
+            new_ts = None
+        if new_ts and _is_later(new_ts, cursor_before):
             # CURSORCLAMP1 (cr1#149): clamp HERE, so the audit row's
             # cursor_to, the receipt's cursor_after and the stored cursor all
             # carry the same value; the clock is the module's corroborated one
             cursor_after = clamp_cursor_to_now(new_ts, now_iso=_clock_now(workspace_root))
             sent_cursor_write = cursor_after
+        elif cursor_before and cursor_before != _stored_cursor(raw):
+            # cr1#767: nothing newer came in, but the stored spelling is
+            # repaired now rather than left for the next message.
+            sent_cursor_write = cursor_before
         contact_cursor_write = None
+        if read_partial and isinstance(contacts, dict) and contacts.get("cursor_from"):
+            # cr1#742: the contact cursor holds with the sent cursor, or a new
+            # address on the pages never read is stepped over. The contacts
+            # this run carried are deduped by address on the re-read.
+            contacts["cursor_to"] = contacts["cursor_from"]
         if isinstance(contacts, dict) and contacts.get("ran") and \
                 contacts.get("cursor_to") and \
                 contacts.get("cursor_to") != contacts.get("cursor_from"):
@@ -2242,8 +2393,15 @@ def reconcile_and_receipt(
                 "capture_skip_reason": capture_skip_reason,
                 "people_skip_reason": people_skip_reason,
                 "n_excluded": n_excluded,
+                # cr1#767: messages set aside for a time nothing could read
+                "n_bad_time": n_bad_time,
             },
         }
+        if bad_times:
+            audit_event["data"]["bad_time_messages"] = bad_times
+        if read_partial:
+            # cr1#742: the audit says the read was partial and the cursor held
+            audit_event["data"]["read_partial"] = True
         _stamp_window(audit_event, cursor_before)
         try:
             # SCHED1 — the shared stamp helper, so the machine token and its
@@ -2337,10 +2495,19 @@ def reconcile_and_receipt(
                        f"— nothing matched an open commitment.")
         else:
             tail = f", {n_pend} to confirm" if n_pend else ""
-            summary = (f"Reconciled your sent mail through {_short_date(cursor_after, workspace_root)}: "
+            through = _short_date(cursor_after, workspace_root)
+            summary = (f"Reconciled your sent mail{f' through {through}' if through else ''}: "
                        f"closed {n_auto} you'd already handled{tail}.")
         if n_excluded:
             summary += f" Your include or exclude list set aside {n_excluded}."
+        if n_bad_time:
+            summary += (f" {n_bad_time} message{'s' if n_bad_time != 1 else ''} "
+                        "arrived with a time that could not be read and "
+                        f"{'were' if n_bad_time != 1 else 'was'} set aside; "
+                        "the same window is read next time.")
+        if read_partial:
+            summary += (" The mailbox had more than this pass read; the same "
+                        "span is read again on the next pass.")
         n_opened = capture["n_opened"] if isinstance(capture, dict) else 0
         if n_opened:
             summary += (f" Started tracking {n_opened} new "
@@ -2374,6 +2541,10 @@ def reconcile_and_receipt(
             summary += (
                 " Contact-adding started fresh from today — the record of where it "
                 "had reached wasn't usable, so nothing older was read back.")
+        if close_mode_refused:
+            n = len(close_mode_refused)
+            summary += (f" {n} match{'es' if n != 1 else ''} could not go on your "
+                        "confirm list and will be tried again on a new send.")
         if n_partial_receipts:
             summary += (
                 f" Noted delivery to {n_partial_receipts} "
@@ -2434,6 +2605,8 @@ def reconcile_and_receipt(
             "cursor_before": cursor_before,
             "cursor_after": cursor_after,
             "cursor_advanced": cursor_after != cursor_before,
+            # cr1#742: a read that did not reach the end of its window
+            "read_partial": read_partial,
             "n_fetched": n_fetched,
             "n_open_before": n_open_before,
             "n_auto_closed": n_auto,
@@ -2466,6 +2639,15 @@ def reconcile_and_receipt(
             "capture_skip_reason": capture_skip_reason,
             "people_skip_reason": people_skip_reason,
             "n_excluded": n_excluded,
+            # cr1#756: the mail connector's close mode this run ran under
+            # (None when no mail connector is declared) and the closes it
+            # sent to the confirm list instead.
+            "close_mode": close_mode,
+            "n_close_mode_proposed": n_close_mode_proposed,
+            "n_close_mode_refused": len(close_mode_refused),
+            "close_mode_refused": close_mode_refused,
+            "n_bad_time": n_bad_time,
+            "bad_time_messages": bad_times,
             # CONTACT1 (additive; zeros/None when items not passed).
             "n_contacts_added": n_contacts,
             "n_contacts_gave_up": n_gave_up,

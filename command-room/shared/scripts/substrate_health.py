@@ -543,6 +543,45 @@ def check_lease_hold_lost(workspace_root, now=None) -> dict:
     return out
 
 
+def check_conflict_copies(workspace_root) -> list[str]:
+    """cr1#724 / cr1#385 — one plain line per sync conflict copy of the
+    activity log still beside the live file, and one for the other copies
+    together. Empty when there is none. Read-only; never raises."""
+    out: list[str] = []
+    try:
+        import sync_conflict_copies as scc
+        found = scc.scan(workspace_root)
+    except Exception:
+        return out
+    others = 0
+    for item in found.get("copies") or []:
+        if item.get("kind") != "events":
+            others += 1
+            continue
+        try:
+            plan = scc.plan_events(item["live"], item["copy"])
+        except Exception:
+            continue
+        n = int(plan.get("n_missing") or 0)
+        if plan.get("held"):
+            out.append(
+                "⚠ A second computer's copy of your activity log holds everything "
+                f"this one holds and {n} more entr{'y' if n == 1 else 'ies'}, so "
+                "this computer's log may be the older one. Nothing was merged; "
+                "tell me which computer is current.")
+        elif n:
+            out.append(
+                f"⚠ {n} entr{'y' if n == 1 else 'ies'} a second computer wrote "
+                "while out of sync are waiting beside your activity log; "
+                "Maintenance merges them on its next run.")
+    if others:
+        out.append(
+            f"⚠ {others} conflict cop{'y' if others == 1 else 'ies'} of your "
+            "Command Room files from a second computer are waiting; Maintenance "
+            "merges and archives them on its next run.")
+    return out
+
+
 def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
@@ -583,6 +622,11 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
                 f"and recent activity are unreliable; nothing is written while "
                 f"this is true."
             )
+    # cr1#724 / cr1#385 — a second computer's conflict copy of the book
+    # sitting beside a live file. Waiting: Maintenance merges it on its next
+    # run. Held: the copy holds everything this log holds and more, so this
+    # computer's log may be the stale one, and only the owner can say.
+    lines.extend(check_conflict_copies(workspace_root))
     bad = check_json_parse(workspace_root)
     for b in bad:
         lines.append(
@@ -701,6 +745,7 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
 __all__ = [
     "check_seq_regression",
     "check_stale_view",
+    "check_conflict_copies",
     "preflight_freshness",
     "check_git_in_drive",
     "check_json_parse",

@@ -139,6 +139,18 @@ DEFAULT_CAP_DAYS = 30
 # a widened span, this is the first-run floor every job shares.
 MAINTENANCE_WINDOW_DAYS = DEFAULT_CAP_DAYS
 
+# How far past that bound a CARRY-OVER MARKER is still honoured. The bound
+# caps a gap: a seat that was away. A marker on a recent receipt is not a gap,
+# it is work in progress: the job read those items and is working through
+# them, so items held on a first run's oldest day would otherwise drop off the
+# rolling floor between one fire and the next. The grace is finite because a
+# hold can also be a row that will never be readable; past it the marker is
+# dropped, as a gap's window is, and the job moves on, and the fire says so
+# once (`hold_dropped_span`): what the hold still owed is not read again.
+# Seven days is one weekly cycle of fires, far more than a cap of a dozen items
+# a fire needs to drain.
+HOLD_GRACE_DAYS = 7
+
 # The ONE spelling of the window a job receipt names, reader and writer
 # side (the `WINDOW_INCOMPLETE_FIELD` lesson). A job's own receipt carries
 # the helper's dict under `MAINTENANCE_WINDOW_FIELD`; the run-level
@@ -158,6 +170,61 @@ WINDOW_REASON_FIRST_RUN = "first_run_window"
 
 # Ceiling on how many missed periods one fire will produce deliverables for.
 DEFAULT_PERIOD_CAP = 12
+
+# THE STATUSES THAT MOVE A WINDOW (cr1#740). A receipt says what its run did;
+# only a run that read its whole window may be the basis of the next one.
+# `complete` is that run; `degraded` is a real read over narrower cover (the
+# chat leg's word, cr1#743), its gap named on the receipt. A receipt with no
+# status at all is an older shape written only on completion, and counts.
+# Every other word (`skipped`, `blocked`, `failed`, anything this module
+# does not know) is a run that read nothing, or not all of it: the window
+# stays where the last window-moving receipt left it. Before this rule the
+# newest receipt of ANY status moved the window, so a blocked read's span
+# was never read again, and a seat that skipped for weeks (no connector
+# declared yet) got a 0-day window on its first real run instead of the
+# ruled 30 days. The same vocabulary as the dispatcher's
+# `COMPLETE_RECEIPT_STATUSES` (cr1#760), spelled here too because the
+# dispatcher imports this module.
+WINDOW_MOVING_STATUSES = frozenset({"complete", "degraded"})
+
+
+#: The one exception to the status rule: a leg whose commitment dials are off
+#: still reads its connector for people and project signal (the tasks legs).
+#: Its receipt says `skipped` (nothing captured or closed, the job stays owed)
+#: yet the read happened, whole, so it says so here and it moves the window.
+#: Without it such a seat re-reads the same span on every fire for good.
+WINDOW_READ_FIELD = "window_read"
+
+
+def read_reached_end(flag):
+    """The `read_complete` a writer was handed, as True, False or None (cr1#742).
+    None is a caller that predates the flag and counts as a whole read: a
+    scheduled prompt is baked on the seat, so failing closed would hold those
+    seats' windows for good. A word from a model's JSON is read as the word it
+    is ("false" is False), never by truthiness."""
+    if isinstance(flag, str):
+        word = flag.strip().lower()
+        if word in ("false", "no", "0"):
+            return False
+        if word in ("true", "yes", "1"):
+            return True
+        return None
+    return None if flag is None else bool(flag)
+
+
+def receipt_moves_window(status, data=None) -> bool:
+    """Does a receipt with this `status` move its job's window? (cr1#740)
+    None, or an empty string, is an older shape that was only ever written
+    on completion, so it does. `data` is the receipt's own data, for the
+    `WINDOW_READ_FIELD` exception."""
+    if isinstance(data, dict) and data.get(WINDOW_READ_FIELD) is True:
+        return True
+    if status is None:
+        return True
+    if not isinstance(status, str):
+        return False
+    word = status.strip().lower()
+    return (not word) or word in WINDOW_MOVING_STATUSES
 
 
 def _now_local() -> _dt.datetime:
@@ -282,7 +349,12 @@ def receipt_window_marker(window, *, incomplete: bool,
         candidate = start
     if end is not None and candidate > end:
         candidate = end
-    return candidate.isoformat()
+    # cr1#741: an instant, not this machine's wall clock. A seat's fires can
+    # run on machines in two zones; a marker written as naive local text is
+    # read as a different instant on the other one, and the next fetch can
+    # start after the very items it holds. Every reader goes through
+    # `_parse_iso_local`, which takes an offset.
+    return to_connector_iso(candidate)
 
 
 def _coerce_number(value, fallback: float) -> float:
@@ -324,12 +396,25 @@ def last_successful_point(workspace_root, task_id) -> dict:
     basis for the next window's start.
 
     Returns {"dt": datetime|None, "receipt_dt": datetime|None,
-             "incomplete_before": datetime|None} in machine-local naive time.
+             "incomplete_before": datetime|None,
+             "newest_receipt_dt": datetime|None,
+             "held_by_status": str|None} in machine-local naive time.
 
-    `dt` is the marker when the newest receipt carries one, else the newest
-    receipt's own timestamp, else None (never receipted). The NEWEST receipt
-    is the one consulted: a later fire that completed its window is exactly
-    the event that clears an earlier fire's marker.
+    `dt` is the marker when the newest WINDOW-MOVING receipt carries one,
+    else that receipt's own timestamp, else None (never completed). The
+    newest window-moving receipt is the one consulted: a later fire that
+    completed its window is exactly the event that clears an earlier fire's
+    marker.
+
+    cr1#740: a receipt whose status does not move the window
+    (`receipt_moves_window`: skipped, blocked, failed) is read past. A
+    blocked read's span is read again on the next run, and a job whose only
+    receipts are skips (no connector declared yet) is a first run. THIS
+    FILTER IS THE FENCE: remove it and a blocked run moves the window past
+    the mail, items and sessions it never read, with a receipt on the
+    record saying so. `newest_receipt_dt` is the newest receipt of any
+    status, for a reader that wants to know the job fired; `held_by_status`
+    is that receipt's status when it did not move the window, else None.
 
     Raises nothing of its own, but lets a substrate read failure propagate to
     `catchup_window`, which owns the best-effort fallback.
@@ -338,28 +423,53 @@ def last_successful_point(workspace_root, task_id) -> dict:
     accepted = [canonical] + list(TASK_PREDECESSORS.get(canonical, ()))
     newest = None
     newest_dt = None
+    any_dt = None
+    any_status = None
     for r in iter_receipts(workspace_root, task_ids=accepted):
         dt = _to_local_naive(r.get("dt"))
         if dt is None:
             continue
+        if any_dt is None or dt >= any_dt:
+            any_dt, any_status = dt, r.get("status")
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        if not receipt_moves_window(r.get("status"), raw.get("data")):
+            continue  # cr1#740: a run that read nothing holds the window
         if newest_dt is None or dt >= newest_dt:
             newest, newest_dt = r, dt
+    held = (any_status if (any_dt is not None
+                           and (newest_dt is None or any_dt > newest_dt))
+            else None)
     if newest is None:
-        return {"dt": None, "receipt_dt": None, "incomplete_before": None}
+        return {"dt": None, "receipt_dt": None, "incomplete_before": None,
+                "receipt_seq": None,
+                "newest_receipt_dt": any_dt, "held_by_status": held}
     raw = newest.get("raw") if isinstance(newest.get("raw"), dict) else {}
     data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
     marker = _incomplete_marker(data)
+    seq = raw.get("seq")
+    if marker is not None:
+        # A capped run stepped back over its own window, so the book position
+        # it opens at steps back with it: rows the cap left past that run's
+        # start reached the book before its receipt and must stay in reach.
+        ran = data.get(MAINTENANCE_WINDOW_FIELD)
+        seq = ran.get("since_seq") if isinstance(ran, dict) else None
     return {
         "dt": marker if marker is not None else newest_dt,
         "receipt_dt": newest_dt,
         "incomplete_before": marker,
+        # cr1#761: where that receipt sits in the book, so a reader can tell
+        # what reached the book after it, whatever the record's own time.
+        "receipt_seq": seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
+        "newest_receipt_dt": any_dt,
+        "held_by_status": held,
     }
 
 
 def _window_dict(job_id, basis, *, now: _dt.datetime,
                  last_receipt: Optional[_dt.datetime] = None,
                  incomplete_before: Optional[_dt.datetime] = None,
-                 error: Optional[str] = None) -> dict:
+                 error: Optional[str] = None,
+                 since_seq: Optional[int] = None) -> dict:
     """The one piece of window math every maintenance job shares.
 
     `basis` is where the job's last successful read reached (its newest
@@ -371,6 +481,12 @@ def _window_dict(job_id, basis, *, now: _dt.datetime,
       basis older than that bound   -> the same window, the same reason,
                                        `gap_capped` True (the gap is treated
                                        as a first run; cr1#609 build default)
+      a carry-over marker on a      -> since the marker, reason `cursor`,
+      recent receipt, up to             not capped: the job is still working
+      HOLD_GRACE_DAYS past the bound    through items it has read
+      a marker past that grace, on  -> the bound's window, `gap_capped` True
+      a recent receipt                  and `hold_dropped` True: the hold is
+                                        given up, and the fire says so once
       otherwise                     -> since the basis, reason `cursor`,
                                        no floor and no cap
 
@@ -380,6 +496,7 @@ def _window_dict(job_id, basis, *, now: _dt.datetime,
     this file and watches section [2] go red.
     """
     floor_start = now - _dt.timedelta(days=MAINTENANCE_WINDOW_DAYS)
+    hold_floor = floor_start - _dt.timedelta(days=HOLD_GRACE_DAYS)
     out = {
         "job_id": normalize_task_id(job_id),
         "since": floor_start.isoformat(),
@@ -396,12 +513,29 @@ def _window_dict(job_id, basis, *, now: _dt.datetime,
                                      if incomplete_before else None),
         "cap_days": float(MAINTENANCE_WINDOW_DAYS),
         "error": error,
+        # cr1#761: the book position of the receipt this window opens at. A
+        # record that reached the book after it is in the window however it
+        # is dated (a meeting held before the last run but captured after).
+        # None for a job with no receipt or a leg that keeps its own cursor.
+        "since_seq": since_seq,
     }
     if basis is None:
         return out
+    if (basis == incomplete_before and basis >= hold_floor
+            and last_receipt is not None and last_receipt >= floor_start):
+        return _from_basis(out, basis, now)  # a hold, not a gap
+    # The grace ran out on a seat that kept running: no gap, but the span the
+    # marker still held is given up here.
+    if (basis < floor_start and basis == incomplete_before
+            and last_receipt is not None and last_receipt >= floor_start):
+        out["hold_dropped"] = True  # present only then: a plain window is unchanged
     if basis < floor_start:
         out["gap_capped"] = True
         return out
+    return _from_basis(out, basis, now)
+
+
+def _from_basis(out: dict, basis: _dt.datetime, now: _dt.datetime) -> dict:
     out["since"] = basis.isoformat()
     out["since_aware"] = to_connector_iso(basis)
     out["reason"] = WINDOW_REASON_CURSOR
@@ -430,6 +564,9 @@ def maintenance_window(workspace_root, job_id: str, *,
       last_receipt                the newest receipt's time, or None
       window_incomplete_before    the batch-cap marker, when the newest
                                   receipt carries one
+      since_seq                   the newest receipt's place in the book
+                                  (cr1#761): a record appended after it is
+                                  in the window whatever its own time
       cap_days / job_id / error   echoed, so a logged window is
                                   self-describing
 
@@ -444,9 +581,88 @@ def maintenance_window(workspace_root, job_id: str, *,
         point = last_successful_point(workspace_root, job_id)
     except Exception as exc:  # noqa: BLE001 - best-effort by contract
         return _window_dict(job_id, None, now=now, error=repr(exc)[:200])
-    return _window_dict(job_id, point["dt"], now=now,
-                        last_receipt=point["receipt_dt"],
-                        incomplete_before=point["incomplete_before"])
+    out = _window_dict(job_id, point["dt"], now=now,
+                       last_receipt=point["receipt_dt"],
+                       incomplete_before=point["incomplete_before"],
+                       since_seq=point.get("receipt_seq"))
+    # cr1#740: a newer receipt that did not move the window (a skip, a
+    # blocked read) is named, so a plan can say why the window reaches back
+    # past the job's newest receipt.
+    out["held_by_status"] = point.get("held_by_status")
+    return out
+
+
+def gap_unread_span(window) -> Optional[dict]:
+    """The days a long gap cost (cr1#746), or None for any other window:
+    `{"from", "to", "days"}`, ISO dates, machine-local.
+
+    A gap is the job's newest receipt older than the bound. A window held
+    back by a carry-over marker on a recent receipt is not one, however old
+    the marker: the seat ran, and nothing was left unread by being away. The
+    span runs from where the last read reached up to the day before the
+    window opens, and always names at least one day: a gap of thirty days
+    and a few hours lost those hours."""
+    win = window if isinstance(window, dict) else {}
+    if not win.get("gap_capped"):
+        return None
+    last = _parse_iso_local(win.get("last_receipt"))
+    since = _parse_iso_local(win.get("since"))
+    if last is None or since is None or last >= since:
+        return None
+    marker = _parse_iso_local(win.get("window_incomplete_before"))
+    first = min(last, marker or last).date()
+    end = max(first, since.date() - _dt.timedelta(days=1))
+    return {"from": first.isoformat(), "to": end.isoformat(),
+            "days": (end - first).days + 1}
+
+
+def gap_capped_line(window) -> str:
+    """The one sentence the owner reads when a gap longer than the bound was
+    cut to the bound (cr1#746): which days were not read. Empty for any
+    other window. `maintenance_dispatcher` says it once per fire on the run
+    receipt; no job's own summary carries it, because nothing reads those."""
+    span = gap_unread_span(window)
+    if span is None:
+        return ""
+    n = span["days"]
+    bound = _trim(MAINTENANCE_WINDOW_DAYS)
+    dates = (span["from"] if n == 1 else f"{span['from']} to {span['to']}")
+    return (f"After a long gap only the newest {bound} days were read: {n} "
+            f"day{'s' if n != 1 else ''} ({dates}) "
+            f"{'were' if n != 1 else 'was'} not.")
+
+
+def hold_dropped_span(window) -> Optional[dict]:
+    """The days a carry-over marker gave up when it passed the grace, or None
+    for any other window (cr1#746, cr1#741): `{"from", "to", "days"}`, ISO
+    dates, machine-local, from the marker to the day before the window now
+    opens. Not a gap: this seat kept running, so it never reads as one. A
+    held window inside the grace is None, however old its marker."""
+    win = window if isinstance(window, dict) else {}
+    if not win.get("hold_dropped"):
+        return None
+    marker = _parse_iso_local(win.get("window_incomplete_before"))
+    since = _parse_iso_local(win.get("since"))
+    if marker is None or since is None or marker >= since:
+        return None
+    first = marker.date()
+    end = max(first, since.date() - _dt.timedelta(days=1))
+    return {"from": first.isoformat(), "to": end.isoformat(),
+            "days": (end - first).days + 1}
+
+
+def hold_dropped_line(window, job_name: str = "") -> str:
+    """The one sentence the owner reads when a held window was given up: which
+    job, which days. Empty for any other window."""
+    span = hold_dropped_span(window)
+    if span is None:
+        return ""
+    n = span["days"]
+    who = str(job_name or (window or {}).get("job_id") or "A job")
+    dates = (span["from"] if n == 1 else f"{span['from']} to {span['to']}")
+    return (f"{who} could not finish what it held back: {n} "
+            f"day{'s' if n != 1 else ''} ({dates}) "
+            f"{'were' if n != 1 else 'was'} dropped and will not be read again.")
 
 
 def window_from_cursor(job_id: str, cursor, *,
@@ -737,7 +953,15 @@ __all__ = [
     "MAINTENANCE_WINDOWS_FIELD",
     "WINDOW_REASON_CURSOR",
     "WINDOW_REASON_FIRST_RUN",
+    "WINDOW_MOVING_STATUSES",
+    "WINDOW_READ_FIELD",
+    "read_reached_end",
+    "receipt_moves_window",
     "catchup_window",
+    "gap_capped_line",
+    "gap_unread_span",
+    "hold_dropped_line",
+    "hold_dropped_span",
     "maintenance_window",
     "window_from_cursor",
     "missed_periods",

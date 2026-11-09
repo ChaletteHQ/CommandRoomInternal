@@ -16,6 +16,12 @@ Each read stays inside the connector's include list and never touches a
 board on its exclude list (`connector_reads.allowed`, applied again here as
 the belt for an item staged from one anyway).
 
+One more read, by id, for the capture half (cr1#766): `tasks_leg` plans
+`tracked_items`, the owner's open rows from this connector, because once
+such an item is reassigned away no intent is sure to return it. It reads only
+items whose board as last seen is allowed, and an answer on an excluded board
+is dropped.
+
 THE CAPTURE RULE (owner ruling, cr1#609, 2026-11-03), in `capture_class`:
 
   * assigned to the owner, with a due date      -> `promise` (the owner's own);

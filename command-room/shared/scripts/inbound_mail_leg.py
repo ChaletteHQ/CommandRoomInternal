@@ -74,10 +74,21 @@ YIELD_HOURS = 24
 #: Phase 4b candidates; the writer anchors each to the message's own ids.
 #: `labels`, `folder`, `folders` and `label` are every spelling `_labels`
 #: reads, so a staged message keeps what the lists match on (cr1#770).
+#: `account` (cr1#755) is the address the fetch was addressed to (the plan's
+#: `acting_email`): on a seat that has classified its accounts, a message
+#: with no account, or from an account that does not file into the business
+#: book, is refused before either half reads it, and the receipt says so.
+#: `attachment_names` (cr1#764) is what the connector calls each attached
+#: file: the close rail's invite, image and file-name rules read it.
 MESSAGE_FIELDS = ("message_id", "thread_id", "ts", "sender_email",
                   "sender_name", "sender_person_id", "subject", "body",
                   "has_attachment", "from_me", "labels", "folder", "folders",
-                  "label", "captures")
+                  "label", "captures", "account", "attachment_names")
+
+#: The two reasons a staged row is refused by the account wall (cr1#755).
+REFUSED_NO_ACCOUNT = "no_account"
+REFUSED_OUT_OF_SCOPE = "out_of_scope"
+REFUSED_UNREADABLE = "accounts_unreadable"
 
 #: What one capture candidate carries (orchestrator-inbox.md Phase 4b).
 CAPTURE_FIELDS = ("direction", "title", "kind", "due", "no_due", "evidence",
@@ -86,7 +97,7 @@ CAPTURE_FIELDS = ("direction", "title", "kind", "due", "no_due", "evidence",
 
 #: The message keys a capture inherits from its message when it names none.
 _ANCHOR_KEYS = ("message_id", "thread_id", "ts", "sender_person_id",
-                "sender_name")
+                "sender_name", "account")
 
 NO_MAIL_REASON = "no mail connector is declared for this workspace"
 NO_ACCOUNT_REASON = "no mail account is set to file into the business book"
@@ -234,6 +245,35 @@ def fetch_accounts(workspace_root) -> List[Dict[str, Any]]:
     return out
 
 
+def fetch_floor(window) -> str:
+    """The date the inbox fetch reads from (cr1#745): the window's start as
+    an instant, dated in UTC (the zone every receipt and cursor is stored
+    in), one day of overlap behind it on a cursor run (the sent leg's
+    `CURSOR_OVERLAP_DAYS`, imported rather than typed, and the sent leg's
+    own rule: a first run or a capped gap keeps the bare 30-day date, so
+    the ruled bound is not widened). Cutting the start's machine-local text
+    to ten characters gave two fires in two zones two different floors, and
+    mail from the evening before the date could fall outside every fetch.
+    Empty when the window has no readable start."""
+    from catchup import WINDOW_REASON_CURSOR
+    from reconcile_sent_commitments import CURSOR_OVERLAP_DAYS
+
+    win = window if isinstance(window, dict) else {}
+    raw = _norm(win.get("since_aware") or win.get("since"))
+    if not raw:
+        return ""
+    try:
+        since = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw[:10]
+    if since.tzinfo is None:
+        since = since.astimezone()
+    floor = since.astimezone(_dt.timezone.utc)
+    if win.get("reason", WINDOW_REASON_CURSOR) == WINDOW_REASON_CURSOR:
+        floor -= _dt.timedelta(days=CURSOR_OVERLAP_DAYS)
+    return floor.date().isoformat()
+
+
 def plan_inbound_mail(workspace_root, now=None) -> dict:
     """The inbound-mail job PLANNED beside the data - READ ONLY (on
     `workspace_access.RUN_HELPER_ALLOWLIST`).
@@ -256,7 +296,7 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
     # cr1#667: the dials and the lists, BEFORE any source is read.
     reads = connector_reads_for(workspace_root)
     window = _window(workspace_root, now=now)
-    after = str(window.get("since_aware") or window.get("since") or "")[:10]
+    after = fetch_floor(window)
     intent = {"in_inbox": True, "after": after}
     try:
         from connector_adapters.provenance import resolve_mail_provider
@@ -319,6 +359,7 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
 def inbound_messages(items) -> List[Dict[str, Any]]:
     """The close half's list: every fetched message that is not the owner's
     own, in the reconcile rail's input shape."""
+    from reconcile_inbound_commitments import attachment_flag, attachment_names
     out = []
     for item in items or []:
         if not isinstance(item, dict) or item.get("from_me"):
@@ -330,8 +371,52 @@ def inbound_messages(items) -> List[Dict[str, Any]]:
                     "subject": _norm(item.get("subject")),
                     "body": _norm(item.get("body")),
                     "thread_id": _norm(item.get("thread_id")),
-                    "has_attachment": bool(item.get("has_attachment"))})
+                    # cr1#764: the text "false" reads as False.
+                    "has_attachment": attachment_flag(item),
+                    "attachment_names": attachment_names(item),
+                    "account": _norm(item.get("account")).lower()})
     return out
+
+
+def partition_by_account(workspace_root, items) -> tuple:
+    """cr1#755: the account wall for THIS job, applied before either half
+    reads a row. Returns `(kept, refused)` where `refused` is
+    `{"n": int, "no_account": int, "out_of_scope": int}`.
+
+    On a seat that has classified at least one mail account
+    (`connector_config.account_map_populated`), every staged row must name
+    the account it was read as (`account`), and that account must file into
+    the business book (`is_in_write_scope`); a row that names none is
+    refused, never read as business. On a seat that has classified nothing
+    (R4: the wall is a no-op) every row is kept, today's behaviour."""
+    refused = {"n": 0, REFUSED_NO_ACCOUNT: 0, REFUSED_OUT_OF_SCOPE: 0,
+               REFUSED_UNREADABLE: 0}
+    rows = [i for i in (items or []) if isinstance(i, dict)]
+    try:
+        import connector_config as cc
+        populated = cc.account_map_populated(workspace_root)
+    except Exception:  # noqa: BLE001 - fail CLOSED: no row can be shown in scope
+        refused["n"] = refused[REFUSED_UNREADABLE] = len(rows)
+        return [], refused
+    if not populated:
+        return rows, refused
+    kept = []
+    for item in rows:
+        addr = _norm(item.get("account")).lower()
+        if not addr:
+            refused["n"] += 1
+            refused[REFUSED_NO_ACCOUNT] += 1
+            continue
+        try:
+            in_scope = cc.is_in_write_scope(address=addr, workspace_root=workspace_root)
+        except Exception:  # noqa: BLE001 - cannot be shown in scope -> refused
+            in_scope = False
+        if not in_scope:
+            refused["n"] += 1
+            refused[REFUSED_OUT_OF_SCOPE] += 1
+            continue
+        kept.append(item)
+    return kept, refused
 
 
 def capture_items(items) -> List[Dict[str, Any]]:
@@ -369,6 +454,9 @@ def _incomplete_marker(window: dict, oldest=None) -> Optional[str]:
                                  incomplete=True, oldest_unhandled=oldest)
 
 
+_NO_NEW_MAIL = "No new mail to check."
+
+
 def _summary(r: dict) -> str:
     """One plain line, no field names, never claiming coverage it lacks."""
     if r.get("status") == "skipped":
@@ -376,6 +464,24 @@ def _summary(r: dict) -> str:
     if r.get("status") == "blocked":
         return ("New mail was not read this time, so nothing was opened or "
                 "closed from it; the same mail is read on the next pass.")
+    line = _read_summary(r)
+    if r.get("n_bad_time") and not r.get("n_fetched") and line == _NO_NEW_MAIL:
+        line = ""  # mail did arrive: the next sentence says what happened to it
+    return (line + _bad_time_line(r)).strip()
+
+
+def _bad_time_line(r: dict) -> str:
+    """cr1#767: the messages set aside for a time nothing could read."""
+    n = r.get("n_bad_time") or 0
+    if not n:
+        return ""
+    verb = "were" if n != 1 else "was"
+    return (f" {n} message{'s' if n != 1 else ''} arrived with a time that "
+            f"could not be read and {verb} set aside; the same window is "
+            "read on the next pass.")
+
+
+def _read_summary(r: dict) -> str:
     bits = []
     if r.get("n_captured"):
         n = r["n_captured"]
@@ -389,19 +495,57 @@ def _summary(r: dict) -> str:
     n_aside = r.get("n_excluded") or 0
     aside = (f" Your include or exclude list set aside {n_aside}."
              if n_aside else "")
+    n_ref = r.get("n_refused") or 0
+    if n_ref:
+        # cr1#755: the account wall, in plain words and with its reasons.
+        by = r.get("refused") or {}
+        why = []
+        if by.get(REFUSED_NO_ACCOUNT):
+            why.append(f"{by[REFUSED_NO_ACCOUNT]} named no account")
+        if by.get(REFUSED_OUT_OF_SCOPE):
+            why.append(f"{by[REFUSED_OUT_OF_SCOPE]} came from an account that "
+                       "does not file into your business book")
+        if by.get(REFUSED_UNREADABLE):
+            why.append(f"{by[REFUSED_UNREADABLE]} could not be matched to an "
+                       "account because your mail accounts could not be read")
+        aside += (f" {n_ref} message{'s were' if n_ref != 1 else ' was'} not "
+                  f"read into the book: " + "; ".join(why) + ".")
     if not bits:
         n = r.get("n_fetched") or 0
         if n:
             return (f"Checked {n} new message{'s' if n != 1 else ''}; nothing "
-                    "to pick up or close." + aside)
+                    "to pick up or close." + aside + _held_lines(r))
         if n_aside:  # cr1#770: mail was read, so never "no new mail"
             return (f"Read {n_aside} new message{'s' if n_aside != 1 else ''}, "
-                    "none of them checked." + aside)
-        return "No new mail to check."
+                    "none of them checked." + aside + _held_lines(r))
+        if n_ref:  # cr1#755: mail was read and every row was refused
+            return (f"Read {n_ref} new message{'s' if n_ref != 1 else ''}, "
+                    "none of them checked." + aside + _held_lines(r))
+        return _NO_NEW_MAIL + _held_lines(r)
     line = "From your mail: " + ", ".join(bits) + "." + aside
     if r.get("n_capped"):
         line += " The rest are picked up on the next pass."
-    return line
+    return line + _held_lines(r)
+
+
+#: How many refused captures a receipt spells out; `n_capture_errors` counts all.
+CAPTURE_ERRORS_KEPT = 20
+
+
+def _held_lines(r: dict) -> str:
+    """What this run says about its own edges, in plain words: captures it
+    could not write and a read that did not reach the end of its window
+    (cr1#742). Empty when neither happened."""
+    out = ""
+    n = r.get("n_capture_errors") or 0
+    if n:
+        # The reasons stay on the receipt, under `capture_errors`: a writer's
+        # refusal is field names and error text, not an owner's line.
+        out += f" {n} item{'s' if n != 1 else ''} could not be picked up."
+    if r.get("read_partial"):
+        out += (" The mailbox had more than this pass read; the same span "
+                "is read again on the next pass.")
+    return out
 
 
 def _log(workspace_root, receipt: dict, *, fired_via) -> None:
@@ -429,9 +573,22 @@ def _log(workspace_root, receipt: dict, *, fired_via) -> None:
 def run_inbound_mail(workspace_root, items, *, user_person_id=None,
                      provider=None, fired_via=None, fetch_blocked=None,
                      exclude_captured_since=None, close_mode=None,
-                     accounts=None, source_skill: str = SOURCE_SKILL) -> dict:
+                     accounts=None, source_skill: str = SOURCE_SKILL,
+                     read_complete=None) -> dict:
     """Run the job end to end over the fetched `items` (one dict per message,
     `MESSAGE_FIELDS`) and land its one receipt. A WRITER.
+
+    `read_complete` (cr1#742): did the fetch reach the end of its window?
+    False is a PARTIAL read (the connector had more pages than the run
+    read): the receipt says so (`read_partial`), and it carries the window's
+    start as `window_incomplete_before`, so the next window starts where
+    this one did and the mail the run never saw is read then. True, or None
+    from a caller that predates the flag, is a read of the whole window.
+
+    A capture the job could not write (a due date that is not a date, an
+    unknown kind, a mistyped direction, no due and no `no_due`) is named on
+    the receipt under `capture_errors` with its reason. It is not offered
+    again: cr1#771 stays open.
 
     Three terminal states, never alike: SKIPPED (no mail backend declared, or
     no account in write scope: nothing read, the receipt says why, and a
@@ -501,9 +658,25 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
         return receipt
 
     items = [i for i in (items or []) if isinstance(i, dict)]
+    # cr1#755: the account wall FIRST. A row with no account, or from an
+    # account that does not file into the business book, reaches neither
+    # half; the receipt counts it and says why.
+    items, refused = partition_by_account(workspace_root, items)
     items, n_excluded = drop_excluded(reads["close"] or reads["open"], items)
+    # cr1#767: one spelling of a message's time before either half reads
+    # it. A header date or an epoch number becomes the house ISO form; a
+    # time nothing can read refuses the message, with a count and the raw
+    # text on the receipt, and holds the window (below): a commitment
+    # stamped with that text could never be closed by a reply.
+    from message_time import normalize_messages
+    from trusted_now import trusted_now_utc
+    clock = trusted_now_utc(workspace_root)
+    items, bad_times = normalize_messages(items, now=clock)
     messages = inbound_messages(items)
     candidates = capture_items(items) if not open_skip else []
+    # A candidate may name its own time; it is read the same way.
+    candidates, bad_captures = normalize_messages(candidates, now=clock)
+    bad_times = bad_times + bad_captures
 
     # OPEN - the Inbox chat's own gate, cap and below-bar declaration; not
     # run at all when the connector's `open_commitments` dial is off.
@@ -549,6 +722,8 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
         "captured": captured,
         "n_fetched": len(messages),
         "n_excluded": n_excluded,
+        "n_refused": int(refused.get("n") or 0),
+        "refused": {k: int(v) for k, v in refused.items() if k != "n"},
         "n_candidates": int(opened.get("n_candidates") or 0),
         "n_captured": int(opened.get("n_captured") or 0),
         "n_deduped": int(opened.get("n_deduped") or 0),
@@ -566,22 +741,51 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
         "n_roster_closed": len(roster.get("closed") or []),
         "close_batch_id": closed.get("batch_id"),
         "roster_batch_id": roster.get("batch_id") if roster.get("closed") else None,
+        "n_bad_time": len(bad_times),
     })
-    if receipt["n_capped"]:
-        # A capped capture leaves the deferred slice inside the window: the
-        # next window starts at the oldest message it did not get to.
-        # Compared as instants, never as strings: connectors spell one
-        # time several ways (`Z`, `+00:00`, fractions).
-        from cru_match import _parse_ts
+    if bad_times:
+        receipt["bad_time_messages"] = bad_times
+    # The messages this run leaves for the next one: a capped capture,
+    # deferred. Compared as instants, never as strings: connectors spell one
+    # time several ways (`Z`, `+00:00`, fractions).
+    from cru_match import _parse_ts
 
-        capped = []
-        for c in opened.get("capped") or []:
-            raw = ts_of.get(_norm(c.get("message_id")))
-            when = _parse_ts(raw) if raw else None
-            if when is not None:
-                capped.append((when, raw))
-        oldest = min(capped)[1] if capped else None
-        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window, oldest)
+    held = []
+    untimed = False  # a held message with no readable time could be the oldest
+    for row in opened.get("capped") or []:
+        raw = ts_of.get(_norm(row.get("message_id")))
+        when = _parse_ts(raw) if raw else None
+        if when is not None:
+            held.append((when, raw))
+        else:
+            untimed = True
+    if receipt["n_capture_errors"]:
+        # The count is `n_capture_errors`; a bad batch must not bloat the book.
+        receipt["capture_errors"] = [
+            {"message_id": _norm(e.get("message_id")),
+             "title": _norm(e.get("title")), "reason": _norm(e.get("error"))}
+            for e in opened.get("errors") or [] if isinstance(e, dict)
+        ][:CAPTURE_ERRORS_KEPT]
+    from catchup import read_reached_end
+    read_complete = read_reached_end(read_complete)
+    partial = read_complete is False
+    if read_complete is not None:
+        receipt["read_complete"] = read_complete
+    if partial:
+        receipt["read_partial"] = True
+    if partial or bad_times:
+        # cr1#742: the unread mail can be anywhere in the window (the
+        # connector's page order is its own), and a message refused for its
+        # time has no time to resume from (cr1#767): the only honest resume
+        # point is the window's start. The cap bounds it.
+        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window)
+    elif held and not untimed:
+        # The next window starts at the oldest message this run did not
+        # get to, so a capped capture is offered again.
+        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window, min(held)[1])
+    elif receipt["n_capped"]:
+        # Held, but no message time to resume from: re-cover the window.
+        receipt[WINDOW_INCOMPLETE_FIELD] = _incomplete_marker(window)
     receipt["summary"] = _summary(receipt)
     _log(workspace_root, receipt, fired_via=fired_via)
     receipt["close"] = {k: closed.get(k) for k in

@@ -541,9 +541,12 @@ Commitments accumulate as "open" in events.jsonl forever unless something explic
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -590,11 +593,11 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_meeting_closes.json", "name": "commitment_policy_pass:apply_meeting_closes"}'
 ```
 
-**The write door, with the transcript in a file (MNSTEPS1, cr1#550).** The pass appends review proposals (and closes, when the switch is on), so it is a writer and runs only through `run_writer`; before this it was an in-shell call to a writer on no door's list, and on a merged seat the step was skipped. A whole transcript does not survive a pasted command line (a long one has already failed with "Argument list too long"), so it travels the way the End of Day's transcript pass carries it: write ONE JSON object into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace), name it as `args_file` above, paste what the form prints and run that. The file holds `{"meeting_ref": "granola:<meeting_id>", "transcript_ts": "<THIS meeting start ts, offset-carrying or UTC, e.g. 2026-07-28T18:00:00-07:00>", "transcript_text": "<full transcript text for THIS meeting>", "attendee_person_ids": ["<resolved attendee person_id 1>", ...], "source_skill": "meeting-notes"}`. The answer's `result` is the counts dict described below. On a seat whose files are local the same call runs in this shell, `apply_meeting_closes("<WORKSPACE>", meeting_ref=..., transcript_ts=..., transcript_text=..., attendee_person_ids=[...], source_skill="meeting-notes")`, and answers the same counts. `ok` false means this step did not run: add `closes` to the closing's skipped steps (Step coverage, below Step 9d), and never call the result complete.
+**The write door, with the transcript in a file (MNSTEPS1, cr1#550).** The pass appends review proposals (and closes, when the switch is on), so it is a writer and runs only through `run_writer`; before this it was an in-shell call to a writer on no door's list, and on a merged seat the step was skipped. A whole transcript does not survive a pasted command line (a long one has already failed with "Argument list too long"), so it travels the way the End of Day's transcript pass carries it: write ONE JSON object into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace), name it as `args_file` above, paste what the form prints and run that. The file holds `{"meeting_ref": "granola:<meeting_id>", "transcript_ts": "<THIS meeting start ts, offset-carrying or UTC, e.g. 2026-07-28T18:00:00-07:00>", "transcript_text": "<full transcript text for THIS meeting>", "attendee_person_ids": ["<resolved attendee person_id 1>", ...], "attendee_records": <this meeting's attendee list, or null when there is none>, "user_names": ["<the CEO's own canonical name>"], "source_skill": "meeting-notes"}`. The answer's `result` is the counts dict described below. On a seat whose files are local the same call runs in this shell, `apply_meeting_closes("<WORKSPACE>", meeting_ref=..., transcript_ts=..., transcript_text=..., attendee_person_ids=[...], attendee_records=<the attendee list, or None>, user_names=["<the CEO's own canonical name>"], source_skill="meeting-notes")`, and answers the same counts. `ok` false means this step did not run: add `closes` to the closing's skipped steps (Step coverage, below Step 9d), and never call the result complete.
 
 - **`meeting_ref` is PROV1 — the TRANSCRIPT the close was read out of** (`granola:<meeting_id>`, the meeting's native id prefixed with its provider), carried onto every close and proposal the pass writes as `source_ref`; it is also the self-evidence fence (a row captured FROM this transcript is never closed by it). A close is never blocked for want of one — since SPEC PROVMINT1, an empty `meeting_ref` makes the writer mint `session:meeting-notes:<now>` marked `surface_minted`, a pointer at the act rather than at the transcript, and PROV1's bare marker is no longer reachable here. But on this path there is always a meeting, so there is never a reason to omit it: a minted ref on THIS rail is a real transcript pointer thrown away, and the coverage split shows it as exactly that.
 - **`transcript_ts` is the MEETING's own start — the same value Step 8 stamps as the `meeting` event's `ts`. Never the processing clock.** "Now" is after every commitment, so a guessed value fences nothing and reads as if it did. Without it every close is refused by name (`NoTranscriptTs` on `close_refusals`) and only proposals write.
-- **What the pass does per open commitment** (`cru_match` Path 3 scorer, `commitment_policy.decide`, then `apply_transcript_results` — the same function Phase 4.6 of the past-meetings orchestrator calls): HIGH-confidence completion language on a row an attendee owns → a CLOSE when the switch is on, a review proposal when it is off (`n_close_withheld` counts it either way); a corroborating match inside the chip band → ONE review proposal per (item, meeting); schedule-shift language → `commitment_updated`, never a resolution; below the bar → nothing. A parent with open sub-items is never closed (SUB1 D3); a `pending_review` target closes only through the transcript door and only when the switch is on.
+- **What the pass does per open commitment** (`cru_match` Path 3 scorer, `commitment_policy.decide`, then `apply_transcript_results` — the same function Phase 4.6 of the past-meetings orchestrator calls): HIGH-confidence completion language on a row an attendee owns → a CLOSE when the switch is on, a review proposal when it is off (`n_close_withheld` counts it either way); a corroborating match inside the chip band → ONE review proposal per (item, meeting); schedule-shift language → `commitment_updated`, never a resolution; below the bar → nothing. A parent with open sub-items is never closed (SUB1 D3); a `pending_review` target closes only through the transcript door and only when the switch is on. **A close lands only when the transcript is tight (cr1#882, the owner's ruling on cr1#751):** the CEO's own report names the other person, and `attendee_records` shows exactly the CEO and that person, the same test Step 5e-ter applies. Everything else becomes a proposal (`n_close_not_tight` counts it) that waits for the CEO and is withdrawn, never closed, at the timeout; without `attendee_records` nothing is tight.
 - **Conservative by construction.** The user-trust cost of falsely closing a commitment is much higher than the cost of leaving one open for a day; that is why the refusals exist and why the switch ships off.
 - **Silent.** Per CONTRACT Rule 24, do NOT narrate "auto-resolved N commitments" or "proposed N" in the meeting summary, and never print a count from `counts` in chat. The user sees a close on the next Commitments fire and a proposal under `needs your call`; the brief's CHANGED line narrates closes (with `undo`) and, while the switch is off, one line saying how many promises look kept.
 - **Dedup.** The pass seeds `already_proposed` from disk (one open proposal per commitment) and `close_commitment` is idempotent over the resolved-id set, so a same-turn race and a re-run are both no-ops.
@@ -621,9 +624,12 @@ Run it AFTER 5e-bis and BEFORE Step 5e, for the same reason 5e-bis runs first: a
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -675,6 +681,7 @@ print(json.dumps(apply_own_word_closes(
     transcript_text='<full transcript text for THIS meeting or dictation>',
     source_ref='granola:<meeting_id>',      # the transcript this was read out of
     user_names=['<the CEO\\'s own canonical name>'],   # so a NAMED transcript counts their turns too
+    attendee_records=<this meeting's attendee list, or None when there is none>,
 )))
 "
 ```
@@ -683,7 +690,8 @@ print(json.dumps(apply_own_word_closes(
 - **A statement that matches nothing opens nothing.** "I sent Quinn the deck" with no matching item on the book is a REPORT, not a promise: it closes nothing and it captures nothing. Step 5e's own capture rules decide what gets opened, unchanged.
 - **Two items matching equally well closes neither and asks nothing** (M's ruling 6 — one question per item, and these items have none).
 - **Silent, like 5e-bis** (CONTRACT Rule 24): print no count in the meeting summary. The close narrates itself once in the CHANGED feed ("Closed N items you said you had finished — say `undo` to put them back").
-- **A dictated working session is exactly where this earns its keep.** Step 5e writes no open item from a dictation; this step still closes what the CEO said they finished in it. Those are not in tension: one is about opening, the other about closing.
+- **A transcript reads the meetings connector's dials first (cr1#751, cr1#756).** The helper does it: with the close dial off it closes nothing and proposes nothing (`dial_skip_reason` says why); with `close_mode: propose` every report goes to the confirm list; otherwise a report closes outright only when it is tight: it names the other person, and the attendee list shows exactly the CEO and that person. Everything else goes to the confirm list, including a report followed by any denial, doubt or retraction. When `proposal_line` comes back non-empty, say it verbatim as its own line after `receipt_line`; it offers nothing and asks nothing.
+- **A dictated working session is exactly where this earns its keep.** Step 5e writes no open item from a dictation; this step still lists what the CEO said they finished in it for them to confirm. Those are not in tension: one is about opening, the other about closing.
 
 ---
 
@@ -1112,9 +1120,12 @@ When the drafts could not be prepared here (follow-up-ritual did not run, or sto
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

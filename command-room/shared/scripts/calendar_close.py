@@ -8,11 +8,20 @@ maintenance JOB (`calendar-close`, daily, after `review-expiry`).
 THE PREDICATE (pure — `commitment_policy.calendar_matches`): an open,
 CONFIRMED `kind: scheduling` row closes `done` when a `meeting` event
 exists whose time (`data.start_ts`, else `ts`) lies inside
-(capture ts, capture ts + CALENDAR_WINDOW_DAYS] AND at least one non-user
+(capture ts, capture ts + CALENDAR_WINDOW_DAYS], at least one non-user
 person id on the row (`person_ids` / `counterparty_id(s)`) appears in the
-meeting's `person_ids`. Never `data.status` (set on 3 of 428 meetings on
-the operator's book). Evidence names the meeting by date, party count and
-seq — no names in evidence. Pending rows never close here.
+meeting's `person_ids`, and the meeting is about the item (cr1#765). Never
+`data.status` (set on 3 of 428 meetings on the operator's book). Evidence
+names the meeting by date, party count and seq — no names in evidence.
+Pending rows never close here.
+
+A TASK-CAPTURED ROW THE USER OWES (cr1#765, owner ruling 2026-11-07): its
+creator is who asked, not who the meeting is with, so attendance says
+nothing. A meeting surely about it takes the path above; a meeting that may
+be about it is asked about once on the Review tab
+(`commitment_review_proposed`, its pointer in `evidence_ref`, never
+`source_ref`, which arms the chip timeout). Book tier only: an observed
+guess has no row a proposal could name.
 
 THE OBSERVED TIER IS READ TOO (REVIEW_ATTRIB1B F-10): ATTRIB1-B's aside
 rule diverts an UNDATED scheduling row to the observed tier, so a closer
@@ -184,7 +193,7 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     if read and read.get("skip_reason"):
         # cr1#667 review: a calendar whose close dial is off contributes no
         # candidates, to this job and to `exit_doors.plan_fact_closes`.
-        return {"book": [], "observed": [], "n_scheduling_open": 0,
+        return {"book": [], "observed": [], "propose": [], "n_scheduling_open": 0,
                 "n_scheduling_observed": 0, "skip_reason": str(read["skip_reason"])}
     meetings = [e for e in events if isinstance(e, dict) and e.get("type") == "meeting"
                 and _on_allowed_calendar(read, e)]
@@ -203,8 +212,16 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     # the new door is offered three times before it closes exactly like one
     # that arrived through the old one.
     sched_book = [r for r in opens if _is_calendar_row(r)]
+    # cr1#765 - the parties' names on file, so the subject read can set
+    # them aside ("a call with Quinn" is about meeting Quinn, not about a
+    # word "quinn" the meeting title must carry).
+    try:
+        from calendar_subject import people_names as _people_names
+        names = _people_names(workspace_root)
+    except Exception:  # noqa: BLE001
+        names = {}
     book = policy.calendar_matches(sched_book, meetings, user_id=uid, now_iso=now_iso,
-                                   window_days=CALENDAR_WINDOW_DAYS)
+                                   window_days=CALENDAR_WINDOW_DAYS, people_names=names)
     for b in book:
         b["tier"] = "book"
     observed_rows: list = []
@@ -216,7 +233,7 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     except Exception:
         observed_rows = []
     observed = policy.calendar_matches(observed_rows, meetings, user_id=uid, now_iso=now_iso,
-                                       window_days=CALENDAR_WINDOW_DAYS)
+                                       window_days=CALENDAR_WINDOW_DAYS, people_names=names)
     for o in observed:
         o["tier"] = "observed"
     # AN UNDONE CALENDAR CLOSE IS A STANDING ANSWER (the `undone_promotions`
@@ -226,9 +243,61 @@ def plan(workspace_root, *, now_iso=None) -> dict:
     undone = _undone_pairs(events)
     book = [c for c in book if (c["commitment_id"], c["meeting_seq"]) not in undone]
     observed = [c for c in observed if (c["commitment_id"], c["meeting_seq"]) not in undone]
-    return {"book": book, "observed": observed,
+    # cr1#765 - a task-captured row a meeting may be about: asked about, once.
+    propose = _spent_proposals(events, [
+        c for c in policy.calendar_proposals(sched_book, meetings, user_id=uid, now_iso=now_iso,
+                                             window_days=CALENDAR_WINDOW_DAYS, people_names=names)
+        if (c["commitment_id"], c["meeting_seq"]) not in undone])
+    return {"book": book, "observed": observed, "propose": propose,
             "n_scheduling_open": len(sched_book),
             "n_scheduling_observed": len(observed_rows)}
+
+
+def _meeting_key(c: dict) -> str:
+    """The pointer a proposal on this meeting rests on."""
+    return str(c.get("meeting_ref") or f"meeting:{c.get('meeting_seq')}")
+
+
+def _spent_proposals(events, candidates: list) -> list:
+    """`candidates` less the pairs already proposed or already answered: one
+    meeting asks about one item once."""
+    from evidence_answered import answered_evidence, evidence_key
+    asked = set(answered_evidence(events=events))
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment_review_proposed" and d.get("evidence_ref"):
+            asked.add((str(d.get("commitment_id") or ""), evidence_key(d["evidence_ref"])))
+    return [c for c in candidates
+            if (str(c["commitment_id"]), evidence_key(_meeting_key(c))) not in asked]
+
+
+def _propose_row(workspace_root, c: dict) -> None:
+    """Ask the owner about a task-captured row on the Review tab."""
+    import commitment_policy as policy
+    from cru_match import build_pending_review_event
+    from event_gate import append_event
+    day = str(c.get("meeting_ts") or "")[:10]
+    ev = build_pending_review_event(
+        commitment_id=c["commitment_id"], primary_thread_id=c.get("primary_thread_id") or "",
+        source_skill=SOURCE_SKILL, proposed_resolution="auto_resolve",
+        score=policy.MATCH_SCORE_PENDING_REVIEW,
+        evidence=f"a meeting on {day} may have been about this", next_seq=None,
+        title=c.get("title") or "", evidence_ts=c.get("meeting_ts") or None)
+    ev["data"].update({"ttl_days": policy.PROPOSAL_TTL_DAYS, "evidence_ref": _meeting_key(c)})
+    append_event(_events_path(workspace_root), [ev], holder=SOURCE_SKILL)
+
+
+def _propose_tasks(workspace_root, p: dict, out: dict) -> int:
+    """cr1#765 - ask about each task-captured row a meeting may be about, and
+    count it on `out`. Returns how many were asked."""
+    n = 0
+    for c in p.get("propose") or []:
+        _propose_row(workspace_root, c)
+        out["proposed"].append({"commitment_id": c["commitment_id"],
+                                "meeting_seq": c.get("meeting_seq")})
+        n += 1
+    out["n_proposed"] = int(out.get("n_proposed") or 0) + n
+    return n
 
 
 def _undone_pairs(events) -> set:
@@ -401,6 +470,24 @@ def offer_line(n_book: int, n_observed: int, n_prior: int = 0, *, min_remaining=
             f"say `my plate` to see {'it' if n == 1 else 'them'}.")
 
 
+def proposal_line(n: int) -> str:
+    """The line for the items this fire asked about."""
+    if not n:
+        return ""
+    return (f"{n} task{'' if n == 1 else 's'} may be done: a meeting looks related, but I "
+            f"am not sure, so {'it is' if n == 1 else 'they are'} on your Review tab.")
+
+
+def propose_line(n: int) -> str:
+    """cr1#756 - the line for a calendar set to ask before closing. It
+    offers nothing: the items wait on the owner's confirm list."""
+    if n <= 0:
+        return ""
+    return (f"{n} scheduling item{'' if n == 1 else 's'} look{'s' if n == 1 else ''} "
+            f"booked and {'is' if n == 1 else 'are'} on your confirm list, since this "
+            "calendar is set to ask before closing.")
+
+
 def receipt_line(out: dict) -> str:
     n = int(out.get("n_closed") or 0)
     if not n:
@@ -494,7 +581,8 @@ def _log_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
     # probation counter that these receipts ARE.
     _noop = (not int(out.get("n_closed") or 0)
              and not int(out.get("n_planned") or 0)
-             and not (out.get("offered") or []))
+             and not (out.get("offered") or [])
+             and not int(out.get("n_proposed") or 0))
     if _noop and _recent_noop_receipt(workspace_root, out, fired_via):
         out["deduped"] = True
         return
@@ -525,10 +613,19 @@ def _log_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
                 # OFFERED (not closed). `offers_so_far` reads these back.
                 "offered": out.get("offered") or [],
                 "n_offered": len(out.get("offered") or []),
+                # cr1#765 - what this fire asked about instead of closing:
+                # the dial's book rows (cr1#756) and the task-captured items.
+                "proposed": out.get("proposed") or [],
                 # CUT-A — the switch's state on this fire and the pairs it
                 # held back from a close (offered again instead).
                 "closes_enabled": out.get("closes_enabled"),
                 "n_close_withheld": int(out.get("n_close_withheld") or 0),
+                # cr1#756 - the dial this fire ran under and what it sent
+                # to the confirm list instead of closing.
+                "close_mode": out.get("close_mode"),
+                "n_proposed": int(out.get("n_proposed") or 0),
+                **({"n_observed_held": int(out["n_observed_held"])}
+                   if out.get("n_observed_held") else {}),
             })
     except Exception:
         pass
@@ -559,6 +656,7 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
                "n_planned": 0, "n_planned_book": 0, "n_planned_observed": 0,
                "n_closed": 0, "n_closed_from_observed": 0, "n_refused": 0,
                "batch_id": None, "closed": [], "refused": [], "offered": [],
+               "proposed": [], "n_proposed": 0,
                "receipt_line": "", "n_scheduling_open": 0, "n_scheduling_observed": 0,
                "yield": {"book": "0/0", "observed": "0/0"}}
         if apply:
@@ -573,12 +671,50 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
            "n_planned": n_book + n_obs, "n_planned_book": n_book,
            "n_planned_observed": n_obs, "n_closed": 0,
            "n_closed_from_observed": 0, "n_refused": 0, "batch_id": None,
-           "closed": [], "refused": [], "offered": [], "receipt_line": "",
+           "closed": [], "refused": [], "offered": [], "proposed": [], "n_proposed": 0,
+           "receipt_line": "",
            "n_scheduling_open": p["n_scheduling_open"],
            "n_scheduling_observed": p["n_scheduling_observed"],
            "yield": {"book": f"{n_book}/{p['n_scheduling_open']}",
                      "observed": f"{n_obs}/{p['n_scheduling_observed']}"}}
+    # cr1#756 - the calendar connector's close mode. Under `propose` every
+    # matched book row goes to the confirm list, once, and nothing is offered
+    # on probation or closed: the owner confirms. An observed row is not on
+    # the book, so the proposal gate refuses its id and promoting it would add
+    # a row to the owner's plate only to ask about closing it: it is held,
+    # counted, and still closes through the ordinary path if the dial changes.
+    close_mode = str(((read or {}).get("dials") or {}).get("close_mode") or "").strip().lower()
+    out["close_mode"] = close_mode or None
+    out["n_proposed"] = 0
+    out["proposed"] = []
     if not apply:
+        return out
+    if close_mode == "propose":
+        try:
+            from close_mode_dial import propose_closes
+            res = propose_closes(
+                workspace_root,
+                [{"commitment_id": c["commitment_id"], "title": c.get("title") or "",
+                  "primary_thread_id": c.get("primary_thread_id") or "",
+                  "score": 1.0, "evidence": _evidence(c),
+                  "evidence_ts": c.get("meeting_ts"),
+                  "source_ref": c.get("meeting_ref") or f"meeting:{c.get('meeting_seq')}"}
+                 for c in p["book"]],
+                source_skill=SOURCE_SKILL,
+                reason="this calendar is set to ask before closing",
+                extra={"calendar_close": True, "exit_route": EXIT_ROUTE})
+            out["n_proposed"] = int(res.get("n_proposed") or 0)
+            out["proposed"] = list(res.get("proposed") or [])
+            out["refused"].extend(res.get("refused") or [])
+        except Exception as exc:  # noqa: BLE001 - a refused proposal never takes the job down
+            out["refused"].append({"leg": "propose", "error": type(exc).__name__})
+        out["n_refused"] = len(out["refused"])
+        out["n_observed_held"] = n_obs
+        out["mode"] = MODE_PROPOSED
+        n_tasks = _propose_tasks(workspace_root, p, out)
+        out["receipt_line"] = " ".join(x for x in (
+            propose_line(out["n_proposed"] - n_tasks), proposal_line(n_tasks)) if x)
+        _log_receipt(workspace_root, out, fired_via=fired_via)
         return out
     # F-5 — split every pair by ITS OWN offer count
     ready, to_offer = [], []
@@ -624,6 +760,7 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
             else:
                 out["n_refused"] += 1
                 out["refused"].append(r)
+    _propose_tasks(workspace_root, p, out)
     out["applied"] = out["n_closed"] > 0
     out["mode"] = MODE_APPLIED if out["n_closed"] else MODE_PROPOSED
     lines = []
@@ -635,6 +772,7 @@ def run_calendar_close_job(workspace_root, *, apply: bool = False, now_iso=None,
                                 sum(1 for t, _c, _n in to_offer if t == "observed"),
                                 min_remaining=max(0, nearest),
                                 closes_enabled=closes_on))
+    lines.append(proposal_line(out["n_proposed"]))
     out["receipt_line"] = " ".join(x for x in lines if x)
     _log_receipt(workspace_root, out, fired_via=fired_via)
     return out

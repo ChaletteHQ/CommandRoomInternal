@@ -19,7 +19,7 @@ Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
 - `_hq/contracts/ContractReview_[Counterparty]_[YYYY-MM-DD].docx` — the structured review with key terms, flag list, suggested redlines, questions to ask. Per CONTRACT Rule 27 (no .md deliverables) the output is `.docx`.
 
 **Appends to:**
-- `_hq/data/events.jsonl` — event type `contract_reviewed` with `{counterparty_org_id, contract_title, term_summary_hash, deviation_count_by_color: {green, yellow, red}, artifact_path, source_file_path}`. The `term_summary_hash` allows detecting identical contracts across submissions — computed by the exact recipe in "The `term_summary_hash` recipe" below (deterministic: two runs over the same contract MUST produce the same hash, or the Phase 2 dedup never matches). The `deviation_count_by_color` field is canonical-shape substrate that future consumers (insight-generator pattern detection, cleanup, board-pack-assembler) can aggregate over a period — no consumer reads it yet as of v3.12.0, but the event is shaped correctly for when one is built.
+- `_hq/data/events.jsonl` — event type `contract_reviewed` with `{counterparty_org_id, contract_title, term_summary_hash, deviation_count_by_color: {green, yellow, red}, artifact_path, source_file_path}`. The `term_summary_hash` allows detecting identical contracts across submissions — computed by the exact recipe in "The `term_summary_hash` recipe" below (deterministic: two runs over the same contract MUST produce the same hash, or the Phase 2 dedup never matches). The `deviation_count_by_color` field is canonical-shape substrate that future consumers (insight-generator pattern detection, cleanup) can aggregate over a period — no consumer reads it yet as of v3.12.0, but the event is shaped correctly for when one is built.
 
   **Append through the locked writer (SPEC GATE1 / A1):** write this event via `atomic_append_jsonl(events_path, [event], holder="contract-review")`, NOT a hand-rolled `next_seq`+`open('a')` or a raw `>>`. The helper reserves the seq and writes inside the cross-process writer lock so a concurrent append can't lose the event or duplicate a seq. Omit `seq`/`ts` — auto-stamped. See `shared/WORKSPACE_API.md` → Append Protocol §3.
 
@@ -343,9 +343,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

@@ -196,7 +196,13 @@ PROCESSED_RECEIPT_TYPE = "meeting_processed"
 # is the customer's own correction, never a re-run of the capture.
 LINEAGE_FIELDS = ("promoted_from", "promoted_from_observed",
                   "supersedes", "corrects", "correction_of", "rebound_from",
-                  "split_from")
+                  "split_from",
+                  # cr1#724: a row merged back from a sync conflict copy names
+                  # the copy and its old number. Its meeting may already carry a
+                  # `meeting_processed` receipt (the copy's own history was
+                  # indexed), so without this capture-once refused exactly the
+                  # promises the merge exists to bring back.
+                  "recovered_from")
 
 
 def declares_lineage(event: dict) -> bool:

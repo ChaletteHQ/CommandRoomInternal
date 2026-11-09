@@ -306,6 +306,406 @@ def owner_turn_texts(transcript_text, *, user_names=()) -> list:
     return out
 
 
+#: Words that mean somebody doubts, denies or takes back the report, read as
+#: whole words. A wide net on purpose: a false hit costs one proposal, a miss
+#: leaves a close standing on something somebody just said was not done.
+DENIAL_PHRASES = (
+    "no", "nope", "nah", "not", "never", "nobody", "no one", "none", "nothing",
+    "but", "however", "cannot", "can't", "cant", "couldn't", "couldnt", "didn't",
+    "didnt", "doesn't", "doesnt", "don't", "dont", "hasn't", "hasnt", "haven't",
+    "havent", "isn't", "isnt", "wasn't", "wasnt", "weren't", "werent", "won't",
+    "wont", "wouldn't", "wouldnt", "doubt", "unsure", "maybe", "mistake",
+    "mistaken", "oops", "sorry", "forgot", "actually", "wait", "hold on",
+    "hang on", "scratch that", "take that back", "never mind", "nevermind",
+    "missing", "wrong", "lost", "bounced", "resend", "re-send", "again", "still",
+    "please", "waiting", "once", "failed", "broken", "did you", "can you",
+    "could you",
+)
+#: Courtesies that carry a denial word and deny nothing.
+_BENIGN_NEGATIONS = ("no problem", "no problems", "no worries", "no rush",
+                     "not a problem", "no doubt")
+
+#: What opens a sentence that asks for the thing: "Send me the checklist."
+#: says it did not arrive, in words the denial net has no reason to hold.
+_REQUEST_OPENERS = frozenset((
+    "send", "resend", "forward", "share", "email", "give", "get", "pass",
+    "attach", "drop",
+))
+
+#: What a tight close stamps as its `corroboration`: the ruling's one case.
+TIGHT_CLOSE = "named_in_two_person_meeting"
+
+#: The close kind stamped on a transcript own-word close (cr1#751): the
+#: Review tab counts the ones the owner reverses per kind.
+TRANSCRIPT_CLOSE_KIND = "transcript_own_word"
+CHAT_CLOSE_KIND = "chat_own_word"
+
+
+def owner_turn_contexts(transcript_text, *, user_names=()) -> list:
+    """The owner's own turns WITH what sits around them (cr1#751):
+    `[{"text", "index", "turns"}]`, where `turns` is the whole transcript
+    (`[{"label", "text", "is_owner"}]`). Same owner test as
+    `owner_turn_texts`."""
+    from meeting_capture import _is_user_name, transcript_turns
+    text = str(transcript_text or "")
+    turns = transcript_turns(text)
+    if not turns:
+        return []
+    rows = []
+    for idx, (label, marker_start, body_start) in enumerate(turns):
+        end = turns[idx + 1][1] if idx + 1 < len(turns) else len(text)
+        low = str(label or "").strip().lower()
+        mine = (low == "me") or (bool(user_names) and _is_user_name(label, user_names))
+        rows.append({"label": label, "text": text[body_start:end].strip(),
+                     "is_owner": mine})
+    # The owner's texts come from `owner_turn_texts`, THE turn fence, so a
+    # probe that removes that fence removes it here too; each text is then
+    # placed back among the turns for its context.
+    by_text = {}
+    for idx, row in enumerate(rows):
+        by_text.setdefault(row["text"], idx)
+    out = []
+    for text_ in owner_turn_texts(transcript_text, user_names=user_names):
+        out.append({"text": text_, "index": by_text.get(text_), "turns": rows})
+    return out
+
+
+def _turn_low(text) -> str:
+    return " ".join(str(text or "").replace("\u2019", "'").lower().split())
+
+
+def _is_denial(text) -> bool:
+    """Does this turn say no, not yet, or not received? Whole words only, so
+    `now` is not `no` and `notes` is not `not`."""
+    low = _turn_low(text)
+    for phrase in _BENIGN_NEGATIONS:
+        low = low.replace(phrase, " ")
+    return _title_has_word(low, DENIAL_PHRASES)
+
+
+#: The words that open a question when a transcript dropped the "?".
+_QUESTION_OPENERS = frozenset((
+    "who", "what", "when", "where", "why", "how", "which", "did", "do", "does",
+    "is", "are", "was", "were", "has", "have", "can", "could", "will", "would",
+))
+
+
+def _asks(text) -> bool:
+    from cru_match import is_question_shaped
+    low = _turn_low(text)
+    return is_question_shaped(low) or (low.split() or [""])[0] in _QUESTION_OPENERS
+
+
+def _unsettles(text) -> bool:
+    """Does this text deny, doubt, retract, ask, or ask for the thing? Each
+    sentence is read on its own, so a question or a request after a first
+    sentence still counts."""
+    for sentence in _sentences(text):
+        low = _turn_low(sentence)
+        if (_is_denial(low) or _has_not_yet_marker(low) or _asks(low)
+                or (low.split() or [""])[0].strip(",:") in _REQUEST_OPENERS):
+            return True
+    return False
+
+
+#: The only things the other person may say after a report and leave it
+#: standing, each sentence whole. Anything else is unsettled: a positive list,
+#: so a reply nobody thought of proposes instead of closing.
+_PLAINLY_NEUTRAL = frozenset((
+    "perfect", "great", "good", "fine", "ok", "okay", "thanks", "thank you",
+    "perfect thanks", "perfect thank you", "great thanks", "great thank you",
+    "ok thanks", "okay thanks", "okay thank you", "got it", "got it thanks",
+    "sounds good", "no problem", "bye", "goodbye",
+))
+
+
+def _plainly_neutral(text) -> bool:
+    return all(re.sub(r"[,.]", "", _turn_low(sentence)).strip() in _PLAINLY_NEUTRAL
+               for sentence in _sentences(text))
+
+
+def _is_other_person_label(label, person: dict) -> bool:
+    """`Them`, the person's whole name, or their first name alone."""
+    from meeting_capture import _norm_person_name
+    key = _norm_person_name(label)
+    return (key == "them" or key == person["key"].split()[0]
+            or _is_person(person, name=label))
+
+
+def _report_unsettled(ctx: dict, quote, person: dict) -> bool:
+    """Is anything after the report short of leaving it standing? The owner's
+    own words, in the rest of the turn and every later turn, must not deny,
+    doubt or retract. The other person must say nothing that is not plainly
+    neutral. Any other label after the report, a heading included, unsettles
+    it. With no place to read from, it is unsettled."""
+    report = ctx.get("index")
+    turns = ctx.get("turns") or []
+    if report is None or report >= len(turns):
+        return True
+    said = _sentences(turns[report].get("text"))
+    own = _WS_RE.sub(" ", str(quote or "")).strip()
+    if own not in said or any(_unsettles(t) for t in said[said.index(own) + 1:]):
+        return True
+    for turn in turns[report + 1:]:
+        if turn.get("is_owner"):
+            if _unsettles(turn.get("text")):
+                return True
+        elif not (_is_other_person_label(turn.get("label"), person)
+                  and _plainly_neutral(turn.get("text"))):
+            return True
+    return False
+
+
+#: A row's own act, as the title opens with it, and the one past tense that
+#: reports it. A title that opens any other way has no act to report.
+_ROW_ACTS = {
+    "send": "sent", "email": "emailed", "mail": "mailed", "deliver": "delivered",
+    "share": "shared", "forward": "forwarded", "pay": "paid", "sign": "signed",
+    "submit": "submitted", "file": "filed", "post": "posted", "upload": "uploaded",
+    "return": "returned", "ship": "shipped", "publish": "published",
+    "text": "texted", "call": "called",
+}
+_ITEM_FILLER = ("the", "a", "an", "my", "our", "to", "about")
+#: Where a title stops naming the item and starts naming a date.
+_ITEM_ENDS = ("by", "before", "after", "on", "tomorrow", "next", "asap")
+#: The only words that may follow the item in a clean report.
+_REPORT_WHEN = ("yesterday", "today", "earlier", "this morning", "this afternoon",
+                "last night")
+
+
+def _row_act_and_item(title, person: dict) -> tuple:
+    """`(past tense of the row's act, the words naming its item, whether the
+    title says "about")` from a title such as "Send Alex Sample the pricing
+    deck". The person's name comes out once, as a phrase, so a word of their
+    name can still be a word of the item."""
+    low = _WS_RE.sub(" ", str(title or "")).strip().lower()
+    for name in (person["key"], person["key"].split()[0]):
+        hit = re.search(r"(?<![\w'])" + re.escape(name) + r"(?![\w'])", low)
+        if hit:
+            low = low[:hit.start()] + low[hit.end():]
+            break
+    words = low.split()
+    if not words or words[0] not in _ROW_ACTS:
+        return None, [], False
+    item = []
+    for word in words[1:]:
+        if word in _ITEM_ENDS:
+            break
+        item.append(word)
+    return (_ROW_ACTS[words[0]], [w for w in item if w not in _ITEM_FILLER],
+            "about" in item)
+
+
+def _names_the_item(text, item) -> bool:
+    """The object is the row's item: its last word, and no word the row does
+    not have, behind at most one article."""
+    words = str(text or "").lower().split()
+    if words and words[0] in _ITEM_FILLER:
+        words = words[1:]
+    return bool(words) and words[-1] == item[-1] and all(w in item for w in words)
+
+
+def is_clean_report(statement, title, person: dict) -> bool:
+    """cr1#751: ONE clean sentence, tested for what it is, not for what might
+    be wrong with it. First person, simple past, the verb the row's own act,
+    the object the row's item, the other person as a name in recipient
+    position: "I sent Alex the deck", "I sent the deck to Alex Sample",
+    "I called Alex about the renewal" on a row that says "about". Anything else
+    is not clean: a month or a word that spells their name, a hedge, another
+    person's item, a name with more behind it, a different act."""
+    past, item, about = _row_act_and_item(title, person)
+    if not past or not item:
+        return False
+    text = _WS_RE.sub(" ", str(statement or "")).replace("\u2019", "'").strip()
+    head = re.match(r"I (?:just |already |finally )?" + past + " ", text[:-1] if text.endswith(".") else text)
+    if not head:
+        return False
+    rest = (text[:-1] if text.endswith(".") else text)[head.end():]
+    for when in _REPORT_WHEN:
+        if rest.endswith(" " + when):
+            rest = rest[:-len(when) - 1]
+            break
+    whole = _WS_RE.sub(" ", person["name"]).strip()
+    for name in (whole, whole.split()[0]):
+        if rest.startswith(name + " "):
+            after = rest[len(name) + 1:]
+            if about:
+                return after.startswith("about ") and _names_the_item(after[6:], item)
+            return _names_the_item(after, item)
+        if rest.endswith(" to " + name):
+            return not about and _names_the_item(rest[:-len(name) - 4], item)
+    return False
+
+
+def _people_on_file(workspace_root) -> dict:
+    """`{person id: record}` from the entities file. Unreadable reads empty,
+    so nothing is confirmed and the report proposes."""
+    try:
+        from entities_io import entities_collection, unwrap_entities
+        from narration_names import _load_doc
+        people = entities_collection(unwrap_entities(_load_doc(workspace_root)), "people")
+        return {str(p["id"]): p for p in people if isinstance(p, dict) and p.get("id")}
+    except Exception:  # noqa: BLE001 - no roster means nobody confirmed
+        return {}
+
+
+def _identity(person: dict) -> dict:
+    from meeting_capture import _norm_person_name, _person_emails
+    name = str(person.get("canonical_name") or person.get("name") or "").strip()
+    return {"name": name, "key": _norm_person_name(name),
+            "emails": {str(e).strip().lower() for e in _person_emails(person) if e}}
+
+
+def _other_person(ev, workspace_root=None) -> Optional[dict]:
+    """The ONE other person on this row (`{"name", "key", "emails"}`), or None
+    when it has nobody, or more than one, on the other end: a report can name
+    "the other person" only when there is exactly one."""
+    from commitment_parties import counterparty_ids, counterparty_names
+    d = (ev.get("data") if isinstance(ev, dict) else None) or {}
+    ids = counterparty_ids(d)
+    names = counterparty_names(d, workspace_root=workspace_root)
+    if d.get("owner_external") or len(ids) + len(names) != 1:
+        return None
+    record = (_people_on_file(workspace_root).get(str(ids[0])) if ids
+              else {"name": names[0]})
+    person = _identity(record) if record else None
+    return person if person and person["key"] else None
+
+
+def _is_person(person: dict, *, name="", email="") -> bool:
+    """One attendee record or speaker label against one person: the email, or
+    the whole name. A first name alone is not the person: two people share it."""
+    from meeting_capture import _norm_person_name
+    if email and str(email).strip().lower() in person["emails"]:
+        return True
+    key = _norm_person_name(name)
+    return " " in key and key == person["key"]
+
+
+def two_person_meeting(workspace_root, attendee_records, person, *, user_names=(),
+                       transcript_text="") -> bool:
+    """The meeting was the owner and `person`, and nobody else: the attendee
+    record shows exactly those two, and no third voice recurs in the transcript.
+    No record is not two people, it is not knowing. A label heard once is not
+    a voice (`transcript_class`'s rule: a one-off heading is not a speaker)."""
+    from attendee_evidence import normalize_attendee_records
+    from meeting_capture import _is_user_name, _norm_person_name, transcript_class
+    from primary_user import resolve_primary_user
+    records = normalize_attendee_records(attendee_records)
+    if not records:
+        return False
+    roster = _people_on_file(workspace_root)
+    owner = roster.get(str(resolve_primary_user(workspace_root) or ""))
+    owner_id = _identity(owner) if owner else {"key": "", "emails": set()}
+    owner_keys = {_norm_person_name(u) for u in user_names or ()} | {owner_id["key"]}
+    owner_keys.discard("")
+    first_name = person["key"].split()[0]
+    if first_name in {key.split()[0] for key in owner_keys}:
+        return False      # "Alex" could be either of them
+    seen = set()
+    for rec in records:
+        name = str((rec or {}).get("name") or "")
+        email = str((rec or {}).get("email") or "").strip().lower()
+        if _is_person(person, name=name, email=email):
+            seen.add("person")
+        elif (email in owner_id["emails"] if email and owner_id["emails"]
+              else _norm_person_name(name) in owner_keys):
+            seen.add("owner")     # the owner's name at another address is somebody else
+        else:
+            return False
+    if seen != {"owner", "person"}:
+        return False
+    return not _third_voice(transcript_text, person, owner_keys, roster, user_names)
+
+
+def _third_voice(transcript_text, person: dict, owner_keys, roster: dict, user_names) -> bool:
+    """Does the transcript hear anybody beyond the owner and the person? A
+    recurring label; a numbered one, which identifies nobody; two `System
+    audio` handles, which the turn reader folds into one `Them`; or a whole
+    name on file, even once."""
+    from meeting_capture import (_AUDIO_SYSTEM_RE, _SPEAKER_LABEL_RE, _is_user_name,
+                                 _norm_person_name, transcript_class, transcript_turns)
+    text = str(transcript_text or "")
+    heard = transcript_class(text, user_names=user_names)
+    if heard.get("generic_labels"):
+        return True
+    if any(not _is_user_name(label, user_names) and not _is_other_person_label(label, person)
+           for label in heard.get("named_speakers") or []):
+        return True
+    handles = {(m.group(1) or "").strip().lower()
+               for m in map(_AUDIO_SYSTEM_RE.match,
+                            (x.group(1) for x in _SPEAKER_LABEL_RE.finditer(text))) if m}
+    if len(handles) > 1:
+        return True
+    on_file = {_identity(p)["key"] for p in roster.values()} - owner_keys - {person["key"]}
+    return any(_norm_person_name(label) in on_file for label, _s, _b in transcript_turns(text))
+
+
+def tight_close_basis(statement_ctx: dict, event, *, statement: str, workspace_root=None,
+                      attendee_records=None, user_names=(), transcript_text="") -> str:
+    """cr1#751, owner ruling of 2026-11-07 (narrows E1 of 2026-11-04): a
+    transcript closes a commitment outright only when it is TIGHT: the report
+    names the other person, in a two-person meeting. Returns `TIGHT_CLOSE`, or
+    '' and the report proposes. A positive test throughout: a clean sentence
+    (`is_clean_report`), the two people (`two_person_meeting`) and nothing
+    after it but the neutral (`_report_unsettled`). An acknowledgement or a
+    mention elsewhere closes nothing, and neither does a dictation."""
+    try:
+        person = _other_person(event, workspace_root)
+        if (person and is_clean_report(statement, _row_title(event), person)
+                and two_person_meeting(workspace_root, attendee_records, person,
+                                       user_names=user_names,
+                                       transcript_text=transcript_text)
+                and not _report_unsettled(statement_ctx or {}, statement, person)):
+            return TIGHT_CLOSE
+    except Exception:  # noqa: BLE001 - no reading means no close, so it proposes
+        pass
+    return ""
+
+
+def transcript_close_tight(workspace_root, event, *, quote, transcript_text,
+                           attendee_records=None, user_names=()) -> str:
+    """cr1#882: the same tight gate (`tight_close_basis`) for a close the
+    transcript pass graded on the WHOLE transcript (`cru_match`'s matcher,
+    behind `commitment_policy_pass.apply_transcript_results`), not on one
+    sentence of the owner's. Returns `TIGHT_CLOSE` when a sentence the owner
+    said, inside the matcher's own quote, is a tight report of `event`'s row:
+    the report names the other person, in a two-person meeting. '' otherwise,
+    and the close proposes.
+
+    The owner's sentences are found the way the own-word pass finds them
+    (`owner_turn_contexts`, `own_word_statements`), and each is held to
+    `tight_close_basis` exactly as that pass holds it, so the two transcript
+    closers read one rule. The sentence has to sit inside the quote the
+    close would be written on, so the evidence on the row is the tight
+    report itself. No transcript, no quote or no attendee record: ''.
+    Never raises."""
+    try:
+        want = _WS_RE.sub(" ", str(quote or "")).strip()
+        if not want or not str(transcript_text or "").strip():
+            return ""
+        # The owner reports their OWN work: a row somebody else owes is
+        # never closed on the owner's sentence, as in the own-word pass.
+        from primary_user import resolve_primary_user
+        uid = str(resolve_primary_user(workspace_root) or "")
+        d = (event.get("data") if isinstance(event, dict) else None) or {}
+        if not uid or str(d.get("owner_id") or "") != uid:
+            return ""
+        for ctx in owner_turn_contexts(transcript_text, user_names=user_names):
+            for st in own_word_statements(ctx["text"]):
+                if st["quote"] not in want:
+                    continue
+                basis = tight_close_basis(
+                    ctx, event, statement=st["quote"], workspace_root=workspace_root,
+                    attendee_records=attendee_records, user_names=user_names,
+                    transcript_text=transcript_text)
+                if basis:
+                    return basis
+    except Exception:  # noqa: BLE001 - no reading means no close, so it proposes
+        pass
+    return ""
+
+
 def _row_counterparty_tokens(ev, *, workspace_root=None, name_idx=None) -> set:
     """The name tokens of whoever is on the other end of a row — the "and the
     counterparty name if any" half of the match rule.
@@ -432,7 +832,8 @@ def match_statement_to_rows(statement: dict, rows, *, owner_id: str,
     win = pool[0]
     return {"status": "matched", "commitment_id": win["commitment_id"],
             "score": win["score"], "shared": win["shared"],
-            "title": win["title"], "candidates": []}
+            "title": win["title"], "candidates": [],
+            "event": win.get("event")}
 
 
 def own_word_closes_enabled(workspace_root=None) -> bool:
@@ -444,13 +845,15 @@ def own_word_closes_enabled(workspace_root=None) -> bool:
 
 
 def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
-                         user_names=(), open_rows=None, now_iso=None) -> dict:
+                         user_names=(), open_rows=None, now_iso=None,
+                         attendee_records=None) -> dict:
     """What route 2 WOULD close from one dictation or transcript. No writes.
 
     Returns `{"enabled", "n_statements", "closes": [...], "ambiguous": [...],
     "no_match": [...], "n_owner_turns"}`. Every entry in `closes` carries the
     verbatim sentence, the row it matched and the score — which is exactly
-    what the close then writes as its evidence.
+    what the close then writes as its evidence. `attendee_records` is this
+    meeting's attendee list, when the caller has one (cr1#751).
     """
     from cru_match import load_open_commitments, partition_subitems
     from primary_user import resolve_primary_user
@@ -461,11 +864,13 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
     if not uid:
         out["refused"] = "no primary user on file"
         return out
-    turns = owner_turn_texts(transcript_text, user_names=user_names)
-    out["n_owner_turns"] = len(turns)
+    contexts = owner_turn_contexts(transcript_text, user_names=user_names)
+    out["n_owner_turns"] = len(contexts)
     statements = []
-    for t in turns:
-        statements.extend(own_word_statements(t))
+    for ctx in contexts:
+        for st in own_word_statements(ctx["text"]):
+            st["_ctx"] = ctx
+            statements.append(st)
     out["n_statements"] = len(statements)
     if not statements:
         return out
@@ -495,9 +900,11 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
     rows, _subs = partition_subitems(list(open_rows or []))
     taken = set()
     for st in statements:
+        ctx = st.pop("_ctx", None) or {}
         m = match_statement_to_rows(st, rows, owner_id=uid,
                                     workspace_root=workspace_root)
-        row = {"quote": st["quote"], "verb": st["verb"], **m}
+        row = {"quote": st["quote"], "verb": st["verb"],
+               **{k: v for k, v in m.items() if k != "event"}}
         if m["status"] == "matched":
             if m["commitment_id"] in taken:
                 # Two sentences about one row is one close, not two.
@@ -506,6 +913,15 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
                 continue
             taken.add(m["commitment_id"])
             row["source_ref"] = source_ref
+            row["primary_thread_id"] = str((m.get("event") or {}).get("primary_thread_id") or "")
+            # cr1#751 - is this report tight? The door reads it for a
+            # transcript only: the owner typing in chat has no meeting.
+            row["corroboration"] = tight_close_basis(
+                ctx, m.get("event") or {},
+                statement=row["quote"], workspace_root=workspace_root,
+                attendee_records=attendee_records,
+                user_names=user_names, transcript_text=transcript_text)
+            row["corroborated"] = bool(row["corroboration"])
             out["closes"].append(row)
         elif m["status"] == "ambiguous":
             out["ambiguous"].append(row)
@@ -664,12 +1080,26 @@ def close_from_own_word(workspace_root, statements, *, source_ref=None,
     return apply_own_word_closes(
         workspace_root, transcript_text=text, source_ref=ref,
         user_names=user_names, open_rows=open_rows, now_iso=now_iso,
-        batch_id=batch_id)
+        batch_id=batch_id, channel="chat")
+
+
+def own_word_proposal_line(n: int) -> str:
+    """cr1#751 - the line for the reports that went to the confirm list
+    instead of closing. Plain words, no id; it asks for nothing and offers
+    nothing (the owner's confirm list is where it waits)."""
+    if n <= 0:
+        return ""
+    if n == 1:
+        return ("1 thing you said you had done is on your confirm list, since "
+                "the transcript alone did not settle it.")
+    return (f"{n} things you said you had done are on your confirm list, since "
+            "the transcript alone did not settle them.")
 
 
 def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
                           user_names=(), open_rows=None, now_iso=None,
-                          batch_id=None, plan=None) -> dict:
+                          batch_id=None, plan=None, channel="transcript",
+                          attendee_records=None) -> dict:
     """Route 2, applied. One run = one batch = one `undo`.
 
     Every close goes through `commitment_state.close_commitment` with:
@@ -680,16 +1110,34 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
         stated honestly (no surface embedded the id, no model picked it);
       * `resolved_by = source_skill = OWN_WORD_SOURCE_SKILL` — ATTRIB2: the
         machine is the closer.
+
+    `channel` (cr1#751): `transcript` (the meeting-notes pass; default) or
+    `chat` (`close_from_own_word`, the owner typing). A TRANSCRIPT reads the
+    meetings connector's dials first: close dial off, nothing closes and
+    nothing is proposed (`dial_skip_reason` says why); `close_mode:
+    propose`, every matched report goes to the confirm list; `close` or no
+    meetings connector on file, a report closes outright only when it is tight
+    (owner ruling of 2026-11-07: `tight_close_basis`), and goes to the confirm
+    list otherwise. Every transcript close is stamped `close_kind:
+    transcript_own_word`, so the reversals can be counted per kind. The CHAT
+    channel is the owner's own typing: no dial and no tightness, as before.
     """
     out = dict(plan or plan_own_word_closes(
         workspace_root, transcript_text=transcript_text, source_ref=source_ref,
-        user_names=user_names, open_rows=open_rows, now_iso=now_iso))
+        user_names=user_names, open_rows=open_rows, now_iso=now_iso,
+        attendee_records=attendee_records))
     out.setdefault("closes", [])
     out["applied"] = []
     out["refused_rows"] = []
     out["n_closed"] = 0
     out["batch_id"] = None
     out["receipt_line"] = ""
+    out["proposal_line"] = ""
+    out["n_proposed"] = 0
+    out["proposed"] = []
+    out["channel"] = channel
+    out["dial_skip_reason"] = None
+    out["close_mode"] = None
     # Composed HERE, on every path out of this function — the door that knows
     # nothing matched is the door that says so. A surface that has to work it
     # out from a list of dicts composes a sentence nothing scanned, which is
@@ -700,11 +1148,65 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
         return out
     if not out["closes"]:
         return out
+    # cr1#751 / cr1#756 - the meetings connector's dial, read once, for a
+    # transcript only.
+    to_close = list(out["closes"])
+    to_propose: list = []
+    if channel != "chat":
+        try:
+            from close_mode_dial import MODE_PROPOSE, close_mode_for
+            dial = close_mode_for(workspace_root, "meetings")
+        except Exception:  # noqa: BLE001
+            dial = {"declared": False, "mode": None, "skip_reason": None}
+            MODE_PROPOSE = "propose"
+        out["close_mode"] = dial.get("mode")
+        if dial.get("skip_reason"):
+            out["dial_skip_reason"] = str(dial["skip_reason"])
+            out["withheld"] = len(out["closes"])
+            return out
+        if dial.get("mode") == MODE_PROPOSE:
+            to_propose, to_close = to_close, []
+        else:
+            to_close = [r for r in to_close if r.get("corroborated")]
+            to_propose = [r for r in out["closes"] if not r.get("corroborated")]
+            # The owner said no to this report: the same transcript read
+            # again does not close it.
+            try:
+                from close_mode_dial import asked_evidence
+                refused = asked_evidence(workspace_root, dismissed_only=True)
+            except Exception:  # noqa: BLE001
+                refused = set()
+            to_close = [r for r in to_close
+                        if (str(r["commitment_id"]), str(r.get("source_ref") or "")) not in refused]
+    if to_propose:
+        try:
+            from close_mode_dial import propose_closes
+            res = propose_closes(
+                workspace_root,
+                [{"commitment_id": r["commitment_id"], "title": r.get("title") or "",
+                  "primary_thread_id": r.get("primary_thread_id") or "",
+                  "score": r.get("score"), "evidence": str(r["quote"])[:200],
+                  "evidence_ts": now_iso, "source_ref": r.get("source_ref") or source_ref,
+                  "has_completion_signal": True} for r in to_propose],
+                source_skill=OWN_WORD_SOURCE_SKILL,
+                reason=("this meetings connector is set to ask before closing"
+                        if out.get("close_mode") == "propose"
+                        else "the transcript alone did not settle it"),
+                extra={"exit_route": "own_word", "close_kind": TRANSCRIPT_CLOSE_KIND})
+            out["n_proposed"] = int(res.get("n_proposed") or 0)
+            out["proposed"] = list(res.get("proposed") or [])
+            out["refused_rows"].extend(res.get("refused") or [])
+        except Exception as exc:  # noqa: BLE001 - one bad row never stops a run
+            out["refused_rows"].append({"leg": "propose", "error": type(exc).__name__,
+                                        "detail": str(exc)[:200]})
+        out["proposal_line"] = own_word_proposal_line(out["n_proposed"])
+    if not to_close:
+        return out
     from commitment_state import close_commitment
     batch_id = batch_id or _mint_batch_id(OWN_WORD_BATCH_PREFIX, now_iso)
     out["batch_id"] = batch_id
     from commitment_policy import CLOSE_CHANGE_CLASS, QUOTE_MAX_CHARS
-    for row in out["closes"]:
+    for row in to_close:
         try:
             r = close_commitment(
                 workspace_root, row["commitment_id"],
@@ -719,7 +1221,12 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
                 extra_data={"match_score": float(row.get("score") or 0.0),
                             "brain_batch_id": batch_id,
                             "brain_change_class": CLOSE_CHANGE_CLASS,
-                            "exit_route": "own_word"},
+                            "exit_route": "own_word",
+                            # cr1#751 - the kind of close, and why it was
+                            # tight, for the per-kind count of reversals.
+                            "close_kind": (CHAT_CLOSE_KIND if channel == "chat"
+                                           else TRANSCRIPT_CLOSE_KIND),
+                            "corroboration": row.get("corroboration") or ""},
             )
         except Exception as exc:   # noqa: BLE001 — one bad row never stops a run
             out["refused_rows"].append({"commitment_id": row["commitment_id"],
@@ -772,15 +1279,63 @@ PROOF_KEY = "proof"
 #: still open although the agreement had been signed AND paid ten days
 #: earlier, and the product had both facts on file.
 _DEAL_WORDS = (
-    "pay", "paid", "payment", "invoice", "wire", "deposit", "retainer",
-    "sign", "signed", "countersign", "signature", "agreement", "contract",
-    "msa", "sow", "engagement letter", "proposal accepted",
+    "pay", "pays", "paid", "paying", "payment", "payments",
+    "unpaid", "underpaid", "overpaid", "prepaid", "prepay", "repay", "repays",
+    "repaid", "repayment", "repayments", "prepayments", "nonpayment", "payoff",
+    "payoffs", "pay-off", "pay-offs", "payout", "payouts", "paid-in-full",
+    "payable", "payables",
+    "invoice", "invoices", "invoiced", "invoicing", "reinvoice", "reinvoiced",
+    "wire", "wires", "wired", "wire-transfer", "deposit", "deposits", "deposited",
+    "depositing",
+    "prepayment", "docusign", "docusigned", "docusigning",
+    "retainer", "retainers",
+    "sign", "signs", "signed", "signing", "countersign", "countersigns",
+    "countersigned", "countersigning", "countersignature", "countersignatures",
+    "esign", "esigned", "esignature", "esignatures", "signoff", "signoffs",
+    "sign-off", "sign-offs", "cosign", "cosigns", "cosigned", "cosigning",
+    "signer", "signers", "signatory", "signatories",
+    "signature", "signatures", "agreement", "agreements", "contract", "contracts",
+    "subcontract", "subcontracts", "contracted", "contracting", "contractual",
+    "msa", "msas", "sow", "sows", "engagement letter", "engagement letters",
+    "proposal accepted",
 )
+#: The deal words whose hyphen makes a different thing (`pay-per-click`,
+#: `sign-up`, `wire-frames`, `paid-media`). Every other deal word keeps its
+#: meaning with a hyphen behind it (`payment-plan`, `contract-renewal`,
+#: `signed-copy`, `invoice-ready`).
+_DEAL_WORDS_HYPHEN_ENDS = ("pay", "pays", "paid", "sign", "signs", "wire", "wires")
 #: Deliverable language — the row a SENT MESSAGE with an attachment finishes.
 _DELIVERY_WORDS = (
     "send", "sent", "share", "email", "deliver", "forward", "provide",
     "get over", "get to", "circulate", "pass along", "write up", "draft",
 )
+
+
+def _title_has_word(title: str, words) -> bool:
+    """cr1#750 - whole words only. The test used to be `in`, so `sign`
+    matched inside `design`, `pay` inside `payroll` and `wire` inside
+    `wireframes`, and "review the design mockups" was classed as an
+    agreement item that a won deal could close. Each entry (a word or a
+    phrase) must sit on word boundaries; a hyphen after it continues the word
+    (`wire-frames`, `pay-per-click`, `sign-up`), a hyphen before it does not
+    (`e-sign`, `co-signed`). Inflections are listed, not stemmed: a stem would
+    bring `design`'s problem back."""
+    low = str(title or "").lower()
+    if not low:
+        return False
+    for w in words:
+        if re.search(r"(?<![a-z0-9])" + re.escape(str(w).lower()) + r"(?![a-z0-9-])", low):
+            return True
+    return False
+
+
+def _title_has_deal_word(title: str) -> bool:
+    """A deal word as a whole word, or ahead of a hyphen that does not change
+    what it means (cr1#750)."""
+    low = str(title or "").lower()
+    return _title_has_word(low, _DEAL_WORDS) or any(
+        re.search(r"(?<![a-z0-9])" + re.escape(w) + "-", low)
+        for w in _DEAL_WORDS if w not in _DEAL_WORDS_HYPHEN_ENDS)
 
 
 def _row_has_counterparty(d: dict) -> bool:
@@ -809,7 +1364,7 @@ def proof_for_row(ev) -> str:
         return PROOF_OWN_WORD
     title = str(d.get("title") or "").lower()
     kind = str(d.get("kind") or "").strip().lower()
-    if any(w in title for w in _DEAL_WORDS):
+    if _title_has_deal_word(title):
         return PROOF_DEAL
     if kind == "scheduling":
         return PROOF_CALENDAR
@@ -819,18 +1374,35 @@ def proof_for_row(ev) -> str:
             return PROOF_CALENDAR
     except Exception:  # noqa: BLE001 — a missing detector never blocks a row
         pass
-    if any(w in title for w in _DELIVERY_WORDS):
+    if _title_has_word(title, _DELIVERY_WORDS):
         return PROOF_MAIL
     return PROOF_MAIL
+
+
+def _stale_deal_stamp(ev) -> bool:
+    """Is this `payment_or_agreement` stamp the old classifier's mistake?
+    From 2026-09-07 to cr1#750 the capture door stamped it whenever a deal
+    word sat INSIDE any word of the title. So a title where a deal word
+    appears only inside another word is that mistake; a title with no deal
+    word at all was stamped by somebody on purpose, and stands."""
+    d = (ev.get("data") if isinstance(ev, dict) else None) or {}
+    low = str(d.get("title") or "").lower()
+    return any(w in low for w in _DEAL_WORDS) and not _title_has_deal_word(low)
 
 
 def stored_proof(ev) -> str:
     """THE reader. The stamped value when the row carries a legal one, else
     the derivation. One reader, so a stamped row and a legacy row are never
-    graded by two different ideas of the same question."""
+    graded by two different ideas of the same question.
+
+    The ONE exception (cr1#750): a deal stamp the old classifier wrote by
+    reading `sign` inside `design` is derived again rather than trusted,
+    because that stamp is what lets a won deal close the row."""
     d = (ev.get("data") if isinstance(ev, dict) else None) or {}
     raw = str(d.get(PROOF_KEY) or "").strip()
-    return raw if raw in PROOF_KINDS else proof_for_row(ev)
+    if raw not in PROOF_KINDS or (raw == PROOF_DEAL and _stale_deal_stamp(ev)):
+        return proof_for_row(ev)
+    return raw
 
 
 def proof_census(open_rows) -> dict:
@@ -1945,7 +2517,19 @@ def run_exit_doors_job(workspace_root, *, apply: bool = False, now_iso=None,
     # reads `manual`, which is what a typed brief actually is.
     fired_via = _effective_fired_via(fired_via)
     out = {"ran": True, "applied": bool(apply), "job": JOB_ID,
-           "fact": None, "silence": None, "receipt_lines": [], "wrap_line": ""}
+           "fact": None, "silence": None, "receipt_lines": [], "wrap_line": "",
+           "pre_rule_closeout": None}
+    # cr1#117 (owner ruling 2026-11-06) - the one-time close-out of the
+    # commitments from before the closure-target rule, on every book, with
+    # a receipt and one `undo`; recorded so it runs once. First, so the
+    # routes below read a book whose old rows are already out.
+    try:
+        from pre_rule_closeout import run_once as _closeout
+        out["pre_rule_closeout"] = _closeout(workspace_root, apply=apply,
+                                             now_iso=now_iso)
+    except Exception as exc:  # noqa: BLE001
+        out["pre_rule_closeout"] = {"error": type(exc).__name__,
+                                    "detail": str(exc)[:200]}
     try:
         out["fact"] = (apply_fact_closes(workspace_root, now_iso=now_iso,
                                          run_calendar=False)
@@ -1958,7 +2542,7 @@ def run_exit_doors_job(workspace_root, *, apply: bool = False, now_iso=None,
                                           now_iso=now_iso)
     except Exception as exc:  # noqa: BLE001
         out["silence"] = {"error": type(exc).__name__, "detail": str(exc)[:200]}
-    for leg in (out["fact"], out["silence"]):
+    for leg in (out["pre_rule_closeout"], out["fact"], out["silence"]):
         line = (leg or {}).get("receipt_line") if isinstance(leg, dict) else ""
         if line:
             out["receipt_lines"].append(line)
@@ -1974,12 +2558,28 @@ def _log_job_receipt(workspace_root, out: dict, *, fired_via: str) -> None:
         from receipts import log_receipt
         fact = out.get("fact") if isinstance(out.get("fact"), dict) else {}
         sil = out.get("silence") if isinstance(out.get("silence"), dict) else {}
+        prc = (out.get("pre_rule_closeout")
+               if isinstance(out.get("pre_rule_closeout"), dict) else {})
         log_receipt(
             workspace_root, JOB_ID, receipt_type=RECEIPT_TYPE,
             fired_via=fired_via,
             surfaced=int(fact.get("n_closed") or 0) + int(sil.get("n_parked") or 0)
-            + int(sil.get("n_let_go") or 0),
+            + int(sil.get("n_let_go") or 0) + int(prc.get("n_closed") or 0),
             extra_data={
+                # cr1#117 - the close-out's run is recorded here too, so a
+                # run that found nothing to close still counts as run.
+                "pre_rule_closeout": {
+                    "ran": bool(prc.get("ran")) or bool(prc.get("ran_before")),
+                    "n_closed": int(prc.get("n_closed") or 0),
+                    "n_candidates": int(prc.get("n_candidates") or 0),
+                    "n_review": int(prc.get("n_review") or 0),
+                    "n_open_child": int(prc.get("n_open_child") or 0),
+                    "n_other": int(prc.get("n_other") or 0),
+                    "batch_id": prc.get("batch_id"),
+                    "error": prc.get("error"),
+                } if prc else None,
+                # At the top too: `change_feed._job_batches` reads it there.
+                "batch_id": prc.get("batch_id"),
                 "n_closed_deal": int(fact.get("n_closed_deal") or 0),
                 "n_parked": int(sil.get("n_parked") or 0),
                 "n_let_go": int(sil.get("n_let_go") or 0),

@@ -50,8 +50,9 @@ saw, and says why when a dial turned a kind away. What it saw goes to the
 identity and lifecycle paths (`hand_off_seen`, cr1#738) with the item as the
 source pointer. The daily people and project jobs (cr1#665) run after this
 leg in the fire, so they judge it there the same fire, or in their next window
-when it landed after they ran. Their window rule is unchanged: activity dated
-before a daily window is the Sunday pass's, however late it was read.
+when it landed after they ran. Their window is tested against when a record
+reached the book as well as its own time (cr1#761), so what this leg hands
+them after their run is theirs on the next daily run, not Sunday's.
 
 Pure-ish: no network I/O. The fire's connector step reads the items and
 hands dicts in; everything after that happens here.
@@ -77,6 +78,25 @@ RESOLVED_BY = "tasks_reconcile"
 #: What ONE capture fire may write; the rest is counted and left for the
 #: next fire (the inbound capture's cap, adopted rather than re-invented).
 DEFAULT_CAPTURE_CAP = 12
+
+#: How many tracked items ONE capture fire reads by id (cr1#766). Past this
+#: the plan takes one page per calendar day, so a seat firing daily reads all
+#: of them in as many days as there are pages; a seat firing less often can
+#: land on the same pages and read fewer.
+MAX_TRACKED_READ = 20
+
+#: The plan's sentence for that read, so a step that sees `tracked_items` on
+#: a connector entry knows what it is.
+TRACKED_READ_RULE = (
+    "An entry's `tracked_items` are items already on the book that the owner's "
+    "own lists may no longer return (reassigned away). When the tool can read "
+    "one item by its id, read each of them by id, whatever `after` says, and "
+    "stage the answer like any other item; a tool with no such read skips "
+    "this. An answer on a board the entry may not read (an `exclude` board, or "
+    "one not on its `include` list when it has one) is never staged whole: stage only "
+    "its `item_id`, `board_id`, `board_name`, `created_at` and the entry's "
+    "`category`, so the item is marked as having left the boards and is not "
+    "read again (cr1#900).")
 
 #: Evidence word on a close or a proposal made by the item itself.
 _DONE_EVIDENCE = "marked done on the board"
@@ -144,7 +164,50 @@ def _signal_dials(workspace_root, env=None) -> Dict[str, Dict[str, Any]]:
 # The plans (READ ONLY; on the read door's allow-list)
 # ---------------------------------------------------------------------------
 
-def _plan(workspace_root, job_id: str, purpose: str, intents: tuple, now=None) -> dict:
+def _tracked_items(workspace_root, rec: dict, user, now=None) -> List[str]:
+    """The item ids to read by id this fire (cr1#766): every open row of the
+    owner's from this connector, because once an item is reassigned away no
+    list is sure to return it (`created_by_me` needs a creator the tool
+    names). A row whose board, AS LAST SEEN, is excluded is left out, so
+    this never reads a board the owner shut. Over `MAX_TRACKED_READ`, one
+    page per calendar day. Read only; a fault here costs only this read."""
+    from connector_adapters.provenance import dedup_key_of
+    from connector_reads import allowed
+    from cru_match import load_open_commitments
+    from tasks_follow import board_state, left_boards
+    if rec.get("skip_reason") or not user:
+        return []
+    try:
+        opens = load_open_commitments(str(_events_path(workspace_root)),
+                                      workspace_root=workspace_root)
+        rows = captured_rows(workspace_root)
+    except Exception:  # noqa: BLE001
+        return []
+    ids = set()
+    for ev in opens:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ref = data.get("task_source_ref")
+        if not (isinstance(ref, dict) and _s(ref.get("item_id"))
+                and _s(ref.get("provider")).lower() == _s(rec.get("provider")).lower()
+                and _s(data.get("owner_id")) == user):
+            continue
+        have = rows.get(dedup_key_of(data.get("source_ref")) or "") or [ev]
+        if left_boards(have):
+            continue  # cr1#900: it left the followed boards; never read by id again
+        last = board_state(have)
+        if allowed(rec, *_tasks.board_names(last), must_match=True):
+            ids.add(_s(ref.get("item_id")))
+    ordered = sorted(ids)
+    if len(ordered) <= MAX_TRACKED_READ:
+        return ordered
+    pages = -(-len(ordered) // MAX_TRACKED_READ)
+    day = (now if isinstance(now, _dt.datetime) else _dt.datetime.now()).toordinal()
+    start = (day % pages) * MAX_TRACKED_READ
+    return ordered[start:start + MAX_TRACKED_READ]
+
+
+def _plan(workspace_root, job_id: str, purpose: str, intents: tuple, now=None,
+          tracked: bool = False) -> dict:
     window = _window(workspace_root, job_id, now)
     user = _user(workspace_root)
     signal = _signal_dials(workspace_root)
@@ -167,6 +230,8 @@ def _plan(workspace_root, job_id: str, purpose: str, intents: tuple, now=None) -
                 include=rec.get("include"), exclude=rec.get("exclude"))
                 if i["intent"] in intents],
         })
+        if tracked:
+            connectors[-1]["tracked_items"] = _tracked_items(workspace_root, rec, user, now)
     readable = [c for c in connectors
                 if not c["skip_reason"]
                 or not (c["people_skip_reason"] and c["projects_skip_reason"])]
@@ -174,6 +239,7 @@ def _plan(workspace_root, job_id: str, purpose: str, intents: tuple, now=None) -
     return {
         "job_id": job_id,
         "kind": KIND,
+        **({"tracked_read": TRACKED_READ_RULE} if tracked else {}),
         "connectors": connectors,
         "connector_queries": [c["label"] or c["category"] for c in readable
                               if c.get("skip_kind") != "reachability"],
@@ -192,9 +258,11 @@ def plan_tasks_capture(workspace_root, now=None) -> dict:
     """The tasks-capture job PLANNED beside the data - READ ONLY. The
     declared tasks connectors with their open-dial skips, lists and the two
     capture intents (`assigned_to_me`, `created_by_me`) bounded by the
-    window. Writes nothing."""
+    window, and each entry's `tracked_items` (cr1#766), read by id. Writes
+    nothing."""
     return _plan(workspace_root, JOB_CAPTURE, "open",
-                 (_tasks.INTENT_ASSIGNED_TO_ME, _tasks.INTENT_CREATED_BY_ME), now)
+                 (_tasks.INTENT_ASSIGNED_TO_ME, _tasks.INTENT_CREATED_BY_ME), now,
+                 tracked=True)
 
 
 def plan_tasks_close(workspace_root, now=None) -> dict:
@@ -356,11 +424,22 @@ def read_fields(unread, unconfirmed) -> Dict[str, Any]:
 def note_unread(workspace_root, receipt: dict, unread, unconfirmed) -> None:
     """A run that read part of what it was meant to says which part it did
     not (cr1#743): `degraded`, the chat leg's word for a real read over
-    narrower cover, which the scorer counts as a run."""
+    narrower cover, which the scorer counts as a run.
+
+    cr1#740: the window is shared by every connector the job reads, so a
+    connector that did not answer holds it: the receipt carries the window's
+    start as the marker and the next fire reads the span again. The connector
+    that did answer re-reads harmlessly (capture skips what is on the book;
+    a proposal still open is not written twice; the owner's own answer stands
+    over old evidence, `cru_match._owner_adjudications`)."""
     if not unread:
         return
+    from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD
     from connector_reads import unread_line
     receipt["status"] = "degraded"
+    held = hold_marker(receipt.get(MAINTENANCE_WINDOW_FIELD))
+    if held:
+        receipt[WINDOW_INCOMPLETE_FIELD] = held
     receipt.update(read_fields(unread, unconfirmed))
     line = unread_line(workspace_root, set(unread) - set(unconfirmed), unconfirmed)
     receipt["summary"] = " ".join(x for x in (receipt.get("summary"), line) if x)
@@ -382,12 +461,42 @@ def note_waiting(receipt: dict) -> None:
     receipt["summary"] = " ".join(x for x in (receipt.get("summary"), line) if x)
 
 
+def hold_marker(window, oldest=None):
+    """`window_incomplete_before` for a run that left part of its window
+    unhandled: the oldest unhandled point, clamped into the window, else
+    the window's own start, through catchup's one writer of the marker. A
+    caller passes it for whatever its receipt leaves unhandled: a skip, a
+    blocked read, a read with a connector missing (cr1#740), a capped capture
+    (cr1#741). The receipt then says, on its own, where the next window
+    starts."""
+    from catchup import receipt_window_marker
+    win = window if isinstance(window, dict) else {}
+    return receipt_window_marker({"start": win.get("since"),
+                                  "end": win.get("until")},
+                                 incomplete=True, oldest_unhandled=oldest)
+
+
+def _read_whole(kept, connectors_read, unread) -> bool:
+    """Did a run that the dials stopped still read every connector it meant
+    to? Proof is an item it kept or the fire's own word; a gap is not."""
+    return bool(not unread and (kept or connectors_read))
+
+
 def _skip_receipt(workspace_root, job_id: str, reason: str, *, window, fired_via,
-                  signal=None, extra=None) -> dict:
-    from catchup import MAINTENANCE_WINDOW_FIELD
+                  signal=None, extra=None, read_whole=False) -> dict:
+    """`read_whole`: the dials stopped the capture or the close, but the
+    connector was read for people and project signal and answered, so the
+    window moves (`catchup.WINDOW_READ_FIELD`). Otherwise nothing was read
+    and the receipt holds the window at its start."""
+    from catchup import (MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD,
+                         WINDOW_READ_FIELD)
     receipt = {"ran": False, "status": "skipped", "leg": job_id,
                "skip_reason": reason, MAINTENANCE_WINDOW_FIELD: window,
                "summary": ""}
+    if read_whole:
+        receipt[WINDOW_READ_FIELD] = True
+    else:
+        receipt[WINDOW_INCOMPLETE_FIELD] = hold_marker(window)
     receipt.update(signal or {})
     receipt.update(extra or {})
     note_waiting(receipt)
@@ -428,22 +537,41 @@ def _person_for_name(workspace_root, name: str, user_person_id: str) -> str:
         return ""
 
 
-def _already_captured(workspace_root, ref_string: str) -> bool:
-    """True when a row from this item (any title) is already on the book,
-    open, held or closed: a re-fire over the same board writes nothing."""
+def captured_rows(workspace_root) -> Dict[str, List[dict]]:
+    """`{dedup key of the item pointer: [rows]}` for every row on the book
+    that points at a task item, open, held or closed, read ONCE per run
+    (the per-item ledger walk this replaces read the whole book for every
+    item on the board). The capture rows (`commitment`,
+    `commitment_observed`) come first in each list, in book order; the
+    closes (`commitment_resolved`, `thread_resolved`) follow."""
     from connector_adapters.provenance import dedup_key_of
     from events_io import iter_events_org_scoped
+    out: Dict[str, List[dict]] = {}
+    for ev in iter_events_org_scoped(workspace_root):
+        # The update and reopen rows the follow step writes (cr1#766) point
+        # at the item too; they carry the board state last seen.
+        if ev.get("type") not in ("commitment", "commitment_observed",
+                                  "commitment_resolved", "thread_resolved",
+                                  "commitment_updated", "commitment_reopened"):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        key = dedup_key_of(data.get("source_ref"))
+        if key:
+            out.setdefault(key, []).append(ev)
+    return out
+
+
+def _already_captured(workspace_root, ref_string: str, rows=None) -> bool:
+    """True when a row from this item (any title) is already on the book,
+    open, held or closed: a re-fire over the same board writes nothing.
+    `rows` is `captured_rows`' answer when the caller holds one."""
+    from connector_adapters.provenance import dedup_key_of
     want = dedup_key_of(ref_string)
     if not want:
         return False
-    for ev in iter_events_org_scoped(workspace_root):
-        if ev.get("type") not in ("commitment", "commitment_observed",
-                                  "commitment_resolved", "thread_resolved"):
-            continue
-        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        if dedup_key_of(data.get("source_ref")) == want:
-            return True
-    return False
+    if rows is None:
+        rows = captured_rows(workspace_root)
+    return bool(rows.get(want))
 
 
 def build_task_commitment_event(item: dict, cls: str, *, user_person_id: str,
@@ -506,14 +634,19 @@ def build_task_commitment_event(item: dict, cls: str, *, user_person_id: str,
             data["status"] = "overdue"
     except (ValueError, TypeError):
         pass
+    # cr1#752: the commitment is dated when it reached the book (the append
+    # gate stamps `ts`), never to the board item's own day: a task created
+    # 90 days ago used to enter as a 90-day-old row, and every job that
+    # weighs a row's age against later evidence read it as old. The item's
+    # own dates stay on the row as fields of their own.
+    for key in ("created_at", "updated_at"):
+        if _s(item.get(key)):
+            data[f"item_{key}"] = _s(item.get(key))
     event: Dict[str, Any] = {"type": "commitment", "source_skill": source_skill,
                              "person_ids": person_ids, "data": data}
     thread = derive_primary_thread_id({"data": data}) or ""
     if thread:
         event["primary_thread_id"] = thread
-    when = _s(item.get("created_at") or item.get("updated_at"))
-    if when:
-        event["ts"] = when
     return event
 
 
@@ -545,7 +678,7 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
     require_writer_identity(workspace_root=workspace_root)
     fired_via = _effective_fired_via(fired_via)
     window = maintenance_window or _window(workspace_root, JOB_CAPTURE, now)
-    from catchup import MAINTENANCE_WINDOW_FIELD
+    from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD
 
     records = _records(workspace_root, "open")
     if not records:
@@ -563,8 +696,10 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
         said = "confirmed as read" if unsure else "read"
         receipt = {"ran": False, "status": "blocked", "leg": JOB_CAPTURE,
                    "blocked_reason": blocked, MAINTENANCE_WINDOW_FIELD: window,
+                   WINDOW_INCOMPLETE_FIELD: hold_marker(window),
                    "connectors_unreachable": unread,
-                   "summary": f"Tasks were not {said}: {blocked}. Nothing was captured."}
+                   "summary": f"Tasks were not {said}: {blocked}. Nothing was "
+                              "captured; the same window is read next time."}
         receipt.update(read_fields(unread, unsure))
         _log_receipt(workspace_root, JOB_CAPTURE, receipt, fired_via=fired_via)
         return receipt
@@ -578,7 +713,8 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
         return _skip_receipt(
             workspace_root, JOB_CAPTURE, "; ".join(sorted(set(skips.values()))),
             window=window, fired_via=fired_via, signal=signal,
-            extra=dict(counts, connector_skips=skips, **read_fields(unread, unsure)))
+            extra=dict(counts, connector_skips=skips, **read_fields(unread, unsure)),
+            read_whole=_read_whole(kept, connectors_read, unread))
 
     from capture_gate import (CaptureGateError, classify_capture,
                               intake_kwargs, matches_open_commitment,
@@ -599,12 +735,33 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
     batch: List[dict] = []
     accepted: List[dict] = []
     captured, errors = [], []
-    for item, rec in kept:
+    rows = captured_rows(workspace_root)
+    # cr1#766: a captured item follows its board. Every staged item whose
+    # row is already on the book is compared with the board as last seen
+    # first, and a change lands through the existing update, reopen and
+    # close writers.
+    from tasks_follow import follow_items
+    followed = follow_items(
+        workspace_root, items,
+        # A connector whose capture dial is off is not followed either.
+        [r for r in records if r.get("category") in open_records], rows, opens,
+        user_person_id=user_person_id, owner_ids=owner_ids,
+        owner_names=owner_names, source_skill=source_skill)
+    held_times: List[str] = []
+    for item, rec in _oldest_first(kept):
         if rec.get("category") not in open_records:
             tallies["n_dialed_off"] += 1
             continue
         cls = _tasks.capture_class(item, owner_person_id=user_person_id,
                                    owner_ids=owner_ids, owner_names=owner_names)
+        try:
+            ref_string = _tasks.source_ref_string(_tasks.build_task_source_ref(item))
+        except _tasks.TaskPointerError:
+            ref_string = ""
+        if ref_string and _already_captured(workspace_root, ref_string, rows):
+            # Followed above; nothing to capture again.
+            tallies["n_skipped_existing"] += 1
+            continue
         if cls == _tasks.CLASS_NO_DUE:
             tallies["n_no_due"] += 1
             continue
@@ -618,9 +775,6 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
             continue
         try:
             ref = _tasks.build_task_source_ref(item)
-            if _already_captured(workspace_root, _tasks.source_ref_string(ref)):
-                tallies["n_skipped_existing"] += 1
-                continue
             ev = build_task_commitment_event(
                 item, cls, user_person_id=user_person_id,
                 workspace_root=workspace_root, source_skill=source_skill,
@@ -632,12 +786,17 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
         match = matches_open_commitment(
             ev["data"], list(opens) + accepted,
             person_ids=ev.get("person_ids") or (),
-            exclude_party_ids={user_person_id}, exclude_party_names=user_names)
+            exclude_party_ids={user_person_id}, exclude_party_names=user_names,
+            workspace_root=workspace_root)  # cr1#747: names on file set aside
         if match is not None:
             tallies["n_merged"] += 1
             continue
         if len(batch) >= cap:
+            # cr1#741: held for the next pass, and the receipt must say
+            # where the pass stopped, or the next window starts after this
+            # receipt and the held items (changed before it) are never read.
             tallies["n_capped"] += 1
+            held_times.append(_s(item.get("updated_at") or item.get("created_at")))
             continue
         tier = classify_capture(
             ev["data"], mode=resolve_capture_mode(workspace_root),
@@ -663,11 +822,51 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
     receipt.update(counts)
     receipt.update(tallies)
     receipt.update(signal)
+    receipt.update(followed)
+    if tallies["n_capped"]:
+        # cr1#741: the same marker the mail leg writes on a capped capture,
+        # set just before the oldest item not handled (clamped into the
+        # window), so the next fire's window starts there and reads the rest.
+        receipt[WINDOW_INCOMPLETE_FIELD] = hold_marker(
+            window, oldest=_resume_point(held_times))
     receipt["summary"] = _capture_summary(receipt)
     note_waiting(receipt)
     note_unread(workspace_root, receipt, unread, unsure)
     _log_receipt(workspace_root, JOB_CAPTURE, receipt, fired_via=fired_via)
     return receipt
+
+
+def _change_time(item):
+    """When a board item last changed, as an instant, or None."""
+    from cru_match import _parse_ts
+    raw = _s(item.get("updated_at") or item.get("created_at"))
+    return _parse_ts(raw) if raw else None
+
+
+def _oldest_first(kept) -> list:
+    """The items in the order the cap takes them (cr1#741): the oldest change
+    first, so what a capped fire holds is the newest and the next window
+    starts later than this one did. A board answers newest first, and on a
+    first run the held items were the oldest, which then fell off the rolling
+    30-day floor before the next fire read them. An item with no readable
+    time goes first: there is no point after which it could be read again."""
+    def key(pair):
+        when = _change_time(pair[0])
+        return (0, 0.0) if when is None else (1, when.timestamp())
+    return sorted(kept, key=key)
+
+
+def _resume_point(times) -> Optional[str]:
+    """One second before the oldest of `times`, as ISO: the fetch reads items
+    changed AFTER its bound, so a bound on the item's own second would miss
+    it. Compared as instants, never as strings (one time, several spellings).
+    None, meaning the window's own start, when any of them cannot be read: a
+    held item with no time could sit anywhere in the window."""
+    from cru_match import _parse_ts
+    whens = [_parse_ts(raw) if raw else None for raw in times or ()]
+    if not whens or any(w is None for w in whens):
+        return None
+    return (min(whens) - _dt.timedelta(seconds=1)).isoformat()
 
 
 def _capture_summary(r: dict) -> str:
@@ -684,6 +883,43 @@ def _capture_summary(r: dict) -> str:
         bits.append(f"{r['n_no_due']} with no due date read for people and projects only")
     if r.get("n_capped"):
         bits.append(f"{r['n_capped']} held for the next pass")
+    moved = []
+    for key, word in (("n_followed_updated", "updated"), ("n_followed_reassigned", "reassigned"),
+                      ("n_followed_reopened", "reopened")):
+        if r.get(key):
+            moved.append(f"{r[key]} {word}")
+    if moved:
+        bits.append("from changes on the boards: " + ", ".join(moved))
+    refused = r.get("n_followed_refused") or 0
+    if refused:
+        who = sorted({f["who"] for f in r.get("followed") or [] if f.get("who")})
+        bits.append(f"{refused} change{'s' if refused != 1 else ''} on the boards "
+                    "could not be applied"
+                    + (f" ({', '.join(who)} not on file)" if who else ""))
+    noted = sum(1 for f in r.get("followed") or []
+                if f.get("why") == "owner_is_other_side")
+    if noted:
+        bits.append(f"{noted} item{'s were' if noted != 1 else ' was'} given on the board "
+                    "to the person it is owed to, and left as it was here")
+    # cr1#901: asked once, the owner's own reassignment standing meanwhile.
+    held = [f for f in r.get("followed") or [] if f.get("why") == "owner_set_by_hand"]
+    if held:
+        which = ", ".join(f"{f.get('title') or 'an item'} (the board names "
+                          f"{f.get('to_name') or 'someone else'})" for f in held)
+        bits.append(f"{len(held)} item{'s' if len(held) != 1 else ''} whose owner you set "
+                    f"yourself {'are' if len(held) != 1 else 'is'} named for someone else "
+                    f"on the board: {which}; your choice stands until you change it")
+    # cr1#900: the one "left the boards" marker.
+    left = r.get("n_followed_left") or 0
+    if left:
+        bits.append(f"{left} tracked item{'s' if left != 1 else ''} moved to a board "
+                    "you excluded and will not be read again; "
+                    f"{'their commitments are' if left != 1 else 'its commitment is'} "
+                    "unchanged")
+    same_id = r.get("n_followed_collisions") or 0
+    if same_id:
+        bits.append(f"{same_id} item{'s' if same_id != 1 else ''} on another board "
+                    "share an id with a tracked one and were left alone")
     return "; ".join(bits) + "."
 
 
@@ -793,6 +1029,18 @@ def _score_by_matcher(opens, done: List[tuple], *, user_person_id, owner_ids,
     return out
 
 
+def _item_version(item: dict) -> str:
+    """cr1#763 - which state of a board item this evidence is: its done and
+    updated times. '' when the connector sent neither."""
+    return "|".join(_s(item.get(k)) for k in ("done_at", "updated_at")
+                    if _s(item.get(k)))
+
+
+def _version_field(row: dict) -> dict:
+    version = row.get("evidence_version")
+    return {"evidence_version": version} if version else {}
+
+
 def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
                             owner_ids=(), owner_names=(),
                             maintenance_window=None, fired_via=None,
@@ -815,7 +1063,7 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
     require_writer_identity(workspace_root=workspace_root)
     fired_via = _effective_fired_via(fired_via)
     window = maintenance_window or _window(workspace_root, JOB_CLOSE, now)
-    from catchup import MAINTENANCE_WINDOW_FIELD
+    from catchup import MAINTENANCE_WINDOW_FIELD, WINDOW_INCOMPLETE_FIELD
 
     records = _records(workspace_root, "close")
     if not records:
@@ -832,8 +1080,10 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
         said = "confirmed as read" if unsure else "read"
         receipt = {"ran": False, "status": "blocked", "leg": JOB_CLOSE,
                    "blocked_reason": blocked, MAINTENANCE_WINDOW_FIELD: window,
+                   WINDOW_INCOMPLETE_FIELD: hold_marker(window),
                    "connectors_unreachable": unread,
-                   "summary": f"Tasks were not {said}: {blocked}. Nothing was closed."}
+                   "summary": f"Tasks were not {said}: {blocked}. Nothing was "
+                              "closed; the same window is read next time."}
         receipt.update(read_fields(unread, unsure))
         _log_receipt(workspace_root, JOB_CLOSE, receipt, fired_via=fired_via)
         return receipt
@@ -847,12 +1097,14 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
         return _skip_receipt(
             workspace_root, JOB_CLOSE, "; ".join(sorted(set(skips.values()))),
             window=window, fired_via=fired_via, signal=signal,
-            extra=dict(counts, connector_skips=skips, **read_fields(unread, unsure)))
+            extra=dict(counts, connector_skips=skips, **read_fields(unread, unsure)),
+            read_whole=_read_whole(kept, connectors_read, unread))
 
     from commitment_state import close_commitments
     from connector_adapters.provenance import dedup_key_of
-    from cru_match import (_commitment_id, build_pending_review_event,
-                           load_open_commitments, load_open_review_proposals)
+    from cru_match import (_adjudicated_since, _commitment_id, _parse_ts,
+                           build_pending_review_event, load_open_commitments,
+                           load_open_review_proposals)
     from event_gate import append_event
 
     events_path = _events_path(workspace_root)
@@ -877,6 +1129,26 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
         tallies["n_done"] += 1
         done.append((item, rec))
 
+    # cr1#763 - a board item the owner has already answered for a commitment
+    # (they reopened the close it made, or dismissed the proposal it raised)
+    # is not applied to that commitment again. The answer is to the item as
+    # it stood (`evidence_version`), so a later change to the item is new
+    # evidence and still applies. Set aside BEFORE the fold, so a different
+    # item about the same commitment still gets its slot.
+    try:
+        from evidence_answered import answered_evidence, is_answered
+        _answered = answered_evidence(workspace_root)
+    except Exception:  # noqa: BLE001 - the ledger of answers never takes the leg down
+        _answered = set()
+    tallies["n_answered_skipped"] = 0
+
+    def _spent(cid, ref, item) -> bool:
+        if _answered and is_answered(_answered, cid, _tasks.source_ref_string(ref),
+                                     version=_item_version(item)):
+            tallies["n_answered_skipped"] += 1
+            return True
+        return False
+
     # (commitment id) -> (row-like dict, ref, close_mode, recommendation)
     decisions: Dict[str, tuple] = {}
     matcher_items = []
@@ -888,13 +1160,21 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
             continue
         mode = (rec.get("dials") or {}).get("close_mode")
         hits = by_key.get(dedup_key_of(_tasks.source_ref_string(ref)) or "") or []
+        done_at = _parse_ts(_s(item.get("done_at") or item.get("updated_at")) or None)
         for ev in hits:
             cid = str(_commitment_id(ev))
+            # cr1#763 first, so the receipt counts the answered item; the
+            # cr1#740 fence then refuses what is no newer than the owner's word.
+            if _spent(cid, ref, item):
+                continue
+            if _adjudicated_since(ev, done_at):
+                continue  # cr1#740: the owner reopened it after this mark
             data = ev.get("data") or {}
             decisions[cid] = ({"commitment_id": cid, "title": data.get("title") or "",
                                "primary_thread_id": ev.get("primary_thread_id") or "",
                                "score": 1.0, "ts": item.get("done_at") or None,
-                               "evidence": f"{_DONE_EVIDENCE}: {item.get('title')}"},
+                               "evidence": f"{_DONE_EVIDENCE}: {item.get('title')}",
+                               "evidence_version": _item_version(item)},
                               ref, mode, "auto_resolve", "item")
         if not hits:
             matcher_items.append((item, rec))
@@ -914,17 +1194,27 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
             mode = (rec.get("dials") or {}).get("close_mode")
             for row, recommendation in rows:
                 cid = str(row.get("commitment_id") or "")
-                if not cid:
+                if not cid or _spent(cid, ref, item):
                     continue
                 prev = decisions.get(cid)
                 if prev is not None and (prev[3] == "auto_resolve"
                                          or recommendation != "auto_resolve"):
                     continue
-                decisions[cid] = (dict(row), ref, mode, recommendation, "matcher")
+                # cr1#749 - the evidence names the board item, never a
+                # mail match.
+                matched = dict(row, evidence_version=_item_version(item))
+                matched["evidence"] = (f"{_DONE_EVIDENCE}: {_s(item.get('title'))}"
+                                       " (matched by its words)")
+                decisions[cid] = (matched, ref, mode, recommendation, "matcher")
 
+    # cr1#749 - on a close-mode board a done item closes ONLY the commitment
+    # captured from that item (pointer identity). A commitment matched by
+    # its words is a proposal whatever the mode: a done task with no
+    # commitment of its own used to close an unrelated commitment captured
+    # from mail or a meeting, under evidence that read as a sent-mail match.
     to_close, to_propose = [], []
     for cid, (row, ref, mode, recommendation, basis) in decisions.items():
-        if mode == "close" and recommendation == "auto_resolve":
+        if mode == "close" and recommendation == "auto_resolve" and basis == "item":
             to_close.append((cid, row, ref, basis))
         else:
             to_propose.append((cid, row, ref, basis))
@@ -939,7 +1229,8 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
             "primary_thread_id": row.get("primary_thread_id") or "",
             "source_ref": _tasks.source_ref_string(ref),
             "extra_data": dict(_tasks.pointer_fields(ref), close_basis=basis,
-                               close_mode="close"),
+                               close_mode="close",
+                               **_version_field(row)),
         } for cid, row, ref, basis in to_close], source_skill=source_skill)
         for r in results:
             if r.get("status") == "closed":
@@ -971,6 +1262,7 @@ def close_tasks_and_receipt(workspace_root, items, *, user_person_id,
             )
             ev["data"]["task_source_ref"] = dict(ref)
             ev["data"]["close_basis"] = basis
+            ev["data"].update(_version_field(row))
             rows_out.append(ev)
             proposed.append({"commitment_id": cid,
                              "source_ref": _tasks.source_ref_string(ref)})
@@ -1009,7 +1301,7 @@ def _close_summary(r: dict) -> str:
 
 __all__ = [
     "KIND", "JOB_CAPTURE", "JOB_CLOSE", "RESOLVED_BY", "DEFAULT_CAPTURE_CAP",
-    "TasksLegError", "plan_tasks_capture", "plan_tasks_close",
+    "TasksLegError", "hold_marker", "plan_tasks_capture", "plan_tasks_close",
     "build_task_commitment_event", "capture_tasks_and_receipt",
     "close_tasks_and_receipt",
 ]

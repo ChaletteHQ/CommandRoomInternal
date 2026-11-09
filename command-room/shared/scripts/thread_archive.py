@@ -85,18 +85,12 @@ WHAT IS DELIBERATELY NOT HERE
     archived — no staleness rule, no decay, no dormancy transition lives here.
     The caller decides and this module writes.
 
-    Most callers are downstream of a human gesture (workspace-manager's
+    Every caller is downstream of a human gesture (workspace-manager's
     `archive [project]`, the stalled-projects `archive` tap, the dormancy
-    row's `archive` verb). Exactly ONE is not: `lifecycle_pass.py` archives a
-    thread that has been DORMANT and quiet past the 180-day rule in the
-    lifecycle state machine (SPEC LIFECYCLE1, M's ruling 2026-08-02 — eliminate
-    the Pulse chat, fold its real jobs). That rule and its caps live in that
-    module, not here, and it routes through `archive_thread` precisely so the
-    leg gets the `archived_at` stamp and the canonical event Pulse's prose
-    never wrote. (An earlier draft of this docstring read "every call is
-    downstream of a human gesture, Pulse-style automatic lifecycle transitions
-    are eliminated" — accurate the day ARCHFIX shipped, superseded the day the
-    fold landed. A stale doc is a live instruction.)
+    row's `archive` verb). `lifecycle_pass.py` does not archive: past the
+    180-day rule it asks, and the owner's `archive` answer lands here (ruling
+    F2 of 2026-11-04, cr1#845). An archive that pass wrote before that ruling
+    is still on old seats, and it stays readable as the pass's own.
   - No un-archive DECISION. Which status a thread comes back to is the caller's
     lifecycle contract, and `lifecycle_pass` owns it: it writes the revive
     through `thread_writer.update_thread` + this module's shared

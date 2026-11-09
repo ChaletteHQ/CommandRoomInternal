@@ -1129,6 +1129,8 @@ This scrub runs at render time — read the user's session notes / project conte
 
 The Morning Brief chat IS the surface. The `morning-brief` orchestrator (registered by enable-command-room-schedules, back-filled by command-room-update-bridge) composes the digest, saves the snapshot copy to `_hq/briefings/morning-[YYYY-MM-DD].md`, records the `pack_run` receipt (including `data.needs_attention_ids` so `mark done [n]` resolves — see Step 3b), and THEN posts it as a markdown chat post in that persistent scheduled chat. **That order is the contract, not an implementation detail (SPEC BRIEFFIX1 Item C):** receipt before post, so a fire that dies mid-way leaves a receipt with no post — a state this product already tolerates — instead of a posted brief the substrate has no record of, which reads as a fire that never happened and puts `mark done [n]` on the wrong numbering. The post is markdown end to end — **no widget on any fire (FB-20)**: Step 3h's money sentences and queue-pointer line are prose inside that same digest, and `show_widget` is never called from this surface. Do not send the digest anywhere else on a scheduled fire.
 
+**The Hub carries the brief too (cr1#782, owner ruling D2 of 2026-11-04).** On a seat with a Command Room Hub, the Hub's Today tab shows this morning's view from the page's own feeds (the calendar, the mail that needs a reply, what is overdue, one first action) and the day's top three open questions, answered on the page through its Apply step. The scheduled fire ends by pointing at the Hub (`cockpit_helpers:hub_pointer`, Phase 6 of the orchestrator); a seat without a Hub gets no pointer and keeps this chat unchanged. Every setting in this file still shapes the chat digest; the Hub reads none of them and resets none of them.
+
 **Legacy delivery-channel fallback (explicit opt-in only):** if the user's `CLAUDE.md` / `_hq/BUSINESS_CONTEXT.md` carries an explicit "Briefing Delivery" preference naming Slack or email, honor it as an ADDITIONAL copy (Slack DM, or Gmail with subject `Morning briefing — [Day, Month DD]`). Never infer this from a connector merely being connected, and note that `mark done [n]` only works in the Morning Brief chat.
 
 ### Manual mode (user triggered in chat):
@@ -1234,9 +1236,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

@@ -15,7 +15,7 @@ Read `cockpit-shared.md` in this folder first and do its shared step 0 and share
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the documents as read, each with its version>], "now_iso": "<now ISO>", "run_id": "<this session id>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:plan_claim"}'
 ```
 
-3. Send its `writes` as ONE ArtifactData `batch`, exactly as they came back. A batch refused because a document changed (another run claimed it, or the owner pressed Undo) sends you back to step 1, once. Never write a claim by hand, never claim without its pin, and never act on a choice this run did not claim. Nothing to claim and nothing held (`writes` and `held` both empty): the light is `done` with "Nothing waiting." and the shared last step.
+3. Send its `writes` as ONE ArtifactData `batch`, exactly as they came back. A batch refused because a document changed (another run claimed it, or the owner pressed Undo) sends you back to step 1, once. Never write a claim by hand, never claim without its pin, and never act on a choice this run did not claim. Nothing to claim and nothing held (`writes` and `held` both empty): skip to **The page's own sends and drafts** below (cr1#817: a press the page made itself is already `applied` and never in this query), and when that records nothing either, the light is `done` with "Nothing waiting." and the shared last step.
 4. **More than one batch (cr1#689).** One batch carries at most fifty claims; the answer's `n_more` counts what it could not. While `n_more` is more than zero, do steps 1 to 3 again for the rest, at most four rounds in one run (a round is one read, one plan, one batch). What still waits after the fourth round is the answer's `line` ("N more wait for the next run."): append it to this light's line at the end, after the counts, so the owner knows the rest is coming.
 
 Then read the choices again (step 1's `query`, for the versions the claim left), `get` the used-token record `config/sent_tokens` (keep its version; a document that does not exist reads as no tokens), and hand them to the planner with the newest inbox fire stamp (the `fire_stamp` on `feed/inbox`, read with `get`) and this run's id:
@@ -80,4 +80,26 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 
 Write each result as that choice's `result`. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. The next refresh brings the Week tab up to date.
 
-**The light says what happened (cr1#678).** Count every result written: applied, refused, and failed (outcome `error`). When nothing failed and every writer answered `ok: true`, the light is `done` with "Applied N, refused M." When anything failed, the light is `error` with "Applied N, refused M, failed K: <the first failed line>." Never `done` over a failure. When the claim's last round left `n_more` above zero, its `line` follows the counts ("Applied N, refused M. K more wait for the next run.").
+**`settings`** (cr1#781): the Settings tab's edits, a learned rule reworded, switched off or deleted, or the question budget changed. One writer call, `resolved_by` again left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the settings list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_settings_choices"}'
+```
+
+Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_settings` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/settings`; a reworded or switched-off rule also moves the Week tab, so run the step headed **Then the Week tab** in `orchestrator-cockpit-refresh.md` and `set` its answer on `feed/week`.
+
+**The page's own sends and drafts (cr1#817).** A Send or Draft the page made itself (cr1#710, cr1#727) went out through the mail connector with no record in the book. This run writes that record, once however many runs overlap. `query` on `choices` with `where: [["by_page", "==", true]]`, keep each document's `version`, and plan:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the documents as read, each with its version>], "now_iso": "<now ISO>", "run_id": "<this session id>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:plan_page_records"}'
+```
+
+Send its `writes` as ONE ArtifactData `batch`, exactly as they came back: the claim, pinned to the version read, is what makes the record land once. A batch refused because a document changed sends you back to the `query`, once; a row in `taken` belongs to another run and is left alone. Then, when `entries` is not empty, one writer call:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"entries": [<the entries, as they came back>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:record_page_sends"}'
+```
+
+For each result with outcome `applied`, `already` or `refused`, `update` its row with `{"book_recorded": true, "book_recorded_at": "<now ISO>", "book_record": {"drafted_seq": <its drafted_seq>, "sent_seq": <its sent_seq>}, "book_record_line": "<its line>"}`, pinned to the version the claim write returned: a refusal (no recipient on the press) has nothing to record and is final. A result with outcome `error` leaves its row as it is, with the result's `line` written on the row as `book_record_line`: the claim lapses after twenty minutes and the next run tries again. Nothing here sends or drafts anything: the mail went out when the owner pressed; this writes the record of it.
+
+**The light says what happened (cr1#678).** Count every result written: applied, refused, and failed (outcome `error`). When nothing failed and every writer answered `ok: true`, the light is `done` with "Applied N, refused M." When anything failed, the light is `error` with "Applied N, refused M, failed K: <the first failed line>." Never `done` over a failure. When the claim's last round left `n_more` above zero, its `line` follows the counts ("Applied N, refused M. K more wait for the next run."). When this run recorded a page send or draft (cr1#817), the count follows too: "Applied N, refused M, recorded K from the page." A record that failed counts among the failed, so the light is never `done` over a press the book still lacks.

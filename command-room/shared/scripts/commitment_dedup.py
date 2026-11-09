@@ -167,12 +167,14 @@ DUP_TITLE_AUTO = 0.9
 #     SPEC_FLOW1's named regression), and a customer who re-runs a call
 #     should not be handed a merge decision for doing so.
 #
-# So inside the DOOR WINDOW a suspect COLLAPSES onto the first row: it is
-# written to the held tier carrying `duplicate_of`, the original keeps the
+# So inside the DOOR WINDOW the same promise, word for word (`_one_promise`,
+# cr1#747), COLLAPSES onto the first row: it is written to the held tier carrying `duplicate_of`, the original keeps the
 # plate, and nothing is asked. Outside the door window and inside
 # DUP_WINDOW_DAYS the shipped flag behaviour is unchanged — a same-titled row
 # a fortnight later is far more likely a real recurring ask, and that one is
-# still worth a question.
+# still worth a question. So is a pair inside the window that only looks
+# alike: it lands, flagged, because a held row is off the plate and the owner
+# ruled that a real promise never leaves it silently.
 #
 # It is a COLLAPSE, not a drop: the held row is on disk, searchable, carries
 # the id of the row it folded onto, is rendered by `show me what you'd hide`,
@@ -579,6 +581,16 @@ def find_suspected_duplicate(
     return best
 
 
+def _one_promise(new_data: dict, open_ev: dict, workspace_root) -> bool:
+    """cr1#747, owner ruling 2026-11-07: a capture only stops being shown on
+    its own when the wording is effectively the same, between the same
+    parties (`capture_gate.same_promise`). A pair that merely looks alike
+    keeps both: the flag tier still lands it, with its question."""
+    from capture_gate import same_promise
+    d_open = open_ev.get("data") if isinstance(open_ev.get("data"), dict) else {}
+    return same_promise(new_data, d_open, workspace_root=workspace_root)
+
+
 def auto_merge_eligible(
     new_data: dict,
     open_ev: dict,
@@ -613,9 +625,11 @@ def auto_merge_eligible(
         ref twice is one source seen twice, which corroborates nothing —
         §2's independence rule, the same rule the §6 fence enforces;
       * neither side pending_review for any other reason, and the open side
-        has no open sub-items (SUB1 D3 — a merge would move them silently).
+        has no open sub-items (SUB1 D3: a merge would move them silently);
+      * `_one_promise` (cr1#747): a score reads shared words, and "the
+        contract" scores 1.0 against "the contract redlines".
 
-    Pure over supplied data — no reads, no writes."""
+    Reads no ledger and writes nothing."""
     if new_data.get("pending_review") or _is_pending_review(open_ev):
         return None
     n_open_subs = (open_ev.get("data") or {}).get("n_subitems_open")
@@ -678,6 +692,8 @@ def auto_merge_eligible(
     score = title_similarity(_title_of(new_data), _title_of(d_open),
                              drop_tokens=drop)
     if score < DUP_TITLE_AUTO:
+        return None
+    if not _one_promise(new_data, open_ev, workspace_root):
         return None
 
     return {
@@ -885,7 +901,11 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
                     now_dt=now_dt, window_days=DOOR_WINDOW_DAYS,
                     workspace_root=workspace_root,
                 )
-            if door is not None and door["commitment_id"] != data.get("id"):
+            door_row = next((o for o in open_commitments if door is not None
+                             and _commitment_id(o) == door["commitment_id"]), None)
+            if (door is not None and door["commitment_id"] != data.get("id")
+                    and door_row is not None
+                    and _one_promise(data, door_row, workspace_root)):
                 collapsed = _collapse_onto(ev, door)
                 if collapsed is not None:
                     out.append(collapsed)

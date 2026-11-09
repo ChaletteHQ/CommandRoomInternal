@@ -5,8 +5,9 @@ the page saved, and how a saved choice reaches the book.
 WHAT THE COCKPIT IS
 -------------------
 
-One private artifact page the owner opens each morning. Six tabs (Today, Inbox,
-Commitments, Projects, Review, Week), one Start button, one light per leg. The page
+One private artifact page the owner opens each morning. Seven tabs (Today, Inbox,
+Commitments, Projects, Review, Week, Settings; Overdue is a filter inside
+Commitments since cr1#946), one Start button, one light per leg. The page
 keeps its own small database on claude.ai: the feeds a run writes for it, the
 status line per leg, and the choices the owner presses. Nothing on the page
 writes the book. A run of the `cockpit-apply` task reads the choices back and
@@ -55,11 +56,14 @@ stdlib only.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
+import os
 import re
+import secrets
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 TASK_ID = "cockpit"  # the one-task shape of #614; kept so its receipts parse forever
 SOURCE_SKILL = "cockpit"
@@ -103,6 +107,10 @@ CHOICE_EXPIRY_DAYS = 7
 PREP_HOLD_MINUTES = 60
 UPCOMING_HOURS = 24
 PLATE_ROW_CAP = 150
+#: Rows past their date that the Commitments list leaves out, sent for the
+#: Overdue tab all the same (cr1#877), oldest first. Past this the feed counts
+#: them and the tab says so.
+OVERDUE_EXTRA_CAP = 150
 FOCUS_CAP = 8
 CHASE_CAP = 6
 SCHEDULE_CAP = 4
@@ -228,6 +236,22 @@ def load_config(workspace_root) -> Dict[str, Any]:
     return out
 
 
+#: The line the scheduled Morning Brief ends on when a Hub is set up (cr1#782):
+#: the brief is folded into the Hub, and something still brings the owner there
+#: each morning. A seat with no Hub gets no line and keeps its brief unchanged.
+HUB_POINTER_LINE = "Your Command Room Hub has this morning's view and the three questions to answer: {url}"
+
+
+def hub_pointer(workspace_root) -> Dict[str, Any]:
+    """READ. `{found, url, line}` for the Morning Brief's last line (cr1#782):
+    the page address when `_hq/config/cockpit.json` holds one, else an empty
+    `line`, so a seat that never set up the Hub posts its brief exactly as
+    before. Never raises: an absent or corrupt record reads as not found."""
+    cfg = load_config(workspace_root) if workspace_root else {"found": False, "url": None}
+    url = cfg.get("url") if cfg.get("found") else None
+    return {"found": bool(url), "url": url, "line": HUB_POINTER_LINE.format(url=url) if url else ""}
+
+
 def save_config(workspace_root, *, url: str, trigger_id: Optional[str] = None,
                 server: Optional[str] = None, basename: Optional[str] = None,
                 published_at: Optional[str] = None,
@@ -332,17 +356,111 @@ def connector_display_name(server) -> str:
 #: order: `read` re-reads the thread for the newer-mail check, `draft` makes
 #: the reply in the thread (when the provider sends a draft), `send` sends,
 #: `thread` shows the thread under a draft when the owner opens it (cr1#714;
-#: read live, never stored). A provider not listed here keeps Send on Apply.
+#: read live, never stored), `new_draft` makes a mail that answers no thread (a
+#: chase, cr1#219). A provider not listed here keeps Send on Apply.
 MAIL_DIRECT = {
     "superhuman": {"server": "Superhuman Mail", "read": "get_thread",
-                   "draft": "create_or_update_draft", "send": "send_draft", "thread": "get_thread"},
+                   "draft": "create_or_update_draft", "send": "send_draft", "thread": "get_thread",
+                   "new_draft": "create_or_update_draft"},
     "gmail": {"server": "Gmail", "read": "get_thread", "draft": None, "send": "reply",
-              "thread": "get_thread"},
+              "thread": "get_thread", "new_draft": "create_draft"},
     "outlook": {"server": "Microsoft 365", "read": "outlook_email_search",
                 "draft": "outlook_create_reply_draft", "send": "outlook_send_draft",
-                "thread": "read_resource"},
+                "thread": "read_resource", "new_draft": "outlook_create_draft"},
 }
 _UUIDISH_RE = re.compile(r"^[0-9a-f]{8}-", re.I)
+
+#: Calendar answers from the page (cr1#723, owner ruling 2026-11-04): Accept,
+#: Decline and Tentative on a meeting row, through the seat's declared
+#: calendar connector, one map like `MAIL_DIRECT`. Per provider: the
+#: connector's usual display name, the respond tool, the names of its event-id
+#: and answer arguments, and the words the tool takes for each answer.
+#: `verified` says whether the tool's contract was read from the connector
+#: itself: Microsoft 365's was (`outlook_respond_to_event`: eventId, response
+#: accept|decline|tentative, sendResponse); Google Calendar's is the seam's
+#: expected spelling and still needs a seat to confirm it. Superhuman's
+#: calendar has no respond tool, so its rows show no calendar answers.
+#: `admin_line` is the one plain line a seat sees when the client's admin has
+#: not switched writing on, in place of a failure.
+CALENDAR_DIRECT = {
+    "google_calendar": {"server": "Google Calendar", "respond": "respond_to_event",
+                        "event_key": "eventId", "answer_key": "response",
+                        "answers": {"accept": "accepted", "decline": "declined", "tentative": "tentative"},
+                        "verified": False,
+                        "admin_line": "Google refused this answer. Your Google Workspace admin may need to mark the Claude app as trusted; ask them, then press again. Nothing was changed."},
+    "outlook_calendar": {"server": "Microsoft 365", "respond": "outlook_respond_to_event",
+                         "event_key": "eventId", "answer_key": "response",
+                         "answers": {"accept": "accept", "decline": "decline", "tentative": "tentative"},
+                         "extra": {"sendResponse": True}, "verified": True,
+                         "admin_line": "Your Microsoft 365 admin has to grant the Claude connector Calendars.ReadWrite and your Claude org owner has to enable write tools before the Hub can answer invitations. Nothing was changed."},
+}
+#: The mail-side admin line per provider (cr1#723), said on a send the
+#: connector refuses for want of the switch, and by set-up when it can tell.
+MAIL_ADMIN_LINE = {
+    "gmail": "Gmail refused this send. Your Google Workspace admin may need to mark the Claude app as trusted; ask them, then press Send again. Nothing was sent.",
+    "outlook": "Your Microsoft 365 admin has to grant the Claude connector Mail.Send and your Claude org owner has to enable write tools before the Hub can send. Nothing was sent.",
+}
+#: The scopes a Microsoft 365 seat needs for each action (cr1#723), as
+#: `get_granted_scopes` names them. Google has no equivalent read: the first
+#: press is the check.
+MS_SCOPES = {"send": "Mail.Send", "calendar": "Calendars.ReadWrite"}
+CALENDAR_ANSWERS = ("accept", "decline", "tentative")
+
+
+def calendar_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
+    """The page's calendar-answer plan for this seat (cr1#723): `{provider,
+    server, respond, event_key, answer_key, answers, extra, verified,
+    admin_line, tools}`, or None when the seat declares no calendar connector
+    or one with no respond tool (then the rows show no calendar answers)."""
+    if workspace_root is None:
+        return None
+    try:
+        import connector_config
+        row = connector_config.declared_backend("calendar", workspace_root)
+    except Exception:  # noqa: BLE001 - nothing declared is a supported state
+        row = None
+    if not isinstance(row, dict):
+        return None
+    provider = str(row.get("provider") or "").strip().lower()
+    plan = CALENDAR_DIRECT.get(provider)
+    if not plan:
+        return None
+    sid = str(row.get("server_id") or "").strip()
+    server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
+    return {"provider": provider, "server": server, "respond": plan["respond"], "event_key": plan["event_key"],
+            "answer_key": plan["answer_key"], "answers": dict(plan["answers"]), "extra": dict(plan.get("extra") or {}),
+            "verified": bool(plan.get("verified")), "admin_line": plan["admin_line"], "tools": [plan["respond"]]}
+
+
+def admin_check(workspace_root=None, *, scopes: Optional[List[str]] = None) -> Dict[str, Any]:
+    """READ. What the client's admin must still switch on for the page's Send
+    and calendar answers (cr1#723). On a Microsoft 365 seat the caller hands
+    in the scopes `get_granted_scopes` returned; a missing `Mail.Send` or
+    `Calendars.ReadWrite` earns its one plain line. Google has no such read:
+    the answer names the first press as the check. A seat with neither
+    connector answers nothing to say. Answers `{ok, lines, send_ok,
+    calendar_ok, provider_mail, provider_calendar}`."""
+    mail = mail_direct(workspace_root)
+    cal = calendar_direct(workspace_root)
+    out: Dict[str, Any] = {"ok": True, "lines": [], "send_ok": None, "calendar_ok": None,
+                           "provider_mail": (mail or {}).get("provider"), "provider_calendar": (cal or {}).get("provider")}
+    granted = {str(s).strip() for s in (scopes or []) if str(s).strip()} if scopes is not None else None
+    if mail and mail["provider"] == "outlook":
+        if granted is not None:
+            out["send_ok"] = MS_SCOPES["send"] in granted
+            if not out["send_ok"]:
+                out["lines"].append(MAIL_ADMIN_LINE["outlook"])
+    elif mail and mail["provider"] == "gmail":
+        out["lines"].append("Gmail has no switch the page can read: the first Send on the Hub is the check, and it says in one line what the admin must do if it is refused.")
+    if cal and cal["provider"] == "outlook_calendar":
+        if granted is not None:
+            out["calendar_ok"] = MS_SCOPES["calendar"] in granted
+            if not out["calendar_ok"]:
+                out["lines"].append(cal["admin_line"])
+    elif cal and cal["provider"] == "google_calendar":
+        out["lines"].append("Google Calendar has no switch the page can read: the first Accept on the Hub is the check, and it says in one line what the admin must do if it is refused.")
+    out["ok"] = not any(v is False for v in (out["send_ok"], out["calendar_ok"]))
+    return out
 
 
 def mail_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
@@ -368,15 +486,16 @@ def mail_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
     sid = str(row.get("server_id") or "").strip()
     server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
     tools: List[str] = []
-    for t in (plan["read"], plan["draft"], plan["send"], plan.get("thread")):
+    for t in (plan["read"], plan["draft"], plan["send"], plan.get("thread"), plan.get("new_draft")):
         if t and t not in tools:
             tools.append(t)
     return {"provider": provider, "server": server, "read": plan["read"],
             "draft": plan["draft"], "send": plan["send"], "thread": plan.get("thread"),
-            "tools": tools}
+            "new_draft": plan.get("new_draft"), "tools": tools, "admin_line": MAIL_ADMIN_LINE.get(provider)}
 
 
-def capabilities(server: str, mail: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
+                 calendar: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The runtime capabilities the published page declares. The database
     rule: everything in it, feeds, status, config and choices, is readable
     and writable by the artifact's owner alone (plan item 2: the page shows
@@ -390,6 +509,15 @@ def capabilities(server: str, mail: Optional[Dict[str, Any]] = None) -> Dict[str
                 "tools": ["list_triggers", "update_trigger", "fire_trigger"]}]
     if isinstance(mail, dict) and mail.get("server") and mail.get("tools"):
         servers.append({"server": str(mail["server"]), "tools": list(mail["tools"])})
+    # cr1#723: the calendar connector, with its one respond tool. A seat whose
+    # mail and calendar share one connector (Microsoft 365) declares it once.
+    if isinstance(calendar, dict) and calendar.get("server") and calendar.get("tools"):
+        for s in servers:
+            if s["server"] == str(calendar["server"]):
+                s["tools"] = list(s["tools"]) + [t for t in calendar["tools"] if t not in s["tools"]]
+                break
+        else:
+            servers.append({"server": str(calendar["server"]), "tools": list(calendar["tools"])})
     return {
         "db": {
             "rules": [
@@ -412,22 +540,30 @@ _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\}\}")
 
 def render_page(template_text: str, *, server: str, basename: str,
                 plugin_version: str, published_at: Optional[str] = None,
-                mail: Optional[Dict[str, Any]] = None) -> str:
+                mail: Optional[Dict[str, Any]] = None,
+                calendar: Optional[Dict[str, Any]] = None,
+                runtime_version: Optional[str] = None) -> str:
     """Fill the template mechanically and refuse a page with a placeholder
     left over or a leak in its visible text. Nothing here is typed by hand:
-    cockpit-setup calls this and publishes what it returns."""
+    cockpit-setup calls this and publishes what it returns. The footer shows
+    the installed plugin version and, when the seat has one, the workspace
+    runtime version (cr1#118)."""
     from chat_output_renderer import scan_rendered_html
 
     fills = {
         "{{TRIGGER_SERVER}}": connector_display_name(server),
         "{{WORKSPACE_BASENAME}}": str(basename or ""),
         "{{PLUGIN_VERSION}}": str(plugin_version or ""),
+        "{{RUNTIME_VERSION_LINE}}": (" · runtime " + str(runtime_version).strip()) if str(runtime_version or "").strip() else "",
         "{{PUBLISHED_AT}}": str(published_at or _iso(_now())),
     }
     # The mail plan rides as JSON only (cr1#710); null keeps Send on Apply.
     mail_js = json.dumps(mail if isinstance(mail, dict) else None)
     mail_js = _script_safe(mail_js)
     template_text = template_text.replace("{{MAIL_DIRECT_JSON}}", mail_js)
+    # The calendar plan rides as JSON too (cr1#723); null shows no calendar answers.
+    cal_js = _script_safe(json.dumps(calendar if isinstance(calendar, dict) else None))
+    template_text = template_text.replace("{{CALENDAR_DIRECT_JSON}}", cal_js)
     for key in ("{{TRIGGER_SERVER}}", "{{WORKSPACE_BASENAME}}"):
         if not fills[key]:
             raise ValueError(f"render_page: {key} is required")
@@ -462,23 +598,172 @@ def template_path(plugin_root=None) -> Path:
 def render_page_file(workspace_root=None, *, server: str = "Claude Code Remote",
                      basename: Optional[str] = None, plugin_version: str = "",
                      published_at: Optional[str] = None,
-                     plugin_root=None) -> Dict[str, Any]:
+                     plugin_root=None, runtime_version: Optional[str] = None,
+                     recipe: bool = False) -> Dict[str, Any]:
     """The door form of `render_page`: reads the shipped template beside this
     module (the staged runtime ships `shared/templates/`), fills it, and
-    answers `{ok, html, bytes_len, capabilities, title}` for cockpit-setup to
-    publish as it came back. Never typed by hand, never edited after."""
+    answers `{ok, html, bytes_len, sha256, capabilities, title}` for
+    cockpit-setup to publish as it came back. Never typed by hand, never
+    edited after.
+
+    `recipe=True` (HUBPUB1, cr1#925) answers the same without `html`, and
+    with `recipe`: every value the page was filled from, the workspace's
+    reads included. On a merged seat the page is rendered on the computer
+    and the publish tool attaches only the chat's own files, and a ~150 KB
+    page does not come back through one reply; the chat renders the same
+    page on its own side with `render_from_recipe` and checks `sha256`."""
     if not basename:
         basename = (str(workspace_root or "").replace("\\", "/").rstrip("/")
                     .rsplit("/", 1)[-1])
     path = template_path(plugin_root)
     mail = mail_direct(workspace_root)
+    # cr1#118: `plugin_version` is the installed plugin's, as the chat read it
+    # from its own plugin.json; the runtime version is the door's
+    # CR_RUNTIME_VERSION, else the plugin.json beside this module, which on a
+    # merged seat is the staged runtime's own copy.
+    runtime_version = (runtime_version or os.environ.get("CR_RUNTIME_VERSION")
+                       or plugin_version_here(plugin_root) or None)
+    calendar = calendar_direct(workspace_root)
+    # cr1#925: the stamp is fixed here, so the chat's own render of the
+    # recipe is byte-for-byte this page.
+    published_at = published_at or _iso(_now())
     html = render_page(path.read_text(encoding="utf-8"), server=server,
                        basename=basename, plugin_version=plugin_version,
-                       published_at=published_at, mail=mail)
-    return {"ok": True, "html": html, "bytes_len": len(html.encode("utf-8")),
-            "capabilities": capabilities(server, mail), "title": "Command Room Hub",
-            "mail_direct": (mail or {}).get("provider"),
+                       published_at=published_at, mail=mail, calendar=calendar,
+                       runtime_version=runtime_version)
+    out = {"ok": True, "html": html, "bytes_len": len(html.encode("utf-8")),
+            "sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+            "capabilities": capabilities(server, mail, calendar), "title": "Command Room Hub",
+            "mail_direct": (mail or {}).get("provider"), "plugin_version": plugin_version,
+            "runtime_version": runtime_version,
+            "calendar_direct": (calendar or {}).get("provider"),
+            "calendar_verified": (calendar or {}).get("verified"),
             "template": str(TEMPLATE_REL).replace("\\", "/")}
+    if recipe:
+        out.pop("html")
+        out["recipe"] = {"server": server, "basename": basename,
+                         "plugin_version": plugin_version,
+                         "published_at": published_at, "mail": mail,
+                         "calendar": calendar, "runtime_version": runtime_version}
+    return out
+
+
+#: The one sentence when the chat's own render is not the page the door
+#: rendered (HUBPUB1, cr1#925): nothing is published. The usual cause is the
+#: saved answer, not the plugin, so it names no update.
+RECIPE_MISMATCH_LINE = ("The Hub page built here did not match the one prepared "
+                        "on your computer, so nothing was published; say "
+                        "`rebuild my hub` to try again.")
+#: The saved answer is not a usable render answer (no recipe, no hash, a
+#: refused door reply, or not JSON).
+RECIPE_UNREADABLE_LINE = ("The Hub page could not be prepared here, so nothing "
+                          "was published; say `rebuild my hub` to try again.")
+
+
+def render_from_recipe(recipe: Dict[str, Any], *, expect_sha256: Optional[str] = None,
+                       plugin_root=None) -> Dict[str, Any]:
+    """COMPUTE ONLY, no workspace (HUBPUB1, cr1#925). The page `render_page_file`
+    rendered, rebuilt from its `recipe` on the chat's own side from the
+    template this plugin ships. Answers `{ok, html, bytes_len, sha256}`; with
+    `expect_sha256`, a page that differs answers `ok: false` with
+    `RECIPE_MISMATCH_LINE` and no html, so a stale plugin never publishes."""
+    if not isinstance(recipe, dict):
+        return {"ok": False, "line": RECIPE_UNREADABLE_LINE, "reason": "no_recipe"}
+    html = render_page(template_path(plugin_root).read_text(encoding="utf-8"),
+                       server=str(recipe.get("server") or "Claude Code Remote"),
+                       basename=str(recipe.get("basename") or ""),
+                       plugin_version=str(recipe.get("plugin_version") or ""),
+                       published_at=recipe.get("published_at"),
+                       mail=recipe.get("mail"), calendar=recipe.get("calendar"),
+                       runtime_version=recipe.get("runtime_version"))
+    raw = html.encode("utf-8")
+    sha = hashlib.sha256(raw).hexdigest()
+    if expect_sha256 and sha != str(expect_sha256).strip().lower():
+        return {"ok": False, "line": RECIPE_MISMATCH_LINE, "reason": "sha_mismatch",
+                "sha256": sha}
+    return {"ok": True, "html": html, "bytes_len": len(raw), "sha256": sha}
+
+
+def _render_recipe_cli(argv: List[str]) -> int:
+    """`cockpit_helpers.py render-recipe <answer.json> <out.html>`: the chat's
+    own render (cr1#925). `<answer.json>` is the door's `render_page_file`
+    answer (its `result`, or the whole envelope) saved in this session's own
+    scratch; the page is written to `<out.html>` there, and one JSON line
+    `{ok, path, sha256, bytes_len}` or `{ok: false, line}` is printed."""
+    if len(argv) != 2:
+        print(json.dumps({"ok": False, "line": "usage: render-recipe <answer.json> <out.html>"}))
+        return 2
+    src, dst = Path(argv[0]), Path(argv[1])
+    if "_hq" in dst.parts:
+        print(json.dumps({"ok": False, "line": RECIPE_UNREADABLE_LINE, "reason": "out_in_workspace"}))
+        return 1
+    try:
+        answer = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print(json.dumps({"ok": False, "line": RECIPE_UNREADABLE_LINE, "reason": "unreadable_answer"}))
+        return 1
+    if isinstance(answer, dict) and answer.get("ok") is False:
+        # A refused door reply carries its own sentence; it is the answer.
+        print(json.dumps({"ok": False, "line": str(answer.get("line") or RECIPE_UNREADABLE_LINE),
+                          "reason": "door_refused"}))
+        return 1
+    if isinstance(answer, dict) and isinstance(answer.get("result"), dict):
+        answer = answer["result"]
+    if not isinstance(answer, dict) or answer.get("ok") is False:
+        print(json.dumps({"ok": False, "line": str((answer or {}).get("line") or RECIPE_UNREADABLE_LINE)
+                          if isinstance(answer, dict) else RECIPE_UNREADABLE_LINE,
+                          "reason": "door_refused"}))
+        return 1
+    if not str(answer.get("sha256") or "").strip():
+        # cr1#925 review: an answer with no hash is never published unchecked.
+        print(json.dumps({"ok": False, "line": RECIPE_UNREADABLE_LINE, "reason": "no_sha256"}))
+        return 1
+    got = render_from_recipe(answer.get("recipe"), expect_sha256=answer.get("sha256"))
+    if not got.get("ok"):
+        print(json.dumps({k: v for k, v in got.items() if k != "html"}))
+        return 1
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(got["html"].encode("utf-8"))
+    print(json.dumps({"ok": True, "path": str(dst), "sha256": got["sha256"],
+                      "bytes_len": got["bytes_len"]}))
+    return 0
+
+
+def plugin_version_here(plugin_root=None) -> Optional[str]:
+    """The version in the `plugin.json` shipped beside this module (or under
+    `plugin_root`), else None. The one read every version answer makes."""
+    base = Path(plugin_root) if plugin_root else Path(__file__).resolve().parent.parent.parent
+    try:
+        payload = json.loads((base / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file, no version
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return str(version).strip() if isinstance(version, str) and version.strip() else None
+
+
+VERSION_LINE = "You are on Command Room {plugin}{runtime}."
+VERSION_UNKNOWN_LINE = "I cannot read the installed version from here."
+
+
+def version_answer(workspace_root=None, *, plugin_version: Optional[str] = None,
+                   runtime_version: Optional[str] = None, plugin_root=None) -> Dict[str, Any]:
+    """READ. The one-line answer to `which version am I on` (cr1#118, owner
+    ruling 2026-11-06), from the files the plugin ships: `plugin_version` is
+    the installed plugin's, read by the chat from its own `plugin.json` and
+    handed in (on a merged seat this helper runs from the staged runtime, so
+    the copy beside it is the runtime's, not the installed plugin's); the
+    runtime version is the door's `CR_RUNTIME_VERSION`, else the `plugin.json`
+    beside this module. With nothing handed in, the copy beside this module
+    is the installed version (a seat whose files are local). No fleet view,
+    nothing reported home. Answers `{plugin_version, runtime_version, line}`."""
+    here = plugin_version_here(plugin_root)
+    plugin = str(plugin_version or "").strip() or here
+    runtime = str(runtime_version or os.environ.get("CR_RUNTIME_VERSION") or "").strip() or here
+    if not plugin:
+        return {"plugin_version": None, "runtime_version": runtime, "line": VERSION_UNKNOWN_LINE}
+    tail = "" if not runtime or runtime == plugin else f", workspace runtime {runtime}"
+    return {"plugin_version": plugin, "runtime_version": runtime,
+            "line": VERSION_LINE.format(plugin=plugin, runtime=tail)}
 
 
 # ---------------------------------------------------------------------------
@@ -555,25 +840,41 @@ MAINTENANCE_NONE_LINE = "No Maintenance run recorded yet."
 def _maintenance_history(workspace_root):
     """`(newest_receipt_dt, last_completed, newest_heartbeat_data)` from the
     book. `last_completed` folds every `maintenance_run`: a job's own
-    `completed_at` when the receipt has one, else the receipt's own time for
-    each job in its `jobs_completed` (receipts from before cr1#666)."""
+    `completed_at` when the receipt has one; the receipt's own time only for a
+    receipt that stamps nothing (from before cr1#666). A job a stamping receipt
+    lists as completed without a stamp has no proven completion there
+    (cr1#760), so a blocked job never reads fresh off a later fire."""
     import maintenance_dispatcher as md
     from receipts import iter_receipts
 
     newest = None
+    newest_via = None
     last: Dict[str, _dt.datetime] = {}
     for r in iter_receipts(workspace_root, task_ids=[md.MAINTENANCE_TASK_ID]):
         if r.get("type") != md.RECEIPT_EVENT_TYPE or r.get("dt") is None:
             continue
         at = r["dt"]
-        newest = at if newest is None or at > newest else newest
+        if newest is None or at > newest:
+            newest = at
+            # cr1#743: how the newest fire came about, so the Hub can say a
+            # scheduled fire left the note, not only a typed run.
+            newest_via = r.get("fired_via")
         raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
         data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
-        stamped = data.get(md.COMPLETED_AT_FIELD) if isinstance(data.get(md.COMPLETED_AT_FIELD), dict) else {}
+        has_stamps = isinstance(data.get(md.COMPLETED_AT_FIELD), dict)
+        stamped = data.get(md.COMPLETED_AT_FIELD) if has_stamps else {}
         for job in data.get("jobs_completed") or []:
             if not isinstance(job, str) or not job:
                 continue
-            when = _parse(stamped.get(job)) or at
+            when = _parse(stamped.get(job))
+            if when is None:
+                # cr1#760: a receipt that stamps its jobs and leaves this one
+                # out never proved it ran (a job listed with no receipt of its
+                # own); the fire's own time is only for a receipt from before
+                # cr1#666, which stamped nothing.
+                if has_stamps:
+                    continue
+                when = at
             if job not in last or when > last[job]:
                 last[job] = when
     beat = None
@@ -584,11 +885,13 @@ def _maintenance_history(workspace_root):
         if isinstance(ev, dict) and ev.get("type") == md.HEARTBEAT_EVENT_TYPE \
                 and isinstance(ev.get("data"), dict):
             beat = ev["data"]
-    return newest, last, beat
+    return newest, last, beat, newest_via
 
 
 def _fires(n: int) -> str:
     return f"{n} fire" if n == 1 else f"{n} fires"
+
+
 
 
 def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
@@ -649,7 +952,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     try:
         import maintenance_dispatcher as md
 
-        newest, last, beat = _maintenance_history(workspace_root)
+        newest, last, beat, newest_via = _maintenance_history(workspace_root)
         hours = md.maintenance_staleness(workspace_root, now=now).get("hours_behind")
     except Exception:  # noqa: BLE001 - the page keeps its old document
         return doc
@@ -657,10 +960,18 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         return doc
     finished = _parse((beat or {}).get("finished_at"))
     trouble = _maintenance_trouble(workspace_root)
+    # cr1#743: the document says which fire left it, and the page writes the
+    # clause in the viewer's own time (one wording, on the page). A scheduled
+    # fire's word reaches the page at the next Refresh or Start, as a typed run's.
+    fired_via = str(newest_via or "").strip().lower() or None
+    fired_at = _iso(newest)
     doc.update({
         "state": "done",
+        # The line reads the same after a scheduled fire and a typed one
+        # (cr1#822); which fire left it is its own field, and the page says it.
         "line": " ".join(x for x in (MAINTENANCE_DONE_LINE, trouble["line"]) if x),
         "failing": trouble["failing"], "unread": trouble["unread"],
+        "fired_via": fired_via, "fired_at": fired_at,
         "finished_at": _iso(finished or newest),
         "last_completed": {job: _iso(when) for job, when in sorted(last.items())},
         "hours_behind": float(hours) if isinstance(hours, (int, float)) else None,
@@ -860,7 +1171,7 @@ def _plate_rows(dv: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "lane": sec.get("lane") or it.get("block") or "",
                 "project": project[:120], "context": str(it.get("context_tag") or "")[:160],
                 "horizon": it.get("horizon") or "", "pending": bool(it.get("pending")),
-                "order": order,
+                "order": order, "folded_ids": list(it.get("folded_ids") or []),
             })
     return rows
 
@@ -1118,7 +1429,11 @@ REVIEW_SURFACE = "cockpit-review"
 REVIEW_CLOSE_VERBS = ("confirm", "not relevant", "hold")
 REVIEW_ROW_VERBS = ("dismiss proposal", "snooze proposal 7d", "proposal not relevant")
 REVIEW_ACCEPT_VERBS = ("confirm proposal", "add person", "confirm [type]")
-REVIEW_VERBS = frozenset(REVIEW_CLOSE_VERBS + REVIEW_ROW_VERBS + REVIEW_ACCEPT_VERBS)
+#: cr1#775: Same as on a person row, when the row names one record on file.
+REVIEW_SAME_AS_VERB = "same as [existing]"
+REVIEW_VERBS = frozenset(REVIEW_CLOSE_VERBS + REVIEW_ROW_VERBS + REVIEW_ACCEPT_VERBS + (REVIEW_SAME_AS_VERB,))
+#: A yes the row's kind words for itself.
+REVIEW_YES_LABELS = {"learned_rule": "Yes", "archived_activity": "Bring it back"}
 #: Why an accept is not on the row. The rest of the row still answers here.
 REVIEW_CHAT_WHY = {
     "project": "To accept this one, say `staff meeting` in a chat: a new project needs its folder and a first read of your connectors.",
@@ -1128,6 +1443,8 @@ REVIEW_CHAT_WHY = {
 }
 REVIEW_PERSON_ON_FILE_LINE = "To accept this one, say `staff meeting` in a chat: it changes a record already on file."
 REVIEW_PERSON_LIKE_LINE = "To accept this one, say `staff meeting` in a chat: someone with a name like this is on file, so it is add or same as."
+REVIEW_PERSON_MANY_LINE = "To say who this is, say `staff meeting` in a chat: more than one person with a name like this is on file, and the page never picks one."
+REVIEW_SAME_AS_GONE_LINE = "That row names nobody on file to link to; nothing was written."
 #: The keys the writers read, off the proposal event, onto the row.
 REVIEW_ROW_KEYS = ("proposed_money", "fact", "category", "proposed_role", "to_org_id",
                    "objective_id", "source_event_seq")
@@ -1197,6 +1514,24 @@ def _review_rates(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
     return out
 
 
+def _review_same_as(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The populated Same as on a person row (cr1#775): the one record on file
+    the adapter matched, with its id and name. None when the row has no such
+    verb, or carries it unpopulated because the name collides with two or more
+    records (IDM1): then the page never picks one, and chat does."""
+    if str(item.get("kind") or "") != "person":
+        return None
+    for tup in item.get("action_tuples") or []:
+        if isinstance(tup, dict) and tup.get("action") == REVIEW_SAME_AS_VERB:
+            return tup if tup.get("person_id") else None
+    return None
+
+
+def _review_same_as_unpopulated(item: Dict[str, Any]) -> bool:
+    return any(isinstance(tup, dict) and tup.get("action") == REVIEW_SAME_AS_VERB and not tup.get("person_id")
+               for tup in item.get("action_tuples") or []) if str(item.get("kind") or "") == "person" else False
+
+
 def _review_verbs(item: Dict[str, Any]) -> List[str]:
     """The verbs this row can be answered with on the Hub, in the row's order."""
     import brain_proposals as bp
@@ -1206,6 +1541,8 @@ def _review_verbs(item: Dict[str, Any]) -> List[str]:
     if kind == "commitment_review":
         return [v for v in own if v in REVIEW_CLOSE_VERBS]
     keep = REVIEW_ROW_VERBS + (REVIEW_ACCEPT_VERBS if _review_accepts(item) else ())
+    if _review_same_as(item):
+        keep += (REVIEW_SAME_AS_VERB,)
     if str(item.get("id") or "").split(":", 1)[0] in _REVIEW_LEGACY_DECLINES:
         keep += ("not relevant",)
     return [v for v in own if v in keep]
@@ -1239,6 +1576,9 @@ def _review_accepts(item: Dict[str, Any]) -> bool:
     if kind not in _REVIEW_ACCEPTS:
         return False
     if kind == "person":  # an add: an update row, or a name that may be on file, is a choice made in chat
+        # (cr1#818 kept Add in chat for a row with a Same as; cr1#775 adds Same as itself when one
+        # record matched, and keeps Add in chat there: the Add writer's gate is an exact-name check,
+        # so one press on a first name with a fuller record on file would make a second record)
         return (bool(item.get("name")) and _review_is_add(item)
                 and not any(str(v).startswith("same as") for v in _review_own_verbs(item)))
     if kind == "person_link":  # nobody matched yet: there is no one to link to
@@ -1278,6 +1618,8 @@ def _review_chat_line(item: Dict[str, Any], verbs: List[str]) -> str:
         return REVIEW_CHAT_WHY["person_merge"]
     if kind == "person" and not _review_is_add(item) and "add person" in _review_own_verbs(item):
         return REVIEW_PERSON_ON_FILE_LINE
+    if kind == "person" and _review_same_as_unpopulated(item):
+        return REVIEW_PERSON_MANY_LINE
     if kind == "person" and "add person" in _review_own_verbs(item):
         return REVIEW_PERSON_LIKE_LINE
     return REVIEW_CHAT_WHY.get(kind, REVIEW_CHAT_LINE)
@@ -1328,7 +1670,16 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             reason = qt.importance_hold(behind[str(it["commitment_id"])], now=now, client_ids=ids, workspace_root=workspace_root)
         reason = reason or qt.importance_hold(it, now=now, client_ids=ids, workspace_root=workspace_root)
         weighed.append((_review_weight(it, reason=reason), reason, it))
-    weighed.sort(key=lambda w: w[0])
+    # Weight first, and the queue's own order within a weight, except that the
+    # people and project questions sit together by the read they came from,
+    # people before the project questions of that read (cr1#775). Every other
+    # kind keeps its place ahead of them within the weight.
+    def _grouping(it: Dict[str, Any]):
+        kind = str(it.get("kind") or "")
+        if kind not in ("person", "project"):
+            return (0, "", 0)
+        return (1, str((by_seq.get(it.get("seq")) or {}).get("source_skill") or it.get("detector") or ""), 0 if kind == "person" else 1)
+    weighed.sort(key=lambda w: (w[0],) + _grouping(w[2]))
     rows: List[Dict[str, Any]] = []
     for n, (_w, reason, it) in enumerate(weighed[:REVIEW_CAP]):
         kind = str(it.get("kind") or "")
@@ -1347,8 +1698,15 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
                             _DEFAULT_WORDS.get(qt.class_spec(klass)["default"], "it settles on its own evidence"))
         full = _review_detail(it, by_seq)
         answers = _review_verbs(full)
-        verbs = [{"action": v, "label": "Yes" if kind == "learned_rule" and v == "confirm proposal" else (display_label(v) or v),
+        same_as = _review_same_as(full)
+        verbs = [{"action": v,
+                  "label": (REVIEW_YES_LABELS.get(kind, display_label(v) or v) if v == "confirm proposal"
+                            else (("Same as " + str(same_as.get("value") or "").strip()).strip() if v == REVIEW_SAME_AS_VERB and same_as
+                                  else (display_label(v) or v))),
                   **{k: w for k, w in _review_ask(full, v).items() if w}} for v in answers]
+        # cr1#775: where the question came from, so a project question sits
+        # beside the person questions from the same read.
+        board = str((by_seq.get(it.get("seq")) or {}).get("source_skill") or it.get("detector") or "")
         rows.append({
             "id": it.get("id"), "kind": kind, "shape": it.get("shape") or "hygiene",
             "group": "close" if kind == "commitment_review" else ("rule" if "rule" in kind else "question"),
@@ -1358,7 +1716,7 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             "thread_id": it.get("thread_id"), "verbs": verbs,
             "chat_line": _review_chat_line(full, answers),
             "expires_on": ends.date().isoformat() if ends else None, "default_line": default_line,
-            "today": n < REVIEW_TODAY,
+            "today": n < REVIEW_TODAY, "board": board or None,
             "data": {**bp._row_target_ids(it), **{k: full[k] for k in REVIEW_ROW_KEYS if k in full}},
         })
     return {"generated_at": iso_now, "rows": rows, "n_open": len(weighed),
@@ -1428,6 +1786,27 @@ def _accept_person(ws, row, text, actor, events_path, now):
     except Exception:  # noqa: BLE001
         pass
     return {"status": "added", "person_id": record.get("id")}, "applied", "Added."
+
+
+def _accept_person_same_as(ws, row, text, actor, events_path, now):
+    """Same as on a person row (cr1#775): the sightings are the one record on
+    file the row named. The spelling becomes that record's alias unless it is
+    the record's own name or another record's; the sightings close as that
+    person, the way the chat's own handler does. An alias, never a merge."""
+    from people_writer import add_person_alias, another_record_named, list_same_name_people
+
+    tup = _review_same_as(row)
+    if not tup:
+        return {"status": "no_match"}, "refused", (REVIEW_PERSON_MANY_LINE if _review_same_as_unpopulated(row)
+                                                   else REVIEW_SAME_AS_GONE_LINE)
+    pid, alias = str(tup.get("person_id") or ""), str(row.get("name") or "")
+    own = any(p.get("id") == pid and str(p.get("canonical_name") or "").strip().lower() == alias.strip().lower()
+              for p in list_same_name_people(ws, alias))
+    write = bool(alias) and not own and not another_record_named(ws, pid, alias)
+    if write:
+        add_person_alias(ws, pid, alias, source_skill=COMMITMENT_SRC, confirmed=True)
+    _review_tombstones(events_path, row, "same_as", person_id=pid, alias=alias if write else None)
+    return {"status": "linked", "person_id": pid}, "applied", "Same person; linked."
 
 
 def _accept_person_link(ws, row, text, actor, events_path, now):
@@ -1600,6 +1979,18 @@ def _review_objective_pair(ws, row, events_path, now, *, confirmed: bool) -> boo
     return True
 
 
+def _accept_archived_activity(ws, row, text, actor, events_path, now):
+    """A retired project moved and the owner said bring it back (cr1#753).
+    `bring_back` answers the question itself."""
+    import lifecycle_pass as lp
+
+    res = lp.bring_back(ws, str(row.get("thread_id") or ""), actor=actor, source_skill=COMMITMENT_SRC,
+                        reason="Brought back on the Command Room Hub")
+    if res.get("status") != "updated":
+        return res, "already", REVIEW_GONE_LINE
+    return {**res, "answered": True}, "applied", "Back to active."
+
+
 def _accept_objective_link(ws, row, text, actor, events_path, now):
     _review_objective_pair(ws, row, events_path, now, confirmed=True)
     return {"status": "linked"}, "applied", "Linked."
@@ -1610,7 +2001,7 @@ _REVIEW_ACCEPTS = {
     "person": _accept_person, "person_link": _accept_person_link, "person_rename": _accept_person_rename,
     "person_update": _accept_person_update, "entity_fact": _accept_entity_fact, "org_money": _accept_org_money,
     "org": _accept_org, "config_drift": _accept_config_drift, "objective_link": _accept_objective_link,
-    "learned_rule": _accept_learned_rule,
+    "learned_rule": _accept_learned_rule, "archived_activity": _accept_archived_activity,
 }
 #: The legacy rows whose `not relevant` is theirs, not a proposed close's.
 _REVIEW_LEGACY_DECLINES = ("org", "project")
@@ -1629,6 +2020,8 @@ def _review_queue_answer(ws, verb: str, row: Dict[str, Any], text: str, actor: s
     is_bp = n.startswith("bp_")
     if verb not in bp._row_actions(row):
         return {"status": "not_this_row"}, "refused", UNKNOWN_VERB_LINE.format(verb=verb)
+    if verb == REVIEW_SAME_AS_VERB:
+        return _accept_person_same_as(ws, row, text, actor, events_path, now)
     if verb in REVIEW_ACCEPT_VERBS:
         if not _review_accepts(row):
             return {"status": "chat_only"}, "refused", _review_chat_line(row, [])
@@ -1670,7 +2063,10 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
       * `dismiss proposal`: `brain_proposals.resolve_proposal(declined)`;
       * a yes or a decline on any other queue row (cr1#818): the writer of its
         kind, reading the book's row, never the page's. A row no longer in the
-        queue writes nothing.
+        queue writes nothing;
+      * `same as [existing]` on a person row (cr1#775): an alias on the one
+        record the row named and a `same_as` tombstone per sighting; a row
+        that names two or more records is answered in chat.
 
     Any other verb is refused. A refusal of one row never stops the rest. Each
     close's audit note says accepted or reversed, so the rate per kind can be
@@ -1700,7 +2096,7 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
             if verb not in REVIEW_VERBS or not n:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
                 handler = {"status": "error"}
-            elif (verb in REVIEW_ACCEPT_VERBS or verb == "proposal not relevant"
+            elif (verb in REVIEW_ACCEPT_VERBS or verb == REVIEW_SAME_AS_VERB or verb == "proposal not relevant"
                   or (verb == "not relevant" and n.split(":", 1)[0] in _REVIEW_LEGACY_DECLINES)
                   or (verb == "dismiss proposal" and kind in ("objective_link", "person_link"))):
                 # Read per row: an earlier row in this batch may have answered it.
@@ -1778,6 +2174,7 @@ WEEK_SURFACE = "cockpit-week"
 WEEK_ITEMS_CAP = 12
 WEEK_DECIDED_CAP = 40
 _WEEK_DORMANT_VERBS = [{"action": "bring back", "label": "Bring back"}, {"action": "archive", "label": "Archive"}]
+_WEEK_ARCHIVED_VERBS = _WEEK_DORMANT_VERBS[:1]
 
 
 def _week_undone(events: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -1889,7 +2286,7 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
             if to == "dormant":
                 dormant.append(dict(row, verbs=list(_WEEK_DORMANT_VERBS)))
             elif ev.get("source_skill") == lp.SOURCE_SKILL:
-                archived.append(row)
+                archived.append(dict(row, verbs=list(_WEEK_ARCHIVED_VERBS)))
     except (FileNotFoundError, ValueError, OSError):
         errors.append("dormant")
     sec = sections if isinstance(sections, dict) else {}
@@ -1908,29 +2305,13 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
 
 
 def _bring_back(workspace_root, tid: str, actor: str) -> None:
-    """A press: dormant to active, as the owner's act. The dormancy question is
-    answered too, or the next pass would read the old silence as still standing
-    and flip the project straight back. The clock itself is untouched."""
-    import brain_proposals as bp
+    """A press: a dormant or a retired project to active, as the owner's act,
+    through `lifecycle_pass.bring_back`, which reads the status it is leaving
+    and answers the questions standing on the project."""
     import lifecycle_pass as lp
-    import thread_writer
-    from event_gate import append_event
-    from thread_archive import build_thread_status_event
 
-    root = str(workspace_root)
-    thread_writer.update_thread(root, tid, source_skill=COMMITMENT_SRC, status="active")
-    events_path = Path(root) / "_hq" / "data" / "events.jsonl"
-    append_event(events_path, [build_thread_status_event(tid, from_status="dormant", to_status="active",
-                                                         reason="Brought back on the Command Room Hub",
-                                                         source_skill=COMMITMENT_SRC)], holder="cockpit_helpers")
-    want = lp.FINGERPRINT_PREFIX + tid
-    for ev in _review_events(root):
-        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
-        if ev.get("type") == "brain_proposal" and str(d.get("fingerprint") or "") == want and d.get("proposal_id"):
-            append_event(events_path, [{"type": "brain_proposal_resolved", "source_skill": COMMITMENT_SRC,
-                                        "data": {"proposal_id": d["proposal_id"], "user_action": "declined",
-                                                 "resolved_by": actor, "note": "Brought back on the Command Room Hub"}}],
-                         holder="cockpit_helpers")
+    lp.bring_back(workspace_root, tid, actor=actor, source_skill=COMMITMENT_SRC,
+                  reason="Brought back on the Command Room Hub")
 
 
 def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
@@ -1940,11 +2321,11 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
 
       * `undo`: `brain_undo.undo_batch`, a reversal the owner pressed; a batch
         already reversed is left alone, and a partial one says so;
-      * `bring back`: dormant to active as the owner's act, the dormancy
-        question answered (`_bring_back`);
+      * `bring back`: dormant or retired to active as the owner's act, the
+        questions standing on it answered (`_bring_back`);
       * `archive`: `thread_archive.archive_thread`, the one archive path.
 
-    A project no longer dormant is left alone. A refusal of one row never
+    A project in any other state is left alone. A refusal of one row never
     stops the rest."""
     actor = str(resolved_by or "").strip() or _owner_id(workspace_root)
     rows = [c for c in (choices or []) if isinstance(c, dict)]
@@ -1998,7 +2379,7 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
                     else:
                         r.update(outcome="error", line=WEEK_PARTIAL_LINE)
                         handler = {"status": "error"}
-            elif status_of(n) != "dormant":
+            elif status_of(n) != "dormant" and not (verb == "bring back" and status_of(n) == "archived"):
                 r.update(outcome="already", line="That one is no longer dormant; nothing was written.")
                 handler = {"status": "already_resolved"}
             elif verb == "bring back":
@@ -2023,11 +2404,521 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
             "n_errors": sum(1 for r in results if r["outcome"] == "error")}
 
 
+# ---------------------------------------------------------------------------
+# the Settings tab (cr1#781)
+# ---------------------------------------------------------------------------
+
+#: What the system has learned and every setting it works to, each with where
+#: it came from, read from the same stores the skills read: never a second copy.
+#: Learned rules and the question budget are editable from the first version
+#: (owner ruling D3 of 2026-11-04); the rest is read-only here.
+SETTINGS_VERBS = frozenset({"rule off", "rule delete", "rule edit", "budget"})
+SETTINGS_SURFACE = "cockpit-settings"
+SETTINGS_RULES_CAP = 60
+SOURCE_SENTENCE = "your sentence"
+SOURCE_CORRECTION = "a correction"
+SOURCE_DEFAULT = "a default"
+SOURCE_ON_FILE = "on file"
+SOURCE_HUB = "your words on the Hub"
+RULE_GONE_LINE = "That rule is no longer in force; nothing was written."
+RULE_EDIT_NEEDS_TEXT_LINE = "An edit needs the new wording typed on its row; nothing was written."
+RULE_NO_UNDO_LINE = "That rule shares its record with others and cannot be switched off from here; say `undo` in a chat."
+BUDGET_UNKNOWN_LINE = "That is not one of the question budgets the system takes ({options}); nothing was written."
+BUDGET_SAME_LINE = "The question budget already is that number; nothing was written."
+HUB_EDIT_DETECTOR = "hub"
+
+
+def _settings_source(stored: Optional[Dict[str, Any]]) -> str:
+    """Where a skill_config value came from: the writer's own `origin`."""
+    origin = str((stored or {}).get("origin") or "").strip().lower()
+    if not stored:
+        return SOURCE_DEFAULT
+    if origin in ("tune", "asked", "user", "owner"):
+        return SOURCE_SENTENCE
+    if origin == "first_fire_defaults":
+        return SOURCE_DEFAULT
+    return SOURCE_ON_FILE if origin else SOURCE_SENTENCE
+
+
+def _rule_last_used(events: List[Dict[str, Any]], skill: str, applied_at) -> Optional[str]:
+    """When a draft in the rule's skill was last made after the rule landed:
+    the newest `email_drafted` row from that skill, else None."""
+    best = None
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != "email_drafted" or str(ev.get("source_skill") or "") != skill:
+            continue
+        at = _parse(ev.get("ts"))
+        if at is None or (applied_at and at < applied_at):
+            continue
+        if best is None or at > best:
+            best = at
+    return _iso(best) if best else None
+
+
+def _budget_options() -> List[Dict[str, Any]]:
+    import quiet
+
+    return [{"preset": p, "n": int(quiet.QUESTION_BUDGET[p])} for p in quiet.PRESET_LADDER]
+
+
+def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. The Settings tab (cr1#781): every learned voice rule still in force
+    or reversed (`learning_pass.learned_rules`), each with its one sentence,
+    why, where it applies, when it was confirmed and when it was last used; the
+    question budget as one number with the numbers it can be set to; and,
+    read-only, each connector's kind, dials and lists, each mail account's
+    role, the daily caps, the rest and let-go days, the learning bar, the chat
+    persona and the voice blocks on file, and the usage guide (cr1#187). Every row names its source. Nothing
+    here is a second copy: each section reads the store its skill reads. A
+    section that cannot be read is named in `errors`, never shown empty."""
+    import brain_proposals as bp
+    import brain_undo as bu
+    import chat_persona as cp
+    import connector_config as cc
+    import identity_reconcile as ir
+    import learning_pass as learn
+    import quiet
+    from exit_doors import SILENCE_LET_GO_DAYS, SILENCE_PARK_DAYS
+    import commitment_policy as policy
+    from skill_config_writer import load_skill_config
+
+    now = _now(now_iso)
+    iso_now = _iso(now)
+    ws = str(workspace_root)
+    errors: List[str] = []
+    events = _review_events(workspace_root)
+    rules: List[Dict[str, Any]] = []
+    try:
+        for r in learn.learned_rules(ws, now_iso=iso_now):
+            status = str(r.get("status") or "")
+            if status not in ("live", "reversed"):
+                continue  # a question is the Review tab's
+            applied = _parse(r.get("applied_at"))
+            own = bool(r.get("undo")) and len(bu.resolve_batch(ws, r["undo"])) == 1
+            rid = bu.batch_ref_label(r["undo"]) if r.get("undo") else f"rule:{r.get('seq')}"
+            rules.append({
+                "id": rid, "seq": r.get("seq"), "status": status,
+                "rule": str(r.get("rule") or "")[:200], "effect": str(r.get("effect") or "")[:300],
+                "why": str(r.get("rests_on") or "")[:300], "where": str(r.get("skill") or ""),
+                "op": str(r.get("op") or ""),
+                "confirmed_at": str(r.get("applied_at") or "")[:10] or None,
+                "asked_at": str(r.get("asked_at") or "")[:10] or None,
+                "last_used": _rule_last_used(events, str(r.get("skill") or ""), applied),
+                "source": SOURCE_HUB if r.get("corrections") == [] and str(r.get("rests_on") or "") == SOURCE_HUB else SOURCE_CORRECTION,
+                "editable": status == "live" and own, "batch_ref": r.get("undo"),
+                "verbs": ([{"action": "rule edit", "label": "Save wording", "ask": "The rule in your words"},
+                           {"action": "rule off", "label": "Switch off"},
+                           {"action": "rule delete", "label": "Delete"}] if status == "live" and own else []),
+            })
+    except Exception:  # noqa: BLE001 - said on the page, never shown as no rules
+        errors.append("rules")
+    budget: Dict[str, Any] = {}
+    try:
+        preset = quiet.effective_preset(ws)
+        stored = quiet.stored_preset(ws)
+        budget = {"preset": preset, "n": int(quiet.QUESTION_BUDGET[preset]), "options": _budget_options(),
+                  "source": SOURCE_SENTENCE if stored else SOURCE_DEFAULT,
+                  "stepped_down": bool(stored and stored != preset)}
+    except Exception:  # noqa: BLE001
+        errors.append("budget")
+    connectors: List[Dict[str, Any]] = []
+    accounts: List[Dict[str, Any]] = []
+    try:
+        for c in cc.declared_connector_settings(ws):
+            connectors.append({"category": c.get("category"), "kind": c.get("kind"), "label": c.get("label") or c.get("provider") or c.get("server_id"),
+                               "dials": dict(c.get("dials") or {}), "include": list(c.get("include") or []),
+                               "exclude": list(c.get("exclude") or []), "scope": c.get("scope"), "source": SOURCE_SENTENCE})
+        for a in cc.accounts(ws):
+            role = str(a.get("role") or "unclassified")
+            accounts.append({"address": str(a.get("address") or ""), "role": role,
+                             "role_line": cc._ROLE_IN_ENGLISH.get(role, role), "dials": cc._dials_for(a),
+                             "source": SOURCE_SENTENCE if role != "unclassified" else SOURCE_DEFAULT})
+    except Exception:  # noqa: BLE001
+        errors.append("connectors")
+    caps = {"questions_a_day": {"n": int(bp.DAILY_CONFIRM_CAP), "source": SOURCE_DEFAULT},
+            "connector_questions_a_day": {"n": int(bp.DAILY_CONNECTOR_QUESTION_CAP), "source": SOURCE_DEFAULT},
+            "people_added_a_run": {"n": int(ir.STEADY_CAPS.get("auto_add", 0)), "source": SOURCE_DEFAULT},
+            "merges_proposed_a_run": {"n": int(ir.STEADY_CAPS.get("merge_propose", 0)), "source": SOURCE_DEFAULT}}
+    exits: Dict[str, Any] = {}
+    try:
+        silence_on = policy.flow_switch_enabled(ws, policy.EXIT_SILENCE_AGE_OUT_KEY)
+        own_word_on = policy.flow_switch_enabled(ws, policy.EXIT_OWN_WORD_CLOSES_KEY)
+        stored_policy = load_skill_config(ws, policy.PRESET_SKILL_KEY) or {}
+        cfg = stored_policy.get("config") if isinstance(stored_policy.get("config"), dict) else {}
+        exits = {"rests_after_days": int(SILENCE_PARK_DAYS), "let_go_after_days": int(SILENCE_LET_GO_DAYS),
+                 "silence_age_out": silence_on, "own_word_closes": own_word_on,
+                 "source": SOURCE_SENTENCE if any(k in cfg for k in (policy.EXIT_SILENCE_AGE_OUT_KEY, policy.EXIT_OWN_WORD_CLOSES_KEY)) else SOURCE_DEFAULT}
+    except Exception:  # noqa: BLE001
+        errors.append("exits")
+    learning: Dict[str, Any] = {}
+    try:
+        th = learn.learning_thresholds(ws)
+        stored_learn = load_skill_config(ws, learn.SETTINGS_NAME)
+        learning = {"on": bool(learn.learning_enabled(ws)), "ask_at": int(th.get(learn.ASK_AT_KEY)),
+                    "apply_at": int(th.get(learn.APPLY_AT_KEY)), "source": _settings_source(stored_learn)}
+    except Exception:  # noqa: BLE001
+        errors.append("learning")
+    persona: List[Dict[str, Any]] = []
+    try:
+        saved = cp._load_saved(ws) or {}
+        for knob, value in cp.get_chat_persona(ws).items():
+            persona.append({"knob": knob, "value": value, "source": SOURCE_SENTENCE if knob in saved else SOURCE_DEFAULT})
+    except Exception:  # noqa: BLE001
+        errors.append("persona")
+    voice: List[Dict[str, Any]] = []
+    prep: List[Dict[str, Any]] = []
+    try:
+        import voice_corrections as vc
+
+        for skill in vc.written_overrides(ws) or []:
+            ov = vc.load_voice_block_override(ws, skill) or {}
+            voice.append({"skill": skill, "last_refreshed": str(ov.get("last_refreshed") or "")[:10] or None,
+                          "calibration_level": ov.get("calibration_level"), "sample_count": ov.get("sample_count"),
+                          "source": SOURCE_CORRECTION})
+        stored_prep = load_skill_config(ws, "call-prep") or {}
+        pcfg = stored_prep.get("config") if isinstance(stored_prep.get("config"), dict) else {}
+        for meeting_type, per_section in sorted((pcfg.get("section_weights") or {}).items()):
+            if isinstance(per_section, dict):
+                for section, weight in sorted(per_section.items()):
+                    prep.append({"meeting_type": meeting_type, "section": section, "weight": weight, "source": SOURCE_CORRECTION})
+    except Exception:  # noqa: BLE001
+        errors.append("voice")
+    guide: Dict[str, Any] = {}
+    try:
+        import usage_guide
+
+        guide = usage_guide.guide(ws)
+    except Exception:  # noqa: BLE001
+        errors.append("guide")
+    return {"generated_at": iso_now, "rules": rules[:SETTINGS_RULES_CAP], "n_rules": len(rules), "guide": guide,
+            "budget": budget, "connectors": connectors, "accounts": accounts, "caps": caps, "exits": exits,
+            "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors}
+
+
+def _rule_live(workspace_root, rid: str, now_iso: str) -> Optional[Dict[str, Any]]:
+    """The learned rule the page named, from the book, only while it is live
+    with its own record: a page's payload never picks the target."""
+    import brain_undo as bu
+    import learning_pass as learn
+
+    for r in learn.learned_rules(str(workspace_root), now_iso=now_iso):
+        if r.get("status") != "live" or not r.get("undo"):
+            continue
+        if bu.batch_ref_label(r["undo"]) == rid and len(bu.resolve_batch(str(workspace_root), r["undo"])) == 1:
+            return r
+    return None
+
+
+def _rule_off(workspace_root, rule: Dict[str, Any], actor: str) -> Dict[str, Any]:
+    import brain_undo as bu
+
+    return bu.undo_batch(str(workspace_root), rule["undo"], undone_by=actor, source_skill=COMMITMENT_SRC,
+                         user_confirmed=True) or {}
+
+
+def _rule_edit(workspace_root, rule: Dict[str, Any], text: str, actor: str, events_path, now) -> Dict[str, Any]:
+    """The owner's wording replaces the learned line: the learned change is
+    taken back through its own reverser, then the sentence is written into the
+    block under the rule's section with its own `voice_block_updated` record,
+    so it is a live rule with its own Undo and `learned_rules` reads it back."""
+    import voice_corrections as vc
+    from event_gate import append_event
+    from learning_pass import CLASS_VOICE, _baked_voice_block, _block_body
+
+    undone = _rule_off(workspace_root, rule, actor)
+    if not int(undone.get("n_undone") or 0) and undone.get("status") != "already":
+        return {"status": "error", "undone": undone}
+    skill = str(rule.get("skill") or "")
+    op = str(rule.get("op") or "")
+    existing = vc.load_voice_block_override(workspace_root, skill) or {}
+    previous = existing.get("markdown") or None
+    base = _block_body(previous) or _baked_voice_block(skill)
+    section = vc.VOICE_OP_SECTIONS.get(op) or "Structure"
+    bullet = "- " + text.strip().lstrip("-").strip()
+    lines = base.split("\n")
+    head = next((i for i, ln in enumerate(lines) if ln.strip().lower().startswith("### " + section.lower())), None)
+    if head is None:
+        lines += ["", "### " + section, bullet]
+    else:
+        end = head + 1
+        while end < len(lines) and not lines[end].startswith("#"):
+            end += 1
+        while end > head + 1 and not lines[end - 1].strip():
+            end -= 1
+        lines.insert(end, bullet)
+    vc.write_voice_block_override(workspace_root, skill, "\n".join(lines),
+                                  calibration_level=str(existing.get("calibration_level") or "calibrated"),
+                                  sample_count=int(existing.get("sample_count") or 0))
+    batch_id = f"hub_{now.strftime('%Y%m%dT%H%M%SZ')}_{secrets.token_hex(4)}"
+    append_event(events_path, {
+        "type": "voice_block_updated", "source_skill": COMMITMENT_SRC,
+        "data": {"skill": skill, "op": op, "section": section, "phrases": list(rule.get("items") or []) if op == vc.OP_BAN_PHRASE else [],
+                 "delta": text, "rule": text, "effect": str(rule.get("effect") or ""), "rests_on": SOURCE_HUB,
+                 "corrections": [], "item_fingerprints": [vc.voice_item_fingerprint(skill, op, item) for item in (rule.get("items") or [])],
+                 "learned_line": bullet, "previous_markdown": previous, "had_override": bool(previous),
+                 "fingerprint": vc.voice_proposal_fingerprint(skill, op), "proposal_id": rule.get("proposal_id"),
+                 "confirmed_by": actor, "brain_batch_id": batch_id, "brain_change_class": CLASS_VOICE,
+                 "detector": HUB_EDIT_DETECTOR}}, holder="cockpit_helpers")
+    return {"status": "edited", "batch_id": batch_id}
+
+
+def _delete_rule_items(workspace_root, rule: Dict[str, Any], events_path) -> int:
+    """One `learned_line_deleted` row per item this rule learned (cr1#781):
+    the item fingerprint is the key `learning_pass._deletion_times` reads, so
+    the same correction never re-learns this rule, and nothing else in the
+    skill is closed. The profile key rides on each row, as the profile page's
+    own deletion rows carry it."""
+    import voice_corrections as vc
+    from event_gate import append_event
+    from profile import DELETION_EVENT, DELETION_SOURCE_SKILL
+
+    skill, op = str(rule.get("skill") or ""), str(rule.get("op") or "")
+    prints = [vc.voice_item_fingerprint(skill, op, item) for item in (rule.get("items") or [])]
+    rows = [{"type": DELETION_EVENT, "source_skill": DELETION_SOURCE_SKILL,
+             "data": {"key": f"learned.voice.{skill}", "skill": skill, "op": op, "fingerprint": fp, "surface": SETTINGS_SURFACE}}
+            for fp in prints if fp]
+    if rows:
+        append_event(events_path, rows, holder="cockpit_helpers")
+    return len(rows)
+
+
+def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                           *, resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
+    """A WRITER. The Settings tab's edits (cr1#781), each through the store's
+    own writer, then ONE `apply_choices_applied` audit row:
+
+      * `rule off`: `brain_undo.undo_batch` on the rule's own record, the
+        registered reverser (the Week tab's Undo);
+      * `rule delete`: the same, then one `learned_line_deleted` row per
+        item the rule learned (its item fingerprints, the shape the learning
+        job's reader excludes on), so THAT rule is not learned again from the
+        same corrections and nothing wider is closed (the profile page's
+        skill-wide deletion is deliberately not used here);
+      * `rule edit`: the learned line taken back and the owner's wording
+        written into the block with its own record (`_rule_edit`);
+      * `budget`: `quiet.stamp_preset`, the one writer of the posture the
+        budget is read from, undoable like every stamp.
+
+    A rule no longer live, or one that shares its record with others, writes
+    nothing. Any other verb is refused. A refusal of one row never stops the
+    rest. Answers `{ok, results: [{id, outcome, line}], n_applied, n_errors}`."""
+    actor = str(resolved_by or "").strip() or _owner_id(workspace_root)
+    rows = [c for c in (choices or []) if isinstance(c, dict)]
+    if not actor:
+        return {"ok": False, "reason": "no_actor", "line": NO_ACTOR_LINE,
+                "results": [], "n_applied": 0, "n_errors": len(rows)}
+    import quiet
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    now = _now(now_iso)
+    iso_now = _iso(now)
+    events_path = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
+    results: List[Dict[str, Any]] = []
+    audit: List[Dict[str, Any]] = []
+    for c in rows:
+        verb = str(c.get("action") or "").strip().lower()
+        n = str(c.get("n") or "").strip()
+        text = str(c.get("input") or "").strip()
+        r: Dict[str, Any] = {"id": c.get("id"), "action": verb, "n": n}
+        handler: Any = None
+        try:
+            if verb not in SETTINGS_VERBS or not n:
+                r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
+                handler = {"status": "error"}
+            elif verb == "budget":
+                options = {str(o["n"]): o["preset"] for o in _budget_options()}
+                preset = options.get(text or n.split(":", 1)[-1])
+                if not preset:
+                    r.update(outcome="refused", line=BUDGET_UNKNOWN_LINE.format(options=", ".join(sorted(options, key=int))))
+                    handler = {"status": "refused"}
+                else:
+                    out = quiet.stamp_preset(str(workspace_root), preset, origin="tune",
+                                             triggered_by=SETTINGS_SURFACE, now_iso=iso_now)
+                    if out.get("ran"):
+                        r.update(outcome="applied", line=f"Question budget set to {int(quiet.QUESTION_BUDGET[preset])} a week.")
+                        handler = {"status": "updated", "preset": preset}
+                    else:
+                        r.update(outcome="already", line=BUDGET_SAME_LINE)
+                        handler = {"status": "already_resolved"}
+            else:
+                rule = _rule_live(workspace_root, n, iso_now)
+                if rule is None:
+                    r.update(outcome="already", line=RULE_GONE_LINE)
+                    handler = {"status": "not_open"}
+                elif verb == "rule edit" and not text:
+                    r.update(outcome="refused", line=RULE_EDIT_NEEDS_TEXT_LINE)
+                    handler = {"status": "needs_input"}
+                elif verb == "rule edit":
+                    handler = _rule_edit(workspace_root, rule, text, actor, events_path, now)
+                    if handler.get("status") == "edited":
+                        r.update(outcome="applied", line="Saved in your words.")
+                    else:
+                        r.update(outcome="error", line=ROW_ERROR_LINE)
+                else:
+                    out = _rule_off(workspace_root, rule, actor)
+                    ok = bool(int(out.get("n_undone") or 0)) and not int(out.get("n_errors") or 0)
+                    if not ok and out.get("status") != "already":
+                        r.update(outcome="error", line=WEEK_PARTIAL_LINE)
+                        handler = {"status": "error"}
+                    elif verb == "rule delete":
+                        n_rows = _delete_rule_items(workspace_root, rule, events_path)
+                        r.update(outcome="applied", line="Deleted, and not learned again.")
+                        handler = {"status": "deleted", "deletion_rows": n_rows}
+                    else:
+                        r.update(outcome="applied", line="Switched off.")
+                        handler = {"status": "undone"}
+        except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
+            r.update(_row_error(exc))
+            handler = {"status": "error", "error": type(exc).__name__}
+        results.append(r)
+        audit.append({"n": n, "action": verb, "handler_result": handler})
+    if audit:
+        ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
+        ev["data"]["surface"] = SETTINGS_SURFACE
+        append_event(events_path, ev, holder="cockpit_helpers")
+    return {"ok": True, "results": results, "n_applied": sum(1 for r in results if r["outcome"] == "applied"),
+            "n_errors": sum(1 for r in results if r["outcome"] == "error")}
+
+
+def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str, Any],
+                  now: _dt.datetime) -> Dict[str, Dict[str, Any]]:
+    """`{commitment_id: offer}` for each late row owed to the owner, with a
+    counterparty, that is not snoozed or waiting for the owner's yes
+    (cr1#219): `chase_policy.chase_offer` over the book. Reads only; the offer
+    is text the row carries until the owner presses."""
+    import chase_policy as cp
+    from commitment_parties import counterparty_count
+    from commitment_state import BUCKET_OWED_TO_YOU, _now_calendar_day, bucket_of, is_overdue
+    from contact_capture import own_addresses
+    from cru_match import _commitment_field, _commitment_id, partition_subitems
+    from due_reanchor import parse_date
+    from entities_io import entities_collection, read_entities_json
+    from events_io import load_events_owner_scoped
+    from mute_ledger import active_dismissal_target_ids
+    from people_writer import get_person_emails
+
+    owner = _owner_id(workspace_root)
+    if not owner:
+        return {}
+    day = _now_calendar_day(_iso(now), workspace_path=str(workspace_root))
+    today = day or now.date()
+    ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+    people = {p["id"]: p for p in entities_collection(ent, "people") if isinstance(p, dict) and p.get("id")}
+    orgs = {o["id"]: o for o in entities_collection(ent, "orgs") if isinstance(o, dict) and o.get("id")}
+    addresses = {pid: [a.strip().lower() for a in get_person_emails(p)] for pid, p in people.items()}
+    own = {str(a).strip().lower() for a in own_addresses(workspace_root)} | set(addresses.get(owner) or [])
+    events = load_events_owner_scoped(str(workspace_root))[0]
+    muted = active_dismissal_target_ids(events, _iso(now))
+    tzinfo = _workspace_tz(workspace_root)
+
+    def day_of(value) -> Optional[_dt.date]:
+        at = _parse(value)
+        return at.astimezone(tzinfo).date() if at else None
+
+    touches, heard = cp.chase_touches(events, addresses, day_of, today)
+    chased = cp.row_chases(events, day_of)
+    policy = cp.load_chase_policy(workspace_root)
+    since = _iso(now - _dt.timedelta(days=cp.OUTCOME_WINDOW_DAYS))
+    gaps: Dict[str, List[float]] = {}
+    for o in cp.load_email_outcomes(workspace_root, since_iso=since):
+        if o.get("outcome") == "replied" and isinstance(o.get("latency_days"), (int, float)):
+            gaps.setdefault(str(o.get("recipient") or "").strip().lower(), []).append(float(o["latency_days"]))
+    out: Dict[str, Dict[str, Any]] = {}
+    for ev in partition_subitems(opens)[0]:
+        cid = str(_commitment_id(ev))
+        if bucket_of(ev, owner) != BUCKET_OWED_TO_YOU or cid in muted \
+                or not is_overdue(_commitment_field(ev, "due"), today.isoformat()) \
+                or not counterparty_count(ev, workspace_root=str(workspace_root)):
+            continue
+        pid = str(_commitment_field(ev, "owner_id") or "")
+        rec = people.get(pid)
+        rtype = str((rec or {}).get("relationship_type") or (orgs.get((rec or {}).get("org_id")) or {}).get("relationship_type") or "")
+        lat = [g for a in addresses.get(pid, []) for g in gaps.get(a, [])]
+        window, escalate = cp.person_chase_days(rec, policy, lat, rtype), cp.get_chase_window(policy, rtype)[1]
+        origin = origins.get(cid) or {}
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        row = {"title": d.get("title") or d.get("summary"), "due": parse_date(_commitment_field(ev, "due")),
+               "source": origin.get("source") or "",
+               "source_day": None if origin.get("captured") else parse_date(origin.get("date"))}
+        mine = set(addresses.get(pid, []))
+        out[cid] = cp.chase_offer(row, person=rec, addresses=addresses.get(pid, []), own_addresses=own, days=window,
+                                  escalate_after=escalate, last_touch=touches.get(pid), last_heard=heard.get(pid),
+                                  chases=[day for day, to in chased.get(cid, []) if to in mine], today=today)
+    return out
+
+
+def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str, Any]],
+                   origins: Dict[str, Any], now: _dt.datetime) -> Tuple[List[Dict[str, Any]], int]:
+    """What the Overdue tab needs (cr1#877), from the set the plate draws.
+    Stamps each row with `late` (the Projects row's own test, on the owner's
+    local day), the book's direction (`bucket_of`), its day, the phrase that
+    states its age, who is on the other end, and `snoozed` (a live mute: a
+    snooze on a row owed to the owner hides it and leaves the date alone, and
+    the plate does not read mutes). Answers `(late_rows, n_hidden)`: the rows
+    past their date that `rows[:PLATE_ROW_CAP]` leaves out, because the list
+    cut them, the cap parked them, or a copy folded them into a row that is
+    not on the tab itself. Raises on a book it cannot read; the feed then says
+    the tab has no answer, rather than a wrong one."""
+    from cru_match import _commitment_field, _commitment_id, partition_subitems
+    from commitment_parties import counterparty_ids, primary_counterparty_name
+    from commitment_state import BUCKET_OWED_TO_YOU, _now_calendar_day, bucket_of, is_overdue
+    from due_reanchor import parse_date, render_due_phrase
+    from events_io import load_events_owner_scoped
+    from mute_ledger import active_dismissal_target_ids
+    from plate_view import NO_PROJECT_KEY, TIER_OBSERVED, _entities, _names_by_id, project_group, row_title
+
+    owner = _owner_id(workspace_root)
+    day = _now_calendar_day(_iso(now), workspace_path=str(workspace_root))
+    today = day.isoformat() if day else _iso(now)[:10]
+    muted = active_dismissal_target_ids(load_events_owner_scoped(str(workspace_root))[0], _iso(now))
+    names = _person_names(workspace_root)
+    threads = _names_by_id(_entities(Path(str(workspace_root))), "threads")
+
+    def facts(ev: Dict[str, Any]) -> Dict[str, Any]:
+        bucket = bucket_of(ev, owner)
+        raw = _commitment_field(ev, "due")
+        due = parse_date(raw)
+        other = [str(_commitment_field(ev, "owner_id") or "")] if bucket == BUCKET_OWED_TO_YOU else counterparty_ids(ev)
+        who = names.get(other[0], "") if other else \
+            primary_counterparty_name(ev, workspace_root=str(workspace_root)) or ""
+        return {"late": is_overdue(raw, today), "bucket": bucket, "due": due.isoformat() if due else "",
+                "due_phrase": render_due_phrase(due.isoformat(), today) if due else "",
+                "who": str(who)[:120], "snoozed": str(_commitment_id(ev)) in muted}
+
+    top, _steps = partition_subitems(opens)
+    by_id = {str(r.get("id")): r for r in rows}
+    stamped = [(ev, facts(ev)) for ev in top]  # all or none: a raise leaves no row half stamped
+    for ev, extra in stamped:
+        row = by_id.get(str(_commitment_id(ev)))
+        if row is not None:
+            row.update(extra)
+    # A copy folded into a late row is that row's "+1 more".
+    covered = {str(f) for r in rows if r.get("late") for f in r.get("folded_ids") or []}
+    sent = {str(r.get("id")) for r in rows[:PLATE_ROW_CAP]}
+    late: List[Dict[str, Any]] = []
+    for ev, extra in stamped:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        cid = str(_commitment_id(ev))
+        if cid in sent or cid in covered or d.get("tier") == TIER_OBSERVED or extra["snoozed"] or not extra["late"]:
+            continue
+        late.append(by_id.get(cid) or {
+            "id": cid, "n": None, "title": row_title(d.get("title"), d.get("summary"))[:240], "lane": "",
+            "project": project_group(ev.get("primary_thread_id") or NO_PROJECT_KEY, threads)[1][:120],
+            "context": " · ".join(x for x in (extra["due_phrase"], extra["who"]) if x)[:160],
+            "horizon": "overdue", "pending": extra["bucket"] == "unconfirmed",
+            "origin": origins.get(cid), **extra})
+    late.sort(key=lambda r: (str(r.get("due") or ""), str(r.get("id") or "")))
+    return late[:OVERDUE_EXTRA_CAP], max(0, len(late) - OVERDUE_EXTRA_CAP)
+
+
 def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """A WRITER (building the plate mints display numbers). The Commitments
-    tab and the Today tab's Move these today: the plate's own data view,
-    serialized, never re-derived (`plate_view.plate_data_view` is the one
-    grouping). Rows beyond `PLATE_ROW_CAP` are counted, not sent."""
+    tab, the Overdue tab and the Today tab's Move these today: the plate's own
+    data view, serialized, never re-derived (`plate_view.plate_data_view` is
+    the one grouping). Rows beyond `PLATE_ROW_CAP` are counted, not sent, but
+    for the rows past their date, which ride `late_rows` for the Overdue tab
+    (cr1#877; `_overdue_facts`)."""
     from plate_view import plate_data_view
 
     now = _now(now_iso)
@@ -2037,6 +2928,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     # cr1#725: each row's own record, read once, from the same open set the
     # plate draws (personal rows included: the page is the owner's own).
     # Nothing here is fetched live.
+    opens: Optional[List[Dict[str, Any]]] = None
     try:
         from cru_match import _commitment_id, load_open_commitments
 
@@ -2044,19 +2936,28 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         names = _person_names(workspace_root)
         owner = _owner_id(workspace_root)
         tzinfo = _workspace_tz(workspace_root)
-        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo)
-                   for ev in (load_open_commitments(ep) if ep.exists() else [])}
+        opens = load_open_commitments(ep) if ep.exists() else []
+        origins = {str(_commitment_id(ev)): _row_origin(ev, names, owner, tzinfo) for ev in opens}
     except Exception:  # noqa: BLE001 - a bad record leaves the note off, never the plate
         origins = {}
     for r in rows:
         r["origin"] = origins.get(str(r.get("id")))
+    late_rows: List[Dict[str, Any]] = []
+    n_late_hidden = 0
+    overdue_ok = False
+    try:
+        if opens is not None and _owner_id(workspace_root):
+            late_rows, n_late_hidden = _overdue_facts(workspace_root, rows, opens, origins, now)
+            overdue_ok = True
+    except Exception:  # noqa: BLE001 - the Overdue tab says it has no answer; the plate still draws
+        pass
     do_it = [r for r in rows if r["lane"] in ("do_it", "confirm")]
     order = {"overdue": 0, "this_week": 1}
     focus = sorted(do_it, key=lambda r: (order.get(str(r["horizon"]), 2), r["order"]))[:FOCUS_CAP]
     chase = [r for r in rows if r["lane"] == "chase"][:CHASE_CAP]
     schedule = [r for r in rows if r["lane"] == "schedule"][:SCHEDULE_CAP]
     counts = dict(dv.get("plate_counts") or {})
-    return {
+    feed = {
         "generated_at": _iso(now),
         "header": str(dv.get("header") or ""),
         "quick_read": str(dv.get("quick_read") or ""),
@@ -2065,8 +2966,19 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         "focus": focus, "chase": chase, "schedule": schedule,
         "rows": rows[:PLATE_ROW_CAP], "n_rows": len(rows),
         "n_hidden": max(0, len(rows) - PLATE_ROW_CAP),
+        "late_rows": late_rows, "n_late_hidden": n_late_hidden, "overdue_ok": overdue_ok,
         "overnight": _overnight(workspace_root, now),
     }
+    try:
+        offers = _chase_offers(workspace_root, opens or [], origins, now)
+    except Exception:  # noqa: BLE001 - a bad record takes the press off the row, never the plate
+        offers = {}
+    for r in feed["rows"] + feed.get("late_rows", []):
+        offer = offers.get(str(r.get("id")))
+        if offer:
+            r["chase"] = None if offer.get("note") else offer
+            r["chase_note"] = offer.get("note") or ""
+    return feed
 
 
 class _InboxPage(HTMLParser):
@@ -2302,6 +3214,234 @@ def plan_claim(workspace_root=None, choices: Optional[List[Any]] = None, *,
             "n_more": n_more, "line": CLAIM_MORE_LINE.format(n=n_more) if n_more else ""}
 
 
+# ---------------------------------------------------------------------------
+# the book record of a Send or Draft made on the page (cr1#817)
+# ---------------------------------------------------------------------------
+
+#: A Send or Draft the page made itself (cr1#710, cr1#727) lands in the mail
+#: connector with no record in the book. The next Apply run writes it: the
+#: `email_drafted` row, the voice snapshot and, for a send, the `email_sent`
+#: row, through the writers the chat's own click uses. A press is recorded
+#: once however many runs overlap: a run claims the row with a pinned write
+#: before it records, and the record itself names the page's choice id, so a
+#: run that died between the two never records it twice.
+PAGE_RECORD_CLAIM_MINUTES = CLAIM_STALE_MINUTES
+PAGE_RECORD_VERBS = ("send", "draft")
+PAGE_RECORD_OUTCOMES = ("applied",)
+PAGE_RECORD_SOURCE = "email-writer"
+PAGE_CHOICE_KEY = "page_choice_id"
+#: The page's own choice kinds that carry a mail: a reply, and a chase (cr1#219).
+PAGE_RECORD_KINDS = ("inbox", "chase")
+#: A chase is the product's own text, so it is recorded under the commitments
+#: surface with no snapshot: an edit to it is no lesson about the owner's voice.
+PAGE_CHASE_SOURCE = "commitment-triage"
+PAGE_RECORD_LINE = "Recorded in your book."
+PAGE_RECORD_ALREADY_LINE = "Already in your book."
+PAGE_RECORD_NO_RECIPIENT_LINE = "No recipient on the press, so nothing was recorded."
+
+
+def _record_claim_live(choice: Dict[str, Any], now: _dt.datetime) -> bool:
+    at = _parse(choice.get("record_claimed_at"))
+    return bool(choice.get("record_claimed_by")) and at is not None and (now - at) < _dt.timedelta(minutes=PAGE_RECORD_CLAIM_MINUTES)
+
+
+def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, *,
+                      run_id: str = "", now_iso=None) -> Dict[str, Any]:
+    """READ/COMPUTE. The page's own sends and drafts that have no book record
+    yet (cr1#817): every `by_page` row whose result is `applied` and that
+    carries no `book_recorded`, claimed for this run with one pinned `update`
+    each (`{record_claimed_by, record_claimed_at}`), ready to send as ONE
+    ArtifactData `batch`. A row another live run holds is `taken`; one this
+    run already holds is `held` and goes straight to `entries`. Answers `{ok,
+    run_id, writes, entries, taken, held, n_more, line}`: `entries` are the rows
+    to hand `record_page_sends` once the batch landed (the ones in `writes`)
+    or already held."""
+    rid_ = str(run_id or "").strip()
+    if len(rid_) < 8:
+        return {"ok": False, "run_id": rid_, "writes": [], "entries": [], "taken": [], "held": [],
+                "n_more": 0, "line": "A claim needs this run's own id (8 characters or more)."}
+    now = _now(now_iso)
+    writes: List[Dict[str, Any]] = []
+    entries: List[Dict[str, Any]] = []
+    taken: List[str] = []
+    held: List[str] = []
+    seen = set()
+    for raw in choices or []:
+        c = _flat_choice(raw)
+        if not c:
+            continue
+        cid = str(c.get("id") or "").strip()
+        if not cid or cid in seen or not c.get("by_page") or c.get("book_recorded"):
+            continue
+        verb = str(c.get("action") or "").strip().lower()
+        res = c.get("result") if isinstance(c.get("result"), dict) else {}
+        if str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES:
+            continue
+        seen.add(cid)
+        if _record_claim_live(c, now) and str(c.get("record_claimed_by")) != rid_:
+            taken.append(cid)
+            continue
+        draft = c.get("draft") if isinstance(c.get("draft"), dict) else {}
+        entry = {"id": cid, "action": verb, "provider": str(c.get("provider") or ""),
+                 "draft": {k: str(draft.get(k) or "")[:20000] for k in ("to", "cc", "subject", "body")},
+                 "native_id": str(c.get("native_id") or "") or None, "thread_id": c.get("thread_id") or None,
+                 "applied_at": str(c.get("applied_at") or c.get("created_at") or ""),
+                 "voice_block_sha256": (draft.get("voice_block_sha256") if isinstance(draft.get("voice_block_sha256"), str) else None),
+                 "title": str(c.get("title") or "")[:200]}
+        if str(c.get("kind") or "") == "chase":
+            entry["chase_for"] = str(c.get("n") or "")
+        if _record_claim_live(c, now):
+            held.append(cid)
+            entries.append(entry)
+            continue
+        if len(writes) >= CLAIM_BATCH_MAX:
+            continue
+        w: Dict[str, Any] = {"op": "update", "collection": "choices", "doc_id": cid,
+                             "data": {"record_claimed_by": rid_, "record_claimed_at": _iso(now)}}
+        if c.get("_version") is not None:
+            w["if_version"] = c["_version"]
+        writes.append(w)
+        entries.append(entry)
+    n_more = max(0, len(seen) - len(taken) - len(entries))
+    return {"ok": True, "run_id": rid_, "writes": writes, "entries": entries, "taken": taken, "held": held,
+            "n_more": n_more, "line": CLAIM_MORE_LINE.format(n=n_more) if n_more else ""}
+
+
+def _recipient_person(workspace_root, address: str) -> Optional[str]:
+    """The person on file with this address, else None. A miss is fine: the
+    record then carries the address alone."""
+    try:
+        from entities_io import entities_collection, read_entities_json
+        from people_writer import get_person_emails
+
+        ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+        want = address.strip().lower()
+        for p in entities_collection(ent, "people"):
+            if isinstance(p, dict) and any(e.strip().lower() == want for e in get_person_emails(p)):
+                return str(p.get("id") or "") or None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _page_record_on_book(workspace_root, cid: str) -> Dict[str, Any]:
+    """The seqs already on the book for this page choice: `{drafted, sent}`.
+    Read with the personal-lane drop off (`drop_personal=False`, the opt-out
+    the loader keeps for a reader that renders no row content): a record to a
+    personal-tie contact must still be found, or the next run would write it
+    twice. Nothing read here is shown or returned beyond two seqs."""
+    from events_io import load_events_org_scoped
+
+    out: Dict[str, Any] = {"drafted": None, "sent": None}
+    try:
+        events, _skipped = load_events_org_scoped(str(workspace_root), drop_personal=False)
+    except Exception:  # noqa: BLE001 - an unreadable book is read as empty, and the writer's own append says so
+        events = []
+    for ev in events:
+        if not isinstance(ev, dict) or not isinstance(ev.get("data"), dict):
+            continue
+        if str(ev["data"].get(PAGE_CHOICE_KEY) or "") != cid:
+            continue
+        if ev.get("type") == "email_drafted" and out["drafted"] is None:
+            out["drafted"] = ev.get("seq")
+        elif ev.get("type") == "email_sent" and out["sent"] is None:
+            out["sent"] = ev.get("seq")
+    return out
+
+
+def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = None,
+                      *, now_iso=None) -> Dict[str, Any]:
+    """A WRITER. The book record of each Send or Draft the page made (cr1#817),
+    through the writers the chat's click uses: `voice_corrections.
+    record_draft_click` (the `email_drafted` row, the voice snapshot keyed to
+    it, a voice line) and, for a send, one `email_sent` row carrying
+    `build_email_sent_provenance` and `draft_event_seq`. Each row names the
+    page's choice id, and a choice the book already names is answered from
+    its first write, so a retried run never records a press twice. Answers
+    `{ok, results: [{id, outcome, line, drafted_seq, sent_seq}], n_recorded,
+    n_errors}`."""
+    import voice_corrections as vc
+    from connector_adapters.provenance import build_email_sent_provenance
+    from event_gate import append_event
+
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    now = _now(now_iso)
+    events_path = Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl"
+    try:
+        import connector_config
+        backend = connector_config.declared_backend("email", workspace_root) or {}
+    except Exception:  # noqa: BLE001
+        backend = {}
+    server_id = str(backend.get("server_id") or "") or None
+    address = str(backend.get("address") or backend.get("account") or "") or None
+    results: List[Dict[str, Any]] = []
+    for e in rows:
+        cid = str(e.get("id") or "").strip()
+        verb = str(e.get("action") or "").strip().lower()
+        r: Dict[str, Any] = {"id": cid, "action": verb, "outcome": "error", "line": ROW_ERROR_LINE,
+                             "drafted_seq": None, "sent_seq": None}
+        try:
+            draft = e.get("draft") if isinstance(e.get("draft"), dict) else {}
+            found = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", str(draft.get("to") or ""))
+            recipient = found.group(0).lower() if found else ""
+            if not cid or verb not in PAGE_RECORD_VERBS or not recipient:
+                r.update(outcome="refused", line=PAGE_RECORD_NO_RECIPIENT_LINE)
+                results.append(r)
+                continue
+            on_book = _page_record_on_book(workspace_root, cid)
+            provider = str(e.get("provider") or backend.get("provider") or "") or None
+            drafted = on_book["drafted"]
+            if drafted is None:
+                res = vc.record_draft_click(
+                    workspace_root, recipient=recipient, subject=str(draft.get("subject") or ""),
+                    body=str(draft.get("body") or ""), native_draft_id=e.get("native_id") or None,
+                    provider=provider, server_id=server_id, address=address,
+                    topic=str(draft.get("subject") or ""), recipient_id=_recipient_person(workspace_root, recipient),
+                    domain=recipient.rsplit("@", 1)[-1].lower(), voice_block_sha256=e.get("voice_block_sha256"),
+                    source_skill=PAGE_CHASE_SOURCE if e.get("chase_for") else PAGE_RECORD_SOURCE,
+                    snapshot=not e.get("chase_for"),
+                    extra={PAGE_CHOICE_KEY: cid, "sent_from": "hub",
+                           **({"chase_for": e["chase_for"]} if e.get("chase_for") else {})})
+                if not res.get("ok"):
+                    r.update(outcome="error", line=str(res.get("line") or ROW_ERROR_LINE))
+                    results.append(r)
+                    continue
+                drafted = res.get("event_seq")
+            r["drafted_seq"] = drafted
+            if verb == "send":
+                sent = on_book["sent"]
+                if sent is None:
+                    subject = str(draft.get("subject") or "")
+                    data: Dict[str, Any] = {"recipient": recipient, "subject": subject, "topic": subject,
+                                            "draft_event_seq": drafted, PAGE_CHOICE_KEY: cid, "sent_from": "hub"}
+                    data.update(build_email_sent_provenance(message_id=e.get("native_id") or None,
+                                                            thread_id=e.get("thread_id") or None, provider=provider,
+                                                            server_id=server_id, address=address,
+                                                            workspace_root=workspace_root))
+                    sent_ev: Dict[str, Any] = {"type": "email_sent", "source_skill": PAGE_RECORD_SOURCE, "data": data}
+                    # The envelope keys the chat's own sent row carries, so a
+                    # page send counts as a touch where sends are counted.
+                    who = _recipient_person(workspace_root, recipient)
+                    if who:
+                        sent_ev["person_ids"] = [who]
+                    written = append_event(events_path, sent_ev, holder="cockpit_helpers")
+                    sent = written[0].get("seq") if written and isinstance(written[0], dict) else None
+                    r["sent_seq"] = sent
+                    r.update(outcome="applied", line=PAGE_RECORD_LINE)
+                else:
+                    r["sent_seq"] = sent
+                    r.update(outcome="already", line=PAGE_RECORD_ALREADY_LINE)
+            else:
+                r.update(outcome="applied" if on_book["drafted"] is None else "already",
+                         line=PAGE_RECORD_LINE if on_book["drafted"] is None else PAGE_RECORD_ALREADY_LINE)
+        except Exception as exc:  # noqa: BLE001 - one row's failure never stops the batch
+            r.update(_row_error(exc))
+        results.append(r)
+    return {"ok": True, "results": results, "recorded_at": _iso(now),
+            "n_recorded": sum(1 for x in results if x["outcome"] == "applied"),
+            "n_errors": sum(1 for x in results if x["outcome"] == "error")}
+
+
 #: A row whose write failed: the owner reads this; the exception text stays in
 #: the result's `error` for the run's receipt (cr1#679).
 ROW_ERROR_LINE = "That one could not be written; nothing changed. Try again, or say it in chat."
@@ -2383,6 +3523,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     hub: List[Dict[str, Any]] = []
     review: List[Dict[str, Any]] = []
     week: List[Dict[str, Any]] = []
+    settings: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
     tokens_seen = set(str(t) for t in (used_tokens or []) if isinstance(t, str) and t)
@@ -2473,6 +3614,16 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             week.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
                          "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
                          "title": str(raw.get("title") or "")[:200]})
+        elif kind == "settings":
+            # cr1#781: the Settings tab's edit, for `apply_settings_choices`.
+            if verb not in SETTINGS_VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            typed = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+            settings.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
+                             "input": str(typed.get("text") or "")[:NOTE_CAP],
+                             "title": str(raw.get("title") or "")[:200]})
         elif kind in ("reminder", "todo"):
             # cr1#662: the Today page's own lists, written by apply_hub_choices.
             verbs = REMINDER_VERBS if kind == "reminder" else TODO_VERBS
@@ -2486,8 +3637,9 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=kind or "none"),
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
-            "refused": refused, "skipped": skipped,
-            "n_waiting": len(commitment) + len(inbox) + len(hub) + len(review) + len(week), "n_refused": len(refused)}
+            "settings": settings, "refused": refused, "skipped": skipped,
+            "n_waiting": len(commitment) + len(inbox) + len(hub) + len(review) + len(week) + len(settings),
+            "n_refused": len(refused)}
 
 
 #: The Today page's own lists (cr1#662): reminders the owner adds, clears or
@@ -3341,24 +4493,21 @@ def _chat_rows_placed(workspace_root, registered, basename: str):
     that already has a task id, come through as they were."""
     import schedule_backend as sb
 
-    names = {sb.trigger_name(t, basename): t for t in SURVIVING_CHATS}
-    stored: Dict[str, str] = {}
     try:
-        for tid, row in sb.read_trigger_map(workspace_root).items():
-            if tid in SURVIVING_CHATS and isinstance(row, dict) and row.get("trigger_id"):
-                stored[str(row["trigger_id"])] = tid
+        stored = {t: row for t, row in sb.read_trigger_map(workspace_root).items()
+                  if t in SURVIVING_CHATS}
     except Exception:  # noqa: BLE001 - no map leaves the names to decide
         stored = {}
-    rows: List[Any] = []
+    given = list(registered or [])
+    # The one placement rule, shared with the schedules planner (cr1#923).
+    rows: List[Any] = sb.place_listing_rows(given, basename=basename,
+                                            task_ids=list(SURVIVING_CHATS),
+                                            trigger_map=stored)
     placed: Dict[str, Any] = {}
-    for r in registered or []:
-        if isinstance(r, dict) and not r.get("taskId"):
-            trig = r.get("trigger_id") or r.get("id")
-            tid = names.get(r.get("name")) or stored.get(str(trig))
-            if tid:
-                r = dict(r, taskId=tid, trigger_id=trig)
-                placed[tid] = trig
-        rows.append(r)
+    for before, after in zip(given, rows):
+        if (isinstance(after, dict) and after.get("taskId")
+                and not (isinstance(before, dict) and before.get("taskId"))):
+            placed[after["taskId"]] = after.get("trigger_id")
     return rows, placed
 
 
@@ -3526,4 +4675,13 @@ __all__ = [
     "land_registration", "LANDING_ID",
     "PROJECT_LIVE_ORDER", "PROJECTS_CAP",
     "maintenance_status", "START_MAINTENANCE_BEHIND_HOURS",
+    "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - the chat's own render, cr1#925
+    import sys as _sys
+    if len(_sys.argv) >= 2 and _sys.argv[1] == "render-recipe":
+        _sys.exit(_render_recipe_cli(_sys.argv[2:]))
+    print(json.dumps({"ok": False, "line": "usage: cockpit_helpers.py render-recipe <answer.json> <out.html>"}))
+    _sys.exit(2)

@@ -856,11 +856,15 @@ BRIEF_CHANGED_ORDINARY_CAP = 3
 #: the earlier passes are named in the sentence, stay applied, and are
 #: reviewed and reversed one at a time behind `what have you learned`.
 CHANGED_MACHINE_BATCH_CATEGORIES = (
+    # cr1#746: no row moved, but it is the one line that says what was never
+    # read, and no other surface a scheduled fire reaches says it.
+    "days_not_read",
     "learned",
     "closed_from_sent",
     "closed_from_meetings",
     "closed_from_calendar",
     "closed_from_deal",
+    "closed_out_old",
     "rested_quiet",
     "let_go_quiet",
     "parked_quiet",

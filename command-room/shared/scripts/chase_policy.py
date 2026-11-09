@@ -234,7 +234,188 @@ def get_chase_window(policy: dict, relationship_type: str,
             g.get("escalate_after_silent_chases", 3))
 
 
+# ---------------------------------------------------------------------------
+# The chase on one late promise (cr1#219): who, when, and the words
+# ---------------------------------------------------------------------------
+#
+# A chase is one press on the Hub's Overdue tab, never drafted unasked (owner
+# ruling on cr1#219, 2026-11-07). This module decides what the press would
+# draft and whether to offer it; the page makes the draft through the seat's
+# mail connector, and nothing here writes or sends anything.
+#
+# It goes to the row's OWNER, not its counterparty: on a row the user is owed,
+# the user IS the counterparty, and a delegated row chases the delegate. Every
+# word comes from the row's own fields, never from a message body.
+
+#: Two reply gaps are an anecdote: the floor under a person's own reading.
+MIN_OUTCOMES_FOR_MEDIAN = 3
+#: How far back that reading looks.
+OUTCOME_WINDOW_DAYS = 90
+#: The events that mean this person and the owner were just in touch.
+TOUCH_TYPES = frozenset({"email_sent", "outreach_sent", "email_received", "email_outcome", "interaction", "meeting"})
+#: An `interaction` is a touch only when something passed between them; a name
+#: mentioned in a chat is not (PASSIVE_CAPTURE, `chat_context`).
+TOUCH_DIRECTIONS = frozenset({"inbound", "outbound"})
+#: A bigger meeting says nothing about whether the two of them spoke.
+MEETING_TOUCH_MAX_PEOPLE = 6
+#: Where the promise came from, in a sentence to the person (`_row_origin`'s
+#: source word). "The", not "our": a delegate may not have been there. A row
+#: with no real source date names the kind of source alone, because the day it
+#: was captured is not the day it was said.
+_SOURCE_PHRASES = {"Meeting": ("from the meeting on {d}", "from a meeting"),
+                   "Email": ("from the email on {d}", "from an email"),
+                   "Slack": ("from the Slack thread on {d}", "from Slack")}
+_NOTES_PHRASE = ("from my notes of {d}", "from my notes")
+NO_ADDRESS_LINE = "No email on file for {name}, so there is nothing to chase with."
+OWN_ADDRESS_LINE = "This one points back at your own address, so it is not chased."
+WINDOW_LINE = "{what} {when}. Chase again from {next}."
+SILENT_LINE = "Chased {n} times with no answer. A call may do more than another email."
+CHASED_WORDS = "Chased"
+HEARD_WORDS = "In touch with {name}"
+
+
+def _short_day(day) -> str:
+    return f"{day.strftime('%b')} {day.day}"
+
+
+def person_chase_days(record: Optional[dict], policy: dict, latencies: List[float],
+                      relationship_type: str = "") -> int:
+    """How long silence is normal for this person, in days. Pure. What the
+    owner taught first (`cadence_override_days` on the person), then their own
+    reply gaps (the median, from `MIN_OUTCOMES_FOR_MEDIAN` of them), then the
+    learned window for their relationship type, then the default."""
+    taught = (record or {}).get("cadence_override_days")
+    try:
+        if taught is not None and float(taught) > 0:
+            return max(1, int(round(float(taught))))
+    except (TypeError, ValueError):
+        pass
+    if len(latencies) >= MIN_OUTCOMES_FOR_MEDIAN:
+        return max(1, int(round(statistics.median(latencies))))
+    return max(1, int(get_chase_window(policy, relationship_type)[0] or DEFAULT_CHASE_DAYS))
+
+
+def compose_chase(name: str, title: str, *, due=None, source: str = "", source_day=None) -> dict:
+    """`{subject, body}` for one late promise, the row's own fields only: its
+    title, its day, and where it came from (the citation). Plain sentences, no
+    dashes as punctuation. `name` is the person's name; `source_day` is the
+    day it was said, if the row knows one."""
+    first = str(name or "").split()[0] if str(name or "").strip() else "there"
+    what = " ".join(str(title or "the open item").split())
+    dated, undated = _SOURCE_PHRASES.get(source, _NOTES_PHRASE)
+    parts = [f"Checking in on {what}", dated.format(d=_short_day(source_day)) if source_day else undated]
+    if due:
+        parts.append(f"due {_short_day(due)}")
+    return {"subject": f"Quick check on {what}"[:200],
+            "body": "\n".join([f"Hi {first},", "", ", ".join(parts) + ".", "", "Where does this stand?", ""])}
+
+
+def chase_offer(row: dict, *, person: Optional[dict], addresses: List[str], own_addresses: set,
+                days: int, escalate_after: int, last_touch=None, last_heard=None, chases: Optional[List] = None,
+                today=None) -> dict:
+    """Whether to offer one chase, and on what. Pure. `row` is `{title, due,
+    source, source_day}` for a late row owed to the owner; `person` its owner's
+    record; `last_touch` the newest day they and the owner were in touch,
+    `last_heard` the newest day they answered or met (the owner's own mail is a
+    touch and not an answer); `chases` the days this row was chased, to this
+    person. Answers `{to, name,
+    subject, body}` to offer it, or `{note}` to say why not. A touch inside
+    `days` holds it. A chase holds it for `days` or the default, whichever is
+    longer: a quick replier's habit is no reason to nag. Only the chases since
+    they last answered count towards `escalate_after`: an answer starts them
+    over, and sending the chase does not."""
+    import datetime as _dt
+
+    name = str((person or {}).get("display_name") or (person or {}).get("canonical_name")
+               or (person or {}).get("name") or "")
+    addrs = [str(a).strip().lower() for a in addresses if str(a).strip()]
+    if any(a in own_addresses for a in addrs):
+        return {"note": OWN_ADDRESS_LINE}
+    if not addrs:
+        return {"note": NO_ADDRESS_LINE.format(name=name or "this person")}
+    chased = sorted(c for c in (chases or []) if c and (last_heard is None or c > last_heard))
+    if len(chased) >= max(1, int(escalate_after)):
+        return {"note": SILENT_LINE.format(n=len(chased))}
+    if today is not None:
+        if chased and (today - chased[-1]).days < max(days, DEFAULT_CHASE_DAYS):
+            return {"note": WINDOW_LINE.format(what=CHASED_WORDS, when=_short_day(chased[-1]),
+                                               next=_short_day(chased[-1] + _dt.timedelta(days=max(days, DEFAULT_CHASE_DAYS))))}
+        if last_touch is not None and (today - last_touch).days < days:
+            word = HEARD_WORDS.format(name=name.split()[0] if name else "them")
+            return {"note": WINDOW_LINE.format(what=word, when=_short_day(last_touch),
+                                               next=_short_day(last_touch + _dt.timedelta(days=days)))}
+    return {"to": addrs[0], "name": name,
+            **compose_chase(name, row.get("title"), due=row.get("due"), source=row.get("source") or "",
+                            source_day=row.get("source_day"))}
+
+
+def chase_touches(events, addresses_of: Dict[str, List[str]], day_of: Callable, today=None) -> tuple:
+    """`({person_id: newest day in touch}, {person_id: newest day they
+    answered or met})` from the book. Pure. `day_of` turns a stamp into the
+    owner's calendar day. A touch is a mail either way, an inbound or outbound
+    interaction, a reply on record, or a meeting that happened with few enough
+    people in it; a draft is no touch, nothing reached anyone."""
+    from event_refs import attendee_emails_of, meeting_person_ids, persons_of
+
+    by_address = {a.lower(): pid for pid, addrs in addresses_of.items() for a in addrs}
+    touched: Dict[str, object] = {}
+    heard: Dict[str, object] = {}
+    for ev in events or []:
+        kind = ev.get("type") if isinstance(ev, dict) else None
+        if kind not in TOUCH_TYPES:
+            continue
+        day = day_of(event_time(ev))
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if not day or (today is not None and day > today):
+            continue
+        if kind == "interaction" and d.get("direction") not in TOUCH_DIRECTIONS:
+            continue
+        if kind == "email_outcome" and d.get("outcome") != "replied":
+            continue
+        if kind == "meeting":
+            who = set(meeting_person_ids(ev, by_address))
+            strangers = [e for e in attendee_emails_of(ev) if e.lower() not in by_address]
+            # The same guest can sit in both lists, and they cannot be paired.
+            size = len(who) + max(len(strangers), len(d.get("attendees_external") or []))
+            if str(d.get("status") or "") == "scheduled" or size > MEETING_TOUCH_MAX_PEOPLE:
+                continue
+        else:
+            who = set(persons_of(ev))
+            if d.get("sender_person_id"):
+                who.add(d["sender_person_id"])
+            for key in ("recipient", "to", "to_address"):
+                val = d.get(key)
+                for one in (val if isinstance(val, (list, tuple)) else [val]):
+                    if str(one or "").strip().lower() in by_address:
+                        who.add(by_address[str(one).strip().lower()])
+        theirs = kind in ("email_received", "email_outcome", "meeting") or d.get("direction") == "inbound"
+        for pid in who:
+            if pid in addresses_of:
+                if pid not in touched or day > touched[pid]:
+                    touched[pid] = day
+                if theirs and (pid not in heard or day > heard[pid]):
+                    heard[pid] = day
+    return touched, heard
+
+
+def row_chases(events, day_of: Callable) -> Dict[str, List[tuple]]:
+    """`{commitment_id: [(day, recipient)]}`: the drafts a press made
+    (`data.chase_for`, cr1#219). Pure. The recipient rides along so a chase to
+    the last owner of a reassigned row is not held against the new one."""
+    out: Dict[str, List[tuple]] = {}
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("type") != "email_drafted":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        day = day_of(event_time(ev)) if d.get("chase_for") else None
+        if day:
+            out.setdefault(str(d["chase_for"]), []).append((day, str(d.get("recipient") or "").strip().lower()))
+    return out
+
+
 __all__ = [
+    "MIN_OUTCOMES_FOR_MEDIAN", "OUTCOME_WINDOW_DAYS", "TOUCH_TYPES", "person_chase_days", "compose_chase",
+    "chase_offer", "chase_touches", "row_chases",
     "MIN_TOTAL", "MIN_GROUP", "DEFAULT_CHASE_DAYS", "CAP", "PASS_NAME",
     "load_email_outcomes", "group_outcomes", "derive_chase_policy",
     "load_chase_policy", "group_from_proposal", "write_chase_policy",

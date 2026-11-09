@@ -204,8 +204,15 @@ _SUBSTANTIVE_UPDATE_KEYS = SUBSTANTIVE_UPDATE_KEYS
 #   promise moving. Without this the quiet-lane park reset the very clock
 #   that parked it and the plate read "no movement 47 days — updated today".
 #   `status_hint` is a PRESENT-KEY test (the un-park writes null).
+# `left_boards` — cr1#900. The board follow's one note that a followed task
+#   was seen on a board the owner excluded; the commitment is unchanged, so
+#   noticing it must not read as the promise moving.
+# `owner_held` — cr1#901. The board follow's note that the board names
+#   someone else while the owner's own choice stands; nothing on the row
+#   moved.
 _BOOKKEEPING_MARKER_KEYS = ("watch_set", "watch_cleared",
-                            "asked_set", "asked_cleared", "unparked")
+                            "asked_set", "asked_cleared", "unparked",
+                            "left_boards", "owner_held")
 _BOOKKEEPING_PRESENT_KEYS = ("status_hint",)
 
 

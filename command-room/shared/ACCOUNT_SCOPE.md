@@ -148,7 +148,7 @@ list. These are seen by the workspace owner alone and regenerate every fire.
 **Exportable / multi-recipient artifacts draw ONLY from `write_to_business`-scoped
 substrate — never from a `surface:on, write_to_business:off` item:**
 
-- `weekly-recap`, `operator-report`, `board-pack-assembler`
+- `weekly-recap`, `operator-report` (board-pack-assembler, retired cr1#552, was here too)
 - the brief **.docx** via `brief_writer` (the forwardable artifact — distinct
   from the ephemeral brief chat)
 - any deliverable that leaves the owner's own screen

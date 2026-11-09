@@ -86,6 +86,7 @@ Reader:
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -122,7 +123,9 @@ CANONICAL_TASK_IDS = frozenset({
     "pulse",
     "lifecycle",     # LIFECYCLE1 — the project lifecycle pass job inside `maintenance` (the fold that replaced Pulse's Phase 4)
     "review-expiry",  # REVSCHED1 — the weekly unconfirmed-pile drain job inside `maintenance` (never a task of its own; see maintenance_dispatcher.MAINTENANCE_JOBS)
+    "chat-pointer-sweep",  # cr1#164: the weekly check that every saved chat-evidenced close still carries its pointer, a job inside `maintenance` (never a task of its own)
     "question-expiry",  # TTL1 (SPEC_FLOW1 Lane G) — the daily question-expiry engine job inside `maintenance` (never a task of its own; the third silence-drain, sitting between review-expiry's two-day bar and age-out's thirty)
+    "sync-conflicts",  # cr1#724: the sync conflict-copy merge inside every `maintenance` fire (never a task of its own, not a registry row; one writer, sync_conflict_copies.run)
     "age-out",       # SWEEPSCHED1 — the weekly CONFIRMED-pile drain job inside `maintenance` (never a task of its own; sibling of review-expiry, different pile, different bar)
     "calendar-close",  # POLICY1-B DD-7 — the daily calendar closer for scheduling rows inside `maintenance` (never a task of its own; confirm-first for three fires)
     "exit-doors",    # EXIT1 (SPEC_FLOW1 Lane B) — the daily exit-doors job inside `maintenance` (never a task of its own): the paid-or-signed close and the silence drain
@@ -399,6 +402,9 @@ RECEIPT_TYPES: dict[str, dict] = {
     # n_shielded_by_reopen / n_held_back), every number off the writer's own
     # per-row results.
     "review-expiry":      {"types": frozenset({"pack_run"})},
+    # cr1#164: the chat pointer sweep's one receipt per run, a clean book
+    # included (a silent green receipt is the proof the sweep ran).
+    "chat-pointer-sweep": {"types": frozenset({"pack_run"})},
     # TTL1 (SPEC_FLOW1 Lane G, 2026-09-07) — the daily question-expiry
     # engine's own run receipt. NOT a `pack_run`: the engine writes
     # `question_expiry_run`, the one row `question_ttl.decided_for_you_lines`
@@ -419,6 +425,11 @@ RECEIPT_TYPES: dict[str, dict] = {
     # ever and re-derived the whole pile at all three of the task's daily
     # slots forever.
     "question-expiry":    {"types": frozenset({"question_expiry_run"})},
+    # cr1#724: the sync conflict-copy merge's receipt: one row per sweep
+    # that FOUND a copy (merged, archived or held); a quiet sweep writes
+    # none. The sweep rides every Maintenance fire's start marker
+    # (`maintenance_dispatcher._sync_conflict_sweep`), not a registry row.
+    "sync-conflicts":     {"types": frozenset({"sync_conflicts_run"})},
     # SWEEPSCHED1 — the weekly confirmed-pile drain job's receipt. `pack_run`,
     # the same scheduled-job shape its review-tier sibling uses, so the
     # dispatcher's dueness rule self-limits it to weekly. Written on an EMPTY
@@ -495,6 +506,7 @@ _TYPE_IMPLIES_TASK = {
     "maintenance_run": "maintenance",
     "identity_reconcile_run": "identity-reconcile",
     "question_expiry_run": "question-expiry",  # TTL1 - one writer, question_ttl.run_question_expiry
+    "sync_conflicts_run": "sync-conflicts",  # cr1#724 - one writer, sync_conflict_copies.run
 }
 
 ALL_RECEIPT_TYPES = frozenset().union(*(spec["types"] for spec in RECEIPT_TYPES.values()))
@@ -952,7 +964,69 @@ def _foreign_writer_line() -> str:
     return line if isinstance(line, str) and line.strip() else WRITER_IDENTITY_REQUIRED_LINE
 
 
-def require_writer_identity(env=None, *, workspace_root=None) -> Optional[str]:
+def _declared_scheduled_writer_row(workspace_root) -> Optional[dict]:
+    """The whole declaration (`{writer_id, device_digest?, ...}`), or None;
+    the same reader and the same silence as `_declared_scheduled_writer`."""
+    try:
+        from schedule_config import scheduled_writer  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        declared = scheduled_writer(workspace_root)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(declared, dict) and str(declared.get("writer_id") or "").strip():
+        return declared
+    return None
+
+
+def foreign_scheduled_fire(environ: dict, workspace_root=None) -> Optional[str]:
+    """Why a scheduled fire in `environ` is foreign to the workspace's declared
+    scheduled writer, or None when it is not (or nothing is declared).
+
+    READS ONLY what the fire was HANDED (the forwarded pair and the forwarded
+    folder path) and the declaration; never the identity file, and it never
+    writes one (cr1#605). The answers:
+      `writer`  the forwarded id is absent or is not the declared one;
+      `device`  the ids match but the declaration carries a `device_digest`
+                and this fire's `CR_DEVICE_WORKSPACE` digests differently:
+                the same account on another computer (HYGIENE3 / D-4), the
+                verdict `fire_guards.scheduled_writer` already gives and the
+                write door now gives with the same line.
+    A legacy or local seat, a manual run, a workspace with no declaration:
+    None, today's behaviour."""
+    if normalize_fired_via(environ.get(FIRED_VIA_ENV)) != "scheduled":
+        return None
+    decl = _declared_scheduled_writer_row(
+        workspace_root if workspace_root is not None
+        else (environ.get("CR_WORKSPACE") or None))
+    if not decl:
+        return None
+    declared = str(decl.get("writer_id") or "").strip()
+    try:
+        from writer_identity import forwarded_pair
+
+        pair = forwarded_pair(environ)
+    except Exception:  # noqa: BLE001
+        pair = None
+    forwarded = pair[0] if pair else None
+    if forwarded != declared:
+        return "writer"
+    want = decl.get("device_digest")
+    if want:
+        try:
+            from schedule_config import DEVICE_WORKSPACE_ENV, device_digest
+
+            here = device_digest(environ.get(DEVICE_WORKSPACE_ENV))
+        except Exception:  # noqa: BLE001
+            here = None
+        if here and here != want:
+            return "device"
+    return None
+
+
+def require_writer_identity(env=None, *, workspace_root=None,
+                            allow_foreign: bool = False) -> Optional[str]:
     """The writer id this receipt will carry — or a refusal, in one sentence.
 
     Asked FIRST by every receipt writer in this module and by the write door
@@ -965,10 +1039,22 @@ def require_writer_identity(env=None, *, workspace_root=None) -> Optional[str]:
         loud instead of quietly anonymous.
     (b) a scheduled fire (`CR_FIRED_VIA=scheduled`) on a workspace that
         DECLARES its one scheduled writer (SAFETY0, RETIRE1's R0) when the
-        forwarded id is absent or is not the declared one. Identity by
-        HANDING, never by reading (D-1): the fire's id is what the
-        registering seat baked into it, so a chat registered from another
-        computer carries that computer's id and stops here.
+        forwarded id is absent or is not the declared one, or (cr1#605) when
+        the declaration names a folder digest this fire's forwarded folder
+        does not match. Identity by HANDING, never by reading (D-1): the
+        fire's id is what the registering seat baked into it, so a chat
+        registered from another computer carries that computer's id and
+        stops here.
+
+    THE ORDER IS THE FIX (cr1#605). Leg (b) is asked BEFORE the shared writer
+    id is read, because reading it (`writer_identity.writer_id`) caches the
+    forwarded pair into `_hq/.system/writer_identity.json`: a refused foreign
+    fire used to rewrite the workspace's identity file to the refused id on
+    its way to the refusal. A refused write now changes nothing.
+
+    `allow_foreign` is for the ONE writer that records a foreign fire's own
+    stop (`log_fire_stopped`, cr1#603): leg (b) is skipped for it and only
+    for it; leg (a) still refuses.
 
     Otherwise it returns the shared writer id, or None — every legacy and
     local seat, byte for byte today's behaviour (the caller's
@@ -980,6 +1066,25 @@ def require_writer_identity(env=None, *, workspace_root=None) -> Optional[str]:
         environ = dict(_os.environ) if env is None else dict(env)
     except (TypeError, ValueError):
         environ = {}
+    if foreign_scheduled_fire(environ, workspace_root):
+        if not allow_foreign:
+            raise WriterIdentityRequired(
+                _foreign_writer_line(), cause=CAUSE_FOREIGN_SCHEDULED_WRITER)
+        # The foreign fire's own stop record: it is named by what it was
+        # HANDED, and nothing is cached into the workspace for it (reading
+        # the shared id would write the forwarded pair into the identity
+        # file, cr1#605's rewrite through another door).
+        try:
+            from writer_identity import forwarded_pair
+
+            pair = forwarded_pair(environ)
+        except Exception:  # noqa: BLE001
+            pair = None
+        if pair:
+            return pair[0]
+        if _is_vm_seat(environ):
+            raise WriterIdentityRequired(cause=CAUSE_NO_WRITER_ID)
+        return None
     try:
         from machine_identity import shared_writer_id
 
@@ -988,22 +1093,155 @@ def require_writer_identity(env=None, *, workspace_root=None) -> Optional[str]:
         writer = None
     if not writer and _is_vm_seat(environ):
         raise WriterIdentityRequired(cause=CAUSE_NO_WRITER_ID)
-    if normalize_fired_via(environ.get(FIRED_VIA_ENV)) == "scheduled":
-        declared = _declared_scheduled_writer(
-            workspace_root if workspace_root is not None
-            else (environ.get("CR_WORKSPACE") or None))
-        if declared:
-            try:
-                from writer_identity import forwarded_pair
-
-                pair = forwarded_pair(environ)
-            except Exception:  # noqa: BLE001
-                pair = None
-            forwarded = pair[0] if pair else None
-            if forwarded != declared:
-                raise WriterIdentityRequired(
-                    _foreign_writer_line(), cause=CAUSE_FOREIGN_SCHEDULED_WRITER)
     return writer or None
+
+
+#: cr1#603 — the one row a scheduled fire that STOPPED before its surface
+#: leaves behind. Not a receipt type of any task (the watchdog must still read
+#: the chat as late); the health check reads the newest one for the reason.
+FIRE_STOPPED_TYPE = "fire_stopped"
+
+#: The abort codes the bootloader's stop paths name, each with the plain
+#: words the health check says for it. A code outside this table is still
+#: recorded (the table is for the sentence, never a gate).
+FIRE_STOP_REASONS: dict = {
+    "folder_not_granted": "your computer had not yet allowed it the folder",
+    "plugin_not_found": "it could not find Command Room in that run",
+    "orchestrator_not_found": "it found Command Room but not its own instructions",
+    "env_unknown": "it could not tell which environment it was running in",
+    "workspace_not_found": "it could not find your Command Room folder",
+    "runtime_missing": "the Command Room runtime in your folder could not be brought current",
+    "root_blocked": "your folder no longer matches the one it was registered with",
+    "retired": "it is retired",
+    "foreign_scheduled_writer": ("it was set up from a computer that no longer "
+                                 "runs your scheduled chats"),
+    "contract_marker": "its instructions failed their integrity check",
+    "migration_gate": "its chain has not moved onto the workspace access layer yet",
+}
+
+_ABORT_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+def fire_stop_reason_words(abort_code) -> str:
+    """The plain words for an abort code; an unknown code reads as itself
+    with its underscores as spaces."""
+    code = str(abort_code or "").strip().lower()
+    return FIRE_STOP_REASONS.get(code) or (
+        f"it stopped before it started ({code.replace('_', ' ')})" if code
+        else "it stopped before it started")
+
+
+def log_fire_stopped(workspace_root, task_id, abort_code, *, fired_via=None,
+                     detail=None, env=None) -> dict:
+    """Record that a scheduled fire STOPPED before its surface (cr1#603).
+
+    The bootloader calls this through the write door before it posts any
+    STOP line once the workspace is reachable. One `fire_stopped` row:
+    `{task_id, kind: fire_stopped, abort_code, fired_via, forwarded_writer,
+    declared_writer, foreign, detail?, machine?}`. `detail` is at most 160
+    plain characters (no path lands here; the health check renders it).
+
+    A FOREIGN fire may write this one row and nothing else: it is how the
+    owner learns, from the workspace, that a chat set up elsewhere is still
+    stopping here. The forwarded and declared ids are stamped so the mismatch
+    is visible on the book; a merged seat with no writer id at all still
+    refuses (leg (a) of `require_writer_identity`)."""
+    import os as _os
+
+    environ = dict(_os.environ) if env is None else dict(env)
+    writer = require_writer_identity(environ, workspace_root=workspace_root,
+                                     allow_foreign=True)
+    code = str(abort_code or "").strip().lower()
+    if not _ABORT_CODE_RE.match(code):
+        raise ValueError(f"abort_code must be a short lowercase slug; got {abort_code!r}")
+    canonical = normalize_task_id(task_id) or str(task_id or "").strip()
+    if not canonical:
+        raise ValueError("task_id is required")
+    try:
+        from writer_identity import forwarded_pair
+
+        pair = forwarded_pair(environ)
+    except Exception:  # noqa: BLE001
+        pair = None
+    foreign = foreign_scheduled_fire(environ, workspace_root)
+    # One row per stop: the same code for the same task inside ten minutes is
+    # the same stop (a re-run step, a retried paste), not a second record.
+    previous = last_fire_stop(workspace_root, canonical)
+    if previous and previous.get("abort_code") == code and previous.get("at"):
+        try:
+            from event_time import parse_ts
+
+            then = parse_ts(previous["at"])
+            if then is not None and (_dt.datetime.now(_dt.timezone.utc) - then).total_seconds() < 600:
+                return {"type": FIRE_STOPPED_TYPE, "deduped": True, "data": dict(previous)}
+        except Exception:  # noqa: BLE001
+            pass
+    data: dict = {
+        "task_id": canonical,
+        "kind": FIRE_STOPPED_TYPE,
+        "abort_code": code,
+        "fired_via": effective_fired_via(fired_via, environ),
+        "forwarded_writer": pair[0] if pair else None,
+        "declared_writer": _declared_scheduled_writer(workspace_root),
+        "foreign": foreign,
+    }
+    if detail:
+        data["detail"] = str(detail).strip()[:160]
+    from event_gate import append_event
+
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    # A foreign fire's stop record caches nothing: the machine stamp and the
+    # ledger lock's own sidecar both ask the writer id, and that read would
+    # write the refused pair into `_hq/.system/writer_identity.json`
+    # (cr1#605). The flag covers the stamp AND the append.
+    no_cache = None
+    if foreign:
+        try:
+            from writer_identity import NO_CACHE_ENV
+        except Exception:  # noqa: BLE001
+            NO_CACHE_ENV = "CR_IDENTITY_NO_CACHE"
+        no_cache = NO_CACHE_ENV
+        _os.environ[no_cache] = "1"
+    try:
+        # the one stamp helper, like every other writer (the census pins it)
+        data.update(machine_fields(environ))
+        event = {"type": FIRE_STOPPED_TYPE, "source_skill": "scheduled-task-bootloader",
+                 "data": data}
+        stamped = append_event(events_path, [event], holder="receipts.log_fire_stopped")
+    finally:
+        if no_cache:
+            _os.environ.pop(no_cache, None)
+    return stamped[0] if stamped else event
+
+
+def last_fire_stop(workspace_root, task_id) -> Optional[dict]:
+    """The newest `fire_stopped` row for `task_id`, as `{abort_code, at,
+    fired_via, foreign, detail}`, or None. Read-only; never raises."""
+    want = normalize_task_id(task_id) or str(task_id or "").strip()
+    newest = None
+    try:
+        import events_io
+
+        rows = events_io.iter_events(workspace_root)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        for ev in rows:
+            if not isinstance(ev, dict) or ev.get("type") != FIRE_STOPPED_TYPE:
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            tid = normalize_task_id(data.get("task_id")) or data.get("task_id")
+            if tid != want:
+                continue
+            at = ev.get("ts")
+            if newest is None or str(at or "") >= str(newest.get("at") or ""):
+                newest = {"abort_code": data.get("abort_code"), "at": at,
+                          "fired_via": data.get("fired_via"),
+                          "foreign": data.get("foreign"),
+                          "detail": data.get("detail")}
+    except Exception:  # noqa: BLE001
+        return newest
+    return newest
 
 
 def require_writer_on_vm_seat(env=None) -> None:
@@ -1670,6 +1908,9 @@ def last_receipt_times(
     ids = [normalize_task_id(t) for t in task_ids] if task_ids is not None else list(RECEIPT_TYPES)
     out: dict[str, Optional[_dt.datetime]] = {tid: None for tid in ids}
     for r in iter_receipts(workspace_root, task_ids=ids):
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        if isinstance(raw.get("data"), dict) and raw["data"].get("in_flight") is True:
+            continue  # cr1#772: a fire that stood down ran nothing
         if r["dt"] is not None:
             cur = out.get(r["task_id"])
             if cur is None or r["dt"] > cur:

@@ -1324,14 +1324,11 @@ def _reverse_schedule_fold(workspace_root, change, *, undone_by, source_skill):
     true`, which is still the honest restore for a fold that only ever
     moved that one field.
 
-    This reverses the SUBSTRATE half only, same asymmetry as the disable
-    itself (see `fold_scheduled_fires.py`'s module docstring): the surface
-    that dispatches `undo` also needs to re-issue the seam's
-    `schedule_backend.plan_update(task_id, enabled=True)` for each `task_id`
-    this returns, mirroring the fold's own disable-then-record order in reverse
-    (record first is fine on the way back — a substrate record that says
-    "on" a moment before the live call lands is the safe direction, unlike
-    the false-off case the forward path guards against)."""
+    This reverses the SUBSTRATE half only, and that is all it does: the store
+    goes back and no chat comes with it. Waiting On and My Plate are shelved
+    (cr1#847), so nothing re-issues the live call. The cloud reinstall has
+    deleted the chats, and on the older scheduler a chat still on the seat
+    comes back only through the customer's own `resume`."""
     from schedule_config import (FOLD_PREV_OVERRIDES_KEY, FoldStateError,
                                  apply_fold_state)
 
@@ -2097,9 +2094,9 @@ REVERSERS: dict[str, dict] = {
         "reverse": _reverse_schedule_fold,
         "reverses_via": "schedule_config_changed (enabled: true for every "
                         "folded id in the batch)",
-        "description": "bring a folded chat back exactly as it was — "
-                       "Waiting On and My Plate's live registration is "
-                       "switched back on in one word",
+        "description": "put a folded chat's stored setting back as it was; "
+                       "Waiting On and My Plate are shelved, so no chat "
+                       "comes back with it (cr1#847)",
     },
 }
 

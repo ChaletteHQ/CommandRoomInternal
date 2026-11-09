@@ -16,7 +16,7 @@ description: "Surface every project that has gone quiet — no meetings, commitm
 - **Use `dormant-customer-scan` for:** people-focused cadence breaks (a customer relationship that's gone quiet). Different unit of analysis.
 - **Use `list-active` for:** rendering the whole project roster without filtering by activity.
 - **Use `cleanup` for:** broader workspace hygiene that includes stall as one check among many.
-- **The `lifecycle` maintenance job WRITES; this skill ASKS.** The weekly job (`shared/scripts/lifecycle_pass.py`) proposes the dormancy questions and applies the transitions the lifecycle rules already decided (30-day ask, 60-day dormant after an unanswered ask, 180-day archive, revive on new activity). This skill never flips a status of its own accord — it renders the job's questions and the CEO's tap is what answers them.
+- **The `lifecycle` maintenance job WRITES; this skill ASKS.** The weekly job (`shared/scripts/lifecycle_pass.py`) proposes the dormancy questions and applies the transitions the lifecycle rules already decided (30-day ask, 60-day dormant after an unanswered ask, a dormant project's revive on new activity), and past 180 days it asks whether to archive; only the CEO's answer archives. Movement on an archived project is a question, never a revive. This skill never flips a status of its own accord: it renders the job's questions and the CEO's tap is what answers them.
 - **Use `pipeline-tracker` for:** deal threads. `kind="deal"` threads are EXCLUDED from this scan by fence (SPEC PIPE1 D7 — `stall_detector.detect_stalled_projects` skips them in code): deal rot is stage-dependent (a negotiation goes stale in 7 days, a lead in 10) and reports through the pipeline surface's per-stage thresholds. One quiet deal must never be double-flagged by both scans.
 - **Use `objectives` for:** standing-objective threads. `kind="objective"` threads are EXCLUDED from this scan by the same in-code fence (SPEC OBJ1, DRAFT): objective drift is binding-dependent (a self-reported objective drifts on missed check-ins, a meeting-reviewed one on undiscussed sessions — not on generic thread quiet) and reports through the objectives surfaces with a suggested move. One drifting objective must never be double-flagged.
 
@@ -391,9 +391,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

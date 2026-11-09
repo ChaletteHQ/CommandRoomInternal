@@ -2,6 +2,13 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v5.37.0 (2026-11-08)
+
+The Hub gains Overdue and Settings tabs and this morning's brief; Maintenance no longer loses what it read, and a promise closes only on clear evidence.
+
+- The Hub has grown. A new Overdue tab shows every promise past its date, what you owe and what is owed to you, oldest first, and a late item owed to you offers a chase: one press makes a draft citing where the promise came from, and nothing is sent. A new Settings tab shows what has been learned and every setting, lets you change a learned rule and how many questions you get a day, and ends with a short guide to using Command Room (also when you type 'how do I use this'). This morning's brief now opens the Today tab, and people and project questions are answered with a click. Say 'update my hub' to get the new page.
+- Closing is more careful. When the evidence is unsure, a close now becomes a proposal on the Hub's Review tab for you to confirm. A meeting closes a promise outright only when you plainly report it done to the other person in a meeting of two. Two promises that look alike stay as two, so nothing disappears; drop the copy if it is one. An archived project asks before it comes back, and a reinstall keeps the times you set. 'Show my list' now leads to your reminders, and the balance and board pack chats are retired.
+
 ## v5.36.0 (2026-11-06)
 
 The Hub can send and draft for you, and gains Review and Week tabs.

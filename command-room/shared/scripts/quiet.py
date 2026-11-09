@@ -83,6 +83,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import commitment_policy as _policy  # noqa: E402
+from event_types import MACHINE  # noqa: E402
 from commitment_policy import (  # noqa: E402
     PRESET_CONFIG_KEY, PRESET_ENGAGED, PRESET_LIGHT, PRESET_QUIET,
     PRESET_SKILL_KEY, PRESETS, PROPOSAL_TTL_DAYS,
@@ -201,7 +202,9 @@ ANSWER_EVENT_TYPES = frozenset({
 #: user-verb writers are recognised by the ACTOR FIELD they stamp instead:
 #: `commitment_updated {pushed_by}` (push to a date), `commitment_updated
 #: {question_by: user_verb}` (not mine), `commitment_reassigned
-#: {reassigned_by}`. All three are written only by the person's own verb.
+#: {reassigned_by}`. All three are written only by the person's own verb,
+#: except where the actor is the machine word: a change that came from a task
+#: board (cr1#766) is the board's, and is no answer of the person's.
 USER_VERB_QUESTION_BY = "user_verb"     # commitment_state.QUESTION_BY_USER_VERB
 #: REVIEW_QUIET1 F-1 — the person's own preset stamp (onboarding pick,
 #: `ask me more/less`, the operator's command) is an answer; the bridge's
@@ -352,9 +355,10 @@ def is_user_answer(ev) -> bool:
         return True
     if t == "commitment_updated":
         # F-5 — a chat-typed `push to [date]` or `not mine`
-        return bool(d.get("pushed_by")) or d.get("question_by") == USER_VERB_QUESTION_BY
+        return (d.get("pushed_by") not in (None, "", MACHINE)
+                or d.get("question_by") == USER_VERB_QUESTION_BY)
     if t == "commitment_reassigned":
-        return bool(d.get("reassigned_by"))
+        return d.get("reassigned_by") not in (None, "", MACHINE)
     if t in CONFIG_EVENT_TYPES:
         # F-1 — the person's own preset stamp, never the release stamp
         return (d.get("brain_change_class") == PRESET_CHANGE_CLASS

@@ -423,6 +423,14 @@ A `dead_doc_link` violation means the conversion above did not happen or did not
 
 **If a link genuinely cannot be converted, DROP THE LINE AND POST THE BRIEF.** There is one way this happens: the workspace root could not be resolved, so `absolutize_doc_links` returned the text untouched by design. Withholding the entire digest over one attachment is the wrong trade in a product whose stated posture is that a write without a surface is acceptable and a surface without a write is not — the CEO loses the calendar, the commitments and the money lines to save them from one link that would not have opened. Replace the offending link with the honest sentence the leg already uses for a file that has not landed (`Prep — 9:30 — syncing — open from your cloud drive`), re-run the pre-flight, and post. Say nothing else about it; the receipt from Phase 5 already records the fire.
 
+**Then the Hub pointer (cr1#782, owner ruling D2 of 2026-11-04).** The brief is folded into the Command Room Hub: the Hub's Today tab carries this morning's view (the calendar, the mail that needs a reply, what is overdue, one first action) and the day's top three questions with one-tap answers. Something still has to bring the owner there each morning, so this fire ends by pointing at it. One read:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "cockpit_helpers:hub_pointer"}'
+```
+
+When the answer's `found` is true, its `line` is the LAST line of `post_text`, after the closing preps chip, verbatim. When `found` is false, this seat has no Hub: add nothing, and the brief posts exactly as it always has. The brief's own settings (depth, tone, the going-quiet line, the customisations) shape the digest above as before; the pointer changes none of them.
+
 **Then post it.** Output `post_text` as the chat turn body — nothing before it, nothing between it and the Links section.
 
 If any briefs or files were referenced (Past Meetings docs, prep docs from earlier fires), add a **Links:** section per `shared/CHAT_ACTION_WIDGET.md` "Post-widget chat-links section" — one bulleted line per linked file, `computer://` artifact URLs built the same way (never a hand-assembled path). Skip the Links section entirely if nothing connects.
@@ -493,9 +501,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

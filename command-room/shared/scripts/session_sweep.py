@@ -468,6 +468,69 @@ def _sweep(
     }
 
 
+def _unread_sweep(workspace_root, *, status: str, reason: str, receipt_type: str,
+                  source_skill: str, window: Optional[dict],
+                  window_desc: str, extra_receipt: dict, fired_via,
+                  triggered_by) -> dict:
+    """The receipt of a sweep that read no session (cr1#740): `skipped` when
+    this run has no session tool at all (owed, not failing: nothing went
+    wrong), `blocked` when the read errored. Either way the reason, the
+    window and its start as the carry-over marker, through the one append
+    path. Writes no item and composes no narrative: nothing was read."""
+    from catchup import WINDOW_INCOMPLETE_FIELD, receipt_window_marker
+    from event_gate import append_event
+
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    win = window if isinstance(window, dict) else {}
+    marker = receipt_window_marker(
+        {"start": win.get("since"), "end": win.get("until")}, incomplete=True)
+    receipt_data = {
+        "task_id": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
+        "kind": _RECEIPT_TASK_IDS.get(receipt_type, source_skill),
+        "status": status,
+        ("blocked_reason" if status == "blocked" else "skip_reason"): reason,
+        "fired_via": _effective_fired_via(fired_via),
+        "sessions_scanned": 0,
+        "events_recovered": 0,
+        "skipped_dedup": 0,
+        "by_type": {},
+        "window": window_desc,
+        "n_narratives_composed": 0,
+        # A skip says nothing to the owner, like every other skip receipt.
+        "summary": ("Sessions were not read this time: " + reason
+                    + ". The same window is read next time."
+                    if status == "blocked" else ""),
+    }
+    if marker:
+        receipt_data[WINDOW_INCOMPLETE_FIELD] = marker
+    asked_by = _asked_by(triggered_by)
+    if asked_by:
+        receipt_data["triggered_by"] = asked_by
+    try:
+        from receipts import machine_fields
+
+        receipt_data.update(machine_fields())
+    except Exception:  # noqa: BLE001
+        pass
+    receipt_data.update(extra_receipt or {})
+    append_event(
+        events_path,
+        {"type": receipt_type, "source_skill": source_skill, "data": receipt_data},
+        holder=source_skill,
+    )
+    return {
+        "events_recovered": 0,
+        "skipped_dedup": 0,
+        "sessions_scanned": 0,
+        "by_type": {},
+        "recovered_summaries": [],
+        "n_narratives_composed": 0,
+        "status": status,
+        ("blocked_reason" if status == "blocked" else "skip_reason"): reason,
+        "summary": receipt_data["summary"],
+    }
+
+
 #: The fields one extracted item carries into the writer (Step 3).
 SWEEP_ITEM_FIELDS = ("session_id", "type", "summary", "data", "person_ids")
 
@@ -536,10 +599,21 @@ def sweep_and_receipt(
     sessions: Optional[Iterable[dict]] = None,
     triggered_by: Optional[str] = None,
     maintenance_window: Optional[dict] = None,
+    fetch_blocked: Optional[str] = None,
+    skip_reason: Optional[str] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt. `items` is the skill's extraction; every write
     is idempotent, so a re-run over the same window is a clean no-op.
+
+    cr1#740: `fetch_blocked` is why the session read errored, and lands a
+    BLOCKED receipt; `skip_reason` is why this run has no session-transcript
+    tool at all, and lands a SKIPPED one (owed, not failing, the posture of
+    a mail-less workspace). Both write nothing else and carry the window's
+    start as `window_incomplete_before`, so the next run reads the same
+    window; a run that read nothing used to land `complete` with
+    `sessions_scanned` 0 and the window moved past every session in the
+    gap. An empty `items` with neither is still a quiet window, read whole.
 
     cr1#663: the receipt names the job's maintenance window under
     `catchup.MAINTENANCE_WINDOW_FIELD`: the plan's dict when handed in, else
@@ -574,15 +648,26 @@ def sweep_and_receipt(
 
     require_writer_identity(workspace_root=workspace_root)
     extra_receipt: dict = {"window_hours": int(window_hours)}
+    window = None
     try:
         from catchup import MAINTENANCE_WINDOW_FIELD
         from catchup import maintenance_window as _maintenance_window
 
-        extra_receipt[MAINTENANCE_WINDOW_FIELD] = (
-            maintenance_window if isinstance(maintenance_window, dict)
-            else _maintenance_window(workspace_root, "session-sweep"))
+        window = (maintenance_window if isinstance(maintenance_window, dict)
+                  else _maintenance_window(workspace_root, "session-sweep"))
+        extra_receipt[MAINTENANCE_WINDOW_FIELD] = window
     except Exception:  # noqa: BLE001 - the window never costs the receipt
         pass
+    blocked = str(fetch_blocked or "").strip()
+    skipped = str(skip_reason or "").strip()
+    if blocked or skipped:
+        return _unread_sweep(
+            workspace_root, status="blocked" if blocked else "skipped",
+            reason=blocked or skipped, receipt_type=RECEIPT_SWEEP,
+            source_skill=source_skill, window=window,
+            window_desc=window_desc or f"last-{int(window_hours)}h",
+            extra_receipt=extra_receipt, fired_via=fired_via,
+            triggered_by=triggered_by)
     return _sweep(
         workspace_root,
         items,
@@ -642,6 +727,11 @@ def validate_sweep_ran(
     Returns {ran, ok, last_ts, events_recovered, sessions_scanned}. `ok` is True
     only when a receipt exists AND (no since_ts, or the receipt is at/after it),
     so the skill can prove THIS run landed rather than an old one.
+
+    cr1#740: as the mail and chat validators answer. A BLOCKED receipt (the
+    read errored) is not `ok`: a read that could not happen is not a read
+    that found nothing. A SKIPPED one (no session tool) is `ok` and not
+    `ran`: the leg correctly did nothing. Each carries `status` and `reason`.
     """
     ev = last_sweep(workspace_root, receipt_type=receipt_type)
     if ev is None:
@@ -650,13 +740,23 @@ def validate_sweep_ran(
     ts = _receipt_ts(ev)
     data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
     ok = bool(ts) and (since_ts is None or ts >= since_ts)
-    return {
+    out = {
         "ran": True,
         "ok": ok,
         "last_ts": ts or None,
         "events_recovered": int(data.get("events_recovered") or 0),
         "sessions_scanned": int(data.get("sessions_scanned") or 0),
     }
+    if data.get("status") == "blocked":
+        out["ok"] = False
+        out["status"] = "blocked"
+        out["reason"] = ("the session read did not happen: "
+                         + str(data.get("blocked_reason") or "recorded as blocked"))
+    elif data.get("status") == "skipped":
+        out["ran"] = False
+        out["status"] = "skipped"
+        out["reason"] = data.get("skip_reason")
+    return out
 
 
 # -----------------------------------------------------------------------------

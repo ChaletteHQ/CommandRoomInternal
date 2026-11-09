@@ -13,11 +13,11 @@ IS the daily memory commit.
 
 The scheduled fire runs
 `skills/enable-command-room-schedules/references/orchestrator-past-meetings.md`
-under EITHER of two taskIds — `end-of-day` (the current id, minted by EOD2) or
-`past-meetings` (the predecessor, still registered on every machine that has
-not taken the rename offer). Both map to that one file, so both fire this same
-pack at the same hour, forever; the rename is proposed, never applied, and a
-workspace that ignores it loses nothing. The file is the fire's exact steps;
+under whichever of two taskIds a seat still holds — `end-of-day` (minted by
+EOD2) or `past-meetings` (its predecessor). Both are off the schedule for new
+seats: `end-of-day` is shelved (cr1#618, #847), and no rename is offered. Both
+map to that one file, so a chat still on a seat fires this same pack until it is
+paused, or removed by the reinstall on the cloud scheduler. The file is the fire's exact steps;
 this skill is the on-demand entry point and the source of truth for the render
 contract all paths share. The fire's receipt keeps the `past-meetings` task_id
 on both ids (`end_of_day.TASK_ID`) so the day-close series never splits.
@@ -39,9 +39,12 @@ Every step below that reads or writes the workspace goes through the access laye
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1011,10 +1014,9 @@ below is BACKTICKED for the opposite reason — a quoted phrase outside a
 negative clause reads as a claim on it, and this skill claims none of them.)
 
 **DOES NOT fire on:** 'add end of day' — that is a REGISTRATION ask, not a
-day-close (SPEC EOD2: it is the rename switch, and the exact phrase the
-retirement line hands a customer still running `past-meetings`). It routes to
-`change-schedule` → registration Phase 6, which registers `end-of-day` and
-disables the predecessor in one step. This one is single-quoted deliberately,
+day-close, and `end-of-day` is shelved (cr1#847): it routes to
+`change-schedule`, which refuses it with the shelved line and registers
+nothing. This one is single-quoted deliberately,
 unlike the backticked list below: it sits inside the negative clause the
 mechanical matcher actually scans, so quoting it here is what makes the fence
 real rather than decorative. The bare `end of day` still fires this skill — a

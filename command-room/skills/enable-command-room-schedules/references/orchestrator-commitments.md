@@ -55,9 +55,12 @@ Resolve first, once:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -126,9 +129,9 @@ The answer is `{folded, line}`: `folded` is `schedule_config.fold_is_active(WORK
 
 **If `folded` is True, post EXACTLY the answer's `line` — `schedule_config.folded_fire_line("waiting-on")`, never retyped — as the ENTIRE chat turn, then STOP** — no widget, no connector reads, no CRU scans, not even a receipt: a folded chat that keeps writing receipts is a folded chat that still looks live.
 
-> *Your Waiting On chat folded into your morning brief. Its headline now rides your morning brief — say `show waiting` any time for the full list. Say `undo` right after an update to bring it back as its own chat, or `add waiting on` any time.*
+> *Your Waiting On chat folded into your morning brief. Its headline now rides your morning brief — say `show waiting` any time for the full list. The Command Room Hub shows it too.*
 
-**If `folded` is False** (a fresh install that never had the fold applied, or a seat that reversed it with `undo` / `add waiting on`), this chat is LIVE — fall through to Phase 1 below and run the full chat exactly as documented. This is the one thing that separates a FOLD1A fold from a `RETIRED_TASKS` stub (`schedule_config.FOLDED_FIRES`'s own module comment): the check is PER FIRE, from the workspace's own current state, because the fold is reversible — this file must keep asking, never assume its own history.
+**If `folded` is False** (a fresh install that never had the fold applied, or a seat that reversed it with `undo`), this chat is LIVE — fall through to Phase 1 below and run the full chat exactly as documented. This is the one thing that separates a FOLD1A fold from a `RETIRED_TASKS` stub (`schedule_config.FOLDED_FIRES`'s own module comment): the check is PER FIRE, from the workspace's own current state, because the fold is reversible — this file must keep asking, never assume its own history.
 
 ---
 
@@ -285,13 +288,13 @@ This is the daily backstop to the real-time leg in `orchestrator-inbox.md` Phase
 
 Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since the last fire — the `{"in_inbox": true, "after": "YYYY/MM/DD"}` intent (or with `newer_than`), compiled per provider by `connector_adapters/mail.py`.
 
-For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) and **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached"). Those two fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
+For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached") and **`attachment_names`** (the connector's own name for each attached file; a file with no name is only ever a proposal). Those fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"exclude_captured_since": "<fire_start>", "fetch_blocked": null, "fired_via": "<scheduled, or manual on a chat-phrase / Run Now fire>", "inbound_messages": [<one dict per inbound message, shape below>], "provider": "<the seam-resolved provider>", "source_skill": "commitments", "uncorroborated_thread_ids": [<the uncorroborated thread ids, MAILTRUST1 below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "reconcile_inbound_commitments:reconcile_inbound_and_receipt"}'
 ```
 
-`inbound_messages` is one dict per inbound message in the window: `message_id`, `ts`, `sender_person_id`, `subject`, `body`, `thread_id`, `has_attachment`. Keep the CEO's own messages and the unresolvable senders IN — they are counted, not silently dropped. `user_person_id` is `primary_user.resolve_primary_user`'s answer from setup — deterministic, never guessed (Bug #102). `fetch_blocked` is null on a real read; see TRAINFIX F-4 below for when it carries a reason.
+`inbound_messages` is one dict per inbound message in the window: `message_id`, `ts`, `sender_person_id`, `subject`, `body`, `thread_id`, `has_attachment`, `attachment_names`. Keep the CEO's own messages and the unresolvable senders IN — they are counted, not silently dropped. `user_person_id` is `primary_user.resolve_primary_user`'s answer from setup — deterministic, never guessed (Bug #102). `fetch_blocked` is null on a real read; see TRAINFIX F-4 below for when it carries a reason.
 
 The writer is `reconcile_inbound_and_receipt` — the whole inbound pass: it matches, closes through the single closure path, queues the confirms, and lands its own audit row, under the writer the door names. Its answer is the `receipt` this section reads — `n_auto_closed`, `n_pending`, `n_updated`, `n_held_uncorroborated`, `held`, `summary`, `coverage`, `signal_fields`, `resolved`. Then the self-check, one call:
 
@@ -1074,7 +1077,7 @@ All writes through the canonical helpers — never hand-built appends. Every han
   - `N same as [existing]` → resolve the typed name via the standard entity path (ambiguous → disambiguation widget, never guess), then `people_writer.add_person_alias(workspace_root, <resolved person_id>, <the proposal's raw name>, source_skill="commitments", confirmed=True)` — the permanent resolution improvement (aliases.json mapping + the person record; future captures of that spelling resolve correctly, the F-13 P2b/F-56 fix) — then the tombstone with `resolution="same_as"` + person_id + alias. If `add_person_alias` raises the already-mapped-elsewhere conflict, surface it plainly and write NO tombstone (the proposal stays open for a human decision). Ack: `✓ Saved — "[raw name]" is [canonical name].`
   - `N proposal not relevant` → the tombstone with `resolution="not_relevant"`, nothing else written. Permanent (not a timed mute). Ack: counted in the consolidated line, no per-item callout.
 
-"show muted" / "show snoozed" in this chat → the mute ledger (show-my-list's ledger mode): every live snooze with its remaining time and an Unmute action.
+"show muted" / "show snoozed" in this chat → the mute ledger (show-my-reminders' ledger mode, cr1#552): every live snooze with its remaining time and an Unmute action.
 
 ## Bulk actions (canonical set only — v2.14.19+ retired non-canonical "show all open" / "show all overdue" navigation buttons)
 

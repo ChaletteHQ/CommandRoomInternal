@@ -1,7 +1,7 @@
 ---
 name: command-room-coach
 surfaces: both
-description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'coach me on' (workspace-manager — the earned coaching door names the thing being worked on), 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager)."
+description: "The customer's permanent home chat with their named AI — the mirror-insights-outputs surface that shows what the system knows, what it noticed, and what it can produce next. Fires on: 'show me what's next', 'what should I focus on this week / this month', 'show me around', 'what can you do for me', 'how do I use this', 'coach me', 'command room coach', 'prove it', and the same phrases addressed to the AI by name. Renders three beats: Mirror (what it knows from the customer's own data), Insights (2-3 computed observations), Outputs (3-5 ready-to-produce deliverables from the catalog, each about a specific named entity), closing with 'which one do you want to go after first?'. Does NOT fire on 'coach me on' (workspace-manager — the earned coaching door names the thing being worked on), 'set up command room' (command-room-onboarding), 'weekly insights' (insight-generator), or workspace lifecycle commands like 'let's work' (workspace-manager)."
 ---
 
 # Command Room Coach — The customer's home chat with their AI
@@ -22,11 +22,15 @@ A three-phase proof, delivered to the CEO in one chat, that earns the answer to 
 - **Use `command-room-onboarding` for:** first-install setup. Coach receives the customer at handoff; it does not run setup itself.
 - **Use `workspace-manager` for:** the actual `go [project]` / `go [org]` substrate-deepening step. Coach offers the chain; workspace-manager executes the precursor. Coach lets go after the user types the precursor.
 - **Use `people-crm` for:** the actual `tell me about [person]` step. Same handoff pattern.
-- **Use the downstream produce-now skill** (one-pager-composer, memo-writer, stress-test, decision-log (revisit mode), decision-memo-composer, email-writer, intro-broker, call-prep, board-pack-assembler, dormant-customer-scan) **for the second-phrase produce step.** Coach renders the literal trigger phrase; the downstream skill produces against the loaded substrate.
+- **Use the downstream produce-now skill** (one-pager-composer, memo-writer, stress-test, decision-log (revisit mode), decision-memo-composer, email-writer, intro-broker, call-prep, dormant-customer-scan) **for the second-phrase produce step.** Coach renders the literal trigger phrase; the downstream skill produces against the loaded substrate.
 - **Use `level-up-command-room` for:** `level up command room` — it answers the one dashboards sentence (dashboards live in chat now). Coach is not a menu of installs.
 - **Use `cleanup` for:** the workspace health report. Different lens (validation + scoring) vs coach's (proof + offers).
 
 The catalog of deliverable shapes coach picks from lives in `references/deliverable-catalog.md`. Coach never invents a deliverable shape that isn't in the catalog — but it always resolves the entity slot fresh from current workspace state.
+
+## "how do I use this": the usage guide (cr1#187)
+
+This phrase skips the three phases. Run the Access preamble, then the read helper `usage_guide:guide` with `{"workspace_root": "<WS>"}`. Say the answer's `text` as it came back, and STOP. It is the section on the Hub's Settings tab, word for word. A "how do I use" about anything else, a template or a report, is not this: answer that plainly.
 
 ## When this fires
 
@@ -388,9 +392,12 @@ against their own book. So the order is fixed, and it is fixed in code, not here
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

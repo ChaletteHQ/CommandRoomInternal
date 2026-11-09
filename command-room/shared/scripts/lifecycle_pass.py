@@ -43,13 +43,14 @@ WHAT IT WRITES, AND THROUGH WHAT
     `stalled projects` — and on no scheduled surface.
   * active -> dormant -> `thread_writer.update_thread` + ONE canonical
     `status_change` built by `thread_archive.build_thread_status_event`.
-  * dormant -> archived -> `thread_archive.archive_thread`, THE archive
-    chokepoint. Pulse's prose hand-wrote its own status_change here and
-    stamped no `archived_at`, so the archive sorted under the empty string in
-    MASTER_TRACKER's Recently Archived section and sank off the list — the
-    same defect ARCHFIX fixed at the other two call sites. Routing this leg
-    through the chokepoint closes it in passing.
-  * revive -> the same typed status write as the dormant flip.
+  * the ARCHIVE ask -> `brain_proposals.propose(kind="dormancy", ...)`, the
+    same rail, fingerprint `dont_forget:archive:<thread_id>` (cr1#845: dormant
+    is automatic, archive is a visible step). The pass never archives. The
+    owner's `archive` answer lands through `thread_archive.archive_thread`,
+    THE archive chokepoint, in the handler that dispatches the answer.
+  * the owner's `active` answer -> `answer_active`, the one writer for it.
+  * revive -> the same typed status write as the dormant flip, and any archive
+    question still open on a project that is no longer dormant is retired.
 
 NO NEW AUTO-APPLY CLASS. Everything above is a THREAD STATUS transition, the
 class the lifecycle state machine has always owned (ORG_AND_THREAD_MODEL
@@ -59,7 +60,7 @@ class the lifecycle state machine has always owned (ORG_AND_THREAD_MODEL
 CAPS, AND WHY EVERY CLASS HAS ONE
 ---------------------------------
 A workspace that has never run this pass can carry years of quiet threads. An
-uncapped first fire would archive dozens of projects in one silent job, which
+uncapped first fire would flip dozens of projects in one silent job, which
 is exactly the shape of change nobody can review. Each class is bounded per
 fire and the spill is RECORDED in the receipt (never silently dropped) — the
 remainder is still due next week, and the pass self-heals like every other
@@ -88,7 +89,7 @@ from entities_io import entities_collection  # noqa: E402
 # --- the Pulse Phase 4 prose they replace). Days of quiet.
 PROPOSE_DORMANT_DAYS = 30      # 4b — ask
 AUTO_DORMANT_DAYS = 60         # 4b — flip, only after the ask expired unanswered
-AUTO_ARCHIVE_DAYS = 180        # 4c — dormant long enough to file away
+AUTO_ARCHIVE_DAYS = 180        # 4c — dormant long enough to ASK about filing away (cr1#845)
 REVIVE_WINDOW_DAYS = 7         # 4d — activity this recent brings a thread back
 
 # The proposal's TTL and its family natural key. BOTH are wire contracts:
@@ -117,6 +118,18 @@ REVIVE_WINDOW_DAYS = 7         # 4d — activity this recent brings a thread bac
 # `PROPOSAL_TTL_DAYS` exists in the tree (`run_switch2_test.py` section [5]).
 DORMANT_PROPOSAL_TTL_DAYS = 30
 FINGERPRINT_PREFIX = "dont_forget:"
+#: cr1#845 (ruling F2 of 2026-11-04: dormant is automatic, archive is a visible
+#: step). The archive question rides the same dormancy rail, same kind and
+#: same three answers, under its own natural key so the dormant ask and the
+#: archive ask for one thread never collapse into each other.
+ARCHIVE_FINGERPRINT_PREFIX = "dont_forget:archive:"
+ANSWER_BACK_LINE = "{title} is back to active."
+ANSWER_KEPT_LINE = "{title} stays active."
+ANSWER_NOT_ACTIVE_LINE = ("{title} is {status}, so that answer changed nothing. "
+                          "Say `revive {title}` to bring it back.")
+ANSWER_NOT_SAVED_LINE = ("That answer could not be saved, because your project "
+                         "records could not be read. Nothing changed; try it again.")
+ANSWER_GONE_LINE = "That question is already answered; nothing changed."
 
 # How long an UNANSWERED question keeps authorising the active->dormant flip
 # (LIFECYCLE1 fix round). Silence is the flip's whole warrant, and the first
@@ -204,10 +217,23 @@ DEFAULT_CAPS = {
 # flipped by two lifecycles.
 EXCLUDED_KINDS = frozenset({"deal", "objective"})
 
-# Statuses this pass reads. `archived` threads are eligible for REVIVE only.
+# Statuses this pass reads. cr1#753 (owner ruling 2026-11-04): an `archived`
+# thread is RETIRED and never comes back on its own. Movement on it is
+# recorded as its own kind of row, a question the owner answers once
+# (`ARCHIVED_ACTIVITY_KIND`): a decline silences further notices for that
+# project; its yes, or `revive <project>`, brings it back (`bring_back`). A
+# `dormant` thread (gone quiet, never retired by the owner) still returns to
+# active as before.
 _ACTIVE_STATUSES = frozenset({"active"})
 _DORMANT_STATUSES = frozenset({"dormant"})
-_REVIVABLE_STATUSES = frozenset({"dormant", "archived"})
+_ARCHIVED_STATUSES = frozenset({"archived"})
+_REVIVABLE_STATUSES = frozenset({"dormant"})
+
+#: cr1#753 - the question written for movement on a retired project.
+ARCHIVED_ACTIVITY_KIND = "archived_activity"
+ARCHIVED_ACTIVITY_PREFIX = "archived_activity:"
+ARCHIVED_ACTIVITY_DETECTOR = "lifecycle-archived"
+ARCHIVED_ACTIVITY_TTL_DAYS = 30
 
 
 def _clock_now(workspace_root=None):
@@ -305,6 +331,14 @@ def _activity_types(workspace_root) -> list:
 def _last_activity(workspace_root) -> dict:
     """{thread_id: datetime} — THE derivation. Never `thread.last_activity`
     (deprecated, F-61: no code path maintains it)."""
+    return {tid: dt for tid, (dt, _seq) in _last_activity_full(workspace_root).items()}
+
+
+def _last_activity_full(workspace_root) -> dict:
+    """{thread_id: (datetime, seq|None)}: the same derivation, with the
+    activity event's place in the book beside its time (cr1#761: the daily
+    pass asks whether the activity REACHED the book after its last run, not
+    only whether it is dated inside the window)."""
     try:
         from thread_activity import derive_thread_activity
         rows = derive_thread_activity(
@@ -315,6 +349,11 @@ def _last_activity(workspace_root) -> dict:
         return {}
     out: dict = {}
     for tid, act in (rows or {}).items():
+        seq = getattr(act, "seq", None)
+        if seq is None and isinstance(act, dict):
+            seq = act.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            seq = None
         ts = getattr(act, "ts", None)
         if ts is None and isinstance(act, dict):
             ts = act.get("ts")
@@ -330,7 +369,7 @@ def _last_activity(workspace_root) -> dict:
         else:
             dt = _parse(ts)
         if dt is not None:
-            out[str(tid)] = dt
+            out[str(tid)] = (dt, seq)
     return out
 
 
@@ -481,6 +520,7 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
     opened: dict = {}          # proposal_id -> (thread_id, opened_dt)
     answered: dict = {}        # proposal_id -> when the CEO resolved it
     expired: dict = {}         # proposal_id -> when the sweep tombstoned it
+    archive_asks: dict = {}    # proposal_id -> thread_id (cr1#845)
     for ev in events:
         etype = ev.get("type")
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
@@ -489,7 +529,13 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
             if not fp.startswith(FINGERPRINT_PREFIX):
                 continue
             pid = d.get("proposal_id") or d.get("id")
-            if pid:
+            if pid and fp.startswith(ARCHIVE_FINGERPRINT_PREFIX):
+                # cr1#845: only the ANSWER to an archive question speaks to
+                # this ladder. Open or lapsed, it says nothing about an
+                # active thread, and it shares this prefix, so it must not
+                # be read as a dormancy ask for a thread called `archive:...`.
+                archive_asks[str(pid)] = fp[len(ARCHIVE_FINGERPRINT_PREFIX):]
+            elif pid:
                 opened[str(pid)] = (fp[len(FINGERPRINT_PREFIX):],
                                     _parse(ev.get("ts")))
         elif etype == "brain_proposal_resolved":
@@ -498,6 +544,9 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
         elif etype == "brain_proposal_expired":
             if d.get("proposal_id"):
                 expired[str(d["proposal_id"])] = _parse(ev.get("ts"))
+    for pid, tid in archive_asks.items():
+        if tid and pid in answered:
+            _note_answer(_slot(tid), answered[pid] or now)
     for pid, (tid, opened_dt) in opened.items():
         if not tid:
             continue
@@ -559,6 +608,21 @@ def _dormancy_ask_state(events: list, now: _dt.datetime) -> dict:
             slot["open"] = True
 
     return state
+
+
+def _archive_already_asked(workspace_root, now_iso: str) -> set:
+    """Thread ids whose archive question needs no asking this pass: it stands
+    open, or the owner answered it inside the shared cooldown. `propose` would
+    drop these rows anyway, so leaving them in the plan spends the per-fire
+    cap on nothing and the threads behind them are never asked."""
+    from brain_proposals import open_brain_proposals
+    from proposal_ledger import active_cooldowns
+
+    keys = {r.get("fingerprint") for r in
+            open_brain_proposals(workspace_root, now_iso=now_iso)}
+    keys |= active_cooldowns(workspace_root, DETECTOR, now_iso=now_iso)
+    return {str(k)[len(ARCHIVE_FINGERPRINT_PREFIX):] for k in keys
+            if str(k).startswith(ARCHIVE_FINGERPRINT_PREFIX)}
 
 
 def _flip_authorised(ask: dict, now: _dt.datetime) -> bool:
@@ -851,16 +915,24 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
 
     threads = _threads(workspace_root)
     events = _load_events(workspace_root)
-    last = _last_activity(workspace_root)
+    full = _last_activity_full(workspace_root)
+    last = {tid: dt for tid, (dt, _seq) in full.items()}
+    seqs = {tid: seq for tid, (_dt_, seq) in full.items()}
     asks = _dormancy_ask_state(events, now)
     daily = window is not None
     daily_start = _window_start_utc(window) if daily else None
+    daily_seq = window.get("since_seq") if daily and isinstance(window, dict) else None
+    if not isinstance(daily_seq, int) or isinstance(daily_seq, bool):
+        daily_seq = None
 
     revive: list = []
     propose: list = []
     dormant: list = []
     archive: list = []
+    archived_activity: list = []
     considered = 0
+    # cr1#753 - what the owner already answered about retired projects.
+    answered = _archived_activity_answers(events)
 
     for t in threads:
         if t.get("kind") in EXCLUDED_KINDS:
@@ -868,10 +940,19 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
         tid = str(t["id"])
         if daily:
             # cr1#665: the daily pass considers only a thread whose activity
-            # landed in the window. No start, no activity, or activity before
-            # the window: Sunday's question, never guessed at here.
+            # landed in the window. cr1#761: "landed" is tested two ways,
+            # by the activity's own time and by when it reached the book
+            # (its place after the window's receipt), so a meeting held
+            # before the last run but captured after it is this run's. No
+            # start, no activity, or activity before the window on both
+            # counts: Sunday's question, never guessed at here.
             act = last.get(tid)
-            if daily_start is None or act is None or act < daily_start:
+            seq = seqs.get(tid)
+            dated_in = (daily_start is not None and act is not None
+                        and act >= daily_start)
+            arrived_in = (daily_seq is not None and seq is not None
+                          and seq > daily_seq)
+            if act is None or not (dated_in or arrived_in):
                 continue
         status = str(t.get("status") or "")
         title = (t.get("canonical_name") or t.get("display_name")
@@ -910,12 +991,46 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
             # refuse rather than guess in the direction that overrides a human.
             respects_flip = (not flip_unplaceable
                              and (flipped is None or flipped_auto
-                                  or act_dt > flipped))
+                                  or (act_dt is not None
+                                      and act_dt > flipped)))
             if recent and respects_flip:
                 revive.append({"thread_id": tid, "title": title,
                                "status": status, "quiet_days": round(quiet, 1),
                                "reason": "new activity since it went quiet"})
                 continue
+
+        if status in _ARCHIVED_STATUSES:
+            # cr1#753 - movement on a RETIRED project is never a silent
+            # return to active. It is one question, asked once; the owner's
+            # answer stands: silenced is silenced for good, and "bring it
+            # back" (an applied answer newer than the archive) revives it
+            # through the same typed status write as a dormant revive.
+            act_dt = last.get(tid)
+            flipped, flipped_auto, flip_unplaceable = _last_status_change(
+                events, tid)
+            moved = (act_dt is not None
+                     and 0 <= (now - act_dt).total_seconds() / 86400.0
+                     <= REVIVE_WINDOW_DAYS)
+            # A HUMAN's archive is movement-proof against anything older
+            # than it; this pass's OWN archive yields to in-window activity,
+            # late-captured evidence included (the dormant revive's rule).
+            after_archive = (not flip_unplaceable
+                             and (flipped is None or flipped_auto
+                                  or act_dt is None or act_dt > flipped))
+            ans = answered.get(tid) or {}
+            if ans.get("revive_at") is not None and (
+                    flipped is None or ans["revive_at"] > flipped):
+                revive.append({"thread_id": tid, "title": title,
+                               "status": status, "quiet_days": round(quiet, 1),
+                               "reason": "you asked to bring it back"})
+                continue
+            if moved and after_archive and not ans.get("silenced"):
+                archived_activity.append({
+                    "thread_id": tid, "title": title, "status": status,
+                    "quiet_days": round(quiet, 1),
+                    "activity_on": act_dt.date().isoformat() if act_dt else "",
+                    "reason": "movement on a retired project"})
+            continue
 
         if daily:
             # cr1#665: the ask, the dormant flip and the archive are about
@@ -940,12 +1055,19 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
                                 "status": status, "quiet_days": round(quiet, 1),
                                 "reason": f"{int(quiet)} days quiet"})
 
+    if archive:
+        # cr1#845: before the cap, or the oldest threads hold every slot while
+        # their questions stand and nobody behind them is ever asked.
+        asked = _archive_already_asked(workspace_root, now_iso)
+        archive = [r for r in archive if r["thread_id"] not in asked]
+
     plan = {"now": now_iso, "considered": considered, "spilled": {}}
     if daily:
         plan["daily"] = True
         plan["maintenance_window"] = window
     for name, rows in (("revive", revive), ("propose", propose),
-                       ("dormant", dormant), ("archive", archive)):
+                       ("dormant", dormant), ("archive", archive),
+                       ("archived_activity", archived_activity)):
         rows.sort(key=lambda r: (-r["quiet_days"], r["thread_id"]))
         cap = caps.get(name)
         if cap and len(rows) > cap:
@@ -955,8 +1077,136 @@ def plan_lifecycle(workspace_root, *, now_iso: Optional[str] = None,
     return plan
 
 
+def _archived_activity_answers(events: list) -> dict:
+    """cr1#753 - `{thread_id: {"silenced": bool, "revive_at": datetime|None}}`
+    from the owner's answers to the archived-activity question, read off
+    the ledger's proposal rows and their resolutions: a declined question
+    silences further notices for that project for good; an applied one
+    ("bring it back") revives it, when it post-dates the archive."""
+    out: dict = {}
+    fp_by_id: dict = {}
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        et = ev.get("type")
+        if et == "brain_proposal":
+            fp = str(d.get("fingerprint") or "")
+            if fp.startswith(ARCHIVED_ACTIVITY_PREFIX) and d.get("proposal_id"):
+                fp_by_id[str(d["proposal_id"])] = fp
+        elif et == "brain_proposal_resolved":
+            fp = fp_by_id.get(str(d.get("proposal_id") or ""))
+            if not fp:
+                continue
+            tid = fp[len(ARCHIVED_ACTIVITY_PREFIX):]
+            action = str(d.get("user_action") or "")
+            row = out.setdefault(tid, {"silenced": False, "revive_at": None})
+            if action in ("declined", "superseded"):
+                row["silenced"] = True
+            elif action in ("applied", "edited"):
+                when = _parse(ev.get("ts"))
+                if when is not None and (row["revive_at"] is None or when > row["revive_at"]):
+                    row["revive_at"] = when
+    return out
+
+
+def _ask_archived_activity(workspace_root, rows: list, applied: dict,
+                           failed: list) -> None:
+    """cr1#753 - write the question for movement on a retired project, once
+    per project (the proposal rail dedups an open one and honours a
+    decline)."""
+    if not rows:
+        return
+    from brain_proposals import propose
+    for row in rows:
+        try:
+            res = propose(
+                workspace_root,
+                kind=ARCHIVED_ACTIVITY_KIND,
+                tier="confirm",
+                fingerprint=f"{ARCHIVED_ACTIVITY_PREFIX}{row['thread_id']}",
+                detector=ARCHIVED_ACTIVITY_DETECTOR,
+                evidence=f"movement on {row.get('activity_on') or 'a recent day'}",
+                render_line=(f"{row['title'] or 'A retired project'} is retired, and "
+                             "something moved on it: bring it back, or say not "
+                             "relevant to keep it quiet for good."),
+                ttl_days=ARCHIVED_ACTIVITY_TTL_DAYS,
+                thread_id=row["thread_id"],
+                # The decline silences for good (`_archived_activity_answers`),
+                # so the row carries the decline whose label says permanent.
+                action_tuples=[{"action": "confirm proposal"},
+                               {"action": "proposal not relevant"}],
+                extra={"title": row["title"], "activity_on": row.get("activity_on"),
+                       "archived_activity": True},
+            )
+            if res.get("status") == "proposed":
+                applied["archived_activity"] += 1
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"class": "archived_activity",
+                           "thread_id": row["thread_id"],
+                           "error": f"{type(exc).__name__}: {exc}"})
+
+
+def bring_back(workspace_root, thread_id: str, *, actor: str,
+               source_skill: str = SOURCE_SKILL,
+               reason: str = "You brought it back") -> dict:
+    """cr1#753 - the owner's "bring it back": a dormant or an archived project
+    to active, as the owner's act, through the one typed status write, so a
+    retired project's archive stamps clear with it. Every door lands here: a
+    typed `revive <project>`, the question's yes, the Hub's press.
+
+    The questions standing on the project are answered too: the retired one
+    as applied, the dormancy one as declined, or the next pass would read the
+    old silence as still standing and flip the project straight back; an
+    archive question (cr1#845) as superseded, its premise gone. The dormancy
+    ask's cooldown is written as `answer_active` writes it, so the next pass
+    does not ask it again.
+
+    Answers `{"status": "updated", "from_status"}`, or `{"status":
+    "not_found"}`, or `{"status": "noop", "from_status"}` for a project that
+    is neither dormant nor archived, and then writes nothing."""
+    from event_gate import append_event
+
+    record = next((t for t in _threads(workspace_root) if t.get("id") == thread_id), None)
+    if record is None:
+        return {"status": "not_found"}
+    status = str(record.get("status") or "").lower()
+    if status not in _REVIVABLE_STATUSES | _ARCHIVED_STATUSES:
+        return {"status": "noop", "from_status": status}
+    _set_status(workspace_root, thread_id, from_status=status, to_status="active",
+                reason=reason, source_skill=source_skill)
+    # The owner just said this project is live while the clock still reads it
+    # quiet: the dormancy ask's cooldown, as `answer_active` writes it, or the
+    # next pass asks the same question again.
+    from proposal_ledger import append_decision
+    append_decision(workspace_root, pass_name=DETECTOR,
+                    fingerprint=f"{FINGERPRINT_PREFIX}{thread_id}",
+                    user_action="declined", summary=reason)
+    # The archive question (cr1#845) loses its premise once the project is
+    # active: `superseded`, as the pass's own retirement writes it, so the
+    # record never reads as the owner's decline.
+    answers = {ARCHIVED_ACTIVITY_PREFIX + thread_id: "applied",
+               FINGERPRINT_PREFIX + thread_id: "declined",
+               ARCHIVE_FINGERPRINT_PREFIX + thread_id: "superseded"}
+    events = _load_events(workspace_root)
+    resolved = {str((e.get("data") or {}).get("proposal_id") or "") for e in events
+                if e.get("type") == "brain_proposal_resolved"}
+    for ev in events:
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        answer = answers.get(str(d.get("fingerprint") or ""))
+        pid = str(d.get("proposal_id") or "")
+        if ev.get("type") == "brain_proposal" and answer and pid and pid not in resolved:
+            append_event(_events_path(workspace_root),
+                         [{"type": "brain_proposal_resolved", "source_skill": source_skill,
+                           "data": {"proposal_id": pid, "user_action": answer,
+                                    "resolved_by": actor, "note": reason}}],
+                         holder=SOURCE_SKILL)
+    return {"status": "updated", "from_status": status}
+
+
 def _set_status(workspace_root, thread_id: str, *, from_status: str,
-                to_status: str, reason: str) -> None:
+                to_status: str, reason: str,
+                source_skill: str = SOURCE_SKILL) -> None:
     """Record first, event second — the ARCHFIX ordering. A failed append
     leaves the record telling the truth; the reverse order would leave a
     status_change asserting a transition the substrate does not have."""
@@ -966,7 +1216,7 @@ def _set_status(workspace_root, thread_id: str, *, from_status: str,
                                 clear_archive_stamps)
 
     thread_writer.update_thread(workspace_root, thread_id,
-                                source_skill=SOURCE_SKILL, status=to_status)
+                                source_skill=source_skill, status=to_status)
     # LIFECYCLE1 fix round — a thread LEAVING `archived` must not keep the two
     # stamps that say it is archived. Through the writer that owns them, never
     # a field this module sets by hand. Done AFTER the status write and
@@ -976,7 +1226,7 @@ def _set_status(workspace_root, thread_id: str, *, from_status: str,
     if from_status == ARCHIVED_STATUS:
         try:
             clear_archive_stamps(workspace_root, thread_id,
-                                 source_skill=SOURCE_SKILL)
+                                 source_skill=source_skill)
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write(
                 f"[lifecycle_pass] revive of {thread_id}: archive stamps not "
@@ -987,8 +1237,91 @@ def _set_status(workspace_root, thread_id: str, *, from_status: str,
                                             from_status=from_status,
                                             to_status=to_status,
                                             reason=reason,
-                                            source_skill=SOURCE_SKILL)],
-                 holder=SOURCE_SKILL)
+                                            source_skill=source_skill)],
+                 holder=source_skill)
+
+
+def answer_active(workspace_root, proposal_id: str, *, resolved_by: str,
+                  source_skill: str = "stalled-projects") -> dict:
+    """A WRITER. The owner's `active` on a `bp_` dormancy row (cr1#845).
+
+    The plain dormancy ask (`active` means nothing changes) resolves the row
+    `declined` and writes nothing else. The ARCHIVE question (`data.ask` is
+    `archive`) is asked about a project already dormant, so `active` there
+    also flips it dormant -> active, in the owner's name, and closes the
+    dormancy ask's cooldown too: the project is still quiet by the clock, and
+    the owner has just answered, so the next pass must neither re-ask it nor
+    read an older silence as standing.
+
+    Returns `{status, line, flipped?}`: `kept_active`; `noted` when a plain
+    ask lands on a project that is not active (the row is answered, the status
+    stays, and the line says so); `blocked` when the project records cannot be
+    read; or `already_resolved` when the row is gone (both write nothing)."""
+    import brain_proposals as bp
+    from proposal_ledger import append_decision
+
+    row = next((r for r in bp.open_brain_proposals(workspace_root,
+                                                   include_lapsed=True)
+                if r["id"] == proposal_id), None)
+    if row is None or row.get("kind") != "dormancy":
+        return {"status": "already_resolved", "proposal_id": proposal_id,
+                "line": ANSWER_GONE_LINE}
+    tid = str(row.get("thread_id") or "")
+    threads = _threads(workspace_root)
+    if not threads:
+        # An unreadable book says nothing about this project, and answering
+        # would close the question without acting on it.
+        return {"status": "blocked", "proposal_id": proposal_id,
+                "line": ANSWER_NOT_SAVED_LINE}
+    thread = next((t for t in threads if str(t.get("id")) == tid), {})
+    flipped = (row.get("ask") == "archive"
+               and thread.get("status") in _DORMANT_STATUSES)
+    if flipped:
+        _set_status(workspace_root, tid, from_status=thread["status"],
+                    to_status="active", reason="the owner said active",
+                    source_skill=source_skill)
+        append_decision(workspace_root, pass_name=row["detector"],
+                        fingerprint=f"{FINGERPRINT_PREFIX}{tid}",
+                        user_action="declined",
+                        summary=row.get("evidence") or "")
+    bp.resolve_proposal(workspace_root, proposal_id, "declined",
+                        resolved_by=resolved_by, source_skill=source_skill)
+    title = row.get("title") or "That project"
+    status = str(thread.get("status") or "")
+    if flipped or status in _ACTIVE_STATUSES:
+        return {"status": "kept_active", "flipped": bool(flipped),
+                "line": (ANSWER_BACK_LINE if flipped
+                         else ANSWER_KEPT_LINE).format(title=title)}
+    return {"status": "noted", "flipped": False,
+            "line": ANSWER_NOT_ACTIVE_LINE.format(title=title,
+                                                  status=status or "not on file")}
+
+
+def _retire_settled_archive_questions(workspace_root, now_iso: str) -> int:
+    """Retire every open archive question whose project is no longer dormant
+    (cr1#845). The question's premise is gone, whichever door changed the
+    status: this pass's revive, the Hub, or a typed `revive` or `archive`.
+    `superseded`, so the record never reads as the owner's decline."""
+    import brain_proposals as bp
+
+    status = {str(t["id"]): t.get("status") for t in _threads(workspace_root)}
+    if not status:
+        return 0  # an unreadable book says nothing about any project
+    n = 0
+    for row in bp.open_brain_proposals(workspace_root, now_iso=now_iso):
+        fp = str(row.get("fingerprint") or "")
+        if not fp.startswith(ARCHIVE_FINGERPRINT_PREFIX):
+            continue
+        tid = fp[len(ARCHIVE_FINGERPRINT_PREFIX):]
+        if tid not in status or status[tid] in _DORMANT_STATUSES:
+            continue  # a missing id proves nothing; only a known status does
+        res = bp.resolve_proposal(workspace_root, row["id"], "superseded",
+                                  resolved_by="system",
+                                  source_skill=SOURCE_SKILL,
+                                  note="the project is no longer dormant")
+        if res.get("status") == "resolved":
+            n += 1
+    return n
 
 
 def run_lifecycle_pass(workspace_root, *, apply: bool = False,
@@ -1015,7 +1348,9 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
     plan = (plan_lifecycle(workspace_root, now_iso=now_iso, caps=caps,
                            window=window) if daily
             else plan_lifecycle(workspace_root, now_iso=now_iso, caps=caps))
-    applied = {"revive": 0, "propose": 0, "dormant": 0, "archive": 0}
+    applied = {"revive": 0, "propose": 0, "dormant": 0, "archive": 0,
+               "archived_activity": 0,
+               "archive_proposed": 0, "archive_question_retired": 0}
     failed: list = []
     if not apply:
         plan["applied"] = applied
@@ -1034,6 +1369,17 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
         except Exception as exc:  # noqa: BLE001 — one thread never aborts the pass
             failed.append({"class": "revive", "thread_id": row["thread_id"],
                            "error": f"{type(exc).__name__}: {exc}"})
+
+    # 1b. A question about a project that came back has nothing left to ask.
+    try:
+        applied["archive_question_retired"] = _retire_settled_archive_questions(
+            workspace_root, plan["now"])
+    except Exception as exc:  # noqa: BLE001
+        failed.append({"class": "archive_question", "thread_id": "",
+                       "error": f"{type(exc).__name__}: {exc}"})
+    # 1c. cr1#753 - the question for movement on a retired project.
+    _ask_archived_activity(workspace_root, plan.get("archived_activity") or [],
+                           applied, failed)
 
     # 2. PROPOSE — the ask, on the LB2 rail, on-demand by kind (STAFFCUT §3.7).
     for row in plan["propose"]:
@@ -1071,17 +1417,33 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
             failed.append({"class": "dormant", "thread_id": row["thread_id"],
                            "error": f"{type(exc).__name__}: {exc}"})
 
-    # 4. DORMANT -> ARCHIVED, through THE archive chokepoint. Never a
-    #    hand-built status_change: that is what left Pulse's archives with no
-    #    `archived_at` and no tracker row.
+    # 4. DORMANT -> the ARCHIVE QUESTION (cr1#845; ruling F2 of 2026-11-04:
+    #    dormant is automatic, archive is a visible step). The pass never
+    #    archives on its own: it proposes, on the dormancy rail, and the
+    #    owner's `archive` answer lands through THE archive chokepoint
+    #    (`thread_archive.archive_thread`, the proposal's own dispatch) with
+    #    `archived_at` stamped. `propose` drops an open repeat and a recent
+    #    decline, so a standing question is never asked twice.
     for row in plan["archive"]:
         try:
-            from thread_archive import archive_thread
-            res = archive_thread(workspace_root, row["thread_id"],
-                                 reason=row["reason"],
-                                 source_skill=SOURCE_SKILL)
-            if res.get("status") == "archived":
-                applied["archive"] += 1
+            from brain_proposals import propose
+            res = propose(
+                workspace_root,
+                kind="dormancy",
+                tier="confirm",
+                fingerprint=f"{ARCHIVE_FINGERPRINT_PREFIX}{row['thread_id']}",
+                detector=DETECTOR,
+                evidence=f"dormant and quiet {int(row['quiet_days'])} days",
+                render_line=(f"{row['title'] or 'this project'} has been dormant "
+                             f"{int(row['quiet_days'])} days — archive it?"),
+                ttl_days=DORMANT_PROPOSAL_TTL_DAYS,
+                thread_id=row["thread_id"],
+                action_tuples=[{"action": "archive"}, {"action": "active"},
+                               {"action": "snooze 14d"}],
+                extra={"title": row["title"], "ask": "archive"},
+            )
+            if res.get("status") == "proposed":
+                applied["archive_proposed"] += 1
         except Exception as exc:  # noqa: BLE001
             failed.append({"class": "archive", "thread_id": row["thread_id"],
                            "error": f"{type(exc).__name__}: {exc}"})
@@ -1098,6 +1460,7 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                 "mode": "daily",
                 "considered": plan["considered"],
                 "revived": applied["revive"],
+                "archived_activity_asked": applied["archived_activity"],
                 "spilled": plan["spilled"],
                 "errors": failed,
                 MAINTENANCE_WINDOW_FIELD: window,
@@ -1129,13 +1492,15 @@ def run_lifecycle_pass(workspace_root, *, apply: bool = False,
                 # FIX3 F3-6, fix pass 2: the SEAT answers, not a literal.
                 fired_via=_effective_fired_via(fired_via),
                 triggered_by=triggered_by,
-                surfaced=applied["propose"],
+                surfaced=applied["propose"] + applied["archive_proposed"],
                 extra_data={
                     "considered": plan["considered"],
                     "revived": applied["revive"],
+                "archived_activity_asked": applied["archived_activity"],
                     "proposed": applied["propose"],
                     "went_dormant": applied["dormant"],
-                    "archived": applied["archive"],
+                    "archived": applied["archive"],   # always 0 since cr1#845; kept so old readers parse
+                    "archive_proposed": applied["archive_proposed"],
                     "spilled": plan["spilled"],
                     "errors": failed,
                 })
@@ -1207,8 +1572,10 @@ def main(argv: Optional[list] = None) -> int:
 __all__ = [
     "PROPOSE_DORMANT_DAYS",
     "AUTO_DORMANT_DAYS",
+    "ARCHIVE_FINGERPRINT_PREFIX",
     "AUTO_ARCHIVE_DAYS",
     "REVIVE_WINDOW_DAYS",
+    "answer_active",
     "DORMANT_PROPOSAL_TTL_DAYS",
     "FLIP_AUTHORITY_DAYS",
     "FINGERPRINT_PREFIX",

@@ -187,6 +187,13 @@ def _find_existing_note(events, kind, target_id, source_event_seq, text):
 # to find it.
 
 
+def resolve_note_target(source_ev: Optional[dict], entities: dict) -> tuple:
+    """Public name for `_resolve_target` (cr1#552): the discuss-list retirement
+    pins each open item with the same person-then-thread rule a re-routed
+    orphan note uses, so the two never disagree about where a note lands."""
+    return _resolve_target(source_ev, entities)
+
+
 def reroute_orphan_note(
     workspace_root,
     context_text: str,
@@ -266,4 +273,4 @@ def reroute_orphan_note(
             "target_kind": kind, "target_id": target_id}
 
 
-__all__ = ["DECLINE_LINE", "reroute_orphan_note"]
+__all__ = ["DECLINE_LINE", "reroute_orphan_note", "resolve_note_target"]

@@ -135,6 +135,16 @@ If the resolved draft call fails (no mail connector mounted, auth expired, read-
 
 Then paste the full email body. Don't lose the diagnosis just because the connector path failed.
 
+## Marking a logged bug resolved (cr1#852)
+
+Every report this skill drafts leaves a `bug_reported` row, and the maintainer's tooling leaves `bug_received` rows; nothing closed them until now, so every logged bug stayed open forever. On `mark bug <number> resolved` (also `bug <number> is fixed`, `resolve bug <number>`, `close bug <number>`), the number being the one the health check lists beside each open bug, write ONE row through the write door and say its `line`, verbatim:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"ref": "<the number the owner said>", "note": "<the owner's words about the fix, if any, else omitted>", "workspace_root": "<WS>"}, "name": "bug_log:resolve_bug"}'
+```
+
+`bug_log.resolve_bug` writes one `bug_resolved` row pointing at the bug's seq and answers `resolved` with the count still open; `already_resolved`, `unknown` and `no_ref` write nothing, and their `line` is the whole answer. Never hand-append the row, never edit or remove the bug row itself, and never guess a number the owner did not say. The health check (`system-health` Step 3b) lists the open ones with their numbers through `bug_log:open_bug_count`.
+
 ## Rules
 
 1. **One question, never two.** The user already hit a frustrating bug — don't make them answer a quiz. One sentence each for trying / happened is the whole user-input surface.
@@ -175,7 +185,7 @@ anyone else to.
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Auto-collects plugin version, last skill that fired, workspace state, and active connectors. Pattern-matches against known issues ({SKILL_DIR}/references/known-issue-patterns.md — skill-local, ships with the plugin) — half of reports never need to leave the user because the fix is a one-liner. Use when the user says: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'report this', 'send this to support', 'tell the team about this', 'something is off', 'this is broken', 'why isn't this working'. Output is a Gmail draft pre-filled to matthew@chaletteholdings.com (the maintainer's public support address) with the full diagnosis — user reviews and sends. DOES NOT fire on conversational frustration ('this is annoying' / 'ugh') without an explicit report-it intent. DOES NOT fire on questions about how something works (that's the relevant skill, not a bug).
+> Diagnose a Command Room misfire end-to-end and either self-fix it or draft a fully-diagnosed support email to the maintainer. Auto-collects plugin version, last skill that fired, workspace state, and active connectors. Pattern-matches against known issues ({SKILL_DIR}/references/known-issue-patterns.md — skill-local, ships with the plugin) — half of reports never need to leave the user because the fix is a one-liner. Use when the user says: 'report bug', 'report a bug', 'this isn't working', 'something's wrong', 'it broke', 'report this', 'send this to support', 'tell the team about this', 'something is off', 'this is broken', 'why isn't this working'. Also marks a logged bug resolved (cr1#852): 'mark bug [number] resolved', 'resolve bug [number]', 'bug [number] is fixed', 'close bug [number]': one row through the write door, one line back; machine-matchable stems for the mechanical matcher: 'mark bug', 'resolve bug', 'close bug'. Output is a Gmail draft pre-filled to matthew@chaletteholdings.com (the maintainer's public support address) with the full diagnosis — user reviews and sends. DOES NOT fire on conversational frustration ('this is annoying' / 'ugh') without an explicit report-it intent. DOES NOT fire on questions about how something works (that's the relevant skill, not a bug).
 
 ## The Access preamble this file refers to
 
@@ -194,9 +204,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

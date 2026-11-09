@@ -110,7 +110,7 @@ Pre-v3.7.0, `email-writer` and `follow-up-ritual` saved drafts as `[Project]/del
 | `intel-intake` | Captured intel | `.md` (context) |
 | `insight-generator` | Synthesis pass | `.md` (context, surfaced in next-day chat) |
 
-The new v3.8.0 skills all default to `.docx` (or no-file with Gmail Drafts / calendar invites): `contract-review`, `decision-memo-composer`, `board-pack-assembler` are `.docx`; `calendar-writer` produces calendar events; `intro-broker` produces Gmail Drafts; `decision-revisit`, `thread-resurrection` produce widgets + events with no file writes.
+The new v3.8.0 skills all default to `.docx` (or no-file with Gmail Drafts / calendar invites): `contract-review`, `decision-memo-composer` are `.docx` (`board-pack-assembler` was, until it retired, cr1#552); `calendar-writer` produces calendar events; `intro-broker` produces Gmail Drafts; `decision-revisit`, `thread-resurrection` produce widgets + events with no file writes.
 
 ---
 

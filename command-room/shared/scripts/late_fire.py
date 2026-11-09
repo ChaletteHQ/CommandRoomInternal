@@ -496,9 +496,11 @@ def _log_served_slot_skip(workspace_root, task_id, *, scheduled,
 
     ⚠ IT CARRIES `window_incomplete_before`, AND THAT IS NOT DECORATION. This
     build's own harness caught the regression: `catchup.last_successful_point`
-    reads the NEWEST receipt of any status as "how far processing has actually
-    reached", so a skip receipt — which processes nothing — would otherwise
-    advance the catch-up basis to the moment of the duplicate. Reproduced on a
+    read the NEWEST receipt of any status as "how far processing has actually
+    reached" until cr1#740 (it now reads past a skip), so a skip receipt — which
+    processes nothing — advanced the catch-up basis to the moment of the
+    duplicate. The marker stays: it records the reach on the receipt itself, for
+    any reader of the raw row. Reproduced on a
     fixture: an evening slot served Friday 17:05, a scheduled duplicate on
     Monday midday, and the REAL Monday evening fire then computed its window
     from Monday midday and dropped the entire Friday-to-Sunday span. Before

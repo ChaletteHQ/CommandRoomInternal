@@ -37,7 +37,7 @@ research does NOT write substrate directly. It READS and DELEGATES every write t
 
 ## What It Doesn't Do
 
-- Does NOT require any paid MCP. Built-in web search is the always-available, zero-setup floor and the full skill works on it alone. Tavily (deeper web) and Vibe Prospecting (structured enrichment) are independent detected upgrade branches — each lights up only if the client connected it, and the skill runs clean and labels its depth honestly when either or both are absent.
+- Does NOT require any paid MCP. Built-in web search is the always-available, zero-setup floor and the full skill works on it alone. Tavily and Firecrawl (deeper web, Firecrawl also for research papers) and Vibe Prospecting (structured enrichment) are independent detected upgrade branches — each lights up only if the client connected it, and the skill runs clean and labels its depth honestly when either or both are absent.
 - Does NOT bulk-pull enrichment. When Vibe Prospecting is present it enriches only the specific company / people in the question, and surfaces estimated credit cost before any large or multi-entity pull. It never spends the CEO's credits silently.
 - Does NOT save anything without showing it first. The brief is produced and shown; saving to the workspace (intel + contacts) is offered as a confirm-choice, not done automatically.
 - Does NOT draft emails, memos, or replies in the CEO's voice — it produces a research brief (a report). Composition stays with email-writer / memo-writer / one-pager-composer.
@@ -58,7 +58,7 @@ research brief on warehouse automation vendors
 
 ## How It Works
 
-Four steps. Built-in web search is the floor, but it is NOT the default when better tools are connected — actively reach for Tavily (deeper web) and Vibe Prospecting (structured enrichment) whenever those connectors are present. Settling for built-in web when an upgrade connector is available is the one failure mode this skill must avoid.
+Four steps. Built-in web search is the floor, but it is NOT the default when better tools are connected — actively reach for Tavily and Firecrawl (deeper web) and Vibe Prospecting (structured enrichment) whenever those connectors are present. Settling for built-in web when an upgrade connector is available is the one failure mode this skill must avoid.
 
 ### Step 1 — Frame from the workspace (always)
 
@@ -72,8 +72,8 @@ Before searching, resolve the subject against the CEO's own world so the researc
 
 Connector tools are lazy-loaded: **absence from your current tool list is NOT absence from the workspace.** The host loads connector tools on demand, so a tool you don't see in your immediate set may still be connected — and it stays invisible until you explicitly search for it. Inspecting your loaded tools and concluding "Tavily isn't connected" is the exact failure this step exists to prevent: "I didn't reach for it" is not the same as "it isn't connected." So, before choosing any search tier:
 
-1. **Run the host's tool-discovery mechanism now.** In Claude Code, call `ToolSearch` with the queries `tavily` and `prospect enrich`; in Cowork, check the full connector tool listing. This is a mechanical action, not a judgment call — run it on every research fire, even when you are sure nothing is connected.
-2. **Record which connectors resolved** — Tavily, Vibe Prospecting, both, or neither. Only after this check may you choose a tier.
+1. **Run the host's tool-discovery mechanism now.** In Claude Code, call `ToolSearch` with the queries `tavily`, `firecrawl` (with `max_results` 15, because the default of 5 can leave out the tools below), `firecrawl research papers` and `prospect enrich`; in Cowork, check the full connector tool listing. This is a mechanical action, not a judgment call — run it on every research fire, even when you are sure nothing is connected.
+2. **Record which connectors resolved** — Tavily, Firecrawl, Vibe Prospecting, any combination, or none. Only after this check may you choose a tier.
 3. **The tier you claim must match what this step found.** The source badge (Step 3) and the one-line tier statement in the chat reply both report the tier this step actually resolved — never an assumption.
 
 Skipping this step and defaulting to built-in `WebSearch` is the #1 defect of this skill.
@@ -84,14 +84,16 @@ Use the fan-out research pattern: decompose the question into several angles, se
 
 **Reach for the strongest tools BY DEFAULT — this is the most important rule in this step.** Built-in `WebSearch` / `WebFetch` is the *fallback floor*, not the default. When Step 2.0 resolved an upgrade connector, you MUST use it; do not quietly settle for built-in web just because it is always sitting there and can answer. The whole value of this skill over a plain web search is that it actively reaches for the better tools. One rule follows:
 
-**If you genuinely fall back to built-in web** because Step 2.0 confirmed an upgrade connector really isn't connected, say so in one line of the chat reply (not just the HTML badge): e.g., "Ran on built-in web search — connect Tavily for deeper results." The CEO should never have to wonder which tier ran.
+**If you genuinely fall back to built-in web** because Step 2.0 confirmed an upgrade connector really isn't connected, say so in one line of the chat reply (not just the HTML badge): e.g., "Ran on built-in web search — connect Tavily or Firecrawl for deeper results." The CEO should never have to wonder which tier ran.
 
 **Tavily (deeper web) — use whenever the connector is present.** For *any* web research, prefer `tavily_search` (agent-tuned recall, relevance scoring) over built-in `WebSearch`, and `tavily_extract` to pull clean full-page content — it beats `WebFetch` on messy or JS-heavy pages, strengthening the fetch-the-real-page step. For a deep company dive, `tavily_crawl` / `tavily_map` pull a whole site (about, pricing, docs). Tavily's free tier is generous and search is cheap — use it freely; only surface cost intent before a large multi-page `tavily_crawl`. (`tavily_research`, the agentic deep-research endpoint, is an opt-in "deep mode" for big market questions — still hold the cite-everything and cross-check discipline yourself when you use it.) Tavily improves *how well you search the web*; it does not replace the verify discipline or the workspace framing.
+
+**Firecrawl (deeper web and research papers) — use whenever the connector is present** (cr1 #735). Use `firecrawl_search` for discovery and `firecrawl_scrape` to pull a clean full page, the same job as `tavily_extract` and a better one on JavaScript-heavy sites. For a claim that needs a primary study or survey, use the paper tools (`firecrawl_research_search_papers`, then `firecrawl_research_read_paper`) and cite the paper itself by its full URL, not a bare id and not a blog post about it. When Tavily is present too, use both: fan the search out across them and keep the verify discipline, since two engines are not two independent sources. Surface cost intent before any large multi-page crawl. The tool names above are the ones the Firecrawl connector listed on 2026-11-04; take the exact names from the tools `ToolSearch` returns.
 
 **Vibe Prospecting (structured enrichment) — use whenever the connector is present AND the subject is a company or a person.** Don't skip it just because built-in web already produced an answer — structured data is what *verifies* and *corrects* the web (it's how you catch a stale headcount or an unconfirmed title). Resolve the subject with `match-business` / `match-prospects`, then use `enrich-business` / `enrich-prospects` to verify the scraped claims against structured data (headcount, revenue band, industry, location) and `fetch-businesses-events` / `fetch-prospects-events` to surface trigger events (funding, hiring, leadership change) that web search misses or serves stale.
 
 - **Cost guard:** Vibe is metered. For anything beyond a single-entity lookup, call `estimate-cost` and surface the estimated credit spend before pulling. Enrich surgically — only the entities in the question, never a speculative bulk pull. (This is a spend guard, NOT a reason to skip enrichment on a normal single-company/person research task — those should enrich by default.)
-- For a pure market/topic question with no specific company or person, enrichment usually doesn't apply — skip it and lean on Tavily/web.
+- For a pure market/topic question with no specific company or person, enrichment usually doesn't apply — skip it and lean on Tavily, Firecrawl or web.
 
 **If a connector truly isn't connected:** skip that branch cleanly, run on the next tier down, and label honestly. No dead tool references, no error.
 
@@ -116,7 +118,7 @@ The default output is a **self-contained, branded premium HTML brief** (SPEC OUT
 **Adaptive depth — fill only the blocks that fit the ask:**
 - **Quick lookup** ("what do we know about Acme Co") → bottom line + a few cited key findings + sources. Omit the optional sections.
 - **Deep / account brief** ("research Acme Co before my call") → add `Who & what matters` (decision-makers, likely buyer highlighted), `Recent signals` (trigger events), and a narrative section.
-- The badges are NOT optional: emit exactly one source badge reflecting the strongest tier actually used — `Verified · Vibe Prospecting` (enrichment ran) > `Deep web · Tavily` (Tavily ran, no enrichment) > `Web sources only` (built-in web) — plus one confidence chip (`high` / `medium` / `low`). Never claim a tier whose tools were absent. The footer source-summary names the engines used honestly (e.g., "5 sources via Tavily + Vibe Prospecting enrichment").
+- The badges are NOT optional: emit exactly one source badge reflecting the strongest tier actually used — `Verified · Vibe Prospecting` (enrichment ran) > `Deep web · Tavily` or `Deep web · Firecrawl` (a deep-web connector ran, no enrichment; badge key `tavily` or `firecrawl`, and when both ran, the one that supplied more of the cited sources, counting a URL both returned once and taking `tavily` on a tie) > `Web sources only` (built-in web) — plus one confidence chip (`high` / `medium` / `low`). Never claim a tier whose tools were absent. The footer source-summary names the engines used honestly (e.g., "5 sources via Tavily + Firecrawl + Vibe Prospecting enrichment").
 
 **Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay.
 
@@ -206,9 +208,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

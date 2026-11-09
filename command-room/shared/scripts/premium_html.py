@@ -130,6 +130,7 @@ _VERDICT_ONLY_KINDS = EXEC_EYEBROW_EXCLUDED_KINDS | {"research"}
 _SOURCE_CHIP_LABELS = {
     "enriched": "Verified &middot; Vibe Prospecting",
     "tavily": "Deep web &middot; Tavily",
+    "firecrawl": "Deep web &middot; Firecrawl",
     "web": "Web sources only",
 }
 _CONFIDENCE_CHIP_LABELS = {
@@ -556,7 +557,7 @@ def make_premium_brief(
     raise writes no file.
 
     Extra args over make_brief:
-      badges: optional {"source": "enriched"|"tavily"|"web",
+      badges: optional {"source": "enriched"|"tavily"|"firecrawl"|"web",
         "confidence": "high"|"medium"|"low"} — the research chip contract
         (emit ONE source tier, the strongest actually used, and ONE confidence
         chip; never claim a tier whose tools were absent). Any kind may pass

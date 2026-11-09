@@ -1,7 +1,7 @@
 ---
 name: cockpit-setup
 surfaces: both
-description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Start button that switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
+description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings tab: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Start button that switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
 ---
 
 # cockpit-setup
@@ -20,8 +20,10 @@ The page is called **Command Room Hub** (renamed from "cockpit" on the owner's
 ruling, cr1#670; the skill, its files and task ids keep the old word, and
 the owner never sees them). Three phrases, one path: `set up my hub` does
 everything below; `rebuild my hub` and `update my hub` do the same but publish
-to the SAME address (the stored one) and re-register the task bodies; `where
-is my hub` answers Step 1's address and stops. The same phrases with
+to the SAME address (the stored one) and re-register the task bodies. A `set
+up my hub` on a folder whose Hub is already stored IS a rebuild: every step,
+the same address (cr1#926). `where is my hub` answers Step 1's address and
+stops. The same phrases with
 `cockpit` in place of `hub` still work. Every line this skill says names it
 the Hub, never the cockpit.
 
@@ -73,6 +75,19 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 On `where is my hub` (or `where is my cockpit`): say the `url` (or "No Command
 Room Hub is set up for this folder yet; say `set up my hub`.") and STOP.
 
+On `set up`, `rebuild` or `update`, a stored `url` never stops the turn here
+(cr1#926): go on to Step 2, and Step 4 publishes to that address. A Hub that
+already exists is not a reason to skip the set-up, and the scheduler's task
+listing is not a check of the tasks: only Step 2's planner says whether each
+one is current.
+
+On `show my settings` (cr1#781): say the `url` followed by `#settings` and one
+line, "Everything learned and every setting is on the Hub's Settings tab;
+learned rules and the question budget can be changed there." (or the same
+no-Hub line above), and STOP. The tab is filled by `cockpit-refresh`
+(`cockpit_helpers:feed_settings`); its edits go to the book through
+`cockpit-apply` (`cockpit_helpers:apply_settings_choices`).
+
 ## Step 2: Register the four cockpit tasks, Morning Brief and Maintenance
 
 Find the scheduler tools the way `enable-command-room-schedules` does (its
@@ -88,7 +103,7 @@ needed. Then plan all six in one call (the four cockpit tasks, then Morning Brie
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"discover_block": "<the discovery block, as the schedules skill obtains it>", "plugin_version": "<the installed plugin version>", "registered": [<the listing rows, those four fields>], "tools": [<this session's tool names>], "tz_name": "<the workspace timezone>", "workspace_root": "<WS>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "name": "cockpit_helpers:plan_cockpit_registration"}'
 ```
 
-The line carries no folder path (cr1#732): the door refuses a computer path as an argument. On a merged seat the folder the tasks register is the `CR_DEVICE_WORKSPACE` the door forwards, so render the line with that export in the same command; with none forwarded, nothing is planned. On a seat whose files are local the planner uses the workspace itself.
+The line carries no computer path (cr1#732): the door refuses one as an argument. `<WS>` is the one folder it names; the door puts the workspace in for it (cr1#546), and for a `workspace_root` left out (cr1#924). On a merged seat the folder the tasks register is the `CR_DEVICE_WORKSPACE` the door forwards, so render the line with that export in the same command; with none forwarded, nothing is planned. On a seat whose files are local the planner uses the workspace itself.
 
 `ok: false` ends the turn with its `line` (no folder forwarded, no scheduler, the older desktop
 app's scheduler, no account, or a cron the backend refuses). Otherwise, for
@@ -140,25 +155,69 @@ them.
 ## Step 3: Render the page
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"basename": "<basename from Step 1>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "server": "Claude Code Remote", "workspace_root": "<WS>"}, "name": "cockpit_helpers:render_page_file"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"basename": "<basename from Step 1>", "plugin_version": "<the installed plugin version>", "published_at": "<now ISO>", "recipe": true, "server": "Claude Code Remote", "workspace_root": "<WS>"}, "name": "cockpit_helpers:render_page_file"}'
 ```
 
-`server` is always the connector's display name, `Claude Code Remote`, with
+The answer carries `plugin_version` and `runtime_version` (cr1#118): the
+version in the shipped `plugin.json` beside the helper wins over the typed
+one, and the runtime version is the one the door forwards for this seat
+(`CR_RUNTIME_VERSION`); the page's footer shows them. `server` is always
+the connector's display name, `Claude Code Remote`, with
 spaces (cr1#636): the scheduler listing and the tool prefix spell it
 `Claude_Code_Remote`, and a page declared under that spelling reaches no
 connector, so every button stays off. The helper maps an underscored name
 to the display name anyway, but pass the display name.
 
-The answer's `html` is the page, filled and leak-scanned, and
-`capabilities` is the declaration it needs. **Never edit the html and never
-type a capabilities object by hand.** Save the html to a file in this
-session's own scratch (never in the workspace).
+**The page is built on this chat's side (cr1#925).** With `recipe: true` the
+answer carries no `html`: it carries `recipe` (every value the page was
+filled from, the workspace's own reads included), the page's `sha256`, and
+`capabilities`, the declaration it needs. The publish tool attaches only this
+session's own files and the page is too large to come back in one reply, so
+never save a render on the computer and never re-render with values of your
+own. Save the answer, exactly as it came back (every key and character, in
+order), to `hub/answer.json` in this session's own scratch directory, the
+one the publish tool attaches from (never `/tmp` on the computer), and build
+the page there in THIS chat's shell (not through the door, not on the
+computer):
+
+```bash
+python3 "$PLUGIN_ROOT/shared/scripts/cockpit_helpers.py" render-recipe "<scratch>/hub/answer.json" "<scratch>/hub/index.html"
+```
+
+It prints one line. `ok: true` names the page file, filled, leak-scanned and
+checked against the door's `sha256`. On `reason: sha_mismatch`, save the
+answer again from the reply and run the line once more; a second `ok: false`,
+or any other `ok: false`, says its `line` as the whole turn and nothing is
+published. It also answers
+`calendar_direct` (cr1#723): the calendar connector the page answers
+invitations through, Google Calendar or Microsoft 365, with Accept, Maybe and
+Decline on each meeting row; a seat with no such connector, or Superhuman's
+calendar, which has no respond tool, shows no calendar answers.
+
+**The admin switch (cr1#723).** Before the final line, ask what the client's
+admin must still switch on. On a Microsoft 365 seat call the connector's
+`get_granted_scopes` and hand its list in; on every other seat pass no
+scopes:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"scopes": [<the granted scope names, or omit the key>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:admin_check"}'
+```
+
+Every entry of its `lines` goes into Step 6's line, verbatim: a missing
+`Mail.Send` or `Calendars.ReadWrite` names the admin step in one plain
+sentence, and Google, which has no such read, is told that the first press
+is the check. The page says the same line in place of a failure when a press
+is refused for want of the switch. Nothing on the page attaches a file to a
+send, on any provider, so a Microsoft seat needs no attach control removed. **Never edit the html and never
+type a capabilities object by hand.**
 
 ## Step 4: Publish, private, at the same address
 
-Publish that file with the Artifact tool as a default-private page, title
-`Command Room Hub`, icon `dashboard`, passing `capabilities` exactly as the answer
-returned it. On `rebuild` or `update`, pass the stored `url` from Step 1 so
+Publish `<scratch>/hub/index.html` with the Artifact tool as a
+default-private page, passing all three: title `Command Room Hub`, icon
+`dashboard`, and `capabilities` exactly as the answer returned it (cr1#925:
+a publish with no title or icon leaves the page under the wrong name and
+icon). On `rebuild`, `update`, or a `set up` with a stored `url`, pass the stored `url` from Step 1 so
 the address does not change; on a first set-up, omit it. Never share, widen
 or publicize the page: it shows the owner's own people and work.
 
@@ -169,6 +228,10 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"b
 ```
 
 ## Step 5: Seed the page's database
+
+This step runs on every set-up, rebuild and update; it is never skipped to
+keep the page's current lights (cr1#925). The next run of each task fills
+them again.
 
 Load the artifact database tool (`ArtifactData`; a listed deferred tool is
 loaded, never read as absent). With the page's `url`:
@@ -185,6 +248,17 @@ four documents are there. If the tool is absent in this chat, say so in the
 final line; the page still works and its first run seeds the lights.
 
 ## Step 6: Say where it is, then STOP
+
+**Say only what this run checked (cr1#926).** A task is current only when its
+Step 2 plan said `current: true` WITHOUT `not_compared`. A plan with
+`not_compared: true` (Morning Brief or Maintenance already in the listing:
+its text is unknown) was left alone and not checked, and the line says
+exactly that, never that it is current. A Hub task already in the listing
+comes back as an `update` and is refreshed on every set-up; that is
+expected, not a fault. Nothing in this skill reads how a task's last run
+went, so never say it finished cleanly. If a step did not run, the line
+says the set-up stopped before it and why, and claims nothing it did not
+check.
 
 One line: the page address, what Step 2 created, refreshed and left alone
 (six triggers), and "Open it on claude.ai, allow the Claude Code Remote
@@ -216,7 +290,43 @@ summary of what was registered.
   such connector, or a thread the page cannot read, keeps both on
   `cockpit-apply` exactly as before; so does Draft on Gmail, whose plan has no
   draft tool. Snooze and every book write still wait for `cockpit-apply`, and
-  a choice older than seven days expires instead of applying.
+  a choice older than seven days expires instead of applying. A Send or
+  Draft the page made gets its book record on the next `cockpit-apply` run
+  (cr1#817: the same `email_drafted`, voice snapshot and `email_sent` rows a
+  press through Apply writes), once however many runs overlap, with no
+  delay to the press.
+- **The Overdue tab lists every open promise past its date** (cr1#877): what
+  the owner owes, what is owed to the owner, and what has nobody on it yet,
+  oldest first, from the feed the Commitments tab reads. Its presses are
+  Commitments' own, through Apply.
+- **The Settings tab ends with the usage guide** (cr1#187): one habit per way
+  of working and phrases that route well (`usage_guide:guide`), the same text
+  a typed `how do I use this` says (`command-room-coach` answers it).
+- **A late row owed to the owner offers a chase** (cr1#219, owner ruling
+  2026-11-07): one press on the Overdue tab makes a draft to the person who
+  owes it, through the seat's mail connector, citing where the promise came
+  from. Nothing is drafted before the press and nothing is sent. The row holds
+  back the press for someone just heard from, inside their usual reply time.
+- **The Settings tab shows what was learned and every setting** (cr1#781,
+  owner ruling D3 of 2026-11-04), each with where it came from, read from
+  the stores the skills read: never a second copy. Learned rules can be
+  reworded, switched off or deleted and the question budget changed on the
+  page; each is a choice `cockpit-apply` writes through the store's own
+  writer. Everything else on the tab is read-only in this version.
+- **The morning brief is a section of it** (cr1#782, owner ruling D2 of
+  2026-11-04). The Today tab opens with this morning's view, built from the
+  feeds the page already holds: the calendar, the mail that needs a reply,
+  what is overdue, one first action, and the day's top three open questions
+  with the Review tab's own buttons, answered through Apply. The scheduled
+  Morning Brief still runs with its settings and ends by pointing here
+  (`cockpit_helpers:hub_pointer`); a seat with no Hub keeps its brief as is.
+- **Calendar answers go out from the page too** (cr1#723, owner ruling
+  2026-11-04): Accept, Maybe and Decline on a meeting row, through the
+  seat's declared calendar connector (`calendar_direct` in
+  `cockpit_helpers.py`; `render_page_file` declares it). The answer is
+  recorded on the page as a row; the book learns it from the next calendar
+  read. A seat whose admin has not switched writing on sees one plain line
+  naming the admin step.
 - **It never republishes itself.** A task writes feeds; only this skill
   republishes the page. Start fires prep, inbox and apply at once and
   refresh once apply is done, so the four lights fill side by side.
@@ -242,9 +352,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

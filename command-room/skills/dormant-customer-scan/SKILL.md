@@ -1,7 +1,7 @@
 ---
 name: dormant-customer-scan
 surfaces: both
-description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', plus 'tune dormant-customer-scan'. Threads lens (formerly thread-resurrection): 'warm threads to revive', 'what conversations went quiet', 'threads I dropped', 'thread resurrection'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'draft an email to [name]' (email-writer), or 'balance check' / 'my white space' (balance — personal ties are never customers; this scan skips them at its emit gate)."
+description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', plus 'tune dormant-customer-scan'. Threads lens (formerly thread-resurrection): 'warm threads to revive', 'what conversations went quiet', 'threads I dropped', 'thread resurrection'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'draft an email to [name]' (email-writer), or 'balance check' / 'my white space' (retired Balance phrases — workspace-manager; personal ties are never customers)."
 ---
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
@@ -141,9 +141,12 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. A runtime that is absent, or a runtime_version that
-   #    differs, is a STOP: run the update-bridge install step. There is no
-   #    container fallback.
+   #    customer opens. Then hand that answer to `workspace_access.py discover
+   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+   #    is absent, or its manifest_sha is not this plugin's -- the version alone
+   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    install step once, resolve and compare again, and if it still lags say
+   #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -521,9 +524,12 @@ data_view = {
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

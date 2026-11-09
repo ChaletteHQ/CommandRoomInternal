@@ -86,6 +86,9 @@ def _effective_fired_via(explicit):
 
 JOB_ID = "reconcile-chat"
 RECEIPT_EVENT_TYPE = "chat_reconcile"
+#: On a chat review proposal: which leg wrote it, whatever became of its
+#: pointer (cr1#164, `is_chat_proposal`).
+PROPOSED_BY = "chat_reconcile"
 CURSOR_KEY = "chat_reconcile_cursor"
 SOURCE_SKILL = "reconcile-sent"
 
@@ -803,9 +806,17 @@ def reconcile_chat_and_receipt(
     fired_via=None,
     fetch_blocked=None,
     exclude_captured_since=None,
+    read_complete=None,
 ) -> dict:
     """Run the chat closure leg end-to-end and return a receipt whose fields
     exist only because the work ran.
+
+    `read_complete` (cr1#742): did the read reach the end of its window?
+    False is a PARTIAL read (more pages than the run read): the batch is
+    scored, the cursor does NOT advance over the messages never seen, and
+    the receipt says `read_partial`. True, or None from a caller that
+    predates the flag, is a read of the whole window (a `per_chat_scan`'s
+    own partial cover is `degraded`, a different thing, and unchanged).
 
     Four terminal states, and they must never look alike:
       - NO BACKEND. The workspace declares no chat backend. The leg is
@@ -962,11 +973,19 @@ def reconcile_chat_and_receipt(
         exclude_captured_since=exclude_captured_since,
         workspace_root=workspace_root)
 
+    # cr1#756 - the chat connector's close mode: under `propose` every
+    # matched close joins the confirm list with its reason.
+    close_mode = str(((read or {}).get("dials") or {}).get("close_mode")
+                     or "").strip().lower() or None
     closed, proposed, refused = _apply(
-        workspace_root, scored, provider=provider, source_skill=source_skill)
+        workspace_root, scored, provider=provider, source_skill=source_skill,
+        close_mode=close_mode)
     counts["n_closed"] = len(closed)
     counts["n_proposed"] = len(proposed)
-    counts["n_refused_no_pointer"] = len(refused)
+    counts["n_refused_no_pointer"] = sum(1 for r in refused if not r.get("close_mode"))
+    counts["n_close_mode_refused"] = sum(1 for r in refused if r.get("close_mode"))
+    counts["close_mode"] = close_mode
+    counts["n_close_mode_proposed"] = sum(1 for p in proposed if p.get("close_mode"))
 
     # THE CURSOR MAY NOT PASS WHAT THIS FIRE DID NOT ADJUDICATE.
     #
@@ -990,6 +1009,12 @@ def reconcile_chat_and_receipt(
         # earned no ground.
         passed = [m["ts"] for m in candidates if m.get("ts")]
     ceiling = max(passed, default=None)
+    from catchup import read_reached_end
+    read_partial = read_reached_end(read_complete) is False
+    if read_partial:
+        # cr1#742: a partial read earns no ground; the next run reads the
+        # same window and the dedup keeps the re-read cheap.
+        ceiling = None
     if ceiling and (cursor_before is None or ceiling > cursor_before):
         cursor_after = ceiling
         _write_cursor(workspace_root, cursor_after, source_skill=source_skill)
@@ -1021,9 +1046,12 @@ def reconcile_chat_and_receipt(
         # receipt records that it advanced over an admittedly partial sweep.
         "cursor_advanced_over_partial_sweep": bool(
             plan.get("degraded") and cursor_after != cursor_before),
+        # cr1#742: the read did not reach the end of its window
+        "read_partial": read_partial,
         "closed": closed,
         "proposed": proposed,
-        "refused_no_pointer": refused,
+        "refused_no_pointer": [r for r in refused if not r.get("close_mode")],
+        "close_mode_refused": [r for r in refused if r.get("close_mode")],
         MAINTENANCE_WINDOW_FIELD: window,
     }
     receipt.update(counts)
@@ -1033,7 +1061,82 @@ def reconcile_chat_and_receipt(
     return receipt
 
 
-def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
+def _propose_one(row: dict, already: set, asked: set, by_native: dict,
+                 proposed: List[dict], refused: List[dict], *, events_path,
+                 source_skill: str) -> None:
+    """One close-proposal, written through the shared writer. A row with no
+    pointer back to its message is refused, by name."""
+    from cru_match import build_pending_review_event
+    from event_gate import append_event
+
+    cid = str(row.get("commitment_id"))
+    if cid in already:
+        return
+    msg = by_native.get(str(row.get("message_id") or ""))
+    ref = None
+    if msg is not None:
+        try:
+            ref = build_ref(msg)
+        except _chat.ChatPointerError:
+            ref = None
+    if ref is None:
+        refused.append({"commitment_id": cid,
+                        "why": "no complete pointer back to the message"})
+        return
+    # cr1#756 - a dial's proposal is asked once per message, ever.
+    demoted = bool(row.get("close_mode_reason"))
+    if demoted and (cid, _chat.chat_ref_key(ref)) in asked:
+        return
+    ev = build_pending_review_event(
+        commitment_id=cid,
+        primary_thread_id=row.get("primary_thread_id") or "",
+        source_skill=source_skill,
+        proposed_resolution="auto_resolve",
+        score=row.get("score") or 0,
+        evidence=row.get("evidence") or "matched a message in chat",
+        next_seq=None,
+        title=row.get("title") or "",
+        # The message's own time. The shared bulk-accept fence orders
+        # evidence against the promise at apply time — but only if the
+        # timestamp was persisted, so a hand-built row would screen as
+        # STRONG by construction (the WATCHGATE N-2 class).
+        evidence_ts=row.get("ts") or None,
+        has_completion_signal=None,
+    )
+    ev["data"].update(_chat.pointer_fields(ref))
+    # cr1#164: says this came from chat when the pointer does not.
+    ev["data"]["proposed_by"] = PROPOSED_BY
+    if demoted:
+        # The reason, and the stamp that keeps the timeout from
+        # closing what the owner asked to be asked about.
+        ev["data"]["close_mode_reason"] = row["close_mode_reason"]
+        ev["data"]["auto_close_blocked"] = True
+    # BIND1 STOPPED SHORT HERE, ON PURPOSE. This leg writes no OPEN
+    # commitment row - it closes, and it proposes - so the only row
+    # it could bind is this review proposal. Importing the capture
+    # door to do it reds G26's scope fence
+    # (`tests/run_guard_chatscan1_wiring_test.py`, "no chat leg
+    # imports the capture writer"), which exists to keep chat CAPTURE
+    # unbuilt; and reaching past that door into the resolver directly
+    # would be the same trespass spelled differently. The binding
+    # belongs one level down, inside
+    # `cru_match.build_pending_review_event` - the SHARED writer both
+    # this leg and the mail rail already call - which is not this
+    # lane's file. Recorded as a seam in BUILD_BIND1_2026-09-18.md.
+    # Same post-write verification the close branch runs. A proposal
+    # is the row a human adjudicates, so its pointer is the thing that
+    # lets them check the claim before confirming — an unauditable
+    # proposal asks somebody to take the match on faith. The review
+    # noted only closes were verified; both are now.
+    assert_pointer_or_refuse(dict(ev, type="commitment_resolved"))
+    append_event(events_path, [ev], holder=source_skill)
+    proposed.append({"commitment_id": cid,
+                     "source_ref": _chat.chat_ref_key(ref),
+                     **({"close_mode": True} if demoted else {})})
+
+
+def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str,
+           close_mode: Optional[str] = None):
     """Write the closes and the close-proposals.
 
     Both go through the SAME writers mail uses — `commitment_state.
@@ -1045,8 +1148,7 @@ def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
     second pile is a second thing to remember to look at.
     """
     from commitment_state import close_commitments
-    from cru_match import build_pending_review_event, load_open_review_proposals
-    from event_gate import append_event
+    from cru_match import load_open_review_proposals
 
     by_native = scored.get("by_native_id") or {}
     events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -1055,7 +1157,26 @@ def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
     to_close: List[dict] = []
     ref_by_cid: Dict[str, dict] = {}
 
-    for row in scored.get("auto_close") or []:
+    # cr1#756 - under `propose` the matched closes are proposals, each
+    # carrying the reason; nothing below closes.
+    auto_rows = list(scored.get("auto_close") or [])
+    pending_rows = list(scored.get("pending") or [])
+    asked: set = set()
+    if close_mode == "propose":
+        try:
+            from close_mode_dial import PROPOSE_REASON as _PROPOSE_REASON
+            from close_mode_dial import asked_evidence
+            asked = asked_evidence(workspace_root)
+        except Exception:  # noqa: BLE001
+            _PROPOSE_REASON = "this connector is set to ask before closing"
+        for row in auto_rows:
+            demoted = dict(row)
+            demoted["recommendation"] = "pending_review"
+            demoted["close_mode_reason"] = _PROPOSE_REASON
+            pending_rows.append(demoted)
+        auto_rows = []
+
+    for row in auto_rows:
         msg = by_native.get(str(row.get("message_id") or ""))
         ref = None
         if msg is not None:
@@ -1117,63 +1238,22 @@ def _apply(workspace_root, scored: dict, *, provider: str, source_skill: str):
             })
 
     proposed: List[dict] = []
-    pending = scored.get("pending") or []
+    pending = pending_rows
     if pending:
         already = {(p.get("data") or {}).get("commitment_id")
                    for p in load_open_review_proposals(str(events_path))}
         for row in pending:
-            cid = str(row.get("commitment_id"))
-            if cid in already:
-                continue
-            msg = by_native.get(str(row.get("message_id") or ""))
-            ref = None
-            if msg is not None:
-                try:
-                    ref = build_ref(msg)
-                except _chat.ChatPointerError:
-                    ref = None
-            if ref is None:
-                refused.append({"commitment_id": cid,
-                                "why": "no complete pointer back to the message"})
-                continue
-            ev = build_pending_review_event(
-                commitment_id=cid,
-                primary_thread_id=row.get("primary_thread_id") or "",
-                source_skill=source_skill,
-                proposed_resolution="auto_resolve",
-                score=row.get("score") or 0,
-                evidence=row.get("evidence") or "matched a message in chat",
-                next_seq=None,
-                title=row.get("title") or "",
-                # The message's own time. The shared bulk-accept fence orders
-                # evidence against the promise at apply time — but only if the
-                # timestamp was persisted, so a hand-built row would screen as
-                # STRONG by construction (the WATCHGATE N-2 class).
-                evidence_ts=row.get("ts") or None,
-                has_completion_signal=None,
-            )
-            ev["data"].update(_chat.pointer_fields(ref))
-            # BIND1 STOPPED SHORT HERE, ON PURPOSE. This leg writes no OPEN
-            # commitment row - it closes, and it proposes - so the only row
-            # it could bind is this review proposal. Importing the capture
-            # door to do it reds G26's scope fence
-            # (`tests/run_guard_chatscan1_wiring_test.py`, "no chat leg
-            # imports the capture writer"), which exists to keep chat CAPTURE
-            # unbuilt; and reaching past that door into the resolver directly
-            # would be the same trespass spelled differently. The binding
-            # belongs one level down, inside
-            # `cru_match.build_pending_review_event` - the SHARED writer both
-            # this leg and the mail rail already call - which is not this
-            # lane's file. Recorded as a seam in BUILD_BIND1_2026-09-18.md.
-            # Same post-write verification the close branch runs. A proposal
-            # is the row a human adjudicates, so its pointer is the thing that
-            # lets them check the claim before confirming — an unauditable
-            # proposal asks somebody to take the match on faith. The review
-            # noted only closes were verified; both are now.
-            assert_pointer_or_refuse(dict(ev, type="commitment_resolved"))
-            append_event(events_path, [ev], holder=source_skill)
-            proposed.append({"commitment_id": cid,
-                             "source_ref": _chat.chat_ref_key(ref)})
+            # cr1#756 - under `propose` the batch is the owner's whole confirm
+            # list: one row the writer or the gate refuses is counted and
+            # costs only itself, as `close_mode_dial.propose_closes` does.
+            try:
+                _propose_one(row, already, asked, by_native, proposed, refused,
+                             events_path=events_path, source_skill=source_skill)
+            except Exception as exc:  # noqa: BLE001
+                if close_mode != "propose":
+                    raise
+                refused.append({"commitment_id": str(row.get("commitment_id")),
+                                "why": type(exc).__name__, "close_mode": True})
 
     return closed, proposed, refused
 
@@ -1199,6 +1279,31 @@ def is_chat_evidenced(event: Optional[dict]) -> bool:
         return False
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     return str(data.get("resolved_by") or "").strip() == "chat_reconcile"
+
+
+def is_chat_proposal(event: Optional[dict]) -> bool:
+    """True for a review proposal this leg wrote (cr1#164), the sibling of
+    `is_chat_evidenced`: keyed on what survives a dropped pointer. Newer rows
+    carry `proposed_by`. A row from before that field is known by either half
+    of its pointer, or by `source_skill` when the merged fire wrote it (the
+    fire passes `reconcile-chat`).
+
+    THE ONE ROW THIS CANNOT SEE: a pre-field row written with the leg's default
+    `source_skill` (`reconcile-sent`, `SOURCE_SKILL`) or End of Day's
+    (`past-meetings`) that has lost BOTH halves of its pointer. The mail rail
+    writes those same words, so nothing on the row says chat, and claiming
+    otherwise would flag mail proposals.
+
+    A proposal the person confirmed closes under their own word, so that
+    close carries a session pointer and this row stays the place its chat
+    pointer lives."""
+    if not isinstance(event, dict) or event.get("type") != "commitment_review_proposed":
+        return False
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    return (str(data.get("proposed_by") or "").strip() == PROPOSED_BY
+            or str(event.get("source_skill") or "").strip() == JOB_ID
+            or data.get("chat_source_ref") is not None
+            or _chat.is_chat_ref_string(data.get("source_ref")))
 
 
 # ---------------------------------------------------------------------------
@@ -1248,8 +1353,16 @@ def _summary(receipt: dict) -> str:
         line += (f" {n} possible match{'es' if n != 1 else ''} were left open "
                  "because there was no way to link back to the message that "
                  "would have closed them.")
+    if receipt.get("n_close_mode_refused"):
+        n = receipt["n_close_mode_refused"]
+        line += (f" {n} match{'es' if n != 1 else ''} could not go on your "
+                 "confirm list and will be tried again on a new message.")
     if receipt.get("coverage_note"):
         line += " " + receipt["coverage_note"]
+    if receipt.get("read_partial"):
+        # cr1#742: true because the cursor held (the cursor block above)
+        line += (" The chat had more than this pass read; the same span is "
+                 "read again on the next pass.")
     return line
 
 
@@ -1257,11 +1370,12 @@ _RECEIPT_KEYS = ("provider", "scan_mode", "degraded", "coverage_note",
                  "scan_limits", "cursor_before", "cursor_after",
                  "skip_reason", "blocked_reason",
                  "n_deferred", "deferred_from_ts",
-                 "cursor_advanced_over_partial_sweep",
+                 "cursor_advanced_over_partial_sweep", "read_partial",
                  "n_scanned", "n_excluded", "n_dropped_noise", "n_dropped_bad_ts",
                  "n_dropped_direction",
                  "n_candidates", "n_candidates_over_cap", "n_closed",
                  "n_proposed", "n_refused_no_pointer",
+                 "close_mode", "n_close_mode_proposed", "n_close_mode_refused",
                  MAINTENANCE_WINDOW_FIELD)  # cr1#663
 
 

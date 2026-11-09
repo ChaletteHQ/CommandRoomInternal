@@ -261,14 +261,14 @@ A skill adopts SCL1 by adding, in the SAME commit:
    customizations`) — OR, when the description budget (G11) is at cap, in the
    body's `## Routing (full trigger corpus)` section (the runtime router and the
    trigger tests read description + Routing together, v4.5.1 rule; the OUT2 §5
-   adopters board-pack-assembler and decision-memo-composer use this placement);
+   adopter decision-memo-composer uses this placement);
 3. a **Writer Contract line** declaring the read of `_hq/custom/<skill>.md`
    (SKILL_SHAPE_V2 compliance);
 4. `tests/triggers.yaml` entries for the family.
 
 SCL1 applies to **output-producing skills only**. Infrastructure skills
 (workspace-manager, apply-choices, cleanup, the ingest / enable-* families,
-update-bridge, change-schedule, report-bug, usage-report, show-my-list,
+update-bridge, change-schedule, report-bug, usage-report, show-my-reminders,
 list-active, transcript-search) do NOT adopt — their behavior is contract-
 governed, not preference-shaped. The adoption lint enforces both directions:
 registry skills carry the paragraph; non-registry skills carry no `_hq/custom/`

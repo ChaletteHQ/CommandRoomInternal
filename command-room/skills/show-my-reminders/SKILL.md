@@ -1,7 +1,7 @@
 ---
 name: show-my-reminders
 surfaces: both
-description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Does NOT fire on 'show my list' / 'my list' / 'add to my list' (show-my-list, the discuss-later queue), 'remind me to revisit' (decision-log — its revisit mode), 'remind me what' retrieval (decision-log), or 'balance check' / 'my white space' / 'plan a date night' (balance — proactive + relationship-aware, not a reminder dump; it READS personal reminders but never manages them)."
+description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Also the mute ledger: 'show muted' / 'show snoozed' list every live mute with an Unmute. 'show my list' / 'my list' hear one line: that list is retired. Does NOT fire on 'remind me to revisit' (decision-log — its revisit mode) or 'remind me what' retrieval (decision-log)."
 ---
 
 # show-my-reminders
@@ -55,9 +55,12 @@ Discover the plugin root first (CONTRACT Rule 22) and run python FROM
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -213,15 +216,85 @@ floor: `active_reminders` / `load_active_reminders` default to
 owner-facing surfaces pass `surface="m_facing"`. A new surface that never
 heard of reminders gets the safe behavior by default.
 
+## The retired discuss-later list: `show my list` / `my list` (cr1#552)
+
+The discuss-later list (`commitment_to_discuss`, drain-only since MLK1) is
+retired with its skill, `show-my-list`, on the owner's ruling of 2026-11-06.
+Whatever was still open on a seat was moved by the update bridge's
+`discuss_list_retired_v1` migration: each item became a note on its person or
+project, and an item with no person or project became a My Plate task. So
+every phrase of the old family, `show my list`, `whats on my list`, `what's
+on my list`, `what to discuss`, `what do i need to discuss`, `discuss list`,
+`show discuss list`, `my list`, `add to my list` (the retired capture verb), gets ONE sentence,
+verbatim from `retired_skill_lines.DISCUSS_LIST_RETIRED`, and nothing else:
+no list render, no read of the ledger, no reminder capture ("add it to my
+list" is old muscle memory, not a reminder).
+
+> *"Your discuss-later list is retired. Anything still on it became a note on its person or project, or a task on My Plate, the last time Command Room updated. Say `what's on my plate` for your tasks, or `show my reminders` for your reminders."*
+
+## Mute ledger mode: `show muted` / `show snoozed` (v4.6.0 S4; here since cr1#552)
+
+The SECOND surface this skill renders: every live mute, so a timed mute
+stops being a one-way door. It moved here from the retired show-my-list
+because this is the other personal lane. On "show muted" / "show snoozed" /
+"what's muted" / "what did I snooze":
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "plate_helpers:live_mutes"}'
+```
+
+The answer's `mutes` are `mute_ledger.live_mutes(events, <now>)` over the
+owner's own ledger read (the helper's, never a read in this chat): every
+live mute, oldest first. Build the data view with `"widget_mode": "all_batch_widget"` and
+`"source_skill": "show-my-reminders"`, one row per ledger row, oldest first:
+what was muted (the row's `note`, else its `target_id` resolved to the
+referenced item's title, else the dismissal's `reason`), which chat it came
+from (`surface`), and the remaining time VERBATIM from `ttl_label` ("3 days
+left", every mute states its duration, the F-59 rule). Actions per row:
+`unmute` (**Unmute**) · `skip` (**Snooze (1 day)**, hides the ledger row for
+a day, never touches the underlying mute). Embed the row's dismissal `seq`
+verbatim (widget identity contract).
+
+Render where the data is and relay the page byte-exact:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"data_view": <the data view built above>, "name_hint": "show-my-reminders", "wrapper": "fragment", "workspace_root": "<WS>"}, "name": "plate_helpers:render_list_page"}'
+```
+
+**Load the widget tool before anything else** (`shared/CHAT_ACTION_WIDGET.md` § Finding the widget tool first): on the merged and half-merged seats it is deferred, and a listed deferred tool counts as present; ToolSearch loads it, its setup tool runs first, then the relay. The answer is `{html, page_rel, bytes_len,
+pending_rows}`: land the page with `plan write` at `page_rel`, append every
+row in `pending_rows` with `plan append_jsonl` (holder `show-my-reminders`),
+then hand `html` to `mcp__visualize__show_widget` as `widget_code`, verbatim.
+Never hand-compose or post-process the HTML.
+
+Then the fire-marker apply-choices reads to tell which surface a click came
+from (`log_pack_run`, `kind="list"`, `fired_via="manual"`), held beside the
+data and landed by ONE append:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"duration_ms": <elapsed_ms>, "fired_via": "manual", "kind": "list", "surfaced": <n_mutes>, "workspace_root": "<WS>"}, "name": "plate_helpers:plan_list_marker"}'
+```
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" append_jsonl --json '{"holder": "show-my-reminders", "rel": "_hq/data/events.jsonl", "rows": [<every row in rows from the marker answer above, in order>]}'
+```
+
+Dispatch: apply-choices § show-my-reminders mute-ledger rows (`unmute` → the
+ledger's clear writer; the ack says the item re-surfaces on its next chat).
+0 live mutes → plain English: `Nothing is muted right now.`, no widget, no
+fire-marker.
+
+Fences: permanent never-track rules are NOT in this ledger (they are
+suppression rules in the workspace config, lifted by editing the rules
+file; when any exist, add ONE footer line with their count); learned
+suppressions (surface-preferences) are a separate durable layer, also not
+timed mutes.
+
 ## Fences
 
-- **`show my list` is a different skill.** show-my-list is the RETIRED
-  discuss-later queue (`commitment_to_discuss`, drain-only since MLK1 —
-  nothing captures into it anymore). Reminders are date-pinned nags. The
-  two never cross-fire and neither reads the other's events. If the user
-  says "add it to my list" (old muscle memory), that phrase still routes
-  to show-my-list — it explains the retirement; never treat it as a
-  reminder capture.
+- **The discuss-later list is retired** (above). Its phrases say so in one
+  line; nothing captures into it and nothing renders it. Reminders are
+  date-pinned nags and stay their own lane.
 - **Not the commitments lane.** "push [commitment] to [date]" inside the
   Waiting On / My Plate chats is that orchestrator's verb (writes `commitment_updated`);
   "push the reminder" here writes `reminder_updated`. Same word, different
@@ -245,7 +318,18 @@ heard of reminders gets the safe behavior by default.
   read/write path for this lane).
 - morning-briefing Step 3f — the Pinned / Upcoming sections + 3d/7d
   escalation rendering.
-- show-my-list — the discuss-later queue (fenced above).
+- `retired_skill_lines.DISCUSS_LIST_RETIRED`: the one sentence for the
+  retired list's phrases; `plate_helpers.live_mutes` / `render_list_page` /
+  `plan_list_marker`: the mute ledger's read, render and fire-marker.
+
+## Routing (full trigger corpus)
+
+The description is budget-capped (G11); the families below are binding at
+fire time and enforced mechanically by tests/triggers.yaml.
+
+> Also fires on: 'show muted', 'show snoozed', 'what's muted', 'what did I snooze': the mute-ledger mode, every live snooze/mute with its remaining time and an Unmute action. Does NOT fire on 'never track' rule changes (those are permanent suppression rules, not timed mutes).
+
+> Also answers the retired discuss-later list's phrases with one sentence (cr1#552): 'show my list', 'whats on my list', "what's on my list", 'what to discuss', 'what do i need to discuss', 'discuss list', 'show discuss list', 'my list', 'add to my list'. Does NOT fire on 'what's on my plate' (commitment-triage) or 'show waiting' (the Waiting On surface).
 
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 

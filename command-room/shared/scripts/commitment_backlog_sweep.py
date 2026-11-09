@@ -3937,7 +3937,216 @@ def _owed_to_you_receipt_line(q) -> str:
     return " ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# SWEEPDOOR1 (cr1#938) - the sweep on a merged seat.
+#
+# The skill called this module's functions directly, and none of them was on
+# the door's lists, so `clean up my commitments` refused on every seat whose
+# folder is on the computer. Two of the reads it needs were refused for their
+# own reasons: `skill_config_writer:load_skill_config` was not on the read
+# list, and `connector_adapters.provenance` is a dotted module the read door
+# does not resolve. `door_setup` answers Step 1 and Step 2's reads in ONE
+# call beside the data (each call is a device round trip there), and
+# `render_digest` is Step 5's render and audit page through the write door.
+# ---------------------------------------------------------------------------
+
+def door_setup(workspace_root, *, window_days: Optional[int] = None,
+               age_out_days: Optional[int] = None,
+               item_cap: Optional[int] = None,
+               now_iso: Optional[str] = None) -> dict:
+    """READ. Steps 1 and 2's reads in one call (SWEEPDOOR1, cr1#938):
+    `{ok, user_person_id, window_days, age_out_days, item_cap, prior,
+    resume_after, provider, window_start, sent_query, inbound_query,
+    extra_params}`. A value the owner typed ("last 90 days") is passed in and
+    wins over the saved setting, which wins over the default. An unresolved
+    primary user answers `ok: false` with `line` and nothing else: every check
+    downstream is inert without one (Bug #102)."""
+    from primary_user import resolve_primary_user
+    from skill_config_writer import load_skill_config
+    user_id = resolve_primary_user(workspace_root)
+    if not user_id:
+        return {"ok": False, "reason": "primary_user_unresolved",
+                "line": ("I could not tell whose commitments these are, so "
+                         "nothing was read or changed.")}
+    saved = load_skill_config(workspace_root, SOURCE_SKILL) or {}
+    cfg = saved.get("config") if isinstance(saved.get("config"), dict) else saved
+
+    def _pick(given, key, default):
+        if given is not None:
+            try:
+                return int(given)
+            except (TypeError, ValueError):
+                pass  # a typed value that is not a number: the saved one stands
+        try:
+            return int(cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    wd = _pick(window_days, "window_days", DEFAULT_WINDOW_DAYS)
+    ad = _pick(age_out_days, "age_out_days", DEFAULT_AGE_OUT_DAYS)
+    cap = _pick(item_cap, "item_cap", DEFAULT_ITEM_CAP)
+    prior = last_scan(workspace_root)
+    resume_after = prior.get("resume_after") if (prior and prior.get("has_more")) else None
+    from connector_adapters.mail import compile_search
+    from connector_adapters.provenance import resolve_mail_provider
+    provider = resolve_mail_provider(workspace_root)
+    start = window_start(now_iso=now_iso, days=wd)
+    return {"ok": True, "user_person_id": user_id, "window_days": wd,
+            "age_out_days": ad, "item_cap": cap, "prior": prior,
+            "resume_after": resume_after, "provider": provider,
+            "window_start": start,
+            "sent_query": compile_search(window_intent(start, direction="sent"), provider),
+            "inbound_query": compile_search(window_intent(start, direction="inbound"), provider),
+            "extra_params": structured_window_params(provider, start)}
+
+
+#: Where the sweep's heavy payloads live beside the data on a merged seat
+#: (cr1#938 review): the door walks every argument and refuses past
+#: `ARG_WALK_CAP`, which ~950 messages reach, so the mail and the receipt
+#: never cross it. The skill lands the mail with `write` (a text is one item
+#: and `write` fences only its `rel`); the writers read both here.
+SWEEP_STAGE_REL = "_hq/.system/backlog-sweep"
+MAIL_STAGE_REL = SWEEP_STAGE_REL + "/mail.json"
+RECEIPT_STAGE_REL = SWEEP_STAGE_REL + "/receipt.json"
+
+
+def _stage_path(workspace_root, rel: str, expected: str) -> Path:
+    """The one staged file `rel` may name, resolved inside the workspace."""
+    root = Path(os.path.abspath(str(workspace_root))).resolve()
+    target = (root / str(rel or expected)).resolve()
+    if target != (root / expected).resolve():
+        raise ValueError(f"not the sweep's staged file: {rel}")
+    return target
+
+
+#: Said when the kept receipt is not the run the caller names (a scan that
+#: failed after the last one, or a batch from an earlier day): nothing runs.
+RECEIPT_STALE_LINE = ("That clean-up result is no longer current, so nothing "
+                      "was changed; say `clean up my commitments` to run it again.")
+
+
+def _read_receipt(workspace_root, batch_id, receipt_rel: str = RECEIPT_STAGE_REL):
+    """The kept receipt when it is the run `batch_id` names, else None."""
+    import json as _json
+    target = _stage_path(workspace_root, receipt_rel, RECEIPT_STAGE_REL)
+    try:
+        loaded = _json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(loaded, dict) or not batch_id
+            or loaded.get("batch_id") != batch_id):
+        return None
+    return loaded
+
+
+def _remove_staged(target: Path) -> str:
+    """`removed`, `emptied` (a mount that will not delete), or `still there`."""
+    try:
+        target.unlink()
+        return "removed"
+    except FileNotFoundError:
+        return "removed"
+    except OSError:
+        try:
+            target.write_text("", encoding="utf-8")
+            return "emptied"
+        except OSError:
+            return "still there"
+
+
+def scan_staged(workspace_root, *, user_person_id, mail_rel: str = MAIL_STAGE_REL,
+                window_days: Optional[int] = None,
+                age_out_days: Optional[int] = None,
+                item_cap: Optional[int] = None, provider=None,
+                dry_run: bool = False, resume_after=None,
+                now_iso: Optional[str] = None) -> dict:
+    """WRITER (the write door only; SWEEPDOOR1, cr1#938). Step 3 on a merged
+    seat: reads the mail the skill landed at `mail_rel` (`{sent_messages,
+    inbound_messages}` or `{fetch_blocked}`), runs `scan` exactly as Step 3
+    does, keeps the full receipt beside the data at `RECEIPT_STAGE_REL` for
+    the digest and accept-all, and removes the mail file whatever happens,
+    so no message body stays in the workspace. Answers the receipt's small
+    fields only: `{ok, batch_id, summary, n_age_out, age_out_days, has_more,
+    resume_after, dry_run, receipt_rel}`."""
+    import json as _json
+    from atomic_write import atomic_write_text
+    target = _stage_path(workspace_root, mail_rel, MAIL_STAGE_REL)
+    root = Path(os.path.abspath(str(workspace_root)))
+    # review: a scan that fails must not leave the LAST run's receipt for the
+    # digest and accept-all to act on.
+    _remove_staged(root / RECEIPT_STAGE_REL)
+    try:
+        mail = _json.loads(target.read_text(encoding="utf-8"))
+    finally:
+        mail_file = _remove_staged(target)
+    if not isinstance(mail, dict):
+        raise ValueError("the staged mail is not an object")
+    receipt = scan(workspace_root, user_person_id=user_person_id,
+                   sent_messages=mail.get("sent_messages"),
+                   inbound_messages=mail.get("inbound_messages"),
+                   fetch_blocked=mail.get("fetch_blocked"),
+                   window_days=window_days, age_out_days=age_out_days,
+                   item_cap=item_cap, provider=provider, dry_run=bool(dry_run),
+                   resume_after=resume_after, now_iso=now_iso)
+    atomic_write_text(root / RECEIPT_STAGE_REL,
+                      _json.dumps(receipt, ensure_ascii=False, default=str))
+    keep = ("batch_id", "summary", "n_age_out", "age_out_days", "has_more",
+            "resume_after", "dry_run")
+    out = {k: receipt.get(k) for k in keep}
+    out.update(ok=True, receipt_rel=RECEIPT_STAGE_REL, mail_file=mail_file)
+    return out
+
+
+def render_digest(workspace_root, *, batch_id, page: int = 1,
+                  receipt_rel: str = RECEIPT_STAGE_REL) -> dict:
+    """WRITER (the write door only; SWEEPDOOR1, cr1#938). Step 5's digest
+    from the receipt `scan_staged` kept beside the data: `digest_view`
+    rendered and validated by `widget_transport.render_and_persist`, its audit
+    page landed under `_hq/.system/widgets/`. Answers `{ok, html, pagination,
+    page_rel}`: `html` goes to `show_widget` verbatim, and the page is named
+    workspace-relative, never by the mount path it landed at."""
+    from widget_transport import render_and_persist
+    ws = Path(os.path.abspath(str(workspace_root)))
+    receipt = _read_receipt(ws, batch_id, receipt_rel)
+    if receipt is None:
+        return {"ok": False, "reason": "receipt_stale", "line": RECEIPT_STALE_LINE}
+    view = digest_view(receipt, page=page, workspace_root=str(ws))
+    transport = render_and_persist(
+        data_view=view, wrapper="fragment",
+        persist_dir=str(ws / "_hq" / ".system" / "widgets"), page=page)
+    path = transport.get("path")
+    try:
+        page_rel = Path(path).resolve().relative_to(ws.resolve()).as_posix() if path else None
+    except ValueError:
+        page_rel = None
+    return {"ok": True, "html": transport.get("html"),
+            "pagination": transport.get("pagination"), "page_rel": page_rel}
+
+
+#: Said when accept-all finds nothing to accept: never a run of zero.
+ACCEPT_NOTHING_LINE = "Nothing in the looks-handled pile was left to accept."
+
+
+def apply_accept_handled(workspace_root, *, user_person_id, batch_id,
+                         receipt_rel: str = RECEIPT_STAGE_REL) -> dict:
+    """WRITER (the write door only; SWEEPDOOR1, cr1#938). `mark them all
+    done` on a merged seat: `accept_handled_decisions` over the receipt kept
+    beside the data, applied through `apply_decisions` on the receipt's own
+    `batch_id`. An empty pile applies nothing and answers
+    `ACCEPT_NOTHING_LINE`."""
+    receipt = _read_receipt(workspace_root, batch_id, receipt_rel)
+    if receipt is None:
+        return {"ok": False, "reason": "receipt_stale", "line": RECEIPT_STALE_LINE}
+    rows = accept_handled_decisions(receipt)
+    if not rows:
+        return {"ok": True, "n": 0, "line": ACCEPT_NOTHING_LINE}
+    out = apply_decisions(workspace_root, rows, user_person_id=user_person_id,
+                          batch_id=receipt.get("batch_id"))
+    return {"ok": True, "n": len(rows), "result": out}
+
 __all__ = [
+    "door_setup", "scan_staged", "render_digest", "apply_accept_handled",
+    "MAIL_STAGE_REL", "RECEIPT_STAGE_REL", "ACCEPT_NOTHING_LINE", "RECEIPT_STALE_LINE",
     "DEFAULT_WINDOW_DAYS",
     "DEFAULT_AGE_OUT_DAYS",
     "DEFAULT_ITEM_CAP",

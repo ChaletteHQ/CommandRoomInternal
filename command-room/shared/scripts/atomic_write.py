@@ -69,32 +69,6 @@ from pathlib import Path
 from typing import Any
 
 
-def _license_gate_check(path) -> None:
-    """LICGATE1 SPIKE — delete with `license_gate.py` before any release.
-
-    Placed in `atomic_write_text` because it is the deepest seam: the JSONL
-    append path and `atomic_write_json` both funnel through here, so ONE call
-    covers every substrate write without touching either caller.
-
-    Imported with the same lazy, twice-defensive shape as `_clock1()` above —
-    this module sits at the bottom of the import graph and the writer must keep
-    working if the probe is absent. A missing gate means "cannot evaluate",
-    which is a write that proceeds.
-    """
-    try:
-        import license_gate
-    except ImportError:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent))
-        try:
-            import license_gate
-        except Exception:
-            return
-    except Exception:
-        return
-    license_gate.check(path)
-
-
 def _require_named_writer() -> None:
     """BRIEFDOOR1 MUST 5 (ruling R-RW3-8) -- no write without a named writer
     on a merged seat's sandbox VM.
@@ -108,7 +82,7 @@ def _require_named_writer() -> None:
     directory exactly as they were. On every legacy and local seat the
     question reads the environment and returns: byte for byte today.
 
-    Lazy and import-tolerant with the same shape as `_license_gate_check`:
+    Lazy and import-tolerant with the same shape as `_clock1()`:
     this module sits at the bottom of the import graph, and a runtime whose
     `receipts` predates the question keeps today's behaviour.
     """
@@ -169,7 +143,6 @@ def atomic_write_text(path: str | Path, content: str, encoding: str = "utf-8",
     that silent corruption into a loud FileNotFoundError.
     """
     path = Path(path)
-    _license_gate_check(path)
     if create_parents:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.is_dir():
@@ -219,11 +192,31 @@ def atomic_write_json(
     atomic_write_text(path, content, create_parents=create_parents)
 
 
+#: The ONE plain sentence a refused append says when the ledger on disk is
+#: older than the copy Command Room last wrote (cr1#385). No seq, no path, no
+#: mechanism: the customer did nothing wrong and the repair is the product's.
+SUBSTRATE_REGRESSED_LINE = (
+    "Nothing was saved: the activity log in this folder is older than the copy "
+    "Command Room last wrote, so a sync put a stale copy over it. The change was "
+    "set aside, not lost; say `health check` to see the repair.")
+
+
 class SubstrateRegressionError(Exception):
     """Raised when an events.jsonl in-place append is refused because the file
     on disk regressed below the recorded seq high-water mark (FS-04) — a stale
     lineage clobbered the live file (the multi-machine Drive last-writer-wins
-    hazard). The batch is quarantined, never lost."""
+    hazard). The batch is quarantined, never lost.
+
+    cr1#385: carries `cr_refusal_reason` and `line`, so the access layer's
+    doors (`append_jsonl`, `run_writer`) answer `substrate_regressed` with the
+    one plain sentence instead of a traceback, on a merged seat and a local
+    one alike."""
+
+    cr_refusal_reason = "substrate_regressed"
+
+    def __init__(self, message: str = "", *, line: str = SUBSTRATE_REGRESSED_LINE):
+        super().__init__(message or line)
+        self.line = line
 
 
 def _seqhw_path(events_path: Path) -> Path:
@@ -1008,11 +1001,6 @@ def atomic_append_jsonl(
     # lock file and no ledger.
     if not create_ledger:
         _refuse_missing_ledger_folder(Path(path))
-    # LICGATE1 — the true-append fast path (INDEX1 Phase A) writes events.jsonl
-    # through _append_bytes and never reaches atomic_write_text, so the gate
-    # has to sit here too. Checked BEFORE the writer lock so a refusal never
-    # holds it. Fail-open shape is inside _license_gate_check.
-    _license_gate_check(path)
     # BRIEFDOOR1 MUST 5 -- the writer is named before anything is read or
     # locked (see `_require_named_writer`).
     _require_named_writer()

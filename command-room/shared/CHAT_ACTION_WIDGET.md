@@ -317,7 +317,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | Action | Display | What it does |
 |---|---|---|
 | `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
-| `push to [date]` | Later… | `commitment_state.apply_later` — THE writer, never a hand-appended event. Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere), `status: deferred`; owed-to-you/unowned → `chat_dismissal` with `data.snooze_until`, the mute-ledger shape, `status: snoozed`. A date earlier than the live hold on that item is refused, `status: not_sooner`, nothing written (cr1#166). |
+| `push to [date]` | Later… | `commitment_state.apply_later` — THE writer, never a hand-appended event. Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere), `status: deferred`; owed-to-you/unowned → `chat_dismissal` with `data.snooze_until`, the mute-ledger shape, `status: snoozed`. A date earlier than the live hold on that item is refused, `status: not_sooner`, nothing written (cr1#166). A date already gone is refused too, as `in_the_past`, nothing written, its `ack` naming the day (cr1#849). |
 | `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
 | `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. When the user NAMES the real owner, route via `reassign to [name]` instead of dropping. |
 | `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |
@@ -347,7 +347,7 @@ in the headline `unconfirmed` bucket. Verb clusters per row class:
 | `keep as one` | Keep as one | CLUSTER1 cluster lines only (needs-your-call / staff-meeting fold / commitment-triage / backlog-sweep — NEVER held-review, its DD-4 fence). The row embeds `data.id` + `data.folded_ids` verbatim; dispatch is `commitment_cluster.apply_cluster_merge` — `clear_review_flags` on a pending survivor + one `supersede_commitment(user_confirmed=True)` per folded id, all in ONE `clu_` brain batch so a single `undo` reverses the gesture. |
 | `add person` | Add person | Unknown-person rows — `people_writer.create_person` via apply-choices Step 3a (dedup-first), then the proposal tombstone. |
 | `same as [existing]` | Same as | Unknown-person rows — resolve the typed name (ambiguous → ask), `people_writer.add_person_alias` (aliases.json + the person record), then the tombstone. Name REQUIRED. |
-| `proposal not relevant` | Not relevant (permanent) | Unknown-person rows — proposal tombstone, nothing else written. Permanent by design (not a timed mute; the label says so). |
+| `proposal not relevant` | Not relevant (permanent) | Unknown-person rows and the retired-project question (cr1#753): a proposal tombstone, nothing else written. Permanent by design (not a timed mute; the label says so). |
 | `promote` | Make it a commitment | Promotion-proposal rows — same S5 dispatch as triage; the click IS the adjudication (PROPOSE only, never auto). |
 
 **Send-vs-draft clarity (PL 2026-07-02):** wherever `send` and `draft` appear side by side on an email-shaped item, the widget's intro line (or the item's context tag) makes the difference visible in plain words — "**Send** delivers it now · **Draft** saves it to your Drafts to send later." Never assume the customer knows the distinction from the labels alone.
@@ -391,7 +391,7 @@ Rows are PAST SUBSTRATE RECORDS that name a project by its distinctive term and 
 
 **Undo (S4 — delivered by this surface):** the post-Apply ack ends with *"Say `undo` to reverse this triage."* A follow-up `undo` (within the same chat) reopens every commitment the batch closed via `commitment_state.reopen_commitment` — an ADDITIVE `commitment_reopened` event per item; tombstones stay in history and a later re-close works normally. Reclassifications undo with a reverse `commitment_reclassified` marker. The batch's mutes undo too: every `chat_dismissal` the batch wrote is cleared via `mute_ledger.clear_dismissals` (an additive `chat_dismissal_cleared` per mute — the F-20 P3a asymmetry, fixed: undo used to reopen items while leaving their mutes in force). Never edit or delete prior events.
 
-### Mute ledger — `show muted` / `show snoozed` (v4.6.0 S4, rendered by show-my-list)
+### Mute ledger — `show muted` / `show snoozed` (v4.6.0 S4, rendered by show-my-reminders since cr1#552)
 
 Every live `chat_dismissal` (Snooze 1d/3d/7d/14d, Not relevant 60d), one row each, oldest first — each row states WHAT was muted, WHERE it came from, and its remaining time verbatim from `mute_ledger.live_mutes` (`ttl_label`: "3 days left" / "expires in an hour"). Timed mutes stop being a one-way door.
 
@@ -417,7 +417,7 @@ lanes when they share a brief widget.
 | `reminder push [date]` | Later… | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
 | `reminder keep` | Keep | Acknowledge without clearing (`reminder_updated`, action `keep`) — resets the escalation clock, stays pinned. |
 
-### Balance — the Sunday reconnect card (SPEC BAL1, `surface: "m_facing"` only)
+### Balance — the Sunday reconnect card: FOSSIL (the skill is RETIRED, cr1#552; a persisted card's verbs ack the retired line and write nothing; SPEC BAL1, `surface: "m_facing"` only)
 
 The personal white-space surface's card. PERSONAL-LANE: this widget never
 renders on any org/board/client surface, and every dispatch stays
@@ -765,9 +765,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

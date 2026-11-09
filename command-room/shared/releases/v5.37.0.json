@@ -1,0 +1,30 @@
+{
+  "version": "5.37.0",
+  "headline": "The Hub gains Overdue and Settings tabs and this morning's brief; Maintenance no longer loses what it read, and a promise closes only on clear evidence.",
+  "items": [
+    {
+      "id": "v5370_discuss_list_retired",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "auto_apply",
+      "action_module": "release_actions.discuss_list_retired_v1",
+      "action_function": "discuss_list_retired_v1",
+      "notice_template": "{summary_line}",
+      "fallback_prompt_template": "Moving the open items from your retired discuss-later list is pending; it will retry on the next update."
+    },
+    {
+      "id": "v5370_announce_hub",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "The Hub has grown. A new Overdue tab shows every promise past its date, what you owe and what is owed to you, oldest first, and a late item owed to you offers a chase: one press makes a draft citing where the promise came from, and nothing is sent. A new Settings tab shows what has been learned and every setting, lets you change a learned rule and how many questions you get a day, and ends with a short guide to using Command Room (also when you type 'how do I use this'). This morning's brief now opens the Today tab, and people and project questions are answered with a click. Say 'update my hub' to get the new page."
+    },
+    {
+      "id": "v5370_announce_closing",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Closing is more careful. When the evidence is unsure, a close now becomes a proposal on the Hub's Review tab for you to confirm. A meeting closes a promise outright only when you plainly report it done to the other person in a meeting of two. Two promises that look alike stay as two, so nothing disappears; drop the copy if it is one. An archived project asks before it comes back, and a reinstall keeps the times you set. 'Show my list' now leads to your reminders, and the balance and board pack chats are retired."
+    }
+  ]
+}

@@ -66,7 +66,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from capture_gate import gate_commitment_data  # noqa: E402
+from capture_gate import capture_cover, gate_commitment_data  # noqa: E402
 from capture_gate import stamp_confidence as _stamp_confidence  # noqa: E402
 
 # SPEC PROV2 — identity comparisons on STORED source pointers route through
@@ -106,8 +106,6 @@ NOISE_SUBTYPES = frozenset(
         "tombstone",
     }
 )
-
-_TITLE_DEDUP_CHARS = 60  # scan-for-commitments Step 4: first 60 chars, ci
 
 
 class SlackItemError(ValueError):
@@ -381,16 +379,18 @@ def build_slack_commitment_event(
     return event
 
 
-def _title_key(title) -> str:
-    return (str(title or "").strip().lower())[:_TITLE_DEDUP_CHARS]
-
-
-def already_captured(workspace_root, permalink: str, title: str) -> bool:
+def already_captured(workspace_root, permalink: str, title: str, *,
+                     owner=None) -> bool:
     """Step 4 idempotency for the Slack leg, codified: True when a commitment
     with the same `slack:<permalink>` source_ref AND the same title (ci,
-    first 60 chars — the scan's documented rule) is already on disk, OR the
-    source_ref is already covered by a `commitment_resolved` /
-    `thread_resolved` event. Shard-transparent via events_io. This keys on
+    first 60 chars — the scan's documented rule) is already on disk, OR a
+    closure on that message covers it (`capture_gate.capture_cover`: a
+    closure of another message's row covers only that row, and only by the
+    same words, cr1#884 and cr1#909; with `owner`, the row's owner id or
+    `capture_gate.cover_owner(...)`, only a row the same person owes,
+    cr1#912; a held row is a capture, as on the mail legs).
+    Shard-transparent via events_io.
+    This keys on
     the scan's own (source_ref, title) rule only — C4's semantic cross-source
     layer runs separately inside the append path."""
     try:
@@ -400,7 +400,6 @@ def already_captured(workspace_root, permalink: str, title: str) -> bool:
         from events_io import iter_events
 
     ref = slack_source_ref(permalink)
-    want_title = _title_key(title)
     # CAPTUREONCE1 §2.2 — ask the index first; same contract as the two mail
     # legs. A hit is final, a miss falls through to the scan. One difference
     # worth stating: the index's `t:` namespace covers `commitment_observed`
@@ -415,25 +414,19 @@ def already_captured(workspace_root, permalink: str, title: str) -> bool:
             return True
     except Exception:
         pass
-    for ev in iter_events(workspace_root):
+    want = dedup_key_of(ref)
+
+    def on_message(ev: dict) -> bool:
+        # PROV2 — the ref match is an IDENTITY comparison. A raw `!=` skips a
+        # row whose pointer differs only in case, which turns the idempotency
+        # guard off and re-captures the same Slack promise.
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        ev_ref = str(data.get("source_ref") or "").strip()
-        # PROV2 — the BUG-3719 self-closure guard's ref match is an IDENTITY
-        # comparison. A raw `!=` skips a row whose pointer differs only in
-        # case, which turns the idempotency guard off and re-captures the same
-        # Slack promise.
-        if dedup_key_of(ev_ref) != dedup_key_of(ref):
-            continue
-        etype = ev.get("type")
-        if etype in ("commitment_resolved", "thread_resolved"):
-            return True
-        if etype == "commitment":
-            ev_title = _title_key(data.get("title") or data.get("summary"))
-            if ev_title and want_title and (
-                ev_title in want_title or want_title in ev_title
-            ):
-                return True
-    return False
+        return dedup_key_of(str(data.get("source_ref") or "").strip()) == want
+
+    # The scan has always read `commitment` rows here (the index above
+    # answers an exact held row); the closure answer is `capture_cover`'s.
+    return capture_cover(lambda: iter_events(workspace_root), on_message, title,
+                         row_types=("commitment",), owner=owner)
 
 
 __all__ = [

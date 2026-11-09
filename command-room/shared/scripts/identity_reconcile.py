@@ -622,6 +622,12 @@ def _window_start(window) -> Optional[_dt.datetime]:
     return naive.astimezone() if naive.tzinfo is None else naive
 
 
+def _window_seq(window) -> Optional[int]:
+    """The window's receipt position (`since_seq`, cr1#761), or None."""
+    seq = window.get("since_seq") if isinstance(window, dict) else None
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+
+
 def _daily_spill_marker(window, spilled: bool) -> Optional[str]:
     """The batch-cap marker for a daily run that hit a cap, through the
     one writer of it (`catchup.receipt_window_marker`): the window's own
@@ -635,10 +641,18 @@ def _daily_spill_marker(window, spilled: bool) -> Optional[str]:
         incomplete=True)
 
 
-def _captured_since(row: dict, start: Optional[_dt.datetime]) -> bool:
-    """True when the proposal row was captured at or after `start`. An
-    unplaceable row, or no start at all, is NOT in the window: the Sunday
-    pass still sees it, so the daily pass never guesses."""
+def _captured_since(row: dict, start: Optional[_dt.datetime],
+                    since_seq: Optional[int] = None) -> bool:
+    """True when the proposal row was captured at or after `start`, OR when
+    it reached the book after the window's receipt (`since_seq`, cr1#761: a
+    proposal dated to an older message but written after the last daily
+    run is this run's, not Sunday's). An unplaceable row with no start and
+    no seq is NOT in the window: the Sunday pass still sees it, so the
+    daily pass never guesses."""
+    seq = row.get("seq")
+    if (since_seq is not None and isinstance(seq, int)
+            and not isinstance(seq, bool) and seq > since_seq):
+        return True
     if start is None:
         return False
     from confirm_flow import question_clock
@@ -654,16 +668,18 @@ def _captured_since(row: dict, start: Optional[_dt.datetime]) -> bool:
     return when is not None and when >= start
 
 
-def _restrict_view_to_window(view: dict, start) -> dict:
+def _restrict_view_to_window(view: dict, start, since_seq=None) -> dict:
     """The clustered queue cut to what the window touched: a cluster with
     at least one row captured in the window (judged whole), and the
-    nameless and standalone update rows captured in it."""
+    nameless and standalone update rows captured in it. `since_seq` is the
+    window's receipt position (cr1#761)."""
     return {
         "clusters": [c for c in view["clusters"]
-                     if any(_captured_since(r, start) for r in c["rows"])],
-        "updates": [r for r in view["updates"] if _captured_since(r, start)],
+                     if any(_captured_since(r, start, since_seq) for r in c["rows"])],
+        "updates": [r for r in view["updates"]
+                    if _captured_since(r, start, since_seq)],
         "nameless": [r for r in view["nameless"]
-                     if _captured_since(r, start)],
+                     if _captured_since(r, start, since_seq)],
     }
 
 
@@ -2613,7 +2629,8 @@ def plan_reconcile(workspace_root, *, now_iso: Optional[str] = None,
     view = cluster_open_proposals(rows)
     daily = window is not None
     if daily:
-        view = _restrict_view_to_window(view, _window_start(window))
+        view = _restrict_view_to_window(view, _window_start(window),
+                                        _window_seq(window))
 
     plan: dict = {"auto": [], "confirm": [], "merge_propose": [],
                   "annotations": [], "expire": [], "keep_open": [],

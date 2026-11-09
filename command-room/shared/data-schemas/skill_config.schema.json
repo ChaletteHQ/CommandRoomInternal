@@ -16,7 +16,6 @@
     "one-pager-composer": ["register", "signature"],
     "memo-writer": ["register", "signature"],
     "operator-report": ["length"],
-    "board-pack-assembler": ["pack_length", "deck_companion", "kpi_set"],
     "decision-memo-composer": ["criteria_persistence", "weight_display"],
     "stress-test": ["depth", "risk_framing"],
     "automation-scanner": ["ranking_weights", "horizon_buckets"],

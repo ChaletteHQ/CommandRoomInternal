@@ -316,6 +316,25 @@ def _empty_counts() -> dict:
     }
 
 
+#: The reason a close the tight gate withheld carries on the confirm list,
+#: the own-word pass's words for the same thing.
+NOT_TIGHT_REASON = "the transcript alone did not settle it"
+
+
+def _owner_names(workspace_root, user_names) -> list:
+    """The owner's names for the tight gate's turn reader: the caller's, or
+    the workspace's own (`capture_gate.workspace_capture_context`) when the
+    caller passed none. Unreadable reads as none, so only a `Me` turn is the
+    owner's."""
+    if user_names:
+        return [str(n) for n in user_names if str(n or "").strip()]
+    try:
+        from capture_gate import workspace_capture_context
+        return list(workspace_capture_context(workspace_root).get("user_names") or [])
+    except Exception:  # noqa: BLE001 - no names: a `Me` turn only
+        return []
+
+
 def apply_transcript_results(
     workspace_root,
     results: list,
@@ -329,8 +348,22 @@ def apply_transcript_results(
     now_iso=None,
     source_skill: str = SOURCE_SKILL_TRANSCRIPT,
     close_mode: Optional[str] = None,
+    transcript_text: Optional[str] = None,
+    attendee_records=None,
+    user_names=None,
 ) -> dict:
     """DD-2 — the CRU pass calls policy before it builds anything.
+
+    THE TIGHT GATE (cr1#882, owner ruling of 2026-11-07 on cr1#751): a
+    transcript closes a commitment outright only when it is tight, the
+    report names the other person, in a two-person meeting. Every close this
+    pass would write (`close` and `confirm_close`) is held to the own-word
+    pass's gate (`exit_doors.transcript_close_tight`, over `transcript_text`,
+    this meeting's `attendee_records` and the owner's `user_names`, read
+    from the workspace when not given). A close that is not tight is
+    withheld and proposed exactly as the CUT-A switch-off path does, and
+    counted in `n_close_not_tight`. No transcript or no attendee record is
+    not tight: the pass proposes.
 
     `close_mode` (cr1#668, the cr1#609 ruling of 2026-11-03: meetings
     propose until measured) is the declared meetings connector's dial, read
@@ -429,18 +462,34 @@ def apply_transcript_results(
     # handed must still fence the close. `None` refuses every close (a close
     # needs the meeting's own time); junk fails safe the same way.
     from cru_match import (_normalize_fire_start, _parse_ts, _commitment_id,
-                           load_open_commitments)
-    from event_time import event_time
+                           load_open_commitments, promise_time_raw, promise_tz)
     evidence_at = (_normalize_fire_start(transcript_ts, "transcript_ts")
                    if transcript_ts else None)
-    capture_ts_by_id = {_commitment_id(r): event_time(r)
-                        for r in load_open_commitments(events_path, events=events)}
+    # cr1#744 - the same promise time the matcher's fence reads.
+    tz = promise_tz(workspace_root)
+    open_rows_by_id = {_commitment_id(r): r
+                       for r in load_open_commitments(events_path, events=events)}
+    capture_ts_by_id = {cid: promise_time_raw(r, tz)
+                        for cid, r in open_rows_by_id.items()}
+    # cr1#882 — the tight gate's inputs, read once per transcript.
+    from exit_doors import transcript_close_tight
+    gate_names = None
+
+    def _tight(cid, quote) -> str:
+        nonlocal gate_names
+        if gate_names is None:
+            gate_names = _owner_names(workspace_root, user_names)
+        return transcript_close_tight(
+            workspace_root, open_rows_by_id.get(cid) or {}, quote=quote,
+            transcript_text=transcript_text or "",
+            attendee_records=attendee_records, user_names=gate_names)
 
     def _refuse(name):
         counts["n_close_refused"] += 1
         counts["close_refusals"][name] = counts["close_refusals"].get(name, 0) + 1
 
     to_propose: list = []      # (result row, decision, supersedes_seq)
+    not_tight_ids: set = set()  # cr1#882: closes the tight gate withheld
     to_append: list = []       # commitment_updated rows
     for r in results:
         rec = r.get("recommendation")
@@ -487,7 +536,17 @@ def apply_transcript_results(
                                     "evidence_ts": transcript_ts},
                           preset=preset, hi=hi, pend=pend)
         action = d["action"]
-        if action in (policy.ACTION_CLOSE, policy.ACTION_CONFIRM_CLOSE) \
+        # cr1#882 — the tight gate (owner ruling of 2026-11-07 on cr1#751):
+        # with closing on, a close the transcript does not make tight is
+        # withheld and proposed, by the switch-off path below.
+        # A parent with open sub-items never closes here whatever the
+        # transcript says: the SUB1 fence below handles it, as before.
+        closing = action in (policy.ACTION_CLOSE, policy.ACTION_CONFIRM_CLOSE)
+        tight = ""
+        if closing and closes_on and not r.get("parent_blocks"):
+            tight = _tight(cid, quote)
+        not_tight = closing and closes_on and not r.get("parent_blocks") and not tight
+        if not_tight or closing \
                 and not closes_on:  # CUT-A switch: closing on evidence is OFF
             # M ruling R-A (2026-09-06) — the pass does not act until M
             # re-enables it by word. The bar is still judged and every
@@ -510,6 +569,11 @@ def apply_transcript_results(
                 _refuse(why)
                 continue
             counts["n_close_withheld"] += 1
+            if closes_on:
+                # cr1#882: written only when non-zero, so an answer with
+                # nothing withheld stays byte for byte the base's.
+                counts["n_close_not_tight"] = counts.get("n_close_not_tight", 0) + 1
+                not_tight_ids.add(cid)
             try:
                 _sc = float(r.get("score") or 0.0)
             except (TypeError, ValueError):
@@ -602,6 +666,9 @@ def apply_transcript_results(
                 "quote_has_completion": ce["quote_has_completion"],
                 "signal": signal,
                 "policy_bar": d.get("bar") or "",
+                # cr1#882 — why the transcript was tight, as the own-word
+                # pass stamps it, so its reversals can be counted.
+                "corroboration": tight,
             }
             extra.update(stamps)
             if machine_confirm:
@@ -669,7 +736,7 @@ def apply_transcript_results(
     counts["n_suppressed"] = len(fresh) - len(kept_rows)
     for r, d, supersedes, signal, quote in rescores + [t for t in fresh if t[0]["commitment_id"] in kept_ids]:
         cid = r["commitment_id"]
-        to_append.append(build_pending_review_event(
+        chip = build_pending_review_event(
             commitment_id=cid,
             primary_thread_id=r.get("primary_thread_id") or "",
             source_skill=source_skill,
@@ -683,7 +750,16 @@ def apply_transcript_results(
             source_ref=meeting_ref or None,
             supersedes_seq=supersedes,
             signal=signal,
-        ))
+        )
+        if cid in not_tight_ids:
+            # cr1#882: a report the tight gate withheld waits for the owner,
+            # as the own-word pass's proposals do (`close_mode_dial`): the
+            # stamp keeps the timeout from closing it, and the reason says
+            # why it was not closed.
+            from close_mode_dial import BLOCKED_FIELD
+            chip["data"][BLOCKED_FIELD] = True
+            chip["data"]["close_mode_reason"] = NOT_TIGHT_REASON
+        to_append.append(chip)
         if supersedes is not None:
             counts["n_rescored"] += 1
         else:
@@ -728,6 +804,56 @@ def _is_meeting_ref(source_ref: str, provider: Optional[str]) -> bool:
     return bool(provider) and s.split(":", 1)[0] == provider
 
 
+#: The meeting-shaped schemes that are a calendar event, not a transcript.
+_CALENDAR_SCHEMES = ("calendar", "gcal")
+
+
+def _is_transcript_ref(source_ref: str, provider: Optional[str]) -> bool:
+    """cr1#882: a chip's source is a meeting transcript: a meeting-shaped
+    scheme that is not a calendar event, or the declared meetings
+    connector's own provider prefix."""
+    s = str(source_ref or "").strip().lower()
+    return (_is_meeting_ref(s, provider)
+            and s.split(":", 1)[0] not in _CALENDAR_SCHEMES)
+
+
+#: cr1#911 — the skills the transcript pass writes its chips as: the End of
+#: Day's past meetings and the three prose callers of `apply_meeting_closes`.
+TRANSCRIPT_CHIP_SKILLS = frozenset(TRANSCRIPT_PROSE_CLOSERS | {SOURCE_SKILL_TRANSCRIPT})
+#: Pointers the mail, task and session rails write. The End of Day writes its
+#: mail and chat legs' chips under the past-meetings skill too, so a chip on
+#: one of these (or on a chat pointer, `chat.is_chat_ref_string`) is never a
+#: transcript's by its skill.
+_NOT_MEETING_SCHEMES = ("gmail", "superhuman", "outlook", "ms365", "ms365_outlook",
+                        "mail", "email", "imap", "slack", "chat", "ms365_teams",
+                        "asana", "todoist", "linear", "tasks", "google_tasks",
+                        "session")
+
+
+def _is_transcript_chip(chip: dict, provider: Optional[str]) -> bool:
+    """cr1#911: a chip a meeting transcript wrote. By its pointer
+    (`_is_transcript_ref`), or, whatever provider the pointer names, by the
+    transcript pass that wrote it (`TRANSCRIPT_CHIP_SKILLS`), so a chip from a
+    transcript provider this seat does not recognise (not a known scheme, not
+    the declared meetings connector's) is one too. A calendar event's chip
+    never is, nor one on a mail, chat, task or session pointer."""
+    src = str(chip.get("source_ref") or "").strip()
+    scheme = src.split(":", 1)[0].strip().lower() if ":" in src else ""
+    if scheme in _CALENDAR_SCHEMES:
+        return False
+    if _is_transcript_ref(src, provider):
+        return True
+    if scheme.endswith("calendar") or scheme in _NOT_MEETING_SCHEMES:
+        return False
+    try:
+        from connector_adapters.chat import is_chat_ref_string
+        if is_chat_ref_string(src):
+            return False
+    except Exception:  # noqa: BLE001 - no chat reader: the list above stands
+        pass
+    return str(chip.get("source_skill") or "").strip().lower() in TRANSCRIPT_CHIP_SKILLS
+
+
 def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
                         batch_id: Optional[str] = None, apply: bool = True,
                         source_skill: str = RETRACT_SOURCE_SKILL) -> dict:
@@ -741,7 +867,16 @@ def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
                the `match` door and its score. On an unconfirmed target the
                close goes through the `confirmed_by="transcript"` door and
                carries `resolution_reason: auto_closed_transcript_evidence`,
-               exactly as the live pass does.
+               exactly as the live pass does. Never a chip whose source is
+               a meeting TRANSCRIPT, by its scheme (`_is_transcript_ref`: a
+               known transcript provider, or the declared meetings
+               connector's) (cr1#882), or by the transcript pass that wrote
+               it, whatever provider it names (`_is_transcript_chip`,
+               cr1#911): a transcript closes only when tight,
+               which the timeout cannot judge, so that chip RETRACTS
+               (`n_apply_not_tight` with closing on; `n_apply_withheld`,
+               as before, while the switch or the dial holds). A chip the gate
+               itself withheld is also stamped `auto_close_blocked`.
       RETRACT  everything else — a bare title match, a schedule shift, a new
                ask, a sub-bar score. A `commitment_review_dismissed` naming
                the proposal (`proposal_seq`), reason `policy_retracted`. A
@@ -768,12 +903,14 @@ def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
     pending_ids = _pending_ids_from(events, events_path)
     open_ids = _open_ids_from(events, events_path)
     hi, _pend = policy.thresholds(workspace_root)
-    # The click's ordering check needs each target's capture time (the
-    # promise's own ts): evidence that predates the promise cannot show it
-    # was kept.
-    from cru_match import _commitment_id, load_open_commitments
-    from event_time import event_time
-    promise_ts_by_id = {_commitment_id(r): event_time(r)
+    # The click's ordering check needs when each target's promise was made
+    # (cr1#744: `promise_time_raw`, the fence's own answer, or a close the
+    # fence let through retracts here): evidence that predates the promise
+    # cannot show it was kept.
+    from cru_match import (_commitment_id, load_open_commitments,
+                           promise_time_raw, promise_tz)
+    tz = promise_tz(workspace_root)
+    promise_ts_by_id = {_commitment_id(r): promise_time_raw(r, tz)
                         for r in load_open_commitments(events_path, events=events)}
     cands = [c for c in policy.ttl_candidates(
                  events, now_iso=now_iso, ttl_days=ttl_days, hi=hi,
@@ -808,16 +945,27 @@ def resolve_stale_chips(workspace_root, *, now_iso=None, ttl_days=None,
         cid = c["commitment_id"]
         quote = str(c.get("evidence") or "").strip()
         src = str(c.get("source_ref") or "").strip()
-        if meeting_hold and _is_meeting_ref(src, meeting_provider) \
+        transcript = _is_transcript_chip(c, meeting_provider)  # cr1#911
+        held = meeting_hold and (_is_meeting_ref(src, meeting_provider) or transcript)
+        if (held or transcript) \
                 and c["ttl_action"] == policy.ACTION_CLOSE and quote and src:
             # cr1#668: the meetings connector holds closes, so the chip is
             # graded and counted exactly as under the switch-off branch
             # below, then RETRACTS; it never closes.
+            # cr1#882: nor does any chip a meeting transcript wrote. A
+            # transcript closes outright only when tight (owner ruling of
+            # 2026-11-07 on cr1#751), and the timeout has no transcript to
+            # judge that on: a tight report closed when it was read, and a
+            # chip is a report that waits for the owner. Retracted, never
+            # closed, whatever wrote it (the switch off, a `propose` dial,
+            # a build before the gate).
             ce = policy.close_evidence(quote, c.get("title") or "", hi=hi)
             if ce["ok"] is not True:
                 out["n_apply_no_completion_turn"] += 1
-            else:
-                out["n_apply_withheld"] += 1
+            elif held or not closes_on:
+                out["n_apply_withheld"] += 1  # the dial or the switch held it
+            else:  # cr1#882; absent when zero, as the base's answer
+                out["n_apply_not_tight"] = out.get("n_apply_not_tight", 0) + 1
             to_retract.append(c)
             continue
         if c["ttl_action"] == policy.ACTION_CLOSE and quote and src \
@@ -1067,7 +1215,8 @@ def apply_meeting_closes(workspace_root, *, meeting_ref: str, transcript_ts,
                          transcript_text: str, attendee_person_ids,
                          source_skill: str = "meeting-notes",
                          exclude_captured_since=None, now_iso=None,
-                         batch_id: Optional[str] = None) -> dict:
+                         batch_id: Optional[str] = None,
+                         attendee_records=None, user_names=None) -> dict:
     """CUT-A — the ONE python entry meeting-notes Step 5e-bis (and
     follow-up-ritual's mirror, and team-intelligence's pointer to it) calls
     for "did this meeting close anything already on the book". The model
@@ -1081,9 +1230,25 @@ def apply_meeting_closes(workspace_root, *, meeting_ref: str, transcript_ts,
     never the processing clock; without it every close is refused by name
     (`NoTranscriptTs`) and only proposals write. `meeting_ref` is the
     transcript's own pointer (`granola:<id>`) and is also the self-evidence
-    fence. Returns the counts dict plus `n_results`."""
+    fence. Returns the counts dict plus `n_results`.
+
+    cr1#751: the meetings connector's dials are read here as the CRU pass
+    reads them. Close dial off, nothing closes or proposes and
+    `close_skip_reason` says why; `close_mode: propose`, nothing closes.
+
+    cr1#882: with `close_mode: close` (or no meetings connector) and the
+    transcript-closes switch on, a close lands only when the transcript is
+    tight (`apply_transcript_results`'s gate, the own-word pass's
+    `exit_doors.tight_close_basis`): the owner's report names the other
+    person, and `attendee_records` (this meeting's attendee list, in any
+    shape `attendee_evidence.normalize_attendee_records` reads) shows exactly
+    the owner and that person. `user_names` are the owner's names, read from
+    the workspace when not given. Everything else proposes; without
+    `attendee_records` nothing is tight."""
+    from close_mode_dial import close_mode_for
     from cru_match import (load_open_commitments, match_transcript_to_commitments,
                            open_review_proposal_ids)
+    dial = close_mode_for(workspace_root, "meetings")
     events_path = _events_path(workspace_root)
     diag: dict = {}
     results = match_transcript_to_commitments(
@@ -1094,13 +1259,23 @@ def apply_meeting_closes(workspace_root, *, meeting_ref: str, transcript_ts,
         exclude_captured_since=exclude_captured_since,
         transcript_ts=transcript_ts, diagnostics=diag,
         workspace_root=workspace_root)
+    n_results = len(results)
+    if dial.get("skip_reason"):
+        # A schedule shift is not a close, and still lands (`run_cru_pass`).
+        results = [r for r in results if isinstance(r, dict)
+                   and r.get("recommendation") == "commitment_updated"]
     counts = apply_transcript_results(
         workspace_root, results, meeting_ref=meeting_ref,
         transcript_ts=transcript_ts,
         already_proposed=open_review_proposal_ids(events_path),
         review_budget={}, batch_id=batch_id, now_iso=now_iso,
-        source_skill=source_skill)
-    counts["n_results"] = len(results)
+        source_skill=source_skill, close_mode=dial.get("mode"),
+        transcript_text=transcript_text or "", attendee_records=attendee_records,
+        user_names=user_names)
+    if dial.get("skip_reason"):
+        counts["close_skip_reason"] = dial["skip_reason"]
+        counts["closes_enabled"] = False
+    counts["n_results"] = n_results
     counts["n_stale_evidence_skipped"] = int(diag.get("stale_evidence_dropped", 0) or 0)
     return counts
 

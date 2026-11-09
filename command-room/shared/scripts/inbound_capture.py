@@ -110,6 +110,8 @@ if str(_HERE) not in sys.path:
 
 from capture_gate import (  # noqa: E402
     OBSERVED_TYPE,
+    capture_cover,
+    cover_owner,
     classify_capture,
     gate_commitment_data,
     intake_kwargs,
@@ -129,8 +131,6 @@ from connector_adapters.provenance import (  # noqa: E402
     is_same_artifact,
     resolve_mail_provider,
 )
-
-_TITLE_DEDUP_CHARS = 60  # scan-for-commitments Step 4: first 60 chars, ci
 
 #: The sender promised the user something — owner is the SENDER.
 DIRECTION_WAITING_ON = "waiting_on"
@@ -326,6 +326,7 @@ def build_inbound_commitment_event(
     thread_id: Optional[str] = None,
     is_draft: bool = False,
     workspace_root=None,
+    account_address: Optional[str] = None,
 ) -> dict:
     """One qualifying inbound message → one canonical `commitment` event dict,
     with the full capture block enforced in code (Stage-D kind, S2 due-nudge,
@@ -440,10 +441,15 @@ def build_inbound_commitment_event(
         # Origin discriminator (ACCOUNT_SCOPE §4a): an inbound-mail capture is
         # a connector read — the account-scope wall treats it STRICT.
         "origin": "connector",
-        # The parent `interaction` event is not guaranteed to exist for a
-        # fetched thread, so — like the sent and Slack legs — the source_ref IS
-        # the provenance and there is no source_event_seq.
     }
+    if account_address:
+        # cr1#755: the mail account this message was read as, so the row
+        # names its account and the scope wall can resolve it
+        # (`provenance.resolve_account_id` reads `data.account_address`).
+        data["account_address"] = str(account_address).strip().lower()
+    # The parent `interaction` event is not guaranteed to exist for a
+    # fetched thread, so, like the sent and Slack legs, the source_ref IS
+    # the provenance and there is no source_event_seq.
     if direction == DIRECTION_WAITING_ON:
         # Owner is the sender. `owner_id` is stamped even when empty — that is
         # the shape inbox-triage has always documented for an unrecognised
@@ -564,21 +570,46 @@ def build_inbound_commitment_event(
     # write seam — clamped where it is written, never passed straight through.
     _stamp_confidence(event, classification_confidence,
                       holder="build_inbound_commitment_event")
-    if (ts or "").strip():
-        event["ts"] = ts.strip()  # backdate to when the message arrived
+    if ts is not None and str(ts).strip():
+        # cr1#767: backdate to when the message arrived, in the house
+        # spelling. A header date or an epoch number is converted; a time
+        # nothing can read is refused here, loudly, with the raw text in
+        # the reason, never stored: a row stamped with it could never be
+        # matched by a reply.
+        from message_time import normalize_message_ts
+        when = normalize_message_ts(ts)
+        if when is None:
+            raise InboundItemError(
+                f"inbound-mail commitment {title[:40]!r} carries a message "
+                f"time that cannot be read ({str(ts).strip()[:40]!r}); pass the "
+                f"connector's own ISO-8601 time")
+        event["ts"] = when
     return event
 
 
-def _title_key(title) -> str:
-    return (str(title or "").strip().lower())[:_TITLE_DEDUP_CHARS]
+def candidate_owner(direction, *, user_person_id="", sender_person_id="",
+                    sender_name=""):
+    """Who will owe an inbound item, as `build_inbound_commitment_event`
+    stamps it, for Step 4's owner test (`capture_gate.cover_owner`,
+    cr1#912): the user on a reply owed, the sender on a waiting-on item (by
+    name when the sender has no record yet). None for any other direction,
+    which the builder refuses: Step 4 then compares the words alone."""
+    if direction == DIRECTION_REPLY_OWED:
+        return cover_owner(user_person_id)
+    if direction == DIRECTION_WAITING_ON:
+        return cover_owner(sender_person_id, sender_name)
+    return None
 
 
 def already_captured(workspace_root, message_id: str, title: str,
-                     provider: Optional[str] = None) -> bool:
+                     provider: Optional[str] = None, *, owner=None) -> bool:
     """Per-message idempotency, codified: True when a commitment with the same
     message identity AND the same title (ci, first 60 chars — the scan's
-    documented rule) is already on disk, OR the identity is already covered by
-    a closure. Shard-transparent via events_io.
+    documented rule) is already on disk, OR a closure on that message covers
+    it (`capture_gate.capture_cover`: a closure of another message's row
+    covers only that row, by the same words, cr1#884 and cr1#902, and when
+    `owner` is given only a row the same person owes, cr1#912). `owner` is
+    `candidate_owner(...)` for the item. Shard-transparent via events_io.
 
     Reading the closure types here is a READ, not a write: an identity whose
     item the user already closed must not be re-opened by the next fire over
@@ -601,7 +632,6 @@ def already_captured(workspace_root, message_id: str, title: str,
 
     provider = resolve_mail_provider(workspace_root, provider)
     want_id = inbound_source_ref(message_id, provider).split(":", 1)[1]
-    want_title = _title_key(title)
     # CAPTUREONCE1 §2.2 — ASK THE INDEX FIRST. `source_ref_index.check(...,
     # title=...)` answers the same `(source_ref, title)` question this scan
     # answers, off the sidecar index, without walking the whole book. A HIT is
@@ -621,27 +651,17 @@ def already_captured(workspace_root, message_id: str, title: str,
             return True
     except Exception:
         pass
-    for ev in iter_events(workspace_root):
-        ev_key = canonical_dedup_key(event=ev)
-        if not is_same_artifact(ev_key, provider, want_id):
-            continue
-        etype = ev.get("type")
-        if etype in ("commitment_resolved", "thread_resolved"):
-            return True
-        # INTAKE1 — A HELD ROW IS A CAPTURE. Since SPEC_FLOW1 the door sets
-        # rows aside instead of opening them, and an idempotency check that
-        # reads only `commitment` would call every held row uncaptured and
-        # re-hold it on the next fire over the same mailbox — the same
-        # unbounded re-capture this function exists to prevent, moved one
-        # tier down. Same identity, same title rule, same answer.
-        if etype in ("commitment", "commitment_observed"):
-            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-            ev_title = _title_key(data.get("title") or data.get("summary"))
-            if ev_title and want_title and (
-                ev_title in want_title or want_title in ev_title
-            ):
-                return True
-    return False
+    # INTAKE1 — A HELD ROW IS A CAPTURE: the cover reads `commitment_observed`
+    # as well as `commitment`, so a set-aside row is not re-held on every fire.
+    # cr1#902: a closure of another message's row covers it by the same words
+    # only, so a promise read after the reply's close is kept as on a first
+    # read, where the capture runs before the close. cr1#912: and only a row
+    # the same person owes, so a request to the owner worded like the item
+    # the sender delivered is kept on that later read too.
+    return capture_cover(
+        lambda: iter_events(workspace_root),
+        lambda ev: is_same_artifact(canonical_dedup_key(event=ev), provider, want_id),
+        title, owner=owner)
 
 
 def _summary(counts: dict, cap: int) -> str:
@@ -777,7 +797,12 @@ def capture_inbound_items(
             })
             continue
         try:
-            if already_captured(workspace_root, mid, title, provider=provider):
+            if already_captured(
+                    workspace_root, mid, title, provider=provider,
+                    owner=candidate_owner(
+                        direction, user_person_id=user_person_id,
+                        sender_person_id=item.get("sender_person_id") or "",
+                        sender_name=item.get("sender_name") or "")):
                 skipped.append({"title": title, "message_id": mid})
                 continue
             ev = build_inbound_commitment_event(
@@ -805,6 +830,7 @@ def capture_inbound_items(
                 thread_id=item.get("thread_id"),
                 is_draft=bool(item.get("is_draft")),
                 workspace_root=workspace_root,  # DUEBEFORE1 (cr1#270): the message's day in the WORKSPACE's zone
+                account_address=item.get("account") or item.get("account_address"),  # cr1#755
             )
         except InboundItemError as e:
             errors.append({"title": title, "message_id": mid, "error": str(e)})
@@ -819,6 +845,7 @@ def capture_inbound_items(
             # side or it would link two unrelated items.
             exclude_party_ids={user_person_id},
             exclude_party_names=user_names,
+            workspace_root=workspace_root,  # cr1#747: names on file set aside
         )
         if match is not None:
             md = match.get("data") or {}
@@ -949,5 +976,6 @@ __all__ = [
     "inbound_source_ref",
     "build_inbound_commitment_event",
     "already_captured",
+    "candidate_owner",
     "capture_inbound_items",
 ]

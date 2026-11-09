@@ -70,9 +70,12 @@ Nothing else runs for those phrases: no Step 0, no version check, no migration, 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -401,6 +404,14 @@ WORKSPACE_MIGRATIONS = [
     type: "auto_apply",                                        // APPLIED, then NARRATED — additive and reversible (the old connection id is kept on the account binding as history, never dropped). NEVER a calibration_question: "which of these connection ids is yours" is not a question a customer can answer
     blocking: false,
     apply_once: false                                          // NOT once-ever, unlike the two above: connection ids change again whenever a connector is removed and re-added, and the module's own `nothing_to_do` status IS the idempotency gate — a re-run on a settled workspace writes nothing and says nothing
+  },
+  {
+    id: "discuss_list_retired_v1",                              // cr1#552 (the owner's ruling 2026-11-06, option A1): the retired discuss-later list is emptied on update. Read the id from `release_actions.discuss_list_retired_v1.MIGRATION_ID`
+    target_file: "[WORKSPACE_ROOT]/_hq/data/events.jsonl",    // additive only: one `note` or one My Plate `commitment` per open item, each pointing back at the item it moved, then one applied row
+    marker: null,                                              // no marker: the gate is the module's own `plan`: `nothing_open` on the overwhelming majority of seats, `pending` only where a discuss item is still open
+    type: "auto_apply",                                        // APPLIED, then NARRATED in one line. The owner ruled the move (A1); it writes and moves items without asking, and the items stay on the ledger with their new home pointing at them
+    blocking: false,
+    apply_once: true                                           // one applied row, ever, once every item has moved; a seat that could not name its owner gets no applied row and is tried again next update
   }
 ]
 ```
@@ -460,7 +471,7 @@ On `would_fold`, there are exactly TWO steps and ONE call shape. **Do not also c
 1. For EACH task id in `planned["tasks_to_disable"]`, in order, execute the plan `schedule_backend.plan_update(task_id=<id>, enabled=False)` returns, then its `after` call; a `Refusal` stops the loop rather than half-applying it. Never pass `prompt` — the Step 0 fold gate already ships in the orchestrator file itself (`orchestrator-commitments.md` / `orchestrator-my-plate.md`), so a fire that beats the rest of this migration stubs itself; the registered bootloader is registration's property.
 2. Only after EVERY call in the loop SUCCEEDED, make the ONE call that writes everything: `result = fold_scheduled_fires(events_path, WORKSPACE_ROOT, {"task_records": <the same raw records>, "now_iso": <now>})`. It re-plans, writes the store and the audit event through `schedule_config.apply_fold_state` — which is the ONE caller of `schedule_config.log_schedule_config_change` for this class (SPEC SCHED1 §0-4; never hand-roll a second event beside it) and also the one thing that moves `workspace.schedule_config`, the container the orchestrators' Step 0 gate reads — under ONE `brain_batch_id` (which is what makes `undo` reverse both ids together), and writes the ONE receipt that is also this seat's one-shot marker. Same ordering rule as the readiness block: an event claiming a task is off while it still fires is worse than no event. Read the line to post off `result["context"]["summary_line"]`.
 
-Then surface **exactly ONE line**, built by the module, never composed here: `result["context"]["summary_line"]` (from `schedule_config.folded_fire_summary`). It names what folded, where the headline lives now, and — the clause `readiness_retirement_v1`'s line never carries — that `undo` puts it back. **Do not drop the `undo` mention.** A fold the customer cannot reverse would be a retirement wearing this class's better manners.
+Then surface **exactly ONE line**, built by the module, never composed here: `result["context"]["summary_line"]` (from `schedule_config.folded_fire_summary`). It names what folded and where the answer lives now, the Hub and the typed ask. It offers no way back to a chat: the owner ruled these chats retired on 2026-11-03, and shelved wins.
 
 **Do NOT touch anything else.** No `schedule_config` override key for a THIRD id is ever touched by this migration (`FOLDED_TASK_IDS` is exactly two, read from the module, never retyped), the on-demand `show waiting` / `what's on my plate` skills are untouched, and the Inbox chat is untouched — FOLD1A does not touch it (M: "I am not planning on retiring inbox"). If you are about to disable a task that `schedule_config.is_folded_fire` does not return True for, stop.
 
@@ -508,9 +519,12 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"r
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -654,9 +668,12 @@ Run it automatically whenever the update proceeds (independent of which migratio
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -732,9 +749,12 @@ It is **safe and idempotent by design**, via `thread_writer.repair_dual_project_
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -871,7 +891,7 @@ Narrate completion in one line:
 
 **Narrate completion in one line:**
 
-> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up in your next Waiting On and My Plate chats."*
+> *"✓ Catch-up commitment scan complete — pulled [N] commitments from your historic meetings and emails. They'll show up on the Command Room Hub."*
 
 (Or, for declined): *"Skipped. You can run it later by saying `scan for commitments`."*
 
@@ -1190,6 +1210,30 @@ What the ONE call does, and which the prose must not restate loosely:
 
 > *"New: a document about your work is always a Word, PDF, spreadsheet or deck file in your Command Room folder, never a Markdown text file."*
 
+### Migration: `discuss_list_retired_v1` (cr1#552, the owner's ruling 2026-11-06, option A1: the retired discuss-later list is emptied on update, each open item becoming a note on its person or project, or a My Plate task)
+
+**Trigger gate:** the module's own `plan` (`release_actions.discuss_list_retired_v1.plan`) answers `nothing_open` on the overwhelming majority of seats (the list has taken no new item since MLK1, 2026-07-21, and most seats drained it), `adjudicated` when the ledger already carries this id's applied row, and `pending` only where a `commitment_to_discuss` row is still open (`plate_helpers.open_discuss_items`: not resolved, not under a live mute, not already moved). "update command room", said by the customer, stays the trigger: nothing applies itself.
+
+**Approach (auto_apply, the readiness-retirement precedent: the owner's ruling is the authority, so no per-item question). The module does the move, through the WRITE door (Access preamble rule 8),** under the customer's writer id, never as a hand-written event and never imported into a shell. Render with `workspace_access.py plan run_writer --json '…'` and paste what it prints:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"detector_context": {"from_version": "<from_version>", "to_version": "<to_version>"}, "events_jsonl_path": "<WS>/_hq/data/events.jsonl", "workspace_root": "<WS>"}, "name": "release_actions.discuss_list_retired_v1:discuss_list_retired_v1"}'
+```
+
+What the ONE call does, and which the prose must not restate loosely:
+
+1. For every open item that resolves to a person or a project (the same person-then-thread rule a re-routed orphan note uses, `orphan_note.resolve_note_target`), it appends ONE `note` on that person or project carrying the item's words and `source_event_seq` = the item's seq.
+2. For every open item that resolves to nothing, it mints ONE My Plate task through `commitment_state.create_personal_task`, owned by the workspace's primary user, carrying the same `source_event_seq`.
+3. The discuss row itself is never edited, closed by hand or deleted: the note or the task that points back at it is what marks it moved, and `open_discuss_items` reads that. Then ONE `workspace_migration_applied` row with `migration_id: "discuss_list_retired_v1"` (the module's constant) and the counts. A seat that cannot name its primary user moves the items that resolve to a person or project, leaves the rest open, logs no applied row, and says so; the next update tries them again.
+
+**Do not move an item yourself and do not compose the applied row:** one writer, one pass, one row. `result["ok"]` false with `reason: writer_identity_required` is the door's refusal: say its `line` and stop.
+
+**Surface ONE plain-English line in the update summary (no question, no confirm), only when `ran` is true: `result["context"]["summary_line"]`, verbatim** (built by `discuss_list_retired_v1.summary_line`; never count the items yourself). The shape, for a seat that had items:
+
+> *"Your discuss-later list is retired: 2 items became notes on their people or projects and 1 item became a My Plate task."*
+
+`ran: false` with `context.status` `nothing_open` or `adjudicated` means nothing was written and NOTHING is said: a line about a list the customer never used is noise about a feature they never saw.
+
 <!-- SCHEDULER DISCOVERY >>> -->
 ```text
 SCHEDULER DISCOVERY (SCHEDDISCOVER1) - rendered by schedule_backend.discovery_step(); never edit by hand.
@@ -1370,14 +1414,15 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"r
 
 **The pair and the folder (BRIDGE2, F-OFF-3).** `writer_pair` is the pair this run's rendered lines already carry in front of `python3` (the declaration's line above carries it): pass it explicitly, as the two-item list shown. When no rendered line carries one, pass `null`: the planner then takes the pair the door forwards on this very line (`CR_WRITER_ID` / `CR_WRITER_DERIVATION`) before it ever answers `no_account`. The folder's path is NOT an argument: it crosses on the line as `CR_DEVICE_WORKSPACE`, exported before rendering as the Access preamble says, and the planner reads it there. When `ok` is false (`no_account` when neither a pair nor a forwarded pair exists), say `result["line"]` once and nothing else about schedules: never compose a schedule sentence of your own, and never read the scheduler's list to make one.
 
-**The reinstall (SHELVE1, cr1#618, the owner's ruling 2026-11-03): on the cloud scheduler the bridge DELETES the previous version's scheduled chats and installs the survivors fresh.** The cockpit page (cr1#608, #619) replaced the daily chats, so only Morning Brief and Maintenance stay scheduled from the previous version; Inbox, End of Day, Friday Wrap, Waiting On and My Plate are shelved (`schedule_config.SHELVED_TASK_IDS`; their typed phrases still run each surface, and their orchestrator files stay for the jobs and the cockpit tasks that read them). The one `bridge_plan` form above carries `"reinstall": true`, so on the cloud backend its answer is the reinstall plan; the older desktop app's scheduler never reaches that form (it has no delete) and keeps its own path below. Read `result`. `ok: false` ends the schedules step with `result["line"]` (no scheduler, no account, or a legacy scheduler, which cannot reinstall). Otherwise, in this order, and nothing else:
+**The reinstall (SHELVE1, cr1#618, the owner's ruling 2026-11-03): on the cloud scheduler the bridge DELETES the previous version's scheduled chats and installs the survivors fresh.** The cockpit page (cr1#608, #619) replaced the daily chats, so only Morning Brief and Maintenance stay scheduled from the previous version; Inbox, End of Day, Friday Wrap, Waiting On and My Plate are shelved (`schedule_config.SHELVED_TASK_IDS`; their typed phrases still run each surface, and their orchestrator files stay for the maintenance job, which follows two of them by name, and for a chat still on a seat). The one `bridge_plan` form above carries `"reinstall": true`, so on the cloud backend its answer is the reinstall plan; the older desktop app's scheduler never reaches that form (it has no delete) and keeps its own path below. Read `result`. `ok: false` ends the schedules step with `result["line"]` (no scheduler, no account, or a legacy scheduler, which cannot reinstall). Otherwise, in this order, and nothing else:
 
 1. **`removals`**: execute each through the scheduler's delete call (`tool`, `args`), one at a time. The plan has already left out the cockpit's own tasks (`cockpit-…`) and any registration of another computer; never delete a trigger the plan did not name, and never a trigger the listing did not carry (another account's chats are not visible here and are not this seat's to remove).
-2. **`creates`**: execute each (Morning Brief and Maintenance, composed fresh), then land each one's `after` in ONE door call through `schedule_backend:record_registration` with the payload `schedule_backend.registration_payload(after, trigger_id=<the id the call returned>, source_skill="command-room-update-bridge")` composes, exactly as the schedules skill lands a create.
-3. **The record**: ONE writer call naming every removed id, which drops their trigger rows and writes the one config record the lateness ledger reads:
+2. **`creates`**: execute each (Morning Brief and Maintenance, composed fresh, each at the customer's own time, cr1#890; when this scheduler will not take a chat's time, the plan does not delete that chat at all, and the line of step 4 says so), then land each one's `after` in ONE door call through `schedule_backend:record_registration` with the payload `schedule_backend.registration_payload(after, trigger_id=<the id the call returned>, source_skill="command-room-update-bridge")` composes, exactly as the schedules skill lands a create.
+2b. **`updates`**: a chat the plan kept as it was (its create was refused) still gets this version's instructions, its time untouched: execute each update call (`tool`, `args`; it carries the prompt and the trigger id only). Write no trigger row for it: its stored row, time included, is unchanged and stays as it is. It is never deleted or recreated here.
+3. **The record**: ONE writer call naming every id in `result["gone_ids"]` whose removal you executed, which drops their trigger rows and writes the one config record the lateness ledger reads. `gone_ids` leaves out Morning Brief and Maintenance, which step 2 set up fresh: naming them here would drop the trigger rows step 2 just wrote (cr1#889). A create of step 2 whose call failed is gone too: add its id here, and in step 4 say `result["lines_if_failed"][<the failed creates' task ids, sorted, joined by commas>]` instead of `result["reinstall_line"]`, so a chat that failed is never reported as set up:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"source_skill": "command-room-update-bridge", "task_ids": [<the task_id of every executed removal>], "workspace_root": "<WS>"}, "name": "schedule_backend:record_removals"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"source_skill": "command-room-update-bridge", "task_ids": [<every id of result["gone_ids"] whose removal was executed>], "workspace_root": "<WS>"}, "name": "schedule_backend:record_removals"}'
 ```
 
 4. Say `result["reinstall_line"]` ONCE in the update summary, verbatim (`schedule_backend.reinstall_line` composed it; never count or name the chats yourself). Skip the add paths, the supersede loop and the retirement proposals below for this run: the reinstall is the whole schedules step. A run whose listing carried nothing of Command Room's plans the two creates alone and says the same line. The cockpit's own tasks are `cockpit-setup`'s (cr1#619) and are never created, refreshed or removed here.
@@ -1387,23 +1432,17 @@ Read `result`: when `first_registration_needed` is true, say `result["line"]` ON
 
 **Name the chats (BRIDGE3, F-T2-5).** When `ok` is true and `first_registration_needed` is false, say `result["chats_line"]` ONCE in the update summary, verbatim, when it is not empty: it names the scheduled chats this computer holds, counted from the listing (`result["named"]`), composed by `schedule_backend.bridge_chats_line`. Never count or name the chats yourself: the sentence is the plan's, never one composed from the listing in this chat. A chat whose body could not be compared where the door runs is `current` with `compared: false`, and the plan carries a `note`: that note is a code, never spoken, and nothing about comparing is said.
 
-Check whether Command Room's scheduled tasks are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table performs the disable-and-register (`commitments` → `waiting-on` + `my-plate`). Until that runs, the still-registered `commitments` task fires the re-scoped Waiting On orchestrator and the owner-me direction has no daily chat — the split must land at the first post-update opportunity, not "eventually". The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
+Check whether Command Room's scheduled tasks are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table disables `commitments`. Nothing registers in its place: both successors are shelved, the seat is pointed at the Hub, and no new chats are named. The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
 
 **Render the chat names from what actually registers** (display names from the registration set via `task_display_name()`), never a hardcoded list. Shape (names illustrative only):
 
-> *"Setting up your daily action chats — for example: Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap. (A couple more get added later in a follow-up session.) They run without stopping to ask you for approvals."*
+> *"Setting up your scheduled chats — for example: Morning Brief. They run without stopping to ask you for approvals."*
 
 For upgrade flow (existing workspace with a prior task set already registered, adding what's missing on top), the surfaced text names only what was added:
 
 > *"Adding [Display Name(s)] to your scheduled chats (you already have the others)."*
 
-**Friday Wrap generic-add path (v3.14.4+ — operator-call follow-up, replaces the v3.14.3 manifest item):** also check if `friday-wrap` is in the registered set. If missing AND the workspace is past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register friday-wrap with the current default cadence from `load_schedule_config()` (Fridays 1 PM as of Phase 3/R4). Surface (render the time from the config label):
-
-> *"Adding Friday Wrap to your scheduled chats — it runs Fridays at [config label time] and wraps the week into a recap."*
-
-Same shape as the Inbox-add precedent. No question; the customer sees a notice about what was added. The v3.14.3 manifest item `v3143_friday_wrap_missing` (instruct_user) is REMOVED in v3.14.4 in favor of this Phase 4.7 silent-add path — per CONTRACT.md Rule 28 (don't ask the customer about default-chat registration).
-
-Detection logic (extracted to a helper so future "add missing canonical task" cases can reuse it): use `release_detectors.v3_14_3_friday_wrap_missing.is_friday_wrap_missing()` against `_hq/data/events.jsonl`. If `applies=True`, run the silent-add path above.
+**No shelved chat is added here (cr1#847).** The Friday Wrap add this step used to run is gone, and its detector with it: `friday-wrap` is shelved, so a seat missing it is not missing anything.
 
 **Silent-task generic-add loop (Phase 3 / SPEC-2.3 — replaces the per-task Cleanup / Reconcile-Sent / Weekly-Insights add paths):** the silent background tasks are NOT among the chat taskIds enumerated above; they register separately via `enable-command-room-schedules` **Step 1.D**, so the chat-completeness check is structurally blind to them (Bug #82's class — see references/HISTORY.md § Bug #82 silent-task registration miss). As of Phase 3 the check is one loop over the **`SILENT_TASKS` registry** in `shared/scripts/schedule_config.py` (currently one task, `maintenance` — MAINT1): for EVERY registry task missing from the registered set on a workspace past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register it with its default cadence, then surface one plain-English line built from the registry's `description` + `reason`.
 
@@ -1431,16 +1470,16 @@ offers = propose_task_retirements(WORKSPACE_ROOT,
                                   task_records=<the NORMALISED `schedule_backend.plan_list` records>)
 ```
 
-**Pass `task_records`, not just the ids (EOD2 / REVIEW F-2).** Neither accept path removes a task — there is no delete API, so both `pause` and the rename switch DISABLE, and the id stays in the registered set forever. Ids alone therefore cannot tell "hasn't acted" from "already acted", and the offer repeats every six weeks for the life of the workspace. The raw records carry `enabled`, which is the difference. Without them the helper still catches the renamed case (successor registered), but the disabled signal is simply unavailable — so pass them whenever the readback is in hand, which on this path it always is.
+**Pass `task_records`, not just the ids (EOD2 / REVIEW F-2).** The accept does not remove a task — on this path there is no delete, so a `pause` DISABLES, and the id stays in the registered set forever. Ids alone therefore cannot tell "hasn't acted" from "already acted", and the offer repeats every six weeks for the life of the workspace. The raw records carry `enabled`, which is the difference. Without them the helper still catches the renamed case (successor registered), but the disabled signal is simply unavailable — so pass them whenever the readback is in hand, which on this path it always is.
 
 For each returned offer, surface its `line` VERBATIM (one line, built from the registry so the wording cannot drift between here, change-schedule and system-health), then log the suppression record with `log_retire_proposal(WORKSPACE_ROOT, offer["task"])`. The helper already honors the 6-week window, so a customer who ignored the offer is not asked again next update.
 
 **Never disable it yourself.** The customer's `pause <name>` is what switches it off, routed through change-schedule exactly like every other schedule change. This deliberately does NOT use the MAINT1 `SUPERSEDED_BY` mechanism above — that one disables silently, which is correct for FIVE background tasks the customer never saw and wrong for a chat sitting visibly in their Scheduled list. Silence and a vanished chat are the same posture violation as a chat that registered itself. Silence registers nothing and un-registers nothing; the offer simply goes quiet for 6 weeks.
 
-**RENAME offers are the same machinery and one different accept path (SPEC EOD2).** An offer whose task is a RENAME rather than an elimination (`schedule_config.is_renamed_task(offer["task"])` — `past-meetings` → `end-of-day` is the first) reaches you through the exact same call and gets surfaced the exact same way; the registry has already worded the line as a switch rather than a removal, so do not re-word it and do not add a "your chat is going away" sentence to it. Two things differ, and both are about what an ACCEPT means:
+**RENAME offers are the same machinery with nothing to accept (SPEC EOD2, cr1#847).** An offer whose task is a RENAME rather than an elimination (`schedule_config.is_renamed_task(offer["task"])` — `past-meetings` → `end-of-day` is the first) reaches you through the exact same call and gets surfaced the exact same way; the registry has already worded the line as a rename rather than a removal, so do not re-word it and do not add a "your chat is going away" sentence to it. Two things differ:
 
-- **The accept is `add end of day`, not `pause past meetings`.** It routes to registration's Phase 6 add, which registers the successor AND disables the predecessor in one step (both halves or neither — see that skill's migration semantics). A bare `pause` here would leave the customer with no evening chat at all, which is the one outcome a rename must never produce. If the customer replies with a pause, say what it would cost and offer the switch instead.
-- **Silence costs the customer nothing, and say so if asked.** An ignored elimination offer leaves a chat that only explains itself; an ignored RENAME offer leaves a chat that keeps working perfectly — both ids read the same orchestrator file, so `past-meetings` fires the current End of Day pack at 5 PM indefinitely. That is why nothing here is allowed to auto-apply: there is no degradation to race, and M's Decision 9 puts his own machines under exactly the same rule as every client's.
+- **There is no switch to take.** `end-of-day` is shelved, so `add end of day` gets `schedule_config.shelved_line("end-of-day")` verbatim and registers nothing. `pause past meetings` is an ordinary pause through change-schedule, and the close stays on the Hub and on the typed `end of day`.
+- **Silence costs the customer nothing, and say so if asked.** An ignored elimination offer leaves a chat that only explains itself; an ignored RENAME offer leaves a chat that keeps working: both ids read the same orchestrator file, so `past-meetings` keeps firing the current End of Day pack at 5 PM. Only the reinstall above removes it, and only on the cloud scheduler, where it goes with the rest. The older desktop scheduler has no delete, so on that seat it stays until the customer says `pause past meetings`.
 
 **Do not confuse this with a missing chat.** `end-of-day` is a first-install id, so the "is this workspace's schedule complete?" reflex will want to register it. It is already served — `schedule_config.is_task_served("end-of-day", registered_ids)` is the check — and registration's `registration_target_set()` fences it out of the silent-invoke path above for exactly this reason. Never register `end-of-day` from this skill.
 
@@ -1557,9 +1596,12 @@ Determine `last_applied_version` from the most recent `plugin_update` event in e
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1623,9 +1665,12 @@ For each manifest, for each item, run the detector via bash:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1701,9 +1746,12 @@ So: use the readback taken at the top of Phase 4.7 (`RECORDS`, "The registered s
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1777,9 +1825,12 @@ Plain ids are enough (`mcp__<connection>__<operation>`); the actions accept obje
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1848,9 +1899,12 @@ print(json.dumps(result))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1921,9 +1975,12 @@ print(json.dumps(result))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

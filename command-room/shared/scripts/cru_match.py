@@ -473,6 +473,16 @@ def _content_tokens(text: Optional[str]) -> set[str]:
     return set(_tokenize(text))
 
 
+def fold_plural(word: str) -> str:
+    """cr1#764, cr1#765 - one spelling for a word and its plural, so "renewal"
+    and "renewals" are one subject. A trailing s only, and never on words
+    whose s is not a plural (`address`, `status`, `analysis`). Pure."""
+    w = str(word or "")
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
 def shared_content_words(text: Optional[str], title: Optional[str], *,
                          names: Iterable[str] = ()) -> set[str]:
     """cr1#468 - the words a message and a commitment title really share.
@@ -586,6 +596,16 @@ def detect_scheduling_intent(text: Optional[str]) -> bool:
 # -----------------------------------------------------------------------------
 
 
+#: Who a write the system made with nobody acting names as its author.
+try:
+    from event_types import MACHINE as _ACTOR_MACHINE
+except Exception:  # pragma: no cover - import order safety
+    _ACTOR_MACHINE = "machine"
+
+#: The question an unconfirmed reassignment raises on the projection.
+_REASSIGN_REVIEW_REASON = "reassigned — confirm the new owner before this is chased"
+
+
 def _commitment_id(ev: dict) -> str:
     d = ev.get("data") or {}
     return d.get("id") or ev.get("id") or f"commitment_seq_{ev.get('seq', '?')}"
@@ -648,6 +668,57 @@ _COMMITMENT_FIELD_ALIASES = {
     "title": ("title",),
     "confidence": ("confidence", "classification_confidence"),
 }
+
+
+def promise_tz(workspace_root=None):
+    """The workspace's timezone for `promise_time_raw`, read once per pass
+    through the one helper. None when it cannot be read."""
+    try:
+        from tz import load_workspace_tz
+        return load_workspace_tz(workspace_root)
+    except Exception:  # noqa: BLE001 - TZResolutionError, or no helper
+        return None
+
+
+def promise_time_raw(ev: dict, tz=None) -> str:
+    """cr1#744 - WHEN THE PROMISE WAS MADE, as the row itself says it. The
+    stale-evidence fence compares a send, a reply or a transcript against
+    this, not against when the row was written: after a gap, a Monday promise
+    captured on Wednesday is still a Monday promise, and Tuesday's send
+    closes it.
+
+    A captured task (cr1#752) began on its board before it reached the book:
+    its `item_created_at`, else its `item_updated_at` (a tool that names no
+    creation time), when that is earlier than the row's own time. Work done
+    in between is still evidence for it.
+
+    `data.meeting_date` is a DAY in the workspace's own calendar, with no
+    hour. It says only that the promise was made by that day's END, so the
+    end of that local day is what stands for it, and only when the row was
+    captured after that (the gap case). Anything sent on the meeting's own
+    day might have gone out before the meeting, so it stays fenced, whether
+    the row was captured that day or later. `tz` is `promise_tz`'s answer;
+    without one the day runs to its end in the last zone on earth, which
+    fences at least as much as any workspace's own clock would."""
+    d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+    raw = event_time(ev)
+    for key in ("item_created_at", "item_updated_at"):
+        born = d.get(key)
+        if isinstance(born, str) and born.strip():
+            a, b = _parse_ts(born), _parse_ts(raw)
+            if a is not None:
+                return born.strip() if (b is None or a < b) else raw
+    try:
+        day = datetime.date.fromisoformat(str(d.get("meeting_date") or "").strip()[:10])
+    except ValueError:
+        return raw
+    day_end = datetime.datetime.combine(
+        day + datetime.timedelta(days=1), datetime.time.min,
+        tzinfo=tz or datetime.timezone(datetime.timedelta(hours=-12)))
+    cap_dt = _parse_ts(raw) if raw else None
+    if cap_dt is not None and cap_dt <= day_end:
+        return raw
+    return day_end.astimezone(datetime.timezone.utc).isoformat()
 
 
 def _commitment_field(ev: dict, field: str) -> Any:
@@ -1092,6 +1163,54 @@ def collapse_id_twins(open_evs: list) -> tuple[list, dict]:
     return kept, twin_seqs
 
 
+#: cr1#740/#742. A held window offers mail again that the rails already
+#: judged, so what the owner did with the result has to survive the re-read.
+#: `commitment_reopened` and a person's Skip (`commitment_review_dismissed`
+#: without the policy's retract reason) are that word. The newest of them on a
+#: row rides the projection as `adjudicated_at`, and a message no newer than it
+#: is not evidence for that row: it is what the owner already answered. A
+#: message after it still closes or proposes (the dismissal rule's "genuinely
+#: new" sends).
+def _owner_adjudications(events) -> dict:
+    """commitment id -> the raw time of the newest reopen or Skip on it."""
+    from closure_index import reopen_target
+    try:
+        from event_types import POLICY_RETRACT_REASON as retract
+    except Exception:  # noqa: BLE001 - an older table: no reason to exempt
+        retract = None
+    newest: dict = {}
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("type") or ev.get("event") or ""
+        if et == "commitment_reopened":
+            cid = reopen_target(ev)[0]
+        elif et == "commitment_review_dismissed":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if retract and data.get("resolution_reason") == retract:
+                continue
+            cid = str(data.get("commitment_id") or "")
+        else:
+            continue
+        raw = event_time(ev)
+        when = _parse_ts(raw) if raw else None
+        if not cid or when is None:
+            continue
+        if cid not in newest or when > newest[cid][0]:
+            newest[cid] = (when, raw)
+    return {cid: pair[1] for cid, pair in newest.items()}
+
+
+def _adjudicated_since(ev, evidence_at) -> bool:
+    """Was this row reopened or skipped at or after the evidence's own time?
+    A row with no such word is inert: the fence never invents a refusal. A
+    mark with no time at all (`evidence_at` None) cannot be shown to be newer
+    than the owner's word, so that word stands."""
+    raw = _commitment_field(ev, "adjudicated_at")
+    when = _parse_ts(raw) if raw else None
+    return when is not None and (evidence_at is None or when >= evidence_at)
+
+
 def load_open_commitments(
     events_jsonl_path: str | Path,
     since_ts=None,
@@ -1195,12 +1314,16 @@ def load_open_commitments(
         item's title/summary — each field independently, newest wins; the
         mis-extracted original stays in history. `change_summary` (the CRU
         schedule-shift prose) deliberately never folds into wording.
-      * REASSIGNMENT: the latest `commitment_reassigned` folds
-        new_owner_id / new_counterparty_id (+ display names when carried)
-        into the projected item. Unconfirmed reassignments stamp
-        `pending_review` (+ review_reason) so the item counts as unconfirmed
-        and never enters chase; a confirmed one (W4b Theirs→[name], or the
-        user naming the person) clears the flag.
+      * REASSIGNMENT: `commitment_reassigned` folds PER FIELD: the latest
+        event that names an owner sets the owner, the latest that names a
+        counterparty (or restores one) sets the counterparty (+ display names
+        when carried). A writer names only what it changes, so a reassignment
+        of the owner leaves an earlier counterparty standing, and the other
+        way round (cr1#766: a board reassign and an owner-named counterparty
+        no longer overwrite each other). The latest non-restore event decides
+        `pending_review`: unconfirmed stamps it (+ review_reason) so the item
+        counts as unconfirmed and never enters chase; a confirmed one (W4b
+        Theirs→[name], or the user naming the person) clears the flag.
 
     v4.6.1 W4b — the confirm-flow adjudication fold, same doctrine:
       * OWNER CONFIRM ("Mine"): a `commitment_updated` carrying
@@ -1328,6 +1451,7 @@ def load_open_commitments(
     # rolling private weaker ones. Do not re-inline it.
     from closure_index import build_closure_index, closer_target_id
     closure = build_closure_index(events)
+    adjudicated = _owner_adjudications(events)  # cr1#740: see the helper
     # commitment id → latest due-shifting update (Stage A fold; see docstring).
     due_updates: dict[str, dict] = {}
     hint_updates: dict[str, dict] = {}   # POLICY1-B DD-6
@@ -1336,7 +1460,9 @@ def load_open_commitments(
     # data.new_summary; each field folds independently, newest wins; the
     # original text stays in history — append-only, never rewritten).
     wording_updates: dict[str, dict] = {}
-    # commitment id → latest reassignment (v4.6.0 S4: commitment_reassigned
+    # commitment id → {"owner", "counterparty", "flag"}: the latest
+    # reassignment naming each field, and the latest one that decides the
+    # review flag (cr1#766; was one latest event wholesale) (v4.6.0 S4: commitment_reassigned
     # routes an item to a new owner/counterparty instead of discarding it;
     # an UNCONFIRMED reassignment stamps pending_review on the projection so
     # the item sits in the unconfirmed bucket and never enters chase — the
@@ -1631,8 +1757,10 @@ def load_open_commitments(
                 if isinstance(rnm, str) and rnm.strip():
                     received_names_by_seq.setdefault(sv, set()).add(rnm.strip())
         elif et == "commitment_reassigned":
-            # S4 reassignment fold: latest event wins wholesale (a second
-            # reassignment replaces the first, including its confirmed flag).
+            # S4 reassignment fold, PER FIELD (cr1#766): each field takes the
+            # latest event that names it; the review flag takes the latest
+            # event that is not a restore. A whole-event fold let a later
+            # owner change put an earlier counterparty back, and the reverse.
             target = (
                 d.get("commitment_id")
                 or d.get("target_id")
@@ -1643,7 +1771,7 @@ def load_open_commitments(
             restored = d.get("counterparty_restored") is True
             if target and (d.get("new_owner_id") or d.get("new_counterparty_id")
                            or (restored and d.get("counterparty_cleared") is True)):
-                reassignments[str(target)] = {
+                entry = {
                     "new_owner_id": d.get("new_owner_id"),
                     "new_counterparty_id": d.get("new_counterparty_id"),
                     "new_owner_name": d.get("new_owner_name"),
@@ -1651,9 +1779,23 @@ def load_open_commitments(
                     "confirmed": bool(d.get("confirmed")),
                     "restored": restored,
                     "cleared": d.get("counterparty_cleared") is True,
+                    # cr1#766: a write the board follow made with nobody
+                    # acting. It moves fields; it answers no one's question.
+                    "by_follow": str(d.get("reassigned_by") or "") == _ACTOR_MACHINE,
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
+                fold = reassignments.setdefault(str(target), {})
+                if d.get("new_owner_id") and not restored:
+                    fold["owner"] = entry
+                if d.get("new_counterparty_id") or restored:
+                    fold["counterparty"] = entry
+                if not restored:
+                    fold["flag"] = entry
+                elif fold.get("flag") and not fold["flag"].get("new_owner_id"):
+                    # A restore reverses a counterparty change; the flag that
+                    # change raised goes with it, as the whole-event fold did.
+                    del fold["flag"]
         elif et == "commitment":
             cid_ev = _commitment_id(ev)
             commitment_by_id[cid_ev] = ev
@@ -1739,6 +1881,8 @@ def load_open_commitments(
             patch["id_twin_seqs"] = [s for s in twins
                                      if isinstance(s, int)
                                      and not isinstance(s, bool)]
+        if adjudicated.get(cid):
+            patch["adjudicated_at"] = adjudicated[cid]
         upd = due_updates.get(cid)
         if upd:
             # In-memory copy with the EFFECTIVE due — data.due is first in
@@ -1775,16 +1919,21 @@ def load_open_commitments(
         # chain, so the patch wins over legacy owner / owner_person_id
         # spellings.
         adjudications = []
-        ra = reassignments.get(cid)
-        if ra:
-            adjudications.append(("reassign", ra))
+        ra = reassignments.get(cid) or {}
+        for part in ("owner", "counterparty", "flag"):
+            if ra.get(part):
+                adjudications.append(("reassign_" + part, ra[part]))
         cf = confirmations.get(cid)
         if cf:
             adjudications.append(("confirm", cf))
         fs = review_flag_sets.get(cid)
         if fs:
             adjudications.append(("flagset", fs))
+        # Ties (one event naming several fields) keep the order above.
         adjudications.sort(key=lambda pair: pair[1]["idx"])
+        # cr1#766: an owner someone only guessed stays a question until an
+        # owner is confirmed, whatever a later counterparty change says.
+        owner_guessed = False
         for kind, entry in adjudications:
             if kind == "flagset":
                 # AUTOAPPLY §4c review fix: the auto tier could not honor a
@@ -1799,7 +1948,7 @@ def load_open_commitments(
                 if entry.get("score") is not None:
                     patch["suspected_duplicate_score"] = entry["score"]
                 patch["review_flagged_by_seq"] = entry["seq"]
-            elif kind == "reassign" and entry.get("restored"):
+            elif kind == "reassign_counterparty" and entry.get("restored"):
                 # POLICY1-B F-9 — a restore puts the COUNTERPARTY back (to a
                 # person, or to none) and touches nothing else: no pending
                 # flag, no question — those are other reversers' to restore,
@@ -1812,7 +1961,23 @@ def load_open_commitments(
                     patch["counterparty_id"] = entry.get("new_counterparty_id")
                     patch["counterparty_name"] = entry.get("new_counterparty_name")
                 patch["reassigned_by_seq"] = entry["seq"]
-            elif kind == "reassign":
+            elif kind == "reassign_owner":
+                owner_guessed = not entry["confirmed"]
+                if owner_guessed:
+                    # Stamped here as well as by the flag entry: a restore can
+                    # retire the flag entry, never the guess.
+                    patch["pending_review"] = True
+                    patch["review_reason"] = _REASSIGN_REVIEW_REASON
+                patch["owner_id"] = entry["new_owner_id"]
+                if entry.get("new_owner_name"):
+                    patch["owner_name"] = entry["new_owner_name"]
+                patch["reassigned_by_seq"] = entry["seq"]
+            elif kind == "reassign_counterparty":
+                patch["counterparty_id"] = entry["new_counterparty_id"]
+                if entry.get("new_counterparty_name"):
+                    patch["counterparty_name"] = entry["new_counterparty_name"]
+                patch["reassigned_by_seq"] = entry["seq"]
+            elif kind == "reassign_flag":
                 # An UNCONFIRMED reassignment stamps pending_review (the item
                 # sits in the unconfirmed bucket and never enters chase — no
                 # auto-email on a guessed owner); a confirmed one clears it
@@ -1824,22 +1989,17 @@ def load_open_commitments(
                 if (c.get("data") or {}).get("question"):
                     patch["question"] = None
                     patch["question_by"] = None
-                if entry.get("new_owner_id"):
-                    patch["owner_id"] = entry["new_owner_id"]
-                    if entry.get("new_owner_name"):
-                        patch["owner_name"] = entry["new_owner_name"]
-                if entry.get("new_counterparty_id"):
-                    patch["counterparty_id"] = entry["new_counterparty_id"]
-                    if entry.get("new_counterparty_name"):
-                        patch["counterparty_name"] = entry["new_counterparty_name"]
                 patch["reassigned_by_seq"] = entry["seq"]
-                if entry["confirmed"]:
-                    patch["pending_review"] = False
+                if entry["confirmed"] and not owner_guessed:
+                    if not entry.get("by_follow") or (
+                            patch.get("review_reason") == _REASSIGN_REVIEW_REASON):
+                        patch["pending_review"] = False
+                    # else: the board moved a field, and a question someone
+                    # else raised on this row (a suspected duplicate, a
+                    # capture to confirm) is still the owner's to answer.
                 else:
                     patch["pending_review"] = True
-                    patch["review_reason"] = (
-                        "reassigned — confirm the new owner before this is chased"
-                    )
+                    patch["review_reason"] = _REASSIGN_REVIEW_REASON
             elif entry.get("question_cleared"):
                 # DISOWNUNDO1 (cr1#162): the question is withdrawn; the owner
                 # is whatever the raw capture carries (none, for the item
@@ -1848,6 +2008,7 @@ def load_open_commitments(
                 patch["question_by"] = None
                 patch["question_seq"] = None
             elif entry.get("disown"):
+                owner_guessed = False
                 # PLATE1 P3 — `not mine`: the owner is CLEARED (not routed),
                 # and the open question rides the projection with its
                 # provenance. pending_review is untouched: the item is not an
@@ -1859,6 +2020,7 @@ def load_open_commitments(
                 patch["question_by"] = entry.get("question_by")
                 patch["question_seq"] = entry["seq"]
             else:
+                owner_guessed = False  # the owner's own answer settles it
                 # W4b Mine / Keep both: the explicit user click IS the
                 # adjudication — pending_review clears, review_reason drops;
                 # Keep both additionally clears the C4 duplicate flags
@@ -2864,6 +3026,7 @@ def match_send_to_commitments(
     # FIRE, which is a different question: a commitment captured before the
     # fire but AFTER the message sails past it. `None` → inert.
     evidence_at = _normalize_fire_start(send_ts, "send_ts")
+    _promise_tz = promise_tz(workspace_root)  # cr1#744: once per pass
 
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         # Layer 1 — a send can never corroborate a conclusion about an item
@@ -2872,9 +3035,14 @@ def match_send_to_commitments(
         if own_ref and commitment_matches_source_ref(ev, own_ref):
             continue
         # Layer 2 — same-fire captures share one extraction context, so they
-        # are one source. An unparseable capture ts fails SAFE (excluded).
+        # are one source. An unparseable capture ts fails SAFE (excluded). The
+        # promise's own time decides (`promise_time_raw`): a task row came off
+        # its board, not out of this fire's reading, so its item's own day
+        # counts (cr1#752), and a meeting row captured late stands at the end
+        # of its meeting's local day (cr1#744). Neither is a sibling of this
+        # mail.
         if fire_start is not None:
-            captured = _parse_ts(event_time(ev))
+            captured = _parse_ts(promise_time_raw(ev, _promise_tz))
             if captured is None or captured >= fire_start:
                 continue
         if _commitment_field(ev, "owner_id") != sender_person_id:
@@ -2950,7 +3118,7 @@ def match_send_to_commitments(
         #     tests assert the ts-less item still closes.
         #   * capture time PRESENT but unparseable → exclude, mirroring layer 2.
         if evidence_at is not None:
-            _raw_captured = event_time(ev)
+            _raw_captured = promise_time_raw(ev, _promise_tz)  # cr1#744: the promise's own time
             if _raw_captured:
                 captured = _parse_ts(_raw_captured)
                 if captured is None or captured > evidence_at:
@@ -2958,6 +3126,11 @@ def match_send_to_commitments(
                         diagnostics["stale_evidence_dropped"] = (
                             diagnostics.get("stale_evidence_dropped", 0) + 1)
                     continue
+            if _adjudicated_since(ev, evidence_at):  # cr1#740: already answered
+                if isinstance(diagnostics, dict):
+                    diagnostics["stale_evidence_dropped"] = (
+                        diagnostics.get("stale_evidence_dropped", 0) + 1)
+                continue
         score = score_match(query, title)
         if score >= _hi:
             rec = "auto_resolve"
@@ -3226,6 +3399,7 @@ def match_transcript_to_commitments(
     # inert; present-but-junk → fails SAFE and LOUD (warns on stderr naming
     # `transcript_ts`, then excludes every candidate).
     evidence_at = _normalize_fire_start(transcript_ts, "transcript_ts")
+    _promise_tz = promise_tz(workspace_root)  # cr1#744: once per pass
 
     results: list[dict] = []
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
@@ -3246,9 +3420,11 @@ def match_transcript_to_commitments(
         # §6 layer 2 — same-fire siblings share one extraction context, so
         # they are one source. An unparseable capture ts fails SAFE (the item
         # is excluded): a candidate whose age we cannot establish must not be
-        # treated as independent evidence.
+        # treated as independent evidence. Age is the promise's own time
+        # (`promise_time_raw`: a task's board day, cr1#752; a late meeting
+        # row's end of local day, cr1#744).
         if fire_start is not None:
-            captured = _parse_ts(event_time(ev))
+            captured = _parse_ts(promise_time_raw(ev, _promise_tz))
             if captured is None or captured >= fire_start:
                 continue
         owner_id = _commitment_field(ev, "owner_id") or ""
@@ -3288,7 +3464,7 @@ def match_transcript_to_commitments(
         #     stop closing every ts-less item — far wider than the bug.
         #   * capture time PRESENT but unparseable → exclude, mirroring layer 2.
         if evidence_at is not None:
-            _raw_captured = event_time(ev)
+            _raw_captured = promise_time_raw(ev, _promise_tz)  # cr1#744: the promise's own time
             if _raw_captured:
                 captured = _parse_ts(_raw_captured)
                 if captured is None or captured > evidence_at:
@@ -3726,6 +3902,7 @@ def match_inbound_to_commitments(
     fire_start = _normalize_fire_start(exclude_captured_since)
     # EVORDER — the REPLY's own time; see the Path 1 twin. `None` → inert.
     evidence_at = _normalize_fire_start(inbound_ts, "inbound_ts")
+    _promise_tz = promise_tz(workspace_root)  # cr1#744: once per pass
 
     results: list[dict] = []
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
@@ -3735,9 +3912,11 @@ def match_inbound_to_commitments(
         if own_ref and commitment_matches_source_ref(ev, own_ref):
             continue
         # Layer 2 — same-fire captures share one extraction context, so they are
-        # one source. An unparseable capture ts fails SAFE (excluded).
+        # one source. An unparseable capture ts fails SAFE (excluded). Age is
+        # the promise's own time (`promise_time_raw`: a task's board day,
+        # cr1#752; a late meeting row's end of local day, cr1#744).
         if fire_start is not None:
-            captured = _parse_ts(event_time(ev))
+            captured = _parse_ts(promise_time_raw(ev, _promise_tz))
             if captured is None or captured >= fire_start:
                 continue
         owner_id = _commitment_field(ev, "owner_id") or ""
@@ -3755,7 +3934,7 @@ def match_inbound_to_commitments(
         # Absent capture time → inert, not excluded; see the Path 1 twin for the
         # full reasoning and the 683/683 measurement behind it.
         if evidence_at is not None:
-            _raw_captured = event_time(ev)
+            _raw_captured = promise_time_raw(ev, _promise_tz)  # cr1#744: the promise's own time
             if _raw_captured:
                 captured = _parse_ts(_raw_captured)
                 if captured is None or captured > evidence_at:
@@ -3763,6 +3942,11 @@ def match_inbound_to_commitments(
                         diagnostics["stale_evidence_dropped"] = (
                             diagnostics.get("stale_evidence_dropped", 0) + 1)
                     continue
+            if _adjudicated_since(ev, evidence_at):  # cr1#740: already answered
+                if isinstance(diagnostics, dict):
+                    diagnostics["stale_evidence_dropped"] = (
+                        diagnostics.get("stale_evidence_dropped", 0) + 1)
+                continue
         title = _commitment_field(ev, "title") or ""
         score = score_match(query, title)
 
@@ -3975,6 +4159,7 @@ def match_calendar_to_commitments(
         return []
 
     results: list[dict] = []
+    _promise_tz = promise_tz(workspace_root)  # cr1#744: once per pass
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         if _commitment_field(ev, "owner_id") != user_person_id:
             continue
@@ -3983,7 +4168,7 @@ def match_calendar_to_commitments(
             continue
         title = _commitment_field(ev, "title") or ""
         has_sched = detect_scheduling_intent(title)
-        commit_ts = event_time(ev)
+        commit_ts = promise_time_raw(ev, _promise_tz)
 
         best: Optional[dict] = None
         best_score = -1.0

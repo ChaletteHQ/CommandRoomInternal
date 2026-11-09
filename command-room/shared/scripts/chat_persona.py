@@ -282,6 +282,62 @@ def build_style_changed_event(
             "data": data}
 
 
+# ---------------------------------------------------------------------------
+# Reset (cr1#850, split from #249): the ONE path that puts the persona back
+# ---------------------------------------------------------------------------
+
+#: What the owner hears. The sentence names exactly the knobs that moved
+#: back and nothing else: the 2026-11-03 run of #249 rewrote the persona
+#: through the save path after asking and then said the reset "only covered
+#: three settings", a claim read off the settings list in the workspace
+#: instructions rather than off what was written.
+RESET_LINE = "Your chat persona is back to the defaults: {knobs}. Nothing else changed."
+RESET_LINE_ALREADY = ("Your chat persona is already at the defaults; nothing "
+                      "changed.")
+
+
+def reset_chat_persona(workspace_root, *, source_skill: str = "workspace-manager",
+                       events_jsonl_path=None) -> Dict[str, Any]:
+    """Put the persona back to DEFAULT_CHAT_PERSONA: clear the saved store
+    (never a save of defaults through `save_skill_config`, which would leave
+    a configured store that renders a persona block) and append ONE
+    `style_changed` row naming each knob that moved, origin `asked`.
+
+    Returns `{status, line, changes}`; `status` is `reset` or
+    `already_default`. Writes nothing on `already_default`. A store that
+    carries only invalid or unknown keys counts as default: `get_chat_persona`
+    never read it, so nothing the owner hears changes.
+    """
+    from skill_config_writer import wipe_skill_config_result
+
+    saved = _load_saved(workspace_root) or {}
+    current = get_chat_persona(workspace_root)
+    changes = [{"knob": knob, "from": current[knob], "to": DEFAULT_CHAT_PERSONA[knob]}
+               for knob in DEFAULT_CHAT_PERSONA
+               if current[knob] != DEFAULT_CHAT_PERSONA[knob]]
+    if not changes and not any(k in DEFAULT_CHAT_PERSONA for k in saved):
+        return {"status": "already_default", "line": RESET_LINE_ALREADY, "changes": []}
+    wiped = wipe_skill_config_result(workspace_root, "chat_persona")
+    if wiped.get("existed") and not wiped.get("cleared"):
+        return {"status": "not_cleared", "changes": changes,
+                "line": ("Your chat persona could not be reset: the saved settings "
+                         "are still in place. Nothing changed.")}
+    if not changes:
+        # The store existed but every value already equalled a default.
+        return {"status": "already_default", "line": RESET_LINE_ALREADY, "changes": []}
+    from event_gate import append_event
+
+    path = (Path(str(events_jsonl_path)) if events_jsonl_path
+            else Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl")
+    append_event(path, [build_style_changed_event(
+        layer="chat_persona", origin="asked", changes=changes,
+        source_skill=source_skill, evidence="reset to defaults")],
+        holder=source_skill)
+    knobs = ", ".join(c["knob"].replace("_", " ") for c in changes)
+    return {"status": "reset", "changes": changes,
+            "line": RESET_LINE.format(knobs=knobs)}
+
+
 __all__ = [
     "DEFAULT_CHAT_PERSONA",
     "PERSONA_LINE_BUDGET",
@@ -290,4 +346,7 @@ __all__ = [
     "validate_chat_persona",
     "persona_lines",
     "build_style_changed_event",
+    "reset_chat_persona",
+    "RESET_LINE",
+    "RESET_LINE_ALREADY",
 ]

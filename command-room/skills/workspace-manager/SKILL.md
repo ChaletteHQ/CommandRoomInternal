@@ -1,7 +1,7 @@
 ---
 name: workspace-manager
 surfaces: both
-description: "Catch-all. Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', style: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about', 'next week is about'), no name needed. Does NOT own 'list projects' / 'roster' (list-active)."
+description: "Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', style: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'revive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about', 'next week is about'), no name needed. Not 'list projects' / 'roster' (list-active)."
 ---
 
 **Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="workspace-manager")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost. On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}` (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "workspace-manager"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`, paste what it prints and run that; the envelope's `result` is the answer described above.
@@ -172,9 +172,12 @@ The one knob for interaction posture (`commitment-policy.preset`: `engaged` / `l
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -249,9 +252,12 @@ So the phrases are registered in CODE, the way `render_router_misses.CHAT_PHRASE
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -326,9 +332,12 @@ The one switch for the transcript closing-on-evidence pass (`commitment-policy.a
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -402,9 +411,12 @@ The one switch for the question-expiry engine (`commitment-policy.questions.expi
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -478,9 +490,12 @@ Two switches, both default ON, both failing to ON. They gate the identity acts t
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -637,9 +652,12 @@ Two switches, both default ON, both failing to ON. They gate the two ways an ite
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -714,9 +732,12 @@ One switch, default ON, failing to ON. It gates whether repeated corrections tur
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -822,6 +843,18 @@ turn lands here, the ONLY legal write is the one described in this section.
   this spec exists to stop.
 - **"tune my documents"** → alias of "tune output" above (same store, same flow); on save, also
   append the `style_changed` event (layer `output_profile`, origin `asked`).
+- **"reset my persona" / "reset chat persona to defaults" / "reset my style to defaults" / "reset how you talk to me"** (cr1#850) → ONE
+  `plan run_writer` naming `chat_persona:reset_chat_persona` with `{"workspace_root": "<WS>"}`, then
+  `python3 shared/scripts/render_claude_md.py <workspace_root>` so the persona block leaves the
+  hot cache, then say the writer's `line` verbatim: it names exactly the knobs that moved back
+  ("Your chat persona is back to the defaults: brevity, formality. Nothing else changed.") or that
+  the persona was already at the defaults. NEVER `save_skill_config` the defaults (that leaves a
+  configured store rendering a persona block), never `reset_skill_config` (the owner's stores are
+  refused there by design), and the reply is the writer's line, never a list of settings: the
+  2026-11-03 run of #249 rewrote the persona through the save path after asking and then told the
+  owner the reset "only covered three settings", a sentence read off the settings list in the
+  workspace instructions rather than off what was written. No confirm question: a reset is the
+  owner's own word, and the store is theirs.
 - **"recalibrate my style"** (optional window: "from the last 2 weeks") → the standalone
   re-inference surface, NEVER part of onboarding. Assemble fresh signals the same way onboarding's
   style beat does (sent-mail mechanics through the declared-backend seam, spoken-turn asks from
@@ -1415,9 +1448,12 @@ All findings written to events.jsonl as `interaction` / `meeting` / `note` / `fi
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1485,9 +1521,12 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1556,9 +1595,12 @@ The renderer self-gates and self-limits — read its JSON result, never work aro
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1673,9 +1715,12 @@ This skill's description is frozen at its budget cap, so there is NO dedicated q
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1762,9 +1807,12 @@ The three bare stems — `tomorrow is about`, `today is about`, `next week is ab
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1874,9 +1922,12 @@ On a bare `undo` / "undo that" / "reverse that" with no batch in context — and
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -2067,9 +2118,12 @@ Same shape as `new vendor` but with `relationship_type: prospect` defaulted. Use
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -2160,9 +2214,12 @@ Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -2433,14 +2490,26 @@ An archive is a **typed substrate write**, not a tracker edit. MASTER_TRACKER.md
 4. **Idempotent — an already-archived project is an honest no-op.** `res["status"] == "already_archived"` means nothing was written (no second `status_change`); say so instead of pretending: "That one's already archived — [date], '[reason]'." A `ThreadArchiveError` means the id didn't match; surface it, don't archive something adjacent.
 5. **Confirm in plain language** using `res` — the name, that it's archived, and the reason on file. If `res["view_error"]` is set the substrate write still landed; say the tracker will catch up on the next refresh rather than claiming the archive failed.
 
-**Almost nothing archives itself, and the one thing that does is bounded, narrated and reversible (SPEC LIFECYCLE1, 2026-08-02).** There is no decay timer and no staleness rule that can archive a project straight out of `active` — that has never existed and still does not. The single automatic path is the weekly `lifecycle` maintenance job (`shared/scripts/lifecycle_pass.py`), and it archives a thread only after the whole ladder below has been climbed:
+**Nothing archives itself: archiving is a visible step, every time (ruling F2 of 2026-11-04, cr1#845; SPEC LIFECYCLE1, 2026-08-02, amended).** There is no decay timer and no staleness rule that can archive a project straight out of `active` — that has never existed and still does not. The weekly `lifecycle` maintenance job (`shared/scripts/lifecycle_pass.py`) climbs the ladder below, and its last rung is a QUESTION, never an archive:
 
 1. the project goes quiet past 30 days and the job ASKS — a dormancy question on the on-demand `stalled projects` surface, carrying `active` / `archive` / `snooze 14d`;
 2. that question is left unanswered until its 30-day life runs out (an ANSWER of any kind stops the ladder here — the CEO's decision stands, and a declined question also holds a 60-day cooldown);
 3. only then, and only while that silence is still recent, the project moves `active` → `dormant`;
-4. a further 180 days of quiet ON TOP of that moves `dormant` → `archived`, through `thread_archive.archive_thread` — the same typed write your own `archive [project]` runs, so the record, the `archived_at` stamp and the canonical `status_change` all land exactly as they do for a human archive.
+4. a further 180 days of quiet ON TOP of that puts the ARCHIVE question to the CEO, on the same `stalled projects` surface, carrying `archive` / `active` / `snooze 14d`; only the CEO's `archive` answer (or their own `archive [project]`) archives, through `thread_archive.archive_thread`, the one typed write, so the record, the `archived_at` stamp and the canonical `status_change` land the same way every time. The dormant flip stays automatic; the archive never is.
 
-Every step is narrated in the change feed, capped per fire, and reversible: new activity on a dormant or archived thread revives it to `active` at the next weekly pass (and clears the archive stamps with it). What is still true, and is the sentence that matters: **nothing archives a project the CEO was never asked about.**
+Every step is narrated in the change feed, capped per fire, and reversible: new activity on a dormant thread revives it to `active` at the next daily or weekly pass. An archived thread stays archived whatever moves on it: the movement raises one question, whose yes brings the project back and whose decline silences further notices for it (cr1#753). What is still true, and is the sentence that matters: **nothing archives a project the CEO was never asked about, and nothing archives one the CEO did not say yes to.**
+
+### "revive [project]" / "bring [project] back"
+
+The owner's word bringing a dormant or archived project back to `active`. A typed substrate write, the mirror of `archive [project]`; never a tracker edit.
+
+1. **Resolve the name to one thread id**, as `archive [project]` does. Two matches: ask which.
+2. **Write it through the one path**, `plan run_writer` naming `lifecycle_pass:bring_back`:
+   ```bash
+   cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "lifecycle_pass:bring_back", "args": {"workspace_root": "<WS>", "thread_id": "<the thread id>", "actor": "<owner person id>", "source_skill": "workspace-manager"}}'
+   ```
+   `res` below is the envelope's `result`. In one call it sets the status, clears an archived project's archive stamps through `thread_archive.clear_archive_stamps`, appends the `status_change`, and answers any question standing on the project.
+3. **Say what happened**, from `res["status"]`: `updated` (name it, and whether it was dormant or archived, from `res["from_status"]`); `noop` (it is neither dormant nor archived, so nothing was written; give its status); `not_found` (say the id did not match; revive nothing adjacent).
 
 ### "deep clean" / "maintenance" / "clean up my workspace"
 
@@ -2604,17 +2673,50 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
 
 ---
 
-### Personal ties + Balance config (SPEC BAL1 — mirrors "set my timezone")
+### Personal ties + personal calendar config (SPEC BAL1 — mirrors "set my timezone"; the Balance skill is retired, cr1#552)
 
 **Trigger phrases:** `[name] is my wife/husband/partner/mom/dad/brother/sister/kid` (any explicit family/personal relationship statement), `mark [name] as personal`, `set date-night cadence to [N days/weeks]`, `set [name]'s cadence to [N days/weeks]`, `add my personal calendar [id]`, `set my evening start to [time]`.
 
 **Behavior:**
 
-1. **Tie statements** — ENTITY_RESOLVE the name (Gate 1; ambiguous → disambiguation widget, never a first-pick), then `people_writer.update_person(workspace_root, <person_id>, source_skill='workspace-manager', tie='personal', role=<the stated relationship>)`. Never a raw entities.json edit; never inferred from a transcript — explicit user statement only. Effect (say it in plain English): the person moves to the private Balance lane and stops appearing in any work-outreach or reporting surface.
-2. **Cadence statements** — resolve the person (or default to the spouse-tie for "date-night cadence" when exactly one `tie: "personal"` record has a spouse-shaped role; ambiguous → ask), convert weeks→days, then `update_person(..., cadence_days=<N>)`. `cadence_days` is the Balance re-surface interval ONLY — never write `cadence_override_days` for this (that field is Pulse's work-dormancy suppression knob; the two are opposites, BAL1 D1(b)).
-3. **Calendar/evening config** — write through the canonical helper, never a raw entities.json edit and never a hand-appended event: `workspace_settings.set_workspace_settings(workspace_root, {"personal_calendars": <merged list — append the id, keep existing>, "evening_start": ..., "evening_end": ..., "min_block_hours": ...}, source_skill="workspace-manager")`. It persists the `workspace` keys atomically AND emits the `workspace_setting_changed` receipt (one per changed key, the timezone-handler shape) in the same call — the config write can never land without its receipt (FB-plumbing item 4). Confirm: *"Done — Balance can now see [calendar]. Say `balance check` any time and it uses it."* **Never offer `add balance` (SPEC TASKRET1, 2026-08-17):** the Sunday chat is READINESS-retired, so that phrase now routes to a warm refusal rather than a registration. Connecting a calendar still improves the answer — it simply no longer turns on a weekly fire.
+1. **Tie statements** — ENTITY_RESOLVE the name (Gate 1; ambiguous → disambiguation widget, never a first-pick), then `people_writer.update_person(workspace_root, <person_id>, source_skill='workspace-manager', tie='personal', role=<the stated relationship>)`. Never a raw entities.json edit; never inferred from a transcript — explicit user statement only. Effect (say it in plain English): the person moves to the private personal lane and stops appearing in any work-outreach or reporting surface.
+2. **Cadence statements** — resolve the person (or default to the spouse-tie for "date-night cadence" when exactly one `tie: "personal"` record has a spouse-shaped role; ambiguous → ask), convert weeks→days, then `update_person(..., cadence_days=<N>)`. `cadence_days` is the personal tie's own interval ONLY — never write `cadence_override_days` for this (that field is Pulse's work-dormancy suppression knob; the two are opposites, BAL1 D1(b)).
+3. **Calendar/evening config** — write through the canonical helper, never a raw entities.json edit and never a hand-appended event: `workspace_settings.set_workspace_settings(workspace_root, {"personal_calendars": <merged list — append the id, keep existing>, "evening_start": ..., "evening_end": ..., "min_block_hours": ...}, source_skill="workspace-manager")`. It persists the `workspace` keys atomically AND emits the `workspace_setting_changed` receipt (one per changed key, the timezone-handler shape) in the same call — the config write can never land without its receipt (FB-plumbing item 4). Confirm: *"Done — [calendar] is on your personal calendars."* **Never offer `add balance` (SPEC TASKRET1, 2026-08-17) and never promise a Balance surface (cr1#552):** the Sunday chat was READINESS-retired and the on-demand skill retired with it on 2026-11-06, so `balance check` hears the retired line below. The settings stay the customer's data; nothing reads them for a nudge today.
 
-**Forbidden:** setting `tie` from inference; writing `relationship_type` on a person (forbidden field); touching dormancy's `cadence_override_days` from any Balance-shaped phrase; registering the balance task from here — or from anywhere, since TASKRET1 retired it (the personal-tie and cadence writes above are untouched by that retirement and stay exactly as specified: they are the customer's data, and the on-demand surface reads them).
+**Forbidden:** setting `tie` from inference; writing `relationship_type` on a person (forbidden field); touching dormancy's `cadence_override_days` from any personal-tie phrase; registering the balance task from here — or from anywhere, since TASKRET1 retired it (the personal-tie and cadence writes above are untouched by that retirement and by the skill's retirement: they are the customer's data).
+
+---
+
+### Retired phrases: Balance and the board pack (cr1#552)
+
+Two skills were retired on the owner's ruling of 2026-11-06 and their folders
+are gone: `balance` and `board-pack-assembler`. Their phrases still get an
+answer, ONE sentence each, verbatim from `retired_skill_lines` (the
+`level-up-command-room` shape): nothing is computed, read or written, no
+workaround is offered, and the turn ends there.
+
+- Any Balance phrase (`balance check`, `how's my white space`, `my white
+  space`, `am I making time for family`, `plan a date night`, `tune balance`,
+  `show balance settings`, `reset balance to defaults`) →
+  `retired_skill_lines.BALANCE_RETIRED`:
+
+> *"Balance is retired. Say `who should I reach out to` for the people worth a note this week, or `remind me about [thing] on [day]` to keep a personal evening in view."*
+
+- Any board-pack phrase (`build the board pack`, `assemble the board pack`,
+  `prep the board pack`, `board pack for [date]`, `board package`, `build
+  board deck`, `generate this month's board update`, and the tune and
+  customize families `tune board-pack-assembler`, `tune the board pack`,
+  `show board-pack-assembler settings`, `reset board-pack-assembler to
+  defaults`, `customize board-pack-assembler`, `customize board pack`, `show
+  board-pack-assembler customizations`, `reset board-pack-assembler
+  customizations`) → `retired_skill_lines.BOARD_PACK_RETIRED`:
+
+> *"The board pack is retired. Say `board update` for a board memo in your voice, or `one-pager on [topic]` for a one-page brief."*
+
+A `board update` is memo-writer's; a `one-pager` is one-pager-composer's;
+`prep me for the board meeting` stays call-prep's. The shared board-pack
+renderers (`brief_writer`, `deck_writer`, `scorecard`) are untouched library
+code and nothing here calls them.
 
 ---
 
@@ -2889,7 +2991,7 @@ anyone else to.
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'new prospect', 'new vendor', 'new org', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'board pack', 'build the board pack', 'assemble the board pack' (board-pack-assembler). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
+> Master workspace orchestrator and catch-all thinking partner. Fires on lifecycle commands — 'let's work', 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'new project' (any phrasing), 'new client', 'new prospect', 'new vendor', 'new org', 'is now a client', 'is a client now', 'now a client', 'promote to client', 'convert to client', 'new exploring', 'archive', 'quick task', 'log a commitment', 'confirm [name] on [project]', 'backfill [N] months on [project]', 'refresh my project list', 'rebuild views', 'timezone to' (set/change, any phrasing), 'first go to', 'first-go default', 'name my AI', 'ai name to', 'name my chief of staff', 'skip naming my AI', 'customize command room' (the no-skill customization form — Layer 4 menu of adopting skills, in the body), 'go', 'go [name]', 'go [org] all', 'go [org] rollup' (fuzzy navigation — rules in the body) — AND on vocative addressing by the workspace brain name (wake-word strips off, remainder re-routes; detection lives in the body's MUST-language gate, not in trigger phrases; renamed AIs fire on the custom name) — AND on loose input naming a tracked project/person/org with no clean specialist trigger ('pull up', 'status on', 'catch me up'). Default handler when no specialist matches. DOES NOT fire on 'help' alone (conversational fallback). DOES NOT fire on 'list projects', 'show me projects', 'roster', 'review my projects' (list-active). DOES NOT fire on 'project proposals', 'review project proposals' (insight-generator). DOES NOT fire on 'draft an email', 'email to', 'write an email' (email-writer). DOES NOT fire on 'decision memo', 'tradeoff analysis', 'help me decide between' (decision-memo-composer). DOES NOT fire on 'prep me for the board meeting', 'prep call' (call-prep). DOES NOT fire on 'deep clean', 'maintenance', 'clean up my workspace' (cleanup). DOES NOT fire on 'go through' (inbox-triage), 'go wrong' (stress-test), 'go with' (decision-log — 'we're going with X' logs the decision): ordinary verb uses of go, not navigation.
 
 > Also owns the fire-delivery setting (IDENT1 I-12 (8)) — use when the CEO says 'publish my scheduled pages' or 'stop publishing my scheduled pages'.
 
@@ -2909,7 +3011,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Also owns the two exit switches (SPEC_FLOW1 Lane B / EXIT1, 2026-09-07 — switches, not skill names) — use when the CEO says 'turn on closing when I say it is done', 'turn off closing when I say it is done', 'start closing when I say it is done', 'stop closing when I say it is done', 'turn on parking items nobody touches', 'turn off parking items nobody touches', 'start parking items nobody touches', 'stop parking items nobody touches'. These are NOT the closing-on-evidence switch above — that one governs what a MEETING TRANSCRIPT may close and stays off; this skill owns both. DOES NOT fire on 'triage my commitments' (commitment-triage) or 'clean up my commitments' (commitment-backlog-sweep).
 > Also owns the question-expiry switch (SPEC_FLOW1 Lane G / TTL1 — one switch, not a skill name) — use when the CEO says 'turn on answering old questions for me', 'turn off answering old questions for me', 'start answering old questions for me', 'stop answering old questions for me'. DOES NOT fire on 'needs your call' (needs-your-call — the queue of questions itself). DOES NOT fire on 'triage my commitments' (commitment-triage — the plate). It is a DIFFERENT switch from this skill's own interaction-posture ladder above, which sets how MANY questions a week rather than what happens to one nobody answers.
 
-> Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'talk to me differently', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks' — AND on an in-passing style correction with no verb at all: 'never open with pleasantries', 'never open with...', 'stop saying...', 'stop saying [phrase]', 'change your tone', 'change your style', 'that's too formal' / 'that's too long' / 'shorter next time' said about how THIS assistant talks (SPEC STYLEROUTE1 — routing is frontmatter-driven; these are front-loaded in the description, not body-only). Machine-matchable stems for the mechanical matcher: 'how do you talk to me', 'talk to me differently', 'never open with', 'stop saying', 'change your tone', 'change your style'. Every shape below writes ONLY to the chat_persona/output_profile store via skill_config_writer + event_gate.append_event('style_changed') — NEVER a CLAUDE.md edit, not even a throwaway one-line addition to Working style or Session Rules; see the Style section in the body for the full contract and the D5 bounds it must never cross. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
+> Also owns the style layer (SPEC STYLE1) — use when the CEO says 'show my style', 'how do you talk to me', 'talk to me differently', 'tune my style', 'tune how [BrainName] talks' (any AI name), 'tune my documents', 'recalibrate my style', 'recalibrate how [BrainName] talks', 'reset my persona', 'reset chat persona', 'reset chat persona to defaults', 'reset my style to defaults', 'reset how you talk to me' (cr1#850, the one reset path) — AND on an in-passing style correction with no verb at all: 'never open with pleasantries', 'never open with...', 'stop saying...', 'stop saying [phrase]', 'change your tone', 'change your style', 'that's too formal' / 'that's too long' / 'shorter next time' said about how THIS assistant talks (SPEC STYLEROUTE1 — routing is frontmatter-driven; these are front-loaded in the description, not body-only). Machine-matchable stems for the mechanical matcher: 'how do you talk to me', 'talk to me differently', 'never open with', 'stop saying', 'change your tone', 'change your style'. Every shape below writes ONLY to the chat_persona/output_profile store via skill_config_writer + event_gate.append_event('style_changed') — NEVER a CLAUDE.md edit, not even a throwaway one-line addition to Working style or Session Rules; see the Style section in the body for the full contract and the D5 bounds it must never cross. DOES NOT fire on 'voice calibration' / 'calibrate my voice' (the outbound-drafting voice — email-writer's calibration lane, untouched by STYLE1). DOES NOT fire on 'tune [skill-name]' (per-skill FRP1).
 
 > Deal fences (SPEC PIPE1 — one per line):
 > DOES NOT fire on 'new deal' (pipeline-tracker — a deal thread on an existing org; the new-project MUST-gate carves it out).
@@ -2925,6 +3027,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 > Also owns the routing-correction verb (SPEC ROUTEMISS1 — body-only; the description is frozen at its budget cap and the runtime router reaches these through the catch-all): 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]' — the remainder is re-dispatched as the request and a `router_miss` is logged only when the fences in the body's "Routing corrections" section hold. Machine-matchable stems for the mechanical matcher: 'wrong skill', 'you routed that wrong', 'that should have been'. The redirect shape `no, I meant [X]` is recognised by the handler (`router_miss.split_correction`) but is NOT a stem here or anywhere — `no I meant prep me for my 2pm` belongs to call-prep, and a positive stem would collide with every such remainder. DOES NOT fire on a voice or wording correction after a draft (`no, I meant 'regards'` — the drafting skill's correction lane) or on the answer to a disambiguation question (`no, I meant the other [org]`).
 
 > Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A, D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements (a note-that phrasing whose name resolves to an ORG, e.g. a Series A announcement about Acme Co) route here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a [amount] account', 'is a [amount]/yr account'. Money is confirm-only through org_writer.set_org_money: never estimated, never auto. Behavior in the body's "Org money & facts" section.
+> Also answers the phrases of two retired skills with one sentence each (cr1#552, the owner's ruling 2026-11-06; body section "Retired phrases"): Balance: 'balance check', "how's my white space", 'my white space', 'am I making time for family', 'plan a date night', 'tune balance', 'show balance settings', 'reset balance to defaults'; the board pack: 'build the board pack', 'assemble the board pack', 'prep the board pack', 'board pack for', 'board package', 'build board deck', "generate this month's board update", 'tune board-pack-assembler', 'tune the board pack', 'show board-pack-assembler settings', 'reset board-pack-assembler to defaults', 'customize board-pack-assembler', 'customize board pack', 'show board-pack-assembler customizations', 'reset board-pack-assembler customizations'. DOES NOT fire on 'board update' (memo-writer), 'one-pager' (one-pager-composer) or 'prep me for the board meeting' (call-prep).
 > Also owns the WORKSPACE PROFILE and the two coaching doors (SPEC_SURFACES2 PROFILE1, absorbing SPEC_LEARN2 — the primary stems are front-loaded in the description per STYLEROUTE1; the rest live here and the runtime router reaches them through the catch-all): 'my profile', 'what do you know about me', 'what have you learned about me', 'what do you know about how I work', "show what you've learned", 'how have you adapted to me', 'what have you changed on your own', 'export my profile', 'reset [section]' said about a section of the page, a learned line deleted by saying so ('forget that' / 'that one's wrong' said about a line on the page), 'turn on coaching', 'turn off coaching', and the assessment door ('here are my scores', 'load my assessment'). Machine-matchable stems for the mechanical matcher: 'my profile', 'what do you know about me', 'what have you learned about me', 'export my profile', 'turn on coaching', 'turn off coaching'. ABSORBS 'show my style' — the phrase stays live and now renders as the profile's How you like it section, so nothing a customer already says stops working. Every write goes to the settings store through `skill_config_writer` and the coaching object through `coaching_doors` — NEVER a CLAUDE.md edit; the profile lines inside the workspace instructions are REGENERATED by `render_claude_md` on the persona precedent, which is the whole point. DOES NOT fire on 'who is Sam' (people-crm). DOES NOT fire on 'tell me about Sam' (people-crm). DOES NOT fire on 'what did you change' (system-health). DOES NOT fire on the bare two-word coaching ask with no label after it (command-room-coach - the coaching conversation itself; this skill owns the doors that turn it on and off, and the `on a label` form of that ask, which IS the earned door's yes).
 ## Narration leak scan (LEAK2 — MANDATORY on every composed line)
 

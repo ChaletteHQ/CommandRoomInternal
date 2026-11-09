@@ -374,7 +374,11 @@ def is_automatic_calendar_close(data) -> bool:
 # on `undo confirm` must not refuse the customer's own undo with "you skipped
 # its review row" over a row the machine withdrew (probe P6 found both).
 POLICY_RETRACT_REASON = "policy_retracted"
+# cr1#117: the one-time close-out of pre-rule rows. A bulk close nobody
+# adjudicated, so no learner may read it as the owner dropping them.
+PRE_RULE_CLOSEOUT_REASON = "pre_rule_closeout"
 NON_DISMISSAL_RESOLUTION_REASONS: FrozenSet[str] = frozenset({
+    PRE_RULE_CLOSEOUT_REASON,
     REVIEW_EXPIRY_REASON,
     INGEST_KILL_REASON,
     DANGLING_TARGET_REASON,
@@ -770,6 +774,8 @@ MACHINE_SOURCE_SKILLS: FrozenSet[str] = frozenset({
     "review-expiry", "age-out", "identity-reconcile",
     "deal-signals", "dormant-customer-scan", "dormant-scan",
     "calendar-close", "binding-gauge", "lifecycle", "automation-scanner",
+    # cr1#117 - the one-time close-out inside the exit-doors job
+    "pre-rule-closeout",
     # SCHEDVIEW1 5.2 — the duplicate-merge apply leg inside `maintenance`.
     #
     # DEFENCE IN DEPTH, and the word is still exact. Re-measured at the

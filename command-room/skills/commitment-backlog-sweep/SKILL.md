@@ -44,7 +44,7 @@ fires on a schedule.
   the surface for working the list, this is the surface for shrinking it.
 - **Use `cleanup` for:** "clean up my workspace" / "tidy up" / "weekly cleanup" —
   workspace maintenance. Nothing to do with commitments.
-- **Use `show-my-list` for:** "show my list" — the retired discuss-later list.
+- **"show my list" is retired** (cr1#552): show-my-reminders answers it in one line.
 - **Use `reconcile-sent` for:** "reconcile my sent mail" / "catch up my sent
   mail" — the daily forward pass over new mail since the cursor.
 
@@ -99,9 +99,12 @@ the plugin root:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -146,6 +149,46 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
 ```
+
+### On a merged seat: every step through the door (SWEEPDOOR1, cr1#938)
+
+When the preamble resolved a merged seat (the folder is on the computer, this
+chat is not), the python blocks below are NOT run here: each step is ONE door
+call, rendered with `workspace_access.py plan` and pasted verbatim, exactly as
+the preamble says. The mail is read here, with this chat's own connector,
+exactly as Step 2 says. **Months of mail never go through a call's
+arguments**: the door refuses a payload that large. Land them as ONE JSON
+text with `plan write` at `_hq/.system/backlog-sweep/mail.json` (`{"sent_messages":
+[...], "inbound_messages": [...]}`, or `{"fetch_blocked": "<what was
+missing>"}`), and the scan reads them beside the data and removes the file.
+The scan keeps its full receipt beside the data too, until the next scan
+replaces it, so the digest and accept-all read it there and nothing heavy
+crosses back; each names the scan's `batch_id`, and a receipt from any other
+run is refused with its own line.
+
+| Step | Door | Name | Arguments |
+|---|---|---|---|
+| 1 and 2's reads | `run_helper` | `commitment_backlog_sweep:door_setup` | `workspace_root: "<WS>"`, and `window_days` / `age_out_days` / `item_cap` only when the owner typed one |
+| 3, the mail | `write` | (the verb) | `rel: "_hq/.system/backlog-sweep/mail.json"`, `data`: the JSON text above |
+| 3, the scan | `run_writer` | `commitment_backlog_sweep:scan_staged` | `workspace_root: "<WS>"`; `user_person_id`, `window_days`, `age_out_days`, `item_cap`, `resume_after`, `provider` from `door_setup`'s answer; `dry_run: true` only for "show me first" |
+| 4, the self-check | `run_helper` | `commitment_backlog_sweep:validate_sweep_ran` | `workspace_root: "<WS>"` |
+| 5, the digest | `run_writer` | `commitment_backlog_sweep:render_digest` | `workspace_root: "<WS>"`, `batch_id` from the scan's answer, `page` |
+| 5, the queue offer | `run_helper` | `commitment_backlog_sweep:review_offer` | `workspace_root: "<WS>"`, `user_person_id` |
+| 6, the owner's choices | `run_writer` | `commitment_backlog_sweep:apply_decisions` | `workspace_root: "<WS>"`, `user_person_id`, `batch_id` from the scan's answer; `args_file` holding `{"decisions": [...]}` |
+| 6, accept all | `run_writer` | `commitment_backlog_sweep:apply_accept_handled` | `workspace_root: "<WS>"`, `user_person_id`, `batch_id` from the scan's answer; `n: 0` comes back with its `line`, said as it is |
+| amnesty | `run_helper` then `run_writer` | `commitment_backlog_sweep:amnesty_plan` (`older_than_days`), then `apply_amnesty` (`user_person_id`, `older_than_days`, and `batch_id` when reached from the digest) | `workspace_root: "<WS>"`, as in the Amnesty section |
+| review amnesty | `run_helper` then `run_writer` | `review_expiry_plan` / `ingest_kill_plan`, then `apply_review_expiry` / `apply_ingest_kill` (module `commitment_backlog_sweep`) | `workspace_root: "<WS>"`, `user_person_id`, and the section's own arguments (`older_than_days`, `source_ref`) |
+
+The scan's answer carries `batch_id`, `summary`, `n_age_out` and
+`age_out_days`: Step 5's lines and Step 6's batch read them from it.
+`render_digest`'s `result.html` goes to `show_widget` verbatim, as Step 5
+says; its audit page is already landed. Every rule in the steps below holds
+unchanged: what each pile means, the confirms, the one-batch `undo`.
+
+**When a step cannot run here, one sentence and stop.** An envelope with
+`ok: false` (or a `result` with `ok: false`) says its own `line` when it has
+one. Without one, say exactly: "The commitment clean-up could not run here, so nothing was read, closed or changed; your open and overdue commitments are on the Hub's Commitments and Overdue tabs."
+Never send the owner to `triage my commitments` or to a Claude Code session on their own computer (owner ruling, cr1#938).
 
 ### Step 1 — settings, and the window
 
@@ -360,7 +403,8 @@ out  = sweep.apply_decisions(WORKSPACE, rows, user_person_id=user_id,
 It composes ONLY the proposed rows, each closing on its own evidence line. An
 empty list means there was nothing to accept — say so; never apply `[]` and
 report a successful run of zero. This verb lives only while the receipt is in
-hand: the mail evidence behind those rows is stored nowhere, so a later turn has
+hand: the mail evidence behind those rows is stored nowhere (on a merged seat,
+only beside the data until the next scan replaces it), so a later turn has
 to run the sweep again to get it back. Rows that were already settled elsewhere
 come back as no-ops and are acknowledged honestly, not re-closed.
 
@@ -757,7 +801,7 @@ Does NOT fire on: 'triage my commitments', 'commitment triage', 'review my open 
 
 Does NOT fire on: 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean' — all cleanup, which is workspace maintenance and has nothing to do with commitments.
 
-Does NOT fire on: 'show my list', 'whats on my list', 'my list' — show-my-list.
+Does NOT fire on: 'show my list', 'whats on my list', 'my list' — show-my-reminders (the retired list's one-line answer).
 
 Does NOT fire on: 'reconcile my sent mail', 'catch up my sent mail' — reconcile-sent, the daily forward pass over new mail since the cursor.
 

@@ -194,9 +194,12 @@ The skill auto-detects the meeting — most recent Granola note, pasted transcri
      #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
      #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
      #    before the first plan, so a saved document can name the folder the
-     #    customer opens. A runtime that is absent, or a runtime_version that
-     #    differs, is a STOP: run the update-bridge install step. There is no
-     #    container fallback.
+     #    customer opens. Then hand that answer to `workspace_access.py discover
+     #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+     #    is absent, or its manifest_sha is not this plugin's -- the version alone
+     #    no longer changes between builds) is a STOP: run the update-bridge
+     #    install step once, resolve and compare again, and if it still lags say
+     #    `lags_line` and stop. There is no container fallback.
      #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
      #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
      #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -332,17 +335,19 @@ counts = apply_meeting_closes(
     transcript_ts="<THIS meeting's own start ts, offset-carrying or UTC>",  # never the processing clock
     transcript_text="<full transcript text>",
     attendee_person_ids=["<resolved attendee person_id>", ...],
+    attendee_records=<this meeting's attendee list, or None>,  # cr1#882: a close lands only when tight
+    user_names=["<the CEO's own canonical name>"],
     source_skill="follow-up-ritual",
 )
 ```
 
-With closing on evidence OFF (the shipped default) the pass writes at most a review proposal on the row — the `needs your call` confirm shape — and `counts["n_close_withheld"]` says how many rows it would have closed. With it ON (`turn on closing on evidence`) the tightened pass closes only with the meeting's own start time, only a row captured before that start, and only on one verbatim turn that says done and names the item — stamped with this rail, on a batch, one `undo` away. It normalizes legacy id spellings, refuses no-match ids loudly, is idempotent over the full resolved-id set, and never closes a `pending_review` item except through the transcript door with the switch on. Nothing here is narrated in chat.
+With closing on evidence OFF (the shipped default) the pass writes at most a review proposal on the row — the `needs your call` confirm shape — and `counts["n_close_withheld"]` says how many rows it would have closed. With it ON (`turn on closing on evidence`) the tightened pass closes only with the meeting's own start time, only a row captured before that start, only on one verbatim turn that says done and names the item, and only when that turn is tight (cr1#882): the CEO's own report names the other person and `attendee_records` shows exactly the CEO and that person. Anything else is withheld as a proposal for the CEO, which the timeout withdraws and never closes. A close is stamped with this rail, on a batch, one `undo` away. It normalizes legacy id spellings, refuses no-match ids loudly, is idempotent over the full resolved-id set, and never closes a `pending_review` item except through the transcript door with the switch on. Nothing here is narrated in chat.
 
 This is how commitments stop accumulating in views over time — without resolution events, every commitment stays "open" forever.
 
 ### Surface count in the pack header
 
-Add to the pack header line, **read off `counts`, never asserted**: `"Open before this call: 3 (they owe 2, you owe 1)."` — plus, only when the count is non-zero, `"Closed on this call: N."` from `counts["n_closed"]`, or, while closing on evidence is OFF (the shipped default), `"N look kept — say `needs your call`."` from `counts["n_close_withheld"]`. With the switch off `n_closed` is 0 and the closed half of the line does not render.
+Add to the pack header line, **read off `counts`, never asserted**: `"Open before this call: 3 (they owe 2, you owe 1)."` — plus, only when the count is non-zero, `"Closed on this call: N."` from `counts["n_closed"]`, or `"N look kept — say `needs your call`."` from `counts["n_close_withheld"]` (while closing on evidence is OFF, the shipped default, and, with it ON, the reports that were not tight). With the switch off `n_closed` is 0 and the closed half of the line does not render.
 
 If zero on either side, omit that half of the line.
 

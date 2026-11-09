@@ -154,14 +154,23 @@ def _mount_stale_path(events_path: Path) -> Path:
 
 
 def _conflict_copies(events_path: Path) -> list[Path]:
-    """Drive conflict-copy siblings: `events (1).jsonl` / `events (2).jsonl` …
-    and any `*.conflict`. The active file itself is never a conflict copy."""
+    """Sync conflict-copy siblings of the ledger, in every spelling the sync
+    services use (cr1#724): Google Drive's `events (1).jsonl`, OneDrive's
+    `events-<Computer>.jsonl`, Dropbox's `conflicted copy`, Syncthing's
+    `.sync-conflict-`, and any `*.conflict`. The active file itself, a year
+    shard, a quarantine and a `.bak_` are never conflict copies. The one
+    detector is `sync_conflict_copies.conflict_copies_of`, so the Maintenance
+    merge and this reconciler cannot disagree on what a copy is."""
     d = events_path.parent
     out: list[Path] = []
-    stem = events_path.stem  # "events"
-    for p in d.glob(f"{stem} (*).jsonl"):
-        if p != events_path:
-            out.append(p)
+    try:
+        from sync_conflict_copies import conflict_copies_of
+        out.extend(conflict_copies_of(events_path))
+    except Exception:  # noqa: BLE001 - the older spelling still works alone
+        stem = events_path.stem  # "events"
+        for p in d.glob(f"{stem} (*).jsonl"):
+            if p != events_path:
+                out.append(p)
     for p in d.glob("*.conflict"):
         out.append(p)
     return sorted(set(out))
@@ -169,6 +178,23 @@ def _conflict_copies(events_path: Path) -> list[Path]:
 
 def _bak_files(events_path: Path) -> list[Path]:
     return sorted(events_path.parent.glob(events_path.name + ".bak_*"))
+
+
+def _backup_set(events_path: Path) -> list[Path]:
+    """The `_backups/` copies of the ledger beside it (cr1#385: the repair
+    recovers from the newest readable copy it can find, and the hygiene rule
+    keeps the three newest backups there). Only files named after the ledger."""
+    d = events_path.parent / "_backups"
+    if not d.is_dir():
+        return []
+    out = []
+    try:
+        for p in d.iterdir():
+            if p.is_file() and p.name.startswith(events_path.name):
+                out.append(p)
+    except OSError:
+        return []
+    return sorted(out)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +250,7 @@ def _try_merge_forward(events_path: Path, fr: dict) -> bool:
     candidates: list[tuple[str, Path, list[dict], int]] = [
         ("__live__", events_path, live_events, live_max)
     ]
-    for c in _bak_files(events_path) + _conflict_copies(events_path):
+    for c in _bak_files(events_path) + _conflict_copies(events_path) + _backup_set(events_path):
         evs = _parse_jsonl(c)
         candidates.append((c.name, c, evs, _max_seq(evs)))
 

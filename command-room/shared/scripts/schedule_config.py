@@ -139,9 +139,9 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # file is now a content stub (`references/orchestrator-commitments.md`,
     # `references/orchestrator-my-plate.md`), and a live registration is
     # switched off by the `fold1a_fire_fold_v1` bridge migration — but the
-    # cron/label here is kept intact ON PURPOSE so `add waiting on` /
-    # `add my plate` (or `undo` right after the fold) still has real
-    # metadata to register from. This is NOT a TASKRET1 readiness
+    # cron/label here is kept intact ON PURPOSE so `undo` right after the
+    # fold still has real metadata to put back (`add` is refused: both are
+    # shelved, cr1#847). This is NOT a TASKRET1 readiness
     # retirement: those are permanently one-way (`change-schedule` refuses
     # `add` forever) because the SUBSTRATE wasn't ready; this is a
     # deliberate simplification the customer can reverse, so it needed its
@@ -402,8 +402,8 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # down: BAL1 shipped it needing accumulated substrate AND a declared
     # personal calendar, and shipping a chat behind a gate most workspaces
     # cannot clear is exactly what this retirement class exists to undo. The
-    # on-demand surface is untouched (`balance check` / `skills/balance/`);
-    # only the weekly Sunday 8 AM fire is gone.
+    # on-demand skill followed on 2026-11-06 (cr1#552): `skills/balance/` is
+    # gone and `balance check` hears one retired line from workspace-manager.
     # cr-refresh-workspace-map removed v2.14.25. The five silent-task rows
     # (cleanup 18:00 Sun / reconcile-sent 6:45,12:45,17:45 weekdays /
     # monthly-report 7:00 on the 1st / weekly-insights 19:00 Sun /
@@ -499,12 +499,21 @@ FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
 # seat by the update bridge's reinstall (`schedule_backend.bridge_plan(...,
 # reinstall=True)`), and refused with `shelved_line` when a customer asks to
 # add one. Their rows STAY in `DEFAULT_SCHEDULES` and their orchestrators stay
-# live, on purpose: the cockpit's inbox task and the maintenance meeting-capture
-# job read those files' phases, a typed `triage my inbox` still measures its
-# lateness against the shipped slot, and the orchestrator guards' scope is
-# unchanged. This is the owner-visible half of the retirement; the registry's
-# half (a `RETIRED_TASKS` row and a stub per chat) follows when the remaining
-# phases have homes of their own (the Review and Week tabs of the cockpit).
+# live, on purpose: a typed `triage my inbox` still measures its lateness
+# against the shipped slot, the orchestrator guards' scope is unchanged, and
+# two jobs and any chat still on a seat need the files (next sentence). This
+# is the owner-visible half of the retirement. The registry's half (cr1#847,
+# part two of #618) is THIS set: no `RETIRED_TASKS` row and no stub per chat.
+# A stub would break live work: the maintenance job follows two of these files
+# by name (meeting capture, `orchestrator-past-meetings.md` Phases 3 through
+# 4.8; inbound mail, `orchestrator-inbox.md` Phase 4b), and a chat the update
+# has not removed yet still fires its file. The typed phrases and the Hub do
+# not read them: `show waiting` is `surface_drivers.py waiting-on` and the
+# Week tab is `friday_wrap_helpers:week_sections`. A shelved id is excluded
+# from every first install, every later-add offer and every registration
+# re-run (`later_add_task_ids`, `registration_target_set`), refused by
+# `schedule_backend.plan_registration`, and refused on `add` with
+# `shelved_line`; `tests/run_shelved_registry_test.py` pins all of it.
 SHELVED_TASK_IDS: frozenset[str] = frozenset({
     "inbox", "end-of-day", "friday-wrap", "waiting-on", "my-plate",
 })
@@ -612,7 +621,10 @@ SILENT_TASKS: dict[str, dict] = {
             "call in step 1 AND every maintenance_receipt call this fire makes.\n"
             "1. Ask the dispatcher what is due — NEVER judge due-ness yourself: run "
             "`python3 shared/scripts/maintenance_dispatcher.py <workspace_root> "
-            "--fired-via <fired_via>` from the plugin root and hold its JSON plan. "
+            "--fired-via <fired_via> --fire-id new` from the plugin root and hold "
+            "its JSON plan (a retry of this step by this same fire passes "
+            "`--fire-id <the plan's fire_id>` instead, so it is not taken for a "
+            "second fire). "
             "FIRST check `root_repair` (SPEC "
             "PATHREPAIR1): if `root_repair.blocked` is true, `due` is forced empty and "
             "this is NOT a quiet nothing-due exit — the workspace's own registration "
@@ -681,17 +693,71 @@ SILENT_TASKS: dict[str, dict] = {
             "inbound_mail_leg.plan_inbound_mail(<workspace_root>); unless it "
             "names a `skip_reason`, fetch the inbox it names (each of its "
             "`accounts`, its `query`: inbox mail on or after `after`, read or "
-            "unread, never only unread) and fill each message's "
-            "`message_fields`, its `captures` judged exactly as "
+            "unread, never only unread; when the connector says more pages "
+            "remain, the next pages too, until the window is covered) and "
+            "fill each message's "
+            "`message_fields` (`attachment_names` the connector's own name "
+            "for each attached file), its `captures` judged exactly as "
             "skills/enable-command-room-schedules/references/"
             "orchestrator-inbox.md Phase 4b says; then "
             "inbound_mail_leg.run_inbound_mail(<workspace_root>, <the "
             "messages, none on a skip>, user_person_id=<the plan's>, "
             "accounts=<the plan's>, close_mode=<the plan's>, "
             "exclude_captured_since=<the plan's fire_start>, "
-            "fired_via=<fired_via>), which opens and closes from that mail "
-            "and writes its own pack_run receipt (a skip lands as a skip "
-            "receipt). Say NOTHING to the CEO here; "
+            "fired_via=<fired_via>, fetch_blocked=<None, or why the fetch "
+            "errored, in plain words: the receipt then lands blocked and the "
+            "same window is read next time>, read_complete=<True when the "
+            "fetch reached the end of its window, False when the connector "
+            "had more pages than this run read>), which opens and closes "
+            "from that mail and writes its own pack_run receipt (a skip "
+            "lands as a skip receipt). Say NOTHING to the CEO here; "
+            "tasks-capture (cr1#668) -> from the plugin root, "
+            "tasks_leg.plan_tasks_capture(<workspace_root>); `ready` false "
+            "-> leave it due; no `connectors`, or every connector's "
+            "`skip_reason` set with its people and project skips set too -> "
+            "read nothing and call the writer with items=[] (it lands the "
+            "skip receipt); otherwise, for each connector entry, run its "
+            "`intents` through the tasks connector for items changed after "
+            "`after` (only its `include` boards when it lists any, never its "
+            "`exclude` ones), one item per result with the plan's "
+            "`item_fields` and the entry's `category`; a read that errored "
+            "is not an empty answer: leave that connector out of "
+            "connectors_read, and when no read answered pass fetch_blocked "
+            "saying why; then tasks_leg.capture_tasks_and_receipt("
+            "<workspace_root>, <the items>, user_person_id=<the plan's>, "
+            "owner_ids=<the user's own ids on the task tool>, "
+            "owner_names=<the user's own names there>, "
+            "connectors_read=<the `category` of each connector whose read "
+            "answered, an empty answer included>, fetch_blocked=<None, or "
+            "why no read answered>, maintenance_window=<the plan's>, "
+            "fired_via=<fired_via>), which writes its own pack_run receipt. "
+            "Say NOTHING to the CEO here; "
+            "tasks-close (cr1#668) -> the same shape with "
+            "tasks_leg.plan_tasks_close(<workspace_root>), its one intent "
+            "(done_since) and tasks_leg.close_tasks_and_receipt("
+            "<workspace_root>, <the items>, user_person_id=<the plan's>, "
+            "owner_ids=..., owner_names=..., connectors_read=..., "
+            "fetch_blocked=..., exclude_captured_since=<the plan's "
+            "fire_start>, maintenance_window=<the plan's>, "
+            "fired_via=<fired_via>). Say NOTHING to the CEO here; "
+            "connector-proposals (cr1#668) -> from the plugin root, "
+            "connector_proposals.plan_connector_proposals(<workspace_root>); "
+            "`ready` false -> leave it due; no `connectors` -> call the "
+            "writer with items=[] (it lands the skip receipt); otherwise, for "
+            "each entry, read the items changed after `after` through its "
+            "documents, deals or contracts connector (by the entry's `kind`; "
+            "only its `include` folders or pipelines when it lists any, "
+            "never its `exclude` ones), one item per result with the plan's "
+            "`item_fields` and the entry's `category`, the same errored-read "
+            "rule as tasks-capture; then "
+            "connector_proposals.propose_from_connectors_and_receipt("
+            "<workspace_root>, <the items>, user_person_id=<the plan's>, "
+            "owner_names=<the user's own names>, connectors_read=..., "
+            "fetch_blocked=..., exclude_captured_since=<the plan's "
+            "fire_start>, maintenance_window=<the plan's>, "
+            "fired_via=<fired_via>), which never closes (every match is a "
+            "proposal) and writes its own pack_run receipt. Say NOTHING to "
+            "the CEO here; "
             "cleanup -> "
             "skills/cleanup/SKILL.md (every phase); weekly-insights -> "
             "skills/insight-generator/SKILL.md; learning -> run "
@@ -718,8 +784,8 @@ SILENT_TASKS: dict[str, dict] = {
             "--apply it dry-runs, writes no receipt, and stays due forever. "
             "Dormancy questions ride the confirm rail as ON-DEMAND rows — they "
             "surface when the CEO says `stalled projects`, never on a "
-            "scheduled surface — and the dormant->archived leg goes through "
-            "the canonical archive path; its lifecycle_run receipt is written "
+            "scheduled surface — and it asks the same way about archiving a "
+            "long-dormant project, never archiving one itself; its lifecycle_run receipt is written "
             "by the script itself); dedup-apply -> run "
             "`python3 shared/scripts/commitment_dedup.py --workspace "
             "<workspace_root> --apply` from the plugin root (SCHEDVIEW1 5.2 "
@@ -731,7 +797,15 @@ SILENT_TASKS: dict[str, dict] = {
             "receipted and reversible in ONE undoable batch. It asks NOTHING "
             "and it takes no row list; its pack_run receipt is written by the "
             "script itself, and a fire with nothing stamped writes nothing at "
-            "all and stays due. Say NOTHING to the CEO here); review-expiry -> run "
+            "all and stays due. Say NOTHING to the CEO here); chat-pointer-sweep -> "
+            "run `python3 shared/scripts/chat_pointer_sweep.py --workspace "
+            "<workspace_root> --apply` from the plugin root (cr1#164: the "
+            "flag matters exactly as it does for the legs above: without "
+            "--apply it dry-runs, writes no receipt, and stays due forever. "
+            "It checks that every close made from chat still carries its "
+            "pointer back to the chat message, lists any that do not on its "
+            "pack_run receipt, and changes nothing. Say NOTHING to the CEO "
+            "here); review-expiry -> run "
             "`python3 shared/scripts/commitment_backlog_sweep.py "
             "review-expiry --workspace <workspace_root> --apply` from the "
             "plugin root (REVSCHED1 — the flag matters exactly as it does "
@@ -743,7 +817,17 @@ SILENT_TASKS: dict[str, dict] = {
             "is written by the script itself, on an empty plan too. Say "
             "NOTHING to the CEO here: when its `receipt_line` is non-empty, "
             "the next staff meeting / end-of-day reads that ONE line out "
-            "verbatim; an empty plan is a silent no-op); monthly-report -> for EACH "
+            "verbatim; an empty plan is a silent no-op); any other due job "
+            "of script class (its `skill` string names its own script and "
+            "the --apply flag) -> from the plugin root, "
+            "`python3 shared/scripts/maintenance_dispatcher.py "
+            "<workspace_root> --run-job <job_id> --fired-via <fired_via>` "
+            "(cr1#827: the one "
+            "entry that runs a script job with its own --apply leg and the "
+            "run-mode flag, as the merged fire does; the job's receipt is "
+            "written by the script itself, and a job whose script answered "
+            "a non-zero return code stays due). Say NOTHING to the CEO here; "
+            "monthly-report -> for EACH "
             "period in the job's `periods` list (step 2b), the operator report per "
             "skills/operator-report/SKILL.md then the value receipt per "
             "skills/value-receipt/SKILL.md over that period's own calendar month "
@@ -935,11 +1019,13 @@ RETIRED_TASKS: dict[str, dict] = {
         # here: `retirement_line` derives it from the successor's own cron, so
         # moving the default can never leave this sentence quoting a time the
         # task no longer fires at.
-        "reason": "same {time} close, same chat, one tap to switch",
+        "reason": "same {time} close, same chat",
+        # There is nothing to switch to: `end-of-day` is shelved (cr1#847), so
+        # this line offers no `add`. It says what the customer has.
         "replacement": (
-            "Say `add end of day` and I'll register it and switch Past "
-            "Meetings off in the same step; leave it and your evening chat "
-            "keeps firing exactly as it does today"
+            "The Command Room Hub shows your day now and `end of day` runs "
+            "the close any time; leave this chat and it keeps firing exactly "
+            "as it does today"
         ),
     },
     # ---- READINESS retirements (SPEC TASKRET1, M's ruling 2026-08-17) -------
@@ -1004,9 +1090,13 @@ RETIRED_TASKS: dict[str, dict] = {
             "there's a personal calendar connected and enough history behind "
             "it to be honest about what has gone quiet"
         ),
+        # cr1#552: the on-demand skill retired too, so the line no longer
+        # points at `balance check`; it points at the two surfaces that do
+        # the work now.
         "replacement": (
-            "Nothing is lost — say `balance check` any time and it runs on "
-            "the spot"
+            "The Balance skill is retired as well — say `who should I reach out "
+            "to` for the people worth a note, or `remind me about [thing] on "
+            "[day]` to keep an evening in view"
         ),
     },
     "relationship-moves": {
@@ -1096,16 +1186,18 @@ RETIRE_SUPPRESSION_WEEKS = 6
 #
 #   * membership is THIS registry (`FOLDED_FIRES`), never a name check;
 #   * the row STAYS in `DEFAULT_SCHEDULES` (see the FOLD1A comment there) —
-#     a folded id keeps its cron/label so `add <task>` still has real
-#     metadata to register from;
+#     a folded id keeps its cron/label so `undo` still has real metadata
+#     to put back;
 #   * the live registration is switched off, receipted and narrated by the
 #     `fold1a_fire_fold_v1` bridge migration (mirrors `readiness_retirement_v1`'s
 #     shape: disable-then-record, class-scoped, never a per-task hardcode) —
 #     but UNLIKE that migration, this one is reversible: it stamps a
 #     `brain_batch_id` and registers a `brain_undo` reverser
-#     (`schedule_fold_disable`, in `brain_undo.py`) so a bare `undo` puts the
-#     live registration back, and `add waiting on` / `add my plate` works at
-#     any time after that, forever — never refused;
+#     (`schedule_fold_disable`, in `brain_undo.py`) so a batch on record
+#     stays reversible in the store; a bare `undo` once put the
+#     live registration back. Both ids are shelved now (cr1#847), so `add`
+#     and `bring back` get `shelved_line`, and the answer lives on the Hub
+#     and the typed ask;
 #   * the content stop covers the WINDOW between the fold being applied and
 #     the live scheduler actually going quiet: `references/orchestrator-
 #     commitments.md` and `references/orchestrator-my-plate.md` open with a
@@ -1140,7 +1232,7 @@ def is_folded_fire(task_id: str) -> bool:
     """True when `task_id` is a FOLD1A fold — membership is THIS registry,
     never a hardcoded name list. Deliberately a DIFFERENT predicate from
     `is_retired_task`: a folded fire is not retired (it keeps its
-    `DEFAULT_SCHEDULES` row and can always be re-added), so the two must
+    `DEFAULT_SCHEDULES` row), so the two must
     never be tested with the same function."""
     return task_id in FOLDED_FIRES
 
@@ -1166,7 +1258,9 @@ def folded_fire_line(task_id: str) -> str:
     line = f"Your {name} chat folded into your morning brief."
     if replacement:
         line += f" {replacement[0].upper()}{replacement[1:]}."
-    line += " Say `undo` right after an update to bring it back as its own chat, or `add " + name.lower() + "` any time."
+    # cr1#847: the chat is shelved, so this offers no way back to a chat. The
+    # answer lives on the Hub and the typed ask.
+    line += " The Command Room Hub shows it too."
     return line
 
 
@@ -1188,7 +1282,7 @@ def fold_is_active(workspace_root, task_id: str) -> bool:
     """Is `task_id`'s fold — THE PRODUCT'S — currently in effect here? False
     for a task that is not a fold at all (nothing to check), for one whose
     live schedule_config override reads `enabled: True` (the fresh-install
-    default, or a customer's own `undo` / `add` having put it back), AND —
+    default, or a customer's own `undo` having put it back), AND —
     fix round 2 — for one the CUSTOMER switched off themselves.
 
     FIX ROUND 2, REVIEW_FOLD1A R-3. This used to be `is_folded_fire(id) and
@@ -1251,9 +1345,8 @@ def folded_fire_summary(task_ids) -> str:
     """The ONE line the update bridge posts after the fold migration
     disabled something — the FOLD1A twin of `readiness_retirement_summary`,
     with FOLD1A's own honest framing (a simplification, not a "not ready
-    yet"): no `reoffer_when` clause (nothing to wait for) and an explicit
-    `undo` mention (the one thing this class promises that readiness does
-    not). Empty string for an empty list — most workspaces that never
+    yet"): no `reoffer_when` clause (nothing to wait for), and where the
+    answer lives now. Empty string for an empty list — most workspaces that never
     registered either chat hear nothing."""
     ids = [t for t in (task_ids or []) if is_folded_fire(t)]
     if not ids:
@@ -1270,28 +1363,31 @@ def folded_fire_summary(task_ids) -> str:
     # a seat that had already paused Waiting On by hand read "Folded 1
     # scheduled chat … bring THEM back as THEIR OWN CHATS, or ask for
     # EITHER". One chat, four plural words.
-    if len(ids) == 1:
-        noun, tail = "chat", "bring it back as its own chat, or ask for it"
-    elif len(ids) == 2:
-        noun, tail = "chats", "bring them back as their own chats, or ask for either"
-    else:
-        noun, tail = "chats", "bring them back as their own chats, or ask for any of them"
+    # cr1#847: both chats are shelved, so asking for one is refused, and `undo`
+    # cannot finish the job either: the cloud reinstall deletes the chats and
+    # the older scheduler's reversal restores only the store. Shelved wins.
+    # What is true is the Hub and the typed ask.
+    asks = [f"`{SHELVED_PHRASE[t]}`" for t in ids if t in SHELVED_PHRASE]
+    typed = asks[0] if len(asks) == 1 else ", ".join(asks[:-1]) + f" and {asks[-1]}"
+    noun, it = ("chat", "it") if len(ids) == 1 else ("chats", "them")
     return (f"Folded {len(ids)} scheduled {noun} into your morning brief: "
-            f"{listed} — nothing is lost, say `undo` to {tail} any time.")
+            f"{listed} — nothing is lost: the Command Room Hub shows {it} and "
+            f"{typed} {'answers' if len(asks) == 1 else 'answer'} any time.")
 
 
 def folded_fire_undo_line(task_ids) -> str:
     """The receipt's own `undo` sentence, from the SAME count the summary
     reads (fix round 1, F-7). It used to be a constant claiming "both chats"
     on a seat where only one folded — the receipt is what an operator reads
-    back months later, so it may not be the one line that guesses."""
+    back months later, so it may not be the one line that guesses. It says
+    what the reversal does, which is the store and not the chat (cr1#847)."""
     ids = [t for t in (task_ids or []) if is_folded_fire(t)]
     if len(ids) == 1:
-        return "say `undo` — one batch, the chat back exactly as it was"
+        return "`undo` restores this chat's stored setting, and brings no chat back"
     if len(ids) == 2:
-        return "say `undo` — one batch, both chats back exactly as they were"
-    return (f"say `undo` — one batch, all {len(ids)} chats back exactly as "
-            f"they were")
+        return "`undo` restores both chats' stored settings, and brings no chat back"
+    return (f"`undo` restores all {len(ids)} chats' stored settings, and brings "
+            f"no chat back")
 
 
 class FoldStateError(RuntimeError):
@@ -1646,7 +1742,7 @@ def retirement_line(task_id: str) -> str:
       * RENAMED (`past-meetings` → `end-of-day`) — the chat is NOT gone, so a
         "your chat is retired" sentence would be a lie about a task that
         fires tonight. The line says what it is called now, quotes the hour
-        FROM the successor's own cron, and offers the switch.
+        FROM the successor's own cron, and says what still runs it.
       * READINESS (`commitment-triage`, `pipeline-digest`, `balance`) — the
         update has ALREADY switched it off, so the line must not ask for a
         `pause` the customer no longer has to perform; offering one would be
@@ -1875,7 +1971,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "session-sweep": "Session Sweep",  # Phase 5 / R1 — silent nightly transcript-to-event promotion (not a CEO-facing chat); a maintenance JOB as of MAINT1
     "maintenance": "Maintenance",  # MAINT1 — THE silent background dispatcher task (not a CEO-facing chat). cleanup / reconcile-sent / monthly-report keep their rows above for job-level renders.
     "staff-meeting": "Staff Meeting",  # LB1 R3 — weekly Monday Living Brain review chat (opt-in later-add)
-    "balance": "Balance",  # TASKRET1 — READINESS-RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever for legacy renders). The on-demand `balance check` surface is untouched.
+    "balance": "Balance",  # TASKRET1 — READINESS-RETIRED taskId (out of DEFAULT_SCHEDULES; row kept forever for legacy renders). The on-demand skill retired too (cr1#552).
     # TASKRET1 — pipeline-digest had NO row here before it was retired, and
     # `retirement_line` reads THIS dict rather than `task_display_name`, so it
     # would have rendered the bare taskId into a customer sentence ("Your
@@ -1886,6 +1982,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "deal-signals": "Deal Signals",  # LB1 D7 — silent deal-signal detector (a maintenance JOB, not a task; row kept for job-level renders)
     "learning": "Picking Up Your Edits",  # SPEC_LEARN1 — the weekly learning job (a maintenance JOB, not a task); named for the work, never the mechanism
     "review-expiry": "Unconfirmed Cleanup",  # REVSCHED1 §3-2 — silent weekly unconfirmed-pile drain (a maintenance JOB, not a task; row exists so the watchdog's job-level line reads as English and never as a bare id)
+    "chat-pointer-sweep": "Chat Close Audit",  # cr1#164: the weekly check that every close made from chat still points back to its message (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English). Names what is checked, never the mechanism
     "dedup-apply": "Duplicate Check",  # SCHEDVIEW1 5.2 — the daily duplicate-merge apply (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id). Names what is checked, never the mechanism
     "calendar-close": "Booked Meeting Check",  # POLICY1-B DD-7 — the daily calendar closer for scheduling rows (a maintenance JOB, not a task). Names what is checked (a meeting that got booked with the other side), not the mechanism
     "exit-doors": "Finished and Forgotten Check",  # EXIT1 (SPEC_FLOW1 Lane B) — the daily exit-doors job (a maintenance JOB, not a task). Names what it checks — work the record shows finished, and work nobody has touched — never the rails checking it
@@ -2373,10 +2470,9 @@ def registration_target_set(existing_registered) -> frozenset[str]:
     in their Scheduled list. That is the add-without-asking violation with a
     new name on it, and it is exactly what M's Decision 9 forbids.
 
-    The rename reaches a workspace one way only: the customer takes the offer
-    (`schedule_proposals.propose_task_retirements` →
-    `retirement_line("past-meetings")` → `add end of day`). Then the id IS in
-    `existing` and this function stops fencing it.
+    Since cr1#847 nothing registers the successor (`add end of day` is
+    refused, the id is shelved) and it is out of FIRST_INSTALL_TASK_IDS, so
+    this fence has nothing to fence today. It stays for the next rename.
 
     A retired id already in `existing` stays in the target set on purpose —
     that is what keeps its registered prompt refreshed, and for a RENAMED id
@@ -3495,10 +3591,32 @@ SCHEDULED_WRITER_LINES: dict = {
         "Your scheduled chats run on another computer, so this computer did "
         "not take them over."
     ),
+    # cr1#605: the health check names the computer that holds the schedules
+    # from the declaration (`held_by_line`), never from the identity file.
+    "held_by": "Your scheduled chats run on {name}.",
+    "held_by_nameless": "Your scheduled chats run on one declared computer.",
+    # cr1#603: a registration from an account that is neither the one the
+    # folder's identity file names nor the declared scheduled writer is
+    # refused, instead of re-deriving the identity under it (A5: one owner).
+    "other_account": (
+        "Your scheduled chats were set up under another account on this "
+        "folder, so this account cannot hold them. Set them up again from "
+        "that account, or delete them there first."
+    ),
 }
 
 #: BIND3 - the refusal's `reason`, the same word `plan_registration` answers.
 REASON_DECLARE_BOUND_ELSEWHERE = "bound_elsewhere"
+#: cr1#603 - the refusal's `reason` when another ACCOUNT holds the schedules.
+REASON_DECLARE_OTHER_ACCOUNT = "other_account"
+
+
+def held_by_line(device_name=None) -> str:
+    """cr1#605: the sentence naming the declared holder of the schedules."""
+    name = _clean_device_name(device_name)
+    if not name:
+        return SCHEDULED_WRITER_LINES["held_by_nameless"]
+    return SCHEDULED_WRITER_LINES["held_by"].format(name=name)
 
 #: BRIDGE2 (Train 2 §4 SHOULD) - the sentence after `took_over`, decided by
 #: `setup_invite_line`: the phrase only where this seat can register.
@@ -3815,18 +3933,59 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
             import writer_identity as _wi
+        # cr1#603: read the folder's identity file BEFORE the derivation,
+        # which re-writes it under this account when they differ.
+        try:
+            stored_before = _wi._read_stored(_wi.identity_path(workspace_root))
+        except Exception:  # noqa: BLE001
+            stored_before = None
+        # Derived WITHOUT caching: the derivation re-writes the identity file
+        # under this account when they differ, and a refused registration
+        # must leave it as it was (cr1#603 acceptance 3). It is written once
+        # the refusal below has not fired.
+        import os as _os
+        _no_cache = getattr(_wi, "NO_CACHE_ENV", "CR_IDENTITY_NO_CACHE")
+        _had = _os.environ.get(_no_cache)
+        _os.environ[_no_cache] = "1"
         try:
             writer_id = _wi.writer_id(workspace_root)
         except Exception:  # noqa: BLE001
             writer_id = None
+        finally:
+            if _had is None:
+                _os.environ.pop(_no_cache, None)
+            else:
+                _os.environ[_no_cache] = _had
         if not writer_id:
             out["error"] = "no_writer_id"
             return out
+        derived_here = True
+    else:
+        stored_before = None
+        derived_here = False
     writer = str(writer_id).strip()
     if not _SCHEDULED_WRITER_ID_RE.match(writer):
         out["error"] = "bad_writer_id"
         return out
     out["writer_id"] = writer
+    # cr1#603: another ACCOUNT holds this folder's schedules when both the
+    # identity file this folder carried and the declaration name an id that
+    # is not this seat's. Refuse in one sentence; declare nothing. (The same
+    # account on another computer is BIND3's `bound_elsewhere`, below.)
+    stored_id = (str(stored_before.get("writer_id") or "").strip()
+                 if isinstance(stored_before, dict) else "")
+    existing = scheduled_writer(workspace_root)
+    if (stored_id and stored_id != writer and existing is not None
+            and existing["writer_id"] != writer and existing["writer_id"] == stored_id):
+        out["reason"] = REASON_DECLARE_OTHER_ACCOUNT
+        out["line"] = SCHEDULED_WRITER_LINES["other_account"]
+        return out
+    if derived_here and stored_id != writer:
+        # Not refused: now the derivation may cache itself, as it always did.
+        try:
+            _wi.writer_id(workspace_root)
+        except Exception:  # noqa: BLE001
+            pass
     if device_workspace is None:
         import os as _os
         device_workspace = _os.environ.get(DEVICE_WORKSPACE_ENV)

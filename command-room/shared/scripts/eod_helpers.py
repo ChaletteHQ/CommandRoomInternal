@@ -288,9 +288,17 @@ def apply_cru_pass(workspace_root: str, *, results: Optional[List[Any]] = None,
                    already_proposed: Optional[List[str]] = None,
                    batch_id: Optional[str] = None,
                    n_stale: int = 0,
-                   review_budget: Optional[Dict[str, Any]] = None
+                   review_budget: Optional[Dict[str, Any]] = None,
+                   transcript_text: str = "",
+                   attendee_records: Any = None,
+                   user_names: Optional[List[str]] = None
                    ) -> Dict[str, Any]:
     """Phase 4.6's WRITE half — a WRITER, on the write list only.
+
+    cr1#882: `transcript_text`, `attendee_records` and `user_names` are the
+    tight gate's inputs (`apply_transcript_results`): a close lands only
+    when the owner's report names the other person in a two-person meeting.
+    Called without them, every close this pass would write proposes.
 
     The old block's two writes, in its order and no other:
     `commitment_policy_pass.apply_transcript_results` (closes, updates,
@@ -338,7 +346,9 @@ def apply_cru_pass(workspace_root: str, *, results: Optional[List[Any]] = None,
     counts = apply_transcript_results(
         workspace_root, rows, meeting_ref=meeting_ref,
         transcript_ts=transcript_ts or None, already_proposed=proposed,
-        review_budget=budget, batch_id=batch_id, close_mode=close_mode)
+        review_budget=budget, batch_id=batch_id, close_mode=close_mode,
+        transcript_text=transcript_text or "", attendee_records=attendee_records,
+        user_names=user_names)
     walk = record_walk(workspace_root, evidence_ref=meeting_ref,
                        evidence_ts=transcript_ts, n_stale=int(n_stale or 0),
                        n_results=len(rows))
@@ -886,6 +896,9 @@ EOD_TAP_GONE_LINE = ("That item is no longer on the record, so nothing "
 EOD_TAP_NOT_SOONER_LINE = ("That one is already hidden until a later date, "
                            "and a push cannot bring it back sooner, so "
                            "nothing changed.")
+#: cr1#849: `apply_later` refuses a push to a date already gone; the writer's
+#: own ack names the date, and this surface relays it.
+EOD_TAP_PAST_LINE = "{ack}"
 #: EODTAP2 fix round 1 (review N-1): the caller's `source_ref` is a
 #: cross-check, never an override. When it is not the pointer the resolver
 #: answers for that row now, the list moved (or the pointer was composed),
@@ -981,7 +994,9 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
             ack = {"deferred": EOD_TAP_DEFERRED_LINE,
                    "snoozed": EOD_TAP_SNOOZED_LINE,
                    "not_open": EOD_TAP_ALREADY_CLOSED_LINE,
-                   cs.LATER_NOT_SOONER_STATUS: EOD_TAP_NOT_SOONER_LINE}.get(
+                   cs.LATER_NOT_SOONER_STATUS: EOD_TAP_NOT_SOONER_LINE,
+                   cs.LATER_PAST_STATUS: EOD_TAP_PAST_LINE.format(
+                       ack=res.get("ack") or "")}.get(
                        status, EOD_TAP_ALREADY_CLOSED_LINE)
         else:
             dropped = verb == "drop"
@@ -1125,7 +1140,12 @@ FIRE_KINDS = {"end-of-day": STAGED_INPUTS,
 INBOUND_KEEP_FIELDS = ("message_id", "thread_id", "ts", "sender_email",
                        "sender_name", "sender_person_id", "subject", "body",
                        "has_attachment", "from_me", "labels", "folder",
-                       "folders", "label", "captures")
+                       "folders", "label", "captures",
+                       # cr1#755: the account the message was read as; the
+                       # writer refuses a row without one on a classified seat
+                       "account",
+                       # cr1#764: what each attached file is called
+                       "attachment_names")
 
 #: The maintenance fire's own words for a stage it refused (MAINTHARD2
 #: MUST 2): the job is left due for the next run, never retried by hand.
@@ -1315,10 +1335,14 @@ def reconcile_sent_staged(workspace_root: str, *,
                           provider: Optional[str] = None,
                           exclude_captured_since: Optional[str] = None,
                           fetch_blocked: Optional[str] = None,
-                          fire: str = "end-of-day"
+                          fire: str = "end-of-day",
+                          read_complete: Optional[bool] = None,
                           ) -> Dict[str, Any]:
     """Phase A's mail leg, by path: a WRITER, on the write list only
     (EODHARD3 MUST 1 and 2).
+
+    `read_complete` (cr1#742): whether the Sent fetch reached the end of its
+    window; False holds the cursor and the receipt says the read was partial.
 
     The Sent batch was staged raw (`stage_fire_input`, kind `sent_messages`);
     this reads it beside the data, keeps `SENT_KEEP_FIELDS` of each message
@@ -1340,7 +1364,7 @@ def reconcile_sent_staged(workspace_root: str, *,
         workspace_root, messages, user_person_id=user_person_id,
         source_skill=source_skill, fired_via=fired_via, provider=provider,
         exclude_captured_since=exclude_captured_since,
-        fetch_blocked=fetch_blocked))
+        fetch_blocked=fetch_blocked, read_complete=read_complete))
 
 
 def reconcile_chat_staged(workspace_root: str, *,
@@ -1354,7 +1378,8 @@ def reconcile_chat_staged(workspace_root: str, *,
                           scan_plan: Optional[Dict[str, Any]] = None,
                           user_chat_ids: Optional[List[str]] = None,
                           user_names: Optional[List[str]] = None,
-                          fire: str = "end-of-day"
+                          fire: str = "end-of-day",
+                          read_complete: Optional[bool] = None,
                           ) -> Dict[str, Any]:
     """Phase A's chat leg, by path: a WRITER, on the write list only
     (EODHARD3 MUST 1 and 2). The chat batch staged raw (kind
@@ -1386,7 +1411,7 @@ def reconcile_chat_staged(workspace_root: str, *,
         user_names=tuple(user_names or ()),
         source_skill=source_skill, fired_via=fired_via,
         exclude_captured_since=exclude_captured_since,
-        fetch_blocked=fetch_blocked))
+        fetch_blocked=fetch_blocked, read_complete=read_complete))
 
 
 def inbound_mail_staged(workspace_root: str, *,
@@ -1399,7 +1424,8 @@ def inbound_mail_staged(workspace_root: str, *,
                         fetch_blocked: Optional[str] = None,
                         close_mode: Optional[str] = None,
                         accounts: Optional[List[Any]] = None,
-                        fire: str = "maintenance") -> Dict[str, Any]:
+                        fire: str = "maintenance",
+                        read_complete: Optional[bool] = None) -> Dict[str, Any]:
     """The inbound-mail job's writer, by path (cr1#664): a WRITER, on the
     write list only, the sibling of `reconcile_chat_staged`.
 
@@ -1428,7 +1454,8 @@ def inbound_mail_staged(workspace_root: str, *,
         workspace_root, messages, user_person_id=user_person_id,
         provider=provider, fired_via=fired_via, fetch_blocked=fetch_blocked,
         exclude_captured_since=exclude_captured_since, close_mode=close_mode,
-        accounts=accounts, source_skill=source_skill))
+        accounts=accounts, source_skill=source_skill,
+        read_complete=read_complete))
 
 
 def _staged_names(fire: str = "end-of-day") -> frozenset:
@@ -1496,9 +1523,17 @@ def run_cru_pass(workspace_root: str, *, source_ref: str = "",
                  meeting_ts: str = "", fire_start: str = "",
                  attendee_person_ids: Optional[List[str]] = None,
                  transcript_text: str = "",
-                 review_budget: Optional[Dict[str, Any]] = None
+                 review_budget: Optional[Dict[str, Any]] = None,
+                 attendee_records: Any = None,
+                 user_names: Optional[List[str]] = None
                  ) -> Dict[str, Any]:
     """Phase 4.6 in ONE call: a WRITER, on the write list only (R-2).
+
+    cr1#882: `attendee_records` (this meeting's attendee list) and
+    `user_names` (the owner's names; the workspace's own when not given)
+    ride with the transcript into the write half, where a close lands only
+    when the transcript is tight. Without `attendee_records` every close
+    proposes.
 
     The walk (`cru_walk`'s body: the walk ledger, then the matcher over the
     open set) and the write (`apply_cru_pass`: the pass's writers, then the
@@ -1522,7 +1557,10 @@ def run_cru_pass(workspace_root: str, *, source_ref: str = "",
                          meeting_ref=source_ref, transcript_ts=meeting_ts,
                          already_proposed=walked.get("already_proposed"),
                          batch_id=walked.get("batch_id"), n_stale=stale,
-                         review_budget=review_budget)
+                         review_budget=review_budget,
+                         transcript_text=transcript_text,
+                         attendee_records=attendee_records,
+                         user_names=user_names)
     out = dict(out)
     out.update({"skip": False, "n_results": len(walked.get("results") or []),
                 "stale_evidence_dropped": stale})

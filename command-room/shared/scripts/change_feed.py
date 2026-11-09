@@ -187,7 +187,7 @@ def changes_since(
         "people_added": 0, "people_linked": 0, "people_auto_linked": 0,
         "orgs_promoted": 0,
         "facts_noted": 0,
-        "cleanup_runs": 0, "maintenance_jobs": 0,
+        "cleanup_runs": 0, "maintenance_jobs": 0, "days_not_read": 0,
         "proposals_resolved": 0, "proposals_declined": 0,
         "proposals_expired": 0, "unconfirmed_expired": 0,
         # NUMBER1 3.6 (R-22) — the same split MF-11c-1 made for the
@@ -228,6 +228,9 @@ def changes_since(
         # two ages.
         "closed_from_your_word": 0, "closed_from_deal": 0,
         "rested_quiet": 0, "let_go_quiet": 0,
+        # cr1#117 - the one-time close-out of the rows from before the
+        # closure-target rule, counted off its own closes.
+        "closed_out_old": 0,
         # EXIT1 FIX ROUND 2 (review R-4) — the put-back. Their reply on a row
         # one of those rails had closed puts it back, and an act with a
         # receipt nobody reads is an act nobody sees. (review R-5) — and the
@@ -246,6 +249,7 @@ def changes_since(
         "learned": 0,
     }
     refs: dict[str, list] = {k: [] for k in counts}
+    gap_lines: list[str] = []  # cr1#746: each run's sentence, oldest first
 
     # UNCONFEXP1 — the auto-expiry's disclosure is narrated from the WRITTEN
     # closures themselves (the PID1 receipt-honesty rule: the event IS the
@@ -328,6 +332,7 @@ def changes_since(
     # receipt is written seconds after its rows and a window edge can
     # fall between them.
     job_batches = _job_batches(events)
+    closeout_run: dict = {}
 
     for pos, ev in enumerate(events):
         if not _in_window(ev):
@@ -378,6 +383,21 @@ def changes_since(
             if isinstance(n, (int, float)) and n > 0:
                 counts["maintenance_jobs"] += int(n)
                 refs["maintenance_jobs"].append(seq)
+            # cr1#746: the run's own sentence, once per long gap. A scheduled
+            # fire says nothing, so this is where the owner reads it.
+            gap = data.get("gap_unread")
+            if isinstance(gap, dict) and gap.get("line"):
+                counts["days_not_read"] += 1
+                refs["days_not_read"].append(seq)
+                if str(gap["line"]) not in gap_lines:
+                    gap_lines.append(str(gap["line"]))
+        elif etype == "pack_run" and isinstance(data.get("pre_rule_closeout"), dict):
+            # cr1#117 - what the close-out left open is on its job's receipt,
+            # not on any row, so the line reads it here. Every later run of
+            # the job writes zeros on its own receipt; those say nothing.
+            if any(data["pre_rule_closeout"].get(k)
+                   for k in ("n_closed", "n_review", "n_open_child", "n_other")):
+                closeout_run = data["pre_rule_closeout"]
         elif etype == "identity_reconcile_run" or (
                 # cr1#665: the DAILY people update runs the same writers and
                 # receipts the same counts, as a `pack_run` under its own
@@ -615,6 +635,14 @@ def changes_since(
                 if pos not in reversed_at:
                     counts["let_go_quiet"] += 1
                     refs["let_go_quiet"].append(seq)
+            # cr1#117 - the pre-rule close-out. A `dropped`: nobody said these
+            # were done, the owner ruled they may go. One line, one undo.
+            elif (data.get("pre_rule_closeout") is True
+                  and data.get("brain_batch_id")
+                  and str(data.get("resolution") or "") == "dropped"):
+                if pos not in reversed_at:
+                    counts["closed_out_old"] += 1
+                    refs["closed_out_old"].append(seq)
             # POLICY1-A D14 — a close the TRANSCRIPT closer wrote through the
             # `match` door with its fire batch (the pairing brain_undo lists):
             # the brain's own act, narrated once with its undo. A user's
@@ -742,6 +770,10 @@ def changes_since(
         row.update(extra)
         lines.append(row)
 
+    if gap_lines:
+        # One row, every run's sentence: each is said once on the book, so a
+        # brief that opened after two such fires owes the owner both.
+        _line("days_not_read", " ".join(gap_lines))
     n = counts["closed_from_sent"]
     if n:
         _line("closed_from_sent",
@@ -827,6 +859,14 @@ def changes_since(
         _line("closed_from_deal",
               f"Closed {n} {_plural(n, 'item')} the record shows signed or "
               f"paid — say `undo` to put {'it' if n == 1 else 'them'} back.")
+    n = counts["closed_out_old"]
+    kept = {k: int(closeout_run.get(k) or 0)
+            for k in ("n_review", "n_open_child", "n_other")}
+    # A run that closed nothing still says what it left; a run the owner has
+    # since undone says nothing, and the undo line speaks for it.
+    if n or (any(kept.values()) and not closeout_run.get("n_closed")):
+        from pre_rule_closeout import receipt_line as _closeout_line
+        _line("closed_out_old", _closeout_line(n, **kept))
     n = counts["rested_quiet"]
     if n:
         _line("rested_quiet",
@@ -1086,6 +1126,7 @@ NAMED_ACT_DOORS = {
     "closed_from_calendar": "the calendar",
     "closed_from_meetings": "your meetings",
     "closed_from_deal": "a signed or paid record",
+    "closed_out_old": "the old-items close-out",
     "orgs_promoted": "the deal record",
     # FIX ROUND 1, THE WRAP SEAM (coordinator's call, 2026-09-14). DOORS1's
     # four-day retraction takes a whole PILE out of the offer queue at once
@@ -1103,7 +1144,7 @@ NAMED_ACT_DOORS = {
 #: from the chip rail's per-row dismissals; DOORS1's supersede retraction
 #: writes no per-row event at all — the receipt IS the act — so this reader
 #: goes to the receipt and the generic per-seq loop skips the category.
-BATCH_ACT_DOORS = ("proposals_retracted",)
+BATCH_ACT_DOORS = ("proposals_retracted", "closed_out_old")
 
 #: The receipt DOORS1's retraction rides on, and the field that carries the
 #: size of the pile. Spelled here because that code is on another branch;
@@ -1124,6 +1165,8 @@ BATCH_ACT_TITLES = {
     # MF-6 / F-4: ONE constant, imported - the wrap and the maintenance chat
     # cannot describe one act two ways.
     "proposals_retracted": _RETRACTION_SENTENCE,
+    # cr1#117 - hundreds of rows on one old book: one line, never one each.
+    "closed_out_old": "{n} old {suggestions} closed out",
 }
 
 #: The named line. Title first — it is the only part a reader recognises.
@@ -1405,13 +1448,15 @@ def _undone_batch_ids(events) -> set:
 def _batch_acts(events, since_ts, *, now_iso=None, workspace_root=None) -> list:
     """The window's BATCH-level machine acts, one line per receipt.
 
-    Today that is DOORS1's four-day retraction and nothing else: a pile of
+    DOORS1's four-day retraction: a pile of
     suggestions nobody answered stops being offered, one receipt per pile,
     and no per-row event is written — so the row-level reader above can see
     none of it and the wrap said nothing about an act that was decided for
     the reader. The line carries its own count because there is no row to
     name, and it carries NO `undo` phrase: nothing was written, so there is
-    nothing to reverse.
+    nothing to reverse. And cr1#117's close-out, one line for a batch that
+    may run to hundreds of rows, off its job's receipt; its feed line carries
+    the `undo`.
 
     A receipt whose batch an `undo` has already reversed is skipped, the same
     fold the row-level acts take.
@@ -1428,13 +1473,20 @@ def _batch_acts(events, since_ts, *, now_iso=None, workspace_root=None) -> list:
     undone = _undone_batch_ids(events)
     out: List[dict] = []
     for ev in events or ():
-        if not isinstance(ev, dict) or ev.get("type") != RETRACTION_RECEIPT_TYPE:
+        if not isinstance(ev, dict) or ev.get("type") not in (
+                RETRACTION_RECEIPT_TYPE, "pack_run"):
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        category, noun = "proposals_retracted", "suggestion"
         try:
             n = int(data.get(RETRACTION_COUNT_FIELD) or 0)
         except (TypeError, ValueError):  # pragma: no cover
             continue
+        run = data.get("pre_rule_closeout")
+        if ev.get("type") == "pack_run":
+            if not isinstance(run, dict):
+                continue
+            category, noun, n = "closed_out_old", "item", int(run.get("n_closed") or 0)
         if n <= 0:
             continue
         batch = str(data.get("batch_id") or "").strip()
@@ -1447,12 +1499,12 @@ def _batch_acts(events, since_ts, *, now_iso=None, workspace_root=None) -> list:
             continue
         if until is not None and when > until:
             continue
-        door = NAMED_ACT_DOORS["proposals_retracted"]
-        title = BATCH_ACT_TITLES["proposals_retracted"].format(
-            n=n, suggestions=("suggestion" if n == 1 else "suggestions"))
+        door = NAMED_ACT_DOORS[category]
+        title = BATCH_ACT_TITLES[category].format(
+            n=n, suggestions=(noun if n == 1 else noun + "s"))
         date = _act_date(workspace_root, ev.get("ts"))
         out.append({"title": title, "door": door, "date": date,
-                    "category": "proposals_retracted", "ref": ev.get("seq"),
+                    "category": category, "ref": ev.get("seq"),
                     "n": n,
                     "line": NAMED_ACT_LINE.format(title=title, door=door,
                                                   date=date)})

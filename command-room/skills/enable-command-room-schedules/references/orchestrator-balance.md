@@ -18,21 +18,21 @@ Post exactly the line below, as the ENTIRE chat turn, then STOP.
 
 Build it from `schedule_config.retirement_line("balance")` rather than retyping it — the registry is what keeps this wording identical to the one the update bridge and `change-schedule` use, and three hand-typed copies of a sentence are three chances to describe the same retirement three ways.
 
-> *Your Balance chat is off the schedule — it needs a connected personal calendar and months of history behind it before it can say anything true about your time, and without those it fires weekly with nothing to tell you. Nothing is lost — say `balance check` any time and it runs on the spot. It comes back when there's a personal calendar connected and enough history behind it to be honest about what has gone quiet.*
+> *Your Balance chat is off the schedule — it needs a connected personal calendar and months of history behind it before it can say anything true about your time, and without those it fires weekly with nothing to tell you. The Balance skill is retired as well — say `who should I reach out to` for the people worth a note, or `remind me about [thing] on [day]` to keep an evening in view. It comes back when there's a personal calendar connected and enough history behind it to be honest about what has gone quiet.*
 
 Do NOT offer to re-register it, do NOT propose an alternative schedule, and do NOT compute a nudge, read a calendar, or draft a reconnect "just this once." **Do not offer a `pause` either** — that is the ELIMINATED class's line, and here it would ask the customer to perform a tap the update has already taken.
 
-## Where the work went — nowhere. It is on demand.
+## Where the work went
 
-This is what separates a readiness retirement from an elimination: the surface was not replaced, it was taken off the clock.
+The scheduled fire came off the clock first (TASKRET1), and the on-demand skill followed on 2026-11-06 (cr1#552, the owner's ruling): `skills/balance/` is gone, and `balance check` / `how's my white space` / `plan a date night` hear one retired line from workspace-manager (`retired_skill_lines.BALANCE_RETIRED`), which points at `who should I reach out to` and `remind me about [thing] on [day]`.
 
 | The Sunday chat did | Now |
 |---|---|
-| Surfaced the coldest personal tie pinned to a genuinely open evening, with the reconnect pre-drafted | `skills/balance/SKILL.md`, unchanged and fully live. Say `balance check` (or `how's my white space` / `plan a date night`) and the identical computation runs on the spot, under the same personal-lane firewall and the same propose-and-confirm rule — it still never books, sends, or spends without a click. |
-| Refused honestly when no personal calendar was declared | The same refusal, on the on-demand run. That refusal is exactly why the scheduled fire came out: a weekly chat whose most common outcome is "I can't answer this yet" is a weekly reminder that the product cannot help, and most workspaces never declared a personal calendar. |
+| Surfaced the coldest personal tie pinned to a genuinely open evening, with the reconnect pre-drafted | Nothing computes this any more. The computation module stays in the shared library for the readers that still import it; no surface renders a nudge. |
+| Refused honestly when no personal calendar was declared | That refusal is exactly why the scheduled fire came out: a weekly chat whose most common outcome is "I can't answer this yet" is a weekly reminder that the product cannot help, and most workspaces never declared a personal calendar. |
 | Held the Sunday 8 AM slot | Nothing. The slot is empty again. |
 
-Personal ties, `cadence_days`, and `workspace.personal_calendars` are untouched by this retirement — they are the customer's data, they keep their meaning, and they are what the on-demand surface reads. Declaring a personal calendar still works and still improves the on-demand answer; it simply no longer registers a weekly chat.
+Personal ties, `cadence_days`, and `workspace.personal_calendars` are untouched by either retirement — they are the customer's data and they keep their meaning (the personal lane still partitions outreach and reporting). Declaring a personal calendar still works; it simply no longer registers a chat or promises a surface.
 
 ## What brings it back
 

@@ -2499,6 +2499,11 @@ def _is_system_question(event_type: str, data: dict) -> bool:
         return is_non_dismissal_closure(d)
     if event_type != "commitment_updated":
         return False
+    if d.get("board_followed") and not (d.get("new_due") or d.get("new_title")):
+        # cr1#766: the board follow's record of what it last saw on the
+        # board. It changes nothing on the item; a real change it makes is
+        # its own event and stays a touch.
+        return True
     if not (d.get("asked_set") or d.get("asked_cleared")):
         return False
     from commitment_activity import SUBSTANTIVE_UPDATE_KEYS

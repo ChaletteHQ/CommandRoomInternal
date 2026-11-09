@@ -9,7 +9,7 @@ invoices are still in progress, we will talk it through sometime next week")
 passed the commitment-language test and was written as a fresh, dated
 waiting-on item. The restatement dedup (`capture_gate.matches_open_commitment`)
 did not merge it, because a status line shares one topic word with the
-tracked row and its bar is three words or half the title. So the lane minted
+tracked row, and that test asks for far more than one. So the lane minted
 a second promise out of a progress report on the first one.
 
 THE RULE (SPEC_INCAP2 DD-1)

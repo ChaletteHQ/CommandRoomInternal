@@ -767,7 +767,10 @@ class LegacyBackend:
         recurrence: Optional[str] = None,
         **_ignored: Any,
     ) -> Planned:
-        """Today's arguments, today's names. Nothing about this path changes."""
+        """Today's arguments, today's names, for any chat that may register."""
+        shelved = _shelved_refusal(task_id)
+        if shelved is not None:
+            return shelved
         args: dict = {
             "taskId": task_id,
             "prompt": prompt,
@@ -974,9 +977,23 @@ COCKPIT_TASK_PREFIX = "cockpit-"
 #: The one-task cockpit of cr1#614, superseded by the four; the bridge removes it.
 ONE_TASK_COCKPIT_ID = "cockpit"
 
-REINSTALL_LINE = ("Your scheduled chats were reinstalled: {kept} are set up fresh; "
+REINSTALL_LINE = ("Your scheduled chats were reinstalled: {kept} {kept_verb} set up fresh; "
                   "{removed} were removed, because the Command Room Hub shows them now "
                   "(their typed phrases still work).")
+#: cr1#889: with only the chats actually gone named, one name is possible.
+REINSTALL_LINE_ONE = ("Your scheduled chats were reinstalled: {kept} {kept_verb} set up fresh; "
+                      "{removed} was removed, because the Command Room Hub shows it now "
+                      "(its typed phrase still works).")
+#: cr1#890: said for a chat the reinstall keeps whose create this scheduler
+#: refused: the working chat was not deleted.
+REINSTALL_KEPT_AS_WAS_LINE = "{names} was left as it was, because it could not be set up again here."
+#: cr1#889: said for a chat the reinstall keeps that could not be set up.
+REINSTALL_NOT_SET_UP_LINE = ("{names} could not be set up; say `set up command room "
+                             "schedules` to add it.")
+REINSTALL_NOT_SET_UP_BARE_LINE = ("{names} could not be set up: say `change my schedule` to pick "
+                                  "another time, then `set up command room schedules` to add it.")
+#: cr1#890: the advice instead, when the owner's own time is what was refused.
+REINSTALL_OWN_TIME_ADVICE = " Your own time for it is one this scheduler will not take: say `change my schedule` to pick another."
 #: Said when the bridge removed the one-task Hub of the first build (cr1#679).
 HUB_ONE_TASK_LINE = "Your Command Room Hub needs its new tasks: say `update my hub`."
 REINSTALL_NOTHING_LINE = "Your scheduled chats were already the reinstalled set; nothing changed."
@@ -994,8 +1011,10 @@ def reinstall_line(created_names, removed_names) -> str:
         return REINSTALL_NOTHING_LINE
     if not removed:
         return REINSTALL_CREATED_ONLY_LINE.format(kept=_join_names(created))
-    return REINSTALL_LINE.format(kept=_join_names(created) or "nothing",
-                                 removed=_join_names(removed) or "none")
+    template = REINSTALL_LINE_ONE if len(removed) == 1 else REINSTALL_LINE
+    return template.format(kept=_join_names(created) or "nothing",
+                           kept_verb="are" if len(created) > 1 else "is",
+                           removed=_join_names(removed))
 
 
 def record_trigger_map(workspace_root, task_id: str, row: dict,
@@ -1299,6 +1318,9 @@ class CloudTriggersBackend:
         on_date=None,
         run_once_at: Optional[str] = None,
     ) -> Planned:
+        shelved = _shelved_refusal(task_id)
+        if shelved is not None:
+            return shelved
         gate = self.registration_gate()
         if not gate["allowed"]:
             return Refusal(
@@ -1897,6 +1919,72 @@ def _rec_get(rec, key):
     return rec.get(key) if isinstance(rec, dict) else None
 
 
+def place_listing_rows(registered, *, basename: str, task_ids=None,
+                       trigger_map: Optional[dict] = None) -> list:
+    """The listing with each raw row given its task id (cr1#923, cr1#733).
+
+    A raw trigger row (`{trigger_id | id, name, ...}`) carries no `taskId`;
+    only `normalize` sets one. A row is this folder's task by its exact name
+    (`trigger_name(task_id, basename)`), or by the trigger id the stored map
+    holds for it, which is what finds a task the owner renamed. A row that
+    already has a task id, and a name for another folder, come through as
+    they were. Never raises; the input is not changed."""
+    sc = _schedule_config()
+    ids = list(task_ids) if task_ids is not None else (
+        list(sc.DEFAULT_SCHEDULES) + [t for t in sc.SILENT_TASKS
+                                      if t not in sc.DEFAULT_SCHEDULES])
+    names = {}
+    if basename:
+        for tid in ids:
+            try:
+                names[trigger_name(tid, basename)] = tid
+            except Exception:  # noqa: BLE001 - an unknown id names nothing
+                continue
+    by_trigger = {}
+    wanted = set(ids)
+    for tid, row in (trigger_map or {}).items():
+        if tid in wanted and isinstance(row, dict) and row.get("trigger_id"):
+            by_trigger[str(row["trigger_id"])] = tid
+    out = []
+    for rec in registered or []:
+        if isinstance(rec, dict) and not rec.get("taskId"):
+            trig = rec.get("trigger_id") or rec.get("id")
+            name = rec.get("name")
+            tid = (names.get(name) if isinstance(name, str) else None) \
+                or (by_trigger.get(str(trig)) if trig else None)
+            if tid:
+                rec = dict(rec, taskId=tid, trigger_id=trig)
+        out.append(rec)
+    return out
+
+
+def duplicate_tasks(records, *, basename: str = "") -> dict:
+    """`{task_id: [trigger_id, ...]}` for every task running more than once
+    among `records` (cr1#923): each copy fires, so the task runs twice.
+
+    Only copies that fire count: a paused copy (`enabled is False`) does not,
+    and one trigger listed twice (overlapping pages, or a raw row beside its
+    normalized record) is one copy. With a `basename`, a record whose name is
+    another folder's (`... - Command Room (<other>)`) is not this folder's
+    copy: `normalize` reads identity from the name's prefix alone, so two
+    workspaces' Maintenance would otherwise read as one task twice."""
+    suffix = f" - Command Room ({basename})" if basename else ""
+    seen: dict = {}
+    for rec in records or []:
+        tid = _rec_get(rec, "taskId")
+        if not tid or _rec_get(rec, "enabled") is False:
+            continue
+        name = _rec_get(rec, "name") or _rec_get(rec, "description")
+        if (suffix and isinstance(name, str) and " - Command Room (" in name
+                and not name.endswith(suffix)):
+            continue
+        trig = _rec_get(rec, "trigger_id")
+        copies = seen.setdefault(str(tid), [])
+        if trig is None or trig not in copies:
+            copies.append(trig)
+    return {tid: trigs for tid, trigs in seen.items() if len(trigs) > 1}
+
+
 def compose_registration_body(task_id: str, *, basename: str,
                               plugin_version: str, abs_path: str,
                               writer_pair=None, discover_block=None,
@@ -1941,11 +2029,17 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     """Plan the whole registration for THIS seat (MUST 4). Pure: no call.
 
     Returns `{"ok", "reason", "line", "backend", "pair", "creates",
-    "updates", "current", "refused"}`:
+    "updates", "current", "refused", "duplicates"}` (`duplicates`: each task
+    this folder has registered more than once, `{task_id: [trigger_id]}`,
+    cr1#923). A raw listing row is placed by its exact name or stored trigger
+    id first (`place_listing_rows`), so an unnormalised listing never plans a
+    second copy of a task it already carries:
       * the availability guard refuses (no scheduler, a shut gate, or - on
         the cloud backend - no bakeable writer pair) -> `ok: False` with its
         ONE sentence and nothing planned;
-      * otherwise per task: no registered record -> a `plan_create`; a record
+      * otherwise per task: a shelved id with no registered record -> refused
+        with its `shelved_line` (cr1#847: no path registers one); no registered
+        record -> a `plan_create`; a record
         whose prompt is None -> skipped (unknown, never rewritten); a record
         for ANOTHER workspace folder -> refused with its sentence; a record
         whose body `prompts_equivalent` the composed one -> `current` (no
@@ -1997,7 +2091,8 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
                                       writer_pair=writer_pair, env=env)
     out = {"ok": False, "reason": avail.get("reason"),
            "line": avail.get("line") or "", "backend": None, "pair": None,
-           "creates": [], "updates": [], "current": [], "refused": []}
+           "creates": [], "updates": [], "current": [], "refused": [],
+           "duplicates": {}}
     if not avail.get("available"):
         return out
     backend, _found = select_backend(sc._tool_names(tools))
@@ -2019,6 +2114,12 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
         out["reason"] = REASON_FOREIGN_FOLDER
         out["line"] = FOREIGN_FOLDER_LINE
         return out
+    stored = _resolve_trigger_map(trigger_map, workspace_root or None)
+    # cr1#923: a raw listing row has no `taskId` until it is placed. Unplaced,
+    # it read as no chat, and `set up command room schedules` after the Hub
+    # set-up created Maintenance a second time.
+    registered = place_listing_rows(registered, basename=basename,
+                                    task_ids=task_ids, trigger_map=stored)
     seat = seat_records(registered, abs_path=path,
                         declaration=(declaration if declaration is not None
                                      else _read_declaration(workspace_root)))
@@ -2032,11 +2133,16 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     out.update(ok=True, reason=None, line="", backend=backend.id, pair=pair)
     on_date = on_date or _dt.date.today()
     by_task = _registered_by_task(seat["own"])
-    stored = _resolve_trigger_map(trigger_map, workspace_root or None)
+    out["duplicates"] = duplicate_tasks(seat["own"], basename=basename)
     if uncomposed_current:
         out["not_compared"] = []
     for task_id in task_ids or []:
         rec = by_task.get(task_id)
+        if rec is None and sc.is_shelved(task_id):
+            out["refused"].append({"task_id": task_id,
+                                   "line": sc.shelved_line(task_id),
+                                   "reason_code": REASON_SHELVED})
+            continue
         body = None
         if not uncomposed_current or composer_reachable(task_id, plugin_root):
             body = compose_registration_body(
@@ -2093,6 +2199,19 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
             out["updates"].append(plan)
     return out
 
+
+#: cr1#847 - a shelved chat is never registered by any path.
+REASON_SHELVED = "shelved"
+
+
+def _shelved_refusal(task_id: str) -> Optional[Refusal]:
+    """The refusal both backends' `plan_create` return for a shelved id, so the
+    code route is closed whatever calls it; None for any other id."""
+    sc = _schedule_config()
+    if not sc.is_shelved(task_id):
+        return None
+    return Refusal(line=sc.shelved_line(task_id), reason_code=REASON_SHELVED,
+                   task_id=task_id)
 
 #: SCHEDREG1 review B-3 - a registration bound to a folder that is not this
 #: workspace's is refused, in one sentence a customer can act on.
@@ -2279,7 +2398,10 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
     CREATES, fresh; the cockpit's own tasks are never touched. The answer
     adds `removals` (one `CallPlan` per trigger, with its display name),
     `removed_names`, `created_names` and `reinstall_line`, the one sentence
-    the bridge says. A seat whose listing carries nothing of Command Room's
+    the bridge says, and `gone_ids`, the removed ids with no create (cr1#889:
+    a chat deleted and set up fresh is not gone, so it is neither named as
+    removed nor forgotten by `record_removals`). The creates carry the
+    customer's own times (cr1#890). A seat whose listing carries nothing of Command Room's
     plans the creates alone; a legacy scheduler refuses with the invite line
     as before, because it has no delete.
     """
@@ -2354,6 +2476,33 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
 BODIES_NOT_COMPARED_NOTE = "bodies not compared here"
 
 
+def _with_tail(line: str, tail: str) -> str:
+    """The reinstall line with its extra sentences. When the line alone would
+    say nothing changed and a sentence follows, that sentence is the line:
+    something did happen (cr1#889 review)."""
+    if tail.strip() and line == REINSTALL_NOTHING_LINE:
+        return tail.strip()
+    return line + tail
+
+
+def _reinstall_crons(workspace_root, task_ids) -> dict:
+    """cr1#890: the cron each chat the reinstall sets up fresh is created
+    with, from the customer's own schedule (`load_schedule_config`: their
+    override when they moved it, a renamed predecessor's when it carries one,
+    else the shipped default). An unreadable folder gives `{}`, which is
+    today's shipped defaults."""
+    if not str(workspace_root or "").strip():
+        return {}
+    sc = _schedule_config()
+    try:
+        merged = sc.load_schedule_config(
+            Path(workspace_root) / "_hq" / "data" / "entities.json")
+    except Exception:  # noqa: BLE001 - a plan never raises on a config read
+        return {}
+    return {tid: merged[tid]["cron"] for tid in task_ids
+            if isinstance(merged.get(tid), dict) and merged[tid].get("cron")}
+
+
 def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
                            plugin_version, tz_name, writer_pair, discover_block,
                            on_date, plugin_root, env) -> dict:
@@ -2363,7 +2512,8 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     out: Dict[str, Any] = {"ok": False, "first_registration_needed": False,
                            "reinstall": True, "line": "", "creates": [], "updates": [],
                            "current": [], "refused": [], "removals": [],
-                           "removed_names": [], "created_names": [], "reinstall_line": ""}
+                           "removed_names": [], "created_names": [], "reinstall_line": "",
+                           "gone_ids": []}
     if backend is None or backend.id != "cloud":
         out["line"] = sc.setup_invite_line(
             tools, workspace_root=workspace_root, abs_path=abs_path, env=env,
@@ -2388,12 +2538,14 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
             # cr1#679: the one-task Hub of the first build is not a chat the
             # Hub replaced; the line says to set the Hub up instead of naming it.
             out["hub_one_task_removed"] = True
-            continue
-        out["removed_names"].append(sc.task_display_name(tid))
+    # cr1#890: the chats set up fresh keep the customer's own time. Without
+    # `crons` every create took the shipped default, so a moved Morning Brief
+    # or Maintenance came back at the default hour with nothing said.
     planned = plan_registration(
         tools, workspace_root=workspace_root, abs_path=abs_path,
         task_ids=sorted(sc.FIRST_INSTALL_TASK_IDS), registered=[],
         plugin_version=plugin_version, tz_name=tz_name, writer_pair=writer_pair,
+        crons=_reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS),
         discover_block=discover_block, on_date=on_date, plugin_root=plugin_root,
         env=env, trigger_map={})
     if not planned.get("ok"):
@@ -2404,8 +2556,73 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     out.update(ok=True, backend=backend.id, pair=planned.get("pair"),
                creates=list(planned.get("creates") or []),
                refused=list(planned.get("refused") or []))
+    fresh = {p.task_id for p in out["creates"]}
+    # cr1#890 review: a chat the reinstall keeps whose create this scheduler
+    # refuses (the owner's own time crosses midnight in world time or fires
+    # too often, an unknown zone) is never deleted: its working chat stays as
+    # it is, at the time it runs now, and the line says so. With no chat to
+    # keep, the line says it could not be set up.
+    crons = _reinstall_crons(workspace_root, sc.FIRST_INSTALL_TASK_IDS)
+    reasons = {str((r or {}).get("task_id") or ""): (r or {}).get("reason_code")
+               for r in out["refused"]}
+    tail = ""
+    for tid in sorted(sc.FIRST_INSTALL_TASK_IDS):
+        if tid in fresh:
+            continue
+        name = sc.task_display_name(tid)
+        mine = [p for p in out["removals"] if p.task_id == tid]
+        if mine:
+            out["removals"] = [p for p in out["removals"] if p.task_id != tid]
+            tail += " " + REINSTALL_KEPT_AS_WAS_LINE.format(names=name)
+            # The kept chat still gets this version's instructions: a
+            # prompt-only update, its time untouched.
+            trig = {str(p.args.get("trigger_id")) for p in mine}
+            for rec in [r for r in records if str(_rec_get(r, "trigger_id")) in trig]:
+                refresh = plan_registration(
+                    tools, workspace_root=workspace_root, abs_path=abs_path,
+                    task_ids=[tid], registered=[rec], plugin_version=plugin_version,
+                    tz_name=tz_name, writer_pair=writer_pair,
+                    discover_block=discover_block, on_date=on_date,
+                    plugin_root=plugin_root, env=env, trigger_map={})
+                if refresh.get("ok"):
+                    out["updates"].extend(refresh.get("updates") or [])
+        own = ((crons.get(tid) or "") != ((sc.DEFAULT_SCHEDULES.get(tid) or {}).get("cron") or "")
+               and reasons.get(tid) not in (None, "unknown_timezone", REASON_SHELVED))
+        if not mine:
+            tail += " " + (REINSTALL_NOT_SET_UP_BARE_LINE if own
+                           else REINSTALL_NOT_SET_UP_LINE).format(names=name)
+        if own and mine:
+            tail += REINSTALL_OWN_TIME_ADVICE
     out["created_names"] = [sc.task_display_name(p.task_id) for p in out["creates"]]
-    out["reinstall_line"] = reinstall_line(out["created_names"], out["removed_names"])
+    # cr1#889: a chat deleted and set up fresh in the same run is not gone.
+    # Only the ids with no create are named as removed, and only they are what
+    # the bridge's record step forgets (`gone_ids`): forgetting a chat set up
+    # fresh would drop the trigger row its create had just written.
+    for plan in out["removals"]:
+        tid = plan.task_id
+        if tid in fresh or tid in out["gone_ids"]:
+            continue
+        out["gone_ids"].append(tid)
+        if tid != ONE_TASK_COCKPIT_ID:
+            out["removed_names"].append(sc.task_display_name(tid))
+    out["reinstall_line"] = _with_tail(
+        reinstall_line(out["created_names"], out["removed_names"]), tail)
+    # cr1#889 review: a create whose CALL fails at execution is gone too. The
+    # skill says, instead of `reinstall_line`, the line composed here for the
+    # set of creates that failed (ids sorted, joined by commas), so a chat
+    # that failed is never reported as set up.
+    out["lines_if_failed"] = {}
+    ids = sorted(fresh)
+    for mask in range(1, 2 ** len(ids)):
+        failed = [t for i, t in enumerate(ids) if mask & (1 << i)]
+        kept = [sc.task_display_name(p.task_id) for p in out["creates"]
+                if p.task_id not in failed]
+        line = _with_tail(reinstall_line(kept, out["removed_names"]), tail + "".join(
+            " " + REINSTALL_NOT_SET_UP_LINE.format(names=sc.task_display_name(t))
+            for t in failed))
+        if out.get("hub_one_task_removed"):
+            line += " " + HUB_ONE_TASK_LINE
+        out["lines_if_failed"][",".join(failed)] = line
     if out.get("hub_one_task_removed"):
         out["reinstall_line"] += " " + HUB_ONE_TASK_LINE
     return out
@@ -2625,6 +2842,8 @@ def scheduled_chat_rows(raw_records, *, workspace_root=None, tz_name: str = "",
                                 workspace_root=workspace_root, tz_name=tz_name)
     records = this_seat_chat_records(records, device_path)
     by_task = _registered_by_task(records)
+    here = str(device_path or "").replace("\\", "/").rstrip("/")
+    dupes = duplicate_tasks(records, basename=here.rsplit("/", 1)[-1] if here else "")
     ids = list(task_ids) if task_ids is not None else list(sc.DEFAULT_SCHEDULES)
     rows = []
     for task_id in ids:
@@ -2642,8 +2861,21 @@ def scheduled_chat_rows(raw_records, *, workspace_root=None, tz_name: str = "",
             when = ""
         rows.append({"task_id": task_id, "name": name, "time": when,
                      "enabled": _rec_get(rec, "enabled"),
-                     "registered": True})
+                     "registered": True,
+                     "copies": len(dupes.get(task_id) or []) or 1})
     return rows
+
+
+def copies_note(copies) -> str:
+    """The flag a row registered more than once carries (cr1#923), or ""."""
+    try:
+        n = int(copies or 1)
+    except (TypeError, ValueError):
+        return ""
+    if n < 2:
+        return ""
+    times = "twice" if n == 2 else f"{n} times"
+    return f" (set up {times}, so it runs {times})"
 
 
 #: What a not-yet-registered row says instead of a time (MUST 6).
@@ -2695,9 +2927,11 @@ def scheduled_chat_lines(rows) -> list:
         if not row.get("registered"):
             lines.append(f"{row['name']} — {NOT_RUNNING_YET}")
         elif row.get("enabled") is False:
-            lines.append(f"{row['name']} — {row['time']} (paused)")
+            lines.append(f"{row['name']} — {row['time']} (paused)"
+                         + copies_note(row.get("copies")))
         else:
-            lines.append(f"{row['name']} — {row['time']}")
+            lines.append(f"{row['name']} — {row['time']}"
+                         + copies_note(row.get("copies")))
     return lines
 
 

@@ -63,9 +63,12 @@ Resolve first, once:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -239,7 +242,7 @@ Parse response: list of threads with messages, dates, senders, subjects, snippet
 One dict per fetched thread — the connector's own values, never reformatted:
 
 - `thread_id`, `message_id` — the connector's own ids from the Phase 3 fetch (never a draft id, F-22); `ts` — the latest message's raw ISO-8601 timestamp (EVORDER reads it; a display date is worse than none); `url` — the thread URL the connector returned, if any.
-- `sender_email`, `sender_name`, and `sender_person_id` when the sender resolves in `entities.json` + `aliases.json` (else `""` — the thread still goes in); `subject`; `body` — the latest INBOUND message's plaintext; `has_attachment` — the connector's flag or nothing (never inferred from "attached").
+- `sender_email`, `sender_name`, and `sender_person_id` when the sender resolves in `entities.json` + `aliases.json` (else `""` — the thread still goes in); `subject`; `body` — the latest INBOUND message's plaintext; `has_attachment` — the connector's flag or nothing (never inferred from "attached"). `attachment_names`: the connector's own name for each attached file, as a list, or nothing (never inferred from the body). A file with no name is only ever a proposal, so read the names.
 - `from_me: true` when the newest message on the thread is the CEO's own — such a thread contributes nothing to the surface or the capture (outbound promises belong to `reconcile-sent`).
 - `kind` — `email_reply` (default), `calendar_invite` (a `text/calendar` part, or an invitation-shaped sender and subject), or `noise` with `noise_class` one of `listings`, `marketing`, `calendar` (automated reminders, not invites), `security`, `self_test` (sender is the CEO's own address). A noise thread needs only `kind`, `noise_class` and its ids — it is counted, never shown.
 - `score` — the hard-coded priority score below. The learned sender rules are applied INSIDE the call, after your score, exactly where they always ran; do not apply them yourself.

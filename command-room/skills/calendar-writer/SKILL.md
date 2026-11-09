@@ -245,7 +245,7 @@ On dispatch:
    **On helper failure, do NOT swallow silently (FIX1 item 23).** If `match_calendar_to_commitments` (or the append) raises, log the error to `CONFLICTS.md` per `shared/RELIABILITY.md` AND add one line to the Phase 7 confirm: `(Couldn't verify whether this closed any open commitments — check tomorrow's Commitments list.)` The Phase 2.7 daily backstop is still the safety net, but the user is told the real-time leg didn't complete instead of being left to assume it did.
 5. If the user opted into call-prep auto-fire (via a secondary widget option or follow-up turn), write a scheduled-task entry for call-prep at `scheduled_at_ts - 24h`.
 
-On `1 skip`: abort. Write a `chat_dismissal` event for substrate visibility (so M can see in show-my-list that an invite was drafted but not sent). Do NOT call Calendar MCP.
+On `1 skip`: abort. Write a `chat_dismissal` event for substrate visibility (so the record shows an invite was drafted but not sent; `show muted` lists the live mute). Do NOT call Calendar MCP.
 
 **The contract — never silently create:**
 - ❌ Phase 5 must not call the discovered calendar create tool (event creation is the explicit user-action).
@@ -317,9 +317,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

@@ -94,9 +94,12 @@ every code block below runs with cwd = `$PLUGIN_ROOT` (that is what makes the
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -343,7 +346,7 @@ so nothing leaks as a stray positive:
 
 - chart of accounts — finance vocabulary, not a chart ask (the one recorded
   collision phrase in this workspace; owned by nobody, matches nothing).
-- build the board pack / a board pack — board-pack-assembler (its pipeline
+- build the board pack / a board pack — retired (cr1#552; workspace-manager says so in one line; formerly board-pack-assembler, whose pipeline
   appendix already carries charts mid-flow).
 - operator report — operator-report (the richer lift narrative).
 - value receipt — value-receipt (its quarterly roll-up already carries the MoM

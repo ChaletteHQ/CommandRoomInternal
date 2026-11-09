@@ -250,7 +250,7 @@ echo "CR_WORKSPACE=$CR_WORKSPACE"
      cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py install --out "/mnt/user-data/outputs" --ws "<the discovery JSON's ws>" --device-path "<WORKSPACE_ABSOLUTE_PATH>"
      ```
 
-     It prints one JSON line. Call `mcp__remote-devices__device_commit_files` with its `device_commit_files` list exactly as printed (each `stagedPath` and `devicePath`; the zip is built under `/mnt/user-data/outputs`, the only place the commit tool takes a file from, and `devicePath` names the folder the way your computer does, cr1#651), then run its `verify_line` through `device_bash`, unchanged. No approval card is involved: the folder grant from Step 0 is the permission, as it is for the update's own install step. Then run point 1's block again and compare once more. A match → continue to point 3. Still missing or different, or any of the three calls failed → the runtime could not be brought current: post the message below and STOP. **Restage at most once per run.**
+     It prints one JSON line. Call `mcp__remote-devices__device_commit_files` with its `device_commit_files` list exactly as printed (each `stagedPath` and `devicePath`; the zip is built under `/mnt/user-data/outputs`, the only place the commit tool takes a file from, and `devicePath` names the folder the way your computer does, cr1#651), then run its `verify_line` through `device_bash`, unchanged. No approval card is involved: the folder grant from Step 0 is the permission, as it is for the update's own install step. Then run point 1's block again and compare once more. A match → continue to point 3. Still missing or different, or any of the three calls failed → the runtime could not be brought current: write the Step 1.35 stop record (`runtime_missing`; with no runtime beside the folder that write may itself fail, which is never said), post the message below and STOP. **Restage at most once per run.**
    - otherwise the runtime matches the resolved plugin — continue, whatever this prompt's `plugin-version` stamp says. A stamp older than `expect`'s `plugin_version` is registration drift for the watchdog to report, not a reason to stop this fire.
 
    If `expect` cannot be run at all (no output, or output that is not JSON), continue: the runtime was found and probed in point 1, and point 5 proves it actually works. Stopping a fire on a failed self-check the customer cannot clear is the failure this step exists to avoid.
@@ -281,6 +281,14 @@ If either branch prints `ABORT_WORKSPACE_NOT_FOUND`, ask Step 1.5's retirement q
 
 > ⚠️ Command Room's scheduled chat `<TASK_ID>` could not reach your workspace folder from this run, so it did nothing. Open a new chat with your Command Room folder attached and say `set up command room schedules` to re-bind.
 
+## Step 1.35, every STOP from here on leaves one record (cr1#603)
+
+Six days of silence on one seat left no row, receipt or line saying what stopped every chat. From this step on, a STOP writes ONE `fire_stopped` row before it posts its line, through the write door and nothing else, rendered HERE like every access-layer line in this file:
+
+`cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "receipts:log_fire_stopped", "args": {"workspace_root": "<vm_path>", "task_id": "<TASK_ID>", "abort_code": "<the code below>"}}'`
+
+The codes, one per stop: `runtime_missing` (Step 1.3's merged branch, the runtime could not be brought current), `root_blocked` (Step 1.4), `retired` and `foreign_scheduled_writer` (Step 1.5), `contract_marker` (Step 2), `migration_gate` (Step 2.4). Run it, read nothing from its answer, then post the stop's own line exactly as that step says: an `ok: false` here never changes the stop and is never said. This is the one write a retired or foreign chat makes, and it is not a receipt: the watchdog still reads the chat as stopped, and the health check reads this row to say why. Stops before this step (Step 0's folder card, Step 1's missing plugin, Step 1.3's missing workspace) have no folder to write into and leave nothing; the health check names those by their silence.
+
 ## Step 1.4 — Fire-time root guard (SPEC PATHREPAIR1)
 
 Step 1.3 found a LIVE `$WORKSPACE` — but that is not the same question as whether this workspace's OWN registration record (`_hq/workspace_config.json`'s `workspace_root`) still agrees with it. A folder rename or move leaves the stored value stale even on a fire that resolved fine: this step corrects that stale self-reference against the now-confirmed live `$WORKSPACE`, or aborts loudly rather than letting a chat keep running on a registration nobody can trust.
@@ -291,7 +299,7 @@ Ask the guard through the access layer — ONE rendered `run_helper` form, the s
 
 (rendered HERE, in the container, like every access-layer line in this file — then the ONE line it prints runs in this shell on the legacy and mounted shapes and is pasted into `device_bash` unchanged on the device shape. The same holds for every fire question below. A line rendered on the device carries no identity, so the scheduled-writer question would answer `foreign: true` for this workspace's own chat.)
 
-**The envelope IS the answer.** Its `result` carries `blocked`, `state` and `detail`; nothing parses it a second time. `result.blocked: true` → post the message below as the whole turn and STOP. Anything else → continue to Step 1.5.
+**The envelope IS the answer.** Its `result` carries `blocked`, `state` and `detail`; nothing parses it a second time. `result.blocked: true` → write the Step 1.35 stop record (`root_blocked`), post the message below as the whole turn and STOP. Anything else → continue to Step 1.5.
 
 **`ok: false` is the FALL-THROUGH, never a short-circuit** — the same posture Step 1.5 takes below. If the helper cannot be reached at all, or the envelope comes back `ok: false` for any reason, treat it as `blocked: false` and let the fire proceed unchanged. This is the ONE place in this file where an `ok: false` is not a stop, and the reason is the one this step has always given: a live chat must never be silenced by a hiccup in a guard that was only ever a belt. The cost of guessing wrong in that direction is one unchecked fire; the cost of guessing wrong in the other is a working chat that goes quiet and never says why.
 
@@ -319,7 +327,7 @@ Then ask the registry through the same door, with ONE rendered `run_helper` form
 
 Membership AND class come from the registry, never from a name anyone remembers. A RENAMED row is deliberately NOT retired: its orchestrator is the live successor pack, so that chat keeps firing the real surface forever. Every other retired class — eliminated, readiness, and any class the registry grows later — answers `retired: true`, which is the safe direction, because the file such an id resolves to is a stub that can only post one line anyway.
 
-**The envelope IS the answer.** If `result.retired` is true: post `result.line` in chat, exactly as it came back, as the ENTIRE chat turn — then STOP. **Skip Step 2 and Step 3 completely.** No widget, no scans, no connector reads, no substrate writes of any kind — not even a receipt; a retired chat that keeps writing receipts is a retired chat that still looks alive. Do NOT offer to re-register the task, do NOT propose an alternative schedule, and do NOT run any part of the old prompt "just this once."
+**The envelope IS the answer.** If `result.retired` is true: write the Step 1.35 stop record (`retired`), then post `result.line` in chat, exactly as it came back, as the ENTIRE chat turn — then STOP. **Skip Step 2 and Step 3 completely.** No widget, no scans, no connector reads, no other substrate write of any kind — not a receipt; a retired chat that keeps writing receipts is a retired chat that still looks alive (the stop record is not a receipt and never makes it look alive). Do NOT offer to re-register the task, do NOT propose an alternative schedule, and do NOT run any part of the old prompt "just this once."
 
 **Do not append a deregistration suggestion of your own.** The line already carries the right one for its class, and the classes disagree on purpose: an ELIMINATED chat's line offers the `pause` that clears it, while a READINESS retirement's line deliberately offers none — the update that retired it already switched the task off, and asking the customer to perform a tap the product has already taken reads as the product not knowing its own state. `schedule_config.retirement_line` is the ONE renderer for this sentence; whatever it printed is the whole message.
 
@@ -327,7 +335,7 @@ Then ask ONE more question through the same door — is THIS chat the workspace'
 
 `cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "fire_guards:scheduled_writer", "args": {"root": "<vm_path>"}}'`
 
-If `result.foreign` is true: post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. No write of any kind, no widget, no receipt. `ok: false` here is the same fall-through as the retirement question (R-FIX3-2's exception): proceed.
+If `result.foreign` is true: write the Step 1.35 stop record (`foreign_scheduled_writer`; it is the one write the door lets a foreign chat make), then post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. No other write of any kind, no widget, no receipt. `ok: false` here is the same fall-through as the retirement question (R-FIX3-2's exception): proceed.
 
 If `result.retired` is false, continue to Step 2 unchanged. **`ok: false` is the FALL-THROUGH, never a short-circuit** — the second and last place in this file where that is true: if the helper cannot be reached or the registry cannot be read, a live task must still fire, and the cost of guessing wrong in that direction is one ordinary fire rather than a working chat silenced without being asked. That is also why this step is a belt and not the only brace — every retirement stub carries the `OUTPUT CONTRACT` marker inside its own first 2000 bytes, so Step 2 passes and Step 3 reaches a file that posts the same line by itself. **The same line, byte for byte:** every stub's quoted line is pinned equal to `schedule_config.retirement_line(<its id>)`, which is the sentence this step prints, so the two paths cannot answer one customer two ways. Either half alone produces the retirement line; the pair is what makes the corruption message unreachable.
 
@@ -340,7 +348,7 @@ HEAD=$(head -c 2000 "$ORCH")
 echo "$HEAD" | grep -q "OUTPUT CONTRACT" && echo "CONTRACT_OK" || echo "CONTRACT_FAIL"
 ```
 
-If the output is `CONTRACT_FAIL`, post EXACTLY this message in chat and STOP. Do NOT improvise. Do NOT produce any widget.
+If the output is `CONTRACT_FAIL`, write the Step 1.35 stop record (`contract_marker`), then post EXACTLY this message in chat and STOP. Do NOT improvise. Do NOT produce any widget.
 
 > ⚠️ The orchestrator file for `<TASK_ID>` exists but doesn't contain the canonical OUTPUT CONTRACT marker. The plugin may be partially installed or corrupted. Please reinstall Command Room and type `set up command room schedules`.
 
@@ -350,7 +358,7 @@ After `CONTRACT_OK`, ask once whether this chat's chain has moved onto the works
 
 `cd "$PLUGIN_ROOT" && CR_FIRED_VIA=scheduled CR_DEVICE_WORKSPACE="<WORKSPACE_ABSOLUTE_PATH>" python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "migration_gate:gate", "args": {"env_mode": "<CR_ENV>", "orchestrator_rel": "skills/enable-command-room-schedules/references/<ORCHESTRATOR_FILENAME>", "task_id": "<TASK_ID>"}}'`
 
-If `result.stop` is true: post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. Write NOTHING: no receipt, no page, no push beyond that same line. Anything else (including `ok: false`) → continue to Step 2.5 unchanged; a legacy or local seat never stops here.
+If `result.stop` is true: write the Step 1.35 stop record (`migration_gate`), then post `result.line`, exactly as it came back, as the ENTIRE chat turn — then STOP. Write nothing else: no receipt, no page, no push beyond that same line. Anything else (including `ok: false`) → continue to Step 2.5 unchanged; a legacy or local seat never stops here.
 
 ## Step 2.5 — Determine the run mode (DOGFIX1 2026-07-27)
 

@@ -2649,7 +2649,7 @@ def _scan_for_path_leaks(text, *, workspace=None, plugin_root=None):
     for raw_prefix in (resolved_ws, resolved_pr, resolved_mnt):
         if not raw_prefix:
             continue
-        norm = _normalize_path_for_prefix_match(raw_prefix).rstrip("/")
+        norm = _collapse_dots(_normalize_path_for_prefix_match(raw_prefix)).rstrip("/")
         if norm:
             safe_prefixes.append(norm.lower())
     findings = []
@@ -2659,11 +2659,44 @@ def _scan_for_path_leaks(text, *, workspace=None, plugin_root=None):
         if raw in seen:
             continue
         seen.add(raw)
-        norm = _normalize_path_for_prefix_match(raw).lower()
-        if any(norm.startswith(prefix) for prefix in safe_prefixes):
+        norm = _collapse_dots(_normalize_path_for_prefix_match(raw)).lower()
+        if any(_inside_folder(norm, prefix) for prefix in safe_prefixes):
             continue
         findings.append(("path-leak (not under workspace; click would 404)", raw))
     return findings
+
+
+def _collapse_dots(p: str) -> str:
+    """cr1#580: resolve `.` and `..` segments on the forward-slash form, so a
+    path that climbs out of the workspace (`<ws>/../Other/tax.pdf`) is
+    compared as the folder it really names. Pure string work (`posixpath`),
+    never the filesystem: a leak scan must not touch the disk."""
+    if not p:
+        return ""
+    if "/." not in p and not p.startswith("."):
+        return p
+    import posixpath as _pp
+    drive = ""
+    body = p
+    if len(p) >= 2 and p[1] == ":":
+        drive, body = p[:2], p[2:]
+    if not body:
+        return p
+    collapsed = _pp.normpath(body)
+    if body.startswith("//") and not collapsed.startswith("//"):
+        collapsed = "/" + collapsed
+    return drive + collapsed
+
+
+def _inside_folder(norm: str, prefix: str) -> bool:
+    """cr1#580: `norm` is the trusted folder itself or something inside it,
+    at a folder boundary. A sibling whose name merely starts with the
+    workspace's name (`Sample Brain-old`) is outside."""
+    if not prefix:
+        return False
+    if norm == prefix:
+        return True
+    return norm.startswith(prefix + "/")
 
 
 # ============================================================================

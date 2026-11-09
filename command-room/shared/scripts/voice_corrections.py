@@ -631,6 +631,7 @@ def record_draft_click(
     topic: str = "", recipient_id: Optional[str] = None, domain: str = "",
     edited_body: str = "", voice_block_sha256: Optional[str] = None,
     primary_thread_id: Optional[str] = None, source_skill: str = "email-writer",
+    extra: Optional[dict] = None, snapshot: bool = True,
 ) -> dict:
     """A WRITER (on `RUN_WRITER_ALLOWLIST` only, cr1#586): a Draft click's
     book record, the writes apply-choices Step 4B and Step 3d already ask for,
@@ -645,6 +646,9 @@ def record_draft_click(
        its corrections, keyed to the same seq;
     4. the sentence the ack owes, `draft_constraints.voice_receipt(...)["line"]`.
 
+    `extra` rides additive keys on the row (cr1#817: the Hub's choice id).
+    `snapshot=False` skips step 2, for text the owner's voice never wrote
+    (cr1#219: a chase), so a later edit to it teaches nothing.
     Answers `{ok, event_seq, snapshot, corrections, voice_line}`. With no
     recipient, or when the row cannot be appended, nothing is written and it
     answers `{ok: false, refused, line}` with `DRAFT_NOT_RECORDED_LINE`. The
@@ -663,6 +667,11 @@ def record_draft_click(
             voice_block_sha256=voice_block_sha256, skill=source_skill)
         data = {"recipient": recipient, "topic": str(topic or subject or "")}
         data.update(frag)
+        # cr1#817: a record made for a press on the Hub names the page's
+        # choice id, so a later run finds it and never records it twice. The
+        # builder's own fields are never overridden.
+        for key, value in (extra or {}).items():
+            data.setdefault(str(key), value)
         event = {"type": "email_drafted", "source_skill": source_skill, "data": data}
         # The envelope keys email-writer's event shape carries: readers
         # (dormancy, balance) count the draft as a touch through them.
@@ -680,11 +689,12 @@ def record_draft_click(
 
     snaps = _voice_dir(workspace_root) / "draft-snapshots.jsonl"
     had = _count_lines(snaps)
-    snapshot_draft(workspace_root, skill=source_skill, domain=domain,
-                   recipient_id=recipient_id, recipient_email=recipient,
-                   subject=subject, body=body, draft_event_seq=seq,
-                   native_draft_id=native_draft_id,
-                   voice_block_sha256=voice_block_sha256)
+    if snapshot:
+        snapshot_draft(workspace_root, skill=source_skill, domain=domain,
+                       recipient_id=recipient_id, recipient_email=recipient,
+                       subject=subject, body=body, draft_event_seq=seq,
+                       native_draft_id=native_draft_id,
+                       voice_block_sha256=voice_block_sha256)
     snapshot = _count_lines(snaps) > had
 
     n = 0

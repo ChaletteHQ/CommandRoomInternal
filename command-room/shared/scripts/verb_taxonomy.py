@@ -395,7 +395,7 @@ VERB_TAXONOMY = (
     _row("unmute", "Unmute", "chat_dismissal_cleared",
          "Lift a mute before its time runs out — the item re-surfaces on its "
          "next scheduled chat.",
-         ("show-my-list",), family="mute",
+         ("show-my-reminders", "show-my-list"), family="mute",  # cr1#552: the ledger view moved to show-my-reminders; the old src still arrives from persisted pages
          notes="S4 mute ledger — renders on `show muted` / `show snoozed` "
                "rows (each row states its remaining time). Dispatch: "
                "mute_ledger.clear_dismissal. The triage batch-undo clears "
@@ -642,8 +642,9 @@ VERB_TAXONOMY = (
          ("commitments", "cr-brain"), family="review",
          notes="W4b. A proposal tombstone, NOT a timed mute — the label says "
                "permanent (F-59 rule). Commitment rows keep the 60-day "
-               "`not relevant` mute; this verb renders ONLY on "
-               "unknown-person proposal rows."),
+               "`not relevant` mute; this verb renders on unknown-person "
+               "proposal rows and on the retired-project question "
+               "(cr1#753), whose decline silences that project for good."),
     _row("merge person records", "Merge records (permanent)", "person_merged",
          "Fold the duplicate contact into the record it duplicates — one "
          "record survives carrying both histories. Permanent: a record "

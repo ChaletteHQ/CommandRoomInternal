@@ -191,6 +191,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # whatever the model pasted. A helper here reads or computes; a gated
     # writer is exactly what made this verb a write door once already.
     "maintenance_dispatcher:catch_up_plan",
+    "maintenance_dispatcher:typed_maintenance_branch",  # cr1#929 - a typed run maintenance on a merged seat fetches the registered task's merged branch, adapted for a manual fire (text only)
     "maintenance_dispatcher:maintenance_staleness",
     "surface_drivers:maintenance_truth_line",
     # TZ1 (Night M2) — the schedule registry, read where the folder is.
@@ -259,6 +260,18 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "commitments_helpers:resolve_people",
     "commitments_helpers:setup",
     "commitments_helpers:validate_inbound_ran",
+    # SWEEPDOOR1 (cr1#938) - `clean up my commitments` on a merged seat. Every
+    # one reads or computes: Steps 1-2 in one call, the self-check, the bulk
+    # verbs' plans (which write nothing) and the queue offer. Their writers
+    # are on the write list.
+    "commitment_backlog_sweep:door_setup",
+    "commitment_backlog_sweep:last_scan",
+    "commitment_backlog_sweep:validate_sweep_ran",
+    "commitment_backlog_sweep:amnesty_plan",
+    "commitment_backlog_sweep:review_offer",
+    "commitment_backlog_sweep:review_expiry_plan",
+    "commitment_backlog_sweep:ingest_kill_plan",
+    "skill_config_writer:load_skill_config",  # cr1#938 - a saved setting, read (its two writers are on the write list)
     # ORCH2 (Night M3) — the morning brief. Every one reads or computes; a
     # row its delegated writer would append (the clock record, a served-slot
     # skip, the chat touches, `brief_state`, the combined `pack_run`) comes
@@ -278,10 +291,12 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "morning_brief_helpers:render_for_fire",
     "morning_brief_helpers:settings_for_fire",
     "morning_brief_helpers:thread_payloads",
-    # ORCH2 — what's on my plate (show-my-list's fossil list and mute
-    # ledger, the My Plate chat's lateness check). Same rule: reads and
+    # ORCH2 — what's on my plate (the mute ledger, show-my-reminders' since
+    # cr1#552, and the My Plate chat's lateness check). Same rule: reads and
     # computes; the page comes back for `plan write`, rows for
-    # `plan append_jsonl`.
+    # `plan append_jsonl`. The retired discuss list's read (cr1#552) stays
+    # a verb so the bridge can plan the retirement beside the data; the
+    # `discuss_list_retired_v1` writer is what moves the items.
     "plate_helpers:discuss_list",
     # ORCH2 fix pass 1 — the My Plate chat's Step 0 fold gate and its
     # degrade-tier receipt compose, both beside the data.
@@ -296,6 +311,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # as they run, so they go through `run_writer`.
     "staff_meeting_helpers:health_report",
     "staff_meeting_helpers:health_substrate",
+    "bug_log:open_bug_count",  # cr1#852: how many logged bugs are still open, for the health check
     "staff_meeting_helpers:lateness",
     "staff_meeting_helpers:plan_staff_receipt",
     "staff_meeting_helpers:self_report",
@@ -331,8 +347,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "schedule_backend:bridge_plan",  # v5.33.0 merge-fix MF-3 (D-8): the bridge refreshes mapped chats only; a read that plans
     "schedule_backend:bridge_schedules_line",  # v5.33.0 merge-fix MF-3/MF-4 (D-5): the bridge's schedules sentence through the one producer
     "cockpit_helpers:load_config",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:hub_pointer",  # cr1#782 - the Morning Brief's last line: the Hub's address when one is set up
     "cockpit_helpers:setup_check",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:render_page_file",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
+    "cockpit_helpers:admin_check",  # cr1#723 - what the client's admin must switch on for the page's Send and calendar answers, read only
+    "cockpit_helpers:version_answer",  # cr1#118 - which version am I on: the shipped plugin.json and the forwarded runtime version, one line
     "cockpit_helpers:status_doc",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:settle_statuses",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:plan_prune_choices",  # cr1#683 - the applied choices past the window the refresh leg deletes from the page, planned not written here
@@ -341,8 +360,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_projects",  # cr1#660 - the cockpit page's Projects tab, read only
     "cockpit_helpers:feed_review",  # cr1#779 - the Review tab's rows
     "cockpit_helpers:feed_week",  # cr1#780 - the Week tab's rows
+    "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
+    "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
+    "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:newer_message_arrived",  # COCKPIT1 (cr1#608) - the send gate: did the thread move after the draft
     "cockpit_helpers:sent_tokens_update",  # cr1#684 - the used-token record a run writes before a send, composed not typed
@@ -422,11 +444,18 @@ RUN_HELPER_ALLOWLIST = frozenset({
 # `write`, arguments bound by NAME, and an identity PRECONDITION
 # (`receipts.require_writer_identity`) asked before anything runs. Every
 # name here has a reason in `shared/WORKSPACE_ACCESS.md`'s writer table.
+#: cr1#603: the record a scheduled fire leaves when it STOPS before its
+#: surface. The one writer the door lets a foreign fire run (the identity
+#: gate below skips the foreign leg for this name and this name only).
+FIRE_STOP_WRITER = "receipts:log_fire_stopped"
+
 RUN_WRITER_ALLOWLIST = frozenset({
     # the prep (I-2): the document, its receipt, and the fact closes the
     # prep runs before its Owed table (which include the calendar leg)
     "brief_writer:make_brief_from_json",
     "receipts:log_prep_receipt",
+    # cr1#603: the bootloader's stop record, before any STOP line it posts
+    FIRE_STOP_WRITER,
     "exit_doors:apply_fact_closes",
     "calendar_close:run_calendar_close_job",
     # the connector declaration and the update bridge's re-pin (I-7)
@@ -492,13 +521,17 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "release_actions.claude_md_docs_rule_v1:claude_md_docs_rule_v1",  # DOCS lane (DOCS1 D-1): the rule into CLAUDE.md, one applied row
     "release_actions.claude_md_filecard_rule_v1:claude_md_filecard_rule_v1",  # FILECARD1 (cr1#610): the file-card line into CLAUDE.md, one applied row
     "release_actions.claude_md_nomd_rule_v1:claude_md_nomd_rule_v1",  # FILECARD1 (cr1#610): the no-Markdown line into CLAUDE.md, one applied row
+    "release_actions.discuss_list_retired_v1:discuss_list_retired_v1",  # cr1#552: the retired discuss-later list emptied into notes and My Plate tasks, one applied row
     "deliverables:export_claude_doc",  # DOCS lane (DOCS1 D-2): a Claude Doc landed in the folder + its receipt row
+    "lifecycle_pass:bring_back",  # cr1#753 - see the writer table row
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
     "cockpit_helpers:add_chat_priority",  # cr1#776 - see the writer table row
     "cockpit_helpers:apply_review_choices",  # cr1#779 - see the writer table row
     "cockpit_helpers:apply_week_choices",  # cr1#780 - see the writer table row
+    "cockpit_helpers:apply_settings_choices",  # cr1#781 - see the writer table row
+    "cockpit_helpers:record_page_sends",  # cr1#817 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row
@@ -542,6 +575,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # writer takes a SKILL name checked against the known list, never a file
     # name; `wipe_skill_config` itself stays off this list (LOWS2).
     "skill_config_writer:reset_skill_config",
+    "chat_persona:reset_chat_persona",  # cr1#850: the persona back to its defaults, the store cleared, one style_changed row
+    "bug_log:resolve_bug",  # cr1#852: one bug_resolved row for a logged bug
+    "lifecycle_pass:answer_active",  # cr1#845: the owner's `active` on a dormancy row
     # DOORHELP1 (cr1#518): two WRITES the drafting skills name, refused on
     # every merged seat until now. The card renderer lands its validated page
     # under `_hq/.system/widgets`; the correction in passing appends to the
@@ -585,6 +621,15 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # run left no record and the reply still read as if it had.
     "receipts:log_receipt",  # cr1#615 - a skill's run or scan receipt
     "dormancy:emit_dormancy_signal",  # cr1#615 - one dormancy_signal row, or nothing to record
+    # SWEEPDOOR1 (cr1#938): the backlog sweep's writes, refused on every
+    # merged seat, so `clean up my commitments` could not run there at all.
+    "commitment_backlog_sweep:scan_staged",  # cr1#938 - the scan over mail staged beside the data
+    "commitment_backlog_sweep:apply_accept_handled",  # cr1#938 - accept all, from the kept receipt
+    "commitment_backlog_sweep:apply_decisions",  # cr1#938 - the owner's choices from the digest
+    "commitment_backlog_sweep:apply_amnesty",  # cr1#938 - the quiet pile, on a yes
+    "commitment_backlog_sweep:apply_review_expiry",  # cr1#938 - the unconfirmed pile, on a yes
+    "commitment_backlog_sweep:apply_ingest_kill",  # cr1#938 - one source's guesses, on a yes
+    "commitment_backlog_sweep:render_digest",  # cr1#938 - the digest and its audit page
     "deliverables:land",
 })
 
@@ -674,6 +719,9 @@ R_HELPER_FAILED = "helper_failed"
 R_BAD_ARGS = "bad_args"
 R_WRITE_UNVERIFIED = "write_unverified"
 R_WRITER_OWNED = "writer_owned"
+#: cr1#385: the ledger on disk is older than the copy last written (FS-04); the
+#: append was set aside and the envelope carries `atomic_write`'s plain line.
+R_SUBSTRATE_REGRESSED = "substrate_regressed"
 
 #: WSPLACE1 (cr1#546): the placeholder skill text carries for the anchored
 #: workspace. The run doors put the anchored workspace in for it before
@@ -1603,6 +1651,20 @@ sys.path.insert(0, payload["scripts"])
 import importlib
 mod = importlib.import_module(payload["module"])
 fn = getattr(mod, payload["function"])
+# ROOTFILL1 (cr1#924): a call that leaves `workspace_root` out of a function
+# that requires it gets the anchored workspace, the one value the door's
+# fence accepts. A default is the function's own and is left alone.
+anchored = payload.get("anchored")
+if anchored and "workspace_root" not in payload["args"]:
+    import inspect
+    try:
+        _param = inspect.signature(fn).parameters.get("workspace_root")
+    except (TypeError, ValueError):
+        _param = None
+    if (_param is not None and _param.default is inspect.Parameter.empty
+            and _param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                inspect.Parameter.KEYWORD_ONLY)):
+        payload["args"]["workspace_root"] = anchored
 def plain(value):
     import dataclasses
     if isinstance(value, (str, int, float, bool)) or value is None:
@@ -1864,6 +1926,7 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
         "module": module,
         "function": function,
         "args": dict(args or {}),
+        "anchored": str(ctx["vm_path"]),
     })
     try:
         proc = subprocess.run(
@@ -2064,8 +2127,11 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
     try:
         _ensure_scripts_on_path()
         import receipts as _receipts  # type: ignore
+        # cr1#603: the ONE writer a foreign fire may run is the record of its
+        # own stop; every other name keeps the foreign refusal.
         _receipts.require_writer_identity(child_env,
-                                          workspace_root=str(ctx["vm_path"]))
+                                          workspace_root=str(ctx["vm_path"]),
+                                          allow_foreign=(name == FIRE_STOP_WRITER))
     except Exception as exc:  # noqa: BLE001 - ours is a refusal; any other is too
         if type(exc).__name__ == "WriterIdentityRequired":
             return _refuse("run_writer", ctx, started, R_WRITER_IDENTITY_REQUIRED,
@@ -2093,7 +2159,8 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
     staged = ctx.get("staged_root")
     scripts = str(Path(staged) / "shared" / "scripts") if staged else str(_scripts_dir())
     payload = json.dumps({"scripts": scripts, "module": module,
-                          "function": function, "args": bound})
+                          "function": function, "args": bound,
+                          "anchored": str(ctx["vm_path"])})
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _HELPER_RUNNER],
@@ -2444,8 +2511,10 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
             # (REVIEW_T2_LEASE2 N-2). Nothing was appended when it is said.
             # LEDGERPLACE1 (cr1#124): a ledger whose folder does not exist
             # also carries its plain "Not saved" sentence as `line`.
+            # cr1#385: a ledger older than its own high-water mark refuses
+            # with its plain sentence too (`substrate_regressed`).
             extra = ({"line": str(getattr(exc, "line", ""))}
-                     if str(typed) == R_MISSING_PARENT else {})
+                     if str(typed) in (R_MISSING_PARENT, R_SUBSTRATE_REGRESSED) else {})
             return _refuse("append_jsonl", ctx, started, str(typed), rel=rel,
                            detail=str(getattr(exc, "line", "") or f"{type(exc).__name__}: {exc}"),
                            **extra)

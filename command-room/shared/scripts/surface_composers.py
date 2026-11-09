@@ -762,6 +762,10 @@ def maintenance_answer(plan: dict, *, completed: Sequence = (),
                    workspace=workspace)
 
     gap = plan.get("min_gap") or {}
+    if isinstance(gap, dict) and gap.get("in_flight"):
+        # cr1#772: nothing here ran yet, so never say it did.
+        return say("Another Maintenance run is going right now, so I left it "
+                   "to finish.", workspace=workspace)
     if isinstance(gap, dict) and gap.get("skipped"):
         return say("Everything here ran a few minutes ago, so there is "
                    "nothing to repeat.", workspace=workspace)

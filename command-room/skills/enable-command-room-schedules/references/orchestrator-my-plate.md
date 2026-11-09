@@ -30,9 +30,9 @@ The answer is `{folded, line}`: `folded` is `schedule_config.fold_is_active(WORK
 
 **If `folded` is True, post EXACTLY the answer's `line` — `schedule_config.folded_fire_line("my-plate")`, never retyped — as the ENTIRE chat turn, then STOP** — no widget, no substrate reads, not even a receipt.
 
-> *Your My Plate chat folded into your morning brief. Its number was already on your morning brief (the plate line) — say `what's on my plate` any time for the full list. Say `undo` right after an update to bring it back as its own chat, or `add my plate` any time.*
+> *Your My Plate chat folded into your morning brief. Its number was already on your morning brief (the plate line) — say `what's on my plate` any time for the full list. The Command Room Hub shows it too.*
 
-**If `folded` is False** (a fresh install that never had the fold applied, or a seat that reversed it with `undo` / `add my plate`), this chat is LIVE — fall through to Phase 1 below and run the full chat exactly as documented. Per-fire check, never a permanent stub: see `schedule_config.FOLDED_FIRES`'s module comment for why this class is not `RETIRED_TASKS`.
+**If `folded` is False** (a fresh install that never had the fold applied, or a seat that reversed it with `undo`), this chat is LIVE — fall through to Phase 1 below and run the full chat exactly as documented. Per-fire check, never a permanent stub: see `schedule_config.FOLDED_FIRES`'s module comment for why this class is not `RETIRED_TASKS`.
 
 ---
 
@@ -243,14 +243,14 @@ Parse `N action` (with or without period). All writes through the canonical help
 - `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c dispatch order (Zapier-threaded first if configured, native threaded fallback, standalone last). Confirm `✓ Sent to [name] at HH:MM`. Write `outreach_sent` (`source_skill='commitments'`). Commitment stays open with new context.
 - `N draft` (and the FB-17-retired `N edit then send` alias, accepted ONLY from in-flight widgets) → v2.12.2/v2.14.4 semantics unchanged (replace body with input verbatim, then lazy-create the draft / send).
 - `N keep` → no-op. Confirm `N status kept in Drafts.`
-- `N push to [date]` (displays **Later…**) → parse via `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=workspace_root)` (today = the workspace-local day of `<now_iso>`, REVIEW_CUTC F-4), then ONE call to `commitment_state.apply_later(workspace_root, <data.id verbatim>, when_iso=<the resolved ISO date>, actor_id=<user person_id>, source_skill="commitments", surface="my-plate")` — never a hand-appended event (APPLYAUDIT1 part 3: a hand-append returns no status, so the Apply receipt booked every push as an error). Every row on THIS chat is the owner's own, so the writer routes to the `commitment_updated` due-date shift (`data.new_due`) and returns `{"status": "deferred"}`; update any staged draft to mention the new date.
+- `N push to [date]` (displays **Later…**) → parse via `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=workspace_root)` (today = the workspace-local day of `<now_iso>`, REVIEW_CUTC F-4), then ONE call to `commitment_state.apply_later(workspace_root, <data.id verbatim>, when_iso=<the resolved ISO date>, actor_id=<user person_id>, source_skill="commitments", surface="my-plate", now_iso=<now_iso>)` — never a hand-appended event (APPLYAUDIT1 part 3: a hand-append returns no status, so the Apply receipt booked every push as an error). Every row on THIS chat is the owner's own, so the writer routes to the `commitment_updated` due-date shift (`data.new_due`) and returns `{"status": "deferred"}`; update any staged draft to mention the new date. A date already gone is refused as `in_the_past` with nothing written: say its `ack` verbatim and touch no draft (cr1#849).
 - `N resolved` → `commitment_state.close_commitment(workspace_root, <data.id verbatim>, resolved_by=<user person_id>, evidence="user marked complete via the My Plate task", source_skill="commitments", user_confirmed=True)`. Parent-with-open-sub-items raises `OpenSubitemsError` → one-line cascade confirm, then re-dispatch with `close_subitems=True`.
 - `N promote` (Personal→Promised) → `promote_task_to_commitment(workspace_root, <id>, new_kind="promise", source_skill="commitments", reason="user promoted from My Plate")`. Ack names the counterparty it will be tracked against (or notes it needs one — the §5 gate will nudge at the next capture).
 - `N make task` (Promised→Personal demote) → `promote_task_to_commitment(..., new_kind="task", reason="user demoted from My Plate")`.
 - `N reassign to [name]` → on a counterparty-unresolved row: the COUNTERPARTY attach documented in Phase 3 Group A. On any other row: the standard S4 owner reassignment (`new_owner_id=...`, confirmed=True) — the item leaves My Plate and lands on Waiting On next fire.
 - `N drop` / `N snooze 3d` / `N fix wording: <text>` / `N split into: ...` / `N add subitems: ...` → identical dispatches to the commitment-family handlers (apply-choices § commitment-triage documents the exact calls).
 - `show my plate` (typed in this chat, or anywhere) → re-render THIS widget with the Personal cap lifted (full Personal group, paginated by the transport) — same pipeline, same validators; never a markdown list.
-- `show muted` / `show snoozed` → the mute ledger view (show-my-list's ledger mode).
+- `show muted` / `show snoozed` → the mute ledger view (show-my-reminders' ledger mode, cr1#552).
 
 # What this orchestrator does NOT do
 
@@ -294,9 +294,12 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

@@ -121,9 +121,12 @@ _OK_STATUSES = frozenset({
     #     this string reaches derive_outcome and means the org was created.
     #   complete         commitment_backlog_sweep's run receipt — the sweep
     #     finished (its refusal twin, "blocked", is already classified below).
+    #   kept_active      lifecycle_pass.answer_active — the owner's `active` on
+    #     a dormancy question landed (cr1#845).
     "confirmed", "reclassified", "superseded", "received", "restored",
     "flagged", "subitems_added", "deferred", "noted", "held", "actioned",
     "moved", "reported", "rebound", "written", "active", "complete",
+    "kept_active",
     # PERSONLOOP1 — person_candidates.resolve_candidate on the `not a person`
     # answer. ONE person_candidate_suppressed row landed, and the row must
     # stop being offered: the question has been answered permanently.
@@ -255,6 +258,10 @@ _REFUSED_STATUSES = frozenset({
     # The item did not move the way the user asked, so it is an error outcome,
     # never ok.
     "not_sooner",
+    # cr1#849: a `push to [date]` whose date has already passed.
+    # `commitment_state.apply_later` refuses it on both legs and writes
+    # nothing; the item did not move, so it is an error outcome, never ok.
+    "in_the_past",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """What's on my plate — the named entry points, for the workspace access layer.
 
-WHY THIS MODULE EXISTS (ORCH2, Night M3). `show-my-list/SKILL.md` and
-`orchestrator-my-plate.md` carried five python blocks that opened the
+WHY THIS MODULE EXISTS (ORCH2, Night M3). The retired `show-my-list/SKILL.md`
+and `orchestrator-my-plate.md` carried five python blocks that opened the
 customer's workspace in-process: the retired discuss list's open-item read,
 its page render, its fire-marker, the mute ledger read, and the My Plate
 chat's lateness check. On a merged seat those blocks ran in a container that
 holds no workspace. Each is now ONE `plan run_helper` line naming a function
-here, answered with JSON by the process that holds the data.
+here, answered with JSON by the process that holds the data. Since cr1#552
+the mute ledger view belongs to `show-my-reminders` and the discuss-list read
+serves only the retirement migration that empties it.
 
 THE RULE EVERY FUNCTION HERE OBEYS (workspace_access review B-1, R-M2-6): it
 reads or computes and writes nothing. A row a delegated writer would append
@@ -34,8 +36,16 @@ from morning_brief_helpers import _jsonable, answers, base_cwd, lateness_verdict
 #: The scheduled task the lateness verb serves.
 TASK_ID = "my-plate"
 
-#: The skill whose fossil list and mute ledger live here.
-LIST_SKILL = "show-my-list"
+#: The skill whose mute ledger widget renders through here (cr1#552: the
+#: `show muted` / `show snoozed` view moved to show-my-reminders when
+#: show-my-list retired; the old src still arrives from pages persisted before).
+LIST_SKILL = "show-my-reminders"
+
+#: The `data.via` / `data.source` stamp the discuss-list retirement writes on
+#: the note or the My Plate task an open item became
+#: (`release_actions.discuss_list_retired_v1`). A discuss item one of those
+#: rows points at through `data.source_event_seq` is MOVED, not open.
+DISCUSS_MOVED_VIA = "discuss_list_retirement"
 
 WIDGET_DIR_REL = "_hq/.system/widgets"
 
@@ -88,23 +98,26 @@ def lateness(workspace_root: str, *, fired_via: str = "manual",
                             env_date=env_date, now=now)
 
 
-@answers
-def discuss_list(workspace_root: str, *,
-                 now_iso: Optional[str] = None) -> Dict[str, Any]:
-    """`{open_items, open_count}` — the retired discuss list, drain-only.
+def open_discuss_items(events: List[Dict[str, Any]], now_iso: str, *,
+                       include_muted: bool = False) -> List[Dict[str, Any]]:
+    """The discuss-later items still open: every `commitment_to_discuss` row
+    not closed by a `commitment_resolved` (canonical, v3.11.4+:
+    `data.commitment_id` is the discuss event's seq) or the legacy
+    `thread_resolved` shape, not muted by a LIVE `chat_dismissal` (the mute
+    ledger's own liveness rule, v4.6.0 S4), and not MOVED by the list's
+    retirement (cr1#552): a `note` or a `commitment` stamped
+    `DISCUSS_MOVED_VIA` whose `data.source_event_seq` names the item.
 
-    Exactly the old block's reading: every `commitment_to_discuss` event not
-    closed by a `commitment_resolved` (canonical, v3.11.4+: `data.commitment_id`
-    is the discuss event's seq) or the legacy `thread_resolved` shape, and not
-    muted by a LIVE `chat_dismissal` — the mute ledger's own liveness rule
-    (`mute_ledger.active_dismissal_target_ids`, v4.6.0 S4: the TTL the
-    dismissal was written with, and any later unmute).
-    """
+    A pure function over an event list, so the retirement migration and its
+    test read the same rule the old list did. `include_muted=True` keeps the
+    items a live mute merely HIDES (the migration moves those too: a mute
+    was a snooze, never a drop, and with the list gone nothing would ever
+    show them again)."""
     from mute_ledger import active_dismissal_target_ids
 
-    events = _events(workspace_root)
     discuss_items = [e for e in events if e.get("type") == "commitment_to_discuss"]
     resolved_seqs = set()
+    moved_seqs = set()
     for e in events:
         et = e.get("type")
         d = e.get("data") or {}
@@ -116,10 +129,26 @@ def discuss_list(workspace_root: str, *,
             tid = d.get("target_id") or d.get("id") or d.get("thread_id")
             if tid is not None:
                 resolved_seqs.add(tid)
-    dismissed_seqs = active_dismissal_target_ids(events, _now_iso(now_iso))
-    open_items = [e for e in discuss_items
-                  if e.get("seq") not in resolved_seqs
-                  and e.get("seq") not in dismissed_seqs]
+        elif et in ("note", "commitment") and (
+                d.get("via") == DISCUSS_MOVED_VIA or d.get("source") == DISCUSS_MOVED_VIA):
+            src = d.get("source_event_seq")
+            if src is not None:
+                moved_seqs.add(src)
+    dismissed_seqs = set() if include_muted else active_dismissal_target_ids(events, now_iso)
+    return [e for e in discuss_items
+            if e.get("seq") not in resolved_seqs
+            and e.get("seq") not in dismissed_seqs
+            and e.get("seq") not in moved_seqs]
+
+
+@answers
+def discuss_list(workspace_root: str, *,
+                 now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """`{open_items, open_count}` — what is still open on the retired
+    discuss-later list (`open_discuss_items` over the owner's ledger). Since
+    cr1#552 no skill renders this; the update bridge's retirement migration
+    reads it to know what to move."""
+    open_items = open_discuss_items(_events(workspace_root), _now_iso(now_iso))
     return {"open_items": _jsonable(open_items), "open_count": len(open_items)}
 
 

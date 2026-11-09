@@ -30,10 +30,11 @@ the parts that must be exact:
      captures only the user's OWN outbound promises (inbound asks are
      inbox-triage's lane; direction is fixed by the surface itself).
   2. Cross-channel restatement dedup — `capture_gate.matches_open_commitment`
-     (corroboration-style: shared non-user party + content-token overlap)
+     (same owner, same counterparty, the wording effectively the same)
      against the OPEN set, so a sent email restating a meeting-sourced or
      triage-sourced commitment MERGES into the item that already tracks it
-     instead of double-tracking (the case study's rec #4).
+     instead of double-tracking (the case study's rec #4). Other words keep
+     both (cr1#747).
   3. Idempotency — `already_captured` codifies the scan's Step-4 dedup rule
      ((source_ref, title) — case-insensitive first-60-chars) with
      `gmail:<message_id>` as the per-message source_ref anchor, so re-running
@@ -84,6 +85,8 @@ if str(_HERE) not in sys.path:
 
 from capture_gate import (  # noqa: E402
     build_observed_event,
+    capture_cover,
+    cover_owner,
     classify_capture,
     gate_commitment_data,
     intake_kwargs,
@@ -91,6 +94,7 @@ from capture_gate import (  # noqa: E402
     matches_open_commitment,
     observed_from_commitment_event,
     resolve_capture_mode,
+    same_wording,
     workspace_capture_context,
 )
 from connector_adapters.provenance import (  # noqa: E402
@@ -98,8 +102,6 @@ from connector_adapters.provenance import (  # noqa: E402
     is_same_artifact,
     resolve_mail_provider,
 )
-
-_TITLE_DEDUP_CHARS = 60  # scan-for-commitments Step 4: first 60 chars, ci
 
 
 class SentItemError(ValueError):
@@ -280,22 +282,27 @@ def build_sent_commitment_event(
     # write seam — clamped where it is written, never passed straight through.
     _stamp_confidence(event, classification_confidence,
                       holder="build_sent_commitment_event")
-    if (ts or "").strip():
-        event["ts"] = ts.strip()  # backdate to when the promise was made
+    if ts is not None and str(ts).strip():
+        # cr1#767: backdate to when the promise was made, one spelling; a
+        # time nothing can read is refused, never stored raw.
+        from message_time import normalize_message_ts
+        event["ts"] = normalize_message_ts(ts)
+        if event["ts"] is None:
+            raise SentItemError(f"a sent-mail commitment time cannot be read: "
+                                f"{str(ts).strip()[:40]!r}")
     return event
 
 
-def _title_key(title) -> str:
-    return (str(title or "").strip().lower())[:_TITLE_DEDUP_CHARS]
-
-
 def already_captured(workspace_root, message_id: str, title: str,
-                     provider: Optional[str] = None) -> bool:
+                     provider: Optional[str] = None, *, owner=None) -> bool:
     """Step-4 idempotency for the sent leg, codified: True when a commitment
     with the same message identity AND the same title (ci, first 60 chars —
-    the scan's documented rule) is already on disk, OR the identity is already
-    covered by a `commitment_resolved` / `thread_resolved` event.
-    Shard-transparent via events_io.
+    the scan's documented rule) is already on disk, OR a closure on that
+    message covers it (`capture_gate.capture_cover`: a closure of another
+    message's row covers only that row, and only by the same words,
+    cr1#884 and cr1#909; when `owner` is given, only a row the same person
+    owes, cr1#912). Every sent capture is the user's own promise, so the
+    pipeline passes the user. Shard-transparent via events_io.
 
     R16 (connector-agnostic-v1): identity is the CANONICAL dedup key
     (`connector_adapters.provenance.canonical_dedup_key`), so a legacy
@@ -320,7 +327,6 @@ def already_captured(workspace_root, message_id: str, title: str,
 
     provider = resolve_mail_provider(workspace_root, provider)
     want_id = sent_source_ref(message_id, provider).split(":", 1)[1]
-    want_title = _title_key(title)
     # CAPTUREONCE1 §2.2 — ask the index first; same contract as the inbound
     # leg. A hit is final (exact `(source_ref, title)` already on disk); a miss
     # falls through to the scan, which additionally answers closures and
@@ -333,27 +339,46 @@ def already_captured(workspace_root, message_id: str, title: str,
             return True
     except Exception:
         pass
-    for ev in iter_events(workspace_root):
-        ev_key = canonical_dedup_key(event=ev)
-        if not is_same_artifact(ev_key, provider, want_id):
-            continue
-        etype = ev.get("type")
-        if etype in ("commitment_resolved", "thread_resolved"):
-            return True
-        # INTAKE1 — A HELD ROW IS A CAPTURE. Since SPEC_FLOW1 the door sets
-        # rows aside instead of opening them, and an idempotency check that
-        # reads only `commitment` would call every held row uncaptured and
-        # re-hold it on the next fire over the same mailbox — the same
-        # unbounded re-capture this function exists to prevent, moved one
-        # tier down. Same identity, same title rule, same answer.
-        if etype in ("commitment", "commitment_observed"):
-            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-            ev_title = _title_key(data.get("title") or data.get("summary"))
-            if ev_title and want_title and (
-                ev_title in want_title or want_title in ev_title
-            ):
-                return True
-    return False
+    # INTAKE1 — A HELD ROW IS A CAPTURE: the cover reads `commitment_observed`
+    # as well as `commitment`, so a set-aside row is not re-held on every fire.
+    return capture_cover(
+        lambda: iter_events(workspace_root),
+        lambda ev: is_same_artifact(canonical_dedup_key(event=ev), provider, want_id),
+        title, owner=owner)
+
+
+def _closed_here(workspace_root, message_id, provider, match, title, *, memo) -> bool:
+    """True when `match` is a row a closure on THIS message closed, the
+    closure still standing, and the candidate's title does not agree with it
+    (the scan's title rule, or the same words). `memo` holds each message's
+    closed ids, read once per batch."""
+    from closure_index import closer_target_id
+    from connector_adapters.provenance import canonical_dedup_key
+    from cru_match import _commitment_id
+    from events_io import iter_events
+
+    mid = str(message_id or "").strip()
+    if not mid or not isinstance(match, dict):
+        return False
+    if mid not in memo:
+        from closure_index import ClosureIndex
+        want_id = sent_source_ref(mid, provider).split(":", 1)[1]
+        index, here = ClosureIndex(), {}
+        for pos, ev in enumerate(iter_events(workspace_root)):
+            index.fold(pos, ev)
+            if ev.get("type") in ("commitment_resolved", "thread_resolved") \
+                    and is_same_artifact(canonical_dedup_key(event=ev), provider, want_id):
+                here[closer_target_id(ev)] = pos
+        # Only a closure still in effect: a row reopened since is open again,
+        # and the restatement merges into it as before.
+        memo[mid] = {cid for cid, pos in here.items()
+                     if cid and index.closing_event(cid) is index.event_at.get(pos)}
+    if _commitment_id(match) not in memo[mid]:
+        return False
+    raw = str((match.get("data") or {}).get("title") or "")
+    theirs, mine = raw.strip().lower()[:60], str(title or "").strip().lower()[:60]
+    agree = bool(theirs and mine and (theirs in mine or mine in theirs))
+    return not (agree or same_wording(raw, title))
 
 
 def capture_sent_items(
@@ -393,7 +418,9 @@ def capture_sent_items(
     `opens` — pass a pre-loaded `load_open_commitments` projection to pin the
     dedup baseline (reconcile-sent passes its PRE-close projection so a
     restatement merges into its original even when this same fire just closed
-    it); None loads fresh.
+    it); None loads fresh. Not into a row this same message closed, unless
+    the titles agree or the words are the same: that row is what the send delivered, and another
+    promise on the send is its own row (cr1#884).
 
     Returns {"ran": True, "opened", "merged", "observed", "skipped_existing",
     "errors", "n_opened", "n_merged", "n_observed", "n_skipped", "n_errors",
@@ -416,6 +443,7 @@ def capture_sent_items(
     user_names = ctx.get("user_names") or []
 
     opened, merged, observed, skipped, errors = [], [], [], [], []
+    closed_here_memo: dict = {}
     batch: list = []
     accepted_open_events: list = []  # in-batch restatement guard
 
@@ -425,7 +453,8 @@ def capture_sent_items(
         mid = item.get("message_id") or ""
         title = item.get("title") or ""
         try:
-            if already_captured(workspace_root, mid, title, provider=provider):
+            if already_captured(workspace_root, mid, title, provider=provider,
+                                owner=cover_owner(user_person_id)):
                 skipped.append({"title": title, "message_id": mid})
                 continue
             ev = build_sent_commitment_event(
@@ -460,7 +489,16 @@ def capture_sent_items(
             person_ids=ev.get("person_ids") or (),
             exclude_party_ids={user_person_id},
             exclude_party_names=user_names,
+            workspace_root=workspace_root,  # cr1#747: names on file set aside
         )
+        if match is not None and _closed_here(workspace_root, mid, provider,
+                                              match, title, memo=closed_here_memo):
+            # cr1#884: the row this same send just closed is what it
+            # delivered. A candidate that only shares words with it is
+            # another promise on the send, kept as its own row; merging it
+            # into a closed row lost it. Only the delivered item's own title
+            # still merges.
+            match = None
         if match is not None:
             md = match.get("data") or {}
             merged.append({

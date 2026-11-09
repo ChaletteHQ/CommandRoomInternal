@@ -430,6 +430,13 @@ def chat_ref_key(ref: Optional[dict]) -> Optional[str]:
     return f"{provider}:{room}:{mid}"
 
 
+def is_chat_ref_string(ref) -> bool:
+    """Does this string name a chat message, in `chat_ref_key`'s spelling?
+    A mail pointer never starts with a chat provider."""
+    return (isinstance(ref, str)
+            and ref.split(":", 1)[0].lower() in (PROVIDER_SLACK, PROVIDER_TEAMS))
+
+
 def build_chat_source_ref(*, provider: Optional[str], kind: str,
                           chat_or_channel_id, message_id, ts,
                           permalink: Optional[str] = None) -> Dict[str, Any]:
@@ -572,7 +579,7 @@ def skip_receipt(reason: str, *, provider: Optional[str] = None,
 
 __all__ = [
     "CATEGORY",
-    "PROVIDER_SLACK", "PROVIDER_TEAMS",
+    "PROVIDER_SLACK", "PROVIDER_TEAMS", "is_chat_ref_string",
     "SCAN_MODE_SEARCH", "SCAN_MODE_PER_CHAT", "SCAN_MODE_NONE",
     "KIND_CHANNEL", "KIND_THREAD", "KIND_DM", "KIND_CHAT", "VALID_REF_KINDS",
     "REQUIRED_REF_FIELDS",

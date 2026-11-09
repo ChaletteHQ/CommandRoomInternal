@@ -82,7 +82,7 @@ Each customer-facing surface has a canonical opening shape. Skills implement the
   Prepared by {brain_name} for {first_name} · {Date}
   ```
 
-### board-pack-assembler (.docx)
+### board-pack-assembler (.docx): RETIRED (cr1#552), kept for the shape the brief writer's `board_pack` kind still renders
 
 - Intro paragraph (first paragraph of cover page):
   ```

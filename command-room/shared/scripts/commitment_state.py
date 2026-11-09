@@ -456,6 +456,12 @@ LATER_NOT_SOONER_STATUS = "not_sooner"
 LATER_NOT_SOONER_ACK = (
     "That item is already hidden until a later date, and Later… cannot "
     "bring it back sooner, so nothing moved.")
+#: cr1#849: a push to a date already gone is refused before anything is
+#: written, on both legs. "Today" is the workspace-local day of the clock
+#: the caller holds (`_now_calendar_day`), the same anchor `parse_later_when`
+#: counts days from, so an evening push west of UTC is judged on its own day.
+LATER_PAST_STATUS = "in_the_past"
+LATER_PAST_ACK = "{day} has already passed, so nothing moved. Pick today or a later date."
 
 
 def _live_hold_until(events_path, target_id: str, now_iso: str):
@@ -582,6 +588,19 @@ def apply_later(
     the writer lock (R1c).
     """
     calendar_day, utc_stamp = _later_when(when_iso)
+    # cr1#849 - a date already gone moves nothing, on either leg.
+    today = _now_calendar_day(now_iso or _now_iso(), workspace_root)
+    if today is not None and calendar_day < today.isoformat():
+        try:
+            from due_reanchor import render_moved_phrase
+            day = render_moved_phrase(calendar_day, workspace_path=workspace_root) or calendar_day
+        except Exception:  # noqa: BLE001 - the date itself is the floor
+            day = calendar_day
+        if day != calendar_day and calendar_day[:4] != today.isoformat()[:4]:
+            day = f"{day}, {calendar_day[:4]}"
+        return {"status": LATER_PAST_STATUS, "commitment_id": str(commitment_id),
+                "when": calendar_day, "today": today.isoformat(),
+                "ack": LATER_PAST_ACK.format(day=day)}
     from pathlib import Path as _Path
     from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -4044,6 +4063,7 @@ def edit_commitment_wording(
     new_title: Optional[str] = None,
     new_summary: Optional[str] = None,
     reason: str = "wording fix",
+    source_ref: Optional[str] = None,
 ) -> dict:
     """THE wording-fix writer (v4.6.0 S4 — the `fix wording` verb).
 
@@ -4085,6 +4105,8 @@ def edit_commitment_wording(
             data["new_title"] = new_title[:300]
         if new_summary:
             data["new_summary"] = new_summary[:500]
+        if source_ref:
+            data["source_ref"] = source_ref  # cr1#766: what caused it
         ev = {
             "type": "commitment_updated",
             "source_skill": source_skill,
@@ -4111,6 +4133,7 @@ def reassign_commitment(
     brain_batch_id: Optional[str] = None,
     brain_change_class: Optional[str] = None,
     actor=None,
+    source_ref: Optional[str] = None,
 ) -> dict:
     """THE reassignment writer (v4.6.0 S4). Today "not mine" DISCARDS a
     cross-attendee capture; this ROUTES it instead — the item leaves the
@@ -4172,6 +4195,8 @@ def reassign_commitment(
         }
         if isinstance(target.get("seq"), int):
             data["commitment_seq"] = target["seq"]
+        if source_ref:
+            data["source_ref"] = source_ref  # cr1#766: what caused it
         if new_owner_id:
             data["new_owner_id"] = new_owner_id
             if new_owner_name:

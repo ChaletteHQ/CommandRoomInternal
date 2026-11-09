@@ -1178,21 +1178,50 @@ def _meeting_time(ev: dict):
 
 
 def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
-                     window_days: int = 45) -> list:
+                     window_days: int = 45, people_names=None) -> list:
     """DD-7 / D7 — the calendar closer's predicate, pure.
 
     A row (an open confirmed `scheduling` commitment, or an observed-tier
     scheduling row — the caller decides which tier it hands in) MATCHES a
     `meeting` event when the meeting's time (`data.start_ts`, else `ts`)
-    lies inside (capture ts, capture ts + window_days] and at least one
-    NON-USER party id on the row appears in the meeting's `person_ids`.
-    Never `data.status`. The earliest matching meeting wins.
+    lies inside (capture ts, capture ts + window_days], at least one
+    NON-USER party id on the row appears in the meeting's `person_ids`, and
+    the meeting is ABOUT the item (cr1#765, `calendar_subject`): an item
+    whose title names a subject beyond meeting its parties needs that
+    subject in the meeting's title or notes; one that only says "meet" is
+    satisfied by the meeting itself. A task-captured item the user owes has
+    no calendar party (its creator is who asked, not who the meeting is
+    with): any meeting with someone else in it counts, and only when it is
+    surely about the item (`owed_task_grade`). `calendar_proposals` holds
+    the ones that are not sure. Never `data.status`. The earliest matching
+    meeting wins. `people_names` ({person id: [names]}) lets the subject
+    read set the parties' names aside; without it only the names the row
+    carries are.
 
     Returns [{commitment_id, title, meeting_seq, meeting_ts, meeting_ref,
     n_parties, primary_thread_id, row}] oldest-meeting first."""
+    return _calendar_pairs(rows, meeting_events, user_id=user_id, now_iso=now_iso,
+                           window_days=window_days, people_names=people_names)[0]
+
+
+def calendar_proposals(rows, meeting_events, *, user_id="", now_iso=None,
+                       window_days: int = 45, people_names=None) -> list:
+    """cr1#765, owner ruling 2026-11-07: the task-captured items the user owes
+    whose meeting may be about them, and no meeting surely is. Same shape as
+    `calendar_matches`. Asked about, never closed."""
+    return _calendar_pairs(rows, meeting_events, user_id=user_id, now_iso=now_iso,
+                           window_days=window_days, people_names=people_names)[1]
+
+
+def _calendar_pairs(rows, meeting_events, *, user_id, now_iso, window_days,
+                    people_names) -> tuple:
+    """`(sure, unsure)`: the two lists above, in one pass."""
     from datetime import timedelta
+    from calendar_subject import (SURE, UNSURE, calendar_parties, is_owed_task,
+                                  meeting_is_about, owed_task_grade)
     from event_time import event_time
     out = []
+    unsure = []
     now = _parse_ts(now_iso) if now_iso else None
     meetings = []
     for ev in meeting_events or []:
@@ -1208,18 +1237,25 @@ def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
         cap = _parse_ts(event_time(row))
         if cap is None:
             continue
-        parties = {p for p in _row_party_ids(row) if p and p != str(user_id or "")}
-        if not parties:
+        owed_task = is_owed_task(row, user_id)
+        parties = calendar_parties(row, user_id, party_ids=_row_party_ids(row))
+        if not parties and not owed_task:
             continue
         limit = cap + timedelta(days=max(1, int(window_days)))
+        first_unsure = None
         for when, ev in meetings:
             if not (cap < when <= limit):
                 continue
-            shared = parties & _meeting_party_ids(ev)
-            if not shared:
+            others = _meeting_party_ids(ev) - {str(user_id or "")}
+            if not (others if owed_task else parties & others):
+                continue
+            grade = (owed_task_grade(row, ev, people_names=people_names) if owed_task
+                     else SURE if meeting_is_about(row, ev, people_names=people_names)
+                     else 0)
+            if not grade:
                 continue
             md = ev.get("data") or {}
-            out.append({
+            pair = {
                 "commitment_id": _cid_of(row) or str(d.get("id") or ""),
                 "title": d.get("title") or "",
                 "meeting_seq": _seq_of(ev),
@@ -1228,10 +1264,18 @@ def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
                 "n_parties": len(_meeting_party_ids(ev)),
                 "primary_thread_id": row.get("primary_thread_id") or "",
                 "row": row,
-            })
+            }
+            if grade == UNSURE:
+                first_unsure = first_unsure or pair
+                continue
+            out.append(pair)
+            first_unsure = None
             break
+        if first_unsure:
+            unsure.append(first_unsure)
     out.sort(key=lambda c: c["meeting_ts"])
-    return out
+    unsure.sort(key=lambda c: c["meeting_ts"])
+    return out, unsure
 
 
 def mint_fire_batch_id(now_iso=None) -> str:
@@ -1276,5 +1320,5 @@ __all__ = [
     "standing_completion_evidence", "mint_fire_batch_id",
     "PARENT_BATCH_KEY", "UNDO_GROUP_KEY", "group_batch_id", "group_stamps",
     "close_evidence", "REFUSAL_NO_TRANSCRIPT_TS", "REFUSAL_STALE_EVIDENCE",
-    "REFUSAL_NO_COMPLETION_TURN", "calendar_matches",
+    "REFUSAL_NO_COMPLETION_TURN", "calendar_matches", "calendar_proposals",
 ]

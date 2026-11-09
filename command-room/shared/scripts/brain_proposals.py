@@ -562,7 +562,10 @@ def _open_brain_proposals(events: list[dict], *, now: Optional[datetime] = None)
                                     # cr1#195 - the person_rename row's
                                     # confirm inputs, verbatim.
                                     "new_name", "current_name",
-                                    "shell_id") if data.get(k)},
+                                    "shell_id",
+                                    # cr1#845 - which dormancy question this
+                                    # row is: `active` differs by it.
+                                    "ask") if data.get(k)},
             # TTL1 F-1/F-6 — the fields the importance rule reads, carried
             # through drop-empty when the source event has them. A queue
             # row is the only thing `question_ttl.importance_hold` is
@@ -887,8 +890,10 @@ def _cru_commitment_titles(workspace_root) -> dict:
 
 
 def _cru_commitment_capture_ts(workspace_root) -> dict:
-    """commitment_id -> the commitment's own capture ts (WATCHGATE §2.5's
-    `promise_ts`).
+    """commitment_id -> when the promise was made (WATCHGATE §2.5's
+    `promise_ts`; cr1#744: `cru_match.promise_time_raw`, the same answer the
+    matchers' fence reads, so a close the fence let through is not held here
+    for predating the row's capture).
 
     WHEN THE PROMISE WAS MADE is the other half of the apply-moment ordering
     check, and nothing was supplying it — the check existed but had no input,
@@ -897,12 +902,13 @@ def _cru_commitment_capture_ts(workspace_root) -> dict:
     failure yields {} and the ordering check stays inert rather than
     guessing."""
     try:
-        from cru_match import load_open_commitments
+        from cru_match import load_open_commitments, promise_time_raw, promise_tz
         out = {}
+        tz = promise_tz(workspace_root)
         for ev in load_open_commitments(_events_path(workspace_root)):
             d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             cid = d.get("id")
-            ts = ev.get("ts") or ev.get("timestamp")
+            ts = promise_time_raw(ev, tz)
             if cid and ts:
                 out[cid] = ts
         return out

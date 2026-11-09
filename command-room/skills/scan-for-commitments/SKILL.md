@@ -164,7 +164,7 @@ The pair (where it came from, what it says) is what the write refuses on — see
 
 **A meeting processed once writes no new rows at all (M's ruling R4).** A `source_ref` that already carries a `meeting_processed` receipt is refused in full — commitments, decisions and the meeting row — not deduped row by row. A backfill over history therefore re-writes nothing it has written before, and the count you report is the count that landed.
 
-Also skip commitments where the source is already covered by a `commitment_resolved` or `thread_resolved` event for the same `source_ref` — there's no point creating a commitment that's already known to be done.
+Also skip commitments where the source is already covered by a `commitment_resolved` or `thread_resolved` event for the same `source_ref` — there's no point creating a commitment that's already known to be done. One exception, in code (`capture_gate.capture_cover`, behind `already_captured` and the wrap's `plan_commitment_captures`): a closure of a row ANOTHER message opened covers only that row, so a message that delivers one thing and promises another still gets its new promise captured (cr1#884).
 
 ### Step 5 — Dry-run vs commit
 
@@ -221,9 +221,12 @@ Say `triage my commitments` or open your daily Waiting On / My Plate chats to se
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

@@ -10,7 +10,7 @@ A single reference for understanding the plugin end-to-end — written for the o
 
 1. [What Command Room actually is](#what-command-room-actually-is)
 2. [The substrate (the moat)](#the-substrate-the-moat)
-3. [The daily loop — six scheduled chats](#the-daily-loop--six-scheduled-chats)
+3. [The scheduled chats](#the-scheduled-chats)
 4. [The on-demand surface — skills by intent](#the-on-demand-surface--skills-by-intent)
 5. [Lifecycle — onboarding, updates, release manifests](#lifecycle--onboarding-updates-release-manifests)
 6. [Development model — cr1 staging + per-client production](#development-model--cr1-staging--per-client-production)
@@ -26,8 +26,8 @@ A single reference for understanding the plugin end-to-end — written for the o
 Command Room is a Claude Code plugin distributed via the Cowork marketplace. The product promise from `plugin.json`: *"Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace."* In practice, that means:
 
 - **The substrate**: every meeting, email, decision, commitment, and intel item flows into a structured event log (`events.jsonl`) + a relationship/project graph (`entities.json`). This is the moat. Everything else is read or write against it.
-- **The daily loop**: 6 scheduled Cowork chats fire on cron (~7-9 AM weekdays). They synthesize what's happened, surface what needs attention, and draft replies. Most days the operator spends 5-15 minutes triaging the output of these chats.
-- **The on-demand surface**: <!-- skill-count -->64 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo, board-pack), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
+- **The daily loop**: the Command Room Hub shows the inbox, the plate and the week, and Morning Brief and the silent Maintenance task are what stays on a schedule (cr1#618, #847). Most days the operator spends 5-15 minutes on what they surface.
+- **The on-demand surface**: <!-- skill-count -->61 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
 - **Voice calibration**: every writing skill runs voice calibration on every fire so drafts sound like the operator. The voice corpus grows over time as the operator sends sent-mail samples.
 
 What it is NOT:
@@ -116,9 +116,9 @@ First detector through the rails: the deal-signal detector (`shared/scripts/deal
 
 ---
 
-## The scheduled chats — six daily + one weekly
+## The scheduled chats
 
-> **History (marked 2026-10-24).** The current set is `schedule_config.DEFAULT_SCHEDULES` (the brief, the inbox, End of Day, the Friday wrap, the silent maintenance task and the Staff Meeting; Waiting On and My Plate fold into the brief since v5.30.0). Registration and the scheduler seam are described in `docs/ARCHITECTURE.md` section 7.
+> **History (marked 2026-10-24, amended for cr1#847).** The section below describes the chats as they were. What registers today is `schedule_config.FIRST_INSTALL_TASK_IDS`, Morning Brief and the silent Maintenance task; the five chats the Hub replaced are `schedule_config.SHELVED_TASK_IDS`. Registration and the scheduler seam are described in `docs/ARCHITECTURE.md` section 7.
 
 These fire on cron (defaults: weekdays 6:30 AM–5 PM for the daily loop, plus Friday 4 PM for the weekly Friday Wrap). Together they constitute most of the operator-facing value. They're configured via `enable-command-room-schedules` and registered through Cowork's scheduled-tasks API. Each is one persistent chat thread in Cowork's "Scheduled" section.
 
@@ -162,13 +162,12 @@ id for it and left the predecessor working. `past-meetings` is out of
 `renamed_to: "end-of-day"`, which makes it a different class from the two
 eliminations below: **its orchestrator file is not a stub, it is the live
 End of Day orchestrator, shared with the successor row.** A workspace that
-still has `past-meetings` registered keeps a fully working evening chat
-indefinitely, at the same hour, with no degradation — so the rename is
-offered ONCE (update bridge → `add end of day`, which registers the new id
-and disables the old one in one step) and never auto-applied. Registration's
-`schedule_config.registration_target_set()` is the fence that stops the
-successor from silently appearing beside the predecessor on an existing
-workspace, and the watchdog answers "is End of Day registered / when did it
+still has `past-meetings` registered keeps a fully working evening chat, at
+the same hour, with no degradation, until the update bridge's reinstall
+removes it (the cloud scheduler only; the older desktop scheduler has no
+delete) or the customer pauses it. `end-of-day` is itself shelved (cr1#618,
+#847), so `add end of day` gets `shelved_line`, registers nothing, and no
+successor ever appears beside the predecessor, and the watchdog answers "is End of Day registered / when did it
 last fire" over BOTH ids so a served row is never reported as missing. The
 fire's receipt keeps the `past-meetings` task_id on both ids
 (`end_of_day.TASK_ID`) so the day-close history is one continuous series.
@@ -211,7 +210,7 @@ Where each of its jobs went — none of them was deleted:
 | It did | Now |
 |---|---|
 | Person dormancy narrative | the morning brief + `relationship-moves`, which already ranked the same signal |
-| Project lifecycle: propose dormant, flip at 60d, archive at 180d, revive on new activity | the weekly `lifecycle` job (`shared/scripts/lifecycle_pass.py`) inside `maintenance` — the same thresholds in code, with a receipt, and the archive leg through `thread_archive.archive_thread` |
+| Project lifecycle: propose dormant, flip at 60d, ask about archiving at 180d, revive a dormant project on new activity | the weekly `lifecycle` job (`shared/scripts/lifecycle_pass.py`) inside `maintenance`: the same thresholds in code, with a receipt, and the owner's archive through `thread_archive.archive_thread` |
 | Asking whether a quiet project is dormant | `stalled projects`, the on-demand surface (`load_open_proposals(ws, "on-demand")`) |
 | Pending CRU reviews | `brain_proposals._adapt_commitment_reviews` → staff meeting + `needs your call` |
 | Org-layer drift, new-entity proposals | `entity_signal_detector` + the weekly `insight-generator` passes, both stricter about what may auto-apply |
@@ -261,7 +260,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 
 ## The on-demand surface — skills by intent
 
-<!-- skill-count -->64 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
+<!-- skill-count -->61 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
 
 ### "Brief me on something"
 
@@ -275,7 +274,6 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 | `transcript-search` | `what did anyone say about [topic]`, `meetings about [topic]` | Cross-meeting topic search returning meeting hits with snippets. |
 | `decision-log` (Mode: revisit — formerly `decision-revisit`, folded in SKILLMERGE1) | `what decisions should I revisit`, `decision audit`, `decisions to revisit` | Surfaces decisions worth re-examining based on time elapsed + contradictory signal + named-condition shifts. Companion to decision-log; pure substrate skill. |
 | `dormant-customer-scan` (Mode: threads — formerly `thread-resurrection`, folded in SKILLMERGE1) | `what conversations went silent`, `warm threads to revive`, `thread resurrection` | Mirror of dormant-customer-scan but for THREADS not PEOPLE. Cross-graph awareness — surfaces commitment chase as an alternative when relevant. |
-| `board-pack-assembler` (v3.8.0+) | `build the board pack for [date]`, `assemble the board pack`, `prep for the [date] board meeting` | Multi-page board pack composed from events.jsonl + decision-log + entities.json + QuickBooks. The purest substrate consumer in the plugin. |
 
 ### "Tell me about a person/relationship"
 
@@ -321,7 +319,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 | `workspace-manager` | `let's work`, `what's going on`, `new project`, `archive`, named-entity references with no specialist match | Catch-all router + project/session manager. |
 | `command-room-onboarding` | First install (auto), `set up command room`, `restart onboarding` | 6-phase M1 onboarding (~40 min) distributed across 13 chats. |
 | `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Applies workspace migrations + plays release manifests (v3.4.5+); says the one dashboards sentence (nothing is installed — Night M3). |
-| `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the 7 scheduled chats (6 daily + 1 weekly Friday Wrap, v3.11.0+). |
+| `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the first-install set: Morning Brief and the silent Maintenance task. |
 | `level-up-command-room` | `level up command room`, `install workspace map`, `rebuild quick commands`, `show me dashboards` | Answers the one dashboards sentence. The sidebar dashboards (Workspace Map, Quick Commands, My Open Commitments) are retired on every seat (Night M3); the Workspace Map is `list active projects` in chat. |
 
 ### "Pull in / file existing context"
@@ -346,7 +344,6 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 | Skill | Trigger | What it does |
 |---|---|---|
 | `list-active` | `list projects`, `active projects`, `roster` | Zero-interaction tree render of all projects. |
-| `show-my-list` | `show my list`, `show muted` | The retired discuss-later list (drain-only — nothing adds to it since MLK1) plus the mute ledger. |
 | `log-resolution` | (auto on ✓ done clicks) | Writes thread_resolved events when user clicks ✓ in a widget. |
 | `apply-choices` | (auto on Apply all clicks) | Receives consolidated widget submission, dispatches each action. |
 
@@ -446,7 +443,7 @@ command-room/
 ├── RELEASE_NOTES.md                   # All releases, newest first (rendered from shared/releases/)
 ├── README.md                          # Marketplace-facing description
 │
-├── skills/                            # <!-- skill-count -->64 skills, one directory each
+├── skills/                            # <!-- skill-count -->61 skills, one directory each
 │   ├── morning-briefing/SKILL.md
 │   ├── inbox-triage/SKILL.md
 │   ├── workspace-manager/SKILL.md

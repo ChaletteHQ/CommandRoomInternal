@@ -211,6 +211,11 @@ def _derivation_digest(account: str, basename: str, org: Optional[str]) -> str:
     return hashlib.sha256(("derivation:" + ":".join(parts)).encode("utf-8")).hexdigest()
 
 
+#: cr1#605: set for the ONE write a foreign fire may make (its stop record),
+#: so nothing on that path caches the refused pair into the identity file.
+NO_CACHE_ENV = "CR_IDENTITY_NO_CACHE"
+
+
 def identity_path(workspace_root) -> Path:
     return Path(workspace_root) / "_hq" / ".system" / "writer_identity.json"
 
@@ -239,6 +244,11 @@ def _persist(path: Path, payload: Dict[str, object]) -> None:
     door's side too."""
     try:
         if os.environ.get("CR_HELPER_DOOR"):
+            return
+        # cr1#605 / cr1#603: a foreign fire's own stop record caches nothing.
+        # The ledger lock's info sidecar asks `writer_id()` on every append,
+        # and that read would write the refused pair into this file.
+        if os.environ.get(NO_CACHE_ENV):
             return
         import datetime as _dt
         payload = dict(payload)

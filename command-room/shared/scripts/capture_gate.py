@@ -1968,6 +1968,147 @@ def corroborates(observed_ev: dict, candidate_ev: dict) -> bool:
     return jaccard >= 0.5 or len(shared) >= 3
 
 
+def people_names_on_file(workspace_root) -> dict:
+    """`{person id: [names]}` from the workspace's people (cr1#747), so a
+    party written as a name meets the same party written as an id. {} when
+    the file cannot be read."""
+    if not workspace_root:
+        return {}
+    try:
+        import json as _json
+        from entities_io import entities_collection
+        raw = _json.loads((Path(workspace_root) / "_hq" / "data" / "entities.json")
+                          .read_text(encoding="utf-8"))
+        out: dict = {}
+        for p in entities_collection(raw, "people"):
+            labels = [p.get("name"), p.get("canonical_name")] + list(p.get("aliases") or [])
+            pid = str(p.get("id") or "").strip()
+            if pid:
+                out[pid] = [str(x) for x in labels if isinstance(x, str) and x.strip()]
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+#: cr1#747 - every way a row names its owner, newest first (the aliases
+#: `cru_match._COMMITMENT_FIELD_ALIASES` reads), then the name of a sender
+#: nobody has resolved (`owner_external`, whose `owner_id` is empty).
+_OWNER_KEYS = ("owner_id", "owner_person_id", "owner", "owner_external")
+
+#: cr1#747 - the only words two wordings of one promise may differ by. Never
+#: a number, a weekday, "not", or a word that says which way a thing travels.
+_FILLER_WORDS = frozenset("a an the to will shall".split())
+
+#: The workspace owner, however a row spells them.
+_THE_USER = "\0user"
+
+
+#: A possessive stays on its word ("lee's" is not "lee"): whose deck it is
+#: is part of the promise. Marked with a letter-class apostrophe so the word
+#: pattern keeps it, after every other apostrophe is dropped.
+_POSSESSIVE = "\u02bc"
+
+
+def _words(text) -> list:
+    """Lowercase words with the punctuation gone. A digit is a word of its
+    own and so is any script, so "phase 1" is never "phase 2"; a possessive
+    stays one word with its owner, so "Lee's deck" is never "Lee deck"."""
+    plain = str(text or "").casefold().replace("\u2019", "'")
+    plain = re.sub(r"(?<=[^\W_])'s\b", _POSSESSIVE + "s", plain).replace("'", "")
+    return re.findall(r"[^\W_]+", plain)
+
+
+def _singular(word: str) -> str:
+    if len(word) <= 3 or not word.isalpha() or _POSSESSIVE in word:
+        return word
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith(("ches", "shes", "sses", "xes", "zes")):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
+def _promise_wording(text) -> tuple:
+    """A title with case, punctuation, plurals and filler set aside, in its
+    own order. `same_promise` asks for these equal, word for word."""
+    return tuple(_singular(w) for w in _words(text) if w not in _FILLER_WORDS)
+
+
+def _names_to_people(people_names: dict, user_ids, user_names) -> dict:
+    """`{a name, folded: the one person it means}`; None for a name more than
+    one person carries."""
+    out: dict = {}
+    for pid, names in people_names.items():
+        who = _THE_USER if pid in user_ids else pid
+        for name in names:
+            key = " ".join(_words(name))
+            if key:
+                out[key] = who if out.get(key, who) == who else None
+    for name in user_names:
+        key = " ".join(_words(name))
+        if key:
+            out[key] = _THE_USER
+    return out
+
+
+def _person(raw, user_ids, people_names: dict, by_name: dict) -> str:
+    """One person, however a row spells them: an id, or a name on file
+    resolved to its id. Any other name stands for itself. "" when nobody can
+    say who it is."""
+    raw = str(raw or "").strip()
+    if raw in user_ids:
+        return _THE_USER
+    if raw in people_names:
+        return raw
+    key = " ".join(_words(raw))
+    return (by_name[key] or "") if key in by_name else key
+
+
+def _party_reader(user_ids, user_names, workspace_root, people_names):
+    """A function from a row's data to `(owner, frozenset of counterparties)`,
+    each person as `_person` reads them. The owner is "" when the row does
+    not say; a row with no counterparty gives the empty set."""
+    from commitment_parties import counterparty_ids, counterparty_names
+    if people_names is None and workspace_root is not None:
+        people_names = people_names_on_file(workspace_root)
+    people_names = people_names or {}
+    user_ids = {str(i) for i in (user_ids or ()) if i}
+    by_name = _names_to_people(people_names, user_ids, user_names or ())
+
+    def who(d: dict) -> tuple:
+        owner = next((d.get(k) for k in _OWNER_KEYS if str(d.get(k) or "").strip()), "")
+        others = {_person(p, user_ids, people_names, by_name)
+                  for p in list(counterparty_ids(d))
+                  + list(counterparty_names(d, workspace_root=workspace_root))}
+        return _person(owner, user_ids, people_names, by_name), frozenset(others)
+    return who
+
+
+def _is_one_promise(a: dict, b: dict, who) -> bool:
+    """The high-confidence test (cr1#747): one wording, word for word and in
+    order (`_promise_wording`: "from Tuesday to Thursday" is not "from
+    Thursday to Tuesday"), one owner the rows actually name, one set of
+    counterparties."""
+    wording = _promise_wording(a.get("title") or a.get("summary"))
+    owner, others = who(a)
+    return (bool(wording) and bool(owner) and "" not in others
+            and wording == _promise_wording(b.get("title") or b.get("summary"))
+            and (owner, others) == who(b))
+
+
+def same_promise(a: dict, b: dict, *, workspace_root=None,
+                 people_names: Optional[dict] = None) -> bool:
+    """cr1#747 - may two commitment payloads be treated as one without
+    showing the owner both? The one test for every path that makes a capture
+    disappear: this module's restatement dedup and `commitment_dedup`'s door
+    and auto-merge tiers. Those tiers ask about two rows of any owner, so the
+    user is one more person here."""
+    return _is_one_promise(a or {}, b or {},
+                           _party_reader((), (), workspace_root, people_names))
+
+
 def matches_open_commitment(
     data: dict,
     open_events,
@@ -1975,74 +2116,230 @@ def matches_open_commitment(
     person_ids=(),
     exclude_party_ids=frozenset(),
     exclude_party_names=(),
+    workspace_root=None,
+    people_names: Optional[dict] = None,
 ) -> Optional[dict]:
-    """Corroboration-style RESTATEMENT match of a NEW capture payload against
-    the OPEN set (BUG-3719 cross-channel dedup): the same real-world promise
-    made in a meeting and restated in a sent email must MERGE into the item
-    that already tracks it, never double-track.
+    """Is this NEW capture a promise already on the open set, word for word
+    (BUG-3719 cross-channel dedup)? The same promise made in a meeting and
+    restated in a sent email merges into the item that tracks it.
 
-    Same thresholds as `corroborates`, applied capture-side: the new item and
-    an open commitment match when they share (i) a party — a person id or a
-    ≥3-char name token — AND (ii) content — stopword-stripped title-token
-    Jaccard ≥ 0.5, or ≥ 3 shared content tokens.
+    cr1#747, owner ruling 2026-11-07: when two captured promises look alike,
+    show both. A merge makes a promise disappear, so it needs high
+    confidence: the same owner, the same counterparty, and titles equal once
+    case, punctuation, plurals and filler are set aside (`_promise_wording`).
+    Numbers and weekdays count. Anything less keeps both, and a restatement
+    in other words is a duplicate the owner can drop.
 
-    `exclude_party_ids` / `exclude_party_names` MUST carry the workspace
-    owner's id and names when the new capture is the user's own promise
-    (sent mail, own Slack messages): the user is a party to every own promise
-    and to most open items, so user-overlap alone would link two unrelated
-    items — the party test has to be carried by the OTHER side (the
-    counterparty). A new item with no non-user party never matches here
-    (fail-open: the append path's semantic dedup, v4.6.0 C4, still flags
-    suspects).
+    The parties are compared as people, not as a yes or no about the owner:
+    a row that does not say who owes it, or to whom, cannot be shown to be
+    the same promise. That covers direction too, since the same words the
+    other way round have the owner and counterparty swapped.
 
-    Returns the FIRST matching open event (append order), else None. Pure.
+    `exclude_party_ids` / `exclude_party_names` carry the workspace owner's
+    ids and names, so every spelling of the user is one person. A new item
+    with no party but the user never matches: the append path's semantic
+    dedup (v4.6.0 C4) still flags suspects. `people_names` (or the names read
+    from `workspace_root`) lets a name on one row meet an id on another.
+    `person_ids` is not read: the rows say who the parties are.
+
+    Returns the FIRST matching open event (append order), else None. Pure
+    when `workspace_root` is None.
     """
     data = data or {}
-    excl_ids = {str(i) for i in (exclude_party_ids or ()) if i}
-    excl_names = set()
-    for n in exclude_party_names or ():
-        for tok in str(n or "").lower().split():
-            if len(tok) >= _MIN_NAME_TOKEN:
-                excl_names.add(tok)
-
-    new_ids = {str(p) for p in (person_ids or ()) if p}
-    for k in ("owner_id", "counterparty_id"):
-        if data.get(k):
-            new_ids.add(str(data[k]))
-    new_ids -= excl_ids
-    new_names = set()
-    for k in ("owner_external", "counterparty_name"):
-        for tok in str(data.get(k) or "").lower().split():
-            if len(tok) >= _MIN_NAME_TOKEN:
-                new_names.add(tok)
-    new_names -= excl_names
-    if not new_ids and not new_names:
+    who = _party_reader(exclude_party_ids, exclude_party_names, workspace_root, people_names)
+    owner, others = who(data)
+    if not others or not ({owner} | others) - {_THE_USER}:
         return None
-
-    new_tok = _content_tokens(data.get("title") or data.get("summary"))
-    if not new_tok:
-        return None
-
     for ev in open_events or []:
         if ev.get("type") != "commitment":
             continue
-        ev_ids, ev_names = _party_tokens(ev)
-        ev_ids = {str(i) for i in ev_ids} - excl_ids
-        ev_names = ev_names - excl_names
-        if not ((new_ids & ev_ids) or (new_names & ev_names)):
-            continue
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        ev_tok = _content_tokens(
-            f"{d.get('title') or ''} {d.get('summary') or ''} "
-            f"{d.get('evidence') or ''}"
-        )
-        if not ev_tok:
-            continue
-        shared = new_tok & ev_tok
-        jaccard = len(shared) / len(new_tok | ev_tok)
-        if jaccard >= 0.5 or len(shared) >= 3:
+        if _is_one_promise(data, d, who):
             return ev
     return None
+
+
+# ---------------------------------------------------------------------------
+# A closure covers the item it closed (cr1#884).
+# ---------------------------------------------------------------------------
+
+_COVER_TITLE_CHARS = 60  # scan-for-commitments Step 4: first 60 chars, ci
+#: The closers Step 4 has always read. A supersession is a correction of the
+#: row, not evidence about the message, and never covered it.
+_COVER_CLOSERS = ("commitment_resolved", "thread_resolved")
+
+
+def _cover_key(title) -> str:
+    return str(title or "").strip().lower()[:_COVER_TITLE_CHARS]
+
+
+def _row_title(ev: dict) -> str:
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    return str(data.get("title") or data.get("summary") or "")
+
+
+def same_wording(a, b) -> bool:
+    """The one resemblance the ruling on cr1#747 lets two promises be treated
+    as one on, for `capture_cover`: the same words in any order, once case,
+    punctuation, plurals and filler are set aside (`_promise_wording`), the
+    whole multiset alike. Numbers, weekdays, "not", "from" and possessives
+    count, so "phase 1 plan" is never "phase 2 plan" and "Dustin Lee's deck"
+    is never "Lee Dustin's deck". `same_promise` asks for more: the same
+    words in the same order, beside the parties."""
+    words = sorted(_promise_wording(a))
+    return bool(words) and words == sorted(_promise_wording(b))
+
+
+def cover_owner(owner_id="", owner_name="") -> str:
+    """Who owes a row, as `capture_cover` compares it (cr1#912): the owner's
+    person id, or, for a row whose owner has no record yet, the name the row
+    carries (`data.owner_external`). '' when neither is known."""
+    oid = str(owner_id or "").strip().lower()
+    if oid:
+        return oid
+    name = " ".join(str(owner_name or "").split()).lower()
+    return f"name:{name}" if name else ""
+
+
+#: The events the open view folds into who owes a row (cr1#912): a
+#: reassignment, and an owner confirm or clear (`commitment_updated`).
+_OWNER_FOLD_TYPES = ("commitment_reassigned", "commitment_updated")
+
+
+def _folded_owners(rows: list, folds: list) -> list:
+    """Who owes each of `rows` (closed rows), as the open view would say it:
+    `cru_match.load_open_commitments`' own fold, run over the rows alone and
+    the reassignments and owner confirms naming them, so the owner keys it
+    reads (`owner_id` and its older spellings) and the order of the changes
+    are the projection's, not a second copy. A row the fold does not return
+    falls back to its own owner fields."""
+    from cru_match import _commitment_field, _commitment_id, load_open_commitments
+    ids = {_commitment_id(ev) for ev in rows}
+    mine = [ev for ev in folds
+            if str((ev.get("data") or {}).get("commitment_id")
+                   or (ev.get("data") or {}).get("target_id")
+                   or ev.get("commitment_id") or "") in ids]
+    try:
+        projected = {_commitment_id(ev): ev
+                     for ev in load_open_commitments("", events=list(rows) + mine)}
+    except Exception:  # noqa: BLE001 - unreadable: the rows' own fields
+        projected = {}
+    out = []
+    for ev in rows:
+        row = projected.get(_commitment_id(ev), ev)
+        data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        out.append(cover_owner(_commitment_field(row, "owner_id"),
+                               data.get("owner_external")))
+    return out
+
+
+def capture_cover(events, on_artifact, title, *,
+                  row_types=("commitment", "commitment_observed"),
+                  owner=None) -> bool:
+    """Step 4 for every capture leg: is a candidate from one message already
+    on the book, or already known to be done? Shared by the mail, Sent, chat
+    and scan paths; `on_artifact` is each leg's own identity test.
+
+    `events` is an iterable of events, or a function returning a fresh one:
+    a second pass is made only when this message closed another message's
+    row, so a generator is enough everywhere else.
+
+    True when a capture row from this message (`row_types`; a held row is a
+    capture on the mail legs) has this title (the scan's rule, first 60
+    characters, one inside the other), or a closure on this message covers
+    it. A closure on this message covers everything from it, as before,
+    EXCEPT a closure whose rows another message opened: that one covers only
+    those rows, and only by the same words, in any order, possessives kept
+    on their words (`same_wording`). A send that delivers one thing and
+    promises another closes the first, and the second is new; reading every
+    closure on the message as covering all of it lost the second (cr1#884).
+    Not by shared words: "Send Dustin the deck" and "Send Dustin the
+    contract" share half their words and are two promises.
+
+    Not by the scan's title rule either (cr1#902 on inbound mail, cr1#909 on
+    Sent, chat and the scan): a new promise whose title CONTAINS the
+    delivered row's title ("Send Dustin the deck again next month") is a
+    promise of its own. Sent closes before it captures, so that rule refused
+    it on every read there; on inbound it refused it on a read after the
+    reply's close. A rewording of the delivered item from the same message
+    can come back as one row the owner can drop, once per distinct
+    rewording, the cost the rulings on cr1#747 and cr1#751 accept.
+
+    `owner` (cr1#912) is who owes the candidate (`cover_owner`), when the leg
+    knows it. Given, a closure of another message's row covers the
+    candidate only when that row is owed by the same person as well (its
+    owner as the open view folds it, a reassignment included): a
+    request to the owner worded like the item someone else delivered is
+    another promise, and when unsure both are kept (the ruling on cr1#747):
+    an owner unknown on either side covers nothing. `None` (the leg does not
+    say) compares the words alone.
+
+    Deliberately no wider than that: a closure of a row this message opened
+    still covers the message (a rewording of that promise is not brought
+    back), and so does a closure naming no row on the book. What it does not
+    do: a row this message opened and that was closed through a DIFFERENT
+    message carries no closure on this one, so a reworded re-read of it is
+    not refused here, as before; that stays open on cr1#771.
+    """
+    from closure_index import closer_target_id, closer_target_seqs
+    from cru_match import _commitment_id
+
+    want = _cover_key(title)
+    own_ids: set = set()
+    own_seqs: set = set()
+    target_ids: set = set()
+    target_seqs: set = set()
+    for ev in (events() if callable(events) else events):
+        if not isinstance(ev, dict) or not on_artifact(ev):
+            continue
+        etype = ev.get("type")
+        if etype in row_types:
+            row = _cover_key(_row_title(ev))
+            if row and want and (row in want or want in row):
+                return True
+        if etype == "commitment":
+            own_ids.add(_commitment_id(ev))
+            if ev.get("seq") is not None:
+                own_seqs.add(ev.get("seq"))
+        elif etype in _COVER_CLOSERS:
+            cid, seqs = closer_target_id(ev), closer_target_seqs(ev)
+            if not cid and not seqs:
+                return True  # names no row: the whole message was closed
+            if cid:
+                target_ids.add(cid)
+            target_seqs.update(seqs)
+    if not target_ids and not target_seqs:
+        return False
+    if target_ids & own_ids or target_seqs & own_seqs:
+        return True  # the message's own row
+    found_ids: set = set()
+    found_seqs: set = set()
+    same_words: list = []  # the closed rows in this candidate's words
+    folds: list = []       # what changes who owes them, in append order
+    for ev in (events() if callable(events) else events):
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") in _OWNER_FOLD_TYPES:
+            folds.append(ev)
+            continue
+        if ev.get("type") != "commitment":
+            continue
+        cid, seq = _commitment_id(ev), ev.get("seq")
+        if cid not in target_ids and seq not in target_seqs:
+            continue
+        found_ids.add(cid)
+        found_seqs.add(seq)
+        if same_wording(_row_title(ev), title):
+            same_words.append(ev)
+    if same_words:
+        if owner is None:
+            return True
+        want_owner = str(owner or "").strip().lower()
+        owners = _folded_owners(same_words, folds)
+        if any(o and o == want_owner for o in owners):
+            return True
+    # A closure whose row is not on the book covers the message, as before.
+    return bool(target_ids - found_ids) or bool(target_seqs - found_seqs)
 
 
 def _promoted_ids(events) -> set:
@@ -2480,7 +2777,10 @@ def propose_gate_directives(
                 dismissed_ids.add(str(cid))
         elif t == "commitment_reassigned":
             cid = d.get("commitment_id") or d.get("target_id")
-            if cid:
+            # cr1#766: the board follow's reassign is the board's move, not
+            # the owner turning the capture away.
+            from event_types import MACHINE as _BY_MACHINE
+            if cid and str(d.get("reassigned_by") or "") != _BY_MACHINE:
                 dismissed_ids.add(str(cid))
         elif t == "chat_dismissal":
             cid = d.get("target_id") or d.get("commitment_id")
@@ -2557,6 +2857,9 @@ def apply_gate_proposal(workspace_root, proposal: dict) -> dict:
 
 
 __all__ = [
+    "capture_cover",
+    "cover_owner",
+    "same_wording",
     "CONFIDENCE_SURFACE_MIN",
     "CaptureGateError",
     "parse_iso_date",
@@ -2613,6 +2916,7 @@ __all__ = [
     "observed_from_commitment_event",
     "corroborates",
     "matches_open_commitment",
+    "same_promise",
     "find_corroborations",
     "promote_observed",
     "observed_counts",

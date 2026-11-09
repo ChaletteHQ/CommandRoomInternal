@@ -27,7 +27,7 @@ End-of-Day-specific scope notes:
 
 **The FILENAME keeps saying `past-meetings`.** Registration substitutes `<ORCHESTRATOR_FILENAME>` into each task's bootloader at registration time, so every `past-meetings` prompt already on the fleet names this exact file. Renaming it would break every one of those registrations at their next fire — a plugin upgrade that turns working chats into load errors. Giving `end-of-day` its own file would be worse: two files for one pack, drifting apart from the first edit that only lands in one of them. So `ORCHESTRATOR_MAP` has two rows pointing here, and that is the whole mechanism. (Same reason `waiting-on` → `orchestrator-commitments.md` and `pulse` → `orchestrator-dont-forget.md`.)
 
-**The RECEIPT keeps saying `past-meetings` too** — `end_of_day.TASK_ID`, unchanged by EOD2, and the Phase 5 writer below is unchanged with it. The rename is per-machine and propose-only, so at any moment part of the fleet fires under each id; writing the receipt under whichever id happened to fire would split one day-close history into two half-series at whatever date each customer took the offer, and the week roll-up, the score, `catchup_window` and `late_fire` all read that series. It stays one series. `receipts.TASK_PREDECESSORS["end-of-day"] = ("past-meetings",)` is how the new id reads it.
+**The RECEIPT keeps saying `past-meetings` too** — `end_of_day.TASK_ID`, unchanged by EOD2, and the Phase 5 writer below is unchanged with it. A seat may still fire under either id; writing the receipt under whichever id happened to fire would split one day-close history into two half-series, and the week roll-up, the score, `catchup_window` and `late_fire` all read that series. It stays one series. `receipts.TASK_PREDECESSORS["end-of-day"] = ("past-meetings",)` is how the new id reads it.
 
 **What this means when you fire:** nothing. Do not branch on which taskId started you, do not mention the rename in the chat post, and do not write anything under `end-of-day`. Both ids are this pack.
 
@@ -190,20 +190,20 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"w
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "chat_reconcile:plan_chat_scan"}'
 ```
 
-The mail plan's `first_run` and `intent` are the Sent fetch floor above (its `after` is the cursor branch's date, one day of overlap already applied, or the first-run floor); its `user_person_id` is USER_PERSON_ID and its `provider` is the resolved mail provider tag. The chat plan's `after` is `backfill_floor`'s answer and nothing else. Fetch through the connectors (here, never through the door).
+The mail plan's `first_run` and `intent` are the Sent fetch floor above (its `after` is the cursor branch's date, one day of overlap already applied, or the first-run floor); its `user_person_id` is USER_PERSON_ID and its `provider` is the resolved mail provider tag. The chat plan's `after` is `backfill_floor`'s answer and nothing else. Fetch through the connectors (here, never through the door); when a connector says more pages remain, read the next pages too, until the window is covered.
 
 **THE DAY'S INPUTS TRAVEL AS FILES, AND THE CODE KEEPS THE FIELDS (EODHARD3).** Stage each batch as the connector's answer came: ONE JSON list, one object per message, every message it returned, in ONE stage (a batch is never split, and nothing needs cutting away). Each object carries the plan's `message_fields` under the plan's names; where the connector spells one differently, add it under the plan's name. Anything else an object carries is dropped in code: the code keeps these fields of a Sent message: message_id, ts, thread_id, has_attachment, recipient_person_ids, recipient_names, recipient_emails, subject, body, labels, folder, folders, label; and these of a chat message: chat_or_channel_id, message_id, ts, user_id, author_id, user_name, text, thread_ts, permalink, counterparty_person_ids, counterparty_names, channel_name, chat_name. The leg then runs the whole batch in ONE call, a first run's 30 days included. **Each stage states `n_returned`, how many messages the connector returned** (0 when it answered with none): a stage with no batch, no count, or a count that is not the batch's lands nothing and answers one sentence, because a read that never happened must never pass as a day that was read and found empty. Each batch is staged through the door as bytes, then its leg is run by the staged file's `rel`:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"kind": "sent_messages", "n_returned": <how many messages the connector returned>, "workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_stage_sent.json", "name": "eod_helpers:stage_fire_input"}'
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "provider": <the mail plan's provider, never a literal>, "sent_rel": "<the rel the stage answered>", "source_skill": "past-meetings", "user_person_id": "<the mail plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_sent_staged"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "provider": <the mail plan's provider, never a literal>, "read_complete": <true when the fetch reached the end of its window, false when more pages remained unread>, "sent_rel": "<the rel the stage answered>", "source_skill": "past-meetings", "user_person_id": "<the mail plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_sent_staged"}'
 ```
 
 The stage's file holds `{"content_base64": "<the Sent batch as one JSON list, base64 encoded in this session's own scratch>"}`. Write the batch to a file in your scratch with your own file-writing tool (every file this fire keeps in its scratch is written that way or by this recipe, never by a python body: a python body in the run log is a G69 finding), then build the stage's file from it in the same scratch with `{ printf '{"content_base64": "'; base64 < <the batch file> | tr -d '\n'; printf '"}'; } > <the stage's file>`: bytes under a `*_base64` key are the door's content carrier and are never walked item by item, and an `args_file` crosses no command line, so a 30 day batch crosses whole. `reconcile_sent_staged` runs `reconcile_sent_commitments.reconcile_and_receipt` beside the data over the whole staged batch (`exclude_captured_since` is RECONFENCE) and answers that writer's own receipt. When the fetch was blocked there is no batch: skip the stage and leave `sent_rel` out.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"kind": "chat_messages", "n_returned": <how many messages the connector returned>, "workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_stage_chat.json", "name": "eod_helpers:stage_fire_input"}'
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"chat_rel": "<the rel the stage answered>", "exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "source_skill": "past-meetings", "user_chat_ids": [<the user's own ids on that chat backend>], "user_names": [<the user's own names there>], "user_person_id": "<the chat plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_chat_staged"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"chat_rel": "<the rel the stage answered>", "exclude_captured_since": "<fire_start>", "fetch_blocked": <plain-English reason, or null>, "fired_via": "<the Phase 2.9 receipt_fired_via>", "read_complete": <true when the read reached the end of its window, a per_chat_scan's own limits included; false when more pages remained unread>, "source_skill": "past-meetings", "user_chat_ids": [<the user's own ids on that chat backend>], "user_names": [<the user's own names there>], "user_person_id": "<the chat plan's user_person_id>", "workspace_root": "<WS>"}, "name": "eod_helpers:reconcile_chat_staged"}'
 ```
 
 The chat stage's file is built the same way from the chat messages you read. `reconcile_chat_staged` runs `chat_reconcile.reconcile_chat_and_receipt` beside the data over the whole staged batch. No chat backend, or a blocked read: skip the stage and leave `chat_rel` out.
@@ -403,9 +403,12 @@ Call Granola MCP for meetings in `[start_aware, end_aware]`. For each:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -490,9 +493,12 @@ Ask the declared transcript backend for the same window a SECOND way: with the i
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -582,9 +588,12 @@ For each meeting:
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. A runtime that is absent, or a runtime_version that
-   #    differs, is a STOP: run the update-bridge install step. There is no
-   #    container fallback.
+   #    customer opens. Then hand that answer to `workspace_access.py discover
+   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+   #    is absent, or its manifest_sha is not this plugin's -- the version alone
+   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    install step once, resolve and compare again, and if it still lags say
+   #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -678,9 +687,12 @@ For each meeting:
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. A runtime that is absent, or a runtime_version that
-   #    differs, is a STOP: run the update-bridge install step. There is no
-   #    container fallback.
+   #    customer opens. Then hand that answer to `workspace_access.py discover
+   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+   #    is absent, or its manifest_sha is not this plugin's -- the version alone
+   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    install step once, resolve and compare again, and if it still lags say
+   #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -815,9 +827,12 @@ For each meeting:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1021,9 +1036,12 @@ Otherwise, for EACH newly-processed meeting transcript, execute via bash:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1071,7 +1089,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"w
 ```
 
 
-The file holds `{"attendee_person_ids": [<resolved attendee person_ids>], "fire_start": "<UTC ISO recorded BEFORE Phase 4 appended anything>", "meeting_ts": "<THIS meeting start ts>", "review_budget": <review_budget from the PREVIOUS transcript pass answer this fire, or {} for the first>, "source_ref": "granola:<THIS meeting id>", "transcript_text": "<full transcript text for THIS meeting>"}`. The walk and the write run in ONE writer beside the data (MIGRATE3-EOD fix round 2, review R-2): the matcher's results, over a hundred rows on a real day, never cross the door. The writer answers the walk's `skip` / `walked` and, when it wrote, the write step's own answer below, plus `n_results` and this transcript's `stale_evidence_dropped`.
+The file holds `{"attendee_person_ids": [<resolved attendee person_ids>], "attendee_records": <THIS meeting attendee list from Phase 4 step 1, or null>, "fire_start": "<UTC ISO recorded BEFORE Phase 4 appended anything>", "meeting_ts": "<THIS meeting start ts>", "review_budget": <review_budget from the PREVIOUS transcript pass answer this fire, or {} for the first>, "source_ref": "granola:<THIS meeting id>", "transcript_text": "<full transcript text for THIS meeting>", "user_names": ["<the CEO canonical name>"]}`. `attendee_records` and `user_names` are the tight gate's (cr1#882): a close lands only when the CEO's own report names the other person and the attendee list shows exactly the CEO and that person; everything else is a proposal that waits for the CEO, and without `attendee_records` nothing is tight. The walk and the write run in ONE writer beside the data (MIGRATE3-EOD fix round 2, review R-2): the matcher's results, over a hundred rows on a real day, never cross the door. The writer answers the walk's `skip` / `walked` and, when it wrote, the write step's own answer below, plus `n_results` and this transcript's `stale_evidence_dropped`.
 
 The walk runs `eod_incremental.already_walked` first: `skip: true` means the walk ledger honored this transcript (count `n_cru_walks_ledger_skipped` / `..._honored`) and the write step does NOT run. Otherwise it is the matcher's `match_transcript_to_commitments` over `load_open_commitments` with the §6 fence (`exclude_captured_since=fire_start`), EVORDER layer 3 (`transcript_ts`, THIS meeting's own start) and F-28's roster, plus `open_review_proposal_ids` and `mint_fire_batch_id(fire_start)`. The write step, `eod_helpers.apply_cru_pass`, is the old block's two writes in its order; `commitment_policy_pass.apply_transcript_results` and then, only after its appends landed, `record_walk`; and its answer carries `counts` (resolved, confirmed_closed, withheld, closes_enabled, updated, chips, rescored, the silent tallies, close_refused) and `review_budget` (`proposals_suppressed`) for the CRU diagnostic line. **Print the answer's `line`**; the write half composes it, exactly the line the old block printed:
 
@@ -1129,7 +1147,7 @@ Run it per transcript, immediately after 4.6, before Phase 4.6.b:
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_own_word.json", "name": "exit_doors:apply_own_word_closes"}'
 ```
 
-The file holds `{"source_ref": "granola:<meeting_id>", "transcript_text": "<this transcript>", "user_names": ["<the CEO canonical name>"]}`.
+The file holds `{"source_ref": "granola:<meeting_id>", "transcript_text": "<this transcript>", "user_names": ["<the CEO canonical name>"], "attendee_records": <this meeting's attendee list, or null when there is none>}`.
 
 The answer is `apply_own_word_closes`' own — `n_closed`, `n_statements` and `ambiguous` (own-word: closed=… statements=… ambiguous=…).
 
@@ -1180,9 +1198,12 @@ Otherwise, for each newly-processed transcript, execute:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1294,9 +1315,12 @@ The meetings Phase 3.5 classified `non_attendee` run here, and **nowhere else**.
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -1664,9 +1688,12 @@ You MUST execute the renderer through the session's bash after the Rule 22 pream
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

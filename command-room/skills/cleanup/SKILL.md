@@ -37,7 +37,8 @@ Post-MAINT1, the bridge and the install ritual teach the customer they have a "M
 **This engine now has a second caller (HEAL1).** `morning briefing`, `end of day` and `weekly recap` ask the same dispatcher the same question before they gather, run what it returns, and receipt it once with `triggered_by` naming the surface — see `maintenance_dispatcher.catch_up_plan`. Nothing below changes: this step is still the door someone walks through when they type the words, and it still runs the WHOLE registry. Two things follow from having two callers, and both are already in code rather than in this paragraph: a catch-up minutes ago means this fire finds nothing due (the receipt is the same receipt), and the Sunday family runs from here and from `weekly recap` and from nowhere else (R-M2).
 
 1. Resolve the workspace + plugin root per CONTRACT Rule 22 (multiple plugins may be installed — filter the plugin_* candidates by this plugin's name, the MAINT-RUN discovery wobble).
-2. Ask the dispatcher what is due — NEVER judge due-ness yourself: `python3 shared/scripts/maintenance_dispatcher.py <workspace_root>` and hold its JSON plan (`due` is ordered; the order is the contract). Where the files are on another machine the same question goes through the access layer — `maintenance_dispatcher:catch_up_plan` with `"surface": "run-maintenance"`, one verb, one call, rendered by `workspace_access.py plan run_helper` per the Access preamble. That surface is exempt from the two gates the typed surfaces get: somebody asked, so it plans the whole registry whether or not the last slot was served. In the cloud container the plan comes back with every job that carries an `--apply` leg held out under `refused_container` — the APPLY class (`maintenance_dispatcher.apply_class_jobs`), which is NOT every job that writes: a job whose only write is its own receipt still runs there. Those held jobs stay owed, and `refused_line` is the one sentence to say about it here — plainly, once, with no count and no part named. Nothing here passes a host mode: this step is the door a person types their way through, and the resolution `surface_drivers.resolved_host_mode` does belongs to the typed read surfaces that call `maintenance_catch_up`, not to this one.
+   **The files are on another machine (a merged seat) → steps 2-4 are ONE fetched text, not the words below (cr1#929).** Ask the read door for it, one `workspace_access.py plan run_helper` line per the Access preamble: `maintenance_dispatcher:typed_maintenance_branch` with `{"workspace_root": "<WS>"}`. Follow its `text` verbatim, T1 to T3, then step 5. It is the registered Maintenance task's own merged branch adapted for a person asking: every mail, chat and session job runs its plan beside the data, its connector step here in this chat, and its writer through the write door, and each is scored by `score_door_job`. On 2026-11-08 a typed run on a merged seat that went by the prose below read no connected app, ran job scripts in a shell, set the writer identity by hand and scored jobs by exit code. Steps 2-4 below are the local seat's.
+2. Ask the dispatcher what is due — NEVER judge due-ness yourself: `python3 shared/scripts/maintenance_dispatcher.py <workspace_root> --fired-via manual` and hold its JSON plan (`due` is ordered; the order is the contract). A person asked, so this is a manual fire, exempt from the gap guard: without the word the CLI takes it for a scheduled fire, and a due job could come back as already run. Where the files are on another machine the fetched text above asks the same question through the access layer — `maintenance_dispatcher:catch_up_plan` with `{"surface": "run-maintenance", "workspace_root": "<WS>"}`. That surface is exempt from the two gates the typed surfaces get: somebody asked, so it plans the whole registry whether or not the last slot was served. In the cloud container the plan comes back with every job that carries an `--apply` leg held out under `refused_container` — the APPLY class (`maintenance_dispatcher.apply_class_jobs`), which is NOT every job that writes: a job whose only write is its own receipt still runs there. Those held jobs stay owed, and `refused_line` is the one sentence to say about it here — plainly, once, with no count and no part named. Nothing here passes a host mode: this step is the door a person types their way through, and the resolution `surface_drivers.resolved_host_mode` does belongs to the typed read surfaces that call `maintenance_catch_up`, not to this one.
 3. **Nothing due →** the composer's nothing-due line (step 5 below builds it from the same plan) and STOP. Write NO `maintenance_run` receipt for a nothing-due manual poke: the watchdog reads `maintenance_run` for task freshness, and an empty manual receipt could mask a broken scheduled task.
 4. **Jobs due →** execute each due job's skill END-TO-END in plan order, one at a time, never in parallel, under identical rules to the registered task prompt: score each job through `maintenance_dispatcher.job_counts_as_complete(job_id, receipt_validated=…, run_reported_nothing_due=…)`; ordinarily a job is COMPLETED only when its OWN receipt validator confirms its substrate receipt, and an unreceipted job goes in jobs_failed and stays due (self-healing); the one exception the function knows is a job in `maintenance_dispatcher.QUIET_RUN_JOBS` whose own return said there was nothing due, because those write no receipt on a quiet run by design. Never widen that yourself: reporting a correct nothing-to-do run as a failure is what put seven phantom question-expiry failures on the maintenance report. A job whose plan row carries `read_proof` reads a connector and its writer asks for proof of the read: follow the row, so a run that read an empty board still passes `connectors_read`, and a run no read answered passes `fetch_blocked`. Then finish with ONE `maintenance_dispatcher.maintenance_receipt(workspace_root, jobs_due=…, jobs_completed=…, jobs_failed=…, skipped_disabled=…, fired_via="manual", windows={<each job's job_id>: <its window from the plan>})`, hold what it returns as `receipt` (on a merged seat, the first of the rows `plan_maintenance_receipt` hands back), and confirm it landed via `validate_maintenance_ran`.
 5. **Chat output comes from the composer, not from the plan (SPEC FIXTRAIN 6.2 — MANDATORY).** On 09-13 this fire answered with an "Internal record" paragraph: a raw record number, a command-line flag, the job ids verbatim and a field name with UNKNOWN after it. All four were the plan dictionary being read out loud. **Never print that dictionary, in whole or in part, in any shape** — it is a machine's report to another machine. Build the answer from it instead, and print what comes back:
@@ -574,9 +575,12 @@ Convert each project's hand-written People table into the generated Live State b
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -694,9 +698,12 @@ Safe and idempotent by construction: non-empty `projects` records merge into `th
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -770,9 +777,12 @@ Runs right after 3.5a-bis, same DUALKEY1-style shape: a pure mutator plus an own
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -854,9 +864,12 @@ the same clustering writes nothing (HONEST1).
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
@@ -927,9 +940,12 @@ print('n_split_proposals=' + str(counts['n_split_proposals']))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. A runtime that is absent, or a runtime_version that
-#    differs, is a STOP: run the update-bridge install step. There is no
-#    container fallback.
+#    customer opens. Then hand that answer to `workspace_access.py discover
+#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
+#    is absent, or its manifest_sha is not this plugin's -- the version alone
+#    no longer changes between builds) is a STOP: run the update-bridge
+#    install step once, resolve and compare again, and if it still lags say
+#    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",

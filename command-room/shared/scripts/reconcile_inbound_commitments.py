@@ -41,7 +41,8 @@ INPUT SHAPE (inbound_messages)
   [{"message_id": str, "ts": iso-str, "sender_person_id": str,
     "subject": str|None, "body": str|None,
     "thread_id": str|None,                  # REPLYCLOSE R1 — the thread anchor
-    "has_attachment": bool}, ...]           # REPLYCLOSE — the fulfillment shape
+    "has_attachment": bool,                 # REPLYCLOSE — the fulfillment shape
+    "attachment_names": [str]}, ...]        # cr1#764 — no name, only a proposal
 `thread_id` and `has_attachment` are optional and absent → the behavior that
 field enables simply does not fire (never a guess). A message with no resolvable
 `sender_person_id` is skipped and COUNTED — an unresolvable sender is the single
@@ -51,7 +52,9 @@ clean one.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import sys
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -116,23 +119,159 @@ CLOSE_MODE_ACK_REASON = "their reply did not carry the item itself"
 CLOSE_MODE_PROPOSE_REASON = "this mail is set to ask before closing"
 
 
-def carries_deliverable(row, message, commitment, *, provider=None) -> bool:
+#: cr1#764 - the words a connector may send for "no attachment". A flag that
+#: arrives as the TEXT "false" used to read as True through `bool()`.
+_ATTACHMENT_FALSE_WORDS = frozenset({"", "0", "false", "no", "none", "null",
+                                     "off", "n"})
+
+def attachment_flag(message) -> bool:
+    """The connector's attachment flag, read for what it says (cr1#764): a
+    bool as itself, a count or a list by whether it is non-empty, and TEXT
+    by its words, so "false", "no" and "0" read as False. An absent key is
+    False: no evidence is not weak evidence. Pure."""
+    value = message.get("has_attachment") if isinstance(message, dict) else message
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        return value.strip().lower() not in _ATTACHMENT_FALSE_WORDS
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    return bool(value)
+
+
+def attachment_names(message) -> list:
+    """The attachment file names a message carries, when the connector sent
+    them (`attachment_names`, or `attachments` as names or as dicts with a
+    `name` / `filename`). [] when it did not: the behaviour that field
+    enables simply does not fire. Pure."""
+    if not isinstance(message, dict):
+        return []
+    raw = message.get("attachment_names")
+    if raw in (None, ""):
+        raw = message.get("attachments")
+    if isinstance(raw, str):
+        raw = [raw]
+    out = []
+    for item in raw if isinstance(raw, (list, tuple)) else []:
+        name = item
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("filename") or item.get("title")
+        name = str(name or "").strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def _party_names_of(commitment, people_names=None) -> list:
+    """The names a commitment's parties go by: the names the row carries and,
+    through `people_names` ({person id: [names]}), the names on file for
+    every party id it names. A shared name never counts as a shared subject
+    (the cr1#468 rule)."""
+    data = commitment.get("data") if isinstance(commitment.get("data"), dict) else {}
+    names = []
+    try:
+        from commitment_parties import counterparty_names
+        names += list(counterparty_names(data) or [])
+    except Exception:  # noqa: BLE001
+        pass
+    for key in ("owner_external", "owner_name", "counterparty_name"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            names.append(v.strip())
+    if people_names:
+        ids = [data.get("owner_id"), data.get("counterparty_id")]
+        ids += list(data.get("counterparty_ids") or [])
+        ids += list(commitment.get("person_ids") or [])
+        ids += list(data.get("person_ids") or [])
+        for pid in ids:
+            if pid:
+                names += [str(n) for n in people_names.get(str(pid)) or [] if n]
+    return names
+
+
+def _delivery_grade(message, commitment, people_names=None) -> int:
+    """cr1#764 - the grade `delivery_evidence.delivery_strength` gives this
+    message for this item: 0 unless the message is a plain hand-over of it.
+    Also 0 when a file cannot do what the title asks (`asks_for_delivery`:
+    "introduce me to their finance lead", "pay the invoice"). Pure, never
+    raises."""
+    if not isinstance(message, dict) or not isinstance(commitment, dict):
+        return 0
+    try:
+        from cru_match import _commitment_field
+        from delivery_evidence import asks_for_delivery, delivery_strength
+        title = str(_commitment_field(commitment, "title") or "")
+        parties = _party_names_of(commitment, people_names)
+        if not asks_for_delivery(title, parties):
+            return 0
+        return delivery_strength(str(message.get("body") or ""),
+                                 attachment_names(message), title, parties)
+    except Exception:  # noqa: BLE001 - what cannot be read is not evidence
+        return 0
+
+
+def attachment_is_the_item(message, commitment, *, people_names=None,
+                           thread_items=()) -> bool:
+    """cr1#764 - is there evidence the attachment on `message` IS the thing
+    `commitment` is waiting for? True when the message's own words or its
+    file's name link it to this item (`delivery_evidence`: the subject line
+    is left out because a reply on the item's own thread always echoes it)
+    and links it better than to any other open item in `thread_items`, the
+    open items on the same thread. Two items that fit equally stay proposals:
+    the message cannot say which it delivers. Pure, never raises."""
+    grade = _delivery_grade(message, commitment, people_names)
+    if not grade:
+        return False
+    return all(_delivery_grade(message, other, people_names) < grade
+               for other in thread_items or () if other is not commitment)
+
+
+def _open_items_on_thread(message, opens, provider) -> list:
+    """The open items whose own thread is the one `message` sits on."""
+    tid = str((message or {}).get("thread_id") or "").strip()
+    if not tid:
+        return []
+    from cru_match import commitment_matches_thread_ref
+    key = primary_artifact_key(provider, tid)
+    return [c for c in opens or ()
+            if isinstance(c, dict) and commitment_matches_thread_ref(c, key)]
+
+
+def carries_deliverable(row, message, commitment, *, provider=None,
+                        people_names=None, opens=(), used_messages=()) -> bool:
     """True when the inbound `message` behind a graded close IS the delivery,
-    by the sent matcher's own three evidence rules (cr1#664):
+    by the sent matcher's own three evidence rules (cr1#664) plus the
+    content rule of cr1#764:
 
       * ATTACHMENT - the connector says the message carries one
-        (`has_attachment`, the SENTMATCH signal A field);
+        (`has_attachment`, read by `attachment_flag`: the text "false" is
+        False);
       * THREAD ID - the message sits in the item's own conversation: the
         matcher's thread-anchored basis (`REPLY_BASIS`), or the commitment's
         own thread or source refs naming the message's thread
         (`commitment_matches_thread_ref`, the SENTMATCH signal B compare);
       * SEND TIME - the message has a readable time, so EVORDER's layer 3
         (a reply cannot be evidence for a promise captured after it) has
-        already run on it in the matcher.
+        already run on it in the matcher;
+      * THE ATTACHMENT IS THE ITEM (cr1#764, `attachment_is_the_item`): an
+        attachment on the item's thread used to be read as the delivery
+        whatever it was, so an unrelated file, an old version sent with
+        "this is not it", a calendar invite or a signature image closed the
+        item. Now the message must be a plain hand-over of this item
+        (`delivery_evidence`), and name it more than any other open item on
+        the thread (`opens`); otherwise the close is a proposal.
 
-    All three are required. No new threshold and no new matcher: each rule
-    is a field the rails already compute or read. Pure, never raises."""
-    if not isinstance(message, dict) or not bool(message.get("has_attachment")):
+    All four are required, and a message some proposal already rests on
+    (`used_messages`, `evidence_answered.messages_used_for_proposals`) stays
+    a proposal: the sibling check sees only open items, so confirming one of
+    two items must not let the next fire close the other on that message.
+    No new threshold and no new matcher: each rule is a field the rails
+    already compute or read. Pure, never raises."""
+    if not isinstance(message, dict) or not attachment_flag(message):
         return False
     ts = message.get("ts")
     try:
@@ -141,21 +280,120 @@ def carries_deliverable(row, message, commitment, *, provider=None) -> bool:
             return False
     except Exception:  # noqa: BLE001 - an unreadable time is not evidence
         return False
-    if (row or {}).get("close_basis") == _REPLY_BASIS:
-        return True
-    tid = str(message.get("thread_id") or "").strip()
-    if not tid or not isinstance(commitment, dict):
+    if not isinstance(commitment, dict):
+        return False
+    on_thread = (row or {}).get("close_basis") == _REPLY_BASIS
+    if not on_thread:
+        tid = str(message.get("thread_id") or "").strip()
+        if not tid:
+            return False
+        try:
+            from cru_match import commitment_matches_thread_ref
+            on_thread = bool(commitment_matches_thread_ref(
+                commitment, primary_artifact_key(provider, tid)))
+        except Exception:  # noqa: BLE001
+            return False
+    if not on_thread:
+        return False
+    if used_messages and _answered_key(primary_artifact_key(
+            provider, message.get("message_id"))) in used_messages:
         return False
     try:
-        from cru_match import commitment_matches_thread_ref
-        return bool(commitment_matches_thread_ref(
-            commitment, primary_artifact_key(provider, tid)))
+        siblings = _open_items_on_thread(message, opens, provider)
+    except Exception:  # noqa: BLE001 - the thread cannot be read: no close
+        return False
+    return attachment_is_the_item(message, commitment, people_names=people_names,
+                                  thread_items=siblings)
+
+
+#: cr1#764 - the lede a promoted close carries (the matcher's own R1 words).
+DELIVERY_PROMOTED_LEDE = "they replied on this thread with what you were waiting for"
+
+
+def _reply_may_close(row, message, commitment, *, user_person_id=None,
+                     workspace_root=None) -> bool:
+    """cr1#764 - would the matcher let a reply close this item outright? The
+    guards of its own reply path, so a promotion never overrides why a row
+    was held back: no document ask and no words saying done (its
+    `evidence_ok`), a reply that moves the date, a scheduling item
+    (a file does not answer "set up a call"), an item this sender does not
+    owe, an unconfirmed guess, an item with several counterparties (one
+    person's delivery is a receipt, MC1), a parent with open sub-items (SUB1:
+    propose, never auto-close). Never raises: unreadable is False."""
+    try:
+        from commitment_parties import has_multiple_counterparties
+        from cru_match import (_commitment_field, _is_pending_review,
+                               commitment_is_waiting_on,
+                               detect_deliverable_artifact, detect_scheduling_intent,
+                               parent_blocks_auto_resolve)
+        if not isinstance(commitment, dict) or not isinstance(message, dict):
+            return False
+        title = _commitment_field(commitment, "title") or ""
+        says_done = row.get("has_completion_signal") is True
+        if not says_done and not detect_deliverable_artifact(title):
+            return False
+        return not (
+            row.get("has_schedule_shift_signal")
+            or detect_scheduling_intent(title)
+            or not commitment_is_waiting_on(
+                commitment, user_person_id=user_person_id,
+                sender_person_id=message.get("sender_person_id"))
+            or _is_pending_review(commitment)
+            or has_multiple_counterparties(commitment, workspace_root=workspace_root)
+            or parent_blocks_auto_resolve(commitment))
     except Exception:  # noqa: BLE001
         return False
 
 
+def promote_deliveries(pending, inbound_messages, opens, *, close_mode,
+                       provider=None, people_names=None, user_person_id=None,
+                       workspace_root=None, used_messages=()):
+    """`(promoted, still_pending)` (cr1#764): in `close` mode, a proposal the
+    matcher graded on the TITLE path (the reply echoes the item's words, no
+    completion language) becomes a close when the message carries the item
+    itself on the item's own thread (`carries_deliverable`). The matcher's
+    reply bases are confined to the band below the confirm bar by design, so
+    the genuine delivery whose words ALSO match the title was only ever
+    proposed while a bare attachment closed. A promoted row carries the
+    thread-reply basis, since that is the evidence it closes on. An ambiguous
+    reply (one message fitting several items) is never promoted, nor a row
+    the matcher's own reply path would hold back (`_reply_may_close`). Any
+    mode but `close` promotes nothing. Pure."""
+    rows = list(pending or [])
+    if close_mode != CLOSE_MODE_CLOSE:
+        return [], rows
+    by_mid = {str(m.get("message_id") or ""): m
+              for m in (inbound_messages or []) if isinstance(m, dict)}
+    by_cid = {str(_commitment_id(c)): c for c in (opens or [])}
+    promoted, still = [], []
+    for row in rows:
+        basis = row.get("close_basis") or ""
+        if basis in (_AMBIGUOUS_REPLY_BASIS, _REPLY_PROPOSED_BASIS):
+            still.append(row)
+            continue
+        message = by_mid.get(str(row.get("message_id") or ""))
+        commitment = by_cid.get(str(row.get("commitment_id") or ""))
+        if _reply_may_close(row, message, commitment, user_person_id=user_person_id,
+                            workspace_root=workspace_root) and carries_deliverable(
+                row, message, commitment, provider=provider,
+                people_names=people_names, opens=opens,
+                used_messages=used_messages):
+            out = dict(row)
+            out["recommendation"] = "auto_resolve"
+            out["close_basis"] = _REPLY_BASIS
+            out["close_mode_promoted"] = True
+            out["has_completion_signal"] = True
+            out["evidence"] = DELIVERY_PROMOTED_LEDE + (
+                f" \"{by_mid.get(str(row.get('message_id') or ''), {}).get('subject')}\""
+                if by_mid.get(str(row.get("message_id") or ""), {}).get("subject") else "")
+            promoted.append(out)
+        else:
+            still.append(row)
+    return promoted, still
+
+
 def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
-                     provider=None):
+                     provider=None, people_names=None, used_messages=()):
     """`(kept, demoted)`: the graded closes `close_mode` lets stand, and the
     ones it sends to the confirm list instead, each demoted row carrying its
     reason in `close_mode_reason`. `close_mode` None keeps everything (the
@@ -173,7 +411,8 @@ def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
         if mode == CLOSE_MODE_CLOSE and carries_deliverable(
                 row, by_mid.get(str(row.get("message_id") or "")),
                 by_cid.get(str(row.get("commitment_id") or "")),
-                provider=provider):
+                provider=provider, people_names=people_names, opens=opens,
+                used_messages=used_messages):
             kept.append(row)
             continue
         out = dict(row)
@@ -186,7 +425,8 @@ def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
 
 
 def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
-                                 close_mode, provider=None):
+                                 close_mode, provider=None, people_names=None,
+                                 used_messages=()):
     """`(kept, demoted)` for the MC1 per-person receipts (cr1#664 review).
 
     A receipt is not a close, but enough of them close the item outright
@@ -212,7 +452,8 @@ def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
         for r in p.get("receipts") or []:
             if mode == CLOSE_MODE_CLOSE and carries_deliverable(
                     {}, by_mid.get(str(r.get("message_id") or "")), commitment,
-                    provider=provider):
+                    provider=provider, people_names=people_names, opens=opens,
+                    used_messages=used_messages):
                 ok.append(r)
             else:
                 held.append(r)
@@ -235,6 +476,46 @@ def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
                                       else CLOSE_MODE_PROPOSE_REASON),
             })
     return kept, demoted
+
+
+def _message_instant(value):
+    """cr1#748 - when a message arrived, for the one compare that can reopen
+    an item, so a real reply is not refused for its connector's time format:
+    ISO-8601, an RFC 2822 date, or an epoch in seconds or milliseconds. A
+    date with no time reads as the END of that day, since the message may
+    have come after a close that same day; the message that opened the item
+    is held off by the identity compare whatever its time reads. None when
+    no time can be read."""
+    from cru_match import _parse_ts
+    if isinstance(value, bool):
+        return None
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        text += "T23:59:59+00:00"
+    at = _parse_ts(text)
+    if at is not None:
+        return at
+    try:
+        if re.fullmatch(r"\d{9,13}(\.\d+)?", text):
+            secs = float(text)
+            return _dt.datetime.fromtimestamp(
+                secs / 1000 if secs >= 1e11 else secs, tz=_dt.timezone.utc)
+        at = parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=_dt.timezone.utc)
+
+
+def _answered_key(source_ref) -> str:
+    """cr1#763 - the identity form of a pointer, as `evidence_answered`
+    folds it; the raw ref when that module is off the tree."""
+    try:
+        from evidence_answered import evidence_key
+        return evidence_key(source_ref)
+    except Exception:  # noqa: BLE001
+        return str(source_ref or "").strip().lower()
 
 
 def _clock_now(workspace_root=None):
@@ -285,6 +566,10 @@ def _empty_signal_fields() -> dict:
         "n_with_thread_ref": 0,
         "n_attachment_field_present": 0,
         "n_with_attachment": 0,
+        # cr1#764 - messages with a file the connector did not name. Such a
+        # file is only ever a proposal, so a seat where this tracks
+        # `n_with_attachment` never auto-closes a delivery.
+        "n_attachment_unnamed": 0,
         # GRADED AND WRITTEN ARE TWO DIFFERENT MOMENTS — see the sent rail's
         # `_empty_signal_fields` for the live instance (seq 9561/9617) that
         # named this class. `n_graded_on_reply` is what the MATCHER proposed;
@@ -312,6 +597,10 @@ def _empty_signal_fields() -> dict:
         # EVORDER — candidates refused because the reply predates the promise it
         # would have closed. Non-zero is the fence working, not an error.
         "n_stale_evidence_skipped": 0,
+        # cr1#763 - matches set aside because the owner already answered
+        # that message for that commitment (an undone close, a dismissed
+        # proposal). Non-zero is the memory working, not an error.
+        "n_answered_evidence_skipped": 0,
     }
 
 
@@ -471,8 +760,16 @@ def reconcile_inbound(
     exclude_captured_since=None,
     uncorroborated_thread_ids=None,
     workspace_root=None,
+    answered_evidence=None,
 ):
     """Match a batch of INBOUND messages to open waiting-on commitments.
+
+    `answered_evidence` (cr1#763) - the `{(commitment_id, evidence key)}`
+    pairs the owner has already answered (`evidence_answered`). A graded row
+    on such a pair is set aside BEFORE the per-commitment best-evidence fold,
+    so a different message about the same commitment still wins its slot.
+    Counted in `signal_fields["n_answered_evidence_skipped"]`. None (every
+    caller before cr1#763) sets nothing aside.
 
     Returns::
 
@@ -614,6 +911,8 @@ def reconcile_inbound(
             signals["n_attachment_field_present"] += 1
         if msg.get("has_attachment"):
             signals["n_with_attachment"] += 1
+        if attachment_flag(msg) and not attachment_names(msg):
+            signals["n_attachment_unnamed"] += 1
         signals["n_scored"] += 1
 
         # MAILSEAM item 4, inbound flavor — the caller-side half of layer 1,
@@ -633,6 +932,17 @@ def reconcile_inbound(
                 if not is_same_artifact(canonical_dedup_key(event=c),
                                         provider, mid)
             ]
+        # cr1#763 - an item the owner already answered for THIS message is
+        # set aside before the matcher reads it, and counted. Done here, not
+        # on the matcher's results, because the matcher's own fence (cr1#740:
+        # evidence no newer than the owner's word) drops the pair first and
+        # would leave the count at zero.
+        if answered_evidence and own_key:
+            spent_key = _answered_key(own_key)
+            kept_opens = [c for c in opens_for_msg
+                          if (str(_commitment_id(c)), spent_key) not in answered_evidence]
+            signals["n_answered_evidence_skipped"] += len(opens_for_msg) - len(kept_opens)
+            opens_for_msg = kept_opens
 
         results = match_inbound_to_commitments(
             open_commitments=opens_for_msg,
@@ -649,10 +959,11 @@ def reconcile_inbound(
             exclude_captured_since=exclude_captured_since,
             # R1 — the thread anchor. Inert when the fetch carried no thread id.
             inbound_thread_ref=own_thread_key,
-            # The fulfillment shape. bool() so a provider reporting an
-            # attachment COUNT or a list still reads correctly, and an absent
-            # key stays False: no evidence is not weak evidence.
-            has_attachment=bool(msg.get("has_attachment")),
+            # The fulfillment shape. `attachment_flag` so a provider
+            # reporting an attachment COUNT or a list still reads correctly,
+            # the TEXT "false" reads as False (cr1#764), and an absent key
+            # stays False: no evidence is not weak evidence.
+            has_attachment=attachment_flag(msg),
             # EVORDER layer 3 — when the reply actually arrived. A reply cannot
             # be evidence for a promise captured after it. `ts` is already read
             # above for the cursor-free window; absent → the guard is inert.
@@ -668,6 +979,15 @@ def reconcile_inbound(
             cid = r.get("commitment_id")
             if not cid:
                 continue
+            # cr1#763 - the owner already answered THIS message for THIS
+            # commitment (undid the close it made, dismissed the proposal
+            # it raised): not applied again, counted, never silent.
+            if answered_evidence and own_key and rec in (
+                    "auto_resolve", "pending_review", "commitment_updated",
+                    "partial_received"):
+                if (str(cid), _answered_key(own_key)) in answered_evidence:
+                    signals["n_answered_evidence_skipped"] += 1
+                    continue
             basis = r.get("close_basis") or ""
             # MAILTRUST1: evidence from a thread whose reads disagree is
             # diverted BEFORE any bucket — neither a close, nor a proposal,
@@ -731,20 +1051,29 @@ def reconcile_inbound(
                 # proposal — the item stays open with a note. Unchanged
                 # behavior; it just lands in a named bucket instead of an
                 # inline append at the call site.
+                entry = {
+                    "commitment_id": cid,
+                    "score": r.get("score"),
+                    "title": r.get("title") or "",
+                    "owner_id": r.get("owner_id") or sender,
+                    "primary_thread_id": r.get("primary_thread_id") or "",
+                    "message_id": msg.get("message_id") or "",
+                    "ts": ts or "",
+                    "recommendation": rec,
+                    "close_basis": basis,
+                    "evidence": evidence,
+                }
+                # The best message moves the row; the others stay beside it
+                # under `others`, so a message already moved (cr1#740, a held
+                # window offers it again) gives way to the next one.
                 prev = updated_by_cid.get(cid)
-                if prev is None or (r.get("score") or 0) > (prev["score"] or 0):
-                    updated_by_cid[cid] = {
-                        "commitment_id": cid,
-                        "score": r.get("score"),
-                        "title": r.get("title") or "",
-                        "owner_id": r.get("owner_id") or sender,
-                        "primary_thread_id": r.get("primary_thread_id") or "",
-                        "message_id": msg.get("message_id") or "",
-                        "ts": ts or "",
-                        "recommendation": rec,
-                        "close_basis": basis,
-                        "evidence": evidence,
-                    }
+                if prev is None:
+                    updated_by_cid[cid] = entry
+                elif (r.get("score") or 0) > (prev["score"] or 0):
+                    entry["others"] = [prev] + prev.pop("others", [])
+                    updated_by_cid[cid] = entry
+                else:
+                    prev.setdefault("others", []).append(entry)
                 continue
             if rec not in ("auto_resolve", "pending_review"):
                 continue  # no_action
@@ -767,6 +1096,7 @@ def reconcile_inbound(
                 # persisted could never say whether completion language was
                 # found, and the bulk-accept fence had nothing to weigh.
                 "has_completion_signal": r.get("has_completion_signal"),
+                "has_schedule_shift_signal": r.get("has_schedule_shift_signal"),
             }
             prev = best.get(cid)
             if prev is None:
@@ -1049,6 +1379,17 @@ def reconcile_inbound_and_receipt(
     n_open_before = len(opens)
     coverage = _coverage_for(opens, user_person_id)
 
+    # cr1#763 - evidence the owner has already answered is not applied
+    # again. The same message is re-read at every fire; once the owner has
+    # undone the close it made or dismissed the proposal it raised, that
+    # message is spent for that commitment. Read once per run off the
+    # ledger; the matcher sets the pair aside and counts it.
+    try:
+        from evidence_answered import answered_evidence
+        _answered = answered_evidence(workspace_root)
+    except Exception:  # noqa: BLE001 - the ledger of answers never takes the run down
+        _answered = set()
+
     res = reconcile_inbound(opens, inbound_messages,
                             user_person_id=user_person_id,
                             provider=provider,
@@ -1060,7 +1401,8 @@ def reconcile_inbound_and_receipt(
                             # F-28 — this wrapper HOLDS the workspace and used
                             # to keep it, leaving Path 4's roster fix
                             # unreachable on the rail that fires daily.
-                            workspace_root=workspace_root)
+                            workspace_root=workspace_root,
+                            answered_evidence=_answered)
     auto_close = res["auto_close"]
     pending = list(res["pending"])
     updated = res["updated"]
@@ -1071,14 +1413,38 @@ def reconcile_inbound_and_receipt(
     # cr1#664 - the close mode, on the matcher's own grades and before the
     # policy gate: a demoted row joins the confirm list like any other.
     n_close_mode_proposed = 0
+    n_close_mode_promoted = 0
     if close_mode is not None:
+        # cr1#764 - the parties' names on file, set aside when the content
+        # rule asks whether a reply's words are about the item.
+        try:
+            from people_names import people_names as _read_people
+            _people = _read_people(workspace_root)
+        except Exception:  # noqa: BLE001
+            _people = {}
+        # cr1#764 - a message a proposal already rests on stays a proposal.
+        try:
+            from evidence_answered import messages_used_for_proposals
+            _used = messages_used_for_proposals(workspace_root)
+        except Exception:  # noqa: BLE001
+            _used = set()
+        # cr1#764 - the genuine delivery whose words also match the title
+        # was graded a proposal by the title path; in close mode it closes
+        # when the message carries the item on the item's own thread.
+        _promoted, pending = promote_deliveries(
+            pending, inbound_messages, opens, close_mode=close_mode,
+            provider=provider, people_names=_people,
+            user_person_id=user_person_id, workspace_root=workspace_root,
+            used_messages=_used)
+        n_close_mode_promoted = len(_promoted)
+        auto_close = list(auto_close) + _promoted
         auto_close, _mode_demoted = apply_close_mode(
             auto_close, inbound_messages, opens, close_mode=close_mode,
-            provider=provider)
+            provider=provider, people_names=_people, used_messages=_used)
         pending.extend(_mode_demoted)
         partial, _receipts_demoted = apply_close_mode_to_receipts(
             partial, inbound_messages, opens, close_mode=close_mode,
-            provider=provider)
+            provider=provider, people_names=_people, used_messages=_used)
         pending.extend(_receipts_demoted)
         n_close_mode_proposed = len(_mode_demoted) + len(_receipts_demoted)
 
@@ -1257,9 +1623,15 @@ def reconcile_inbound_and_receipt(
     # open is not here either — so a reply on an open row does nothing.
     reopen_out = {"n_reopened": 0, "reopened": [], "errors": [],
                   "receipt_line": "", "batch_id": None}
+    # cr1#748 - a message can only put an item back if it ARRIVED AFTER the
+    # close, and the message that created an item is never its
+    # counter-evidence. The job re-reads the day's mail at every fire, so
+    # without the time check the message that opened an item put it back
+    # at the fire after the owner closed it by their own word.
+    n_counter_evidence_stale = 0
     if _exit_closed:
-        from cru_match import (_match_thresholds, commitment_matches_thread_ref,
-                               score_match)
+        from cru_match import (_match_thresholds, _parse_ts as _ce_parse_ts,
+                               commitment_matches_thread_ref, score_match)
         _, _reopen_bar = _match_thresholds(workspace_root)
         _seen_cids: set = set()
         _matches: list = []
@@ -1278,6 +1650,8 @@ def reconcile_inbound_and_receipt(
             _thread_key = primary_artifact_key(provider, _tid)
             _text = " ".join(str(msg.get(f) or "")
                              for f in ("subject", "body")).strip()
+            _msg_at = _message_instant(msg.get("ts"))
+            _msg_mid = str(msg.get("message_id") or "").strip()
             for row in _exit_closed:
                 cid = row.get("commitment_id") or ""
                 if not cid or cid in _seen_cids:
@@ -1291,6 +1665,18 @@ def reconcile_inbound_and_receipt(
                         continue
                     if score_match(_text, row.get("title") or "") < _reopen_bar:
                         continue
+                # cr1#748 - it would put the row back; now the time. Older
+                # than the close, or no readable time at all, is not them
+                # coming back about it; neither is the message the item was
+                # captured from (the matcher's own layer-1 identity compare).
+                _closed_at = _ce_parse_ts(row.get("closed_ts"))
+                if _msg_at is None or _closed_at is None or _msg_at <= _closed_at:
+                    n_counter_evidence_stale += 1
+                    continue
+                if _msg_mid and _cap is not None and is_same_artifact(
+                        canonical_dedup_key(event=_cap), provider, _msg_mid):
+                    n_counter_evidence_stale += 1
+                    continue
                 _seen_cids.add(cid)
                 _matches.append({
                     "commitment_id": cid,
@@ -1383,9 +1769,38 @@ def reconcile_inbound_and_receipt(
             ev["data"].update({
                 "ttl_days": REVIEW_PROPOSAL_TTL_DAYS,
                 "ambiguous": p.get("close_basis") == _AMBIGUOUS_REPLY_BASIS,
+                # cr1#763 - the message this proposal rests on, so the
+                # owner's dismissal of it is remembered against that
+                # message and the next fire does not raise it again. Never
+                # `source_ref`: on a proposal that key arms the chip timeout
+                # (`resolve_stale_chips`), and an "ask before closing"
+                # proposal must not close itself.
+                "evidence_ref": primary_artifact_key(provider, p.get("message_id")),
             })
             append_event(events_path, [ev], holder=source_skill)
             reviews_written += 1
+
+    # cr1#740: one message moves a row once. A held window offers it again, and
+    # a replayed update would also reset the row's quiet clock
+    # (`derive_commitment_movement`).
+    if updated:
+        from connector_adapters.provenance import dedup_key_of
+        from events_io import iter_events
+        moved = {(str((e.get("data") or {}).get("commitment_id")),
+                  dedup_key_of((e.get("data") or {}).get("source_ref")))
+                 for e in iter_events(workspace_root)
+                 if e.get("type") == "commitment_updated"}
+        unmoved = []
+        for u in updated:
+            for one in [u] + list(u.get("others") or []):
+                if (str(one["commitment_id"]), dedup_key_of(
+                        primary_artifact_key(provider, one.get("message_id")))
+                    ) not in moved:
+                    unmoved.append(one)
+                    break
+        updated = unmoved
+    for u in updated:
+        u.pop("others", None)
 
     # Schedule-shift markers — the counterparty moved their own date. Same
     # builder the prose call sites used; only the loop moved.
@@ -1400,6 +1815,7 @@ def reconcile_inbound_and_receipt(
             change_summary="Counter-party shifted their own deadline (inbound mail)",
             evidence=u.get("evidence") or "matched their reply",
             next_seq=None,
+            source_ref=primary_artifact_key(provider, u.get("message_id")),
         ) for u in updated]
         _append_upd(events_path, rows)
 
@@ -1433,6 +1849,10 @@ def reconcile_inbound_and_receipt(
             # SPEC_FLOW1 Lane B item 4 — rows one of the exit rails had
             # closed that their reply put back on this run.
             "n_reopened_on_counter_evidence": reopen_out["n_reopened"],
+            # cr1#748 - (row, message) pairs refused as counter-evidence
+            # because the message is older than the close or is the
+            # message the item came from.
+            "n_counter_evidence_stale": n_counter_evidence_stale,
             # R-5 — how many rows the other side's own move touched, and how
             # many rests that undid.
             "n_counterparty_activity": activity_out["n_marked"],
@@ -1455,6 +1875,9 @@ def reconcile_inbound_and_receipt(
         # byte-identical to the rail before it.
         audit_event["data"]["close_mode"] = close_mode
         audit_event["data"]["n_close_mode_proposed"] = n_close_mode_proposed
+        # cr1#764 - title-path proposals that closed because the message
+        # carried the item on its own thread.
+        audit_event["data"]["n_close_mode_promoted"] = n_close_mode_promoted
     try:
         # SCHED1 — the shared stamp helper, so the machine token and its
         # not-persisted flag land the same way here as on every other receipt.
