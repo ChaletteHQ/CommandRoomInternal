@@ -150,7 +150,7 @@ Per the post-v3.4.5 phases in `skills/command-room-update-bridge/SKILL.md`:
    - If `success=True ran=False`: action was a no-op (already-applied). Skip surfacing; do NOT mark applied (re-detector on next run will catch it if state changes).
    - If `success=False` AND action returned `fallback_prompt`: format `fallback_prompt_template` and surface as instruct_user. Log `release_action_failed_fallback` event.
    - If `success=False` with no fallback: log `release_action_failed` event silently. No user surface.
-8. Write a single `plugin_update` event with `data: {version: <current>, applied_remediation_ids: [...], skipped_remediation_ids: [...]}`. The remediation-id lists make re-runs idempotent — items the user already saw won't re-prompt.
+8. Write a single `plugin_update` event with `data: {version: <current>, applied_remediation_ids: [...], skipped_remediation_ids: [...], schedules_handed_off: true}`. `schedules_handed_off` (cr1#970) records that the update did no schedule work, so `schedule_handoff` never reads the row as schedule work applied through its version. The remediation-id lists make re-runs idempotent — items the user already saw won't re-prompt.
 
 ## Auto-application landed in v3.14.4
 

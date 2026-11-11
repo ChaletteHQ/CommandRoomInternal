@@ -208,6 +208,7 @@
         "schedule_config_changed",
         "schedule_skipped",
         "scheduled_writer_declared",
+        "schedule_changes_applied",
         "schedule_refreshed",
         "person_disambiguation_resolved",
         "person_disambiguation_skipped",

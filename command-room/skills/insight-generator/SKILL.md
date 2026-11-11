@@ -780,7 +780,7 @@ Total score = sum. Report the top 7-10 insights. Discard anything <5 total.
 
 ## Schedule Configuration
 
-The weekly-insights pass runs as a JOB inside the `maintenance` task (MAINT1), which is registered by **enable-command-room-schedules Step 1.D** and back-filled by **command-room-update-bridge**. Do not register anything from this skill; cadence changes go through **change-schedule** (moving `maintenance` moves all its slots; `pause weekly insights` pauses just this job).
+The weekly-insights pass runs as a JOB inside the `maintenance` task (MAINT1), which is registered by **enable-command-room-schedules Step 1.D** and by **cockpit-setup** (the update bridge registers nothing since cr1#970). Do not register anything from this skill; cadence changes go through **change-schedule** (moving `maintenance` moves all its slots; `pause weekly insights` pauses just this job).
 
 On the next session after a scheduled run, workspace-manager surfaces: "Your weekly insights from [date] are ready — want to see them?"
 

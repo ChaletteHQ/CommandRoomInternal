@@ -572,7 +572,10 @@ def shelved_line(task_id: str) -> str:
 # the customer-confirmed workspace folder basename (compose via
 # compose_silent_task_prompt). These are skill-invoking prompts, not
 # bootloaders — the skill body is read from the installed plugin at fire
-# time, so plugin upgrades propagate without re-registration.
+# time, so plugin upgrades propagate without re-registration. Since cr1#972
+# the task is registered with a short stub (`schedule_refresh.compose_stub_body`)
+# and this prompt is composed from it at every fire (`fire-body`), so a
+# change to this text reaches the task with nothing re-registered.
 SILENT_TASKS: dict[str, dict] = {
     # MAINT1 (2026-07) — the registry's ONE entry. The five pre-MAINT1 silent
     # tasks run as jobs inside this task; their execution contracts live in

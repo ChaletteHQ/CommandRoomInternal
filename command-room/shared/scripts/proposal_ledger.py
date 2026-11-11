@@ -144,15 +144,23 @@ def append_decision(
 
 
 def _days_between(a_iso: Optional[str], b_iso: Optional[str]) -> Optional[float]:
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     def _parse(s):
         if not s:
             return None
         try:
-            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
         except Exception:
             return None
+        # cr1#933: a stored time with no offset is read as UTC, the rule of
+        # `event_time.parse_ts` and `tz.to_local`, so it never meets an aware
+        # clock in the subtraction. Only the offset is added: a value this
+        # parse refuses still has no age (no date-prefix fallback), which
+        # keeps `active_cooldowns` failing safe toward not asking again.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
 
     da, db = _parse(a_iso), _parse(b_iso)
     if da is None or db is None:

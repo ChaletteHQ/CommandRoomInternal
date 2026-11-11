@@ -441,6 +441,17 @@ STALE_PROMPT_ALTERNATIVE = (
     "folder attached, and every chat keeps running meanwhile."
 )
 
+#: cr1#972: the one line schedule setup says when a prompt update call fails
+#: (the scheduler refuses or errors), so the fire keeps its old text this
+#: once. It names the one phrase that reaches schedule setup. On 2026-11-09 a
+#: seat improvised a phrase of its own here instead, and that phrase routed to
+#: cleanup, ran the Maintenance jobs and left the scheduled task as it was.
+PROMPT_UPDATE_FAILED_LINE = (
+    "Not every scheduled task could be brought up to date this time; any "
+    "that were not keep running their current instructions. Say `set up "
+    "command room schedules` again later to retry."
+)
+
 _PLUGIN_ROOT = _HERE.parent.parent
 #: RUNTIMESCHED1 (cr1#648): the runtime staged in a workspace ships nothing
 #: from `skills/` (ACCESS1), yet registration composes from the bootloader
@@ -674,6 +685,14 @@ def compose_stub_body(task_id: str, *, workspace_basename: str,
             f"{task_id}: a stub needs the workspace's absolute path on the "
             "customer's computer")
     fname = orchestrator_filename_override or orchestrator_filename(task_id, plugin_root)
+    if not fname and _is_silent(task_id):
+        # cr1#972: a silent task (Maintenance) registers the same stub, and
+        # its fire composes the registry's text instead of a bootloader.
+        return _compose_silent_stub(
+            task_id, workspace_basename=workspace_basename,
+            plugin_version=plugin_version, abs_path=path,
+            display_name=display_name, writer_id=writer_id,
+            writer_derivation=writer_derivation)
     if display_name is None and fname:
         import schedule_config as _sc  # noqa: WPS433 - lazy
 
@@ -706,6 +725,28 @@ def compose_stub_body(task_id: str, *, workspace_basename: str,
         "update reaches this chat on its next run with nothing to "
         "re-register.",
         "",
+        *_stub_bash_lines(rel, facts),
+        "",
+        "If the output contains `ABORT_PLUGIN_NOT_FOUND`, or does not start "
+        f"with the line `{FULL_BODY_TITLE}{task_id}`, post exactly this as the "
+        "whole chat turn and STOP, improvising nothing:",
+        "",
+        plugin_not_found_line(task_id, plugin_root),
+        "",
+        "Otherwise that output IS this run's instructions. If the tool saved "
+        "a long output to a file, read the whole file first. Then follow it "
+        "from its Step 0 exactly as if it were this prompt: every step, every "
+        "STOP and its anti-improvisation contract. Do not run this stub's "
+        "bash again.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _stub_bash_lines(rel: str, facts: list) -> list:
+    """The stub's one bash block (cr1#638), shared by the chats and the
+    silent tasks: find a plugin that ships `rel` and this module, then hand
+    the facts to `fire-body` on stdin."""
+    return [
         "Run this bash once:",
         "",
         "```bash",
@@ -724,18 +765,105 @@ def compose_stub_body(task_id: str, *, workspace_basename: str,
         STUB_FACTS_DELIMITER,
         "fi",
         "```",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# cr1#972 - Maintenance registers a stub too; its text is composed at fire
+# ---------------------------------------------------------------------------
+#
+# Maintenance was registered with its whole composed dispatcher text (about
+# 66,000 characters on a seat with a writer pair), so every release that
+# changed a maintenance job had to rewrite the registered prompt, and on the
+# owner's seat that rewrite failed three times while Morning Brief's stub went
+# through at once. A silent task now registers the chats' stub shape, with no
+# orchestrator line, and `fire-body` composes
+# `schedule_config.compose_silent_task_prompt` from its facts. Maintenance has
+# no row in `orchestrator-map.json` and gets none, so every census guard over
+# that map reads as before.
+
+#: The file a silent task's stub checks for beside this module when it looks
+#: for the plugin: the module its fire-time text is composed with.
+SILENT_STUB_REL = "shared/scripts/maintenance_dispatcher.py"
+
+#: The fixed opening of a silent task's composed text, the way
+#: `FULL_BODY_TITLE` is a chat body's: the stub checks the fire's output
+#: starts with this plus the task id. It is a constant, never read off the
+#: registry's text, so rewording that text after registration cannot turn
+#: every fire into a plugin-not-found stop. `_compose_silent_stub` refuses a
+#: text that does not open with it, and `run_cr972_maintenance_stub_test`
+#: pins it.
+SILENT_BODY_TITLE = "# Command Room — "
+
+#: What a silent task's stub posts when no plugin is found. It names the one
+#: phrase that reaches schedule setup.
+SILENT_PLUGIN_NOT_FOUND_LINE = (
+    "Command Room's background {name} task could not find the Command Room "
+    "plugin in this run, so it did nothing. Open a new chat and say `set up "
+    "command room schedules`, and it will run next time once the plugin is "
+    "reachable."
+)
+
+
+def _is_silent(task_id: str) -> bool:
+    import schedule_config as _sc  # noqa: WPS433 - lazy
+
+    return task_id in _sc.SILENT_TASKS
+
+
+def _compose_silent_stub(task_id: str, *, workspace_basename: str,
+                         plugin_version: str, abs_path: str,
+                         display_name: Optional[str] = None,
+                         writer_id: Optional[str] = None,
+                         writer_derivation: Optional[str] = None) -> str:
+    """A silent task's registered stub (cr1#972). It composes the full text
+    first as its check, so whatever `compose_silent_task_prompt` refuses (a
+    path-shaped basename, a half pair) the stub refuses the same way, and the
+    fire checks the output opens with `SILENT_BODY_TITLE` and the task id."""
+    import schedule_config as _sc  # noqa: WPS433 - lazy
+
+    full = _sc.compose_silent_task_prompt(
+        task_id, workspace_basename, writer_id=writer_id,
+        writer_derivation=writer_derivation, workspace_path=abs_path)
+    title = SILENT_BODY_TITLE + task_id
+    if not full.startswith(title):
+        raise ValueError(f"{task_id}: the composed text does not open with "
+                         f"{title!r}, the line its stub checks for")
+    if display_name is None:
+        display_name = _sc.task_display_name(task_id)
+    basename = workspace_basename.strip()
+    version = str(plugin_version or "")
+    facts = [
+        f"cr-task: {task_id} · cr-workspace: {basename} · plugin-version: {version}",
+        f"display-name: {display_name}",
+        f'WORKSPACE="$SESSION_DIR/mnt/{basename}"',
+        f'paths=["{abs_path}"]',
+    ]
+    if writer_id is not None:
+        facts += [f"CR_WRITER_ID={writer_id.strip()}",
+                  f"CR_WRITER_DERIVATION={str(writer_derivation).strip()}"]
+    lines = [
+        f"# Scheduled background task: {task_id}",
+        "",
+        f"You are running the scheduled background task `{task_id}`. This "
+        "prompt is a short stub: this run's full instructions are composed "
+        "just now by the installed Command Room plugin from the facts below, "
+        "so a plugin update reaches this task on its next run with nothing "
+        "to re-register.",
+        "",
+        *_stub_bash_lines(SILENT_STUB_REL, facts),
         "",
         "If the output contains `ABORT_PLUGIN_NOT_FOUND`, or does not start "
-        f"with the line `{FULL_BODY_TITLE}{task_id}`, post exactly this as the "
-        "whole chat turn and STOP, improvising nothing:",
+        f"with `{title}`, post exactly this as the whole final "
+        "message and STOP, improvising nothing:",
         "",
-        plugin_not_found_line(task_id, plugin_root),
+        SILENT_PLUGIN_NOT_FOUND_LINE.format(name=display_name),
         "",
         "Otherwise that output IS this run's instructions. If the tool saved "
         "a long output to a file, read the whole file first. Then follow it "
-        "from its Step 0 exactly as if it were this prompt: every step, every "
-        "STOP and its anti-improvisation contract. Do not run this stub's "
-        "bash again.",
+        "from its first step exactly as if it were this prompt: every step, "
+        "every STOP and the way it says this run ends. Do not run this "
+        "stub's bash again.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -768,6 +896,15 @@ def compose_from_stub(registered_prompt: str, *, plugin_root=None) -> str:
     missing = [k for k in ("task_id", "basename", "abs_path") if not f[k]]
     if missing:
         raise ValueError(f"stub is missing {missing}")
+    if not f["orchestrator"] and _is_silent(f["task_id"]):
+        # cr1#972: a silent task's stub composes the registry's text, the one
+        # registration stored before the stub.
+        import schedule_config as _sc  # noqa: WPS433 - lazy
+
+        return _sc.compose_silent_task_prompt(
+            f["task_id"], f["basename"], writer_id=f["writer_id"],
+            writer_derivation=f["writer_derivation"],
+            workspace_path=f["abs_path"])
     return compose_bootloader_body(
         f["task_id"], workspace_basename=f["basename"],
         plugin_version=f["plugin_version"] or "", plugin_root=plugin_root,
@@ -889,6 +1026,10 @@ def silent_baked_basename(task_id: str, registered_prompt: str):
     spec = _sc.SILENT_TASKS.get(task_id)
     if not isinstance(spec, dict):
         return None
+    facts = stub_facts(registered_prompt)
+    if facts["task_id"] == task_id and not facts["orchestrator"] and facts["basename"]:
+        # cr1#972: the task's registered stub names its folder in its facts.
+        return facts["basename"].strip()
     tpl = str(spec.get("prompt") or "")
     if "{BASENAME}" not in tpl:
         return None
@@ -1043,7 +1184,7 @@ def prompt_body_drift(task_records, *, plugin_version: str,
                     workspace_root=workspace_root, plugin_root=plugin_root)
             else:
                 composed = _compose_silent(tid, basename, workspace_root,
-                                           registered)
+                                           registered, plugin_version)
         except KeyError:
             continue
         except ValueError:
@@ -1060,7 +1201,7 @@ def prompt_body_drift(task_records, *, plugin_version: str,
 
 
 def _compose_silent(task_id: str, basename: str, workspace,
-                    registered_prompt: str = "") -> str:
+                    registered_prompt: str = "", plugin_version: str = "") -> str:
     """A silent task's prompt composed the way REGISTRATION composes it on
     this seat - with the writer pair from `schedule_config.silent_prompt_pair`,
     the one source Step 1.D bakes from (MF-26, merge-fix 2).
@@ -1088,9 +1229,40 @@ def _compose_silent(task_id: str, basename: str, workspace,
         path = seat_compose_inputs(task_id, registered_prompt, workspace).get("abs_path")
     except Exception:  # noqa: BLE001 - a compare never raises on a read
         path = None
+    path = str(path or "").strip() or None
+    if not path:
+        # cr1#972 review: the last source registration itself uses, the
+        # folder path the door forwards (`CR_DEVICE_WORKSPACE`, what
+        # `schedule_backend.plan_registration` takes when it is handed no
+        # path), so this compare and registration give one answer: a seat
+        # that registration would move to the stub reads as drift here too,
+        # and a seat with no path anywhere keeps the full text in both.
+        import os as _os
+
+        path = str(_os.environ.get(_sc.DEVICE_WORKSPACE_ENV, "") or "").strip() or None
+        if path and workspace:
+            # Registration refuses a forwarded folder that is not this
+            # workspace (`folder_is_this_workspace`), so the compare does not
+            # compose for one either.
+            try:
+                import schedule_backend as _sb  # noqa: WPS433 - lazy
+
+                if not _sb.folder_is_this_workspace(path, workspace):
+                    path = None
+            except Exception:  # noqa: BLE001 - a compare never raises on a read
+                path = None
+    if path:
+        # cr1#972: with a path, registration stores the stub
+        # (`schedule_backend.compose_registration_body`), so the compare
+        # composes the stub: a seat still on the old full text reads as drift
+        # and is moved to the stub once, and a registered stub stays current
+        # whatever a later release changes in a maintenance job.
+        return compose_stub_body(
+            task_id, workspace_basename=basename, plugin_version=plugin_version,
+            abs_path=path, writer_id=pair[0], writer_derivation=pair[1])
     return _sc.compose_silent_task_prompt(
         task_id, basename, writer_id=pair[0], writer_derivation=pair[1],
-        workspace_path=(str(path or "").strip() or None))
+        workspace_path=path)
 
 
 # ---------------------------------------------------------------------------
@@ -1210,7 +1382,7 @@ def plan_prompt_refresh(task_id: str, *, registered_prompt: str,
             plugin_root=plugin_root)
             if is_chat else
             _compose_silent(task_id, basename, workspace_root,
-                            registered_prompt))
+                            registered_prompt, plugin_version))
     except KeyError:
         return {"action": "unknown", "task_id": task_id, "composed": None,
                 "basename": basename, "line": "", "guard": guard}

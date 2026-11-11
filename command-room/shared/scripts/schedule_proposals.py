@@ -582,7 +582,8 @@ def readiness_retired_on_record(workspace_root) -> set:
     return out
 
 
-def log_readiness_retirement(workspace_root, task_id: str) -> bool:
+def log_readiness_retirement(workspace_root, task_id: str,
+                             source_skill: str = "command-room-update-bridge") -> bool:
     """Record ONE readiness retirement as a `schedule_config_changed` event —
     the SCHED1 discipline: a live schedule mutated by Command Room leaves a
     substrate record naming the task and the new state, per instance.
@@ -608,6 +609,11 @@ def log_readiness_retirement(workspace_root, task_id: str) -> bool:
     one pause path on the fleet whose record could drift away from every other
     pause path's. `reason` and `migration_id` ride as annotations; the row
     shape is the writer's.
+
+    cr1#970: the pause is made by the schedule-changes step of
+    `enable-command-room-schedules` and `cockpit-setup` now, so the caller
+    names itself in `source_skill` (the default keeps an old caller's rows
+    as they were).
     """
     if not isinstance(task_id, str) or not task_id.strip():
         return False
@@ -617,7 +623,7 @@ def log_readiness_retirement(workspace_root, task_id: str) -> bool:
         return log_schedule_config_change(
             workspace_root,
             [{"task_id": task_id.strip(), "cron": None, "enabled": False}],
-            source_skill="command-room-update-bridge",
+            source_skill=str(source_skill or "").strip() or "command-room-update-bridge",
             extra_data={
                 "reason": "readiness_retirement",
                 "migration_id": READINESS_RETIREMENT_MIGRATION_ID,

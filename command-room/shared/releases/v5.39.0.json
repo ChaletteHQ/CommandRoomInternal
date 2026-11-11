@@ -1,0 +1,20 @@
+{
+  "version": "5.39.0",
+  "headline": "Your scheduled chats stay the way you set them, and Maintenance, Run Now and meeting capture are more dependable.",
+  "items": [
+    {
+      "id": "v5390_announce_schedules_kept",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "An update no longer touches your scheduled chats. A chat you paused stays paused, and nothing is set up twice. When a release changes your schedule, the update tells you in one line how to apply it. If a release moves a chat's default time and yours still sits at the old default, setup moves it for you and leaves it on or off as it was."
+    },
+    {
+      "id": "v5390_announce_maintenance_runs",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Maintenance is now a short scheduled chat that loads its steps fresh each time it runs, so it always runs the current version. Pressing Run Now on it really runs it, and your next scheduled run still happens. Typing 'run maintenance' just before a scheduled run no longer collides with it. Meeting capture now reads your newest meetings first, so today's promises reach your commitments on the next run."
+    }
+  ]
+}

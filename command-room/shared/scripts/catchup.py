@@ -200,7 +200,8 @@ WINDOW_READ_FIELD = "window_read"
 # connector: the inbound-mail run stopped after 2 pages of about 600 threads
 # and re-opened the same 30 days on every fire, and the meeting capture would
 # not start at all. So a job reads its window ONE PAGE per fire, oldest page
-# first, and the receipt's carry-over marker (the same
+# first (the meeting capture pages newest first, cr1#978, below), and the
+# receipt's carry-over marker (the same
 # `WINDOW_INCOMPLETE_FIELD`) moves to where the page ended. The next fire
 # opens there, until the window reaches the present. The 30-day bound stands
 # and nothing in it is dropped. `PAGE_FIELD` is the page's dict on the
@@ -214,6 +215,29 @@ PAGE_FIELD = "window_page"
 PAGE_FIRST_DAYS = 3.0
 PAGE_MIN_DAYS = 0.25
 PAGE_MAX_DAYS = float(DEFAULT_CAP_DAYS)
+
+# NEWEST FIRST (cr1#978). Oldest-first paging made a meeting held today wait
+# behind every older page of a 30-day backlog, a few days per fire, so the
+# promises made in it reached the book days late. A job that pages newest
+# first (`paged_window(..., newest_first=True)`; the meeting capture) reads
+# the NEWEST page first, ending now, and holds the older days as a backlog
+# behind it. Later passes take turns: the newest meetings since the last
+# newest read (the HEAD), then one page of the backlog, oldest first, until
+# it is drained. Each pass still reads ONE contiguous span, so a job adopts
+# it with nothing new to read. The page dict says which part it is and
+# where the two parts stand, the one spelling reader and writer side:
+#   order          PAGE_ORDER_NEWEST_FIRST
+#   part           PAGE_PART_HEAD or PAGE_PART_BACKLOG
+#   head_until     where the newest read reached (an instant); everything
+#                  from `backlog_until` to here is handled
+#   backlog_until  the backlog's upper end (an instant), or None when no
+#                  backlog is owed; the backlog runs from the window's own
+#                  start (the receipt's carry-over marker) up to it
+# The marker keeps its one meaning, the oldest point still owed, so every
+# reader of `WINDOW_INCOMPLETE_FIELD` reads it unchanged.
+PAGE_ORDER_NEWEST_FIRST = "newest_first"
+PAGE_PART_HEAD = "head"
+PAGE_PART_BACKLOG = "backlog"
 
 
 def read_reached_end(flag):
@@ -706,7 +730,8 @@ def _page_days(value, fallback: float = PAGE_FIRST_DAYS) -> float:
 
 
 def paged_window(workspace_root, job_id: str, *, page_days=None,
-                 now: Optional[_dt.datetime] = None) -> dict:
+                 now: Optional[_dt.datetime] = None,
+                 newest_first: bool = False) -> dict:
     """`maintenance_window`, plus the ONE page of it this fire reads
     (cr1#948, cr1#941). The shared answer to a 30-day first run (or a long
     gap) that one background fire cannot read.
@@ -739,7 +764,12 @@ def paged_window(workspace_root, job_id: str, *, page_days=None,
     receipt must be one whose status moves the window
     (`receipt_moves_window`: complete, degraded, or none), or its marker is
     never read. Reads only; never raises (a failed read of the previous
-    page sizes this one at `PAGE_FIRST_DAYS`)."""
+    page sizes this one at `PAGE_FIRST_DAYS`).
+
+    `newest_first` (cr1#978): the page is chosen newest first instead
+    (`_newest_first_page`, see `PAGE_ORDER_NEWEST_FIRST`), and it carries
+    `order`, `part`, `head_until` and `backlog_until` besides the keys
+    above. A window shorter than the span is still one page, read whole."""
     now_dt = _parse_iso_local(now) or _now_local()
     out = maintenance_window(workspace_root, job_id, now=now_dt)
     prev = None
@@ -755,8 +785,18 @@ def paged_window(workspace_root, job_id: str, *, page_days=None,
         span = PAGE_FIRST_DAYS
     since = _parse_iso_local(out.get("since")) or now_dt
     end = _parse_iso_local(out.get("until")) or now_dt
+    if newest_first:
+        out[PAGE_FIELD] = _newest_first_page(since, end, span, prev)
+        return out
     until = min(end, since + _dt.timedelta(days=span))
-    out[PAGE_FIELD] = {
+    out[PAGE_FIELD] = _page_dict(since, until, end, span, prev)
+    return out
+
+
+def _page_dict(since: _dt.datetime, until: _dt.datetime, end: _dt.datetime,
+               span: float, prev) -> dict:
+    """The page keys every paged job reads (`paged_window`'s docstring)."""
+    return {
         "since": since.isoformat(),
         "until": until.isoformat(),
         "since_aware": to_connector_iso(since),
@@ -767,7 +807,80 @@ def paged_window(workspace_root, job_id: str, *, page_days=None,
         "after_short": bool(isinstance(prev, dict)
                             and prev.get("read") == "short"),
     }
-    return out
+
+
+def _newest_first_parts(window_since: _dt.datetime, end: _dt.datetime,
+                        prev) -> Optional[tuple]:
+    """`(head_until, backlog_until)` from the previous newest-first page,
+    when it still describes this window, else None (the window is read as
+    if fresh: newest page first). It describes this window only when the
+    backlog it held is still owed from the window's start (`window_since`
+    before `backlog_until`, so the carry-over marker it wrote is the one
+    this window opened at) and its head sits between the backlog's end and
+    now. A page from the oldest-first pager, a gap that reset the window,
+    or anything unreadable is None: the safe direction, which re-reads, and
+    never skips."""
+    if not isinstance(prev, dict) or prev.get("order") != PAGE_ORDER_NEWEST_FIRST:
+        return None
+    head = _parse_iso_local(prev.get("head_until"))
+    backlog = _parse_iso_local(prev.get("backlog_until"))
+    if head is None or backlog is None:
+        return None
+    if not (window_since < backlog <= head <= end):
+        return None
+    return head, backlog
+
+
+def _newest_first_page(since: _dt.datetime, end: _dt.datetime, span: float,
+                       prev) -> dict:
+    """The ONE page a newest-first pass reads (cr1#978).
+
+    `since` is the window's start: the oldest point still owed (the
+    carry-over marker, or the 30-day bound). Three cases:
+      the window fits one page          -> the whole window, `last` True,
+                                           no backlog: steady state, as
+                                           before;
+      the previous pass read the head,  -> the BACKLOG's oldest page,
+        and a backlog is still owed        `since` to `since` plus the span
+                                           or the backlog's end;
+      otherwise (a first run, a gap, a  -> the HEAD: from where the last
+        backlog pass, the old pager)       head read reached to now, or the
+                                           newest page when that is longer
+                                           than a page. Everything older is
+                                           the backlog, held by the marker.
+    A head longer than a page folds what lay between the old backlog and
+    the old head into the backlog: read again later, never skipped.
+
+    Review of cr1#978: the backlog's turn comes only after a head read that
+    was WHOLE. A head the batch cap or the time fence stopped, or whose
+    read stopped short, did not move, and the next pass reads the head
+    again, so today's meetings are drained before any older day is read."""
+    span_td = _dt.timedelta(days=span)
+    parts = _newest_first_parts(since, end, prev)
+    if (parts is not None and prev.get("part") == PAGE_PART_HEAD
+            and prev.get("read") == "whole"):
+        head_until, backlog_until = parts
+        until = min(backlog_until, since + span_td)
+        page = _page_dict(since, until, end, span, prev)
+        page.update(order=PAGE_ORDER_NEWEST_FIRST, part=PAGE_PART_BACKLOG,
+                    last=False, head_until=to_connector_iso(head_until),
+                    backlog_until=to_connector_iso(backlog_until))
+        return page
+    head_since, backlog_until = since, None
+    if parts is not None:
+        head_since, backlog_until = parts[0], parts[1]
+    if end - head_since > span_td:
+        head_since = max(since, end - span_td)
+        backlog_until = head_since
+    if backlog_until is not None and backlog_until <= since:
+        backlog_until = None
+    page = _page_dict(head_since, end, end, span, prev)
+    page.update(order=PAGE_ORDER_NEWEST_FIRST, part=PAGE_PART_HEAD,
+                last=backlog_until is None and head_since <= since,
+                head_until=to_connector_iso(end),
+                backlog_until=(to_connector_iso(backlog_until)
+                               if backlog_until is not None else None))
+    return page
 
 
 def page_receipt_fields(window, *, read_complete=None,
@@ -811,6 +924,9 @@ def page_receipt_fields(window, *, read_complete=None,
         page = {"since": win.get("since"), "until": win.get("until"),
                 "span_days": win.get("days"), "last": True,
                 "after_short": False}
+    if page.get("order") == PAGE_ORDER_NEWEST_FIRST:
+        return _newest_first_receipt_fields(win, page, read_complete,
+                                            oldest_unhandled)
     span = _page_days(page.get("span_days"))
     short = read_reached_end(read_complete) is False
     capped = (not short) and _parse_iso_local(oldest_unhandled) is not None
@@ -855,6 +971,111 @@ def page_receipt_fields(window, *, read_complete=None,
     return out
 
 
+#: The order a pass takes the items of its page in (cr1#978 review): the
+#: values of `page_item_order`, and of the `meeting_order` key the meeting
+#: capture's window carries for the phases to read.
+ITEM_ORDER_OLDEST_FIRST = "oldest_first"
+ITEM_ORDER_NEWEST_FIRST = "newest_first"
+
+
+def page_item_order(page) -> str:
+    """The order a pass takes its page's items in: newest first on a
+    newest-first HEAD page, so today's meetings come before the cap or the
+    fence can stop the pass; oldest first everywhere else (a backlog page,
+    any oldest-first page, no page), so the cap marker stays the oldest item
+    not handled, as the batch cap has always written it."""
+    if (isinstance(page, dict) and page.get("order") == PAGE_ORDER_NEWEST_FIRST
+            and page.get("part") == PAGE_PART_HEAD):
+        return ITEM_ORDER_NEWEST_FIRST
+    return ITEM_ORDER_OLDEST_FIRST
+
+
+def _newest_first_receipt_fields(win: dict, page: dict, read_complete,
+                                 oldest_unhandled) -> dict:
+    """`page_receipt_fields` for a newest-first page (cr1#978): how far the
+    pass got moves only the part it read, and the marker stays the oldest
+    point still owed.
+
+      read short (`read_complete` false) -> that part does not move: a
+        short, newest-first listing never saw its older items (review F1),
+        and the next page is half what was read;
+      capped (a marker handed: the batch cap or the time fence stopped the
+        pass) -> a BACKLOG page, whose items are taken oldest first, moves
+        to the first item not handled and no further; the HEAD, whose items
+        are taken NEWEST first (`page_item_order`), does not move at all
+        (review of cr1#978): what the cap left is older than what it
+        handled, and the next pass reads the head again, so the marker's
+        position is never trusted to split it;
+      read whole -> that part moves to the page's end.
+
+    The head moves `head_until`; a backlog page moves the backlog's start,
+    which IS the marker. Then: a backlog still owed -> the marker at its
+    start; none owed and the head short of the present -> the marker at the
+    head (a later head read resumes there); neither -> no marker, the
+    window reached the present."""
+    span = _page_days(page.get("span_days"))
+    short = read_reached_end(read_complete) is False
+    p_since = _parse_iso_local(page.get("since"))
+    p_until = _parse_iso_local(page.get("until"))
+    end = _parse_iso_local(win.get("until")) or p_until
+    capped_at = None if short else _parse_iso_local(oldest_unhandled)
+    if capped_at is not None and p_since is not None and p_until is not None:
+        capped_at = min(max(capped_at, p_since), p_until)
+    if short:
+        reached, read = p_since, "short"
+        read_days = _coerce_number(page.get("days"), span)
+        next_days = _page_days(min(span, read_days) / 2.0)
+    elif capped_at is not None:
+        reached = (capped_at if page.get("part") == PAGE_PART_BACKLOG
+                   else p_since)
+        read, next_days = "capped", span
+    else:
+        reached, read = p_until, "whole"
+        # Only a full page read whole says the next one may be bigger: the
+        # head is often a few hours, and doubling on it would hand the
+        # backlog a page far past what any pass has shown it can read.
+        full = _coerce_number(page.get("days"), 0.0) >= span * 0.999
+        next_days = (_page_days(span * 2)
+                     if full and not page.get("after_short") else span)
+    backlog_until = _parse_iso_local(page.get("backlog_until"))
+    if page.get("part") == PAGE_PART_BACKLOG:
+        head_until = _parse_iso_local(page.get("head_until"))
+        owed_from = reached or _parse_iso_local(win.get("since"))
+    else:
+        head_until = reached
+        owed_from = _parse_iso_local(win.get("since")) or p_since
+    if (backlog_until is not None and owed_from is not None
+            and owed_from >= backlog_until):
+        backlog_until = None  # the backlog is drained
+    if backlog_until is not None:
+        oldest = owed_from
+    elif head_until is not None and end is not None and head_until < end:
+        oldest = head_until
+    else:
+        oldest = None
+    marker = None
+    if oldest is not None:
+        marker = receipt_window_marker(
+            {"start": win.get("since") or page.get("since"),
+             "end": win.get("until") or page.get("until")},
+            incomplete=True, oldest_unhandled=oldest.isoformat())
+    rec = {k: page.get(k) for k in ("since", "until", "days", "span_days")}
+    rec.update(
+        last=marker is None, read=read, next_days=next_days,
+        order=PAGE_ORDER_NEWEST_FIRST, part=page.get("part"),
+        head_until=(to_connector_iso(head_until)
+                    if head_until is not None else None),
+        backlog_until=(to_connector_iso(backlog_until)
+                       if backlog_until is not None else None))
+    out = {PAGE_FIELD: rec}
+    if marker is not None or oldest is not None:
+        out["read_partial"] = True
+        out["partial_line"] = page_partial_line(rec)
+    if marker is not None:
+        out[WINDOW_INCOMPLETE_FIELD] = marker
+    return out
+
+
 def page_partial_line(page) -> str:
     """The one plain sentence a partial paged read says on its receipt: how
     far it read, and that the next run carries on from there. Empty for a
@@ -862,6 +1083,8 @@ def page_partial_line(page) -> str:
     rec = page if isinstance(page, dict) else {}
     if rec.get("read") == "whole" and rec.get("last"):
         return ""
+    if rec.get("order") == PAGE_ORDER_NEWEST_FIRST:
+        return _newest_first_line(rec)
     since = _parse_iso_local(rec.get("since"))
     until = _parse_iso_local(rec.get("until"))
     if since is None or until is None:
@@ -876,6 +1099,41 @@ def page_partial_line(page) -> str:
                 f"carries on from the first item not handled.")
     return (f"Caught up through {until.date().isoformat()} ({span} this "
             f"run); the next run carries on from there until it reaches today.")
+
+
+def _newest_first_line(rec: dict) -> str:
+    """`page_partial_line` for a newest-first page (cr1#978): what this pass
+    read, and what the later runs still read. Plain words, dates only."""
+    since = _parse_iso_local(rec.get("since"))
+    until = _parse_iso_local(rec.get("until"))
+    if since is None or until is None:
+        return ("Read part of the window; a later run carries on from where "
+                "this one stopped.")
+    span = f"{since.date().isoformat()} to {until.date().isoformat()}"
+    if rec.get("read") == "short":
+        return (f"Read part of {span} before stopping; a later run reads it "
+                f"again in a smaller piece.")
+    if rec.get("read") == "capped":
+        if rec.get("part") != PAGE_PART_BACKLOG:
+            return (f"Read {span} newest first but handled only part of it; "
+                    f"the next run reads it again before any older day.")
+        return (f"Read {span} but handled only part of it; a later run "
+                f"carries on from the first item not handled.")
+    backlog = _parse_iso_local(rec.get("backlog_until"))
+    if rec.get("part") == PAGE_PART_BACKLOG:
+        if backlog is None:
+            return (f"Caught up on the older items through "
+                    f"{until.date().isoformat()}; the next run reads the "
+                    f"newest ones.")
+        return (f"Read older items, {span}; later runs carry on with the rest "
+                f"up to {backlog.date().isoformat()} and keep reading the "
+                f"newest ones in between.")
+    if backlog is not None:
+        return (f"Read the newest items first, {span}; the older ones up to "
+                f"{backlog.date().isoformat()} are read a few days at a time "
+                f"on later runs.")
+    return (f"Read {span}; the next run carries on from there until it "
+            f"reaches today.")
 
 
 def catchup_window(
@@ -1160,6 +1418,12 @@ __all__ = [
     "PAGE_FIRST_DAYS",
     "PAGE_MIN_DAYS",
     "PAGE_MAX_DAYS",
+    "PAGE_ORDER_NEWEST_FIRST",
+    "PAGE_PART_HEAD",
+    "PAGE_PART_BACKLOG",
+    "ITEM_ORDER_OLDEST_FIRST",
+    "ITEM_ORDER_NEWEST_FIRST",
+    "page_item_order",
     "paged_window",
     "page_receipt_fields",
     "page_partial_line",

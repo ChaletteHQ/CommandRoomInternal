@@ -2,6 +2,13 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v5.39.0 (2026-11-10)
+
+Your scheduled chats stay the way you set them, and Maintenance, Run Now and meeting capture are more dependable.
+
+- An update no longer touches your scheduled chats. A chat you paused stays paused, and nothing is set up twice. When a release changes your schedule, the update tells you in one line how to apply it. If a release moves a chat's default time and yours still sits at the old default, setup moves it for you and leaves it on or off as it was.
+- Maintenance is now a short scheduled chat that loads its steps fresh each time it runs, so it always runs the current version. Pressing Run Now on it really runs it, and your next scheduled run still happens. Typing 'run maintenance' just before a scheduled run no longer collides with it. Meeting capture now reads your newest meetings first, so today's promises reach your commitments on the next run.
+
 ## v5.38.0 (2026-11-09)
 
 A simpler Hub that leads with your own work and people, and a Maintenance that now runs every job on your setup and catches up on mail and meetings a little at a time.

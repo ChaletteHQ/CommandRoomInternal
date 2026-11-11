@@ -115,6 +115,12 @@ ACTION_FUNCTION = "force_readiness_retirement"
 
 SOURCE_SKILL = "command-room-update-bridge"
 
+#: cr1#970: the skills that may run this action and be named on its rows (see
+#: `fold_scheduled_fires.ACTING_SKILLS`). The caller passes `source_skill` in
+#: the detector context; anything else falls back to `SOURCE_SKILL`.
+ACTING_SKILLS = ("command-room-update-bridge", "enable-command-room-schedules",
+                 "cockpit-setup")
+
 RECEIPT_TYPE = "plugin_update_remediation"
 RECEIPT_ROLE = "marker"
 #: The row a run writes when it has ASKED for the pause but the pause has not
@@ -457,7 +463,7 @@ def plan(workspace_root, *, registered_ids=None, task_records=None) -> dict:
 
 
 def _write_marker(workspace_root, context: dict, *, outcome: str,
-                  manifest_version=None) -> bool:
+                  manifest_version=None, source_skill: str = SOURCE_SKILL) -> bool:
     from event_gate import append_event
     ids = list(context.get("pause_task_ids") or [])
     if outcome in (RECEIPT_OUTCOME_PENDING, RECEIPT_OUTCOME_NO_READBACK):
@@ -481,10 +487,11 @@ def _write_marker(workspace_root, context: dict, *, outcome: str,
     }
     if manifest_version:
         data["manifest_version"] = manifest_version
+    who = source_skill if source_skill in ACTING_SKILLS else SOURCE_SKILL
     try:
         append_event(_events_path(workspace_root),
-                     [{"type": RECEIPT_TYPE, "source_skill": SOURCE_SKILL,
-                       "data": data}], holder=SOURCE_SKILL)
+                     [{"type": RECEIPT_TYPE, "source_skill": who,
+                       "data": data}], holder=who)
         return True
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"[force_readiness_retirement] marker failed: {exc}\n")
@@ -504,6 +511,8 @@ def force_readiness_retirement(events_jsonl_path, workspace_root,
                  "receipt_written": False}
     try:
         dc = detector_context if isinstance(detector_context, dict) else {}
+        who = str(dc.get("source_skill") or "").strip()
+        who = who if who in ACTING_SKILLS else SOURCE_SKILL
         p = plan(workspace_root,
                  registered_ids=dc.get("registered_ids"),
                  task_records=dc.get("task_records"))
@@ -532,7 +541,8 @@ def force_readiness_retirement(events_jsonl_path, workspace_root,
             ctx["outcome_text"] = OUTCOME_TEXT[RECEIPT_OUTCOME_NO_READBACK]
             ctx["receipt_written"] = _write_marker(
                 workspace_root, ctx, outcome=RECEIPT_OUTCOME_NO_READBACK,
-                manifest_version=dc.get("manifest_version"))
+                manifest_version=dc.get("manifest_version"),
+                source_skill=who)
             return {"success": True, "ran": False, "context": ctx,
                     "error": None, "fallback_prompt": None}
         if p["status"] == "would_pause":
@@ -548,7 +558,8 @@ def force_readiness_retirement(events_jsonl_path, workspace_root,
             ctx["outcome_text"] = OUTCOME_TEXT[RECEIPT_OUTCOME_PENDING]
             ctx["receipt_written"] = _write_marker(
                 workspace_root, ctx, outcome=RECEIPT_OUTCOME_PENDING,
-                manifest_version=dc.get("manifest_version"))
+                manifest_version=dc.get("manifest_version"),
+                source_skill=who)
             return {"success": True, "ran": True, "context": ctx,
                     "error": None, "fallback_prompt": None}
         outcome = (RECEIPT_OUTCOME_APPLIED if p["status"] == "pause_confirmed"
@@ -557,7 +568,8 @@ def force_readiness_retirement(events_jsonl_path, workspace_root,
         ctx["outcome_text"] = OUTCOME_TEXT[outcome]
         ctx["receipt_written"] = _write_marker(
             workspace_root, ctx, outcome=outcome,
-            manifest_version=dc.get("manifest_version"))
+            manifest_version=dc.get("manifest_version"),
+                source_skill=who)
         # `ran` is "did the customer's seat change on THIS update" and the
         # answer is no in both branches left here: the pause either already
         # landed (and was narrated when it was asked for) or there was

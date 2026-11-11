@@ -143,21 +143,34 @@ def _capture_window(workspace_root: str, out: Dict[str, Any], *,
     (cr1#663), laid over the catch-up shape the phases read.
 
     cr1#948: ONE PAGE of that window per pass (`catchup.paged_window`), so a
-    first run or a long gap is read a few days at a time, oldest first, and
-    never stands as a 30-day read a background fire will not start. `start`
-    and `end` are the page, which is what Phases 3 to 4.8 fetch and what the
-    batch-cap marker is clamped into; the whole window, page and all, rides
-    under `maintenance_window` for the receipt
+    first run or a long gap is read a few days at a time and never stands as
+    a 30-day read a background fire will not start. `start` and `end` are
+    the page, which is what Phases 3 to 4.8 fetch and what the batch-cap
+    marker is clamped into; the whole window, page and all, rides under
+    `maintenance_window` for the receipt
     (`eod_incremental.log_capture_pass_receipt`), which moves the marker to
-    where the page ended. A window shorter than a page is read whole, as
-    before."""
-    from catchup import MAINTENANCE_WINDOW_FIELD, PAGE_FIELD, paged_window
+    where the pass stopped. A window shorter than a page is read whole, as
+    before.
 
-    mw = paged_window(workspace_root, "meeting-capture", now=now)
+    cr1#978: NEWEST page first (`paged_window(..., newest_first=True)`). The
+    first pass after a first run or a long gap reads the newest few days,
+    ending now, so a meeting held today is captured on that pass; the older
+    days are a backlog the later passes read one page at a time, oldest
+    first, taking turns with the newest meetings since the last pass."""
+    from catchup import (MAINTENANCE_WINDOW_FIELD, PAGE_FIELD,
+                         page_item_order, paged_window)
+
+    mw = paged_window(workspace_root, "meeting-capture", now=now,
+                      newest_first=True)
     page = mw[PAGE_FIELD]
     floor_h = float(out.get("floor_hours") or 24)
     out = dict(out)
     out.update({
+        # cr1#978 review: the order the phases take this page's meetings
+        # in. `newest_first` on the newest page, so the batch cap and the
+        # time fence stop on older meetings, never on today's; else
+        # `oldest_first`, as the close and every backlog page always have.
+        "meeting_order": page_item_order(page),
         "start": page["since"],
         "end": page["until"],
         "start_aware": page["since_aware"],
@@ -170,8 +183,8 @@ def _capture_window(workspace_root: str, out: Dict[str, Any], *,
         "reason": (f"the maintenance window ({mw['reason']}): since "
                    f"{mw['since']}, the one rule every maintenance job reads"
                    + ("" if page["last"] else
-                      f"; this pass reads up to {page['until']}, and the "
-                      f"next pass carries on from there")),
+                      f"; this pass reads {page['since']} to "
+                      f"{page['until']}, and later passes read the rest")),
     })
     out[MAINTENANCE_WINDOW_FIELD] = mw
     return out
@@ -1133,19 +1146,37 @@ IDENTITY_FIELDS = {"sent_messages": "message_id",
 #: WAVE 2 MAINTHARD2 MUST 1 (D-W2-3, EODHARD3 N-8): the fires that stage,
 #: each in its OWN folder, so two fires never share one folder or one set of
 #: names. A closed set: `fire` is looked up here and never used as a path, so
-#: no caller can name a folder. One staging primitive, three folders.
+#: no caller can name a folder. One staging primitive, four folders.
+#: cr1#955: a typed `run maintenance` on a merged seat
+#: (`maintenance_dispatcher.TYPED_FIRE`) stages under its own name and
+#: folder, so a scheduled fire's clear at its start or end never removes the
+#: batch a typed run staged a moment before, and the other way round.
 STAGE_DIRS = {"end-of-day": PACK_DIR_REL,
               "maintenance": "_hq/.system/maintenance-fire",
-              "morning-brief": "_hq/.system/morning-brief-fire"}
+              "morning-brief": "_hq/.system/morning-brief-fire",
+              "run-maintenance": "_hq/.system/run-maintenance-fire"}
+
+#: cr1#955 review: how old, in minutes, a staged file must be before a
+#: `stale_only` clear removes it. A typed run clears its own batch after each
+#: job; one that stopped before its clear leaves raw mail behind, and no
+#: other run enters its folder, so the scheduled fire and the next typed run
+#: each clear what is older than this. The bound is the maintenance fire's
+#: own longest life, `maintenance_dispatcher.FIRE_MARKER_STALE_MINUTES`
+#: (SPEC_FIREGAP2 ruling 3: past it a run is presumed dead, not slow), pinned
+#: equal by test, so a typed run still in flight keeps its batch.
+STALE_STAGE_MINUTES = 90
+
+#: The kinds the maintenance fire stages: its two reconcile batches and the
+#: inbound-mail job's batch (cr1#664). A typed run stages the same kinds.
+MAINT_FIRE_KINDS = ("sent_messages", "chat_messages", "inbound_messages")
 
 #: The kinds each fire stages, and the only kinds `stage_fire_input` lands
 #: in that fire's folder: the End of Day every kind; the maintenance fire
-#: its two reconcile batches and the inbound-mail job's batch (cr1#664);
-#: the Morning Brief its chat.
+#: and a typed run (cr1#955) `MAINT_FIRE_KINDS`; the Morning Brief its chat.
 FIRE_KINDS = {"end-of-day": STAGED_INPUTS,
-              "maintenance": ("sent_messages", "chat_messages",
-                              "inbound_messages"),
-              "morning-brief": ("chat_messages",)}
+              "maintenance": MAINT_FIRE_KINDS,
+              "morning-brief": ("chat_messages",),
+              "run-maintenance": MAINT_FIRE_KINDS}
 
 #: cr1#664: the fields the inbound-mail writer KEEPS of a staged inbound
 #: message: the plan's `message_fields` (`inbound_mail_leg.MESSAGE_FIELDS`,
@@ -1179,7 +1210,9 @@ BRIEF_STAGE_UNREAD_LINE = (
     "The morning brief left chat out "
     "because the messages did not arrive, so none were checked.")
 
-#: Per fire, the one sentence each refusal answers: the fire's own words.
+#: Per fire, the one sentence each refusal answers: the fire's own words. A
+#: typed run (cr1#955) runs the maintenance jobs, so it says the maintenance
+#: fire's words.
 STAGE_LINES = {
     "end-of-day": {"too_large": STAGE_TOO_LARGE_LINE,
                    "unread": STAGE_UNREAD_LINE},
@@ -1187,6 +1220,8 @@ STAGE_LINES = {
                     "unread": MAINT_STAGE_UNREAD_LINE},
     "morning-brief": {"too_large": BRIEF_STAGE_TOO_LARGE_LINE,
                       "unread": BRIEF_STAGE_UNREAD_LINE},
+    "run-maintenance": {"too_large": MAINT_STAGE_TOO_LARGE_LINE,
+                        "unread": MAINT_STAGE_UNREAD_LINE},
 }
 
 
@@ -1478,20 +1513,29 @@ def _staged_names(fire: str = "end-of-day") -> frozenset:
 
 
 def _clear_staging(workspace_root: str,
-                   fire: str = "end-of-day") -> Dict[str, Any]:
+                   fire: str = "end-of-day",
+                   stale_only: bool = False) -> Dict[str, Any]:
     """Remove every file `fire`'s writers stage under `STAGE_DIRS[fire]`: one
     file per kind that fire stages (`FIRE_KINDS`) and, for the End of Day
     only, the day-close pack copies. Nothing else in the folder is touched,
     and no other fire's folder is entered (MAINTHARD2 MUST 1, D-W2-3). A
     mount that refuses the delete gets the file emptied instead (the
     transcript text is gone either way) and says so; a file that can be
-    neither is named in `left`."""
+    neither is named in `left`.
+
+    cr1#955 review: `stale_only` narrows the clear to files last written
+    more than `STALE_STAGE_MINUTES` ago, so a run still in flight keeps its
+    batch; a file it leaves for that reason is named in `kept`."""
     import os
+    import time
 
     from atomic_write import atomic_write_text
 
     folder = Path(workspace_root) / _stage_dir(fire)
     out: Dict[str, List[str]] = {"removed": [], "emptied": [], "left": []}
+    if stale_only:
+        out["kept"] = []
+    cutoff = time.time() - STALE_STAGE_MINUTES * 60
     if (not folder.is_dir() or not _inside_workspace(workspace_root, folder)
             or not _own_folder(workspace_root, fire)):
         # review N-7: a link out of the workspace is never followed; W2
@@ -1505,6 +1549,14 @@ def _clear_staging(workspace_root: str,
                                       and path.suffix == ".json")
         if not ours or not path.is_file():
             continue
+        if stale_only:
+            try:
+                fresh = path.stat().st_mtime > cutoff
+            except OSError:
+                fresh = True  # unreadable age: never remove a live batch
+            if fresh:
+                out["kept"].append(path.name)
+                continue
         try:
             os.unlink(str(path))
             out["removed"].append(path.name)
@@ -1520,7 +1572,8 @@ def _clear_staging(workspace_root: str,
 
 
 def clear_fire_staging(workspace_root: str,
-                       fire: str = "end-of-day") -> Dict[str, Any]:
+                       fire: str = "end-of-day",
+                       stale_only: bool = False) -> Dict[str, Any]:
     """EODHARD3 MUST 3: the fire's staged files, removed: a WRITER, on the
     write list only. The fire runs it at the start of Phase A, before it
     stages anything (so a fire that stopped early is cleaned by the next),
@@ -1530,8 +1583,12 @@ def clear_fire_staging(workspace_root: str,
 
     MAINTHARD2 MUST 1: `fire` clears only that fire's own folder; the End of
     Day's (the default) is untouched by a maintenance clear, and the other
-    way round."""
-    return _clear_staging(workspace_root, fire)
+    way round.
+
+    cr1#955 review: `stale_only` true removes only files older than
+    `STALE_STAGE_MINUTES` (a run that stopped before its own clear); the
+    Maintenance fire and the typed run pass it for the typed run's folder."""
+    return _clear_staging(workspace_root, fire, stale_only=bool(stale_only))
 
 
 def run_cru_pass(workspace_root: str, *, source_ref: str = "",

@@ -133,15 +133,16 @@ as planned, and say so in one clause (cr1#676: a task only switched off was
 switched back on by the page's Start, so every leg ran twice). An entry with
 no `delete` (a backend that cannot delete), or a delete that is refused, is
 switched off with its `switch_off` call instead, and the clause says it is
-off and can be deleted from the Scheduled list. The update bridge never
+off and can be deleted from the Scheduled list. Nothing else ever
 deletes these: their task ids are the Hub's own.
 
 Plans 5 and 6 are Morning Brief and Maintenance (`task_id` `morning-brief`
 and `maintenance`), the two chats of the previous version that survive the
 cockpit. They are handled exactly like the four above: a `create` or an
 `update` is executed and its `landing` landed, a `current` needs no call. One already in the listing with no prompt to compare is `current` with
-`not_compared: true`: its text is unknown, so it is never rewritten and never
-created again. **Never stop after the fourth plan.** The first build asked for these
+`not_compared: true`: its text is unknown here, so Step 2 never rewrites it
+and never creates it again; Step 2b compares its prompt and refreshes it
+when it is stale (for Maintenance, the one-time move to its stub, cr1#972). **Never stop after the fourth plan.** The first build asked for these
 two in a separate call, and a real set-up skipped it, leaving a seat with no
 Morning Brief and no Maintenance (cr1#631). A chat listed in
 `chats_refused` is named in the final line with its `line`; it never stops
@@ -151,6 +152,29 @@ The final line (Step 6) names what was created, refreshed and left
 alone across all six. None of the cockpit tasks is a daily chat: the
 schedules skill never registers them, and `change-schedule` does not list
 them.
+
+## Step 2b: Apply the schedule changes an update ships with, every time (cr1#970)
+
+The owner's ruling of 2026-11-09 (cr1#970): scheduled chats are created,
+changed, switched off or removed only here and by
+`enable-command-room-schedules`; the update bridge touches none of them. So
+every time this skill runs, after Step 2's six plans were executed and landed
+and before Step 3, run
+`enable-command-room-schedules/references/schedule-changes.md` (in that
+skill's folder) start to finish, with `<this skill>` = `cockpit-setup`. It
+reads the listing once after Step 2's own calls, removes the previous
+version's shelved and retired chats (the reinstall plan's removals only: Morning
+Brief and Maintenance are Step 2's plans 5 and 6, never the file's, and a chat
+the owner paused stays paused, cr1#914), makes the retirement offers, applies
+the readiness retirement, the fold and the superseded silent tasks, and ends
+with the one `schedule_changes_applied` record that quiets the update's line,
+written only when this run finished what it planned. Its step 6 compares and
+refreshes Morning Brief's and Maintenance's prompts on every run (Step 2 hands
+in rows without prompts, so it cannot), so a stale Maintenance prompt is
+brought current here.
+The cockpit's own four tasks are never touched by it. A step that planned
+nothing says nothing; the lines it does compose go into Step 6's final line,
+verbatim. A run that ended at Step 2's `ok: false` never reaches this step.
 
 ## Step 3: Render the page
 
@@ -250,18 +274,25 @@ final line; the page still works and its first run seeds the lights.
 ## Step 6: Say where it is, then STOP
 
 **Say only what this run checked (cr1#926).** A task is current only when its
-Step 2 plan said `current: true` WITHOUT `not_compared`. A plan with
+Step 2 plan said `current: true` WITHOUT `not_compared`, or Step 2b's prompt
+compare judged it current. A plan with
 `not_compared: true` (Morning Brief or Maintenance already in the listing:
-its text is unknown) was left alone and not checked, and the line says
-exactly that, never that it is current. A Hub task already in the listing
+its text is unknown to Step 2) was not checked by Step 2; Step 2b's prompt
+compare then checked it, so the line says what that compare found: refreshed
+when its update landed, current when it was judged current, not brought up
+to date this time when its update call failed (with
+`schedule_refresh.PROMPT_UPDATE_FAILED_LINE`, verbatim), and left alone and
+not checked only when Step 2b did not compare it (its readback failed, or
+the listing carried no prompt for it), and never that it is current on
+Step 2's answer alone. A Hub task already in the listing
 comes back as an `update` and is refreshed on every set-up; that is
 expected, not a fault. Nothing in this skill reads how a task's last run
 went, so never say it finished cleanly. If a step did not run, the line
 says the set-up stopped before it and why, and claims nothing it did not
 check.
 
-One line: the page address, what Step 2 created, refreshed and left alone
-(six triggers), and "Open it on claude.ai, allow the Claude Code Remote
+One line: the page address, what Step 2 and Step 2b created, refreshed and
+left alone (six triggers), and "Open it on claude.ai, allow the Claude Code Remote
 connector when the page asks, and press Start." When the answer from Step 3
 carried `mail_direct`, the line also says the page asks once to use the mail
 connector the first time Send is pressed. On a first set-up, also fire

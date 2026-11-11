@@ -113,6 +113,22 @@ ACTION_FUNCTION = "fold_scheduled_fires"
 #: (ATTRIB2's actor resolver reads `source_skill` by identity: `machine`).
 SOURCE_SKILL = "command-room-update-bridge"
 
+#: cr1#970: the skills that may run this action and be named on its rows. The
+#: update bridge no longer runs it (it skips this item); the schedule-changes
+#: step of the two owner skills does, and passes `source_skill` in the
+#: detector context. Anything else falls back to `SOURCE_SKILL`, so an old
+#: caller's rows read exactly as before.
+ACTING_SKILLS = ("command-room-update-bridge", "enable-command-room-schedules",
+                 "cockpit-setup")
+
+
+def acting_skill(detector_context) -> str:
+    """The `source_skill` the rows of this run carry: the caller's own name
+    when it is one of `ACTING_SKILLS`, else `SOURCE_SKILL`."""
+    dc = detector_context if isinstance(detector_context, dict) else {}
+    name = str(dc.get("source_skill") or "").strip()
+    return name if name in ACTING_SKILLS else SOURCE_SKILL
+
 #: The two ids this fold touches — read from the registry, never retyped.
 FOLDED_TASK_IDS = ("waiting-on", "my-plate")
 
@@ -251,7 +267,7 @@ def plan(workspace_root, *, task_records=None) -> dict:
 
 
 def apply_plan(workspace_root, planned: dict, *, batch_id=None,
-               now_iso=None) -> dict:
+               now_iso=None, source_skill: str = SOURCE_SKILL) -> dict:
     """Write the substrate half in ONE call, under ONE batch id: the
     workspace's OWN `workspace.schedule_config` store (`enabled: false` for
     every id in `planned["tasks_to_disable"]`) AND the matching
@@ -306,7 +322,8 @@ def apply_plan(workspace_root, planned: dict, *, batch_id=None,
         return {"batch_id": batch_id, "tasks_disabled": [], "logged": False,
                 "prev_overrides": {}}
     written = apply_fold_state(
-        workspace_root, tasks, enabled=False, source_skill=SOURCE_SKILL,
+        workspace_root, tasks, enabled=False,
+        source_skill=source_skill if source_skill in ACTING_SKILLS else SOURCE_SKILL,
         # ONE spelling of the reason, read from the module that also stamps it
         # on the store's own discriminator (fix round 2, R-3).
         extra_data={"reason": _sc_fold_reason(), "item_id": ITEM_ID,
@@ -336,7 +353,8 @@ def apply_plan(workspace_root, planned: dict, *, batch_id=None,
             "prev_overrides": prev}
 
 
-def _write_receipt(workspace_root, context: dict, *, manifest_version=None) -> bool:
+def _write_receipt(workspace_root, context: dict, *, manifest_version=None,
+                   source_skill: str = SOURCE_SKILL) -> bool:
     """ONE `plugin_update_remediation` — the act's receipt AND the marker
     that makes it a one-shot. Written through the gated appender (CONTRACT
     Rule 31), never by hand."""
@@ -363,10 +381,11 @@ def _write_receipt(workspace_root, context: dict, *, manifest_version=None) -> b
             "undo": _sc.folded_fire_undo_line(context.get("tasks_disabled"))}
     if manifest_version:
         data["manifest_version"] = manifest_version
+    who = source_skill if source_skill in ACTING_SKILLS else SOURCE_SKILL
     try:
         append_event(_events_path(workspace_root),
-                     [{"type": RECEIPT_TYPE, "source_skill": SOURCE_SKILL,
-                       "data": data}], holder=SOURCE_SKILL)
+                     [{"type": RECEIPT_TYPE, "source_skill": who,
+                       "data": data}], holder=who)
         return True
     except Exception as exc:  # noqa: BLE001 — loud, never fatal: the fold landed
         sys.stderr.write(f"[fold_scheduled_fires] receipt failed: {exc}\n")
@@ -388,7 +407,9 @@ def fold_scheduled_fires(events_jsonl_path, workspace_root,
         if planned["status"] != "would_fold":
             return {"success": True, "ran": False, "context": ctx,
                     "error": None, "fallback_prompt": None}
-        applied = apply_plan(workspace_root, planned, now_iso=dc.get("now_iso"))
+        who = acting_skill(dc)
+        applied = apply_plan(workspace_root, planned, now_iso=dc.get("now_iso"),
+                             source_skill=who)
         ctx["batch_id"] = applied["batch_id"]
         ctx["tasks_disabled"] = applied["tasks_disabled"]
         if not applied["tasks_disabled"]:
@@ -397,7 +418,8 @@ def fold_scheduled_fires(events_jsonl_path, workspace_root,
         import schedule_config as _sc
         ctx["summary_line"] = _sc.folded_fire_summary(applied["tasks_disabled"])
         ctx["receipt_written"] = _write_receipt(
-            workspace_root, ctx, manifest_version=dc.get("manifest_version"))
+            workspace_root, ctx, manifest_version=dc.get("manifest_version"),
+            source_skill=who)
         return {"success": True, "ran": True, "context": ctx,
                 "error": None, "fallback_prompt": None}
     except Exception as exc:  # noqa: BLE001

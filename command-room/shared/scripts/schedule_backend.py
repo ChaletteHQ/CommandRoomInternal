@@ -1024,6 +1024,11 @@ REINSTALL_DUPLICATE_LINE = ("{names} is set up twice, so it runs twice; delete t
 #: cr1#942: a second copy that is paused does not fire, so it does not run twice.
 REINSTALL_PAUSED_COPY_LINE = ("{names} has a second, paused copy; delete the extra copy "
                               "in your scheduled tasks.")
+#: cr1#914: said for a chat the reinstall keeps that the owner paused: every
+#: copy of it on this seat is switched off. It is kept, never deleted or set
+#: up fresh (the scheduler's create takes no on/off switch), and its update is
+#: prompt-only, so it stays paused.
+REINSTALL_KEPT_PAUSED_LINE = "{names} stays paused, as you left it."
 #: cr1#942: the scheduler's listing could not be read, so nothing was checked
 #: and nothing was set up (a create here could only be a second copy).
 REINSTALL_UNCHECKED_LINE = ("Your scheduled tasks could not be checked, so nothing was set up "
@@ -2048,18 +2053,22 @@ def compose_registration_body(task_id: str, *, basename: str,
     the full body is composed from it by the installed plugin at every fire,
     so a template fix reaches the chat with no re-registration. With no path
     there is nothing for a stub to ask for, and the chat keeps the full body,
-    composed as before."""
+    composed as before.
+
+    A silent task (Maintenance) registers the same stub (cr1#972): its fire
+    composes `schedule_config.compose_silent_task_prompt` from the stub's
+    facts, so a release that changes a maintenance job changes nothing
+    registered. With no path it keeps the full text, as a chat does."""
     sc = _schedule_config()
     import schedule_refresh as _sr  # noqa: WPS433 - lazy
 
     wid, wder = (writer_pair or (None, None))
-    if task_id in sc.SILENT_TASKS:
-        # T2 CB-4 (REVIEW_T2_FIRE1 N-1, R-WALK-4): the registered silent body carries
-        # its one folder request for THIS seat's path; without the path the composer
+    if task_id in sc.SILENT_TASKS and not str(abs_path or "").strip():
+        # T2 CB-4 (REVIEW_T2_FIRE1 N-1, R-WALK-4): without the path the composer
         # keeps today's text (FIRE1 (1e)).
         return sc.compose_silent_task_prompt(
             task_id, basename, writer_id=wid, writer_derivation=wder,
-            workspace_path=(str(abs_path or "").strip() or None))
+            workspace_path=None)
     compose = (_sr.compose_stub_body if str(abs_path or "").strip()
                else _sr.compose_bootloader_body)
     return compose(
@@ -2435,6 +2444,13 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
                 reinstall: bool = False) -> dict:
     """The update bridge's schedule phase (MUST 8, coordinator decision D-8).
 
+    Since cr1#970 (the owner's ruling 2026-11-09) the update bridge calls
+    neither form. The `reinstall=True` form is run by the schedule-changes
+    step (`enable-command-room-schedules/references/schedule-changes.md`) of
+    the two skills that own the scheduled chats, which execute only its
+    `removals`: Morning Brief and Maintenance are created and updated by those
+    skills' own registration, never by this plan's `creates` or `updates`.
+
     It REFRESHES only chats already in the stored trigger map - it never
     first-registers. An empty map plans nothing and returns
     `first_registration_needed: True` with the ONE sentence the invite
@@ -2464,7 +2480,9 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
     `created_names`, `kept_names`, `updated_names`, `copies` and
     `reinstall_line`, the one sentence the bridge says, and `gone_ids`, the
     removed ids, which never include a survivor (cr1#889). The creates carry
-    the customer's own times (cr1#890). A legacy scheduler refuses with the
+    the customer's own times (cr1#890). A survivor the owner paused on this
+    seat is kept like any other, its update prompt-only, and the line says it
+    stays paused (cr1#914). A legacy scheduler refuses with the
     invite line as before.
     """
     sc = _schedule_config()
@@ -2633,7 +2651,9 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
                            "current": [], "refused": [], "removals": [],
                            "removed_names": [], "created_names": [], "kept_names": [],
                            "updated_names": [], "reinstall_line": "", "gone_ids": [],
-                           "duplicates": {}, "copies": {}, "listing_loaded": False}
+                           "duplicates": {}, "copies": {}, "listing_loaded": False,
+                           "paused_names": [], "quiet": False, "owner_line": "",
+                           "owner_tail": "", "kept_names_all": []}
     if backend is None or backend.id != "cloud":
         out["line"] = sc.setup_invite_line(
             tools, workspace_root=workspace_root, abs_path=abs_path, env=env,
@@ -2694,12 +2714,17 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
             # cr1#679: the one-task Hub of the first build is not a chat the
             # Hub replaced; the line says to set the Hub up instead of naming it.
             out["hub_one_task_removed"] = True
-    keep, ordered = {}, []
+    keep, ordered, paused = {}, [], set()
     for tid in survivors:
         copies = [r for r in own if str(_rec_get(r, "taskId") or "") == tid]
         chosen = _survivor_copy(copies, stored.get(tid), here)
         if chosen is not None:
             keep[tid] = chosen
+            # cr1#914: paused means every copy of it on this seat is switched
+            # off (a record with no folder counts as this seat's, as `own`
+            # holds it; another computer's paused copy is not this seat's).
+            if all(_rec_get(r, "enabled") is False for r in copies):
+                paused.add(tid)
             # The planner keeps the LAST record per id: the chosen copy goes last.
             ordered.extend([r for r in copies if r is not chosen] + [chosen])
     # cr1#942 review: a listing is one unpaged read, and a session can read an
@@ -2748,6 +2773,8 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
                 tail += " " + REINSTALL_KEPT_AS_WAS_LINE.format(names=name)
             else:
                 out["kept_names"].append(name)
+            if tid in paused:
+                tail += " " + REINSTALL_KEPT_PAUSED_LINE.format(names=name)
             continue
         if tid in unconfirmed:
             continue  # said once, below
@@ -2778,6 +2805,27 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
     out["reinstall_line"] = _with_tail(
         reinstall_line(out["created_names"], out["removed_names"], out["kept_names"],
                        out["updated_names"]), tail)
+    # cr1#970: the schedule-changes step of the two owner skills runs this plan
+    # after their own registration, executes only its removals, and says the
+    # line only when it carries news: something removed or planned, a chat that
+    # stays paused (cr1#914), a copy, or a chat the check could not confirm.
+    out["paused_names"] = [sc.task_display_name(t) for t in survivors if t in paused]
+    out["quiet"] = not (out["removals"] or out["creates"] or tail.strip())
+    # cr1#970 review: the line the owner skills' schedule-changes step says.
+    # That step executes only the removals, so the line claims nothing it did
+    # not do: no survivor named as set up fresh or as having taken this
+    # version's instructions. A survivor still planned as a create is named as
+    # not set up here.
+    owner_tail = tail + "".join(
+        " " + REINSTALL_NOT_SET_UP_LINE.format(names=sc.task_display_name(t))
+        for t in sorted(fresh))
+    out["owner_line"] = _with_tail(
+        reinstall_line([], out["removed_names"], out["kept_names"], []), owner_tail)
+    # cr1#970 review: the pieces `schedule_handoff.owner_line` recomposes the
+    # line from, once the deletes have run (a failed delete is never named as
+    # removed).
+    out["owner_tail"] = owner_tail
+    out["kept_names_all"] = list(out["kept_names"])
     # cr1#889 review: a create whose CALL fails at execution is gone too. The
     # skill says, instead of `reinstall_line`, the line composed here for the
     # set of creates that failed (ids sorted, joined by commas), so a chat
@@ -2798,6 +2846,7 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
         out["lines_if_failed"][",".join(failed)] = line
     if out.get("hub_one_task_removed"):
         out["reinstall_line"] += " " + HUB_ONE_TASK_LINE
+        out["owner_line"] += " " + HUB_ONE_TASK_LINE
     return out
 
 
@@ -2836,6 +2885,135 @@ def record_removals(workspace_root, task_ids, *, source_skill: str = "command-ro
             workspace_root, [{"task_id": tid, "cron": None, "enabled": False} for tid in ids],
             source_skill=source_skill, extra_data={"reinstall": True})
     return {"forgotten": forgotten, "event": event}
+
+
+#: cr1#967: the writer a moved time's receipt lands through (the door form).
+REFRESH_RECEIPT_WRITER = "schedule_refresh:log_schedule_refreshed"
+
+
+def _raw_time_overrides(workspace_root) -> dict:
+    """The RAW `workspace.schedule_config` store, never the merged view: the
+    merged view folds the current default in when nothing was overridden,
+    which is exactly the comparison the customization test must not use
+    (BRIDGESIL1 Ruling 1). `{}` when the folder cannot be read here."""
+    if not str(workspace_root or "").strip():
+        return {}
+    path = Path(workspace_root) / "_hq" / "data" / "entities.json"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        store = ((data.get("workspace") or {}).get("schedule_config") or {})
+    except Exception:  # noqa: BLE001 - a plan never raises on a config read
+        return {}
+    return store if isinstance(store, dict) else {}
+
+
+def plan_default_cron_moves(workspace_root, tools=None, *, registered=None,
+                            abs_path: Optional[str] = None, tz_name: str = "",
+                            trigger_map: Optional[dict] = None,
+                            overrides: Optional[dict] = None, on_date=None,
+                            env=None,
+                            source_skill: str = "enable-command-room-schedules") -> dict:
+    """cr1#967: move a kept chat to a new shipped default time. Pure: no call.
+
+    Since cr1#942 the reinstall keeps Morning Brief and Maintenance in place,
+    and since cr1#970 the update bridge touches no scheduled chat, so a
+    release that moves a chat's shipped default no longer reaches a seat by
+    delete-and-recreate. This is the one planner for that move, run by the two
+    owner skills only: schedule setup's Step 1.C2 and the Hub's
+    schedule-changes step 6. It is BRIDGESIL1's silent re-anchor in code: a
+    registered chat whose live time (the listing's `cronExpression`, always
+    the customer's own zone) is an OLD shipped default
+    (`schedule_config.SHIPPED_CRON_HISTORY`) and whose stored override carries
+    no `cron` gets ONE time-only update (`schedule_refresh.
+    plan_schedule_refresh` decides; only `silent_apply` moves). An owner's own
+    time, or a time core never shipped, is `preserved` and never touched.
+
+    Each update names the chat's trigger (from the listing, else the stored
+    map) and carries the time only: never a prompt, never the on/off switch,
+    so a paused chat stays paused (cr1#914, cr1#920). Nothing is ever
+    created here (`creates` is always empty). Raw listing rows are placed by
+    exact name or stored trigger id first (cr1#923); another computer's
+    records are never planned. `registered` that is not a list (a failed
+    read) plans nothing.
+
+    Returns `{ok, reason, backend, updates, creates, moves, preserved,
+    refused}`. Each `moves` entry is `{task_id, old, new, trigger_id,
+    landing}`; `landing` is the door payloads to land after the update call
+    succeeded, in order: the trigger row re-stamped with the new time
+    (`record_trigger_row`, merge) and the ONE `schedule_refreshed` receipt
+    whose row the next morning brief says in one line
+    (`schedule_refresh.announce_lines`)."""
+    sc = _schedule_config()
+    import schedule_refresh as _sr  # noqa: WPS433 - lazy
+
+    out: Dict[str, Any] = {"ok": False, "reason": None, "backend": None,
+                           "updates": [], "creates": [], "moves": [],
+                           "preserved": [], "refused": []}
+    backend, _found = select_backend(sc._tool_names(tools))
+    if backend is None:
+        out["reason"] = "no_scheduler"
+        return out
+    out.update(ok=True, backend=backend.id)
+    if not isinstance(registered, (list, tuple)):
+        out["reason"] = "listing_unavailable"
+        return out
+    env_map = dict(os.environ) if env is None else dict(env)
+    if not str(abs_path or "").strip():
+        abs_path = (str(env_map.get(sc.DEVICE_WORKSPACE_ENV, "") or "").strip() or None)
+    path = str(abs_path or "").strip()
+    basename = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    here = sc.device_digest(path) if path else None
+    try:
+        stored = _resolve_trigger_map(trigger_map, workspace_root or None)
+    except Exception:  # noqa: BLE001 - no map leaves the listing to decide
+        stored = {}
+    stored = stored if isinstance(stored, dict) else {}
+    store = overrides if isinstance(overrides, dict) else _raw_time_overrides(workspace_root)
+    ids = [t for t in sc.DEFAULT_SCHEDULES if not str(t).startswith(COCKPIT_TASK_PREFIX)]
+    given = [r for r in registered if isinstance(r, (TaskRecord, dict))]
+    records = place_listing_rows(given, basename=basename, task_ids=ids, trigger_map=stored)
+    own = seat_records(records, abs_path=path, declaration={})["own"]
+    for tid in ids:
+        copies = [r for r in own if str(_rec_get(r, "taskId") or "") == tid]
+        chosen = _survivor_copy(copies, stored.get(tid), here)
+        if chosen is None:
+            continue
+        live = _rec_get(chosen, "cronExpression")
+        if not isinstance(live, str) or not live.strip():
+            continue  # the listing did not carry the time: unknown, never moved
+        default = (sc.DEFAULT_SCHEDULES.get(tid) or {}).get("cron")
+        if not default:
+            continue
+        spec = store.get(tid) if isinstance(store.get(tid), dict) else {}
+        decided = _sr.plan_schedule_refresh(
+            tid, "cron", live_value=live.strip(), new_default=default,
+            has_override="cron" in spec,
+            shipped_defaults=sc.SHIPPED_CRON_HISTORY.get(tid, (default,)))
+        if decided["decision"] == _sr.DECISION_PRESERVE:
+            out["preserved"].append(tid)
+            continue
+        if decided["decision"] != _sr.DECISION_SILENT_APPLY:
+            continue
+        trigger_id = (_rec_get(chosen, "trigger_id")
+                      or (stored.get(tid) or {}).get("trigger_id"))
+        plan = backend.plan_update(tid, trigger_id=trigger_id, cron_local=default,
+                                   tz_name=tz_name, on_date=on_date)
+        if isinstance(plan, Refusal):
+            out["refused"].append({"task_id": tid, "line": plan.line,
+                                   "reason_code": plan.reason_code})
+            continue
+        landing = []
+        for name, kwargs in list(plan.after or []):
+            if name == "schedule_backend.record_trigger_map":
+                landing.append(trigger_row_payload(kwargs))
+        landing.append({"name": REFRESH_RECEIPT_WRITER, "args": {
+            "field": "cron", "new_value": default, "old_value": decided["old"],
+            "source_skill": source_skill, "task_id": tid, "workspace_root": "<WS>"}})
+        out["updates"].append(plan)
+        out["moves"].append({"task_id": tid, "old": decided["old"], "new": default,
+                             "trigger_id": trigger_id, "landing": landing})
+    return out
 
 
 def composer_reachable(task_id: str, plugin_root=None) -> bool:

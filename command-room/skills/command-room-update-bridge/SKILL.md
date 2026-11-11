@@ -2,14 +2,14 @@
 name: command-room-update-bridge
 surfaces: cowork
 slack_fallback: "Updates apply from a chat with your Command Room folder attached — run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions). Release notes and pending workspace-file migrations, additively, archive-never-delete. Dashboards live in chat now: the old dashboard-install phrases hear that one sentence and nothing is installed. Idempotent — re-runs are safe; detects which workspace migrations and release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions (like re-registering schedules) when a release needs them. Does NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
+description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions). Release notes and pending workspace-file migrations, additively, archive-never-delete. Dashboards live in chat now: the old dashboard-install phrases hear that one sentence and nothing is installed. Idempotent — re-runs are safe; detects which workspace migrations and release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions when a release needs them. Touches no scheduled chat. Does NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
 
 ## What this skill does
 
-This skill is the **update ritual**: it brings a workspace current after the plugin updates — release notes, workspace-file migrations, release-manifest remediations, the runtime cache and the scheduled chats. **It installs no dashboards.** The pinned sidebar dashboards are retired on every seat (Night M3, RETIRE1 — ruling R-M3-4): Phase 4 says the one dashboards sentence, and nothing in this skill installs, lists, refreshes or verifies a sidebar artifact. It serves two user populations with one flow:
+This skill is the **update ritual**: it brings a workspace current after the plugin updates — release notes, workspace-file migrations, release-manifest remediations and the runtime cache. **It touches no scheduled chat** (cr1#970, the owner's ruling 2026-11-09): scheduled chats belong to `enable-command-room-schedules` and `cockpit-setup`, and Phase 4.7 says at most one line naming them. **It installs no dashboards.** The pinned sidebar dashboards are retired on every seat (Night M3, RETIRE1 — ruling R-M3-4): Phase 4 says the one dashboards sentence, and nothing in this skill installs, lists, refreshes or verifies a sidebar artifact. It serves two user populations with one flow:
 
 1. **Fresh post-onboarding users.** Onboarding installs nothing into a sidebar — the Workspace Map is `list active projects`, in chat. This skill brings a new workspace current like any other.
 2. **Upgrade users.** Their `command-room-onboarding` checkpoint is `status: "complete"` from a prior version, so the existing-workspace guard at Phase 0a stops onboarding from re-running. This skill surfaces what changed in the version diff and applies what is pending. Users coming from older versions may still have dashboards pinned — those are no longer refreshed, and Phase 4 adds one sentence saying they can unpin them.
@@ -165,7 +165,7 @@ The **default dashboard set** the bridge installs is empty (Night M3, RETIRE1 �
 CURRENT_DEFAULTS = {}      // level_up_lines.CURRENT_DEFAULTS — nothing is installed
 ```
 
-With nothing to install, nothing is ever missing, so Phase 2's up-to-date exit is reachable whenever nothing else is pending — `level_up_lines.bridge_plan` is the rule (driven by `run_retire1_test`); the prose here narrates it. Phase 4.7 fires `enable-command-room-schedules` to register the M1 first-install scheduled-task set (Morning Brief, Upcoming Meetings, Past Meetings, Inbox, Friday Wrap — 5 tasks; the remaining 2 defaults Commitments and Pulse stay deferred to a follow-up session).
+With nothing to install, nothing is ever missing, so Phase 2's up-to-date exit is reachable whenever nothing else is pending — `level_up_lines.bridge_plan` is the rule (driven by `run_retire1_test`); the prose here narrates it. Phase 4.7 touches no scheduled chat: it says at most one line naming `set up command room schedules` (cr1#970).
 
 **Retired dashboard ids** — older versions installed these (and, until Night M3, the two Layer 1 defaults). Any of them in the history set gets Phase 4's one unpin sentence; the bridge never uninstalls:
 
@@ -382,22 +382,6 @@ WORKSPACE_MIGRATIONS = [
     apply_once: true                                           // one ask, ever — answered or declined, it never asks twice
   },
   {
-    id: "readiness_retirement_v1",                             // SPEC TASKRET1 (M's ruling 2026-08-17). Read the id from `schedule_proposals.READINESS_RETIREMENT_MIGRATION_ID`: the event this migration writes carries the same constant, so the id in the record and the id the planner's per-task fence reads can never be two strings
-    target_file: null,                                         // NOT a file migration — the target is the LIVE scheduler, read via the FS-16 registered-set readback
-    marker: null,                                              // live schedule state — the adjudication gate + the readback's own `enabled` flag are the gates (see the section)
-    type: "auto_apply",                                        // APPLIED, then NARRATED — the one migration type that acts on live schedule config without asking. M's ruling is the authority; §0 rationale lives in the class block above `schedule_config.RETIRED_TASKS`. NEVER downgrade this to calibration_question: "I will NOT manually pause" is the ruling, and a per-task question here rebuilds the register-then-nag pattern the retirement removes
-    blocking: false,
-    apply_once: false                                          // PER TASK, not once ever (cr1#540): a chat retired by a later release still has to stop firing on a seat that already ran this. The planner's two fences are the whole gate; this id is never handed to the adjudication lookup
-  },
-  {
-    id: "fold1a_fire_fold_v1",                                 // SPEC_FLOW1 Lane H / FOLD1A (M's ruling 2026-09-07, "lets do this then the fold builds"). Read the id from `release_actions.fold_scheduled_fires.ITEM_ID`'s sibling constant is the RECEIPT marker (`v5300_fold_scheduled_fires`); this migration id is the BRIDGE's own adjudication key, kept distinct on purpose (see the prose below)
-    target_file: null,                                         // NOT a file migration — the target is the LIVE scheduler, read via the FS-16 registered-set readback, same as readiness_retirement_v1
-    marker: null,                                              // live schedule state — the adjudication gate + the module's own `already_ran` receipt check are the gates
-    type: "auto_apply",                                        // APPLIED, then NARRATED — same class of act as readiness_retirement_v1, but REVERSIBLE: `schedule_config.FOLDED_FIRES`, never `RETIRED_TASKS`. NEVER offer this as a question — the whole point of an auto_apply here is that the fold ships with its own undo, so there is no tap to ask for
-    blocking: false,
-    apply_once: true                                           // one application, ever — an `undo` reverses the SUBSTRATE half; it does not re-arm this migration to fold again
-  },
-  {
     id: "connector_display_name_repin_v1",                     // DISC1 (gap analysis §6.7, ruling §0.29). Read the id from `release_actions.connector_display_name_repin_v1.MIGRATION_ID` — the events this migration writes carry that same constant, so the id the registry gates on and the id in the customer's record can never drift into two strings
     target_file: null,                                         // NOT a file migration — the target is the workspace's declared-connector block, written only through `connector_config.set_declared_backend`, never by a raw edit
     marker: null,                                              // no marker to look for: the gate is THIS SESSION'S TOOL LIST. A category whose declared connection is visible is already migrated, which is exactly what a second run sees
@@ -418,69 +402,14 @@ WORKSPACE_MIGRATIONS = [
 
 **`connector_agnostic_account_map_v1` (N1) — additive, never a prompt.** Detection: JSON-load entities.json; pending iff `workspace.accounts` is absent entirely. Apply: seed an EMPTY map — `workspace.accounts = []` — via the delegated setter path (write through `connector_config.py` conventions / the locked entities writer; update-bridge is a declared delegate, NEVER a raw editor of the block), and emit ONE nudge line in the update summary: *"New: you can tell me which email accounts are business vs personal — say 'what accounts do I have' to see them, or '[address] is my personal account' to wall one off."* **An empty map is a NO-OP by design (R4)** — the live workspace behaves byte-identically until the user classifies an account. NEVER ask a blocking classification question from the bridge; classification is the user's move (workspace-manager verbs) or onboarding's account-enumeration gate on fresh installs.
 
-**`readiness_retirement_v1` — the readiness retirement (SPEC TASKRET1, M's ruling 2026-08-17).** The one migration that switches off a chat the customer can see, without asking. Everything about it is scoped to CLASS, never to a task name.
-
-Run it on the full-update intent path, after the FS-16 registered-set readback (the same readback the proposal blocks quote). The plan reads the activity log for its per-task fence and writes nothing:
-
-```python
-import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
-from schedule_proposals import plan_readiness_retirements, log_readiness_retirement
-from schedule_config import readiness_retirement_summary
-plan = plan_readiness_retirements(registered_ids=<the quoted readback>,
-                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>,
-                                  workspace_root=WORKSPACE_ROOT)
-```
-
-Both arguments come from the ONE readback taken in Step 4.8a and composed by `schedule_proposals.readback_context` — the same dict handed to this item as its detector context. Do not re-read the scheduler here, and do not reach this block with neither argument: an item that was handed nothing plans nothing, and the trace it leaves says so (`outcome: "no_readback"`, one sentence on the receipt, item still armed) rather than leaving nothing at all.
-
-**`plan == []` is the answer on the overwhelming majority of workspaces, and it means SAY NOTHING.** All three of these were later-adds, so most installs never registered any of them; a line about a chat the customer never had is noise about a feature they never saw. No summary, no "nothing to do" note, no mention in the recap.
-
-On a non-empty plan, for EACH entry, in order:
-
-1. Execute the plan `schedule_backend.plan_update(task_id=<entry["task"]>, enabled=False)` returns, then its `after` call. The seam picks the backend from this session's tool list, so one instruction serves a desktop seat and a merged one; a `Refusal` instead of a plan means this seat cannot move the task, so print nothing and skip the migration. **Never pass `prompt`** — the registered bootloader is registration's property, and a retired task's prompt still needs to resolve its stub for any fire that beats this migration to the customer.
-2. Only after that call SUCCEEDED, write the substrate record: `log_readiness_retirement(WORKSPACE_ROOT, entry["task"])`. It is a thin wrapper over `schedule_config.log_schedule_config_change` — THE one config-event writer (SPEC SCHED1 §0-4) — so this pause lands in exactly the shape every other pause lands in, annotated with the migration id. **Never hand-roll the event here and never call the writer directly instead:** the wrapper is what keeps the annotation and the adjudication gate reading one constant. Order matters: an event claiming a task is off while it still fires is worse than no event, and `late_fire` reads these records to refuse scoring slots older than the change — which is exactly right here, since the slots this task will now never fire were minted by this migration (F-51).
-
-Then surface **exactly ONE line**, built by the registry, never composed here:
-
-```python
-summary = readiness_retirement_summary([e["task"] for e in plan])   # "" when the plan was empty
-```
-
-That line is the whole difference between this class and the silent `SUPERSEDED_BY` disable above. It names what was switched off, why it needed groundwork first, and — the clause only this class carries — what brings each chat back (`reoffer_when`). **Do not drop the comes-back clauses to shorten it, and do not paraphrase.** A retirement the customer is told about but not told the terms of is a deletion with better manners; the promise of return is what makes acting-without-asking legitimate here.
-
-**Pass `task_records`, not just the ids.** The raw records carry `enabled`, and an entry already disabled is dropped from the plan: that is the fence that stops a workspace from re-writing a `schedule_config_changed` event on every update forever. `workspace_root` is the other fence: a task that already carries this migration's own pause record is dropped, so each retired chat is switched off at most once per seat. Both are deliberate: idempotency here has to survive losing either one.
-
-**The one-shot is per task, so this migration runs on every full update (cr1#540).** Do not hand `readiness_retirement_v1` to the Phase 1 adjudication lookup, and do not log `workspace_migration_applied` for it: the lookup is keyed on the one migration id, and an applied record there used to stop this block forever, so a chat retired by a later release kept firing on every seat that had run it once. An `applied` record already in a seat's log for this id changes nothing. The planner's two fences above are its whole gate, and on a seat with nothing new the plan is `[]` and you say nothing.
-
-**Do NOT touch anything else.** No `schedule_config` override key is deleted (an override for a retired id is expected history, and the customer's chosen hour is theirs to keep if the surface ever returns), no on-demand skill is disabled, and no other retirement class is applied — eliminations and renames still go through the propose blocks above. If you are about to disable a task that `schedule_config.is_readiness_retirement` does not return True for, stop: that is the add-without-asking violation with the sign flipped.
-
-**`fold1a_fire_fold_v1` — the FOLD (SPEC_FLOW1 Lane H / FOLD1A, M's ruling 2026-09-07).** Same two-step shape as `readiness_retirement_v1` immediately above — read that block first, this one only names the differences. This is NOT a `RETIRED_TASKS` readiness retirement: `schedule_config.FOLDED_FIRES` is the membership test, `waiting-on` and `my-plate` are the two ids, and the whole point of this class is that the customer gets an `undo`, which readiness never offers.
-
-Run it on the same full-update intent path, right after the readiness block above (either order between the two is fine — they touch disjoint ids). Nothing here reads or writes a workspace file either:
-
-```python
-import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
-from release_actions.fold_scheduled_fires import plan, fold_scheduled_fires
-planned = plan(WORKSPACE_ROOT, task_records=<the NORMALISED `schedule_backend.plan_list` records>)
-```
-
-**`planned["status"] != "would_fold"` (`not_a_workspace`, `already_ran`, `nothing_to_fold`) is the answer on the overwhelming majority of runs, and it means SAY NOTHING** — same posture as the readiness block: most seats either already took their one-shot or never registered either chat.
-
-On `would_fold`, there are exactly TWO steps and ONE call shape. **Do not also call `apply_plan` by hand** — `fold_scheduled_fires` calls it itself, and a hand-rolled step before it writes a SECOND `schedule_config_changed` under a SECOND `brain_batch_id` that no receipt names and no `undo` narration points at (fix round 1, REVIEW_FOLD1A F-5: the earlier three-step wording produced exactly that when followed literally).
-
-1. For EACH task id in `planned["tasks_to_disable"]`, in order, execute the plan `schedule_backend.plan_update(task_id=<id>, enabled=False)` returns, then its `after` call; a `Refusal` stops the loop rather than half-applying it. Never pass `prompt` — the Step 0 fold gate already ships in the orchestrator file itself (`orchestrator-commitments.md` / `orchestrator-my-plate.md`), so a fire that beats the rest of this migration stubs itself; the registered bootloader is registration's property.
-2. Only after EVERY call in the loop SUCCEEDED, make the ONE call that writes everything: `result = fold_scheduled_fires(events_path, WORKSPACE_ROOT, {"task_records": <the same raw records>, "now_iso": <now>})`. It re-plans, writes the store and the audit event through `schedule_config.apply_fold_state` — which is the ONE caller of `schedule_config.log_schedule_config_change` for this class (SPEC SCHED1 §0-4; never hand-roll a second event beside it) and also the one thing that moves `workspace.schedule_config`, the container the orchestrators' Step 0 gate reads — under ONE `brain_batch_id` (which is what makes `undo` reverse both ids together), and writes the ONE receipt that is also this seat's one-shot marker. Same ordering rule as the readiness block: an event claiming a task is off while it still fires is worse than no event. Read the line to post off `result["context"]["summary_line"]`.
-
-Then surface **exactly ONE line**, built by the module, never composed here: `result["context"]["summary_line"]` (from `schedule_config.folded_fire_summary`). It names what folded and where the answer lives now, the Hub and the typed ask. It offers no way back to a chat: the owner ruled these chats retired on 2026-11-03, and shelved wins.
-
-**Do NOT touch anything else.** No `schedule_config` override key for a THIRD id is ever touched by this migration (`FOLDED_TASK_IDS` is exactly two, read from the module, never retyped), the on-demand `show waiting` / `what's on my plate` skills are untouched, and the Inbox chat is untouched — FOLD1A does not touch it (M: "I am not planning on retiring inbox"). If you are about to disable a task that `schedule_config.is_folded_fire` does not return True for, stop.
+**`readiness_retirement_v1` and `fold1a_fire_fold_v1` left this skill (cr1#970, the owner's ruling 2026-11-09).** Both switch off a scheduled chat, so both run in `enable-command-room-schedules/references/schedule-changes.md` (its steps 4 and 5), which `set up command room schedules` and `rebuild my hub` run every time they run. Their ids are not in the table above, and this skill applies neither. An `applied` or `skipped` record already in a seat's log for either id changes nothing.
 
 **`email_exclusion_rules_to_sender_scope_v1` — the structured-scope migration** (PASSIVE_CAPTURE § Privacy Surface): if the workspace CLAUDE.md carries an `email_exclusion_rules` prose list, convert each SENDER-shaped rule (an address or domain-address) to `connector_config.set_sender_scope_override(root, <business-primary account — or the sole account>, <sender>, write_to_business=False, reason="migrated from email_exclusion_rules")`. Append a one-line `<!-- migrated to sender scope YYYY-MM-DD -->` note next to the prose section — NEVER delete the user's prose (readers honor both during the transition; conservative wins). Pattern-shaped rules (subject regexes) stay prose and are skipped with a note in the summary. Skip the whole migration silently when the account map is empty (nothing to key overrides to yet — re-checked on the next bridge run after classification).
 
 Detection logic per migration:
 - **Adjudication gate runs FIRST — mechanized, keyed on migration id, NEVER on marker phrases (FB-5, T3).** Before any marker/validator check, run the durable adjudication lookup ONCE for the full candidate id list:
 
-  Leave `readiness_retirement_v1` out of that id list (cr1#540): its one-shot is per task, and the planner's two fences in its block are its whole gate. An `applied` record for it must never remove it from the candidates.
+  `readiness_retirement_v1` is not in that id list: it left this skill with the other scheduled-chat work (cr1#970), and its per-task one-shot (cr1#540) is kept where it runs now.
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"root_or_file": "<WS>", "migration_ids": ["<migration_id_1>", "<migration_id_2>"]}, "name": "migration_adjudication:adjudication_status"}'
@@ -581,9 +510,9 @@ Future migrations append to this list. The skill is forward-compatible: each mig
 
 ## Phase 2: Surface what changed
 
-**FS-01 — run the idempotent Phase 4.7 state-gated blocks BEFORE any up-to-date early-exit.** On **full-update intent** (`update command room` / `check for updates` / `install latest` — see the Phase 4.7 intent table), the version-keyed manifest work may short-circuit when `current version == last installed version`, but Phase 4.7's *state-gated* idempotent blocks MUST still run first: the Staff Meeting later-add PROPOSAL (Phase 4.7 §, gated on not-registered + past-M1 + no-prior-proposal), the `SILENT_TASKS` registration assertion (Phase 5.9), the unconditional prompt hash-refresh, **and the post-4.7 orchestrator-rebind heads-up line (v3.14.3+ — surfaced unconditionally at the end of every full-update fire, same-version included; the T2 re-verify found it still missing because this enumeration didn't name it — FS-01 residual)**. These are gated on WORKSPACE STATE, not version, so a same-version re-fire (a stack that shipped without a bump, like a staging re-install) still owes them. The live dogfood took this early-exit and skipped Phase 4.7 entirely — the staff-meeting proposal and the rebind heads-up never surfaced. Only after those state-gated blocks run (surfacing nothing when their gates are already satisfied) may the up-to-date verdict below fire. Clients are unaffected in practice (a promote always bumps the version, so their bridge runs the full path); this bites same-version staging re-fires.
+**FS-01: say Phase 4.7's one line BEFORE any up-to-date early-exit (cr1#970).** On **full-update intent** (`update command room` / `check for updates` / `install latest`, see the Phase 4.7 intent table), the version-keyed manifest work may short-circuit when `current version == last installed version`, but Phase 4.7's one read, `schedule_handoff:pending_line`, MUST still run first. It is state-gated, on the activity log (is schedule work pending that `set up command room schedules` or `rebuild my hub` has not applied yet?), not on the version diff alone, so a same-version re-fire still owes it. When it returns a line, say it once and do not take the up-to-date exit; when it returns nothing, the exit below may fire. Nothing else about scheduled chats runs here or anywhere in this skill: it registers, refreshes, proposes, compares, switches off and removes nothing.
 
-If `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version AND the full-update Phase 4.7 state-gated blocks surfaced nothing → tell the user they're up to date, verbatim (`level_up_lines.UP_TO_DATE`; `level_up_lines.bridge_plan` is the rule — there are no default dashboards to be missing, so this exit is reachable):
+If `pending_workspace_migrations` is empty AND `pending_release_remediations` (Phase 4.8) is empty AND current version == last installed version AND Phase 4.7's one line is empty → tell the user they're up to date, verbatim (`level_up_lines.UP_TO_DATE`; `level_up_lines.bridge_plan` is the rule — there are no default dashboards to be missing, so this exit is reachable):
 
 > *"You're all set. Your workspace is current, and there's nothing pending. Nothing to update."*
 
@@ -1234,41 +1163,13 @@ What the ONE call does, and which the prose must not restate loosely:
 
 `ran: false` with `context.status` `nothing_open` or `adjudicated` means nothing was written and NOTHING is said: a line about a list the customer never used is noise about a feature they never saw.
 
-<!-- SCHEDULER DISCOVERY >>> -->
-```text
-SCHEDULER DISCOVERY (SCHEDDISCOVER1) - rendered by schedule_backend.discovery_step(); never edit by hand.
-A scheduler tool you cannot see yet may only be waiting to be loaded. Load first, look second, then decide.
-1. LOAD FIRST, every time. Claude Code and the Claude app: run the host's tool search once per query,
-   exactly as written, asking for up to 10 results each:
-       +claude-code-remote create trigger list triggers
-       +scheduled-tasks create scheduled task list tasks
-   The older desktop app, which has no tool search: read its full connector tool listing, end to end.
-2. LOOK SECOND. Hand ONLY the names that loaded, as plain strings, to this skill's availability guard
-   and to schedule_backend.select_backend below. A scheduler name still waiting to be loaded is not a
-   scheduler: it goes only into step 3's TOOLS, as {"name": <id>, "deferred": true}.
-3. THE OPENING LINE. Render this one call with `workspace_access.py plan run_helper --json '<it>'` and
-   paste what it prints (the older app, or Code on this computer: `workspace_access.py run_helper` here):
-     {"name":"schedule_backend:opening_lines","args":{"tools":<TOOLS>,"env_mode":"<CR_ENV>","availability":<AVAIL>,"folder_attached":<FOLDER>,"reloaded":<RELOADED>,"error_text":<ERROR>}}
-   TOOLS = the loaded names and any waiting one; AVAIL = the guard's answer, as it came back;
-   FOLDER = is a workspace folder attached to this chat (true/false); RELOADED = false; ERROR = null,
-   or the scheduler's own error text when one of its calls failed (then call again). Say each line of
-   `result` verbatim, once, as the first thing this skill says about schedules, before any listing or
-   registration; it replaces the no-scheduler sentence. An empty result adds nothing: the guard's own
-   refusal stands alone, and a step that says nothing about schedules still says nothing. Add nothing
-   of your own about where the chats run or why.
-   Refused because this chat has no workspace folder: say "This chat has no workspace folder attached, so it cannot see your scheduled chats; open a chat with your Command Room folder attached." instead.
-4. If that line said the tools are loading: refresh the host's connector tools once, run step 1
-   again, then steps 2 and 3 with RELOADED = true. The answer after that reload is final.
-```
-<!-- <<< SCHEDULER DISCOVERY -->
-
 ### Migration: `staff_meeting_cadence_mwf_v1` (SPEC FB-20 — Staff Meeting moves Mon-only → Mon/Wed/Fri, PROPOSED never imposed)
 
-**RETIRED (cr1#176, the owner's ruling 2026-10-23).** The scheduled Staff Meeting is a readiness retirement, so there is no cadence left to move. This migration is a silent skip on every workspace: do not ask the question, do not change any schedule, and write no event (a skip record would durably suppress a question nobody was asked, the rule this section always had). A workspace that still has the chat registered hears about it once, from `readiness_retirement_v1` above, never from here. `staff meeting` on demand is unchanged. The migration id stays in the table above so an earlier answer keeps its meaning.
+**RETIRED (cr1#176, the owner's ruling 2026-10-23).** The scheduled Staff Meeting is a readiness retirement, so there is no cadence left to move. This migration is a silent skip on every workspace: do not ask the question, do not change any schedule, and write no event (a skip record would durably suppress a question nobody was asked, the rule this section always had). A workspace that still has the chat registered hears about it once, from the readiness retirement that `set up command room schedules` and `rebuild my hub` apply (cr1#970), never from here. `staff meeting` on demand is unchanged. The migration id stays in the table above so an earlier answer keeps its meaning.
 
 ### Migration: `rm_supersede_v1` (SPEC LB2 §3d — fold a standalone Relationship Moves chat into the Staff Meeting, PROPOSED never imposed)
 
-**RETIRED (cr1#176, the owner's ruling 2026-10-23).** There is no scheduled Staff Meeting left to fold Relationship Moves into, and both chats are readiness retirements that `readiness_retirement_v1` switches off by class. `schedule_config.rm_supersede_plan` returns null on every workspace now, so this migration is a silent skip: do not ask, do not register anything, and write no event. `who should I reach out to` and `staff meeting` both still run on demand. The migration id stays in the table above so an earlier answer keeps its meaning.
+**RETIRED (cr1#176, the owner's ruling 2026-10-23).** There is no scheduled Staff Meeting left to fold Relationship Moves into, and both chats are readiness retirements that the schedule-changes step of `set up command room schedules` and `rebuild my hub` switches off by class (cr1#970). `schedule_config.rm_supersede_plan` returns null on every workspace now, so this migration is a silent skip: do not ask, do not register anything, and write no event. `who should I reach out to` and `staff meeting` both still run on demand. The migration id stays in the table above so an earlier answer keeps its meaning.
 
 ### Migration: `connector_display_name_repin_v1` (DISC1 — point the declared connectors at the connections this session can see)
 
@@ -1342,9 +1243,11 @@ Either way, carry the outcome on the `plugin_update` event this update already w
 
 ---
 
-## Phase 4.7: Set up scheduled tasks (CONDITIONAL — gated by intent in v2.9.1+)
+## Phase 4.7: Scheduled chats, one line and nothing touched (cr1#970)
 
-**v2.9.1 split:** this phase runs ONLY when the user's intent matches a "full update" trigger.
+**The owner's ruling, 2026-11-09 (cr1#970): the update touches no scheduled chat.** Scheduled chats are created, changed, switched off and removed by exactly two skills: `enable-command-room-schedules` (*set up command room schedules*) and `cockpit-setup` (*set up my hub* / *rebuild my hub*). This skill makes no scheduler call of any kind, reads no list of scheduled tasks, declares no scheduled writer, and runs neither of those skills, silently or otherwise. Why: an update and a Hub rebuild started a minute apart both rewrote the same Hub tasks, two writers on one task set, which is how a task is lost, doubled or switched off under the other chat's feet.
+
+The schedule work an update ships with (the previous version's chats removed, the retirement offers, the readiness retirement, the fold, the pauses a release item asks for) lives in `enable-command-room-schedules/references/schedule-changes.md`, and both owners run it every time they run. A scheduled chat registered as a stub composes its instructions from the installed plugin at every fire (cr1#638), so an update reaches it with no prompt rewritten; Maintenance is not a stub until cr1#972, so its prompt is refreshed by `set up command room schedules` or `rebuild my hub`.
 
 ### Intent-detection table
 
@@ -1352,162 +1255,28 @@ Determine intent from the trigger phrase that fired this skill:
 
 | Triggering phrase | Intent | Phase 4.7 behavior |
 |---|---|---|
-| `update my command room`, `update command room`, `what's new`, `whats new`, `whats new in command room`, `check for updates`, `install latest`, `install the latest` | **full-update** | Run Phase 4.7 — register the M1 first-install set (5 scheduled tasks) |
-| `set up command room schedules`, `set up my daily chats`, `enable schedules` | **schedule-only** | This skill is NOT invoked — the app's trigger router routes those phrases directly to `enable-command-room-schedules`, bypassing the bridge. |
-| `configure my schedules`, `change my schedule`, `show my scheduled chats`, `list my schedules` | **schedule change / read** | This skill is NOT invoked — those phrases belong to `change-schedule` (the corpus row in `tests/triggers.yaml` agrees). `show my schedule` is the calendar's and no skill answers it. |
+| `update my command room`, `update command room`, `what's new`, `whats new`, `whats new in command room`, `check for updates`, `install latest`, `install the latest` | **full-update** | Say the one line below, when it is not empty. Touch nothing. |
+| `set up command room schedules`, `set up my daily chats`, `enable schedules` | **schedule-only** | This skill is NOT invoked: those phrases belong to `enable-command-room-schedules`. |
+| `set up my hub`, `rebuild my hub`, `update my hub` | **Hub** | This skill is NOT invoked: those phrases belong to `cockpit-setup`. |
+| `configure my schedules`, `change my schedule`, `show my scheduled chats`, `list my schedules` | **schedule change / read** | This skill is NOT invoked: those phrases belong to `change-schedule` (the corpus row in `tests/triggers.yaml` agrees). `show my schedule` is the calendar's and no skill answers it. |
 
 **The old dashboard phrases** (`install my dashboards`, `install dashboards`, `install missing dashboards`, `set up my dashboards`, `add my dashboards`, `i'm missing dashboards`) never reach this phase. The dispatch at the top of Phase 1 answers them first, with Phase 4's one sentence as the whole turn, and stops there: `bridge_plan(intent="artifact_only")` plans `run_phases: []` (Night M3, RETIRE1).
 
-### The guard runs first (SPEC_NIGHTM1_LANES §7, COPY1)
+### The one line
 
-**Before the intent table's full-update branch does anything at all:**
-
-```python
-import sys
-sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
-from schedule_config import scheduler_availability, write_schedule_skipped
-avail = scheduler_availability(<this session's tool names>, workspace_root=WORKSPACE_ROOT)
-```
-
-`available: True` → the whole phase below runs exactly as written.
-
-`available: False` → this phase is a no-op with a record, and nothing else:
-
-- Do NOT invoke `enable-command-room-schedules`, silently or otherwise; do not register, refresh, disable, propose or compare a single task.
-- Call `write_schedule_skipped(WORKSPACE_ROOT, avail["reason"])` — once per workspace-local day, not once per update.
-- Carry the fact into this run's `plugin_update` notes as `schedules: skipped (scheduler unavailable)` for `scheduler_unavailable`, or `schedules: skipped (registration blocked)` for `registration_blocked`. That note is how a seat's own record says why its chats stopped moving, and it is the only place this phase says anything at all — the update's customer-facing summary does not mention schedules on such a seat, because the update did not change them.
-- Say nothing to the customer about schedules here. The one paragraph that explains it belongs to `set up command room schedules`, which is the surface they will type when they want it; an update announcement is not the place to deliver a refusal they did not ask for.
-
-### The registered set is read once (FS-16 readback, BIND3: before the declaration)
-
-On the full-update intent path, when the guard above said `available: True`, read the registered set NOW, once, through the seam: execute the plan `schedule_backend.plan_list()` returns and keep its NORMALISED records as `RECORDS`. This is the one FS-16 readback of the run: the declaration below hands it in, and every later reader on this run (the Phase 4.7 proposal blocks, the stale-prompt check, and Step 4.8a's detector context) uses these same records instead of taking a second one.
-
-- When the guard said `available: False`, the scheduler cannot be read: take no readback here and keep no `RECORDS`.
-- When the readback itself fails (the tool errors), keep no `RECORDS` either. **Never substitute an empty list for a failed readback:** `[]` means "I looked, and nothing is registered", which licenses the declaration to move.
-- **A record that carries a `path` and no `prompt` (the scheduled-tasks listing: it returns a `path` to the task's SKILL.md, never the prompt text): Read the file at that `path` and set the record's `prompt` to its text, then drop `path` from the record.** Do this for every such record before writing `args_file`. The writer places a chat on a computer by the folder its own body names, and the door refuses a path argument, so a record left with only its `path` cannot be placed and the writer refuses to move the declaration.
-
-### The scheduled writer is declared (SAFETY0 — RETIRE1, Night M3; BIND3; full-update intent, whatever the guard answered)
-
-A workspace has exactly ONE computer that runs its scheduled chats. On the full-update intent path, AFTER the guard and the readback above and **whatever the guard answered** — this is the one step that also runs when the guard says `available: False`, because declaring registers nothing, and a seat whose registration is refused is exactly the seat that needs the declaration (its chats were made by hand) — render and paste, once:
-
-`workspace_access.py plan run_writer --json '{"name": "schedule_config:declare_scheduled_writer", "args": {"workspace_root": "<WS>", "declared_by": "command-room-update-bridge", "device_name": "<the name get_device_info reports>"}, "args_file": "<your scratch>/cr_declare_registered.json"}'`
-
-**`registered` is the listing, and it travels by `args_file` (BIND3, D-T2-1).** Every record carries its whole bootloader (tens of KB each, with apostrophes), so the listing never rides inside the pasted `--json` argument. Write `{"registered": RECORDS}` as one JSON object into THIS SESSION'S OWN scratch on the host that runs the door (never under the workspace), and name that file as `args_file`, the door's route for a payload too large or too quote-laden for a pasted command line. Each record keeps its plain keys (`taskId`, `enabled`, `prompt`, `trigger_id`, `name`), whole (the `prompt` filled from `path` as the readback above says), and never its `folders` or `path`: the door refuses a path argument, and a registered chat's own body names the folder it lives in. Never trim a prompt to make it fit: a record the writer cannot place on a computer makes it refuse. When there is no `RECORDS` (the guard said the scheduler is unavailable, or the readback failed), write no file and drop the `args_file` key: the form passes no `registered`, and the writer then refuses to move a declaration that names another computer (D-T3-1: the declared computer stays the writer).
-
-**Per computer (HYGIENE3, ruling R-RW3-2).** `device_name` is this computer's name exactly as `get_device_info` reports it (drop the key when this session has no device tool). The folder's path on this computer travels on the rendered line itself as `CR_DEVICE_WORKSPACE` — export it before rendering, as the Access preamble says — and the writer stores a digest of it beside the name, so a second computer of the same account and folder name is told apart by where its folder lives. Never pass the path as an argument (the door refuses a path outside the workspace).
-
-- `result.changed: true` → say `result.line` ONCE in the update summary, verbatim, and nothing else about it; when `result.invite` is not empty, say it right after, verbatim. **When the declaration moved here from another computer,** that can only happen with no chat registered there (the writer refuses otherwise), so `result.line` is the plain declared sentence for this computer and the row carries `previous_device`: the move is on the book, and nothing on the other computer has to stop.
-- `result.reason: "bound_elsewhere"` (BIND3, D-T2-1) → another computer holds this workspace's scheduled chats, and nothing was declared. Say `result.line` (it names that computer) and then `result.invite`, once each, verbatim, and nothing else about schedules. The declaration stays where it is; the phrase in the invite is how the customer moves it, after deleting the chats there.
-- `result.changed: false` with no `reason` (already declared), `result.error: "no_writer_id"` (a seat that cannot name itself — every older desktop seat and every local session — declares nothing, which is right), `ok: false`, or any other error → say nothing and carry on. The declaration never blocks the update.
-
-Once a writer is declared, a chat registered from another computer stops itself with one sentence and writes nothing, and `health check` names how many chats another computer is still writing. **Honest limit:** that stop reaches the other computer only after its own Command Room updates; until then its chats have to be deleted there by hand.
-
-### Full-update intent (Phase 4.7 runs)
-
-**The registered set rides with the plan (FS-16 readback, BRIDGE3, F-T2-5).** Use the `RECORDS` read once above (The registered set is read once). Write `{"registered": RECORDS}` as one JSON object into THIS SESSION'S OWN scratch and name that file as the form's `args_file`. When there is no `RECORDS`, write no file and drop the `args_file` key.
-
-**On the merged app the bridge REFRESHES and never first-registers (SCHEDREG1 MUST 8, coordinator decision D-8; v5.33.0 merge-fix MF-3).** Before any add path below, and only when the scheduler discovery step above resolved the cloud backend: render ONE read through the door and paste what it prints —
+On the full-update intent path, render ONE read through the door and paste what it prints:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"reinstall": true, "tools": [<the tool ids visible in THIS session>], "workspace_root": "<WS>", "plugin_version": "<the installed version from the triple>", "tz_name": "<the workspace zone>", "writer_pair": ["<the CR_WRITER_ID this run's rendered lines carry>", "<the CR_WRITER_DERIVATION they carry>"]}, "args_file": "<your scratch>/cr_bridge_registered.json", "name": "schedule_backend:bridge_plan"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"plugin_version": "<the installed version from the triple>", "tools": [<every tool id visible in THIS session, a deferred one by its name>], "workspace_root": "<WS>"}, "name": "schedule_handoff:pending_line"}'
 ```
 
-**The pair and the folder (BRIDGE2, F-OFF-3).** `writer_pair` is the pair this run's rendered lines already carry in front of `python3` (the declaration's line above carries it): pass it explicitly, as the two-item list shown. When no rendered line carries one, pass `null`: the planner then takes the pair the door forwards on this very line (`CR_WRITER_ID` / `CR_WRITER_DERIVATION`) before it ever answers `no_account`. The folder's path is NOT an argument: it crosses on the line as `CR_DEVICE_WORKSPACE`, exported before rendering as the Access preamble says, and the planner reads it there. When `ok` is false (`no_account` when neither a pair nor a forwarded pair exists), say `result["line"]` once and nothing else about schedules: never compose a schedule sentence of your own, and never read the scheduler's list to make one.
+Render that line with `workspace_access.py plan run_helper --json '…'` and paste what it prints, verbatim. It reads the activity log only and never the scheduler: is schedule work pending on this seat (a version since the seat's last applied schedule changes ships a schedule item, or schedule setup has never run here)? `result` is the line:
 
-**The reinstall (SHELVE1, cr1#618; the owner's ruling 2026-11-09, cr1#942, which replaced the 2026-11-03 delete-and-recreate rule): on the cloud scheduler the bridge never deletes Morning Brief or Maintenance.** The survivors are planned by `schedule_backend.plan_registration` over the listing, the same planner and the same placement rule (`place_listing_rows`: exact name, or the stored trigger id) the schedules skill and the Hub use: a survivor already on the seat is kept (`current`, or a prompt-only update), a raw listing row included, and it is created only when the listing was read and neither the listing nor the stored trigger map knows it. A survivor the map holds a trigger for but the listing does not carry (one unpaged read, or an empty store read from a session that cannot see the chats) is `result["unconfirmed"]`: nothing is created for it, and the line says the check could not confirm it. The plan's `creates` are the only create path for a survivor: never create Morning Brief or Maintenance because a check of your own did not find it, which is how a seat came to run each twice. When the readback failed (no `RECORDS`, so no `args_file`), the plan creates nothing and its line says the check could not run; say it and stop. A shelved or retired chat of the previous version is removed only when the listing's own record names it and its folder path reads as this seat's (the check is the path alone, so a second computer with its folder at the same path reads the same, and its retired chat can be removed too; the ruling retires that chat anyway). The cockpit page (cr1#608, #619) replaced the daily chats, so only Morning Brief and Maintenance stay scheduled from the previous version; Inbox, End of Day, Friday Wrap, Waiting On and My Plate are shelved (`schedule_config.SHELVED_TASK_IDS`; their typed phrases still run each surface, and their orchestrator files stay for the maintenance job, which follows two of them by name, and for a chat still on a seat). The one `bridge_plan` form above carries `"reinstall": true`, so on the cloud backend its answer is the reinstall plan; the older desktop app's scheduler never reaches that form (it has no delete) and keeps its own path below. Read `result`. `ok: false` ends the schedules step with `result["line"]` (no scheduler, no account, or a legacy scheduler, which cannot reinstall). Otherwise, in this order, and nothing else:
+- Not empty: say it ONCE in the update summary, verbatim. It names `set up command room schedules` and `rebuild my hub`; never compose a schedule sentence of your own.
+- Empty (no schedule work is pending, or this seat cannot set schedules up): say nothing about scheduled chats.
+- An envelope that comes back `ok: false`: say nothing about scheduled chats.
 
-1. **`removals`**: execute each through the scheduler's delete call (`tool`, `args`), one at a time. They are shelved or retired chats only, never Morning Brief or Maintenance. The plan has already left out the cockpit's own tasks (`cockpit-…`), any registration at another folder path and any row whose folder it cannot place on this seat; never delete a trigger the plan did not name, and never a trigger the listing did not carry (another account's chats are not visible here and are not this seat's to remove).
-2. **`creates`**: execute each (a survivor the listing does not carry, composed fresh, at the customer's own time, cr1#890; when this scheduler will not take its time, the line of step 4 says so), then land each one's `after` in ONE door call through `schedule_backend:record_registration` with the payload `schedule_backend.registration_payload(after, trigger_id=<the id the call returned>, source_skill="command-room-update-bridge")` composes, exactly as the schedules skill lands a create.
-2b. **`updates`**: a survivor the plan kept (it is on the seat already) still gets this version's instructions, its time untouched: execute each update call (`tool`, `args`; it carries the prompt and the trigger id only). Write no trigger row for it: its stored row, time included, is unchanged and stays as it is. It is never deleted or recreated here. A survivor in `result["current"]` needs no call. `result["duplicates"]` (`{task_id: [trigger_id]}`) names a task this folder runs twice, and `result["copies"]` also counts a paused second copy; nothing is removed for either, and the line of step 4 tells the owner to delete the extra copy. Never delete a copy yourself.
-3. **The record**: ONE writer call naming every id in `result["gone_ids"]` whose removal you executed, which drops their trigger rows and writes the one config record the lateness ledger reads. `gone_ids` never names Morning Brief or Maintenance, which run on (kept, or set up by step 2): naming them here would drop the trigger rows they run on (cr1#889). A create of step 2 whose call failed is gone too: add its id here, and in step 4 say `result["lines_if_failed"][<the failed creates' task ids, sorted, joined by commas>]` instead of `result["reinstall_line"]`, so a chat that failed is never reported as set up:
-
-```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"source_skill": "command-room-update-bridge", "task_ids": [<every id of result["gone_ids"] whose removal was executed>], "workspace_root": "<WS>"}, "name": "schedule_backend:record_removals"}'
-```
-
-4. Say `result["reinstall_line"]` ONCE in the update summary, verbatim (`schedule_backend.reinstall_line` composed it; never count or name the chats yourself). Skip the add paths, the supersede loop and the retirement proposals below for this run: the reinstall is the whole schedules step. A run whose listing was read and carried nothing of Command Room's (an empty account) plans the two creates alone and says the same line; a seat that already carries both survivors and nothing older creates nothing and removes nothing. The cockpit's own tasks are `cockpit-setup`'s (cr1#619) and are never created, refreshed or removed here.
-
-
-Read `result`: when `first_registration_needed` is true, say `result["line"]` ONCE — the one sentence the invite producer composed for this seat (the phrase only where this seat can register; the honest alternative otherwise) — and SKIP every add, supersede and proposal path in this section: nothing is registered by the bridge, ever (first registration is `set up command room schedules`, and only there). Otherwise `result["updates"]` are the mapped chats whose registered body drifted: execute each through the scheduler tool's update call exactly as `change-schedule` does, then record each through `plan run_writer` naming `schedule_backend:record_trigger_map`; `result["current"]` need nothing; `result["creates"]` is always empty on this path. The legacy desktop backend keeps the paragraphs below byte for byte.
-
-**Name the chats (BRIDGE3, F-T2-5).** When `ok` is true and `first_registration_needed` is false, say `result["chats_line"]` ONCE in the update summary, verbatim, when it is not empty: it names the scheduled chats this computer holds, counted from the listing (`result["named"]`), composed by `schedule_backend.bridge_chats_line`. Never count or name the chats yourself: the sentence is the plan's, never one composed from the listing in this chat. A chat whose body could not be compared where the door runs is `current` with `compared: false`, and the plan carries a `note`: that note is a code, never spoken, and nothing about comparing is said.
-
-Check whether Command Room's scheduled tasks are configured (i.e., look for `schedule_created` events in events.jsonl matching any taskId in `schedule_config.DEFAULT_SCHEDULES` **or** `schedule_config.RETIRED_TASKS`). Read both from the registry rather than hand-typing them here — the list that used to sit in this sentence still named `upcoming-meetings` and `pulse` as *current*, long after they were retired. Retired ids belong in the DETECTION set specifically: a workspace that registered one before its retirement is configured, and re-running registration over it would be wrong. Nothing offers a retired task; this check only recognises it. If NOT configured, invoke `enable-command-room-schedules` silently. **CTS1 split-migration rule (explicit — do not treat this as "configured"):** a workspace whose events/registry show `commitments` but NO `waiting-on` is a PRE-SPLIT workspace — invoke `enable-command-room-schedules` silently so its Phase 1 migration table disables `commitments`. Nothing registers in its place: both successors are shelved, the seat is pointed at the Hub, and no new chats are named. The skill auto-detects first-install via `_hq/workspace_config.json` (M1 / 2026-05-23+); on a fresh workspace it registers the first-install set — `schedule_config.FIRST_INSTALL_TASK_IDS`, never a list retyped here; on an upgrade from a pre-M1 workspace, it adds whatever's missing from that set without removing anything the customer already had:
-
-**Render the chat names from what actually registers** (display names from the registration set via `task_display_name()`), never a hardcoded list. Shape (names illustrative only):
-
-> *"Setting up your scheduled chats — for example: Morning Brief. They run without stopping to ask you for approvals."*
-
-For upgrade flow (existing workspace with a prior task set already registered, adding what's missing on top), the surfaced text names only what was added:
-
-> *"Adding [Display Name(s)] to your scheduled chats (you already have the others)."*
-
-**No shelved chat is added here (cr1#847).** The Friday Wrap add this step used to run is gone, and its detector with it: `friday-wrap` is shelved, so a seat missing it is not missing anything.
-
-**Silent-task generic-add loop (Phase 3 / SPEC-2.3 — replaces the per-task Cleanup / Reconcile-Sent / Weekly-Insights add paths):** the silent background tasks are NOT among the chat taskIds enumerated above; they register separately via `enable-command-room-schedules` **Step 1.D**, so the chat-completeness check is structurally blind to them (Bug #82's class — see references/HISTORY.md § Bug #82 silent-task registration miss). As of Phase 3 the check is one loop over the **`SILENT_TASKS` registry** in `shared/scripts/schedule_config.py` (currently one task, `maintenance` — MAINT1): for EVERY registry task missing from the registered set on a workspace past M1 install (any prior `schedule_created` event exists), invoke `enable-command-room-schedules` to silently register it with its default cadence, then surface one plain-English line built from the registry's `description` + `reason`.
-
-**Supersede step (MAINT1, D5 — this loop is the auto-migration vehicle for existing installs):** after registering a registry task, read `SUPERSEDED_BY[task_id]` from `schedule_config.py` and disable every listed taskId still registered+enabled via `schedule_backend.plan_update(enabled=False)`, executed by this skill. Idempotent and never deletes — re-running the bridge converges on the same end state (the five old silent tasks off, one `maintenance` task on). A custom cron override the customer had on the old `reconcile-sent` task migrates onto the `maintenance` task cron (the one 1:1 cadence mapping); overrides on the other four can't map onto a single task cron — leave them in place (parity ignores superseded ids) and note the old time couldn't carry over in the same line. Surface exactly ONE plain-English migration line:
-
-**Every pause, disable or enable writes a config record (SPEC SCHED1 §0-4).** The moment a `schedule_backend.plan_update(enabled=...)` call lands (on a legacy seat the shim spells the old verb), call `schedule_config.log_schedule_config_change(<WORKSPACE>, [{'task_id': '<id>', 'cron': None, 'enabled': False}], source_skill='<this skill>')` — one call, the same single writer `change-schedule` uses, and never a hand-rolled event (the helper owns the shape). This is not bookkeeping: the lateness ledger READS `schedule_config_changed` to know that a slot older than the change was minted by the change and must never be scored (the F-51 phantom), so a pause nobody recorded leaves the ledger believing this task's newest config change is whatever came before it. The 2026-08-17 fold-in wrote three `schedule_created` events and no record at all for the two chats it paused.
-
-> *"Your background upkeep now runs as one 'Maintenance' entry. The old background entries are switched off."*
-
-No question (CONTRACT.md Rule 28 — default-task registration isn't a customer decision). A future silent JOB ships inside the already-authorized `maintenance` task (`maintenance_dispatcher.MAINTENANCE_JOBS`) with no registration change at all, and a future silent TASK added to the registry is covered by this loop with zero edits to this file. The legacy per-task detectors (`release_detectors.v3_18_2_cleanup_missing`, `v3_18_12_reconcile_sent_missing`) remain valid as detection helpers for pre-MAINT1 workspaces; the inline check — taskId absent from the registered set AND a prior `schedule_created` event exists — is the canonical shape. **Self-heals ride along:** the maintenance task's first fire runs every job the dispatcher reports due, so the reconcile backlog clears from the stored cursor forward and stale analytical views recompute (once the workspace has ≥14 days of events) without any extra step.
-
-**The Staff Meeting later-add PROPOSAL is DELETED (cr1#176, the owner's ruling 2026-10-23).** LB1 R3 shipped a propose block here offering to add the weekly Staff Meeting. The scheduled Staff Meeting is now READINESS-retired: the taskId is out of `DEFAULT_SCHEDULES` and no registration path will create it. Do not surface a Staff Meeting proposal, do not log a `schedule_add_proposed` record for it, and do not reconstruct one from older release notes. The readiness migration (`readiness_retirement_v1`) is what a workspace that still has it registered hears, if anything. `staff meeting` on demand is untouched, and it is what the morning brief points at. Do not propose the standalone `relationship-moves` chat anywhere in this flow either: it is readiness-retired too.
-
-**The Balance later-add PROPOSAL is DELETED (SPEC TASKRET1, M's ruling 2026-08-17).** BAL1 shipped a hand-written propose block here, gated on `entities.json` `workspace.personal_calendars` being declared and non-empty. Balance is now READINESS-retired, so there is nothing to propose: the taskId is out of `DEFAULT_SCHEDULES` and no registration path will create it. Do not surface a Balance proposal, do not reconstruct one from the release notes, and do not treat a workspace that has since connected a personal calendar as newly qualified — the calendar gate is not what came back. The readiness migration below is what this workspace hears about Balance, if anything. (`commitment-triage` never had an automated offer path, and `pipeline-digest`'s lived in `schedule_proposals.PROPOSAL_THRESHOLDS`, which is deleted there.)
-
-**Retired-task PROPOSAL (SPEC LIFECYCLE1 §4 — propose the removal, NEVER disable it silently):** on the full-update intent path, run the same FS-16 registered-set readback and quote its verdict. This block is the mirror of the later-add proposal above, with the gate inverted: it fires only when a task in `schedule_config.RETIRED_TASKS` is quoted-PRESENT in the registered set. On the overwhelming majority of workspaces that set is empty and this whole block is a silent no-op — say nothing about a chat the customer never had.
-
-**This block covers the ELIMINATION and RENAME classes ONLY (SPEC TASKRET1).** `propose_task_retirements` already filters the READINESS class out, so you cannot surface a readiness offer from here even by accident — but know why, because the two blocks fire on the same readback in the same run: a readiness retirement is APPLIED by the migration below, and offering to `pause` a chat that the same update already switched off is the one combination that would read as the product not knowing its own state. If you find yourself about to offer a pause for one of the readiness-retired ids, something upstream is wrong; stop and check `schedule_config.retirement_class`. (Deliberately phrased without quoting the command: an advertised-command guard reads a quoted pause phrase as a live offer, and it is right to — even inside a sentence forbidding it.)
-
-```python
-import sys; sys.path.insert(0, "shared/scripts")   # cwd == $PLUGIN_ROOT per Rule 22
-from schedule_proposals import propose_task_retirements, log_retire_proposal
-offers = propose_task_retirements(WORKSPACE_ROOT,
-                                  registered_ids=<the quoted readback>,
-                                  task_records=<the NORMALISED `schedule_backend.plan_list` records>)
-```
-
-**Pass `task_records`, not just the ids (EOD2 / REVIEW F-2).** The accept does not remove a task — on this path there is no delete, so a `pause` DISABLES, and the id stays in the registered set forever. Ids alone therefore cannot tell "hasn't acted" from "already acted", and the offer repeats every six weeks for the life of the workspace. The raw records carry `enabled`, which is the difference. Without them the helper still catches the renamed case (successor registered), but the disabled signal is simply unavailable — so pass them whenever the readback is in hand, which on this path it always is.
-
-For each returned offer, surface its `line` VERBATIM (one line, built from the registry so the wording cannot drift between here, change-schedule and system-health), then log the suppression record with `log_retire_proposal(WORKSPACE_ROOT, offer["task"])`. The helper already honors the 6-week window, so a customer who ignored the offer is not asked again next update.
-
-**Never disable it yourself.** The customer's `pause <name>` is what switches it off, routed through change-schedule exactly like every other schedule change. This deliberately does NOT use the MAINT1 `SUPERSEDED_BY` mechanism above — that one disables silently, which is correct for FIVE background tasks the customer never saw and wrong for a chat sitting visibly in their Scheduled list. Silence and a vanished chat are the same posture violation as a chat that registered itself. Silence registers nothing and un-registers nothing; the offer simply goes quiet for 6 weeks.
-
-**RENAME offers are the same machinery with nothing to accept (SPEC EOD2, cr1#847).** An offer whose task is a RENAME rather than an elimination (`schedule_config.is_renamed_task(offer["task"])` — `past-meetings` → `end-of-day` is the first) reaches you through the exact same call and gets surfaced the exact same way; the registry has already worded the line as a rename rather than a removal, so do not re-word it and do not add a "your chat is going away" sentence to it. Two things differ:
-
-- **There is no switch to take.** `end-of-day` is shelved, so `add end of day` gets `schedule_config.shelved_line("end-of-day")` verbatim and registers nothing. `pause past meetings` is an ordinary pause through change-schedule, and the close stays on the Hub and on the typed `end of day`.
-- **Silence costs the customer nothing, and say so if asked.** An ignored elimination offer leaves a chat that only explains itself; an ignored RENAME offer leaves a chat that keeps working: both ids read the same orchestrator file, so `past-meetings` keeps firing the current End of Day pack at 5 PM. Only the reinstall above removes it, and only on the cloud scheduler, where it goes with the rest. The older desktop scheduler has no delete, so on that seat it stays until the customer says `pause past meetings`.
-
-**Do not confuse this with a missing chat.** `end-of-day` is a first-install id, so the "is this workspace's schedule complete?" reflex will want to register it. It is already served — `schedule_config.is_task_served("end-of-day", registered_ids)` is the check — and registration's `registration_target_set()` fences it out of the silent-invoke path above for exactly this reason. Never register `end-of-day` from this skill.
-
-**Unconditional prompt COMPARE, conditional refresh (Phase 3 / W4; BRIDGESIL1, 2026-08-27):** on the full-update intent path, the `enable-command-room-schedules` invocation above ALWAYS runs its Step 1.C compare against every registered prompt — never skip it because "the tasks look registered." But the compare itself is `schedule_refresh.prompts_equivalent`, not a raw hash: it normalizes the diagnostic plugin-version stamp (Phase 1.B `<PLUGIN_VERSION>` substitution) out of both sides first, so a version-only bump — the ONLY thing that changed on most releases — compares equal and writes nothing (Ruling §0.2, the fix for BUG_2026-08-16 / BUG_2026-08-19: the prior raw-hash compare rewrote every registered prompt on every version bump for zero behavioral gain — proof on file is a `git diff` across a real release showing the pinned bootloader template byte-identical while seven prompts were rewritten anyway). A prompt whose content genuinely changed still refreshes exactly as before, silently, no confirmation — bootloader text has no customer customization surface. Step 1.C2, same invocation, ALSO silently re-anchors an uncustomized cron to core's current shipped default when core changed it (Ruling §0.1/§0.3), receipted via `schedule_refreshed` and narrated once on the next morning brief — never here, never as a prompt. (`label` needs no separate re-anchor: it has no live scheduler-side field and is derived fresh from cron whenever uncustomized, so a cron re-anchor already carries it forward.) The watchdog (`shared/scripts/task_watchdog.py::check_prompt_versions`, which reads the UNNORMALIZED registered prompt) is still the detector for a prompt this refresh hasn't reached yet (its own stamp read is unaffected by the write-side normalization above). This replaces hoping Rule 16 was obeyed.
-
-The schedule skill creates the chat orchestrators with sensible defaults silently — no calibration questions on first install. Defaults: time zone from entities.json primary user, work hours 8 AM–6 PM weekdays, per-chat times read from `schedule_config.DEFAULT_SCHEDULES` (never a time typed here). Users who want different cadences fire `change my schedule cadence` later for per-task customization.
-
-If the legacy-backend registration fails or is unavailable, log a warning and continue, and say ONCE what `schedule_backend:bridge_schedules_line` returns (rendered through `plan run_helper` with this session's tool ids, `workspace_root` and `abs_path`): it names the phrase only on a seat that can act on it and the honest alternative elsewhere (D-5) — never type the phrase here.
-
-### Post-update orchestrator-rebind heads-up (v3.14.3+)
-
-After Phase 4.7 completes on the full-update intent path **and only when the guard said this seat has a working scheduler**, surface this one-line note ONCE at the end of the bridge flow, plain-English chat. On a seat where schedules are not running there is nothing to rebind and nothing to reopen — say none of it:
-
-> *"Heads-up — the next time your scheduled chats run, they're reading from the just-updated Command Room. If tomorrow's morning brief (or any scheduled chat) shows an error about not being able to load, fully quit and reopen the desktop app — not just close the window, end every one of its processes in Task Manager / Activity Monitor — then say `set up command room schedules` to reconnect them. That's the normal recovery after an update — it's not a real failure of your chats."*
-
-Why this is unconditional on that path, not detected: the desktop app's cache refresh timing is opaque to the bridge — some workspaces remount cleanly on the next fire, some serve the stale snapshot for hours. We can't reliably detect from inside this skill whether the next scheduled fire will hit a stale mount. Cheap, plain English, harmless if not needed.
-
-### Post-update stale-prompt check — ONE sentence, only when the refresh did not reach the chats (CUT-PLATE, 2026-09-06)
-
-**What the registered prompt is, so nobody re-registers for the wrong reason.** Each scheduled chat's registered prompt is a thin BOOTLOADER that `cat`s the plugin's orchestrator file at fire time (`references/scheduled-task-bootloader.md`, Step 3). The CONTENT a fire runs is therefore always the installed plugin's — the morning brief's lead, the day-close's plate screen, the wrap's Parked review all reach a fire the moment the plugin is updated, with no re-register. Since cr1#638 the registered prompt is shorter still: a STUB that has the installed plugin compose the bootloader body itself at every fire (`schedule_refresh.py fire-body`), so the bootloader's own text reaches a fire on update too. What CAN go stale is the stub (and, on a seat registered before cr1#638, the whole stored bootloader, which reads as drift until it is replaced by the stub), and Step 1.C above refreshes that in place through the seam (`schedule_backend.plan_update(task_id, prompt=…)`, executed by this skill; on a legacy seat the shim spells the old verb) — never a re-register, never a new chat.
-
-**The check, on the full-update intent path, after Phase 4.7 and after the readback:** read the registered tasks back through the seam (`schedule_backend.plan_list`, executed and normalised) and compute the BODY drift — `drift = schedule_refresh.prompt_body_drift(records, plugin_version=<installed version>)`: the task ids whose registered bootloader body still differs from the one this plugin composes today once the diagnostic stamp is normalized out of both sides (the same `prompts_equivalent` compare Step 1.C writes on, so a non-empty `drift` after the readback IS "the refresh did not reach the chats"). Then post what `schedule_refresh.stale_prompt_notice(drift)` returns — the ONE pinned sentence, verbatim, or nothing. `task_watchdog.check_prompt_versions(records, <installed version>)` — the stamp read — is INFORMATIONAL here and never earns the sentence: a stamp-only difference is not drift (CUT-PLATE fix round 1, REVIEW F-1 — Step 1.C deliberately leaves the stamp alone, BRIDGESIL1 Ruling §0.2, so a sentence keyed to the stamp would print on every run of every release whose bootloader body did not change, and the phrase it names could never clear it). Post:
-
-> *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."*
-
-That is the sentence on a seat where registration is open. `stale_prompt_notice` composes through the one invite producer (SCHEDREG1 MUST 7, D-5), so on a seat that cannot register it returns the alternative sentence — post whatever it returns, never the quoted form by hand.
-
-It renders ONCE per run, only when a body drift survives the refresh — which happens when this session cannot see the scheduler store the chats live in (a Code / cloud session reads an empty store; the v5.28.0 attended test's Step 0 saw all seven bootloaders still stamped v5.20.0 after two updates for exactly this reason) or when the `schedule_backend.plan_update` call failed. Never a per-task list, never a diagnosis, never a second phrasing — the health check and the Monday cleanup note say this same sentence from the same constant. When the readback shows every stamp current, say nothing.
+Say nothing else about scheduled chats anywhere in this update: no count, no names, no proposal, no heads-up, no note that a chat is stale. The `plugin_update` row's `notes` carry nothing about schedules either.
 
 ### Migration: `workspace_shape_question` (v2.10.5)
 
@@ -1571,11 +1340,11 @@ If `orgs_retiered == 0` (every org's current state matched inferred): surface a 
 
 ## Phase 4.8: Play release-manifest remediations (v3.4.5+)
 
-After workspace migrations apply and scheduled tasks are registered, read per-version release manifests at `$PLUGIN_ROOT/shared/releases/v<X.Y.Z>.json` and play any whose detectors match the user's workspace state. This is where per-version remediations live — bug fixes that recover existing state, new-skill announcements, etc. Full schema and contract in `references/RELEASE_MANIFEST.md`.
+After workspace migrations apply, read per-version release manifests at `$PLUGIN_ROOT/shared/releases/v<X.Y.Z>.json` and play any whose detectors match the user's workspace state. This is where per-version remediations live — bug fixes that recover existing state, new-skill announcements, etc. Full schema and contract in `references/RELEASE_MANIFEST.md`.
 
 **Why a manifest-driven layer:** plugin code updates fix forward but don't reach existing workspace state. A user upgrading v3.4.1 → v3.4.5 gets the new code (filter handles all commitment shapes, etc.) but: their previously-dropped commitments still need to be SURFACED on a re-fire; new skills like `process bug report` won't auto-discover themselves; future workspace-data backfills need a hook. Each release that introduces such a follow-up ships a manifest item describing it.
 
-**One gated item (v5.33.0, R-V533-7; coordinator decision D-C2).** The manifest item `v5330_instruct_schedule_setup` names the setup phrase. Surface it ONLY when `schedule_backend:bridge_schedules_line` (rendered through `plan run_helper`, above) returned its invitation on this seat; on a seat where it returned the alternative sentence, say that sentence once instead and never the item's text (D-5: the phrase is only ever offered where it can be acted on).
+**The schedule release items this skill never runs (cr1#970, the owner's ruling 2026-11-09).** Skip every item on this list as if its detector had answered `applies: False`: run no detector or action for it, write no row for it, and say nothing for it, never the item's text: `v3110_add_friday_wrap_to_existing_schedules`, `v3143_post_update_rebind_recovery`, `v450_reregister_schedules`, `v480_reregister_maintenance`, `v490_instruct_staff_meeting_cadence`, `v500_instruct_commitments_split_migration`, `v5110_instruct_pick_up_the_merge_on_this_computer`, `v5140_instruct_set_up_schedules`, `v5190_instruct_reassert_schedules`, `v5210_instruct_schedule_reregistration`, `v5300_fold_scheduled_fires`, `v5310_readiness_retirement`, `v5330_instruct_schedule_setup`. Two of them act on scheduled chats (the fold writes the switched-off state and its record; the readiness item asks for pauses), so they run in `enable-command-room-schedules/references/schedule-changes.md`, which `set up command room schedules` and `rebuild my hub` run every time, with a listing of their own. Every other one tells the owner to say `set up command room schedules`, and Phase 4.7's one line is the only sentence this update says about scheduled chats. The list is `schedule_handoff.BRIDGE_SKIPPED_RELEASE_ITEMS`; never run an item on it here.
 
 ### Step 4.8a — Compute pending remediations
 
@@ -1729,85 +1498,12 @@ Skip items whose detector returns `{"applies": False}`. For items returning `{"a
 - **action: `announce_only` or `instruct_user`** — format the `prompt_template` with `.format(**detector_context)` and add to `pending_release_remediations` list.
 - **action: `auto_apply` (v3.14.4+)** — invoke the action module's function via bash python (same plugin-root resolution as the detector), passing `(events_jsonl_path, workspace_root, detector_context)`. Handle the result per the auto_apply contract in Step 4.8b. See `references/RELEASE_MANIFEST.md` "Action contract" for the full schema.
 
-**THE SCHEDULE READBACK RIDES IN THE DETECTOR CONTEXT — ON EVERY PATH, INCLUDING THIS ONE (SCHEDVIEW1 5.3, MANDATORY).** Several actions read LIVE schedule state and can only be handed it: nothing under `shared/scripts/` may call a scheduler tool, so an action with no readback in its context plans nothing, by design. On the operator's own seat the readiness item was handed neither `registered_ids` nor `task_records` — it planned nothing, left no trace, and read in the ledger exactly like an item that had never run (`ATTENDED_TEST_v5.31.0_2026-09-14.md`, Step 0 b), while the same item on a workspace that WAS handed one wrote its marker correctly. The difference was this call site.
+**NO SCHEDULE LISTING RIDES IN THE DETECTOR CONTEXT (cr1#970).** This skill reads no list of scheduled tasks, so no item is handed `registered_ids` or `task_records`. The two items that read live schedule state are not run here at all (they are among the schedule release items skipped above). Never put a listing into the context, and never take one to fill it.
 
-So: use the readback taken at the top of Phase 4.7 (`RECORDS`, "The registered set is read once") — the NORMALISED records, which carry the five keys every reader here expects whichever scheduler answered. On a path that did not reach Phase 4.7, read the registered set ONCE here instead, through the seam: execute the plan `schedule_backend.plan_list()` returns. It is the same FS-16 readback the proposal blocks quote, and one readback serves every reader — and build the context from its RAW records through the one composer, never by hand:
-
-```bash
-# >>> CR ACCESS PREAMBLE v6 (CONTRACT Rule 22; shared/WORKSPACE_ACCESS.md) >>>
-# The substrate is on the customer's machine; this process may not be. Every
-# read, helper and write goes through workspace_access ON the host that holds
-# the data. Never open, copy or tar a workspace file into this session, and
-# never write one from here.
-#  1 RESOLVE, once per call. The four lines below name the plugin root, the
-#    environment, and -- on a seat whose files are local -- the workspace. On a
-#    merged seat resolve instead with `workspace_access.py discover`, hand the
-#    block it prints to the device shell, and keep its answer: WS, RT, BRAIN,
-#    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
-#    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
-#    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
-#    install step once, resolve and compare again, and if it still lags say
-#    `lags_line` and stop. There is no container fallback.
-#  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
-#  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
-#    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
-#    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
-#    variables in front of python3, which carry the writer identity and the
-#    run mode to the host that holds the data. The reply is one JSON
-#    envelope; ok:false is a stop, never a hand retry.
-#  4 WRITES. Only `plan write` and `plan append_jsonl` -- never an append
-#    redirect, an in-place edit, a heredoc into the workspace, or a python body
-#    that opens a substrate file.
-#  5 LEGACY / LOCAL. When this seat's files are on this filesystem -- an older
-#    sandbox seat, or a Code session on the customer's own machine -- the same
-#    verbs run in this shell, and the four lines below resolve it for them.
-#  6 THE SURFACE IS THE WHOLE ANSWER. A step that could not run gets ONE
-#    sentence with no file, script, path, variable, shell text or mechanism
-#    in it -- "One step could not run here; what is below is complete." or
-#    "... is partial." Never narrate a workaround, never say what you tried.
-#  7 STAGING. A file this chat needs for itself -- a widget copy, a scratch
-#    render -- lives in this session's own scratch, never under the
-#    workspace. Nothing under `_hq/` is created, copied or removed by a
-#    redirect, `cp`, `tee` or `rm`: a file is written by `plan write` and
-#    removed by `plan remove`, and a removal is reported in the envelope's
-#    own words -- removed, moved aside, or still there -- never as done.
-#  8 WRITERS. A document, a receipt, a close or a re-pin is written by
-#    `plan run_writer` naming a writer on its list -- never by importing a
-#    writer in a shell. The door forwards who you are; a writer with no
-#    identity on this seat refuses in one sentence, and that sentence is the
-#    whole answer.
-#  9 FOLDER. Three tiers, one wording here and in the block the customer
-#    pastes into the account's Claude instructions (claude_instructions.py,
-#    TIER_LINES). If the owner's computer is connected, work in the Command
-#    Room folder; if it is not attached, ask for it by name before doing any
-#    work. If the owner's computer is not connected, ask for the Command Room
-#    folder to be attached from OneDrive or Google Drive before doing any
-#    work. If neither is possible, answer as plain Claude and do not go
-#    through Command Room. A scheduled chat asks nothing: it works in the
-#    folder it was registered with, or stops in one sentence.
-SESSION_DIR=$(echo "${CLAUDE_CODE_TMPDIR:-}" | sed "s|/tmp$||")
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(ls -d "$SESSION_DIR"/mnt/.remote-plugins/plugin_*/shared/scripts/chat_output_renderer.py /root/.claude/plugins/synced/*/*/shared/scripts/chat_output_renderer.py 2>/dev/null | head -1 | sed 's|/shared/scripts/chat_output_renderer.py$||')}"
-eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared/scripts/env_detect.py --shell || echo CR_ENV=unknown)"; export CR_ENV CR_PLUGIN_ROOT CR_BRAIN_FILE CR_LOCAL_FS CR_CLOCK_TRUST
-WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
-[ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
-# <<< CR ACCESS PREAMBLE v6 <<<
-python3 -c "
-import sys, json; sys.path.insert(0, 'shared/scripts')
-from schedule_proposals import readback_context
-print(json.dumps(readback_context(task_records=<the NORMALISED `schedule_backend.plan_list` records>)))
-"
-```
-
-Merge what it returns into `$DETECTOR_CONTEXT_JSON` for every `auto_apply` item on this run. Pass the RAW records, not just the ids: the records carry `enabled`, which is the fence that stops a workspace whose adjudication record was lost from re-writing a config event on every update forever. If the readback genuinely cannot be taken (the tool errors, or the seat has no scheduler), pass the context WITHOUT those keys — `readback_context()` returns `{}` and the actions then say "could not look" in their own receipts. **Never substitute an empty list for a failed readback:** an empty registered set means "I looked, and nothing is registered", which is a different fact and licenses different acts.
-
-**THE VISIBLE TOOL IDS RIDE IN THE SAME CONTEXT (DISC1, MANDATORY).** The same rule, one fact over. A detector is handed one argument — the path to the events file (`references/RELEASE_MANIFEST.md`, "Item": `def fn(events_jsonl_path: str) -> dict`) — so a detector CANNOT see which connectors this session has. Nothing under `shared/scripts/` may enumerate them either. An action that resolves connectors therefore has exactly one supplier, this call site, and an action handed no tool list plans nothing by design. So merge the ids of every tool visible in THIS session into `$DETECTOR_CONTEXT_JSON` for every `auto_apply` item on this run, under the key `"tools"`, exactly as the readback above is merged:
+**THE VISIBLE TOOL IDS RIDE IN THE SAME CONTEXT (DISC1, MANDATORY).** The same rule, one fact over. A detector is handed one argument — the path to the events file (`references/RELEASE_MANIFEST.md`, "Item": `def fn(events_jsonl_path: str) -> dict`) — so a detector CANNOT see which connectors this session has. Nothing under `shared/scripts/` may enumerate them either. An action that resolves connectors therefore has exactly one supplier, this call site, and an action handed no tool list plans nothing by design. So merge the ids of every tool visible in THIS session into `$DETECTOR_CONTEXT_JSON` for every `auto_apply` item on this run, under the key `"tools"`:
 
 ```
-DETECTOR_CONTEXT_JSON = {**detector_context, **readback_context, "tools": [<every tool id visible in this session>]}
+DETECTOR_CONTEXT_JSON = {**detector_context, "tools": [<every tool id visible in this session>]}
 ```
 
 Plain ids are enough (`mcp__<connection>__<operation>`); the actions accept objects carrying `tool_id` as well. If you genuinely cannot enumerate them, pass the context WITHOUT the key — never `[]`: an empty list reads as "I looked, and this seat has no connectors at all", which would be a licence to conclude things. With the key absent, `connector_display_name_repin_v1` returns `status: "no_tools"`, writes nothing, and says why in its own report.
@@ -2112,15 +1808,13 @@ The "I [did the thing]" framing is the canonical voice for auto_apply notices �
 
 **One receipt per act.** If an `auto_apply` action returned `context.receipt_written: true`, it has already written its own `plugin_update_remediation` for this item — carrying what it actually did (the batch id, the counts, the bar) and the `receipt_role` that makes it that item's one-shot marker. SKIP this step for that item: writing a second row of the same type and the same `item_id` puts the same act in the operator's log twice and gives the idempotency read two rows to choose between (CONTRACT Rule 36). Every other item still gets its row here.
 
-**A run that COULD NOT LOOK leaves its own marker too (SCHEDVIEW1 5.3).** An action that reads live schedule state and was handed no readback returns `ran: false` with `receipt_written: true` and an `outcome` of `no_readback`. Treat it exactly like the zero-result case below — surface nothing — with one difference that matters later: the marker is written as a NOTE, so the item stays ARMED and the next update that carries a readback re-evaluates it. Three states, three receipts, three sentences: a run that looked and acted, a run that looked and found nothing, and a run that could not look. Before this, the third wrote nothing at all and was indistinguishable in the ledger from an item that never ran.
+**A run that COULD NOT LOOK leaves its own marker too (SCHEDVIEW1 5.3).** An action that reads live schedule state and was handed no readback returns `ran: false` with `receipt_written: true` and an `outcome` of `no_readback`. Treat it exactly like the zero-result case below — surface nothing — with one difference that matters later: the marker is written as a NOTE, so the item stays ARMED. Since cr1#970 the two schedule items are not run here; the schedule-changes step of the two owner skills runs them with a listing. Three states, three receipts, three sentences: a run that looked and acted, a run that looked and found nothing, and a run that could not look. Before this, the third wrote nothing at all and was indistinguishable in the ledger from an item that never ran.
 
 **A zero-result run still leaves its marker (DOORS1 1.5).** `context.receipt_written: true` now arrives from runs that DID NOTHING as well as from runs that acted — a one-shot whose bar found no rows, a switch-off on a seat where the job was already off. Treat those identically: skip this step, surface nothing (the action returns `ran: false`), and let the marker be what `applied_remediation_ids` carries. The v5.30.0 update-day cleanup parked zero rows on the operator's seat and wrote nothing at all, so the ledger could not tell a truthful zero from a run that never happened; that is the hole this closes, and it closes only if the marker is not duplicated here.
 
-**A retired maintenance job refreshes its prompt through the COMPARE, not through a re-registration (DOORS1 1.1, fix round 1).** The `v5310_retire_age_out_job` item switches the job off in the workspace's own config and returns `context.prompt_stanza_retired: true`. It deliberately does NOT re-register the maintenance task's prompt, and the spec step that asked for one is traded for the unconditional prompt COMPARE above (Phase 5.9 / FS-01): nothing under `shared/scripts/` may reach a scheduled task, by battery guard, so an action cannot re-register anything. The trade is safe because the stanza the old prompt types — the `age-out ... --apply` command line — has been DELETED from the CLI, so a seat whose prompt has not been refreshed yet gets an argparse error and never a fire. Two things follow and both are load-bearing: the compare must not be skipped on this release (it is the only thing that rewrites the stanza out), and the re-test reads the registered prompt back afterwards to confirm it is gone.
+**A retired maintenance job needs no prompt refresh from this skill (DOORS1 1.1; cr1#970).** The `v5310_retire_age_out_job` item switches the job off in the workspace's own config and returns `context.prompt_stanza_retired: true`. It re-registers nothing: nothing under `shared/scripts/` may reach a scheduled task, by battery guard, and this skill touches no scheduled chat. The stanza the old prompt typed (the `age-out ... --apply` command line) has been DELETED from the CLI, so a seat whose prompt still carries it gets an argparse error and never a fire. A registered prompt is compared and refreshed by `set up command room schedules` (its Step 1.C) and by `rebuild my hub` (the schedule-changes reference's step 6); Phase 4.7's one line is what points there when schedule work is pending.
 
-> **Re-test line (v5.30.0 script, HOLD 2 / Part E):** after the update, read the registered set through the seam, find the row whose `task_id` is `maintenance`, and look at what it carries. The listing is `schedule_backend.plan_list`'s normalised records; a legacy listing returns a `path` to the task's SKILL.md, never the prompt text — read the file at that `path`. Confirm the string `age-out` does not appear in it (on a backend whose listing carries the prompt itself, read that instead; a record whose prompt is `None` is unknown, never clean). If it does, the prompt compare did not run and the seat still types a command that no longer exists. Without the Read step there is nothing to check: a scorekeeper who stops at the listing sees no prompt field and marks the step unverifiable.
-
-**Items that ask you to call the scheduler (DOORS1 1.5).** An `auto_apply` action can never reach a live scheduled task — nothing under `shared/scripts/` may, by battery guard. An action that needs one returns `context.pause_task_ids`, a list of task ids. For each id in that list, in order: disable it through `schedule_backend.plan_update(task_id=<id>, enabled=False)`, handed to the scheduler this session can see — **never pass `prompt`** — and only after that call SUCCEEDED write the substrate record with `schedule_proposals.log_readiness_retirement(WORKSPACE_ROOT, <id>)` — a thin wrapper that routes `schedule_config.log_schedule_config_change`, THE one config-event writer (SPEC SCHED1 §0-4), so this pause lands in the same shape every other pause lands in; never hand-roll the event here and never call the writer directly instead, because the wrapper is what keeps the annotation and the adjudication gate reading one constant. That order is not a preference: an event claiming a task is off while it still fires is worse than no event, and `late_fire` reads these records to refuse scoring the slots the change itself minted. Then surface the ONE line the action handed you in `context.summary`, built by the registry — do not paraphrase it and do not drop its comes-back clauses. This is the same two-step as `readiness_retirement_v1` above; the manifest item exists because that block only runs on one branch of the update path, and on the operator's seat it never did — Commitment Triage and Pipeline Digest were still firing weeks after both were retired.
+**Items that ask for a pause (DOORS1 1.5; cr1#970).** An `auto_apply` action can never reach a live scheduled task, and neither can this skill. The one item that asks for pauses is skipped above; if any item ever names task ids to switch off here, switch off nothing and say nothing about it. The pause two-step lives in `enable-command-room-schedules/references/schedule-changes.md`, where the two owner skills apply it with a listing of their own.
 
 For each remaining item that surfaced (applies=True and not previously seen), append ONE `plugin_update_remediation` row through the door — every item's row in the one call, rendered in the container and pasted (OMIT `id`/`seq`/`ts` — the door auto-stamps `seq` and `ts` inside the writer lock, `ts` in UTC; a hand-typed "now" was the F-15 naive-local-clock bug class, v4.5.2 R4):
 
@@ -2148,11 +1842,13 @@ The goal: a broken manifest, detector, or action never blocks the rest of the up
 
 ## Phase 5: Log the update event
 
-After installs, workspace migrations, scheduled-task registration, and release-manifest remediations complete (full or partial), append a single `plugin_update` row through the door — rendered in the container, pasted. The row is `type`, `source_skill` and `data`; OMIT `id`, `seq` and `ts` (the door stamps them — a hand-typed id or timestamp is the F-15 class):
+After installs, workspace migrations and release-manifest remediations complete (full or partial), append a single `plugin_update` row through the door — rendered in the container, pasted. The row is `type`, `source_skill` and `data`; OMIT `id`, `seq` and `ts` (the door stamps them — a hand-typed id or timestamp is the F-15 class):
 
 ```bash
-cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "applied_migrations": ["prompt_restructuring_preference"], "applied_remediation_ids": ["v344_refire_commitments"], "failed_artifacts": [], "from_version": "<INSTALLED>", "installed_artifacts": [], "newest_manifest_version": "<NM>", "notes": "<runtime / schedules notes>", "plugin_json_version": "<PJ>", "skipped_migrations": [], "to_version": "<CURRENT>", "unshipped_tip": false, "workspace_stamp": "<the workspace stamp>"}, "source_skill": "command-room-update-bridge", "type": "plugin_update"}]}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan append_jsonl --json '{"holder": "command-room-update-bridge", "rel": "_hq/data/events.jsonl", "rows": [{"data": {"actor": "command-room-update-bridge", "applied_migrations": ["prompt_restructuring_preference"], "applied_remediation_ids": ["v344_refire_commitments"], "failed_artifacts": [], "from_version": "<INSTALLED>", "installed_artifacts": [], "newest_manifest_version": "<NM>", "notes": "<runtime notes>", "plugin_json_version": "<PJ>", "schedules_handed_off": true, "skipped_migrations": [], "to_version": "<CURRENT>", "unshipped_tip": false, "workspace_stamp": "<the workspace stamp>"}, "source_skill": "command-room-update-bridge", "type": "plugin_update"}]}'
 ```
+
+**`schedules_handed_off: true` rides on every `plugin_update` row this skill writes (cr1#970).** It records that this update did no schedule work, so `schedule_handoff.pending_line` never reads this row as schedule work applied through its version (`schedule_handoff.HANDED_OFF_KEY`).
 
 **MANDATORY — the version fields come from the Phase 1 struct, verbatim (WALKFIX1 Item I).** Build them with `bridge_versions.receipt_version_fields(<the Phase 1 struct>)` and merge the result into the event's data. Every `plugin_update` receipt this run writes carries the SAME three named members, so a reader never has to infer which member a bare number came from — the ambiguity that made one run's two receipts read first as a downgrade and then as a no-op.
 
@@ -2211,6 +1907,7 @@ The dispatch answers `run_phases` `["5.5"]`: run Phase 5.5's steps 1, 3, 4, 5 an
 - Does not re-run onboarding. If the user wants a full reset, they say `restart onboarding` (different skill).
 - Does not re-prompt for migrations the user explicitly declined. If they said "No" to prompt restructuring on first run, subsequent runs respect that choice unless they say `redo workspace migrations`.
 - Does not run on every session start. Only fires on explicit user trigger.
+- Does not create, change, switch off or remove a scheduled chat, read the list of scheduled tasks or declare the scheduled writer (cr1#970, the owner's ruling 2026-11-09): those belong to `enable-command-room-schedules` and `cockpit-setup` alone, and this skill starts neither. Phase 4.7 says at most one line naming `set up command room schedules` and `rebuild my hub`.
 
 ---
 

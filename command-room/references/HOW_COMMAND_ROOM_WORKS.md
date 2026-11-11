@@ -163,8 +163,8 @@ id for it and left the predecessor working. `past-meetings` is out of
 eliminations below: **its orchestrator file is not a stub, it is the live
 End of Day orchestrator, shared with the successor row.** A workspace that
 still has `past-meetings` registered keeps a fully working evening chat, at
-the same hour, with no degradation, until the update bridge's reinstall
-removes it (the cloud scheduler only; the older desktop scheduler has no
+the same hour, with no degradation, until the removal step of `set up
+command room schedules` or `rebuild my hub` removes it (cr1#970) (the cloud scheduler only; the older desktop scheduler has no
 delete) or the customer pauses it. `end-of-day` is itself shelved (cr1#618,
 #847), so `add end of day` gets `shelved_line`, registers nothing, and no
 successor ever appears beside the predecessor, and the watchdog answers "is End of Day registered / when did it
@@ -185,7 +185,7 @@ Its capture leg processes meeting transcripts from everything since its last suc
 
 ### 5. upcoming-meetings — RETIRED (SPEC BRIEFMERGE, M's ruling 2026-08-08)
 
-The separate prep chat is **merged into the morning brief**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (update bridge → `pause upcoming meetings`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of replaying the old chat.
+The separate prep chat is **merged into the morning brief**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (`set up command room schedules` or `rebuild my hub` → `pause upcoming meetings`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of replaying the old chat.
 
 Where its work went — none of it was deleted:
 
@@ -203,7 +203,7 @@ Two fences make the merge safe, both proven by removal in `tests/run_briefmerge_
 
 ### 6. pulse — RETIRED (SPEC LIFECYCLE1, M's ruling 2026-08-02)
 
-The weekday pattern-detection chat is **eliminated**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (update bridge → `pause pulse`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of erroring.
+The weekday pattern-detection chat is **eliminated**. It is out of `DEFAULT_SCHEDULES`, listed in `schedule_config.RETIRED_TASKS`, never offered, and never registered again. A workspace that still has it registered gets ONE offer to switch it off (`set up command room schedules` or `rebuild my hub` → `pause pulse`), never a silent disable; its orchestrator file is a retirement stub so that fire explains itself instead of erroring.
 
 Where each of its jobs went — none of them was deleted:
 
@@ -318,7 +318,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 |---|---|---|
 | `workspace-manager` | `let's work`, `what's going on`, `new project`, `archive`, named-entity references with no specialist match | Catch-all router + project/session manager. |
 | `command-room-onboarding` | First install (auto), `set up command room`, `restart onboarding` | 6-phase M1 onboarding (~40 min) distributed across 13 chats. |
-| `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Applies workspace migrations + plays release manifests (v3.4.5+); says the one dashboards sentence (nothing is installed — Night M3). |
+| `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Applies workspace migrations + plays release manifests (v3.4.5+); says the one dashboards sentence (nothing is installed — Night M3). Touches no scheduled chat (cr1#970): at most one line naming `set up command room schedules`. |
 | `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the first-install set: Morning Brief and the silent Maintenance task. |
 | `level-up-command-room` | `level up command room`, `install workspace map`, `rebuild quick commands`, `show me dashboards` | Answers the one dashboards sentence. The sidebar dashboards (Workspace Map, Quick Commands, My Open Commitments) are retired on every seat (Night M3); the Workspace Map is `list active projects` in chat. |
 

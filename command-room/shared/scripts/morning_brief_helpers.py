@@ -885,7 +885,8 @@ def plan_maintenance_receipt(workspace_root: str, *,
                              triggered_by: Optional[str] = TASK_ID,
                              windows: Optional[Dict[str, Any]] = None,
                              completed_at: Optional[Dict[str, Any]] = None,
-                             connectors_unreachable: Optional[List[str]] = None
+                             connectors_unreachable: Optional[List[str]] = None,
+                             fire_id: Optional[str] = None
                              ) -> Dict[str, Any]:
     """`{rows}` — THE one `maintenance_run` row a maintenance pass owes.
 
@@ -903,6 +904,8 @@ def plan_maintenance_receipt(workspace_root: str, *,
     `window` from the plan, keyed by job id; omitted, the row names none.
     `completed_at` (cr1#666) is when each completed job finished, keyed by
     job id; a completed job left out takes the receipt's own finish time.
+    `fire_id` (cr1#977) is the scheduled fire's own id from its plan, stamped
+    on the receipt so a later fire can tell this fire finished.
     The answer's `rows` are the receipt and the heartbeat that follows it,
     in that order, for the one append.
     """
@@ -922,7 +925,8 @@ def plan_maintenance_receipt(workspace_root: str, *,
                                completed_at=(dict(completed_at)
                                              if isinstance(completed_at, dict)
                                              else None),
-                               connectors_unreachable=list(connectors_unreachable or []))
+                               connectors_unreachable=list(connectors_unreachable or []),
+                               fire_id=fire_id)
     return {"rows": _jsonable(list(captured))}
 
 

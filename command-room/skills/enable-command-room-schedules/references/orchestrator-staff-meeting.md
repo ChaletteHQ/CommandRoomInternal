@@ -1,6 +1,6 @@
 # RETIRED: Staff Meeting (taskId: staff-meeting)
 
-**This chat is off the schedule (the owner's ruling 2026-10-23, cr1#176).** It is no longer registered on any workspace, it is never offered again, and the update bridge switches off any live registration it finds. This is a READINESS retirement, the one class the product applies rather than proposes. `schedule_config.RETIRED_TASKS` is the membership test and `retirement_class("staff-meeting")` is the class; the registry, not this file, is what the bridge, `change-schedule` and `system-health` read.
+**This chat is off the schedule (the owner's ruling 2026-10-23, cr1#176).** It is no longer registered on any workspace, it is never offered again, and `set up command room schedules` or `rebuild my hub` switches off any live registration it finds. This is a READINESS retirement, the one class the product applies rather than proposes. `schedule_config.RETIRED_TASKS` is the membership test and `retirement_class("staff-meeting")` is the class; the registry, not this file, is what the bridge, `change-schedule` and `system-health` read.
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this stub's entire contract is ONE plain-text line and then STOP. No widget, no widget-transport render, no queue read, no substrate writes, not even a receipt. A retired chat that keeps writing receipts is a retired chat that still looks alive. (The transport helper, the lateness helper and the surface driver are deliberately described here rather than named: a bare mention of any of them is how a stub grows a phase back.)
 

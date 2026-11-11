@@ -257,13 +257,24 @@ def record_walk(workspace_root, *, evidence_ref: str, evidence_ts,
 # The capture-pass receipt (dispatcher due-ness + catchup resume point)
 # ---------------------------------------------------------------------------
 
-def _page_from_window(mw: dict, window) -> dict:
+def _page_from_window(mw: dict, window, marker=None) -> dict:
     """Review F2 (cr1#948): with no maintenance window handed in any form,
     the span the pass actually read (`window`'s start and end) is its page,
     so a pass that read part of the window still leaves a marker at the end
     of what it read instead of a receipt that says the window is done. A
-    window with no readable span leaves `mw` as it is."""
-    from catchup import PAGE_FIELD, _parse_iso_local
+    window with no readable span leaves `mw` as it is.
+
+    cr1#978: the pass reads newest first, so a span that opens after the
+    window's own start read the newest days and left the older ones unread.
+    That span is a newest-first head page whose backlog is everything
+    before it, so the marker holds the window's start and the older days
+    are read later, never dropped. A span the plan marked `meeting_order:
+    newest_first` is a head page too, even when it opens at the window's
+    start (its meetings were taken newest first, so a cap marker inside it
+    is no resume point)."""
+    from catchup import (ITEM_ORDER_NEWEST_FIRST, PAGE_FIELD,
+                         PAGE_ORDER_NEWEST_FIRST, PAGE_PART_HEAD,
+                         _parse_iso_local, to_connector_iso)
 
     win = window if isinstance(window, dict) else {}
     start = _parse_iso_local(win.get("start"))
@@ -280,7 +291,29 @@ def _page_from_window(mw: dict, window) -> dict:
         "last": (until - end).total_seconds() <= 60,
         "after_short": False,
     }
+    since = _parse_iso_local(mw.get("since"))
+    opens_late = since is not None and (start - since).total_seconds() > 60
+    # A marker OLDER than the span read names a resume point the pass did
+    # not get from this span; it is the caller's own, kept verbatim as
+    # before. One inside the span is a cap over the newest meetings.
+    named = _parse_iso_local(marker)
+    inside = named is None or named >= start
+    if ((opens_late and inside)
+            or win.get("meeting_order") == ITEM_ORDER_NEWEST_FIRST):
+        out[PAGE_FIELD].update(
+            order=PAGE_ORDER_NEWEST_FIRST, part=PAGE_PART_HEAD,
+            last=out[PAGE_FIELD]["last"] and not opens_late,
+            head_until=to_connector_iso(end),
+            backlog_until=to_connector_iso(start) if opens_late else None)
     return out
+
+
+def _newest_first_head(mw) -> bool:
+    """Is `mw`'s page a newest-first head page (cr1#978)?"""
+    from catchup import ITEM_ORDER_NEWEST_FIRST, PAGE_FIELD, page_item_order
+
+    page = mw.get(PAGE_FIELD) if isinstance(mw, dict) else None
+    return page_item_order(page) == ITEM_ORDER_NEWEST_FIRST
 
 
 def log_capture_pass_receipt(workspace_root, *,
@@ -332,7 +365,10 @@ def log_capture_pass_receipt(workspace_root, *,
     the window has not reached the present. The receipt then says the pass
     was partial (`read_partial`, `partial_line`) and carries the page
     (`window_page`), and the next pass opens where this one stopped. A
-    window with no page is unchanged.
+    window with no page is unchanged. cr1#978: the page is newest first
+    (the newest days, then the older ones a page at a time), and the same
+    call moves only the part the pass read, the marker staying at the oldest
+    point still owed.
 
     SPEC EODLEG1 — `capture_leg_ms`, OPTIONAL and additive. The module
     docstring's part 1 is the reason this is honest rather than redundant:
@@ -392,10 +428,16 @@ def log_capture_pass_receipt(workspace_root, *,
                   if isinstance(window, dict) else None)
         if not isinstance(handed, dict):
             handed = _maintenance_window(workspace_root, CAPTURE_JOB_ID, now=now)
-            if not window_incomplete_before:
+            paged = _page_from_window(handed, window,
+                                      marker=window_incomplete_before)
+            if not window_incomplete_before or _newest_first_head(paged):
                 # A caller that names its own marker keeps it verbatim, as
                 # before; only a marker-less receipt needs the page's end.
-                handed = _page_from_window(handed, window)
+                # cr1#978 review: except on a newest page, where a marker
+                # names a meeting inside today's span and taken verbatim
+                # would open the next window past every older day unread.
+                # The page holds the window's start instead.
+                handed = paged
         data[MAINTENANCE_WINDOW_FIELD] = handed
     except Exception:  # noqa: BLE001, the window never costs the receipt
         pass

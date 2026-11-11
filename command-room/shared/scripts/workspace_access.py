@@ -383,6 +383,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "morning_brief_helpers:post_text",  # BRIEFDOOR1 - the chat copy's document links
     "bridge_versions:install_versions",  # HYGIENE3 - the bridge's version triple, workspace half (D-3)
     "schedule_backend:plan_registration",  # BRIDGE2 - registration planned beside the data: the seat digest vs the declaration (R-WALK-3)
+    "schedule_backend:plan_default_cron_moves",  # cr1#967 - a kept chat still at an old shipped default time moves, time only; the owner's own time never
     "schedule_config:scheduled_writer",  # BRIDGE2 - the declaration read where the folder is, so a refusal can name the computer
     "migration_adjudication:adjudication_status",  # BRIDGE2 - the bridge's Phase 1 adjudication gate, read beside the data (R-WALK-5)
     "maintenance_dispatcher:chats_state",  # CHATSON1 (#98) - M1b asks with the scheduler's rows for EVERY chat on the roster; switch-on only for the ones that read off
@@ -433,6 +434,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "skill_jobs_door:plan_cleanup",  # cr1#928 - the cleanup passes the writer runs and the ones it does not
     "skill_jobs_door:plan_weekly_insights",  # cr1#928 - the five projections the session composes from
     "skill_jobs_door:plan_monthly_report",  # cr1#928 - the owed months and each month's digest
+    # cr1#970: the update bridge's one line about scheduled chats. A pure
+    # read of the activity log; it never reads the scheduler. Its writer,
+    # the marker the two owner skills write, is on the write list.
+    "schedule_handoff:pending_line",  # cr1#970 - the update's one schedules line, read only
     "workspace_root:find_workspace_root",
 })
 
@@ -641,6 +646,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "skill_jobs_door:cleanup_and_receipt",  # cr1#928 - see the writer table row
     "skill_jobs_door:insights_and_receipt",  # cr1#928 - see the writer table row
     "skill_jobs_door:monthly_report_and_receipt",  # cr1#928 - see the writer table row
+    "schedule_handoff:log_schedule_changes_applied",  # cr1#970 - see the writer table row
     "deliverables:land",
 })
 
@@ -1806,7 +1812,9 @@ CONTENT_KEY_SUFFIXES = ("_base64",)
 #: path on this host. So the fence leaves exactly that value alone, and walks
 #: every other value of every record as before. The health check used to be
 #: refused here, and its chat stripped the folder to get through.
-LISTING_ARG_HELPERS = {"staff_meeting_helpers:health_report": "task_records"}
+LISTING_ARG_HELPERS = {"staff_meeting_helpers:health_report": "task_records",
+                       # cr1#967: compares each record's folder by digest, never opens it
+                       "schedule_backend:plan_default_cron_moves": "registered"}
 LISTING_FOLDER_KEYS = ("folders",)
 
 

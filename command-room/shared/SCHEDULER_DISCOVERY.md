@@ -12,10 +12,10 @@ there is no scheduler on a seat that has one. The step makes the model load
 first, look second, say where the chats run, and — when there really is
 nothing — say why in one plain sentence.
 
-**Where it lives.** Verbatim, between the two sentinels, in the four skills
-that plan scheduler calls: `enable-command-room-schedules`, `change-schedule`,
-`system-health` and `command-room-update-bridge` (above its first scheduler
-use, the staff-meeting cadence migration). Its step 3 is the ONE rendered call
+**Where it lives.** Verbatim, between the two sentinels, in the three skills
+that plan scheduler calls: `enable-command-room-schedules`, `change-schedule`
+and `system-health`. The update bridge carried a copy until cr1#970; it no
+longer looks at the scheduler, so it carries none. Its step 3 is the ONE rendered call
 each skill pastes — `schedule_backend:opening_lines` through the access
 layer's `run_helper` — and what that call returns is the only thing the skill
 says about where the chats run or why there are none.
