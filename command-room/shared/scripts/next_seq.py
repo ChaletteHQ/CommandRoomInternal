@@ -92,6 +92,18 @@ def next_seq(events_jsonl_path: Union[str, Path]) -> int:
                 if seq_int > max_human:
                     max_human = seq_int
 
+    # cr1#1061 (owner ruling 2a): numbering is the merged view's, so the next
+    # number is also above every computer's own log beside the live file. 0
+    # when there is none, so a one-computer seat answers exactly as before.
+    try:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from computer_logs import computer_files_floor
+        max_human = max(max_human, computer_files_floor(path))
+    except Exception:
+        pass
     return max_human + 1
 
 

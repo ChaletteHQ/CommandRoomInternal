@@ -706,6 +706,275 @@ def transcript_close_tight(workspace_root, event, *, quote, transcript_text,
     return ""
 
 
+# ---------------------------------------------------------------------------
+# cr1#910 - one tight sentence closes at most one row (owner ruling of
+# 2026-11-11 on the ticket, B1 b, B2 a, B3 a).
+#
+# B1: when one tight sentence fits two open items, the better match closes
+# and the other is proposed. "Better" is judged on the tight sentence itself
+# against each item's own words (its title), never on a matcher's score for
+# a whole quote. If neither is clearly better, nothing closes and both are
+# proposed. A sentence that has closed one item is spent and closes nothing
+# else, on the matcher, on the own-word pass and on a re-read of the meeting.
+# B2: only items this meeting could have closed count, and only they may be
+# closed or proposed: promised before the meeting, not captured in it, with
+# the meeting's time known.
+# B3: nothing else is asked here; any other asking stays in the matcher's
+# own band.
+# ---------------------------------------------------------------------------
+
+#: The reason the other item is proposed when one tight sentence fits two.
+SHARED_SENTENCE_REASON = "one thing you said fitted more than one item"
+
+
+def sentence_candidates(workspace_root, *, source_ref, open_rows=None, events=None) -> dict:
+    """cr1#910: the rows one tight sentence of this meeting is judged against.
+    `{"rows", "open", "closed_here", "source_ref"}`: `rows` is every open row the
+    owner owes (live sub-items aside, as the own-word pass sets them aside)
+    and every row the owner owes that this same meeting (`source_ref`)
+    already closed or proposed, so a sentence stays spent across a re-read;
+    `open` is the ids of the open ones; `closed_here` is `{row id: [the
+    evidence of each close of a row this meeting closed or proposed]}`,
+    whoever wrote the close (the owner's confirm included). No time fence
+    here: `meeting_could_close` is that.
+    Never raises; what cannot be read is left out."""
+    out = {"rows": [], "open": set(), "closed_here": {},
+           "source_ref": str(source_ref or "").strip()}
+    try:
+        _fill_sentence_candidates(out, workspace_root, open_rows=open_rows, events=events)
+    except Exception:  # noqa: BLE001 - nothing counted: the pass decides as before
+        pass
+    return out
+
+
+def _fill_sentence_candidates(out, workspace_root, *, open_rows, events) -> None:
+    from primary_user import resolve_primary_user
+    uid = str(resolve_primary_user(workspace_root) or "")
+    if not uid:
+        return
+    from cru_match import _commitment_id, load_open_commitments, partition_subitems
+    events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    if events is None:
+        try:
+            from events_io import load_events_owner_scoped
+            events, _skipped = load_events_owner_scoped(workspace_root)
+        except Exception:  # noqa: BLE001
+            events = []
+    if open_rows is None:
+        open_rows = load_open_commitments(events_path, events=events or None,
+                                          workspace_root=workspace_root)
+    rows, _subs = partition_subitems([r for r in open_rows or [] if isinstance(r, dict)])
+    seen = set()
+    for ev in rows:
+        d = ev.get("data")
+        cid = str(_commitment_id(ev) or "")
+        if (isinstance(d, dict) and cid and cid not in seen
+                and str(d.get("owner_id") or "") == uid):
+            seen.add(cid)
+            out["rows"].append(ev)
+    out["open"] = set(seen)
+    ref = out["source_ref"]
+    if not ref:
+        return
+    from connector_adapters.provenance import dedup_key_of
+    want = dedup_key_of(ref)
+    if want is None:
+        return
+    captured, touched, closes = {}, set(), []
+    for ev in events or []:
+        d = ev.get("data") if isinstance(ev, dict) else None
+        if not isinstance(d, dict):
+            continue
+        kind = ev.get("type") or ev.get("event")
+        if kind == "commitment":
+            captured[str(_commitment_id(ev) or "")] = ev
+            continue
+        cid = str(d.get("commitment_id") or d.get("target_id") or "")
+        if not cid:
+            continue
+        if kind == "commitment_resolved":
+            closes.append((cid, _WS_RE.sub(" ", str(d.get("evidence") or "")).strip()))
+        if dedup_key_of(d.get("source_ref")) == want:
+            touched.add(cid)
+    # Every close of a row this meeting closed or proposed, whoever wrote it:
+    # the owner's confirm on the Review tab carries its own pointer, not the
+    # meeting's, and still spends the sentence it was asked on (review).
+    for cid, evidence in closes:
+        if cid in touched:
+            out["closed_here"].setdefault(cid, []).append(evidence)
+    for cid in sorted(touched - seen):
+        ev = captured.get(cid)
+        d = (ev or {}).get("data")
+        if (isinstance(d, dict) and str(d.get("owner_id") or "") == uid
+                and not d.get("parent_id")):
+            seen.add(cid)
+            out["rows"].append(ev)
+
+
+def meeting_could_close(ev, *, evidence_at, source_ref, tz=None) -> bool:
+    """cr1#910 B2: could this meeting have closed `ev`? Only with the
+    meeting's time known (`evidence_at`, aware), a promise time that can be
+    read and is not after the meeting began (the close's own fence), and a
+    row not captured from this meeting (the matcher's self-evidence fence).
+    Never raises; anything unreadable is no."""
+    try:
+        if evidence_at is None:
+            return False
+        from cru_match import _parse_ts, commitment_matches_source_ref, promise_time_raw
+        ref = str(source_ref or "").strip()
+        if ref and commitment_matches_source_ref(ev, ref):
+            return False
+        at = _parse_ts(promise_time_raw(ev, tz))
+        return at is not None and at <= evidence_at
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _unsaid_words(statement, ev, person: dict) -> set:
+    """The words of the row's own title the sentence does not say, after its
+    act (the title's first word, which the sentence reports in the past
+    tense), the other person's name and the filler words."""
+    low = _WS_RE.sub(" ", str(_row_title(ev) or "")).replace("’", "'").strip().lower()
+    for name in (person["key"], person["key"].split()[0]):
+        hit = re.search(r"(?<![\w'])" + re.escape(name) + r"(?![\w'])", low)
+        if hit:
+            low = low[:hit.start()] + " " + low[hit.end():]
+            break
+    words = _WORD_RE.findall(low)[1:]
+    said = set(_WORD_RE.findall(str(statement or "").replace("’", "'").lower()))
+    return {w for w in words if w not in _ITEM_FILLER and w not in said}
+
+
+def better_match(statement, rows, *, workspace_root=None) -> str:
+    """cr1#910 B1: of exactly two rows one sentence is a tight report of,
+    the id of the clearly better one, judged on the sentence itself against
+    each row's own title: the one whose every word the sentence says, when
+    the other has a word it does not say ("by Friday"). '' when that does
+    not settle it (both said in full, neither, or not two rows): then
+    nothing closes. Three or more rows is not ruled by the owner; the
+    careful reading pending a ruling is no winner. Never raises."""
+    try:
+        if len(rows or []) != 2:
+            return ""
+        unsaid = []
+        for ev in rows:
+            person = _other_person(ev, workspace_root)
+            if not person:
+                return ""
+            unsaid.append(_unsaid_words(statement, ev, person))
+        if not unsaid[0] and unsaid[1]:
+            return _row_id(rows[0])
+        if unsaid[0] and not unsaid[1]:
+            return _row_id(rows[1])
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _could_report(statement, ev) -> bool:
+    """A cheap first look before the tight gate: the row's act, in the past
+    tense, is a word of the sentence."""
+    words = _row_title(ev).strip().lower().split()
+    past = _ROW_ACTS.get(words[0]) if words else None
+    return bool(past) and past in _WORD_RE.findall(str(statement or "").lower())
+
+
+def shared_sentence(ctx, statement, pool, *, workspace_root, attendee_records=None,
+                    user_names=(), transcript_text="", evidence_at=None, tz=None):
+    """cr1#910: what one tight owner sentence may close when it fits more
+    than one row. None when it fits at most one row this meeting could have
+    closed: the pass then decides exactly as before. Otherwise
+    `{"sentence", "rows", "close", "propose"}`: `rows` the ids of the rows
+    it fits that this meeting could have closed (`meeting_could_close`),
+    `close` the one to close ('' for none) and `propose` the open others.
+
+    * Two rows and one clearly better (`better_match`): it closes, unless
+      the sentence is spent (a close of a row this meeting closed or
+      proposed was already written on it, the owner's confirm included) or
+      the better row is closed already; the other is proposed.
+    * Two rows and no clear winner: nothing closes and each is proposed.
+    * Three or more rows: not ruled by the owner; the careful reading
+      pending a ruling is that nothing closes and each is proposed.
+    * No meeting time and two or more rows it fits: nothing closes and
+      nothing is proposed (B2), `rows` empty.
+    Never raises; a reading that fails is None."""
+    try:
+        quote = _WS_RE.sub(" ", str(statement or "")).strip()
+        fits, seen = [], set()
+        for ev in (pool or {}).get("rows") or []:
+            cid = _row_id(ev)
+            if (cid and cid not in seen and _could_report(quote, ev)
+                    and tight_close_basis(ctx, ev, statement=quote, workspace_root=workspace_root,
+                                          attendee_records=attendee_records,
+                                          user_names=user_names,
+                                          transcript_text=transcript_text)):
+                seen.add(cid)
+                fits.append(ev)
+        if len(fits) < 2:
+            return None
+        if evidence_at is None:
+            return {"sentence": quote, "rows": [], "close": "", "propose": []}
+        ref = (pool or {}).get("source_ref") or ""
+        rows = [ev for ev in fits
+                if meeting_could_close(ev, evidence_at=evidence_at, source_ref=ref, tz=tz)]
+        if len(rows) < 2:
+            return None
+        closed_here = (pool or {}).get("closed_here") or {}
+        ids = [_row_id(ev) for ev in rows]
+        still_open = (pool or {}).get("open") or set()
+        open_ids = [cid for cid in ids if cid in still_open and cid not in closed_here]
+        spent = any(quote in text for cid in ids for text in closed_here.get(cid) or ())
+        win = better_match(quote, rows, workspace_root=workspace_root)
+        close = win if (win and not spent and win in open_ids) else ""
+        return {"sentence": quote, "rows": ids, "close": close,
+                "propose": [cid for cid in open_ids if cid != close]}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def transcript_shared_sentence(workspace_root, event, *, quote, transcript_text, pool,
+                               attendee_records=None, user_names=(), evidence_at=None,
+                               tz=None) -> dict:
+    """cr1#910, for a close the matcher found tight (`transcript_close_tight`):
+    may `event`'s row close on the owner's sentences inside `quote`?
+    `{"closes", "shared"}`: `closes` True when one tight sentence there
+    reports this row alone among the rows this meeting could have closed, or
+    fits more than one and this row is the one it closes (`shared_sentence`);
+    `shared` lists every shared-sentence answer read on the way, so the
+    caller proposes the others. With `shared` empty no sentence was found
+    that fits more than one row, and the close stands as the tight gate
+    decided it. Never raises; a reading that fails finds nothing shared."""
+    out = {"closes": False, "shared": []}
+    try:
+        want = _WS_RE.sub(" ", str(quote or "")).strip()
+        me = _row_id(event)
+        for ctx in owner_turn_contexts(transcript_text, user_names=user_names):
+            for st in own_word_statements(ctx["text"]):
+                if st["quote"] not in want:
+                    continue
+                if not tight_close_basis(
+                        ctx, event, statement=st["quote"], workspace_root=workspace_root,
+                        attendee_records=attendee_records, user_names=user_names,
+                        transcript_text=transcript_text):
+                    continue
+                dec = shared_sentence(
+                    ctx, st["quote"], pool, workspace_root=workspace_root,
+                    attendee_records=attendee_records, user_names=user_names,
+                    transcript_text=transcript_text, evidence_at=evidence_at, tz=tz)
+                if dec is None:
+                    out["closes"] = True
+                    continue
+                out["shared"].append(dec)
+                if dec["close"] == me:
+                    out["closes"] = True
+    except Exception:  # noqa: BLE001 - nothing shared found: the gate decides
+        out["shared"] = []
+    return out
+
+
 def _row_counterparty_tokens(ev, *, workspace_root=None, name_idx=None) -> set:
     """The name tokens of whoever is on the other end of a row — the "and the
     counterparty name if any" half of the match rule.
@@ -846,7 +1115,7 @@ def own_word_closes_enabled(workspace_root=None) -> bool:
 
 def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
                          user_names=(), open_rows=None, now_iso=None,
-                         attendee_records=None) -> dict:
+                         attendee_records=None, transcript_ts=None) -> dict:
     """What route 2 WOULD close from one dictation or transcript. No writes.
 
     Returns `{"enabled", "n_statements", "closes": [...], "ambiguous": [...],
@@ -854,6 +1123,14 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
     verbatim sentence, the row it matched and the score — which is exactly
     what the close then writes as its evidence. `attendee_records` is this
     meeting's attendee list, when the caller has one (cr1#751).
+
+    cr1#910 (owner ruling of 2026-11-11): a tight sentence that fits two or
+    more rows (`shared_sentence`) closes at most the better one, marked
+    `shared_close`; the others it fits go to `shared`, to be proposed.
+    `transcript_ts` is the meeting's start: without it such a sentence
+    closes nothing and proposes nothing (B2). What the score matcher made
+    of that sentence is kept, marked `shared_hold`, for a meetings
+    connector set to propose, which asks exactly as before.
     """
     from cru_match import load_open_commitments, partition_subitems
     from primary_user import resolve_primary_user
@@ -899,12 +1176,38 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
     # round asks him whether to keep this as it is.
     rows, _subs = partition_subitems(list(open_rows or []))
     taken = set()
+    # cr1#910 - the rows a tight sentence is judged against, read once, and
+    # the meeting's own time (B2). A typed chat has no attendee list, so it
+    # never reads them.
+    pool = None
+    evidence_at, tz = None, None
+    if attendee_records and transcript_ts:
+        try:
+            from cru_match import _normalize_fire_start, promise_tz
+            evidence_at = _normalize_fire_start(transcript_ts, "transcript_ts")
+            tz = promise_tz(workspace_root)
+        except Exception:  # noqa: BLE001 - no readable time: nothing shared closes
+            evidence_at = None
+    shared: list = []
     for st in statements:
         ctx = st.pop("_ctx", None) or {}
+        dec = None
+        if attendee_records:
+            if pool is None:
+                pool = sentence_candidates(workspace_root, source_ref=source_ref,
+                                           open_rows=open_rows)
+            dec = shared_sentence(ctx, st["quote"], pool, workspace_root=workspace_root,
+                                  attendee_records=attendee_records, user_names=user_names,
+                                  transcript_text=transcript_text, evidence_at=evidence_at,
+                                  tz=tz)
         m = match_statement_to_rows(st, rows, owner_id=uid,
                                     workspace_root=workspace_root)
         row = {"quote": st["quote"], "verb": st["verb"],
                **{k: v for k, v in m.items() if k != "event"}}
+        if dec is not None:
+            _plan_shared_sentence(out, row, m, dec, pool, taken, shared,
+                                  source_ref=source_ref)
+            continue
         if m["status"] == "matched":
             if m["commitment_id"] in taken:
                 # Two sentences about one row is one close, not two.
@@ -927,7 +1230,71 @@ def plan_own_word_closes(workspace_root, *, transcript_text, source_ref,
             out["ambiguous"].append(row)
         else:
             out["no_match"].append(row)
+    if shared:
+        out["shared"] = shared
     return out
+
+
+def _plan_shared_sentence(out, row, m, dec, pool, taken, shared, *, source_ref) -> None:
+    """cr1#910: one tight sentence that fits two or more rows, in the plan.
+    The better row closes (`shared_close`) unless an earlier sentence of
+    this run took it; each other row it fits is listed in `shared`, once.
+    The score matcher's own pick is kept as `shared_hold` (a closing dial
+    neither closes nor proposes it) and never takes its row, so that row's
+    own later report still counts. A sentence the score matcher called
+    ambiguous is still counted there, as before."""
+    from cru_match import score_match
+    by_id = {_row_id(ev): ev for ev in (pool or {}).get("rows") or []}
+    if not dec["rows"]:
+        # No meeting time (B2): nothing is closed or proposed on the shared
+        # sentence, and it is counted exactly as before, so the End of Day's
+        # ambiguous count does not move; only the score matcher's own pick
+        # is held, never closed.
+        if m["status"] == "matched":
+            if m["commitment_id"] in taken:
+                out["no_match"].append(dict(row, status="already_taken"))
+                return
+            out["closes"].append(dict(
+                row, source_ref=source_ref, corroboration="", corroborated=False,
+                shared_hold=True,
+                primary_thread_id=str((m.get("event") or {}).get("primary_thread_id") or "")))
+        elif m["status"] == "ambiguous":
+            out["ambiguous"].append(row)
+        else:
+            out["no_match"].append(row)
+        return
+    row["shared_with"] = list(dec["rows"])
+    if m["status"] == "ambiguous":
+        # Counted as before, so the End of Day's ambiguous count does not move.
+        out["ambiguous"].append(row)
+    if m["status"] == "matched" and m["commitment_id"] not in taken:
+        out["closes"].append(dict(
+            row, source_ref=source_ref, corroboration="", corroborated=False,
+            shared_hold=True,
+            primary_thread_id=str((m.get("event") or {}).get("primary_thread_id") or "")))
+    win = dec["close"]
+    if win and win not in taken and win in by_id:
+        ev = by_id[win]
+        taken.add(win)
+        out["closes"].append({
+            "quote": row["quote"], "verb": row["verb"], "status": "matched",
+            "commitment_id": win, "title": _row_title(ev),
+            "score": round(float(score_match(row["quote"], _row_title(ev))), 4),
+            "source_ref": source_ref,
+            "primary_thread_id": str(ev.get("primary_thread_id") or ""),
+            "corroboration": TIGHT_CLOSE, "corroborated": True,
+            "shared_close": True, "shared_with": list(dec["rows"])})
+    listed = {r["commitment_id"] for r in shared}
+    for cid in dec["propose"]:
+        ev = by_id.get(cid)
+        if ev is None or cid in listed:
+            continue
+        listed.add(cid)
+        shared.append({
+            "commitment_id": cid, "quote": row["quote"], "title": _row_title(ev),
+            "score": round(float(score_match(row["quote"], _row_title(ev))), 4),
+            "source_ref": source_ref,
+            "primary_thread_id": str(ev.get("primary_thread_id") or "")})
 
 
 def _mint_batch_id(prefix: str, now_iso=None) -> str:
@@ -1099,7 +1466,7 @@ def own_word_proposal_line(n: int) -> str:
 def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
                           user_names=(), open_rows=None, now_iso=None,
                           batch_id=None, plan=None, channel="transcript",
-                          attendee_records=None) -> dict:
+                          attendee_records=None, transcript_ts=None) -> dict:
     """Route 2, applied. One run = one batch = one `undo`.
 
     Every close goes through `commitment_state.close_commitment` with:
@@ -1121,11 +1488,17 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
     list otherwise. Every transcript close is stamped `close_kind:
     transcript_own_word`, so the reversals can be counted per kind. The CHAT
     channel is the owner's own typing: no dial and no tightness, as before.
+
+    cr1#910: `transcript_ts` is the meeting's start. A tight sentence that
+    fits two rows closes the better one and proposes the other
+    (`SHARED_SENTENCE_REASON`), or closes neither and proposes both; with
+    no meeting time it closes and proposes nothing (`plan_own_word_closes`).
+    A meetings connector set to propose asks exactly as before.
     """
     out = dict(plan or plan_own_word_closes(
         workspace_root, transcript_text=transcript_text, source_ref=source_ref,
         user_names=user_names, open_rows=open_rows, now_iso=now_iso,
-        attendee_records=attendee_records))
+        attendee_records=attendee_records, transcript_ts=transcript_ts))
     out.setdefault("closes", [])
     out["applied"] = []
     out["refused_rows"] = []
@@ -1144,13 +1517,16 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
     # how "say the word and I'll close it" reached a customer on 09-16.
     out["no_match_line"] = own_word_no_match_line(_n_unmatched(out))
     if not out.get("enabled"):
-        out["withheld"] = len(out["closes"])
+        out["withheld"] = len([r for r in out["closes"] if not r.get("shared_close")])
         return out
-    if not out["closes"]:
+    # cr1#910: the other rows a shared sentence fits, proposed beside the
+    # close; a transcript only (a typed chat has no meeting).
+    shared = list(out.get("shared") or []) if channel != "chat" else []
+    if not out["closes"] and not shared:
         return out
     # cr1#751 / cr1#756 - the meetings connector's dial, read once, for a
     # transcript only.
-    to_close = list(out["closes"])
+    to_close = [r for r in out["closes"] if not r.get("shared_hold")]
     to_propose: list = []
     if channel != "chat":
         try:
@@ -1162,13 +1538,18 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
         out["close_mode"] = dial.get("mode")
         if dial.get("skip_reason"):
             out["dial_skip_reason"] = str(dial["skip_reason"])
-            out["withheld"] = len(out["closes"])
+            out["withheld"] = len([r for r in out["closes"] if not r.get("shared_close")])
             return out
         if dial.get("mode") == MODE_PROPOSE:
-            to_propose, to_close = to_close, []
+            # cr1#910: a propose dial asks exactly as before (B3): what the
+            # score matcher picked, never the shared-sentence close or its
+            # others.
+            to_propose = [r for r in out["closes"] if not r.get("shared_close")]
+            to_close, shared = [], []
         else:
             to_close = [r for r in to_close if r.get("corroborated")]
-            to_propose = [r for r in out["closes"] if not r.get("corroborated")]
+            to_propose = [r for r in out["closes"]
+                          if not r.get("corroborated") and not r.get("shared_hold")]
             # The owner said no to this report: the same transcript read
             # again does not close it.
             try:
@@ -1195,6 +1576,29 @@ def apply_own_word_closes(workspace_root, *, transcript_text, source_ref,
                 extra={"exit_route": "own_word", "close_kind": TRANSCRIPT_CLOSE_KIND})
             out["n_proposed"] = int(res.get("n_proposed") or 0)
             out["proposed"] = list(res.get("proposed") or [])
+            out["refused_rows"].extend(res.get("refused") or [])
+        except Exception as exc:  # noqa: BLE001 - one bad row never stops a run
+            out["refused_rows"].append({"leg": "propose", "error": type(exc).__name__,
+                                        "detail": str(exc)[:200]})
+        out["proposal_line"] = own_word_proposal_line(out["n_proposed"])
+    closing = {str(r["commitment_id"]) for r in to_close}
+    shared = [r for r in shared if str(r["commitment_id"]) not in closing]
+    if shared:
+        # cr1#910: each other row a shared sentence fits, for the owner to
+        # settle, with the sentence as its evidence.
+        try:
+            from close_mode_dial import propose_closes
+            res = propose_closes(
+                workspace_root,
+                [{"commitment_id": r["commitment_id"], "title": r.get("title") or "",
+                  "primary_thread_id": r.get("primary_thread_id") or "",
+                  "score": r.get("score"), "evidence": str(r["quote"])[:200],
+                  "evidence_ts": now_iso, "source_ref": r.get("source_ref") or source_ref,
+                  "has_completion_signal": True} for r in shared],
+                source_skill=OWN_WORD_SOURCE_SKILL, reason=SHARED_SENTENCE_REASON,
+                extra={"exit_route": "own_word", "close_kind": TRANSCRIPT_CLOSE_KIND})
+            out["n_proposed"] += int(res.get("n_proposed") or 0)
+            out["proposed"].extend(res.get("proposed") or [])
             out["refused_rows"].extend(res.get("refused") or [])
         except Exception as exc:  # noqa: BLE001 - one bad row never stops a run
             out["refused_rows"].append({"leg": "propose", "error": type(exc).__name__,

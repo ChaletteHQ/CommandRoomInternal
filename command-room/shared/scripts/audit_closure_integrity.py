@@ -51,27 +51,38 @@ CLOSER_TYPES = ("commitment_resolved", "thread_resolved", "commitment_superseded
 
 def _iter_all_events(workspace_root):
     """All events across shards + active file, append order, read-only."""
-    import json
+    # cr1#1061: one stream per computer, merged (exact duplicates dropped);
+    # with no per-computer log there is one stream, read as before.
     try:
-        from events_io import shard_paths
-        paths = shard_paths(workspace_root)
+        from events_io import log_streams, merge_streams
+        streams = [files for _name, files in log_streams(workspace_root)]
     except Exception:
-        paths = [Path(workspace_root) / "_hq" / "data" / "events.jsonl"]
-    for p in paths:
-        p = Path(p)
-        if not p.exists():
-            continue
-        with open(p, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(ev, dict):
-                    yield ev
+        merge_streams = None
+        streams = [[Path(workspace_root) / "_hq" / "data" / "events.jsonl"]]
+    if len(streams) == 1 or merge_streams is None:
+        for p in streams[0]:
+            yield from _file_rows(p)
+        return
+    yield from merge_streams([[ev for p in files for ev in _file_rows(p)]
+                              for files in streams])
+
+
+def _file_rows(p):
+    import json
+    p = Path(p)
+    if not p.exists():
+        return
+    with open(p, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict):
+                yield ev
 
 
 def _resolve_target(ev, by_id, by_seq):

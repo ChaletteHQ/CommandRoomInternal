@@ -377,6 +377,14 @@ print(post(compose(SITE_OPERATOR_REPORT, whole_reply),
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
+**On a merged seat, the composer and the door run as ONE form (cr1#1141; the form is cr1#1005 part 3's).** Through the workspace door each helper runs in its own process, so `say` and `post`, run there separately, never meet, and every relay is refused; `post` is on neither door list at all. Do not call them separately there. Render the combined form with `plan run_writer` and run what it prints: it runs `say` on the report's text, the offer fence and `post`, with what `say` passed as the relay, in one process. `composer_args.text` is the report's chat text, every sentence you would have passed to `say`, and nothing else. The door refuses any argument it reads as a path (one that starts with a slash or a drive letter, or names a folder), so name no file or folder in them. A report does not survive a pasted command line, so it travels as `args_file`: write ONE JSON object, `{"workspace_root": "<WS>", "surface": "operator-report", "composer_args": {"text": "<the report's chat text>"}, "after": ""}`, into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, and name it in the line below. `before` and `after` are the only sentences you add, and they are scanned like every other line. On a seat whose files are local, nothing changes: run the block above.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_operator_report_post.json"}'
+```
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it. If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "operator-report"}` through `plan run_helper` and print its `result` alone.
+
 ### Step 5 — Log
 
 Append the `operator_report_generated` receipt via the canonical helper (`shared/scripts/receipts.py`, v4.5.2 R1) — never a hand-rolled JSON append. This receipt is the monthly-report job's RUN COUNTER (the maintenance task's monthly leg, MAINT1) (the value receipts the same fire emits are freshness signals only — one fire writes several of them), so exactly one per run:
@@ -461,13 +469,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

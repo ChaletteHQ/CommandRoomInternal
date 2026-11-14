@@ -8,6 +8,12 @@ description: "Weekly synthesis pass that surfaces patterns the CEO wouldn't comp
 
 The differentiation layer. Morning briefings tell the CEO what happened. This skill tells them what the data means that they wouldn't otherwise notice.
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
+## Context (cr1#1016 — the one loader)
+
+Before the first pass that answers the owner, load this skill's context through the one loader every skill uses, one call: `plan run_helper` with name `context_loader:load_context` and args `{"workspace_root": "<WS>", "skill": "insight-generator"}`. Follow every rule in its `rules`; an answer a rule shaped says so in the rule's own plain words. Asked about the owner's own records and nothing on file answers, say "I do not have that." The owner's rules are read through this loader only.
+
 ## Writer Contract
 
 This skill is **read-only over the data layer for synthesis** (passes 1–7), with one v2.3 exception: **Pass 7 connector probe** reads Gmail / Calendar / Slack / Granola for dormant-project re-activation signals and emits passive-capture `interaction` / `meeting` events per `shared/PASSIVE_CAPTURE.md` when hits land. This is a declared passive-capture writer — dedup via `source_ref` hash is mandatory, and writes occur independently of whether Pass 7 surfaces the signal in the insight report.

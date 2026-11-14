@@ -601,9 +601,20 @@ def sweep_and_receipt(
     maintenance_window: Optional[dict] = None,
     fetch_blocked: Optional[str] = None,
     skip_reason: Optional[str] = None,
+    craft_candidates: Optional[Iterable[dict]] = None,
+    craft_sessions: Optional[Iterable[str]] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
-    `session_sweep_run` receipt. `items` is the skill's extraction; every write
+    `session_sweep_run` receipt.
+
+    cr1#400: `craft_candidates` are the method signal the model found in the
+    window (`craft_sweep.propose_craft_rules` names the shape). Each becomes
+    an always-ask `craft_rule` proposal, or an amend proposal when it
+    contradicts a confirmed rule, for the Hub's Review tab; no craft file is
+    written here. A chat counts as evidence only when this run read it: a
+    session of `items`, of `sessions`, or of `craft_sessions` (the ids of
+    every session read, passed when a session yielded nothing else). The
+    receipt counts them under `craft`. `items` is the skill's extraction; every write
     is idempotent, so a re-run over the same window is a clean no-op.
 
     cr1#740: `fetch_blocked` is why the session read errored, and lands a
@@ -668,6 +679,23 @@ def sweep_and_receipt(
             window_desc=window_desc or f"last-{int(window_hours)}h",
             extra_receipt=extra_receipt, fired_via=fired_via,
             triggered_by=triggered_by)
+    if craft_candidates:
+        try:
+            import craft_sweep
+
+            items = list(items or [])
+            sessions = list(sessions or []) if sessions is not None else None
+            read = {str(i.get("session_id")) for i in items if isinstance(i, dict) and i.get("session_id")}
+            read |= {str(x.get("session_id")) for x in sessions or [] if isinstance(x, dict) and x.get("session_id")}
+            read |= {str(x) for x in (craft_sessions or []) if x}
+            got = craft_sweep.propose_craft_rules(workspace_root,
+                                                  list(craft_candidates),
+                                                  known_sessions=read)
+            extra_receipt["craft"] = {"proposed": got.get("proposed", 0),
+                                      "amends": got.get("amends", 0),
+                                      "skipped": len(got.get("skipped") or [])}
+        except Exception as exc:  # noqa: BLE001 - the facts still land
+            extra_receipt["craft"] = {"error": type(exc).__name__}
     return _sweep(
         workspace_root,
         items,

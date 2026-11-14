@@ -10,6 +10,8 @@ Filename + event continuity: this file keeps its name and events keep `source_sk
 
 ---
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## ⛔ STOP CONTRACT — READ BEFORE YOU DO ANYTHING
 
 Read `shared/STOP_CONTRACT.md` from disk and obey it as your first action of every fire. It carries the canonical post-widget output rules (no writing widget HTML to disk, no narrating widget contents, no markdown lists as substitute for widget rendering, no skipping `show_widget` after clean validator pass, etc.). Pre-v3.5.0 each orchestrator inlined a ~25-line copy of this contract; v3.5.0+ they reference the shared file so amendments edit one place.
@@ -55,13 +57,23 @@ Resolve first, once:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -291,10 +303,10 @@ Otherwise, use the seam-resolved mail-search tool to query INBOUND mail since th
 For each result, fetch the message body, resolve the SENDER email → `person_id` (via `aliases.json` / `entities.json`), and carry the message's **`thread_id`** (the connector's conversation id) **`has_attachment`** (the connector's attachment flag — never inferred from a body that says "attached") and **`attachment_names`** (the connector's own name for each attached file; a file with no name is only ever a proposal). Those fields are what let a reply be recognized as the delivery rather than as words about it. **Do NOT pre-filter the CEO's own messages or unresolvable senders out of the list** — the helper refuses the first and counts the second, and both counts are how a quiet fire gets explained instead of reading as a clean zero. Then make ONE call over the whole batch:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"exclude_captured_since": "<fire_start>", "fetch_blocked": null, "fired_via": "<scheduled, or manual on a chat-phrase / Run Now fire>", "inbound_messages": [<one dict per inbound message, shape below>], "provider": "<the seam-resolved provider>", "source_skill": "commitments", "uncorroborated_thread_ids": [<the uncorroborated thread ids, MAILTRUST1 below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "reconcile_inbound_commitments:reconcile_inbound_and_receipt"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"close_mode": "dial", "exclude_captured_since": "<fire_start>", "fetch_blocked": null, "fired_via": "<scheduled, or manual on a chat-phrase / Run Now fire>", "inbound_messages": [<one dict per inbound message, shape below>], "provider": "<the seam-resolved provider>", "source_skill": "commitments", "uncorroborated_thread_ids": [<the uncorroborated thread ids, MAILTRUST1 below>], "user_person_id": "<primary_user from setup>", "workspace_root": "<WS>"}, "name": "reconcile_inbound_commitments:reconcile_inbound_and_receipt"}'
 ```
 
-`inbound_messages` is one dict per inbound message in the window: `message_id`, `ts`, `sender_person_id`, `subject`, `body`, `thread_id`, `has_attachment`, `attachment_names`. Keep the CEO's own messages and the unresolvable senders IN — they are counted, not silently dropped. `user_person_id` is `primary_user.resolve_primary_user`'s answer from setup — deterministic, never guessed (Bug #102). `fetch_blocked` is null on a real read; see TRAINFIX F-4 below for when it carries a reason.
+`close_mode` is always `"dial"` (cr1#1121): the writer reads the mail connector's own close dial, and when the owner has not set one it proposes every close instead of closing on a reply alone. `inbound_messages` is one dict per inbound message in the window: `message_id`, `ts`, `sender_person_id`, `subject`, `body`, `thread_id`, `has_attachment`, `attachment_names`. Keep the CEO's own messages and the unresolvable senders IN — they are counted, not silently dropped. `user_person_id` is `primary_user.resolve_primary_user`'s answer from setup — deterministic, never guessed (Bug #102). `fetch_blocked` is null on a real read; see TRAINFIX F-4 below for when it carries a reason.
 
 The writer is `reconcile_inbound_and_receipt` — the whole inbound pass: it matches, closes through the single closure path, queues the confirms, and lands its own audit row, under the writer the door names. Its answer is the `receipt` this section reads — `n_auto_closed`, `n_pending`, `n_updated`, `n_held_uncorroborated`, `held`, `summary`, `coverage`, `signal_fields`, `resolved`. Then the self-check, one call:
 

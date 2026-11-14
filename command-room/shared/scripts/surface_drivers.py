@@ -1409,6 +1409,32 @@ def assert_no_coaching_leak(text: str, *, surface: str,
             f"`brief_coaching_line`'s three gates.")
 
 
+def brief_owner_first_name(workspace_root) -> str:
+    """cr1#1139 (ruling A5): the name the Brief's greeting uses, the folder
+    OWNER's, read from the folder and never from the account that runs the
+    fire. A second account acting for the owner fires the same Brief, and its
+    greeting must still say the owner's name, not the second account's.
+
+    `workspace.user_first_name` when set; else the first word of the primary
+    user's `canonical_name` (`primary_user.resolve_primary_user`); else "".
+    Never raises."""
+    try:
+        import primary_user as _pu
+
+        ent = _pu._entities(workspace_root)
+        name = str(_pu._workspace_settings(ent).get("user_first_name") or "").strip()
+        if name:
+            return name
+        pid = _pu.resolve_primary_user_from_entities(ent)
+        for person in _pu._people(ent):
+            if pid and person.get("id") == pid:
+                words = str(person.get("canonical_name") or "").split()
+                return words[0] if words else ""
+    except Exception:  # noqa: BLE001 - an unnamed greeting is always safe
+        return ""
+    return ""
+
+
 def brief_explain_once_line(workspace_root) -> str:
     """The first-week explain-once line, consumed INSIDE the pack (2.2 item
     4) so it lands above the three fences instead of below them.
@@ -2301,7 +2327,8 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     # per real-world item: survivor + "+N folded" + read-only expand + the
     # one `keep as one` tap, ids widget-embedded. Additive and drop-empty:
     # with no clusters the view is byte-identical to before this existed.
-    _apply_triage_clusters(view, by_cid, ws, now_iso)
+    _apply_triage_clusters(view, by_cid, ws, now_iso,
+                           tzinfo=getattr(_lnow_hoist, "tzinfo", None))
 
     rendered_rows = sum(len(s.get("items") or []) for s in sections)
     n_cluster_folded = int(view.get("n_folded") or 0)
@@ -2327,7 +2354,8 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     return view
 
 
-def _apply_triage_clusters(view: dict, by_cid: dict, ws, now_iso) -> None:
+def _apply_triage_clusters(view: dict, by_cid: dict, ws, now_iso, *,
+                           tzinfo=None) -> None:
     """CLUSTER1 — fold the triage view's open sections, in place.
 
     Clusters are computed at render by `commitment_cluster.render_clusters`
@@ -2372,6 +2400,18 @@ def _apply_triage_clusters(view: dict, by_cid: dict, ws, now_iso) -> None:
             return
         clusters = render_clusters([by_cid[c] for c in row_home],
                                    workspace_root=str(ws), now_iso=now_iso)
+        # cr1#1067 (owner ruling 2026-11-12, unfold): a copy the overdue
+        # number counts is never folded under a line it does not count; it
+        # keeps its own row and its own overdue phrase. An unreadable list
+        # leaves the folds as they were.
+        from commitment_cluster import unfold_counted
+        try:
+            from open_list import counted_ids as _counted_ids
+            # On the timezone this render already resolved (F-10 / F-16).
+            _counted = _counted_ids(ws, now_iso, tzinfo=tzinfo)
+        except Exception:  # noqa: BLE001 - never a guessed verdict
+            _counted = None
+        clusters = unfold_counted(clusters, _counted)
         # A cluster only folds when EVERY member is a foldable rendered row.
         clusters = [c for c in clusters
                     if all(m in row_home for m in c["member_ids"])]
@@ -3498,7 +3538,9 @@ def _last_brief_ts(workspace_root, now_iso: str) -> str:
         newest = None
         p = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
         if p.exists():
-            for line in p.read_text(encoding="utf-8").splitlines():
+            # Every computer's own log too (cr1#1061 slice 3).
+            from events_io import merged_lines
+            for line in merged_lines(p, encoding="utf-8"):
                 if '"brief_state"' not in line:
                     continue
                 try:
@@ -4360,16 +4402,20 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     # Phase 6 already re-validates the FULL composed digest after
     # absolutizing every doc link in it, which is where these lines get
     # their real leak scan — not skipped, just scanned at the right layer.
+    #
+    # cr1#997: only lines this surface PRINTS are scanned. `alarm_lines`,
+    # `watchdog`, `dark_surface_lines` and `schedule_refresh_announce_lines`
+    # are never placed on the brief (HEALTH1, 2026-09-07); the weekly cleanup
+    # report composes them. Scanning them here let one torn log line, whose
+    # alarm names the log file, refuse the whole brief for text nobody sees.
     scannable = "\n".join(
         # DATE1 — the header line is printed verbatim; scanned like the rest.
         ([date_header] if date_header else [])
-        + alarm_lines + changed_lines + ([watchdog] if watchdog else [])
+        + changed_lines
         # QUIET1 — the return header and the step-down line are printed
         # verbatim by the orchestrator, so they are scanned like the rest.
         + ([return_summary["header"]] if return_summary else [])
         + ([quiet_line] if quiet_line else [])
-        + dark_surface_lines
-        + schedule_refresh_announce_lines
         + money_lines
         + ([queue_pointer["line"]] if queue_pointer["line"] else [])
         # CAPTUREFLOW §D — the lane's overflow pointer is a text line the
@@ -4394,6 +4440,9 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
         "surface": "morning-brief",
         "mode": mode,
         "now": now_iso,
+        # cr1#1139 — the owner's name for the greeting, from the folder,
+        # whichever account fires the Brief.
+        "owner_first_name": brief_owner_first_name(ws),
         # HEAL1 — the catch-up's own record: the plan (and, when a runner ran
         # it, what ran and the one receipt). None on a scheduled fire. It is
         # a machine's note to a machine and never composes into a sentence.
@@ -4745,6 +4794,11 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
             # direction of that residual gap.
             sent_reconcile_cursor=_sent_reconcile_cursor(ws),
             thread_activity=_brief_thread_activity(ws))
+        # cr1#1012 (train 2): the evening's overdue number and each row's
+        # overdue flag are the open list's verdict, the same as the morning
+        # brief's and the Hub's (the owner's ruling of 2026-11-11).
+        from open_list import stamp_state_overdue
+        stamp_state_overdue(state, str(ws), _local_today)
         lane = cap_needs_attention(state.get("needs_attention") or [],
                                    now_iso=now_iso)
         # SPEC EODSYNTH1 §3.6 — THE HELD FENCE, ONE LEVEL UP FROM WHERE IT
@@ -5301,16 +5355,17 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
 
         # Leak-scan every text line the pack hands the orchestrator. Loud by
         # design, in the driver, before any of it reaches a chat turn.
+        #
+        # cr1#997: `alarm_lines` and `dark_surface_lines` are not scanned.
+        # Neither is placed on the composed screen any more (HEALTH1,
+        # 2026-09-07), so a hidden alarm naming the log file must not refuse
+        # the day-close.
         scannable = "\n".join(
-            alarm_lines
-            # TASKALARM1 — the render-once dead-surface lines are composed
-            # prose the fire posts, scanned exactly like alarm_lines.
-            + list(pack.get("dark_surface_lines") or [])
             # EODLEDGER1 — the three new text surfaces are scanned like every
             # other one. The coverage strip carries connector reasons that
             # arrived from the orchestrator, which is exactly the shape a leak
             # travels in.
-            + list(coverage.get("lines") or [])
+            list(coverage.get("lines") or [])
             + list(catchup.get("lines") or [])
             + [l for l in [score.get("line"), wins.get("line"),
                            wins.get("more_line"), slipped.get("more_line"),

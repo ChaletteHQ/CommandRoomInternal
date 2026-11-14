@@ -294,13 +294,23 @@ Discover the plugin root first (CONTRACT Rule 22) and run FROM `$PLUGIN_ROOT`:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -345,6 +355,12 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 # <<< CR ACCESS PREAMBLE v6 <<<
 python3 shared/scripts/needs_review_queue.py view "$WORKSPACE"
 ```
+
+On a merged seat the command line above cannot reach the files. The same page
+comes through the read door instead (cr1#1005): render it with
+`workspace_access.py plan run_helper --json '{"name":"needs_review_queue:queue_text","args":{"workspace_root":"<WS>"}}'`
+(add `"group_by":"counterparty"` for the chase grouping), paste what it
+prints, and relay its `result` exactly as below.
 
 One command. It prints the whole queue **grouped by the call it came from**
 (CAPTUREFLOW 2026-08-01), oldest call first, numbered across the whole list —

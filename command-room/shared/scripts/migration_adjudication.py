@@ -149,8 +149,12 @@ def _adjudication_rows(root_or_file):
             # gate. Fall back to the same file set, same order (shards
             # oldest first, then the active file), each read with
             # errors="replace" exactly as the base single-file read was.
-            from events_io import shard_paths
-            return [ev for fp in shard_paths(p) for ev in _single_file_rows(fp)]
+            # cr1#1061: one stream per computer, merged as the primary read
+            # merges them; one stream (every seat today) is the old fallback.
+            from events_io import log_streams, merge_streams
+            parsed = [[ev for fp in files for ev in _single_file_rows(fp)]
+                      for _name, files in log_streams(p)]
+            return parsed[0] if len(parsed) == 1 else merge_streams(parsed)
     return list(_single_file_rows(p))
 
 

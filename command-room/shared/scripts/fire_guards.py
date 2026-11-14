@@ -183,13 +183,22 @@ def scheduled_writer(root) -> Dict[str, Any]:
         pair = wi.forwarded_pair(dict(os.environ))
         declared = decl.get("writer_id") if isinstance(decl, dict) else None
         forwarded = pair[0] if pair else None
-        foreign = declared is not None and forwarded != declared
-        device_mismatch = False
-        if declared is not None and not foreign:
-            want = decl.get("device_digest") if isinstance(decl, dict) else None
-            here = sc.device_digest(os.environ.get(sc.DEVICE_WORKSPACE_ENV))
-            if want and here and here != want:
-                foreign = device_mismatch = True
+        # cr1#1138: the same verdict the write door gives
+        # (`schedule_holder.fire_verdict`): marks when both sides carry them,
+        # a pending hand-over honoured, today's comparison otherwise.
+        try:
+            import schedule_holder as sh
+            why = sh.fire_verdict(decl, dict(os.environ))
+            foreign = why is not None
+            device_mismatch = why in (sh.FOREIGN_COMPUTER, sh.FOREIGN_DEVICE)
+        except ImportError:
+            foreign = declared is not None and forwarded != declared
+            device_mismatch = False
+            if declared is not None and not foreign:
+                want = decl.get("device_digest") if isinstance(decl, dict) else None
+                here = sc.device_digest(os.environ.get(sc.DEVICE_WORKSPACE_ENV))
+                if want and here and here != want:
+                    foreign = device_mismatch = True
         line = sc.SCHEDULED_WRITER_LINES["foreign"] if foreign else ""
     except Exception:  # noqa: BLE001
         return out

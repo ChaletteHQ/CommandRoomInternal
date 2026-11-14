@@ -1,0 +1,48 @@
+{
+  "version": "6.0.0",
+  "headline": "Your Hub now holds your whole week: your people, priorities and work in one place, what was done for you, and a short email each morning.",
+  "items": [
+    {
+      "id": "v600_announce_hub",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Your Hub has new tabs: Week, Priorities, Work streams and People. Week shows the next seven days as a board, and More on a card moves it to another day or marks it done. Work streams groups your work, and a click opens where each one stands. People shows what each person owes you and what you owe them, and Send them their list puts a draft in your mail for you to review. The Hub uses your own words for your work."
+    },
+    {
+      "id": "v600_announce_today",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Today now opens with your day in one sentence. The number of things that need you is set when you open it and only goes down as you act; anything new waits in a quiet line. A second look shows only what changed. Done for you counts what was handled for you, and Missed something lets you say what the Hub did not show you."
+    },
+    {
+      "id": "v600_announce_morning_email",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Each morning you can get one short email at your own business address: what the day is about, how many things need you, and a link to your Hub. It goes only to you, once a day. Everything else still waits for your click."
+    },
+    {
+      "id": "v600_announce_privacy",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Any account or source you mark personal is never read, and people you mark off-limits stay out of your records. Say 'set up what's new' to mark your accounts and confirm your settings in a few minutes."
+    },
+    {
+      "id": "v600_announce_two_accounts",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "announce_only",
+      "prompt_template": "Your folder can now be used from two computers, and by a second account you name as acting for you. Your schedules stay with one computer and account, and you can hand them over."
+    },
+    {
+      "id": "v600_instruct_schedules",
+      "detector_module": "release_detectors.always",
+      "detector_function": "always_applies",
+      "action": "instruct_user",
+      "prompt_template": "One step to finish this update: open a new chat and type 'set up command room schedules'. It refreshes your morning brief so the morning email can go out."
+    }
+  ]
+}

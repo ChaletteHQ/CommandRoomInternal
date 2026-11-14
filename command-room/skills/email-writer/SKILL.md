@@ -28,6 +28,8 @@ On a merged seat (the folder is on the customer's computer) this read runs besid
 `c["lines"]` are CONSTRAINTS, not suggestions — obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. **`c["voice_block_sha256"]` is the proof you read it (VOICELOAD1, cr1#197):** put it on the draft's card row in Phase 4 (`"voice_block_sha256": c["voice_block_sha256"],` in the item), never from memory and never hashed by hand. The card carries it on the click's tuple, where apply-choices passes it to `build_email_drafted_provenance(..., voice_block_sha256=...)` and `snapshot_draft(..., voice_block_sha256=...)`; the event then records `voice_applied` and, when the workspace has a voice file this draft cannot prove it read, the ack says the one sentence `draft_constraints.voice_receipt(...)["line"]` returns. The card itself says the same sentence when its row does not carry the hash of the voice file on disk: `render_and_persist` checks it. A draft composed without this block loaded is flagged, never silently returned. Anything the person has STATED in this request outranks all of it. When you have a draft, run it through `apply_draft_constraints(draft, c)` before you show it — that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
 
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 Before resolving the recipient(s) from the trigger phrase, you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)`. Multi-candidate results MUST surface a disambiguation widget — do NOT silently pick the first match. Only after `resolve_all` returns no candidates may you fall back to grep or to asking the user, and that fallback MUST be flagged. For thread / recent-context lookup, load the canonical thread payload — `load_thread_knowledge(workspace_root, primary_thread_id, "email-writer")` per the MANDATORY context load below — to ground the substrate-aware agenda; do not re-derive thread context with a freelance substrate read. The profile applies the org scope at the source (PGUARD2 D2 — drafts must not see personal-lane or masked-account commitments) and keeps only the confirmed half of the open set (INTAKE — the org scope is not the pending filter; see the Reads bullet below). See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. Once resolved, the greeting and every rendered mention of the recipient use the record's `canonical_name` spelling (or its nickname field for warm registers) — never a transcript/ASR or email-display-name spelling (F-50 P2b; protocol § Display names).
@@ -63,6 +65,29 @@ Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
 - `coverage.gauge.state == "ready"` → the payload is trusted context. Its provenance and coverage notes may inform the EXISTING chat-side disclosure lines (the held count in `coverage.needs_review_held` and the needs-your-call queue are the same fact). Surface behavior is otherwise unchanged.
 - Any other state (`not_ready`, `unmeasured`) → produce the draft directly, exactly as specified, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — in the draft or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
 - `coverage.empty_payload` true → the substrate holds nothing reachable for this project. Do NOT fabricate thread context: draft from recipient context (Phase 2) and the connector-driven assembly alone (the mail backend's thread history — that stage runs regardless). Never weave thread context the payload did not supply into an outbound email — a fabricated "as we discussed" line to the one person who would know it is wrong is worse than a plain draft.
+
+### Craft: how the recipient and their business work (cr1#397)
+
+A craft file is how a person or a business does a kind of work, as numbered rules. A draft reads the write and decide scopes of the people it is addressed to, and of the business its project is with. The `"email-writer"` payload carries the business's: `sections.craft` holds the thread's own and its business's files. It carries no other person's craft: a draft reads ONLY its recipients' craft, never that of the thread's other people, so an email to a colleague on a thread never applies the key contact's rules. Make this call on EVERY draft, through the read door: with the person ids the recipient resolution above returned (the To line; never a name match), and with an empty list (`"subject_ids": []`) when none resolves (a cold email to someone not on file, an email to the team). Never skip it because nobody resolved: the same call returns your own write method.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": ["<recipient person id>", "<recipient person id>"], "task": "draft", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Each file in `result.files` carries its scope, its status and its numbered rules; each rule has its own words (`text`) and a `cite_id`. Only confirmed files come back, and the owner's own proposed ones.
+
+**Your own method comes first (ruling on cr1#399).** The same call returns, before any other file, your own write method (`_hq/craft/write.md`) and then your firm's (`_hq/craft/firm/write.md`), on every draft, without your id being passed. Your and your firm's write scope loads on every draft; your firm's other scopes load only when the draft is for the firm itself (its own project or business is the subject), and your own other scopes load only when you are yourself a recipient. When both apply, the owner's method sets how he writes; a recipient's or business's file adds what that relationship needs. Cite every rule of either that the draft used, the owner's first, in the order `result.files` gives. Craft is method, not voice: the voice calibration stays the voice source. If a craft rule and the voice block conflict, voice wins on wording and craft wins on structure.
+
+- **Apply a rule where the email is the kind of work it describes.** A rule is method, never content: it shapes how the email is written, and its words never appear in the email.
+- **Cite every rule the draft used, from the helper, never by hand.** After the draft is composed, pass the `cite_id` of each rule it used:
+
+  ```bash
+  python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+  ```
+
+  Each line in `result.lines` is one bullet of the chat `Sources:` section under the draft preview, pasted verbatim (for example `"When they write to a client, they open with the decision, because the reader is busy", per how Sam Sample writes (R1, confirmed Oct)`). An id in `result.refused` is not cited. The lines stay in chat: never in the email body, the subject or any file.
+- **The Draft click records what the draft cited (cr1#401).** The `cite_id`s that `cite_rules` did not refuse go on the draft's book record when the owner clicks Draft (apply-choices Step 4B, `extra.craft_cites`). A later correction to that draft is then attached to those rules by the weekly learning run.
+- **No craft, no mention.** When `sections.craft` is not in the payload and the helper returns no file, or the draft used no rule, the turn says nothing about craft: no line, no "no method on file".
 
 ---
 
@@ -289,13 +314,23 @@ Rewrite what fails each pass, re-check once, then return.
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -494,13 +529,23 @@ Each draft's `N send` lands in apply-choices the same way the n=1 case does — 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

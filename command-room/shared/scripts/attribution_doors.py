@@ -52,6 +52,12 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+try:  # cr1#1011: the stored direction and its fit check live in one place
+    from owed_direction import stored_direction
+except Exception:  # noqa: BLE001 - a standalone copy works direction out
+    def stored_direction(_row, _user_id):
+        return None
+
 # The verb the door-1 pick dispatches on (SPEC D8 / A6 wording). Parsed by
 # `parse_pick_token`; composed by `pick_token`.
 PICK_VERB = "confirm_counterparty"
@@ -396,7 +402,16 @@ def row_direction(ev, *, user_person_id=None, default_person_id=None,
     is unresolved."""
     names = names if isinstance(names, dict) else {}
     owner = _owner_id(ev)
-    if owner and user_person_id and owner == str(user_person_id).strip():
+    # cr1#1011 (owner ruling 2026-11-11, option b): the direction stored on
+    # the row is read first. `stored_direction` answers only while it still
+    # fits this owner and this user, so it can never disagree with the
+    # derivation below; the derivation answers every row that stored none.
+    stored = stored_direction(ev, user_person_id)
+    if stored == DIRECTION_OWED_TO_YOU:
+        who = _safe_name(names.get(owner))
+        return DIRECTION_OWED_TO_YOU, f"{who} owes you"
+    if stored == DIRECTION_YOU_OWE or (
+            owner and user_person_id and owner == str(user_person_id).strip()):
         other = _counterparty_label(ev, names, workspace_root)
         if not other:
             return DIRECTION_YOU_OWE, YOU_OWE_NO_NAME

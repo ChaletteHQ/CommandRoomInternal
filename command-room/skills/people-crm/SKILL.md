@@ -1,8 +1,10 @@
 ---
 name: people-crm
 surfaces: both
-description: "Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]'. Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Also fires on 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]' — appends a sourced fact to their history. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep — the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export)."
+description: "Fires on: 'who is [name]', 'tell me about [name]', 'who do I know at [company]'. Never walk into a meeting or dinner wondering who-is-this-again. The relationship memory: who someone is, how you know them, what you last discussed, what's open between you. Also fires on 'what did [name] and I last discuss', 'prep me for dinner with [name]', 'add [name] to my contacts', 'quick, who is [name] again'. Owns person facts: 'remember [fact] about [name]' ('remember Sam prefers Signal'), 'note that [name] [fact]', which appends a sourced fact to their history. How someone works: 'what do I know about how [name] works', 'how does [name] work', 'apply [name]'s method to this'. Builds and reads per-person records from email, meetings, and notes. Does NOT fire on 'prep me for my 2pm' (call-prep, the meeting brief), 'prep for 1:1 with [direct report]' (team-intelligence), 'who should I reach out to' (relationship-moves), or 'model [name] as an advisor' (advisor-export)."
 ---
+
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## Skill Boundary (v2.1)
 
@@ -44,13 +46,23 @@ Before any person-write step in this skill or its callers, resolve through the A
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -356,13 +368,23 @@ An explicit user statement of one atomic fact about a person ("remember Sam pref
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -414,9 +436,61 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 
 **Structured auto-noting (HIST1 Part 2 — the ONE nuance to "enrichment doesn't auto-save"):** when the cross-source enrichment scan surfaces an atomic NON-identity fact from a STRUCTURED connector field (a signature block's "Prefers Signal" line, a calendar location field — never model inference over prose), it may be auto-noted as an additive fact EVENT via `entity_signal_detector.apply_structured_facts` — the person RECORD still never auto-updates, `role`/`company_news` facts still demote to confirm (S2), every auto batch is one-`undo` reversible, and the morning brief's CHANGED line narrates the count. Surface the returned `undo_line` in chat when anything was noted. Everything else in the "Fresh from your tools:" section stays exactly as documented below: shown, not saved, until the user decides.
 
+### A person's category, introducer, care note and phone numbers (train 2 part 3b)
+
+Each is a FIELD on the record, set through one write door and undone by `undo`. ENTITY_RESOLVE the person first (Gate 1), render the form with `plan run_writer`, paste what it prints, and say the door's `line` when `ok` is false. Never set any of these from a transcript guess: only the CEO's own statement, or a source they named, sets one.
+
+- "set Rio Sample's category to Prospect": `people_writer:door_set_person_field` with `{"person_id": "<id>", "field": "category", "value": "<one of: Client contact, Prospect, Partner or referral source, Peer or advisor, Vendor or service provider, Team or hiring, Personal, Unclear>", "workspace_root": "<WS>"}`.
+- "Dustin Sample introduced Rio Sample" with the words that show it: the same door with `"field": "introduced_by"` and `"value": {"person_id": "<the introducer's id>", "channel": "email|imessage|meeting|contact_card", "evidence": "<the words, verbatim>", "confidence": "stated|card_tag", "date": "<YYYY-MM-DD or null>"}`. `confidence` here is how sure the introduction is, a part of the value, not the record-level confidence the Writer Contract forbids. An introduction you only infer is never written by this door: it rides the confirm rail like any inferred fact.
+- "handle Rio Sample with care: <the CEO's own line>": the same door with `"field": "handle_with_care"` and the line as `value` (280 characters at most). It shows only on the CEO's own surfaces; never repeat it on a surface someone else reads.
+- Clearing any of the three: the same door with `"value": null`.
+- "add <a phone number> to Rio Sample" / "remove that number": `people_writer:door_attach_phone` / `people_writer:door_remove_phone` with `{"person_id": "<id>", "phone": "<as typed>", "workspace_root": "<WS>"}`. The door normalises it; a number on file for someone else is refused with its `line`.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"field": "category", "person_id": "<id>", "value": "Prospect", "workspace_root": "<WS>"}, "name": "people_writer:door_set_person_field"}'
+```
+
+"Rio Sample works at Acme Co" is the company: `people_writer:door_update_person` with `primary_org_id` (the Fences paragraph above). Next step per person is not one of these: it comes with train 3.
+
+**Importing these facts from a list (train 2 part 3c).** "import these categories / introducers / phone numbers": `people_writer:door_import_person_facts` with `{"rows": [{"name" or "person_id": "...", "category": "...", "introduced_by": {"name" or "person_id": "<the introducer>", "channel": "...", "evidence": "...", "confidence": "...", "date": "..."}, "phones": ["..."]}], "workspace_root": "<WS>"}`. Run it with `"preview": true` first and show what each row would do; import on the CEO's yes. A long list is landed in the workspace with `write` and named by `"rows_path"` instead of `rows`. Every row lands in one batch, so one `undo` takes back the facts and the people it added (a question it raised stays on the queue), and a re-run writes nothing new. A row naming someone not on file needs its `source_ref`, `source_kind` and `source_company`: the add guard adds them only when a task board, deal or contract source states their company (owner ruling C1); otherwise they are asked about and the row waits. Say each skipped row's `line`. Whole people from a list are not imported here (cr1#189), nor contact files (cr1#506).
+
 ### Personal ties — "[name] is my wife/husband/partner/mom/dad/kid" (SPEC BAL1 D1)
 
 A family/personal relationship statement is a FIELD change, not a fact: ENTITY_RESOLVE the name, then `run_writer people_writer:door_update_person` with `{"person_id": "<person_id>", "role": "<the stated relationship, e.g. Wife>", "tie": "personal", "workspace_root": "<WS>"}` (rendered with `plan run_writer`, pasted verbatim). The `tie: "personal"` marker moves the person into the Balance surface's lane and OUT of every work surface: relationship-moves drops them and every dormancy emitter skips them at its source gate. Never infer the tie from a transcript; only an explicit user statement sets it (an inferred family relationship rides the confirm rail like any proposal). The reverse ("actually [name] is a client contact") sets `tie='work'`. A cadence statement ("set date-night cadence to 2 weeks", "remind me to call Mom every 3 weeks" said as a cadence, not a reminder) sets `cadence_days` (days) on the same record through the same `people_writer:door_update_person` form; `cadence_days` is read ONLY by the Balance surface and never touches work dormancy math (it is NOT `cadence_override_days`).
+
+### How someone works: `what do I know about how [name] works`, `how does [name] work`, `apply [name]'s method to this` (SPEC CRAFT1, cr1#397)
+
+A craft file is how a person, a business or the owner does a kind of work (review, decide, write, run a meeting, sell, or a scope the owner added), as numbered rules, each with its evidence. These two verbs read those files; neither writes anything, and creating a file is not this skill's job.
+
+**Which verb.** Ask the matcher, through the read door, with the owner's words as typed:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"text": "<what the owner typed>", "workspace_root": "<WS>"}, "name": "craft_recall:match_craft_verb"}'
+```
+
+`result.verb` is `list`, `apply` or null, `result.name` the name it carries and `result.subject_ids` the people and businesses on file it resolved to, through the canonical resolver. Null means neither verb: `who is [name]` stays the profile above, `prep me for [name]` is call-prep, and a question about the product or the thing in front of the owner ("how does this work", "how does the Hub work", "how does Command Room work") is never a craft verb: answer it as the product question it is. A name on no record is null too. Several `subject_ids` get the disambiguation widget (Gate 1's rule); one is the subject. "Me" or the owner's own name is the owner.
+
+**`list`: what do I know about how [name] works.** Read the inventory for the resolved id:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_id": "<the resolved id>", "workspace_root": "<WS>"}, "name": "craft_recall:craft_inventory"}'
+```
+
+One line per file in `result.files`, in order: the scope (`scope_label`), its status, its confidence, its last test (`last_test`, as given), its rule count, then its open questions as sub-bullets. A file with a `problem` says it in plain words. A person outside the owner's company whose file carries `consent` gets it named on the line. No file: one line, "Nothing on file yet about how [name] works." The rows are for display; a rule's words are read from the file when they are used (ruling C3).
+
+**`apply`: apply [name]'s method to this.** The artifact is what the owner pasted or attached in this turn; none there: ask for it in one line. Read the method, naming the scope when the owner did or when the artifact makes it plain (a contract is review, a draft email is write); with several files and no clear scope, ask which one in one question:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"scope": "<scope, or omit the key>", "subject_ids": ["<the resolved id>"], "task": "apply", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply each file's rules, its order of work and its never-do rules to the artifact, and show the result beside the original: the original first under the heading **Original**, then the result under **With [name]'s method**, each change marked with the rule number that made it. Then cite the rules used, from the helper, never by hand, as the chat `Sources:` section:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+Only confirmed files come back, and the owner's own proposed ones; nothing loaded means one line, "Nothing on file yet about how [name] works", and the artifact is left as it is. Nothing is saved: the owner keeps the result by asking for a document.
 
 ## Person Profile Format
 
@@ -704,5 +778,7 @@ When ANY skill (workspace-manager during "new project," meeting-notes when a new
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
 > Never walk into a meeting or dinner wondering who-is-this-again. Owns the CEO's relationship layer — auto-builds person records from every meeting, email, and Slack thread, and answers relationship queries instantly. Use when the CEO says 'who is', 'who is Aria', 'who is again', 'who do I know at', 'who do I know', 'add [name] to my contacts', 'to my contacts', 'refresh aliases', 'rebuild my aliases', 'what did Bowie and I last discuss', 'last discuss', 'what did we last discuss', 'prep me for dinner', 'prep me for dinner with', 'tell me about' — a PERSON ('tell me about Mira', 'tell me about Mira from the board'), resolved against your contacts. Writes to the person records in entities.json (canonical ownership) and regenerates _hq/views/PEOPLE.md. DOES NOT fire on 'prep me for my 2pm' (that's call-prep, which reads people-crm records) or 'team status / my direct reports' (that's team-intelligence, which extends people-crm for direct reports). DOES NOT fire on 'tell me about [a project or org you track]' (workspace-manager — 'go [name]' context load) or 'tell me about [an unknown company]' (research).
+
+> Craft verbs (SPEC CRAFT1, cr1#397): 'what do I know about how [name] works', 'how does [name] work' (lists the craft files: scope, status, confidence, last test, open questions) and 'apply [name]'s method to this' (runs a file against a pasted or attached artifact, shown beside the original). Machine-matchable stems for the mechanical matcher: 'what do I know about how', 'how does Mira work', 'how does Sam Sample work', 'method to this'. Near misses: 'who is [name]' is the profile above, not a craft verb; DOES NOT fire on 'prep me for [name]' (call-prep, the meeting brief).
 
 > Person-fact verbs (SPEC HIST1 D8): 'remember [fact] about [name]', 'note that [name] [fact]' — an explicit user statement appends a sourced person_fact_observed via people_writer.record_person_fact; ENTITY_RESOLVE gates every name-bearing form (lone first names disambiguate, never first-pick). Machine-matchable stems for the mechanical matcher: 'remember Sam prefers Signal', 'note that'. A name that resolves to a tracked ORG hands over to workspace-manager's org money & facts handler ('[Org] is a $[N] account' and org facts live there).

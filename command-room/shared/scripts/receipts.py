@@ -175,6 +175,9 @@ CANONICAL_TASK_IDS = frozenset({
     "connector-proposals",  # cr1#668 - the documents / deals / contracts leg inside `maintenance` (never a task of its own): proposes closes only and reads people and projects; its pack_run is the dueness signal and the window's resume point
     "binding-gauge",  # GAUGEJOB1 — the daily binding-gauge refresh job inside `maintenance` (never a task of its own; its pack_run is the dueness signal, written on CHANGE runs only — a quiet run leaves no trace, see binding_gauge.run_gauge_refresh_job's QUIET-RUN SEMANTICS)
     "people-update",  # cr1#665 (lane 3 of cr1#609) - the DAILY people update job inside `maintenance` (never a task of its own): identity_reconcile.py --daily over the one maintenance window; its pack_run is the dueness signal and the window's resume point, written on every applying run, and never an identity_reconcile_run (that type implies the Sunday identity-reconcile task)
+    "number-ledgers",  # cr1#1018 (train 9) - the sessions and pipeline ledgers rebuilt daily inside `maintenance` (never a task of its own; ledgers.py rebuild --apply); its pack_run is the dueness signal and never makes the ledger stale
+    "decision-list",  # cr1#1073 - the decision list rebuilt daily inside `maintenance` (never a task of its own)
+    "open-list",  # cr1#1012 (train 2) - the open list rebuilt each run inside `maintenance` (never a task of its own)
     "project-update",  # cr1#665 (lane 3 of cr1#609) - the DAILY project update job inside `maintenance` (never a task of its own): lifecycle_pass.py --daily, the revive leg over the one maintenance window; its pack_run is the dueness signal and the window's resume point, written on every applying run, and never a lifecycle_run (the Sunday lifecycle task's own type)
 })
 
@@ -490,6 +493,11 @@ RECEIPT_TYPES: dict[str, dict] = {
     # run's window starts), on a run that changed nothing too.
     "people-update":      {"types": frozenset({"pack_run"})},
     "project-update":     {"types": frozenset({"pack_run"})},
+    # cr1#1018 (train 9): the number ledgers, rebuilt daily inside
+    # maintenance; one pack_run per applying run.
+    "number-ledgers":     {"types": frozenset({"pack_run"})},
+    "decision-list":      {"types": frozenset({"pack_run"})},
+    "open-list":          {"types": frozenset({"pack_run"})},
 }
 
 # Types that identify their task by TYPE alone (exactly one writer each).
@@ -1001,6 +1009,23 @@ def foreign_scheduled_fire(environ: dict, workspace_root=None) -> Optional[str]:
         workspace_root if workspace_root is not None
         else (environ.get("CR_WORKSPACE") or None))
     if not decl:
+        return None
+    # cr1#1138: the holder is compared by its account and computer marks
+    # when both sides carry them (a renamed folder and another organisation
+    # keep the holder; a second computer on the same folder path does not),
+    # and a pending hand-over is honoured. Asked on EVERY write through the
+    # door, so a run that started before a hand-over stops at its next write.
+    try:
+        import schedule_holder as _sh
+
+        why = _sh.fire_verdict(decl, environ)
+    except Exception:  # noqa: BLE001 - fall back to the comparison below
+        _sh, why = None, False
+    if _sh is not None:
+        if why in (_sh.FOREIGN_ACCOUNT, _sh.FOREIGN_WRITER):
+            return "writer"
+        if why in (_sh.FOREIGN_COMPUTER, _sh.FOREIGN_DEVICE):
+            return "device"
         return None
     declared = str(decl.get("writer_id") or "").strip()
     try:
@@ -1821,26 +1846,33 @@ def _iter_events(workspace_root) -> Iterable[dict]:
         return
     except Exception:
         pass
-    # Defensive fallback — active file only, bad lines skipped.
+    # Defensive fallback — active file, then each computer's own file
+    # (cr1#1061 slice 3), bad lines skipped.
     import json
 
-    path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
-    if not path.exists():
-        return
+    data = Path(workspace_root) / "_hq" / "data"
+    paths = [data / "events.jsonl"]
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(ev, dict):
-                    yield ev
+        paths += sorted((data / "computers").glob("*/events.jsonl"))
     except OSError:
-        return
+        pass
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict):
+                        yield ev
+        except OSError:
+            continue
 
 
 def iter_receipts(

@@ -27,6 +27,9 @@ all four §0 decisions RULED by M 2026-07-18):
                  <address>"), which ties under the same rule as anything else.
                  An address merely mentioned in calendar prose does not tie:
                  that row stays a question.)
+                 OR (owner ruling C1, 2026-11-10, cr1#1011) one sighting on a
+                 task board, a deal or a contract whose source states the
+                 person's company, not the owner's (`c1_named_company`).
                  AND zero same-name collision AND not already on file.
                  Applied via `people_writer.auto_add_person` (its internal
                  same-name gate is defense-in-depth: needs_confirm demotes to
@@ -1076,6 +1079,102 @@ def cluster_identifier(cluster: dict, workspace_root=None) -> Optional[str]:
     return None
 
 
+# Owner ruling C1 (2026-11-10, cr1#1011): the source kinds on which one
+# sighting of a full name, with the company the source itself states, adds the
+# person without asking. Every other kind keeps cr1#754's rule.
+C1_SOURCE_KINDS = ("tasks", "deals", "contracts")
+
+
+def c1_named_company(cluster: dict, workspace_root=None) -> Optional[str]:
+    """The company a task board, deal or contract states for this person, or
+    None (owner ruling C1). Only a row with a source pointer and a C1 kind
+    counts; the company is the source's own field, never `inferred_org`; the
+    owner's own company names nobody; and a cluster that disagrees with itself
+    (two companies, two tool ids) names nobody, as in `cluster_identifier`."""
+    if cluster_disagreement(cluster):
+        return None
+    name = _norm_name(cluster.get("name"))
+    if not name or _c1_org_shaped(name):
+        return None
+    from confirm_flow import person_source_kind
+    from connector_adapters.provenance import dedup_key_of
+
+    named = set()
+    for r in _cluster_rows(cluster):
+        company = _source_company(r)
+        ref = r.get("source_ref")
+        if _source_family(r) not in C1_SOURCE_KINDS or not company \
+                or not dedup_key_of(ref):
+            continue
+        # The pointer must not say it is another kind of source: a meeting
+        # pointer under a task-board word is a meeting (review, cr1#1011).
+        if person_source_kind(ref, None) not in (None,) + C1_SOURCE_KINDS:
+            continue
+        if _c1_no_company(company, name):
+            continue
+        named.add(company)
+    if len(named) != 1:
+        return None
+    owners = _owner_companies(workspace_root)
+    if owners is None:
+        return None
+    squashed_owners = {_c1_squash(o) for o in owners}
+    if any(_is_owners_company(c, owners) or _c1_squash(c) in squashed_owners
+           for c in named):
+        return None
+    return next(iter(named))
+
+
+# Words that, in a company field, name no company: a placeholder, or the
+# person working for themselves. A company field reading one of these asks.
+_C1_NO_COMPANY_WORDS = frozenset({
+    "tbd", "tba", "unknown", "none", "na", "self", "independent", "freelance",
+    "freelancer", "personal", "contractor", "individual", "private",
+    "various", "sole", "unemployed", "retired", "student"})
+# Legal endings beyond the shared fold's, for the C1 checks only.
+# (The shorter forms the org-name pattern knows, `_ORG_MARKER_RE`, count too.)
+_C1_ENDINGS = frozenset({"co", "corp", "corporation", "llc", "ltd", "limited",
+                         "incorporated", "plc", "gmbh", "llp", "company"})
+# Names that are a team or an office, never a person.
+_C1_ORG_NAME_WORDS = frozenset({"team", "department", "dept", "office",
+                                "support", "staff", "committee", "board", "desk"})
+
+
+def _c1_squash(company: str) -> str:
+    """A company with case, spaces, a leading "the" and legal endings removed,
+    so "The Sample Bakery Ltd" and "SampleBakery" compare as one."""
+    words = [w for w in re.findall(r"[^\W_]+", _norm_name(company)) if w != "the"]
+    while words and _c1_is_ending(words[-1]):
+        words.pop()
+    return "".join(words)
+
+
+def _c1_is_ending(word: str) -> bool:
+    from brain_proposals import _ORG_MARKER_RE
+
+    return word in _C1_ENDINGS or bool(_ORG_MARKER_RE.fullmatch(word))
+
+
+def _c1_no_company(company: str, name: str) -> bool:
+    """Does this folded company field name no company for this person: a
+    placeholder or self-employment word, or nothing but their own name?"""
+    words = re.findall(r"[^\W_]+", company)
+    if not words or any(w in _C1_NO_COMPANY_WORDS for w in words):
+        return True
+    core = list(words)
+    while core and _c1_is_ending(core[-1]):
+        core.pop()
+    return not core or set(core) <= set(name.split())
+
+
+def _c1_org_shaped(name: str) -> bool:
+    """Is this "name" a company or a team rather than a person?"""
+    from brain_proposals import _ORG_MARKER_RE
+
+    return bool(_ORG_MARKER_RE.search(name)) or \
+        any(w in _C1_ORG_NAME_WORDS for w in name.split())
+
+
 def cluster_source_identifiers(cluster: dict, workspace_root=None) -> list:
     """What an add keeps on the record (`source_identifiers`, cr1#825): the
     source's ids and the companies it supplied, under the rules that let them
@@ -1467,12 +1566,17 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
     # them. A name can be seen twice and still be two people.
     identifier = cluster_identifier(cluster, workspace_root) \
         if n_families >= 2 else None
-    # SPEC_FLOW1 `identity.auto_create` — the workspace switch on the two
-    # branches below, and ONLY on them: these are the two that put a new
-    # record on file without asking. Off means the row asks, which is what
-    # the final branch returns anyway, so a seat that turns it off gets the
-    # pre-IDENT1 behaviour and nothing else changes.
-    if (email or identifier) and not auto_create_enabled(workspace_root):
+    # Owner ruling C1 (2026-11-10, cr1#1011): one sighting on a task board, a
+    # deal or a contract adds the person when the source names their company.
+    named_company = None if (email or identifier) else \
+        c1_named_company(cluster, workspace_root)
+    # SPEC_FLOW1 `identity.auto_create`: the workspace switch on the
+    # branches below that put a new record on file without asking, and ONLY
+    # on them. Off means the row asks, which is what the final branch returns
+    # anyway, so a seat that turns it off gets the pre-IDENT1 behaviour and
+    # nothing else changes.
+    if (email or identifier or named_company) and \
+            not auto_create_enabled(workspace_root):
         return {"tier": "confirm", "email": email, "matched_person": None,
                 "why": "adding people automatically is turned off for this "
                        "workspace — the row asks instead"}
@@ -1489,6 +1593,12 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                        f"{n_families} independent source families "
                        f"({'/'.join(cluster['source_families'])}) + "
                        f"{identifier} + zero collision (D2)"}
+    if named_company:
+        return {"tier": "auto", "email": None, "matched_person": None,
+                "why": "full name + named on a "
+                       f"{'/'.join(cluster.get('source_families') or [])} "
+                       "item whose source states their company + zero "
+                       "collision (owner ruling C1, cr1#1011)"}
     if n_families >= 2:
         return {"tier": "confirm", "email": email, "matched_person": None,
                 "why": f"seen in {n_families} source families "

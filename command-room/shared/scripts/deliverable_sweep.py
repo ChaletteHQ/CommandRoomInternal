@@ -922,7 +922,8 @@ def detect_gate_bypass(
     docx_gate_ran = 0
     by_type: Dict[str, int] = {}
     try:
-        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        for line in _merged_lines(events_path, encoding="utf-8", errors="replace"):
             line = line.strip()
             if not line:
                 continue

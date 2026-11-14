@@ -831,6 +831,65 @@ MAINTENANCE_JOBS: dict[str, dict] = {
         "description": "bring a quiet project back to active the morning "
                        "after it moves again",
     },
+    # cr1#1018 (train 9 of the memory and Hub programme): THE NUMBER
+    # LEDGERS. Ruling A1 of 2026-11-10: the now layer is a folder of ready
+    # answers rebuilt by Maintenance. DAILY, nominal midnight, so it is due
+    # once a day at the day's first fire, beside the people and project
+    # updates; an every-fire cadence would end the quiet no-op fire. Between
+    # rebuilds an answer whose ledger has gone stale is counted from the log
+    # (ledgers.py), so a number is never older than the log. It rebuilds
+    # `_hq/data/now/ledgers/` (sessions by client, pipeline by stage) whole
+    # from the log and writes one pack_run; it reads the log and entities
+    # and writes neither. After the people and project updates, so the
+    # morning's new people and revived projects are in what it counts.
+    # Kind `other`: it opens and closes no commitment.
+    "number-ledgers": {
+        "skill": ("number ledgers (shared/scripts/ledgers.py <workspace_root> "
+                  "rebuild --apply - dry-run without --apply; one pack_run "
+                  "per applying run, which never makes the ledger stale)"),
+        "nominal_cron": "0 0 * * *",
+        "description": "count sessions by client and the pipeline by stage, "
+                       "so those numbers are ready when you ask",
+    },
+    # cr1#1073 (train 6 follow-up): THE DECISION LIST. Ruling A1 of
+    # 2026-11-10, the same as the number ledgers: DAILY, nominal midnight, so
+    # it is due once a day at the day's first fire and the quiet no-op fire
+    # stays quiet. It rebuilds `_hq/data/now/decisions/decisions.json` whole
+    # from the log and the entities file and writes one pack_run; it reads
+    # both and writes neither. Between rebuilds an answer whose list is
+    # behind counts from the log (decision_list.py), so "what did we decide"
+    # is never older than the log; the job only makes it fast. Kind `other`:
+    # it opens and closes no commitment.
+    "decision-list": {
+        "skill": ("decision list (shared/scripts/decision_list.py "
+                  "<workspace_root> rebuild --apply - dry-run without "
+                  "--apply; one pack_run per applying run, which never makes "
+                  "the list stale)"),
+        "nominal_cron": "0 0 * * *",
+        "description": "list every decision and whether it still stands, so "
+                       "what you decided is ready when you ask",
+    },
+    # cr1#1012 (train 2 of the memory and Hub programme): THE OPEN LIST.
+    # Ruling A1 of 2026-11-10: the open list is a file rebuilt every run, and
+    # the log stays the record. It rebuilds `_hq/data/now/open_list/` whole
+    # from the log (every open top-level promise, with direction, people,
+    # thread, due and source) and writes one pack_run; it reads the log and
+    # writes neither it nor the entities file. Due at EVERY weekday fire, on
+    # the reconcile legs' cadence, because those fires are never quiet no-ops
+    # and each one moves promises; plus a daily slot so a weekend fire
+    # rebuilds it too. Last in the fire, after every capture and close leg,
+    # so it lists what the fire left open. Between rebuilds a reader whose
+    # list the log has moved past counts from the log (open_list.py), so the
+    # overdue number is never older than the log. Kind `other`: it opens and
+    # closes no commitment.
+    "open-list": {
+        "skill": ("open list (shared/scripts/open_list.py <workspace_root> "
+                  "rebuild --apply - dry-run without --apply; one pack_run "
+                  "per applying run, which never makes the list stale)"),
+        "nominal_cron": ("45 6,12,17 * * 1-5", "0 0 * * *"),
+        "description": "list every open promise in one place, so every "
+                       "count of them is the same number",
+    },
     # Nominal midnight on the 1st -> due at the first fire on/after the 1st.
     # PARTITIONED (CATCHUP1 F-3): one report per missed month, each labelled
     # with its own month. A machine closed across a 1st loses that month
@@ -981,6 +1040,9 @@ JOB_KIND: dict[str, str] = {
     "daily-measure": KIND_JUDGE,
     "people-update": KIND_OTHER,   # cr1#665: touches no commitment
     "project-update": KIND_OTHER,  # cr1#665: touches no commitment
+    "number-ledgers": KIND_OTHER,  # cr1#1018: touches no commitment
+    "decision-list": KIND_OTHER,  # cr1#1073: reads decisions, touches no commitment
+    "open-list": KIND_OTHER,  # cr1#1012: reads promises, opens and closes none
     "schedule-realign": KIND_OTHER,
     "monthly-report": KIND_MONTHLY,
 }
@@ -2239,15 +2301,54 @@ OWN_RECEIPT_LOOKBACK = _dt.timedelta(hours=4)
 COMPLETE_RECEIPT_STATUSES = frozenset({"complete", "degraded"})
 
 
-def _receipt_outcome(status) -> str:
+#: cr1#1000, cr1#1001. The skip reasons that say the workspace declares no
+#: connector the job reads, word for word as each writer says it: tasks-capture
+#: and tasks-close (`tasks_leg`), connector-proposals (`connector_proposals`),
+#: reconcile-chat (`chat_reconcile`) and inbound-mail
+#: (`inbound_mail_leg.NO_MAIL_REASON`). Such a job did all it can do until a
+#: connector is added, so its skip is complete, not owed: scored due it was
+#: due on every fire forever, and filed failed it sat on the Hub as a standing
+#: alarm. Exact words, not a pattern: a skip for any other reason (a dial
+#: turned away, a reason joined to another) stays due.
+#: `run_undeclared_skip_test.py` pins each writer's words to this set.
+NOT_DECLARED_SKIP_REASONS = frozenset({
+    "no tasks connector is declared for this workspace",
+    "no documents, deals or contracts connector is declared for this workspace",
+    "no chat backend is declared for this workspace",
+    "no mail connector is declared for this workspace",
+})
+NOT_DECLARED_WHY = "not_declared"
+
+
+def _skip_reason_of(row) -> Optional[str]:
+    """The `skip_reason` on one `receipts.iter_receipts` row, or None."""
+    raw = row.get("raw") if isinstance(row, dict) else None
+    data = raw.get("data") if isinstance(raw, dict) else None
+    reason = data.get("skip_reason") if isinstance(data, dict) else None
+    return reason if isinstance(reason, str) else None
+
+
+def _skipped_not_declared(status, skip_reason) -> bool:
+    """A `skipped` receipt whose reason is that no such connector is declared
+    (cr1#1000)."""
+    return (status == SKIPPED_STATUS
+            and isinstance(skip_reason, str)
+            and skip_reason in NOT_DECLARED_SKIP_REASONS)
+
+
+def _receipt_outcome(status, skip_reason=None) -> str:
     """`completed`, `due` or `failed`: what a job's own receipt says about its
     run (cr1#760). `skipped` is a run that had nothing it could read, so it is
     owed and not failing (the validators' own word: a mail-less workspace must
-    not read as a failing one). `blocked`, and any word this module does not
-    know, is a run that did not do its work. A row with no status at all
+    not read as a failing one). A skip whose `skip_reason` says the workspace
+    declares no such connector (cr1#1000) is complete: nothing is owed until a
+    connector is added. `blocked`, and any word this module does not know, is
+    a run that did not do its work. A row with no status at all
     (`value_receipt_generated`, older shapes) cannot say that, and counts."""
     if not status or (isinstance(status, str)
                       and status in COMPLETE_RECEIPT_STATUSES):
+        return "completed"
+    if _skipped_not_declared(status, skip_reason):
         return "completed"
     return "due" if status == SKIPPED_STATUS else "failed"
 
@@ -2260,8 +2361,9 @@ def _book_readable(workspace_root) -> bool:
     try:
         import events_io
 
+        # cr1#1061: a per-computer log is part of the book too.
         for path in {events_io.active_path(workspace_root),
-                     *events_io.shard_paths(workspace_root)}:
+                     *events_io.log_files(workspace_root)}:
             with open(path, "rb") as fh:
                 fh.read(1)
     except Exception:  # noqa: BLE001 - whatever stopped it, nothing was read
@@ -2337,7 +2439,7 @@ def _this_fire_start(workspace_root, since_iso, fired_via,
 
 def _own_fire_receipts(workspace_root, job_ids, finished: str,
                        start: Optional[_dt.datetime] = None) -> Optional[dict]:
-    """`{job_id: (status, UTC ISO, named, window)}`: each job's own newest
+    """`{job_id: (status, UTC ISO, named, window, skip_reason)}`: each job's own newest
     receipt on THIS fire (cr1#666), for the callers that hand no per-job times
     (the scheduled prompt's step 4, the merged M3 line, the typed surfaces'
     receipt lines). `named` is `(firm, unconfirmed)`, the connectors that
@@ -2379,7 +2481,8 @@ def _own_fire_receipts(workspace_root, job_ids, finished: str,
             # `finished` has whole seconds, and a job can land in that second.
             if (job and at.replace(microsecond=0) <= end
                     and (job not in newest or at >= newest[job][1])):
-                newest[job] = (r.get("status"), at, _named_unread(r), _read_window(r))
+                newest[job] = (r.get("status"), at, _named_unread(r),
+                               _read_window(r), _skip_reason_of(r))
     except Exception:  # noqa: BLE001 - nothing is proved either way
         return None
     floor = end - OWN_RECEIPT_LOOKBACK
@@ -2387,8 +2490,9 @@ def _own_fire_receipts(workspace_root, job_ids, finished: str,
         floor = start
     elif prev is not None and prev > floor:
         floor = prev
-    return {j: (status, _utc_iso(at), named, window)
-            for j, (status, at, named, window) in newest.items() if at >= floor}
+    return {j: (status, _utc_iso(at), named, window, reason)
+            for j, (status, at, named, window, reason) in newest.items()
+            if at >= floor}
 
 
 def _read_window(row: dict) -> Optional[dict]:
@@ -2456,7 +2560,7 @@ def _settle_completed(ids, own: Optional[dict], handed: dict, *,
     for jid in ids:
         if jid in own:
             status = own[jid][0]
-            if _receipt_outcome(status) == "completed":
+            if _receipt_outcome(status, own[jid][4]) == "completed":
                 kept.append(jid)
             else:
                 moved[jid] = str(status)
@@ -2479,9 +2583,10 @@ def _collect_completed_at(handed: dict, own: Optional[dict], completed,
     would read as run only through the Hub's fallback for old receipts."""
     out: dict = {}
     for jid in completed:
-        status, at = (own or {}).get(jid, ("", None))[:2]
+        row = (own or {}).get(jid, ("", None, None, None, None))
+        status, at = row[:2]
         when = handed.get(jid) or (
-            at if _receipt_outcome(status) == "completed" else None)
+            at if _receipt_outcome(status, row[4]) == "completed" else None)
         if not when and jid in QUIET_BY_DESIGN_JOBS:
             when = finished
         if when:
@@ -3041,6 +3146,15 @@ JOB_LEGS: dict = {
                       "--workspace {root} --apply --daily"),
     "project-update": ("python3 shared/scripts/lifecycle_pass.py "
                        "--workspace {root} --apply --daily"),
+    # cr1#1018: pure Python, no connector.
+    "number-ledgers": ("python3 shared/scripts/ledgers.py "
+                       "{root} rebuild --apply"),
+    # cr1#1073: pure Python, no connector.
+    "decision-list": ("python3 shared/scripts/decision_list.py "
+                      "{root} rebuild --apply"),
+    # cr1#1012: pure Python, no connector.
+    "open-list": ("python3 shared/scripts/open_list.py "
+                  "{root} rebuild --apply"),
 }
 
 
@@ -3734,6 +3848,42 @@ def _errored_read_rule(rel_name: str) -> str:
 #: receipt at all, so nothing said why. The rule below makes "unreachable"
 #: mean one thing (no mail tool loaded) and makes every run that read nothing
 #: land a blocked receipt that names what it searched and what came back.
+#: cr1#1002. One fire read mail for one job and, minutes later, named `email`
+#: unreachable for the next: each job loaded its connector with its own tool
+#: search, and one empty search (a connector still connecting) was enough.
+#: A connector is loaded once a run and reused, an empty search is repeated
+#: once, and the searches that still found nothing ride the run's receipt.
+CONNECTOR_ONCE_RULE = (
+    "Each connector is loaded once in this run: when a later job reads the "
+    "same category and its plan lists the same `connector_queries` as a "
+    "search this run already made, every later job in this run reuses it "
+    "(the tools that search loaded, and that search's words wherever a step "
+    "quotes its searches) instead of searching again; any other job runs "
+    "its own search as its steps say. A tool search that loads no tool: "
+    "repeat that search once, before any of the steps below leaves a job "
+    "due or blocked or names a connector unreachable for it, and if it "
+    "still loads nothing, keep the search, quoted, for `searches_empty` in "
+    "M3.")
+#: cr1#1002: the run receipt's field for the searches that loaded no tool.
+SEARCHES_EMPTY_FIELD = "connector_searches_empty"
+
+
+def _searches_empty(value) -> dict:
+    """`{category: [search, ...]}` off a caller's `searches_empty`, keeping
+    only non-empty text; anything malformed reads as nothing (cr1#1002)."""
+    out: dict = {}
+    if not isinstance(value, dict):
+        return out
+    for cat, searches in value.items():
+        if not isinstance(cat, str) or not cat.strip():
+            continue
+        if not isinstance(searches, (list, tuple)):
+            continue
+        kept = [s.strip() for s in searches if isinstance(s, str) and s.strip()]
+        if kept:
+            out[cat.strip()] = kept
+    return out
+
 INBOUND_UNREACHABLE_PREFIX = "the mail connector did not load in this run"
 INBOUND_ERRORED_PREFIX = "the mail read failed"
 
@@ -3979,7 +4129,7 @@ def _inbound_steps(pair: str, fire: str = MAINT_FIRE) -> str:
     )
 
 
-def _capture_steps(pair: str) -> str:
+def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
     """M2's meeting-capture sub-steps (MAINTJOBS1 MUST 2). The capture leg is
     the End of Day's Phases 3-4.8, already on the door in that file's merged
     lines (ORCH2): this job runs THOSE lines, verbatim, over its own window,
@@ -3990,7 +4140,11 @@ def _capture_steps(pair: str) -> str:
     window is one PAGE of the maintenance window (`catchup.paged_window`), so
     a 30-day first run is read a few days per fire, and a pass that stops
     short lands a partial receipt the next fire continues from. cr1#978: the
-    newest page first, so a meeting held today is not read last."""
+    newest page first, so a meeting held today is not read last.
+
+    cr1#993: `fire` names the folder the pass stages its meeting batch in
+    (the scheduled fire's by default, a typed run's own), as cr1#955 did
+    for the mail and chat jobs."""
     return (
         "    meeting-capture - PLAN (the window):\n"
         + _m_line(pair, "run_helper",
@@ -4041,7 +4195,21 @@ def _capture_steps(pair: str) -> str:
         "meeting exactly as the phases say (its record, people, projects, "
         "transcript closes) but hand `meeting_capture:route_meeting_captures` "
         "an empty `items` list, so no commitment is captured; the receipt's "
-        "window carries the skip.\n"
+        "window carries the skip. `meetings_skip_reason` set (the "
+        "owner called the meetings source personal, cr1#1163) -> the "
+        "window is empty: fetch no meeting at all.\n"
+        # cr1#993: the phases' staging lines name no fire, so they stage in
+        # the End of Day's folder; this run stages and reads in its own.
+        "      THIS RUN'S OWN FOLDER: in those phases, every "
+        "`eod_helpers:stage_fire_input`, `eod_helpers:dedup_meetings`, "
+        "`eod_helpers:decision_rows` and `eod_helpers:run_shadow_lane` call "
+        "carries one more argument, `\"fire\": \"" + fire + "\"`, beside its "
+        "others, so this pass stages and reads its meeting batch only in "
+        "this run's folder and never in the End of Day's or another run's. "
+        "Never run the phases' own `eod_helpers:clear_fire_staging` line "
+        "here; once the receipt above has landed, clear this run's folder "
+        "with the line below instead.\n"
+        + _clear_line(pair, fire)
     )
 
 
@@ -4295,6 +4463,10 @@ DOOR_JOBS: dict = {
     "meeting-capture": {
         "plan": "eod_helpers:catchup_window",
         "writer": "eod_incremental:log_capture_pass_receipt",
+        # cr1#993: stages its meeting batch in this run's own folder
+        "writers": (MAINT_STAGE_WRITER,
+                    "eod_incremental:log_capture_pass_receipt",
+                    MAINT_CLEAR_WRITER),
         "validator": "receipts:iter_receipts",
         "steps": _capture_steps,
     },
@@ -4600,6 +4772,10 @@ def score_door_job(workspace_root, job_id="", since_iso=None, *,
         read: owed, not failing. A `MERGED_SKILL_CLASS_JOBS` job on a merged
         seat is left due either way: `due` / `skill_class_left_due` with the
         word in `detail`;
+      * `completed` / `not_declared` - that receipt is a skip whose reason is
+        that the workspace declares no such connector
+        (`NOT_DECLARED_SKIP_REASONS`, cr1#1000): nothing is owed until one is
+        added;
       * `completed` / `nothing_stamped` - a `NOTHING_STAMPED_JOBS` job with
         no receipt and no refusal (the registry's own words);
       * `completed` / `quiet_run` - a `QUIET_RUN_JOBS` job whose own plan or
@@ -4637,8 +4813,12 @@ def score_door_job(workspace_root, job_id="", since_iso=None, *,
                 newest = row
         if newest is not None:
             status = newest.get("status")
-            outcome = _receipt_outcome(status)
-            if outcome == "completed":
+            reason = _skip_reason_of(newest)
+            outcome = _receipt_outcome(status, reason)
+            if _skipped_not_declared(status, reason):
+                # cr1#1000: no such connector is declared, so nothing is owed.
+                out.update(outcome="completed", why=NOT_DECLARED_WHY)
+            elif outcome == "completed":
                 out.update(outcome="completed", why="receipt")
             elif (outcome == "failed" and job in MERGED_SKILL_CLASS_JOBS
                   and merged_seat()):
@@ -4800,7 +4980,9 @@ def merged_branch_steps(writer_id: Optional[str] = None,
         "\"morning_brief_helpers:plan_maintenance_receipt\"}'\n"
         "    When a job was left due for want of its connector in this run, "
         "add `connectors_unreachable` to those args: the list of those "
-        "connectors' categories.\n"
+        "connectors' categories. When a tool search loaded no tool even on "
+        "its retry, add `searches_empty` to those args: {<category>: [<each "
+        "such search, quoted>]}.\n"
         f"    {pair}{_PLAN_HEAD} append_jsonl --json "
         "'{\"holder\": \"maintenance\", \"rel\": \"_hq/data/events.jsonl\", "
         "\"rows\": [<every row in rows from the receipt answer above, in "
@@ -4923,7 +5105,9 @@ def _baked_branch_text(pair: str) -> str:
                   '"name": "morning_brief_helpers:plan_maintenance_receipt"}') +
         "    When a job was left due for want of its connector in this run, "
         "add `connectors_unreachable` to those args: the list of those "
-        "connectors' categories. When the plan carries a `fire_id`, add "
+        "connectors' categories. When a tool search loaded no tool even on "
+        "its retry, add `searches_empty` to those args: {<category>: [<each "
+        "such search, quoted>]}. When the plan carries a `fire_id`, add "
         "\"fire_id\": \"<the plan's fire_id>\" to those args too (cr1#977: it "
         "names this fire's receipt, so a later fire in the same slot can "
         "tell this fire finished).\n" +
@@ -5043,7 +5227,9 @@ def _typed_branch_text() -> str:
         "    When a job was left due for want of its connector in this run, "
         "add `connectors_unreachable` to those args: the list of those "
         "connectors' categories (only a connector that did not load; a read "
-        "that answered is never unreachable).\n" +
+        "that answered is never unreachable). When a tool search loaded no "
+        "tool even on its retry, add `searches_empty` to those args: "
+        "{<category>: [<each such search, quoted>]}.\n" +
         _m_line(pair, "append_jsonl",
                 '{"holder": "maintenance", "rel": "_hq/data/events.jsonl", '
                 '"rows": [<every row in rows from the receipt answer above, in '
@@ -5074,7 +5260,12 @@ def _door_job_steps(pair: str, fire: str = MAINT_FIRE) -> str:
     cr1#955: a job that stages its batch (`MAINT_STAGE_WRITER` among its
     `writers`) is handed `fire`, the folder it stages in; the default is
     the scheduled fire's text, byte for byte, and a typed run passes
-    `TYPED_FIRE`."""
+    `TYPED_FIRE`.
+
+    cr1#979: a typed run left mail, meetings and chat due with their
+    connectors loaded ("I chose to leave these three for later"). The header
+    now makes a loaded connector's step mandatory, and says a job left due
+    makes the run partial (`PARTIAL_RUN_STATUS`)."""
     if not DOOR_JOBS:
         return ""
     out = ("    `door` runs in three sub-steps, each job its own: its PLAN "
@@ -5082,7 +5273,13 @@ def _door_job_steps(pair: str, fire: str = MAINT_FIRE) -> str:
            "session, and its WRITER through the write door, which lands the "
            "job's rows and its own receipt under this task's identity. A "
            "`door` job whose connector is not in this run stays due exactly "
-           "like a `skill` entry.\n")
+           "like a `skill` entry. A due `door` job whose connector IS in this "
+           "run runs its CONNECTOR step now, every time: it is never left due "
+           "for later, for a later run, for time or by choice (cr1#979). It "
+           "is left due only when its tool search found no tool loaded or its "
+           "read errored, as its own steps say. A connector job left due with "
+           "no receipt of its own means the run is recorded partial, not "
+           "complete. " + CONNECTOR_ONCE_RULE + "\n")
     for job_id in MAINTENANCE_JOBS:
         spec = DOOR_JOBS.get(job_id)
         if spec:
@@ -5777,6 +5974,228 @@ def _connector_fields(workspace_root, connectors_unreachable, env, *,
     return out
 
 
+#: cr1#979: the `maintenance_run` status of a fire that left a due connector
+#: job unread. Not `complete`: a typed run on a merged seat left mail, meetings
+#: and chat due with their connectors loaded ("I chose to leave these three
+#: for later") and every receipt still read complete. The fire did run and
+#: did serve its slot, so the watchdog counts the word as served
+#: (`task_watchdog.SERVED_RECEIPT_STATUSES`) and no reader of freshness or of
+#: the slot reads it as a missed fire.
+PARTIAL_RUN_STATUS = "partial"
+
+#: cr1#979: the receipt field naming those jobs, omitted when none was left.
+LEFT_UNREAD_FIELD = "jobs_left_unread"
+
+
+def _left_unread_jobs(workspace_root, due_ids, own: Optional[dict], *,
+                      done=(), failed=()) -> list:
+    """The due jobs this fire left unread (cr1#979), sorted: a `door` job
+    that reads a connector the seat declares with a dial on
+    (`connector_reads.job_connectors`), filed in `jobs_due` and in neither
+    `done` nor `failed` (a caller may list a job it ran as due too: the
+    catch-up surfaces do), with no receipt of its own on this fire. A job
+    that wrote one (a skip, a blocked read) has
+    its own word on the book and is not named here, and neither is a job left
+    due on purpose (`MERGED_SKILL_CLASS_JOBS`). Whatever the reason a job was
+    left (no tool loaded, or the run chose not to read), the run is not a
+    clean complete. A book that could not be read (`own` None) proves
+    nothing, and a reader that fails names nothing."""
+    if own is None:
+        return []
+    try:
+        from connector_reads import job_connectors
+
+        settled = set(done or ()) | set(failed or ())
+        return sorted(
+            job for job in dict.fromkeys(due_ids or [])
+            if job not in settled
+            and job_class(job) == "door" and job not in MERGED_SKILL_CLASS_JOBS
+            and own.get(job) is None and job_connectors(workspace_root, job))
+    except Exception:  # noqa: BLE001 - a receipt never fails over this read
+        return []
+
+
+def left_unread_line(job_ids) -> str:
+    """The owner's sentence for the jobs a fire left unread (cr1#979), "" for
+    none. Names each job as the schedule does. It says only what the book
+    shows, no record of the job running on this fire, never that a read
+    failed (cr1#743: the read may have worked and its writer died)."""
+    try:
+        from schedule_config import task_display_name
+    except Exception:  # noqa: BLE001
+        def task_display_name(job):  # type: ignore[no-redef]
+            return job
+    names = [task_display_name(j) for j in job_ids or []]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return (f"{names[0]} was due and has no record of running, so this "
+                "run is not complete. It stays due for the next run.")
+    joined = ", ".join(names[:-1]) + " and " + names[-1]
+    return (f"{joined} were due and have no record of running, so this run is "
+            "not complete. They stay due for the next run.")
+
+
+def maintenance_left_unread(workspace_root) -> list:
+    """The jobs the newest `maintenance_run` left unread (cr1#979), READ
+    ONLY, for the Hub. A fire that stood down behind another (cr1#772) ran
+    nothing and is read past. An unreadable book answers [], never raises."""
+    try:
+        from receipts import iter_receipts
+
+        rows = iter_receipts(workspace_root, task_ids=[MAINTENANCE_TASK_ID])
+    except Exception:  # noqa: BLE001
+        return []
+    newest = None
+    for r in rows or []:
+        if (r.get("type") != RECEIPT_EVENT_TYPE or r.get("dt") is None
+                or _stood_down(r)):
+            continue
+        if newest is None or r["dt"] >= newest["dt"]:
+            newest = r
+    if newest is None:
+        return []
+    raw = newest.get("raw") if isinstance(newest.get("raw"), dict) else {}
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    left = data.get(LEFT_UNREAD_FIELD)
+    return [j for j in left if isinstance(j, str) and j] if isinstance(left, list) else []
+
+
+#: cr1#1007: how many completed runs in a row must read nothing before a source
+#: that usually brings items in is flagged. The one place this number lives.
+SOURCE_SILENT_RUNS = 5
+
+#: cr1#1007: how many runs before the zero streak say what the source usually
+#: reads (their median). Fewer than `SOURCE_SILENT_RUNS` earlier runs is too
+#: little history to say, and the source is not flagged.
+SOURCE_SILENT_BASELINE_RUNS = 20
+
+#: cr1#1007: each source job and the field its own receipt counts what it read
+#: in, as each writer names it: inbound mail `n_fetched`
+#: (`inbound_mail_leg`), sent mail `sent_scanned_count`
+#: (`reconcile_sent_commitments`), meetings `n_meetings`
+#: (`eod_incremental.log_capture_pass_receipt`), chat `n_scanned`
+#: (`chat_reconcile`).
+SOURCE_COUNT_FIELDS = {
+    "inbound-mail": "n_fetched",
+    "reconcile-sent": "sent_scanned_count",
+    "meeting-capture": "n_meetings",
+    "reconcile-chat": "n_scanned",
+}
+
+#: cr1#1007: the owner's words per source: what it is called, and the
+#: connection to check.
+SOURCE_SILENT_WORDS = {
+    "inbound-mail": ("Mail", "mail"),
+    "reconcile-sent": ("Sent mail", "mail"),
+    "meeting-capture": ("Meetings", "meeting notes"),
+    "reconcile-chat": ("Chat", "chat"),
+}
+
+#: cr1#1007: the `maintenance_run` field naming the silent sources, omitted
+#: when none is.
+SOURCES_SILENT_FIELD = "sources_silent"
+
+
+def silent_sources(history, *, runs: int = SOURCE_SILENT_RUNS,
+                   baseline: int = SOURCE_SILENT_BASELINE_RUNS) -> list:
+    """The sources that usually bring items in and have read nothing on their
+    last `runs` completed runs (cr1#1007). PURE: reads only `history`.
+
+    `history` is `{job_id: [count, ...]}`, each source's items read per
+    completed run, oldest first (`source_count_history`). A source is flagged
+    when its trailing run of zero reads is at least `runs` long and the
+    `baseline` runs before that streak (at least `runs` of them) have a
+    median above zero. So a streak far longer than the window stays flagged,
+    and the first run that reads something clears it. Never flagged: a
+    source with too little earlier history, one whose earlier runs mostly
+    read nothing, and a job quiet by design (`QUIET_BY_DESIGN_JOBS`).
+
+    Answers `[{job_id, runs, usual}]` in the registry's order (`runs` the
+    length of the zero streak, `usual` the earlier median)."""
+    import statistics
+
+    out = []
+    known = list(MAINTENANCE_JOBS) + sorted(
+        j for j in (history or {}) if j not in MAINTENANCE_JOBS)
+    for job in known:
+        if job in QUIET_BY_DESIGN_JOBS:
+            continue
+        counts = [c for c in ((history or {}).get(job) or [])
+                  if isinstance(c, int) and not isinstance(c, bool) and c >= 0]
+        streak = 0
+        for c in reversed(counts):
+            if c:
+                break
+            streak += 1
+        if streak < runs:
+            continue
+        earlier = counts[:len(counts) - streak][-baseline:]
+        if len(earlier) < runs:
+            continue
+        usual = statistics.median(earlier)
+        if usual <= 0:
+            continue
+        out.append({"job_id": job, "runs": streak, "usual": usual})
+    return out
+
+
+def source_count_history(workspace_root) -> dict:
+    """`{job_id: [count, ...]}`, oldest first: each source in
+    `SOURCE_COUNT_FIELDS`, the items its own completed runs read, READ ONLY
+    (cr1#1007). A run counts when its own receipt (one of the job's own
+    receipt types) says it did its run (`_receipt_outcome` completed) and
+    carries the count as a whole number; a skipped or blocked run already
+    says why and is left out. A source with no such run is absent. An
+    unreadable book answers {}, never raises."""
+    try:
+        from receipts import RECEIPT_TYPES, iter_receipts
+
+        rows = iter_receipts(workspace_root, task_ids=list(SOURCE_COUNT_FIELDS))
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict = {}
+    for r in rows or []:
+        job = r.get("task_id")
+        field = SOURCE_COUNT_FIELDS.get(job)
+        if not field:
+            continue
+        types = (RECEIPT_TYPES.get(job) or {}).get("types") or frozenset()
+        if r.get("type") not in types:
+            continue
+        if _receipt_outcome(r.get("status")) != "completed":
+            continue
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        n = data.get(field)
+        if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+            out.setdefault(job, []).append(n)
+    return out
+
+
+def maintenance_silent_sources(workspace_root) -> list:
+    """`silent_sources` over this book's history (cr1#1007), READ ONLY, for
+    the run receipt and the Hub. Never raises."""
+    try:
+        return silent_sources(source_count_history(workspace_root))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def silent_sources_line(rows) -> str:
+    """The owner's sentences for the silent sources (cr1#1007), "" for none."""
+    out = []
+    for row in rows or []:
+        job = row.get("job_id") if isinstance(row, dict) else None
+        name, conn = SOURCE_SILENT_WORDS.get(job, (str(job or ""), "its"))
+        if not name:
+            continue
+        out.append(f"{name} has read nothing on the last {int(row.get('runs') or 0)} "
+                   f"runs, though it usually brings in some. Check the {conn} "
+                   "connection.")
+    return " ".join(out)
+
+
 #: The jobs whose window comes from a cursor at their newest MESSAGE, not from
 #: their last run: a quiet seat's cursor ages with nothing unread (cr1#746).
 CURSOR_WINDOW_JOBS = frozenset({"reconcile-sent", "reconcile-chat"})
@@ -5867,9 +6286,15 @@ def maintenance_receipt(
     connectors_unreachable: Optional[Iterable] = None,
     since_iso: Optional[str] = None,
     fire_id: Optional[str] = None,
+    searches_empty: Optional[dict] = None,
 ) -> dict:
     """Append THE one `maintenance_run` audit event for this fire, via the
     locked append gate (receipts.log_receipt -> event_gate.append_event).
+
+    `searches_empty` (cr1#1002): `{category: [search, ...]}`, the tool
+    searches that loaded no tool even on their one retry. Kept under
+    `SEARCHES_EMPTY_FIELD` with only non-empty text; omitted when none, so
+    every other receipt is unchanged.
 
     `completed_at` (cr1#666): `{job_id: ISO}`, when each job finished, read
     like `windows` (a due dict's own `completed_at`, then this map on top).
@@ -5918,6 +6343,18 @@ def maintenance_receipt(
     keeps it with its dates, which the brief's CHANGED strip reads
     (`change_feed`), so a scheduled fire that says nothing still reaches the
     owner. Said once (`_fire_gap_unread`). Omitted otherwise.
+
+    cr1#979: a fire that leaves a due connector job unread (`_left_unread_jobs`:
+    a `door` job reading a declared connector, filed due, with no receipt of
+    its own on this fire) is written with status `PARTIAL_RUN_STATUS`, names
+    the jobs under `LEFT_UNREAD_FIELD`, and joins `left_unread_line` to
+    `summary`. Every other fire keeps the writer's default status and gains
+    no field.
+
+    cr1#1007: a source that usually brings items in and has read nothing on
+    its last `SOURCE_SILENT_RUNS` completed runs (`maintenance_silent_sources`)
+    is named under `SOURCES_SILENT_FIELD`, and `silent_sources_line` joins
+    `summary`. The status is unchanged; omitted when no source is silent.
 
     T2B FIRE3B MUST 2 (F-T2-12, the receipt half): on a merged seat a job in
     `MERGED_SKILL_CLASS_JOBS` handed in `jobs_failed` is left DUE instead
@@ -5974,6 +6411,15 @@ def maintenance_receipt(
     own = _own_fire_receipts(workspace_root, listed, finished, start)
     done_ids, moved = _settle_completed(_job_ids(jobs_completed), own, handed,
                                         window=start is not None)
+    # cr1#1000: a job handed in as due or failed whose own receipt on this fire
+    # is a skip for want of any such connector is complete, not owed. A job
+    # the caller listed on `jobs_due` (the fire's roster) stays there, like
+    # every completed job; one handed only as failed is not added to it.
+    not_declared = [j for j in dict.fromkeys(due_in + failed_in)
+                    if j not in done_ids and own and j in own
+                    and _skipped_not_declared(own[j][0], own[j][4])]
+    done_ids += not_declared
+    failed_in = [j for j in failed_in if j not in not_declared]
     due_in += [j for j in moved if j not in due_in]
     failed_in += [j for j, why in moved.items()
                   if why != SKIPPED_STATUS and j not in failed_in]
@@ -6003,8 +6449,29 @@ def maintenance_receipt(
         extra_data[GAP_UNREAD_FIELD] = gap_unread
         extra_data["summary"] = " ".join(
             x for x in (extra_data.get("summary"), gap_unread["line"]) if x)
+    left_unread = _left_unread_jobs(workspace_root, due_ids, own,
+                                    done=done_ids, failed=failed_ids)
+    if left_unread:
+        # cr1#979: due connector jobs this fire left unread. The run is
+        # recorded partial, the jobs are named, and the owner's line says so.
+        extra_data[LEFT_UNREAD_FIELD] = left_unread
+        extra_data["summary"] = " ".join(
+            x for x in (extra_data.get("summary"),
+                        left_unread_line(left_unread)) if x)
+    silent = maintenance_silent_sources(workspace_root)
+    if silent:
+        # cr1#1007: a source that usually brings items in has read nothing on
+        # its last runs. The run's status is unchanged; the owner is told.
+        extra_data[SOURCES_SILENT_FIELD] = silent
+        extra_data["summary"] = " ".join(
+            x for x in (extra_data.get("summary"),
+                        silent_sources_line(silent)) if x)
     if root_repair_state is not None:
         extra_data["root_repair_state"] = root_repair_state
+    empty_searches = _searches_empty(searches_empty)
+    if empty_searches:
+        # cr1#1002: which tool search found no tool, per connector category.
+        extra_data[SEARCHES_EMPTY_FIELD] = empty_searches
     if rescored:
         # T2B FIRE3B MUST 2 - the correction is on the book: which jobs the
         # caller handed in as failed and this receipt left due instead.
@@ -6014,6 +6481,11 @@ def maintenance_receipt(
         # cr1#760 - the same posture: what the caller listed completed and
         # this receipt did not take, and why. Omitted when nothing moved.
         extra_data["rescored_completed"] = moved
+    if not_declared:
+        # cr1#1000 - what the caller listed due or failed and this receipt
+        # filed completed, because no such connector is declared. Omitted when
+        # nothing moved.
+        extra_data["rescored_not_declared"] = not_declared
     named = _receipt_fire_id(fire_id)
     if named:
         # cr1#977: the fire this receipt closes, by the id its plan and its
@@ -6038,6 +6510,9 @@ def maintenance_receipt(
     if done_at:
         extra_data[COMPLETED_AT_FIELD] = done_at
 
+    # cr1#979: a fire that left a due connector job unread is not a clean
+    # complete. Any other fire keeps the writer's default word.
+    status_kw = {"status": PARTIAL_RUN_STATUS} if left_unread else {}
     receipt = log_receipt(
         workspace_root,
         MAINTENANCE_TASK_ID,
@@ -6047,6 +6522,7 @@ def maintenance_receipt(
         # its environment instead; every other seat is unchanged.
         fired_via=via,
         extra_data=extra_data,
+        **status_kw,
     )
     _append_heartbeat(workspace_root, receipt, finished)
     return receipt
@@ -6263,6 +6739,18 @@ __all__ = [
     "catch_up_family",
     "maintenance_staleness",
     "maintenance_failing_jobs",
+    "PARTIAL_RUN_STATUS",
+    "LEFT_UNREAD_FIELD",
+    "left_unread_line",
+    "maintenance_left_unread",
+    "SOURCE_SILENT_RUNS",
+    "SOURCE_SILENT_BASELINE_RUNS",
+    "SOURCE_COUNT_FIELDS",
+    "SOURCES_SILENT_FIELD",
+    "silent_sources",
+    "source_count_history",
+    "maintenance_silent_sources",
+    "silent_sources_line",
     "catch_up_plan",
     "run_catch_up",
     "run_job",

@@ -186,16 +186,29 @@ def load_events(events_jsonl_path: str | Path) -> list[dict]:
     includes any sibling `events-<year>.jsonl` shards so full-history callers see the
     whole timeline after a rotation. On an unsharded workspace the result is identical
     to the pre-A5 single-file read (no siblings exist). A non-`events.jsonl` path is
-    read as-is (back-compat for callers pointing at a custom file)."""
+    read as-is (back-compat for callers pointing at a custom file).
+
+    ONE LOG PER COMPUTER (cr1#1061): an `events.jsonl` path also reads every
+    per-computer log beside it and merges the streams through
+    `events_io.merge_streams` (everything from each, exact duplicates
+    dropped). With none -- every seat today -- the read is unchanged."""
     path = Path(events_jsonl_path)
     if path.name == "events.jsonl":
         try:
-            from events_io import shard_paths
-            paths = shard_paths(path)
+            from events_io import log_streams
+            streams = [files for _name, files in log_streams(path)]
         except Exception:
-            paths = [path] if path.exists() else []
+            streams = [[path] if path.exists() else []]
     else:
-        paths = [path] if path.exists() else []
+        streams = [[path] if path.exists() else []]
+    parsed = [_load_files(files) for files in streams]
+    if len(parsed) == 1:
+        return parsed[0]
+    from events_io import merge_streams
+    return merge_streams(parsed)
+
+
+def _load_files(paths) -> list[dict]:
     out: list[dict] = []
     for p in paths:
         if not p.exists():

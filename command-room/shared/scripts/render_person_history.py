@@ -212,6 +212,12 @@ def _dedup_by_seq(events: list[dict]) -> list[dict]:
 def _gather(ws: Path, person_id: str) -> tuple[list[dict], list[dict], int]:
     """(person-events sorted by time asc, skipped-line records, newest seq
     tagging this person)."""
+    mine, skipped, newest_seq, _step = _gather_with_merges(ws, person_id)
+    return mine, skipped, newest_seq
+
+
+def _gather_with_merges(ws: Path, person_id: str) -> tuple:
+    """`_gather`, plus the merge map (`merged_into`) of the whole log."""
     events, skipped = load_events_defensively(_events_path(ws))
     email_idx: dict = {}
     try:
@@ -222,14 +228,22 @@ def _gather(ws: Path, person_id: str) -> tuple[list[dict], list[dict], int]:
                 json.loads(ent_path.read_text(encoding="utf-8")))
     except Exception:
         pass
+    # cr1#1136: rows noted under a record merged into this one, before the
+    # merge, are this person's too.
+    step = merged_into(events)
     mine: list[dict] = []
     newest_seq = 0
     for ev in events:
         if not isinstance(ev, dict):
             continue
         data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-        is_retract = ev.get("type") == RETRACT_TYPE and data.get("target_id") == person_id
-        if not is_retract and person_id not in _event_persons(ev, email_idx):
+        is_retract = (ev.get("type") == RETRACT_TYPE
+                      and isinstance(data.get("target_id"), str)
+                      and follow_merge(step, data["target_id"])[0] == person_id)
+        here = _seq_of(ev)
+        if not is_retract and not any(
+                follow_merge(step, x, here)[0] == person_id
+                for x in _event_persons(ev, email_idx)):
             continue
         seq = ev.get("seq")
         if isinstance(seq, int) and not isinstance(seq, bool) and seq < 10**10:
@@ -237,7 +251,7 @@ def _gather(ws: Path, person_id: str) -> tuple[list[dict], list[dict], int]:
         mine.append(ev)
     mine = _dedup_by_seq(mine)
     mine.sort(key=lambda e: event_time(e) or "")
-    return mine, skipped, newest_seq
+    return mine, skipped, newest_seq, step
 
 
 def _retracted_seqs(events: list[dict]) -> set[int]:
@@ -250,6 +264,73 @@ def _retracted_seqs(events: list[dict]) -> set[int]:
         if isinstance(rs, (int, float)) and not isinstance(rs, bool):
             out.add(int(rs))
     return out
+
+
+MERGE_TYPE = "person_merged"
+
+
+def _seq_of(ev) -> Optional[int]:
+    seq = ev.get("seq") if isinstance(ev, dict) else None
+    return seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+
+
+def _record_name(rec: dict) -> str:
+    """A person record's own name, legacy shapes included."""
+    for key in ("canonical_name", "display_name", "name"):
+        v = rec.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    both = " ".join(str(rec.get(k) or "").strip() for k in ("first_name", "last_name"))
+    return both.strip()
+
+
+def merged_into(events: list) -> dict[str, list]:
+    """{merged-away person id: [{"into", "name", "seq"}, ...]} from the
+    `person_merged` rows, in log order (cr1#1136). Read with `follow_merge`.
+
+    A merge deletes the duplicate's record but leaves the facts and contact
+    rows noted under its id in the log, where no reader looked. Every person
+    reader follows the merge at read time instead, so a merge needs no
+    second write and each row keeps its own source. A merge is permanent
+    (there is no un-merge), so nothing here is undone. Only rows logged
+    before the merge follow it: a person id is handed out again once its
+    record is gone, and the new person's rows stay their own."""
+    step: dict[str, list] = {}
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != MERGE_TYPE:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        # Rows logged before v3.13.6 carried these at the top level.
+        before = data.get("before") if isinstance(data.get("before"), dict) else ev.get("before")
+        before = before if isinstance(before, dict) else {}
+        dup = before.get("duplicate") if isinstance(before.get("duplicate"), dict) else {}
+        old = str(dup.get("id") or "")
+        keep = str(data.get("person_id") or ev.get("person_id") or "")
+        if not old or not keep or old == keep:
+            continue
+        step.setdefault(old, []).append(
+            {"into": keep, "name": _record_name(dup), "seq": _seq_of(ev)})
+    return step
+
+
+def follow_merge(step: dict, person_id, seq=None) -> tuple[str, str]:
+    """(the person a row noted under `person_id` at log position `seq`
+    belongs to now, the name of the merged record it was noted on, or "").
+    Chains are followed to the end (B into A, then A into C reads B's rows
+    on C); a loop follows nothing. A row with no seq follows every merge."""
+    pid = str(person_id or "")
+    cur, name, seen = pid, "", {pid}
+    while cur in step:
+        hop = next((m for m in step[cur]
+                    if seq is None or m["seq"] is None or seq < m["seq"]), None)
+        if hop is None:
+            break
+        if hop["into"] in seen:
+            return pid, ""  # a loop: follow nothing
+        name = name or hop["name"] or "a merged record"
+        cur = hop["into"]
+        seen.add(cur)
+    return cur, name
 
 
 def _median_gap_days(dates: list[str]) -> Optional[int]:
@@ -326,7 +407,7 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
     if person is None:
         raise KeyError(f"no person with id {person_id!r}")
 
-    events, skipped, newest_seq = _gather(ws, person_id)
+    events, skipped, newest_seq, step = _gather_with_merges(ws, person_id)
     confident = [e for e in events if _confident(e)]
     retracted = _retracted_seqs(events)
 
@@ -383,7 +464,12 @@ def compile_person_history(workspace_root: str | Path, person_id: str) -> dict[s
         if not fact:
             continue
         cat = data.get("category") if data.get("category") in CATEGORY_LABELS else "other"
-        facts.setdefault(cat, []).append(f"{fact} ({_event_date(ev, ws_str) or 'undated'})")
+        when = _event_date(ev, ws_str) or "undated"
+        _to, was = follow_merge(step, data.get("person_id"), _seq_of(ev))
+        if was:
+            # cr1#1136: noted under a record since merged into this one.
+            when += f"; noted on {was}, merged in"
+        facts.setdefault(cat, []).append(f"{fact} ({when})")
 
     org_id = person.get("primary_org_id") or person.get("org_id") or (
         (person.get("affiliation_ids") or [None])[0]

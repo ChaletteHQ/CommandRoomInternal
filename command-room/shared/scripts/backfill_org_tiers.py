@@ -109,7 +109,8 @@ def run(workspace_root: str | Path, *, apply: bool = False,
 
     events: list[dict] = []
     if events_path.exists():
-        for line in events_path.read_text(encoding="utf-8").splitlines():
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        for line in _merged_lines(events_path, encoding="utf-8"):
             if line.strip():
                 try:
                     events.append(json.loads(line))

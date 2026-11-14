@@ -65,7 +65,8 @@ def _read_events(ws: Path) -> List[dict]:
         return []
     out: List[dict] = []
     try:
-        for line in p.read_text(encoding="utf-8").splitlines():
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        for line in _merged_lines(p, encoding="utf-8"):
             line = line.strip()
             if not line:
                 continue

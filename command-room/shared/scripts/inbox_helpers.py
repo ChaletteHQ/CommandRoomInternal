@@ -48,6 +48,7 @@ VM's interpreter.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -436,7 +437,8 @@ def mail_seams(workspace_root: str,
                silent: Optional[bool] = None,
                accounts: Optional[List[Any]] = None,
                discovery_ran: Optional[bool] = None,
-               pressed_send: bool = False) -> Dict[str, Any]:
+               pressed_send: bool = False,
+               self_send: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The mail and calendar operations resolved through the seams, one answer.
 
     The declared backend wins, with its own operation vocabulary; nothing else
@@ -460,6 +462,17 @@ def mail_seams(workspace_root: str,
     gated by the page's one-use token and the newer-mail check before it
     goes out. On a silent fire it lets `send` resolve; label, archive and
     mark_read stay read-only, and the answer says `send_by_press: true`.
+
+    `self_send` (cr1#1017 behaviour 1, the owner's ruling of 2026-11-13: the
+    ONE named exception to I-12) is the morning message's plan from
+    `morning_message.plan_send`, and nothing else's. On a silent fire it lets
+    `send` resolve only when `morning_message.check_self_send` passes: the
+    plan's recipient and server are re-derived here from the account map
+    (the owner's one business-primary address, its binding
+    `connector_asserted`), the resolved send tool is on that server, the day
+    is today and not yet sent. The answer then says `send_self_only:
+    <address>`; a refused plan says `self_send_refused: <reason>` and send
+    stays read-only.
     """
     from tool_discovery import ToolDescriptor, discover_for_category
 
@@ -520,13 +533,30 @@ def mail_seams(workspace_root: str,
                         for c, a in drift.items()}
         out["flag_rows"] = [a["flag_row"] for a in drift.values()
                             if a.get("flag_row")]
+    self_ok: Optional[Dict[str, Any]] = None
+    if is_silent and self_send is not None:
+        try:
+            import morning_message as _mm
+            tid = (out["email"].get("send") or {}).get("tool_id")
+            sid = connector_config.server_id_of(tid) if tid else None
+            self_ok = (_mm.check_self_send(workspace_root, self_send, server_id=sid) if sid
+                       else {"ok": False, "reason": "no_send_tool"})
+        except Exception:  # noqa: BLE001 - a check that cannot answer refuses
+            self_ok = {"ok": False, "reason": "unreadable"}
+        if not self_ok.get("ok"):
+            out["self_send_refused"] = self_ok.get("reason") or "refused"
     if is_silent:
         # IDENT1 I-12 (5): a silent fire READS. It never sends, labels,
         # archives or marks anything read - those are a person's clicks on
-        # the widget, never the fire's own act.
+        # the widget, never the fire's own act. Two named exceptions resolve
+        # send alone: the owner's own pressed sends (cr1#707) and the morning
+        # message to the owner's own business address (cr1#1017, self_send).
         for op in SILENT_READ_ONLY_OPS:
             if op == "send" and pressed_send:
                 out["send_by_press"] = True
+                continue
+            if op == "send" and self_ok is not None and self_ok.get("ok"):
+                out["send_self_only"] = self_ok["address"]
                 continue
             out["email"][op] = {"tool_id": None, "reason": SILENT_READ_ONLY_REASON,
                                 "candidates_considered": None}
@@ -543,8 +573,12 @@ def mail_seams(workspace_root: str,
                     seam["reason"] = TOOLS_NOT_LOADED_REASON
     if accounts is not None:
         # IDENT1 I-12 (2): the fetch runs once per linked account.
-        out["fetch_plan"] = fetch_plan(workspace_root, accounts)
+        out["fetch_plan"], line = fetch_plan_and_line(workspace_root, accounts)
         out["n_accounts"] = len(out["fetch_plan"])
+        if not out["fetch_plan"]:
+            # cr1#1226: nothing is read; the fire passes this line as its
+            # `fetch_blocked` and the inbox says it.
+            out["fetch_blocked"] = line or PERSONAL_ONLY_LINE
     return out
 
 
@@ -648,11 +682,26 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
     directions: List[str] = []
     n_candidates = n_below = n_deduped = n_capped = 0
     user_names = _user_names(workspace_root, user_person_id)
+    # cr1#1181: a candidate from a sender the owner put off limits is never
+    # composed (counted under `off_limits`).
+    try:
+        import account_scope_gate as _asg
+        off = _asg.off_limits_senders(workspace_root)
+        off_pids = _asg.off_limits_person_ids(workspace_root, off) if off else set()
+    except Exception:  # noqa: BLE001
+        _asg, off, off_pids = None, set(), set()
+    n_off_limits = 0
     tracked: Optional[List[Dict[str, Any]]] = None  # read once, only if needed
     meetings: Optional[List[Dict[str, Any]]] = None  # INCAP2 DD-2, likewise
 
     for raw in items or []:
         n_candidates += 1
+        if off and _asg.sender_off_limits(
+                workspace_root, sender_email=raw.get("sender_email"),
+                sender_person_id=raw.get("sender_person_id"),
+                off_limits=off, person_ids=off_pids):
+            n_off_limits += 1
+            continue
         if raw.get("below_bar"):
             n_below += 1
             continue
@@ -701,7 +750,8 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
                 if tracked is None:
                     tracked = _open_commitments(workspace_root)
                 narration.hold_if_narration(
-                    row, tracked + rows, user_person_id=user_person_id,
+                    row, _narration_open_set(tracked, rows),
+                    user_person_id=user_person_id,
                     user_names=user_names, workspace_root=workspace_root)
             # INCAP2 DD-2 (cr1#193): an ask a later meeting with the same
             # person already covered carries a reason naming that meeting.
@@ -733,6 +783,8 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
         "n_candidates": n_candidates, "n_captured": len(rows),
         "n_deduped": n_deduped, "n_below_bar": n_below,
         "n_capped": n_capped, "n_errors": len(errors),
+        # cr1#1181: candidates from a sender the owner put off limits.
+        "n_off_limits": n_off_limits,
         # FIX3 F3-11 — the same number under the name the RECEIPT will
         # use for it, so the two counts stop colliding at Phase 7.
         # `n_errors` stays for one release, for readers that have it.
@@ -744,6 +796,22 @@ def plan_inbound_capture(workspace_root: str, items: List[Dict[str, Any]], *,
     }
     return {"rows": rows, "counters": counters, "errors": errors,
             "summary": ic._summary(dict(counters), cap), "cap": cap}
+
+
+
+def _narration_open_set(tracked, rows) -> list:
+    """cr1#771: the rows a progress update is compared against, without a
+    capture kept after its field was misread that the owner has not yet
+    confirmed: a clean update is never set aside as "already on your plate"
+    because of it. The same rule as the mail job's
+    (`inbound_capture.is_unconfirmed_kept`)."""
+    out = []
+    for o in list(tracked or []) + list(rows or []):
+        d = (o.get("data") if isinstance(o, dict) else None) or {}
+        if d.get("kept_after_refusal") and d.get("pending_review") is True:
+            continue
+        out.append(o)
+    return out
 
 
 def _open_commitments(workspace_root: str) -> List[Dict[str, Any]]:
@@ -1165,6 +1233,13 @@ def render_inbox_text(workspace_root: str, data_view: Dict[str, Any], *,
         header = str(data_view.get("header") or "").strip()
         if header:
             lines.append(_validated(header))
+        # cr1#1226 review: why nothing was read, said on the text path too.
+        # Read from the view's own summary line (in the widget vocabulary),
+        # never from a key of its own.
+        summary = str(data_view.get("summary_line") or "")
+        for blocked_line in FETCH_PLAN_LINES:
+            if blocked_line in summary:
+                lines.append(_validated(blocked_line))
         any_draft = False
         for key, title in TEXT_GROUPS:
             items = groups[key]
@@ -1376,37 +1451,103 @@ def typed_reply_action(text: str, data_view: Dict[str, Any]) -> Optional[Dict[st
     return None
 
 
+#: cr1#1226: what the inbox says when every linked mailbox is personal, so
+#: nothing is read. Names no address.
+PERSONAL_ONLY_LINE = ("Your linked mail is marked personal, so it is never "
+                      "read here.")
+#: cr1#1226 review: the account settings could not be read, so no mailbox
+#: is read rather than risk a personal one (fail closed, as cr1#664).
+ACCOUNTS_UNREADABLE_LINE = ("Your mail was not read this time, because your "
+                            "account settings could not be read.")
+#: the lines this module composes for an empty plan; the inbox says them
+FETCH_PLAN_LINES = (PERSONAL_ONLY_LINE, ACCOUNTS_UNREADABLE_LINE)
+#: the keys a connector's account list carries an address under
+_ACCOUNT_ADDRESS_KEYS = ("email", "address", "email_address", "emailAddress")
+
+
+def _is_personal(rec: Optional[Dict[str, Any]]) -> bool:
+    return str((rec or {}).get("role") or "").strip().lower() == "personal"
+
+
 def fetch_plan(workspace_root: str, accounts: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    """The plan alone; `fetch_plan_and_line` says why an empty one is empty."""
+    return fetch_plan_and_line(workspace_root, accounts)[0]
+
+
+def fetch_plan_and_line(workspace_root: str,
+                        accounts: Optional[List[Any]]) -> tuple:
     """The mail fetch, once per linked account (the connector's own rule:
     never answer from the primary account alone when several are linked).
 
     `accounts` is the connector's `list_accounts` answer (addresses, or dicts
-    carrying one). One account (or none listed) -> ONE fetch with no
-    `acting_email`, byte for byte today's path. Several -> one fetch per
-    address with `acting_email`; an address the workspace classified as
-    personal is left out (the F-3 scope), an unclassified one is in scope."""
+    carrying one). A mailbox the workspace classified as personal is NEVER in
+    the plan, sole or not (the F-3 scope, cr1#1226); an unclassified one is in
+    scope. One readable account (or none listed) -> ONE fetch with no
+    `acting_email`, today's path. Several -> one fetch per readable address
+    with `acting_email`.
+
+    `[]` means read nothing: the mail connector itself is personal, every
+    listed mailbox is personal, none is listed and every classified one is
+    personal, or the account settings could not be read (fail closed, as
+    cr1#664). It never falls back to the primary account. With nothing
+    listed while a personal mailbox is classified, each classified mailbox
+    that is not personal is fetched by its own address, because the
+    connector's unaddressed primary could be the personal one.
+
+    Answers `(plan, line)`: `line` is the plain sentence the inbox says when
+    the plan is empty, else None."""
     addresses = []
     for a in accounts or []:
-        addr = a.get("email") or a.get("address") if isinstance(a, dict) else a
+        if isinstance(a, dict):
+            addr = next((a.get(k) for k in _ACCOUNT_ADDRESS_KEYS if a.get(k)), None)
+        else:
+            addr = a
         addr = str(addr or "").strip()
         if addr and addr not in addresses:
             addresses.append(addr)
-    if len(addresses) <= 1:
-        return [{"acting_email": None}]
     try:
         import connector_config as cc
 
-        roles = {str(r.get("address") or "").strip().lower(): r
-                 for r in cc.accounts(workspace_root)}
-    except Exception:  # noqa: BLE001 - scope falls back to every account
-        roles = {}
-    plan = []
-    for addr in addresses:
-        rec = roles.get(addr.lower()) or {}
-        if str(rec.get("role") or "").lower() == "personal":
-            continue
-        plan.append({"acting_email": addr})
-    return plan or [{"acting_email": None}]
+        records = cc.accounts(workspace_root)
+        mail = cc.declared_backend("email", entities=cc.load_entities(workspace_root))
+    except Exception:  # noqa: BLE001 - fail closed (cr1#664)
+        return [], ACCOUNTS_UNREADABLE_LINE
+    if _is_personal(mail):
+        return [], PERSONAL_ONLY_LINE
+    roles = {str(r.get("address") or "").strip().lower(): r for r in records}
+    if not addresses:
+        if not any(_is_personal(r) for r in records):
+            return [{"acting_email": None}], None
+        named = []
+        for r in records:
+            addr = str(r.get("address") or "").strip()
+            if addr and not _is_personal(r) and addr not in named:
+                named.append(addr)
+        if not named:
+            return [], PERSONAL_ONLY_LINE
+        return [{"acting_email": addr} for addr in named], None
+    readable = [a for a in addresses if not _is_personal(roles.get(a.lower()))]
+    if not readable:
+        return [], PERSONAL_ONLY_LINE
+    if len(addresses) == 1:
+        return [{"acting_email": None}], None
+    return [{"acting_email": addr} for addr in readable], None
+
+
+def fetch_wall(workspace_root: str, *, seams: Optional[Dict[str, Any]] = None,
+               accounts_seen: Optional[List[Any]] = None) -> Optional[str]:
+    """cr1#1226 review: the line to block the inbox read with, or None.
+
+    The writer asks this before it processes anything, so the wall does not
+    rest on the fire obeying an empty plan: when the seam answer's plan is
+    empty, or the workspace's own plan reads nothing (a personal mail
+    connector, every classified mailbox personal, unreadable settings), no
+    fetched item is processed."""
+    if isinstance(seams, dict) and seams.get("fetch_plan") == []:
+        return seams.get("fetch_blocked") or PERSONAL_ONLY_LINE
+    plan, line = fetch_plan_and_line(
+        workspace_root, list(accounts_seen) if accounts_seen is not None else None)
+    return None if plan else (line or PERSONAL_ONLY_LINE)
 
 
 # ---------------------------------------------------------------------------
@@ -1844,18 +1985,48 @@ def select_priority(workspace_root: str, items: List[Dict[str, Any]], *,
     (`apply_priority_rules`), the sibling-replied threads leave, the top rows
     are taken by score (by age when nothing scored above zero), and the
     learned suppressions drop what the CEO has told the system to stop
-    showing (`filter_by_preferences`). Reads only."""
+    showing (`filter_by_preferences`). Reads only.
+
+    The owner's own mail rules come first (cr1#1020, `mail_rules`): a thread
+    a hide rule or a drop names leaves before anything is scored (`hidden`),
+    and a thread a show rule names leads the top rows (`pinned` counts them),
+    even when the fetch called it noise, and no learned suppression takes it
+    off.
+
+    cr1#1169: every thread set aside keeps its reason, so the Hub can list it
+    with why: `hidden` rows carry `mail_rule`, `noise_items` are the noise
+    threads with their `noise_class` (before, only counted), `dropped` rows
+    carry `preference` (the learned suppression's item class) and
+    `suppressed` rows carry their sibling-reply reason."""
+    import mail_rules
+
+    rules_store = mail_rules.load(workspace_root)
     noise = {key: 0 for key, _label in NOISE_CLASSES}
     candidates: List[Dict[str, Any]] = []
     suppressed: List[Dict[str, Any]] = []
+    hidden: List[Dict[str, Any]] = []
+    pinned: List[Dict[str, Any]] = []
+    noise_items: List[Dict[str, Any]] = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
+        if not item.get("from_me"):
+            ruled = mail_rules.verdict(rules_store, item)
+            # A thread the owner already answered on a sibling thread stays
+            # out whatever a show rule says (Phase 4.5).
+            if ruled["action"] == "hide" or (ruled["action"] == "show"
+                                             and not str(item.get("suppressed") or "").strip()):
+                row = dict(item)
+                row["mail_rule"] = ruled["rule_id"] or ruled["why"]
+                (hidden if ruled["action"] == "hide" else pinned).append(row)
+                continue
         if _item_kind(item) == "noise":
             cls = str(item.get("noise_class") or "marketing").strip().lower()
             cls = "self_test" if cls in ("self-test", "self_test") else cls
             if cls in noise:
                 noise[cls] += 1
+            if not item.get("from_me"):
+                noise_items.append(dict(item, noise_class=cls))
             continue
         if item.get("from_me"):
             continue
@@ -1886,11 +2057,36 @@ def select_priority(workspace_root: str, items: List[Dict[str, Any]], *,
     filtered = filter_by_preferences(workspace_root, prefs_in, surface=TASK_ID)
     kept_idx = {k["n"] for k in filtered["kept"]}
     kept = [r for i, r in enumerate(top) if i in kept_idx]
-    dropped = [r for i, r in enumerate(top) if i not in kept_idx]
+    dropped = [dict(r, preference=prefs_in[i]["item_class"])
+               for i, r in enumerate(top) if i not in kept_idx]
     top_ids = {id(r) for r in top}
     tracked = [r for r in positive if id(r) not in top_ids and r.get("financial")]
+    # cr1#1020: a show rule's threads lead the rows, then the scored ones up
+    # to the usual count.
+    # A broad show rule never takes more than half the rows while scored
+    # threads wait for the rest; rows the scored threads cannot fill go to it.
+    if pinned:
+        lead = pinned[:max(top_n // 2, top_n - len(kept))]
+        kept = lead + kept[:max(0, top_n - len(lead))]
     return {"top": kept, "suppressed": suppressed, "dropped": dropped,
-            "noise": noise, "scored": len(ranked), "tracked": tracked}
+            "noise": noise, "scored": len(ranked), "tracked": tracked,
+            "hidden": hidden, "pinned": len(pinned), "noise_items": noise_items}
+
+
+def filter_counters(selection: Dict[str, Any]) -> Dict[str, int]:
+    """What one inbox read kept out of the way, as the receipt records it:
+    siblings suppressed, threads the owner dropped, threads hidden by a mail
+    rule, and (cr1#1169 slice 2) the noise threads the Filtered section
+    lists. The Hub's "Done for you"
+    strip reads these from the log, never a second count."""
+    return {
+        "n_suppressed_sibling": len(selection.get("suppressed") or []),
+        "n_dropped_by_preference": len(selection.get("dropped") or []),
+        "n_hidden_by_rule": len(selection.get("hidden") or []),
+        # The noise threads the Filtered section lists (`noise_items`), so the
+        # count matches the list it opens; the owner's own mail is not one.
+        "n_noise": len(selection.get("noise_items") or []),
+    }
 
 
 def _noise_line(noise: Dict[str, int]) -> str:
@@ -1900,8 +2096,74 @@ def _noise_line(noise: Dict[str, int]) -> str:
     return f"Noise filtered ({total} total): {parts}"
 
 
-def _view_item(n: int, item: Dict[str, Any]) -> Dict[str, Any]:
-    """One row of the data view, in the orchestrator's per-item shape."""
+_ADDR_IN_TEXT = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _addresses(value: Any) -> List[str]:
+    """Every address in one header value as the connector gave it: a list of
+    strings or of `{email | address | emailAddress: {address}}` records, or
+    one string like `Rio Sample <rio@example.com>, lee@example.com`. Lower
+    case, in order, each once."""
+    out: List[str] = []
+    parts = value if isinstance(value, (list, tuple)) else [value]
+    for part in parts:
+        if isinstance(part, dict):
+            inner = part.get("emailAddress") if isinstance(part.get("emailAddress"), dict) else part
+            part = inner.get("address") or inner.get("email") or ""
+        for addr in _ADDR_IN_TEXT.findall(str(part or "")):
+            addr = addr.lower()
+            if addr not in out:
+                out.append(addr)
+    return out
+
+
+def _own_key(addr: str) -> str:
+    """An address as the own-address test reads it: lower case, any `+tag`
+    taken off the local part."""
+    local, _, domain = str(addr or "").lower().partition("@")
+    return local.split("+", 1)[0] + "@" + domain if domain else local
+
+
+def own_addresses(workspace_root: Optional[str]) -> set:
+    """The owner's own addresses (`contact_capture.own_addresses`), empty when
+    they cannot be read."""
+    if not workspace_root:
+        return set()
+    try:
+        from contact_capture import own_addresses as _own
+        return {_own_key(a) for a in (_own(workspace_root) or set()) if a}
+    except Exception:  # noqa: BLE001 - a reply still goes to the sender
+        return set()
+
+
+def reply_all_recipients(item: Dict[str, Any], own: Any = ()) -> Dict[str, List[str]]:
+    """Who a reply on this thread goes to (cr1#936): reply-all on the newest
+    inbound message. To is its sender, then everyone else it was addressed
+    to; Cc is everyone it copied. The owner's own addresses (`own`) are left
+    out, and no one is named twice. A thread item with no `to` or `cc` gives
+    the sender alone, as before."""
+    mine = {_own_key(a) for a in (own or ())}
+    to: List[str] = []
+    cc: List[str] = []
+    if not mine:
+        # Fail closed: without the owner's own addresses the others cannot be
+        # told from the owner, so the reply goes to the sender alone, as it
+        # always did, and never back to the owner.
+        for addr in _addresses(item.get("sender_email"))[:1]:
+            to.append(addr)
+        return {"to": to, "cc": cc}
+    for addr in _addresses(item.get("sender_email")) + _addresses(item.get("to")):
+        if _own_key(addr) not in mine and addr not in to:
+            to.append(addr)
+    for addr in _addresses(item.get("cc")):
+        if _own_key(addr) not in mine and addr not in to and addr not in cc:
+            cc.append(addr)
+    return {"to": to, "cc": cc}
+
+
+def _view_item(n: int, item: Dict[str, Any], own: Any = ()) -> Dict[str, Any]:
+    """One row of the data view, in the orchestrator's per-item shape. The
+    reply's To and Cc are reply-all, the owner left out (cr1#936)."""
     name = str(item.get("sender_name") or item.get("name")
                or item.get("sender_email") or "").strip()
     subject = str(item.get("subject") or "").strip()
@@ -1918,11 +2180,14 @@ def _view_item(n: int, item: Dict[str, Any]) -> Dict[str, Any]:
         return row
     row["icon"] = "✉"
     to = str(item.get("sender_email") or "").strip()
+    rcpt = reply_all_recipients(item, own)
     meta = []
     if subject:
         meta.append(["Subject", subject])
-    if to:
-        meta.append(["To", to])
+    if rcpt["to"]:
+        meta.append(["To", ", ".join(rcpt["to"])])
+    if rcpt["cc"]:
+        meta.append(["Cc", ", ".join(rcpt["cc"])])
     if meta:
         row["metadata"] = meta
     draft = [str(x).rstrip() for x in (item.get("draft") or item.get("body_lines") or [])
@@ -1966,6 +2231,10 @@ def build_inbox_view(workspace_root: str, selection: Dict[str, Any], *,
     day = header_date_text or header_date(workspace_root)
     top = list(selection.get("top") or [])
     noise_line = _noise_line(selection.get("noise") or {})
+    n_hidden = len(selection.get("hidden") or [])
+    if n_hidden:
+        # cr1#1020: what the owner's own rules took off is counted too.
+        noise_line += f" · Hidden by your mail rules: {n_hidden}"
     if not top:
         view: Dict[str, Any] = {
             "widget_mode": "all_clear_summary",
@@ -1979,6 +2248,8 @@ def build_inbox_view(workspace_root: str, selection: Dict[str, Any], *,
                 {"label": "Drafted replies", "value": 0},
             ],
             "summary_line": (f"{day}: no mail was read this time."
+                             + (f" {fetch_blocked}"
+                                if fetch_blocked in FETCH_PLAN_LINES else "")
                              if (fetch_blocked or not n_fetched) else
                              f"{day}: {int(n_fetched)} unread, nothing that needs you."),
             "tracked_items": _tracked_items(selection),
@@ -1986,7 +2257,8 @@ def build_inbox_view(workspace_root: str, selection: Dict[str, Any], *,
             "n_fetched": 0 if (fetch_blocked or not n_fetched) else int(n_fetched),
         }
         return view
-    rows = [_view_item(i + 1, item) for i, item in enumerate(top)]
+    own = own_addresses(workspace_root)
+    rows = [_view_item(i + 1, item, own) for i, item in enumerate(top)]
     n_drafts = sum(1 for r in rows if r.get("body_lines"))
     word = "thread" if len(rows) == 1 else "threads"
     header = f"Inbox · {day} · {len(rows)} priority {word}."
@@ -2043,6 +2315,23 @@ def yield_to_inbound_job(workspace_root: str,
             continue
         kept.append(cand)
     return kept, n_yielded
+
+
+def _without_off_limits(workspace_root, items) -> List[Dict[str, Any]]:
+    """cr1#1181: the fetched items minus those from a sender the owner put off
+    limits, so their reply never closes or moves a commitment. Never raises."""
+    rows = [i for i in (items or []) if isinstance(i, dict)]
+    try:
+        import account_scope_gate as _asg
+        off = _asg.off_limits_senders(workspace_root)
+        if not off:
+            return rows
+        pids = _asg.off_limits_person_ids(workspace_root, off)
+        return [i for i in rows if not _asg.sender_off_limits(
+            workspace_root, sender_email=i.get("sender_email"),
+            sender_person_id=i.get("sender_person_id"), off_limits=off, person_ids=pids)]
+    except Exception:  # noqa: BLE001
+        return rows
 
 
 def _inbound_messages(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2246,6 +2535,13 @@ def run_inbox_surface(workspace_root: str, *,
         except Exception:  # noqa: BLE001
             user = ""
     prov = _provider(seams, provider)
+    # cr1#1226 review: the wall does not rest on the fire obeying the plan.
+    # When the workspace's own plan reads nothing (a personal mail connector,
+    # every classified mailbox personal, unreadable settings), or the seam
+    # answer says so, no fetched item is processed.
+    walled = fetch_wall(root, seams=seams, accounts_seen=accounts_seen)
+    if walled:
+        fetch_blocked, items, n_accounts = walled, [], 0
     if n_accounts is None:
         if accounts_seen is not None:
             n_accounts = len(list(accounts_seen)) or 1
@@ -2272,7 +2568,7 @@ def run_inbox_surface(workspace_root: str, *,
                                        provider=prov or None)
         capture["counters"]["n_yielded_to_maintenance"] = n_yielded
         reconcile = plan_inbound_reconcile(
-            root, [] if fetch_blocked else _inbound_messages(items),
+            root, [] if fetch_blocked else _inbound_messages(_without_off_limits(root, items)),
             user_person_id=user, source_skill=TASK_ID,
             exclude_captured_since=fire_started_at, provider=prov or None,
             fetch_blocked=fetch_blocked)
@@ -2293,7 +2589,7 @@ def run_inbox_surface(workspace_root: str, *,
     def _delivery() -> Dict[str, Any]:
         plan = plan_delivery(root, tools=tools or [], page_rel=page["page_rel"],
                              text=text_out["text"], counts=counts,
-                             n_accounts=int(n_accounts or 1),
+                             n_accounts=int(1 if n_accounts is None else n_accounts),
                              device_root=device_root, task_id=task_id)
         message = plan.get("message") or ""
         if tier == "degrade" and verdict.get("degrade_notice"):
@@ -2332,10 +2628,9 @@ def run_inbox_surface(workspace_root: str, *,
         "errors": errors, "fire_started_at": fire_started_at,
         "items_drafted_text": n_drafts, "n_fetched": n_fetched,
         "items_persisted_to_gmail": 0,
-        "n_suppressed_sibling": len(selection.get("suppressed") or []),
-        "n_dropped_by_preference": len(selection.get("dropped") or []),
         "widget_bytes": int(page["bytes_len"]),
     }
+    extra.update(filter_counters(selection))
     extra.update(receipt_counters(capture.get("counters")))
     extra.update(delivery.get("receipt_flags") or {})
     if rerun_of:
@@ -2408,7 +2703,7 @@ def run_inbox_surface(workspace_root: str, *,
         "bytes_written": int(landed.get("bytes_written") or 0),
         "push": delivery.get("push"), "calls": delivery.get("calls") or [],
         "rows_written": written, "receipt": stamped_receipt,
-        "counts": counts, "n_accounts": int(n_accounts or 1),
+        "counts": counts, "n_accounts": int(1 if n_accounts is None else n_accounts),
         "before_widget": list(before),
     }
     if widget_branch:

@@ -186,6 +186,9 @@ ALLOWED_PERSON_FIELDS = {
     "cadence_override_days",  # number | absent — Phase 6 Quick Win B. User-taught cadence baseline: the retired Pulse chat's "just busy" reply widened it (LIFECYCLE1 — read forever, never written again) so dormancy math (dormancy.effective_baseline) stops re-flagging a gap the CEO has said is normal for this person. Absent on legacy records (reads as no-override).
     "tie",                 # "work" | "personal" | absent (=> work) — SPEC BAL1 D1 partition line. tie=personal people belong to the Balance surface ONLY: Pulse/relationship-moves/team-intel/dormant-scan all skip them. NOT relationship_type (forbidden, org-level).
     "source_identifiers",  # array of {kind, tool_id | company} | absent. cr1#825: what the person was added on: the source tool's own id for them, or the company the source stated. `identity_reconcile.sighting_against_record` compares the ids, so a later person of the same name is asked about, not filed here.
+    "category",            # one of PERSON_CATEGORIES | absent (cr1#110 part 1, train 2 part 3b); written ONLY by set_person_field
+    "introduced_by",       # {person_id, name, channel, evidence, confidence, date, set_at} | absent (cr1#110 part 2); set_person_field only
+    "handle_with_care",    # string <= 280 | absent; the owner's own line, shown only to the owner (train 2 part 3b); set_person_field only
     "cadence_days",        # number | absent — SPEC BAL1 D1(b). Personal RE-SURFACE interval (date-night / call-Mom cadence), read ONLY by balance.py. Opposite meaning to cadence_override_days (a suppression widener); never fed to dormancy.effective_baseline.
 }
 
@@ -2180,6 +2183,33 @@ def merge_person_into(
     _union("aliases")
     _union("affiliation_ids")
     _union("project_ids")
+    # cr1#110 part 4: a merge carries every number over, once each.
+    phones = list(keep.get("phones") or [])
+    keys = {_phone_key(x) or x for x in phones if isinstance(x, str)}
+    for x in dup_normalized.get("phones") or []:
+        if isinstance(x, str) and (_phone_key(x) or x) not in keys:
+            phones.append(x)
+            keys.add(_phone_key(x) or x)
+    if phones:
+        keep["phones"] = phones
+    # Train 2 part 3b: a fact the kept record lacks comes over from the other.
+    for field in SETTABLE_PERSON_FIELDS:
+        if not keep.get(field) and dup_normalized.get(field):
+            carried = dup_normalized[field]
+            if field == "introduced_by" and isinstance(carried, dict) and \
+                    carried.get("person_id") in (keep_id, duplicate_id):
+                continue  # nobody is their own introducer
+            keep[field] = carried
+    # An introduction that named the duplicate names the kept record now.
+    for other in entities_collection(data, "people"):
+        intro = other.get("introduced_by")
+        if isinstance(intro, dict) and intro.get("person_id") == duplicate_id \
+                and other.get("id") != duplicate_id:
+            if other.get("id") == keep_id:
+                del other["introduced_by"]
+            else:
+                intro["person_id"] = keep_id
+                intro["name"] = keep.get("canonical_name") or intro.get("name")
     identifiers = list(keep.get("source_identifiers") or [])
     identifiers += [i for i in dup_normalized.get("source_identifiers") or []
                     if i not in identifiers]
@@ -2669,6 +2699,329 @@ def _person_on_file(workspace_root, person_id) -> bool:
                for p in entities_collection(data, "people"))
 
 
+# ---------------------------------------------------------------------------
+# PERSON FACTS (cr1#1012 train 2 part 3b; the fields of cr1#110)
+#
+# Four facts about a person, each a field on the record, each written by one
+# writer here and taken back by `brain_undo` (the step-10 mandate: the
+# reversers land in the same commit):
+#
+#   category          one of `PERSON_CATEGORIES` (#110 part 1);
+#   introduced_by     who brought them to the owner, with the channel, the
+#                     words that prove it and how sure that is (#110 part 2);
+#   handle_with_care  the owner's own line about them, shown only to the
+#                     owner (the named job ruling A4 needs for the card);
+#   phones            attached and removed one number at a time (#110 part 4).
+#
+# The company a person works at is `door_update_person`'s `primary_org_id`
+# (#110 part 5). Next step per person is not here: ruling A9 moves it to
+# train 3 (#1013).
+#
+# THE SHAPE, as `rename_person`'s: validate, save through the locked writer,
+# append ONE gated event carrying `brain_batch_id` and `brain_change_class`.
+# A put-back writes the same row with `reversal_of` and neither key, so it
+# heads no new batch. Saying the same thing twice writes nothing.
+# ---------------------------------------------------------------------------
+
+PERSON_CATEGORIES = (
+    "Client contact", "Prospect", "Partner or referral source",
+    "Peer or advisor", "Vendor or service provider", "Team or hiring",
+    "Personal", "Unclear")
+INTRO_CHANNELS = ("email", "imessage", "meeting", "contact_card")
+#: `stated`: someone said so; `card_tag`: a contact card says so, unverified;
+#: `inferred`: worked out, and kept only with its evidence.
+INTRO_CONFIDENCE = ("stated", "card_tag", "inferred")
+CARE_MAX_CHARS = 280
+EVIDENCE_MAX_CHARS = 500
+SETTABLE_PERSON_FIELDS = ("category", "introduced_by", "handle_with_care")
+FIELD_CHANGE_CLASS = "person_field_set"
+PHONE_CHANGE_CLASS = "person_phone_changed"
+FIELD_BATCH_PREFIX = "pfs_"
+PHONE_BATCH_PREFIX = "pph_"
+
+DOOR_BAD_FIELD_LINE = ("Nothing was saved, because that is not something "
+                       "this door sets on a person.")
+DOOR_BAD_VALUE_LINES = {
+    "category": ("Nothing was saved, because the category must be one of: "
+                 + ", ".join(PERSON_CATEGORIES) + "."),
+    "introduced_by": ("Nothing was saved. An introduction needs who made it "
+                      "(someone else on file), how (email, iMessage, a "
+                      "meeting or a contact card), the words that show it, "
+                      "and how sure that is (stated, card tag or inferred)."),
+    "handle_with_care": (f"Nothing was saved, because that note is longer "
+                         f"than {CARE_MAX_CHARS} characters."),
+}
+DOOR_BAD_PHONE_LINE = "Nothing was saved, because that is not a phone number."
+DOOR_FACT_FIELD_LINE = ("Nothing was saved. A person's category, who "
+                        "introduced them and a care note each have their own "
+                        "door, which keeps a way back.")
+DOOR_PHONE_TAKEN_LINE = ("Nothing was saved, because that number is on file "
+                         "for someone else.")
+
+
+class PersonFieldRefused(ValueError):
+    """A fact the writer will not save, with the reason and one sentence."""
+
+    def __init__(self, reason: str, line: str):
+        self.reason = reason
+        self.line = line
+        super().__init__(f"{reason}: {line}")
+
+
+def _fact_batch_id(prefix: str, now_iso: str | None, workspace_root) -> str:
+    return prefix + _rename_batch_id(now_iso, workspace_root)[len(RENAME_BATCH_PREFIX):]
+
+
+def _checked_field_value(people: list, person_id: str, field: str, value,
+                         now_iso: str | None, workspace_root, *,
+                         restoring: bool = False):
+    """The value to store, or None to clear; raises `PersonFieldRefused`."""
+    if field not in SETTABLE_PERSON_FIELDS:
+        raise PersonFieldRefused("bad_field", DOOR_BAD_FIELD_LINE)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    bad = PersonFieldRefused("bad_value", DOOR_BAD_VALUE_LINES[field])
+    if field == "category":
+        if value not in PERSON_CATEGORIES:
+            raise bad
+        return value
+    if field == "handle_with_care":
+        text = " ".join(str(value).split()) if isinstance(value, str) else ""
+        if not text or len(text) > CARE_MAX_CHARS:
+            raise bad
+        return text
+    # introduced_by
+    if not isinstance(value, dict):
+        raise bad
+    who = str(value.get("person_id") or "").strip()
+    other = next((p for p in people if p.get("id") == who), None)
+    if other is None and restoring:
+        other = {"canonical_name": value.get("name") or ""}
+    evidence = " ".join(str(value.get("evidence") or "").split())
+    day = str(value.get("date") or "").strip()
+    if day:
+        try:
+            datetime.date.fromisoformat(day[:10])
+        except ValueError:
+            raise bad
+    if (not who or who == person_id or other is None
+            or value.get("channel") not in INTRO_CHANNELS
+            or value.get("confidence") not in INTRO_CONFIDENCE
+            or not evidence or len(evidence) > EVIDENCE_MAX_CHARS):
+        raise bad
+    stored = {"person_id": who, "name": str(other.get("canonical_name") or ""),
+              "channel": value["channel"], "evidence": evidence,
+              "confidence": value["confidence"],
+              "date": day[:10] or None}
+    stored["set_at"] = (str(value.get("set_at")) if restoring and value.get("set_at")
+                        else (now_iso or _clock_now(workspace_root).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ")))
+    return stored
+
+
+def _same_fact(field: str, old, new) -> bool:
+    if field == "introduced_by" and isinstance(old, dict) and isinstance(new, dict):
+        keys = ("person_id", "channel", "evidence", "confidence", "date")
+        return all(old.get(k) == new.get(k) for k in keys)
+    return old == new
+
+
+def set_person_field(workspace_root: str | Path, person_id: str, *, field: str,
+                     value, source_skill: str = "people_writer",
+                     brain_batch_id: str | None = None,
+                     now_iso: str | None = None, stamp_batch: bool = True,
+                     reversal_of: str | None = None) -> dict:
+    """Set (or, with `value=None`, clear) one of `SETTABLE_PERSON_FIELDS`.
+
+    Returns `{status: "set"|"cleared"|"unchanged", person_id, field, value,
+    batch_id, record}`. Raises `KeyError` for no such person and
+    `PersonFieldRefused` for a field or value it will not save; nothing is
+    written then. One `person_field_set` row carries the value it replaced
+    (`prior_value`, `prior_present`), which is what `undo` puts back."""
+    workspace_root = Path(workspace_root)
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+    new = _checked_field_value(people, person_id, field, value, now_iso,
+                               workspace_root, restoring=reversal_of is not None)
+    present = field in target
+    prior = json.loads(json.dumps(target.get(field))) if present else None
+    if (new is None and not present) or (
+            new is not None and present and _same_fact(field, prior, new)):
+        return {"status": "unchanged", "person_id": person_id, "field": field,
+                "value": prior, "batch_id": None, "record": target}
+    if new is None:
+        del target[field]
+    else:
+        target[field] = new
+    _validate_person(target)
+    _save_entities(workspace_root, data, source_skill)
+    event_data = {"person_id": person_id, "field": field, "value": new,
+                  "prior_value": prior, "prior_present": present}
+    if reversal_of is not None:
+        event_data["reversal_of"] = reversal_of
+    batch_id = None
+    if stamp_batch:
+        batch_id = brain_batch_id or _fact_batch_id(FIELD_BATCH_PREFIX, now_iso,
+                                                    workspace_root)
+        event_data["brain_batch_id"] = batch_id
+        event_data["brain_change_class"] = FIELD_CHANGE_CLASS
+    from event_gate import append_event
+    append_event(_events_path(workspace_root),
+                 [{"type": FIELD_CHANGE_CLASS, "source_skill": source_skill,
+                   "data": event_data}], holder=source_skill)
+    return {"status": "cleared" if new is None else "set", "person_id": person_id,
+            "field": field, "value": new, "batch_id": batch_id, "record": target}
+
+
+def normalize_phone(text) -> str | None:
+    """A phone number as stored: `+1 NNN-NNN-NNNN` for the US and Canada,
+    otherwise `+` and the digits; None when it is not a number."""
+    raw = str(text or "").strip()
+    if not raw or re.search(r"[A-Za-z]", raw):
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if not raw.startswith("+") and digits.startswith("00"):
+        # 00 is the international dialling prefix most of the world uses.
+        raw, digits = "+" + digits[2:], digits[2:]
+    if not raw.startswith("+") and len(digits) == 10:
+        digits = "1" + digits
+    elif not raw.startswith("+") and not (len(digits) == 11 and digits[0] == "1"):
+        return None
+    if len(digits) == 11 and digits[0] == "1":
+        return f"+1 {digits[1:4]}-{digits[4:7]}-{digits[7:]}"
+    if 7 <= len(digits) <= 15:
+        return "+" + digits
+    return None
+
+
+def _phone_key(text) -> str:
+    norm = normalize_phone(text)
+    return re.sub(r"\D", "", norm) if norm else ""
+
+
+def _change_phone(workspace_root: str | Path, person_id: str, phone, *,
+                  action: str, source_skill: str, brain_batch_id: str | None,
+                  now_iso: str | None, stamp_batch: bool,
+                  reversal_of: str | None) -> dict:
+    workspace_root = Path(workspace_root)
+    norm = normalize_phone(phone)
+    if norm is None:
+        raise PersonFieldRefused("bad_phone", DOOR_BAD_PHONE_LINE)
+    key = _phone_key(norm)
+    data = _load_entities(workspace_root)
+    people = entities_collection(data, "people")
+    target = next((p for p in people if p.get("id") == person_id), None)
+    if target is None:
+        raise KeyError(f"no person with id {person_id!r}")
+    phones = [p for p in (target.get("phones") or []) if isinstance(p, str)]
+    mine = [p for p in phones if _phone_key(p) == key]
+    if action == "attach":
+        if mine:
+            return {"status": "unchanged", "person_id": person_id, "phone": mine[0],
+                    "batch_id": None, "record": target}
+        holder = next((p for p in people if p.get("id") != person_id and any(
+            _phone_key(x) == key for x in (p.get("phones") or []) if isinstance(x, str))), None)
+        if holder is not None:
+            raise PersonFieldRefused("phone_taken", DOOR_PHONE_TAKEN_LINE)
+        target["phones"] = phones + [norm]
+        stored = norm
+    else:
+        if not mine:
+            return {"status": "unchanged", "person_id": person_id, "phone": norm,
+                    "batch_id": None, "record": target}
+        rest = [p for p in phones if _phone_key(p) != key]
+        if rest:
+            target["phones"] = rest
+        else:
+            target.pop("phones", None)
+        stored = mine[0]
+    _validate_person(target)
+    _save_entities(workspace_root, data, source_skill)
+    event_data = {"person_id": person_id, "phone": stored, "phone_action": action}
+    if reversal_of is not None:
+        event_data["reversal_of"] = reversal_of
+    batch_id = None
+    if stamp_batch:
+        batch_id = brain_batch_id or _fact_batch_id(PHONE_BATCH_PREFIX, now_iso,
+                                                    workspace_root)
+        event_data["brain_batch_id"] = batch_id
+        event_data["brain_change_class"] = PHONE_CHANGE_CLASS
+    from event_gate import append_event
+    append_event(_events_path(workspace_root),
+                 [{"type": PHONE_CHANGE_CLASS, "source_skill": source_skill,
+                   "data": event_data}], holder=source_skill)
+    return {"status": "attached" if action == "attach" else "removed",
+            "person_id": person_id, "phone": stored, "batch_id": batch_id,
+            "record": target}
+
+
+def attach_phone(workspace_root, person_id, phone, *, source_skill="people_writer",
+                 brain_batch_id=None, now_iso=None, stamp_batch=True,
+                 reversal_of=None) -> dict:
+    """Attach one number to a person. `unchanged` when they already carry it
+    in any spelling; `PersonFieldRefused` (`bad_phone`, `phone_taken`)
+    otherwise refused, with nothing written."""
+    return _change_phone(workspace_root, person_id, phone, action="attach",
+                         source_skill=source_skill, brain_batch_id=brain_batch_id,
+                         now_iso=now_iso, stamp_batch=stamp_batch,
+                         reversal_of=reversal_of)
+
+
+def remove_phone(workspace_root, person_id, phone, *, source_skill="people_writer",
+                 brain_batch_id=None, now_iso=None, stamp_batch=True,
+                 reversal_of=None) -> dict:
+    """Remove one number from a person, matched in any spelling; `unchanged`
+    when they do not carry it."""
+    return _change_phone(workspace_root, person_id, phone, action="remove",
+                         source_skill=source_skill, brain_batch_id=brain_batch_id,
+                         now_iso=now_iso, stamp_batch=stamp_batch,
+                         reversal_of=reversal_of)
+
+
+def _door_fact(fn, workspace_root, person_id, *args, **kwargs) -> dict:
+    """A fact writer through the door: `{ok: true, status, batch_id, ...}`, or
+    `ok: false` with `reason` and one `line`, nothing written."""
+    if not _person_on_file(workspace_root, person_id):
+        return {"ok": False, "reason": "unknown_person",
+                "line": DOOR_UNKNOWN_PERSON_LINE}
+    scope_error = _account_scope_error()
+    try:
+        out = fn(workspace_root, person_id, *args, **kwargs)
+    except PersonFieldRefused as exc:
+        return {"ok": False, "reason": exc.reason, "line": exc.line}
+    except scope_error:
+        return {"ok": False, "reason": "out_of_scope", "line": DOOR_OUT_OF_SCOPE_LINE}
+    out = {k: v for k, v in out.items() if k != "record"}
+    return {"ok": True, **out}
+
+
+def door_set_person_field(workspace_root: str | Path, *, person_id: str,
+                          field: str, value=None,
+                          source_skill: str = DOOR_SOURCE_SKILL) -> dict:
+    """`set_person_field` through the writer door: a person's category,
+    introducer or handle-with-care line, set or (`value` null) cleared."""
+    return _door_fact(lambda ws, pid: set_person_field(
+        ws, pid, field=field, value=value, source_skill=source_skill),
+        workspace_root, person_id)
+
+
+def door_attach_phone(workspace_root: str | Path, *, person_id: str, phone: str,
+                      source_skill: str = DOOR_SOURCE_SKILL) -> dict:
+    """`attach_phone` through the writer door."""
+    return _door_fact(attach_phone, workspace_root, person_id, phone,
+                      source_skill=source_skill)
+
+
+def door_remove_phone(workspace_root: str | Path, *, person_id: str, phone: str,
+                      source_skill: str = DOOR_SOURCE_SKILL) -> dict:
+    """`remove_phone` through the writer door."""
+    return _door_fact(remove_phone, workspace_root, person_id, phone,
+                      source_skill=source_skill)
+
+
 def door_find_person(
     workspace_root: str | Path,
     *,
@@ -2790,6 +3143,11 @@ def door_update_person(
     if DOOR_UPDATE_REFUSED_KEYS & set(fields):
         return {"ok": False, "reason": "identity_field",
                 "line": DOOR_IDENTITY_FIELD_LINE}
+    # Train 2 part 3b: these are set only by their own door, which checks
+    # them and records a way back.
+    if set(SETTABLE_PERSON_FIELDS) & set(fields):
+        return {"ok": False, "reason": "fact_field",
+                "line": DOOR_FACT_FIELD_LINE}
     if "aliases" in fields:
         return {"ok": False, "reason": "aliases_field",
                 "line": DOOR_ALIASES_FIELD_LINE}
@@ -2852,7 +3210,8 @@ def door_record_person_fact(
 def _add_on_the_guard(workspace_root, *, canonical_name, email, email_provenance,
                       role, primary_org_id, provenance, source_ref,
                       account_address, source_kind, source_user_id,
-                      source_company, evidence, source_skill) -> dict:
+                      source_company, evidence, source_skill,
+                      brain_batch_id=None) -> dict:
     """The add a model judged, held to the guard the runs hold (cr1#825, on
     cr1#754's ruling): the sighting is judged with the open rows of its name
     by `identity_reconcile.classify_cluster`, and anything short of the auto
@@ -2911,14 +3270,28 @@ def _add_on_the_guard(workspace_root, *, canonical_name, email, email_provenance
                                ("account_address", account_address),
                                ("provenance", provenance),
                                ("source_ref", source_ref)) if v}
+    # cr1#1011: an add through the door carries its own undo batch on the
+    # `person_created` row (the ATTENDEE1 stamp), so `brain_undo.undo_batch`
+    # archives it. Before, a door add from one sighting left no row a batch
+    # could reach, and reversibility is what licenses the automatic tier.
+    import secrets
+
+    # A bulk import (train 2 part 3c) hands its own batch, so one undo takes
+    # back the people it added with the facts it wrote.
+    batch_id = brain_batch_id or (
+        "pdoor_" + _clock_now(ws).strftime("%Y%m%dT%H%M%SZ") + "_"
+        + secrets.token_hex(3))
     answer = auto_add_person(
         ws, canonical_name=name, email=kept, source_skill=source_skill,
         email_provenance=(email_provenance if kept == address else
                           {"via": "person_proposal",
                            "proposal_seq": seen_on.get("seq"),
                            "source_ref": seen_on.get("source_ref")}),
-        source_identifiers=ir.cluster_source_identifiers(cluster, ws), **extra)
+        source_identifiers=ir.cluster_source_identifiers(cluster, ws),
+        brain_batch_id=batch_id,
+        brain_change_class="person_org_creation_structured_fact", **extra)
     if answer.get("status") == "added":
+        answer = {**answer, "batch_id": batch_id}
         ir.close_sightings(ws, cluster, answer["record"]["id"],
                            source_skill=source_skill)
     return {**answer, **dropped}
@@ -2957,16 +3330,22 @@ def door_auto_add_person(
     for this person. `role` and `primary_org_id` go on the record and count
     for nothing here: a title is no identifier and the org is the model's
     pick."""
+    return _guarded_add(
+        workspace_root, canonical_name=canonical_name, email=email,
+        email_provenance=email_provenance, role=role,
+        primary_org_id=primary_org_id, provenance=provenance,
+        source_ref=source_ref, account_address=account_address,
+        source_kind=source_kind, source_user_id=source_user_id,
+        source_company=source_company, evidence=evidence,
+        source_skill=source_skill)
+
+
+def _guarded_add(workspace_root, *, brain_batch_id=None, **kwargs) -> dict:
+    """`door_auto_add_person`'s body, with the batch a bulk import hands in."""
     scope_error = _account_scope_error()
     try:
-        answer = _add_on_the_guard(
-            workspace_root, canonical_name=canonical_name, email=email,
-            email_provenance=email_provenance, role=role,
-            primary_org_id=primary_org_id, provenance=provenance,
-            source_ref=source_ref, account_address=account_address,
-            source_kind=source_kind, source_user_id=source_user_id,
-            source_company=source_company, evidence=evidence,
-            source_skill=source_skill)
+        answer = _add_on_the_guard(workspace_root, brain_batch_id=brain_batch_id,
+                                   **kwargs)
     except DuplicatePersonError as exc:
         return {"ok": False, "reason": "duplicate",
                 "existing_id": exc.person_id,
@@ -2981,6 +3360,363 @@ def door_auto_add_person(
         return {"ok": False, "reason": "out_of_scope",
                 "line": DOOR_OUT_OF_SCOPE_LINE}
     return {"ok": True, **answer}
+
+
+# ---------------------------------------------------------------------------
+# BULK IMPORT OF PERSON FACTS (cr1#1012 train 2 part 3c; #110's bulk import)
+#
+# Moves a workspace's CRM facts in: a JSON list of rows, each naming a person
+# and any of `category`, `introduced_by` and `phones`. Each fact goes through
+# the part 3b writer that owns it, so the checks, the rows and the put-backs
+# are that writer's own. Every row of one import shares ONE batch, so a
+# single `undo` takes the whole import back. A re-run writes nothing it
+# already wrote (each writer answers `unchanged`): the import is idempotent.
+#
+# A row is all or nothing: one fact the writer would refuse skips the whole
+# row, with the reason, and the rest of the list goes on.
+#
+# A row whose person is not on file is a sighting, judged by the guard
+# `door_auto_add_person` holds. Owner ruling C1 (cr1#1011): a person seen once
+# by full name is added without asking only when a task board, deal or
+# contract source states their company. Added, their facts land in the same
+# batch; otherwise the name goes on the queue as a question and the row's
+# facts wait for a re-run. The row's email is used to find someone on file,
+# never as evidence for an add: a list is not an observed address. The undo
+# takes back every fact and every person the import added; a question it
+# raised stays on the queue to be answered or dismissed (the guard's own rows
+# carry no batch).
+#
+# Not here: whole people from a list (emails, roles, companies) are cr1#189,
+# and contact files are cr1#506. An import never clears a fact either: a
+# missing or empty value leaves what is on file alone.
+# ---------------------------------------------------------------------------
+
+IMPORT_BATCH_PREFIX = "pimp_"
+IMPORT_MAX_ROWS = 2000
+IMPORT_FACT_KEYS = ("category", "introduced_by", "phones")
+IMPORT_WHO_KEYS = ("person_id", "name", "email")
+IMPORT_SOURCE_KEYS = ("source_ref", "source_kind", "source_company")
+IMPORT_ROW_KEYS = IMPORT_WHO_KEYS + IMPORT_FACT_KEYS + IMPORT_SOURCE_KEYS
+IMPORT_INTRO_WHO_KEYS = ("person_id", "name", "email")
+
+IMPORT_LINES = {
+    "no_rows": "Nothing was imported, because no list of people was given.",
+    "too_many": (f"Nothing was imported, because the list is longer than "
+                 f"{IMPORT_MAX_ROWS} rows. Split it and import each part."),
+    "bad_path": ("Nothing was imported, because that list could not be read "
+                 "from inside the workspace."),
+    "bad_row": "Skipped, because the row is not a person with facts.",
+    "not_a_fact": ("Skipped. Only a person's category, who introduced them and "
+                   "their phone numbers are imported here; adding whole people "
+                   "from a list is not built yet."),
+    "no_person": "Skipped, because the row names nobody.",
+    "no_facts": "Skipped, because the row has no category, introducer or phone number.",
+    "not_on_file": ("Skipped, because that person is not on file and the row "
+                    "names no source to judge them by."),
+    "ambiguous": "Skipped, because that name fits more than one person. Give the id.",
+    "one_word": ("Skipped, because one word is not enough to be sure who that "
+                 "is. Give the full name or the id."),
+    "already_answered": ("Skipped, because you have already answered about that "
+                         "name, so it is not asked again. If they belong on file, "
+                         "add them, then import again."),
+    "write_failed": ("Stopped on this row, because the record could not be "
+                     "saved. Anything already written is in the import's undo."),
+    "merged": ("Skipped, because that record was merged into another. Use the "
+               "record it was merged into."),
+    "introducer_not_found": ("Skipped, because the person named as the "
+                             "introducer is not on file."),
+    "introducer_ambiguous": ("Skipped, because the introducer's name fits more "
+                             "than one person. Give their id."),
+    "asked": ("Not yet: that person is not on file, so the name went to you as "
+              "a question. Import the list again once you have answered."),
+    "needs_confirm": ("Not yet: someone with that name is already on file. Say "
+                      "whether it is them, then import again."),
+}
+
+
+def _import_line(reason: str) -> str:
+    return IMPORT_LINES.get(reason, IMPORT_LINES["bad_row"])
+
+
+def _skip(reason: str, line: str | None = None, **extra) -> dict:
+    return {"status": "skipped", "reason": reason,
+            "line": line or _import_line(reason), **extra}
+
+
+def _import_rows_from(workspace_root: Path, rows, rows_path):
+    """(rows, None) or (None, refusal)."""
+    if rows is None and rows_path:
+        try:
+            root = Path(workspace_root).resolve()
+            source = (root / str(rows_path)).resolve()
+            source.relative_to(root)
+            rows = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, {"ok": False, "reason": "bad_path",
+                          "line": _import_line("bad_path")}
+        if isinstance(rows, dict):
+            rows = rows.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return None, {"ok": False, "reason": "no_rows", "line": _import_line("no_rows")}
+    if len(rows) > IMPORT_MAX_ROWS:
+        return None, {"ok": False, "reason": "too_many", "line": _import_line("too_many")}
+    return rows, None
+
+
+def _import_who(workspace_root: Path, people: list, who: dict):
+    """(record, None) for the person a row or an introducer names, (None,
+    "not_on_file"), (None, "ambiguous") or (None, "merged")."""
+    pid = str(who.get("person_id") or "").strip()
+    if pid:
+        rec = next((p for p in people if p.get("id") == pid), None)
+    else:
+        name = str(who.get("name") or "").strip() or None
+        email = str(who.get("email") or "").strip() or None
+        if not name and not email:
+            return None, "no_person"
+        try:
+            rec = find_existing_person(workspace_root, name=name, email=email)
+        except MultipleCandidatesError:
+            return None, "ambiguous"
+        # One word is never enough to be sure who is meant: part of several
+        # names it fits more than one person, part of one it is still a guess.
+        if rec is None and name and len(name.split()) == 1:
+            fits = list_same_name_people(workspace_root, name)
+            if len(fits) > 1:
+                return None, "ambiguous"
+            if fits:
+                return None, "one_word"
+    if rec is None:
+        return None, "not_on_file"
+    if str(rec.get("status") or "").lower() in ("merged", "deleted"):
+        return None, "merged"
+    return rec, None
+
+
+def _import_facts_of(row: dict) -> dict:
+    """The facts a row carries, empty values left out."""
+    out = {}
+
+    def given(v) -> bool:
+        return v is not None and not (isinstance(v, str) and not v.strip())
+
+    if given(row.get("category")):
+        out["category"] = row["category"]
+    if isinstance(row.get("introduced_by"), dict) and row["introduced_by"]:
+        out["introduced_by"] = row["introduced_by"]
+    elif row.get("introduced_by") not in (None, "", {}):
+        out["introduced_by"] = row["introduced_by"]  # refused when checked
+    phones = row.get("phones")
+    if isinstance(phones, str):
+        phones = [phones]
+    if isinstance(phones, list):
+        phones = [p for p in phones if given(p)]
+        if phones:
+            out["phones"] = phones
+    elif given(phones):
+        out["phones"] = [phones]
+    return out
+
+
+def _import_plan(workspace_root: Path, people: list, target: dict, facts: dict,
+                 now_iso: str | None):
+    """[(fact, value, would)] for each fact, `would` being `set` or
+    `unchanged`; or raises `PersonFieldRefused` for the first fact the
+    writer would refuse, with the reason."""
+    pid = target["id"]
+    plan = []
+    if "category" in facts:
+        new = _checked_field_value(people, pid, "category", facts["category"],
+                                   now_iso, workspace_root)
+        same = "category" in target and target.get("category") == new
+        plan.append(("category", new, "unchanged" if same else "set"))
+    if "introduced_by" in facts:
+        given = facts["introduced_by"]
+        if not isinstance(given, dict):
+            raise PersonFieldRefused("bad_value", DOOR_BAD_VALUE_LINES["introduced_by"])
+        who = {k: given.get(k) for k in IMPORT_INTRO_WHO_KEYS}
+        rec, why = _import_who(workspace_root, people, who)
+        if rec is None:
+            reason = ("introducer_ambiguous" if why in ("ambiguous", "one_word")
+                      else "introducer_not_found")
+            raise PersonFieldRefused(reason, _import_line(reason))
+        value = {k: v for k, v in given.items() if k not in IMPORT_INTRO_WHO_KEYS}
+        value["person_id"] = rec["id"]
+        new = _checked_field_value(people, pid, "introduced_by", value,
+                                   now_iso, workspace_root)
+        same = ("introduced_by" in target
+                and _same_fact("introduced_by", target.get("introduced_by"), new))
+        plan.append(("introduced_by", value, "unchanged" if same else "set"))
+    mine = {_phone_key(x) for x in (target.get("phones") or []) if isinstance(x, str)}
+    for phone in facts.get("phones") or []:
+        norm = normalize_phone(phone)
+        if norm is None:
+            raise PersonFieldRefused("bad_phone", DOOR_BAD_PHONE_LINE)
+        key = _phone_key(norm)
+        if key not in mine and any(
+                p.get("id") != pid and any(_phone_key(x) == key for x in
+                                           (p.get("phones") or []) if isinstance(x, str))
+                for p in people):
+            raise PersonFieldRefused("phone_taken", DOOR_PHONE_TAKEN_LINE)
+        plan.append(("phones", norm, "unchanged" if key in mine else "set"))
+        mine.add(key)
+    return plan
+
+
+def _import_write(workspace_root: Path, pid: str, plan: list, *, batch_id: str,
+                  source_skill: str, now_iso: str | None) -> list:
+    out = []
+    for fact, value, _would in plan:
+        if fact == "phones":
+            done = attach_phone(workspace_root, pid, value, source_skill=source_skill,
+                                brain_batch_id=batch_id, now_iso=now_iso)
+            out.append({"fact": "phone", "value": done["phone"],
+                        "status": "unchanged" if done["status"] == "unchanged" else "set"})
+        else:
+            done = set_person_field(workspace_root, pid, field=fact, value=value,
+                                    source_skill=source_skill,
+                                    brain_batch_id=batch_id, now_iso=now_iso)
+            out.append({"fact": fact, "status": done["status"]})
+    return out
+
+
+def _import_row(workspace_root: Path, i: int, row, *, batch_id: str,
+                source_skill: str, preview: bool, now_iso: str | None) -> dict:
+    if not isinstance(row, dict):
+        return {"row": i, **_skip("bad_row")}
+    extra = sorted(k for k in row if k not in IMPORT_ROW_KEYS)
+    if extra:
+        return {"row": i, **_skip("not_a_fact"), "keys": extra}
+    facts = _import_facts_of(row)
+    if not facts:
+        return {"row": i, **_skip("no_facts")}
+    people = entities_collection(_load_entities(workspace_root), "people")
+    target, why = _import_who(workspace_root, people, row)
+    head = {"row": i, "name": str(row.get("name") or "")}
+    if why in ("no_person", "ambiguous", "one_word", "merged"):
+        return {**head, **_skip(why)}
+    if target is None and str(row.get("person_id") or "").strip():
+        return {**head, **_skip("not_on_file", DOOR_UNKNOWN_PERSON_LINE)}
+    added = None
+    if target is None:
+        if not row.get("source_ref"):
+            return {**head, **_skip("not_on_file")}
+        # The facts are checked before the guard runs, so a row the writers
+        # would refuse adds nobody (all or nothing holds for the add too).
+        try:
+            _import_plan(workspace_root, people, {"id": None}, facts, now_iso)
+        except PersonFieldRefused as exc:
+            return {**head, **_skip(exc.reason, exc.line)}
+        if preview:
+            return {**head, "status": "would_judge",
+                    "line": ("Not on file: the import would judge this name "
+                             "by its source before writing anything.")}
+        answer = _guarded_add(
+            workspace_root, brain_batch_id=batch_id,
+            canonical_name=str(row.get("name") or ""), email=None,
+            email_provenance=None, role=None, primary_org_id=None,
+            provenance=None, source_ref=row.get("source_ref"),
+            account_address=None, source_kind=row.get("source_kind"),
+            source_user_id=None, source_company=row.get("source_company"),
+            evidence=None, source_skill=source_skill)
+        if not answer.get("ok"):
+            return {**head, **_skip(answer.get("reason") or "bad_row",
+                                    answer.get("line"))}
+        status = answer.get("status")
+        if status == "already_answered":
+            return {**head, **_skip("already_answered")}
+        if status in ("asked", "already_asked"):
+            return {**head, "status": "asked", "line": _import_line("asked")}
+        if status == "needs_confirm":
+            return {**head, "status": "asked", "reason": "needs_confirm",
+                    "line": _import_line("needs_confirm")}
+        pid = answer.get("person_id") or (answer.get("record") or {}).get("id")
+        people = entities_collection(_load_entities(workspace_root), "people")
+        target = next((p for p in people if p.get("id") == pid), None)
+        if target is None:
+            return {**head, **_skip("not_on_file")}
+        added = status == "added"
+    head["person_id"] = target["id"]
+    head["name"] = str(target.get("canonical_name") or head["name"])
+    try:
+        plan = _import_plan(workspace_root, people, target, facts, now_iso)
+    except PersonFieldRefused as exc:
+        return {**head, **_skip(exc.reason, exc.line), **({"added": True} if added else {})}
+    if preview:
+        return {**head, "status": "preview",
+                "facts": [{"fact": "phone" if f == "phones" else f, "would": w}
+                          for f, _v, w in plan]}
+    try:
+        written = _import_write(workspace_root, target["id"], plan,
+                                batch_id=batch_id, source_skill=source_skill,
+                                now_iso=now_iso)
+    except PersonFieldRefused as exc:
+        return {**head, **_skip(exc.reason, exc.line)}
+    except _account_scope_error():
+        return {**head, **_skip("out_of_scope", DOOR_OUT_OF_SCOPE_LINE)}
+    except (ValueError, OSError, KeyError):
+        return {**head, **_skip("write_failed"), **({"added": True} if added else {})}
+    changed = added or any(f["status"] != "unchanged" for f in written)
+    return {**head, "status": "written" if changed else "unchanged",
+            "facts": written, **({"added": True} if added else {})}
+
+
+def _batch_landed(workspace_root: Path, batch_id: str) -> bool:
+    """True when any row in the log carries this import's batch: an add whose
+    row was then skipped still needs its undo named."""
+    try:
+        with open(_events_path(workspace_root), encoding="utf-8") as fh:
+            return any(batch_id in line for line in fh)
+    except OSError:
+        return True
+
+
+def import_person_facts(workspace_root: str | Path, rows: list, *,
+                        source_skill: str = "people_writer",
+                        preview: bool = False,
+                        now_iso: str | None = None) -> dict:
+    """Import a list of person facts (the block comment above). Answers
+    `{ok: true, preview, batch_id, counts, rows}`, `batch_id` null when
+    nothing was written; each row says `written`, `unchanged`, `asked`,
+    `skipped` (with `reason` and one `line`), or in a preview `preview` /
+    `would_judge`. A preview writes nothing at all."""
+    workspace_root = Path(workspace_root)
+    batch_id = _fact_batch_id(IMPORT_BATCH_PREFIX, now_iso, workspace_root)
+    results = []
+    for i, row in enumerate(rows):
+        try:
+            results.append(_import_row(workspace_root, i, row, batch_id=batch_id,
+                                       source_skill=source_skill, preview=preview,
+                                       now_iso=now_iso))
+        except PersonFieldRefused as exc:
+            results.append({"row": i, **_skip(exc.reason, exc.line)})
+        except (ValueError, OSError):
+            results.append({"row": i, **_skip("write_failed")})
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    wrote = not preview and _batch_landed(workspace_root, batch_id)
+    out = {"ok": True, "preview": preview, "batch_id": batch_id if wrote else None,
+           "counts": counts, "rows": results}
+    if wrote:
+        out["undo_line"] = "Say undo to take this whole import back."
+    return out
+
+
+def door_import_person_facts(workspace_root: str | Path, *, rows: list | None = None,
+                             rows_path: str | None = None, preview: bool = False,
+                             source_skill: str = DOOR_SOURCE_SKILL) -> dict:
+    """`import_person_facts` through the writer door. `rows` is the list
+    itself; a long list is landed in the workspace first and named by
+    `rows_path` (workspace-relative), because the door's argument fence caps
+    what it walks. `preview: true` answers what each row would do and writes
+    nothing."""
+    workspace_root = Path(workspace_root)
+    found, refusal = _import_rows_from(workspace_root, rows, rows_path)
+    if refusal:
+        return refusal
+    return import_person_facts(workspace_root, found, source_skill=source_skill,
+                               preview=bool(preview))
 
 
 # ---------- CLI ----------

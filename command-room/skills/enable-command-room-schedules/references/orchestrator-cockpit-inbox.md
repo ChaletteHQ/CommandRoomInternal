@@ -1,5 +1,8 @@
 # Cockpit inbox (taskId: cockpit-inbox)
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
+
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this run is the Inbox chain, fired for the cockpit page: the fetch, one dict per thread, the one `inbox_helpers:run_inbox_surface` call that lands the inbox page, captures and the chain's receipt, exactly as the Inbox chat does. Then it writes the page's Inbox feed through the artifact database tool. It posts NO widget and delivers NO chat surface of its own (the cockpit page is the reader): the chat turn is one line, then STOP (COCKPIT1, cr1#608; four tasks per cr1#619). Nothing here sends mail; a Send pressed on the page is `cockpit-apply`'s to carry out.
 
 Read `cockpit-shared.md` in this folder first and do its shared step 0 and shared step 1 with leg `inbox`. Phase 0 below is the chain's own resolve and is what the shared step names. There is no lateness phase on this task.
@@ -47,13 +50,23 @@ Resolve first, once:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -141,6 +154,8 @@ A `pack_run` event still writes at the end of every fire (for audit trail), but 
   actions that needed it and say so in plain English; never fall back to naming
   a provider tool id yourself.
 
+  **When its `fetch_plan` is empty, read no mail (cr1#1226).** Every linked mailbox is marked personal, so none is fetched, not even the primary one. Skip the fetch and pass `"items": []` with `"fetch_blocked"` set to the answer's `fetch_blocked` line, word for word. Otherwise fetch once per `fetch_plan` entry, passing its `acting_email` when it is set.
+
   On a scheduled fire the answer may carry `flag_rows` — the seam found the
   declared connector under the scheduled registry's other name (exactly one
   match, `resolved_via: fingerprint`) or could not (skip-and-flag). Land them
@@ -172,6 +187,7 @@ Parse response: list of threads with messages, dates, senders, subjects, snippet
 One dict per fetched thread — the connector's own values, never reformatted:
 
 - `thread_id`, `message_id` — the connector's own ids from the Phase 3 fetch (never a draft id, F-22); `ts` — the latest message's raw ISO-8601 timestamp (EVORDER reads it; a display date is worse than none); `url` — the thread URL the connector returned, if any.
+- `to` and `cc`: the latest INBOUND message's To and Cc addresses as the connector returned them, as lists (cr1#936: the reply goes to all of them, the owner left out; without them it goes to the sender alone).
 - `sender_email`, `sender_name`, and `sender_person_id` when the sender resolves in `entities.json` + `aliases.json` (else `""` — the thread still goes in); `subject`; `body` — the latest INBOUND message's plaintext; `has_attachment` — the connector's flag or nothing (never inferred from "attached"). `attachment_names`: the connector's own name for each attached file, as a list, or nothing (never inferred from the body). A file with no name is only ever a proposal, so read the names.
 - `from_me: true` when the newest message on the thread is the CEO's own — such a thread contributes nothing to the surface or the capture (outbound promises belong to `reconcile-sent`).
 - `kind` — `email_reply` (default), `calendar_invite` (a `text/calendar` part, or an invitation-shaped sender and subject), or `noise` with `noise_class` one of `listings`, `marketing`, `calendar` (automated reminders, not invites), `security`, `self_test` (sender is the CEO's own address). A noise thread needs only `kind`, `noise_class` and its ids — it is counted, never shown.
@@ -259,7 +275,7 @@ A `calendar_invite` gets no draft. A thread the owner is only copied on gets no 
 Render it in the container like every access-layer line, with the writer pair forwarded (`plan run_writer`), and paste the printed line unchanged:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fire_started_at": "<fire_start>", "fired_via": "<scheduled or manual, from shared step 0>", "items": [<one dict per fetched thread, Phase 4>], "n_accounts": <n_accounts from the seam answer, else 1>, "provider": "<the declared mail backend>", "task_id": "cockpit-inbox", "tools": [<this session's tool list, {name} each>], "workspace_root": "<WS>"}, "name": "inbox_helpers:run_inbox_surface"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fetch_blocked": "<the seam answer's fetch_blocked line; OMIT the key when it has none>", "fire_started_at": "<fire_start>", "fired_via": "<scheduled or manual, from shared step 0>", "items": [<one dict per fetched thread, Phase 4>], "n_accounts": <n_accounts from the seam answer, else 1>, "provider": "<the declared mail backend>", "task_id": "cockpit-inbox", "tools": [<this session's tool list, {name} each>], "workspace_root": "<WS>"}, "name": "inbox_helpers:run_inbox_surface"}'
 ```
 
 `fired_via` is the run mode from shared step 0, never guessed. There is no lateness verdict on a cockpit task (`cockpit-shared.md` says why), so the call composes the ONE receipt row the Inbox chain has always written and appends it LAST, under THIS task's id (`task_id: cockpit-inbox`, never the chain's `inbox`: a still-registered Inbox chat must never see its slot served by a cockpit run). That row is this run's receipt, so skip the receipt call of the shared last step and do its final response only.
@@ -277,7 +293,7 @@ Do NOT do the Inbox chat's delivery: this run has no reader in its chat and the 
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"fire_stamp": "<fire_start>", "items": [<the same items list>], "now_iso": "<now ISO>", "page_html": "<the landed page bytes>", "page_rel": "<page_rel from the call>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_inbox"}'
 ```
 
-`set` the answer on `feed/inbox` (pinned by the version rule in `cockpit-shared.md`). The feed carries each row's number from the landed page; that number is the apply-choices wire `cockpit-apply` dispatches on, and `fire_stamp` is what refuses a stale choice later. Light: `done` with "N threads, M drafted." On a refusal from the Phase 5 call (`ok: false`), the light is `error` with the first of its `lines`, and the feed is left as it was. Then the shared last step.
+`set` the answer on `feed/inbox` (pinned by the version rule in `cockpit-shared.md`). The feed carries each row's number from the landed page; that number is the apply-choices wire `cockpit-apply` dispatches on, and `fire_stamp` is what refuses a stale choice later. It also carries `filtered` (cr1#1169): the threads this read set aside, grouped by why, computed in code from the same `items`; pass the items exactly as handed to the Phase 5 call and add nothing. Light: `done` with "N threads, M drafted." On a refusal from the Phase 5 call (`ok: false`), the light is `error` with the first of its `lines`, and the feed is left as it was. Then the shared last step.
 
 ## Draft date scan (DRAFTDATE1 — MANDATORY on every rendered draft)
 

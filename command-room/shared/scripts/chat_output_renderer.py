@@ -1498,10 +1498,14 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
                     for f in scan_for_personal_leak(text_or_html)
                 ]
         except ImportError:
+            # print to stderr, not a .write(): this check is on the access
+            # layer's read list, whose static check names any .write() call
+            # (cr1#1005). Same text, same stream, same trailing newline.
             import sys as _sys
-            _sys.stderr.write(
+            print(
                 "[chat_output_renderer] WARN: personal_leak module missing — "
-                "the org-surface personal-content scan did NOT run.\n"
+                "the org-surface personal-content scan did NOT run.",
+                file=_sys.stderr,
             )
     all_leaks = leaks + path_leaks + personal_leaks + dead_links
     if all_leaks:

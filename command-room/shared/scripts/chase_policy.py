@@ -310,6 +310,72 @@ def compose_chase(name: str, title: str, *, due=None, source: str = "", source_d
             "body": "\n".join([f"Hi {first},", "", ", ".join(parts) + ".", "", "Where does this stand?", ""])}
 
 
+#: "Send them their list" (cr1#1017, train 8 part A): the two directions a
+#: person's list is drafted in, each with its subject, its opening line and
+#: its ask. Plain sentences, no dashes as punctuation.
+LIST_WORDS = {
+    "owed_to_you": {"subject": "The open items on your side",
+                    "intro": "Here is what I have open on your side, so we are working from the same list:",
+                    "ask": "Could you tell me where each one stands?"},
+    "you_owe": {"subject": "What I owe you",
+                "intro": "Here is what I have open for you, so we are working from the same list:",
+                "ask": "I will come back to you on each one. Tell me if anything is missing."},
+}
+#: How many items one list names before it says how many more there are.
+LIST_CAP = 25
+#: The email-writer's `sign_off` setting, read the way its own drafts read it.
+SIGN_OFF_DEFAULT = "dash_first"
+
+
+def _list_day(value) -> str:
+    import datetime as _dt
+    try:
+        return _short_day(_dt.date.fromisoformat(str(value or "")[:10]))
+    except ValueError:
+        return ""
+
+
+def sign_off_lines(name: str, style: str = SIGN_OFF_DEFAULT) -> List[str]:
+    """The closing lines for a draft in the owner's name, by the email-writer's
+    `sign_off` setting (`dash_first`, `thanks_first`, `first_only`; `custom`
+    and anything unknown read as the first name alone). No name, no sign-off:
+    a guessed name is worse than none."""
+    first = str(name or "").split()[0] if str(name or "").strip() else ""
+    if not first:
+        return []
+    if style == "thanks_first":
+        return ["Thanks,", first]
+    if style == "dash_first":
+        return [chr(0x2014) + first]
+    return [first]
+
+
+def compose_list(name: str, rows: List[dict], direction: str, *, sign_name: str = "",
+                 sign_off: str = SIGN_OFF_DEFAULT) -> dict:
+    """`{subject, body, n}` for one person's whole list in one direction: what
+    they owe the owner (`owed_to_you`) or what the owner owes them
+    (`you_owe`). Pure. Each item is the row's own title and, when it has one,
+    its due day; nothing else from the record travels (no money, no notes).
+    `name` is the person's name; `sign_name` the owner's. An unknown direction
+    or no titled row answers `{}`."""
+    words = LIST_WORDS.get(direction)
+    items = [r for r in rows or [] if isinstance(r, dict) and str(r.get("title") or "").strip()]
+    if not words or not items:
+        return {}
+    first = str(name or "").split()[0] if str(name or "").strip() else "there"
+    lines = []
+    for r in items[:LIST_CAP]:
+        day = _list_day(r.get("due"))
+        lines.append("- " + " ".join(str(r["title"]).split()) + (f", due {day}" if day else ""))
+    if len(items) > LIST_CAP:
+        lines.append(f"- and {len(items) - LIST_CAP} more")
+    body = [f"Hi {first},", "", words["intro"], "", *lines, "", words["ask"], ""]
+    sign = sign_off_lines(sign_name, sign_off)
+    if sign:
+        body += [*sign, ""]
+    return {"subject": words["subject"], "body": "\n".join(body), "n": len(items)}
+
+
 def chase_offer(row: dict, *, person: Optional[dict], addresses: List[str], own_addresses: set,
                 days: int, escalate_after: int, last_touch=None, last_heard=None, chases: Optional[List] = None,
                 today=None) -> dict:
@@ -416,6 +482,7 @@ def row_chases(events, day_of: Callable) -> Dict[str, List[tuple]]:
 __all__ = [
     "MIN_OUTCOMES_FOR_MEDIAN", "OUTCOME_WINDOW_DAYS", "TOUCH_TYPES", "person_chase_days", "compose_chase",
     "chase_offer", "chase_touches", "row_chases",
+    "LIST_WORDS", "LIST_CAP", "sign_off_lines", "compose_list",
     "MIN_TOTAL", "MIN_GROUP", "DEFAULT_CHASE_DAYS", "CAP", "PASS_NAME",
     "load_email_outcomes", "group_outcomes", "derive_chase_policy",
     "load_chase_policy", "group_from_proposal", "write_chase_policy",

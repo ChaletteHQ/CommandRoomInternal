@@ -73,7 +73,8 @@ def _load_json(path: Path) -> Optional[dict]:
 def _load_events(events_path: Path) -> list:
     events = []
     try:
-        with open(events_path, "r", encoding="utf-8") as f:
+        from events_io import open_merged as _open_merged  # cr1#1061: every computer's log
+        with _open_merged(events_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

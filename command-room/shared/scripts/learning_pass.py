@@ -23,6 +23,10 @@ WHAT THIS IS. One code job, three automatic legs, inside the existing
   3. exemplar  — repeated structural corrections on one document kind promote
                  the corrected document to that kind's workspace exemplar.
 
+A fourth leg, `craft` (cr1#401), changes no behaviour: it attaches each
+correction to a draft that cited a craft rule to that rule, as evidence the
+owner reads on the Hub's Review tab.
+
 POSTURE. Every leg goes through `brain_proposals.propose(tier="auto")` FIRST,
 so the shared ledger owns the cooldown and the dedup, and the refusal path is
 the safety: a class with no registered reverser cannot apply at all. Each
@@ -1280,9 +1284,21 @@ def run_exemplar_leg(workspace_root, *, apply: bool, now_iso: str,
 # The job
 # ---------------------------------------------------------------------------
 
+def run_craft_leg(workspace_root, *, apply: bool, now_iso: str,
+                  batch_id: Optional[str] = None) -> dict:
+    """cr1#401: corrections to drafts that cited a craft rule are attached to
+    that rule as evidence (`craft_adjust.run_craft_leg`). Moves no confidence
+    and applies nothing, so it never touches the change feed."""
+    import craft_adjust
+
+    return craft_adjust.run_craft_leg(workspace_root, apply=apply,
+                                      now_iso=now_iso, batch_id=batch_id)
+
+
 _LEGS = (("voice", run_voice_leg),
          ("prep", run_prep_leg),
-         ("exemplar", run_exemplar_leg))
+         ("exemplar", run_exemplar_leg),
+         ("craft", run_craft_leg))
 
 
 def run_learning_job(workspace_root, *, apply: bool = True,
@@ -1349,7 +1365,8 @@ def _log(workspace_root, fired_via: str, result: dict) -> dict:
             "n_applied": applied,
             "legs": {n: {k: v for k, v in (legs.get(n) or {}).items()
                          if k not in ("lines", "questions")}
-                     for n in ("voice", "prep", "exemplar")},
+                     for n in ("voice", "prep", "exemplar", "craft")
+                     if n in legs or n != "craft"},
             "errors": result.get("errors") or [],
         },
     )

@@ -89,6 +89,7 @@ SCHEDULE_RELEASE_ITEMS = {
     "v5300_fold_scheduled_fires": "5.30.0",
     "v5310_readiness_retirement": "5.31.0",
     "v5330_instruct_schedule_setup": "5.33.0",
+    "v600_instruct_schedules": "6.0.0",
 }
 BRIDGE_SKIPPED_RELEASE_ITEMS = tuple(SCHEDULE_RELEASE_ITEMS)
 
@@ -152,26 +153,52 @@ def _newest_applied(workspace_root, events=None) -> Optional[dict]:
 
 
 def _vt(version) -> Optional[tuple]:
-    """`"5.38.0"` -> (5, 38, 0); a suffix after the numbers is ignored; a
-    version with fewer than three parts is padded (`"5.33"` reads as
-    `5.33.0`); an unreadable version is None."""
+    """`"5.38.0"` -> (5, 38, 0, 1); a version with fewer than three parts is
+    padded (`"5.33"` reads as `5.33.0`); an unreadable version is None.
+
+    cr1#991 gap 1: a leading `v` is read (`"v5.41.0"` is 5.41.0), and a
+    suffix after the numbers marks a pre-release, which reads BELOW its
+    release and above the one before (`"5.41.0-rc1"` -> (5, 41, 0, 0)), so
+    an rc seat and a release seat on one synced folder never read as the
+    same version where it matters: an rc seat is quiet about a release
+    seat's marker, and an older computer never writes under a newer one's
+    (`log_schedule_changes_applied`). Which release's schedule work a
+    version covers is read with the flag set aside (`_release`), since an rc
+    build carries its release's manifest. A fourth number on a release is
+    kept after the flag (`"5.41.0.1"` reads above 5.41.0); a four-part
+    pre-release, build metadata (`+b1`) or a trailing dot read as a
+    pre-release of their first three numbers. None of these occurs in the
+    version history; the product ships `X.Y.Z` and `X.Y.Z-rcN`. Only the
+    order matters; every reader compares two `_vt`s."""
+    text = str(version or "").strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:]
     parts = []
-    for seg in str(version or "").strip().split("."):
+    pre = False
+    for seg in text.split("."):
         digits = ""
         for ch in seg:
             if not ch.isdigit():
                 break
             digits += ch
         if not digits:
+            pre = bool(parts)
             break
         parts.append(int(digits))
         if len(digits) != len(seg):
+            pre = True
             break
     if not parts:
         return None
     while len(parts) < 3:
         parts.append(0)
-    return tuple(parts)
+    return tuple(parts[:3]) + (0 if pre else 1,) + tuple(parts[3:])
+
+
+def _release(vt: tuple) -> tuple:
+    """A `_vt` read as its release: an rc build carries its release's
+    manifest, so its schedule work is the release's (cr1#991 review)."""
+    return tuple(vt[:3]) + (1,) + tuple(vt[4:])
 
 
 def _baseline(events, installed: tuple) -> Optional[tuple]:
@@ -253,7 +280,8 @@ def schedule_fingerprint() -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def schedule_work_pending(workspace_root, plugin_version: Optional[str] = None) -> bool:
+def schedule_work_pending(workspace_root, plugin_version: Optional[str] = None,
+                          during_update: bool = False) -> bool:
     """Is schedule work waiting on this seat? A pure read of the activity log
     and this module's table; no scheduler read, no write.
 
@@ -266,7 +294,12 @@ def schedule_work_pending(workspace_root, plugin_version: Optional[str] = None) 
     registered stub, or the shelved, retired or superseded set, changed
     since), or (d)
     the seat has no marker and an update since cr1#970 has run here. A
-    version bump with no schedule work is False."""
+    version bump with no schedule work is False.
+
+    cr1#991 gap 3: `during_update` is the update's own read (`pending_line`,
+    Phase 4.7), which runs before that update writes its own handed-off row;
+    on a seat with no marker it counts as that row, so the first update after
+    cr1#970 says the line instead of the next one."""
     installed = _vt(_installed_version(plugin_version))
     if not installed:
         return False
@@ -279,6 +312,8 @@ def schedule_work_pending(workspace_root, plugin_version: Optional[str] = None) 
         # an update since this change has run here (its row carries
         # `HANDED_OFF_KEY`), that update did no schedule work, so the seat's
         # schedule work is waiting until an owner runs and writes the marker.
+        if during_update:
+            return True
         for ev in events:
             d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             if _type(ev) == "plugin_update" and d.get(HANDED_OFF_KEY):
@@ -293,7 +328,12 @@ def schedule_work_pending(workspace_root, plugin_version: Optional[str] = None) 
     base = _baseline(events, installed)
     if base is None:
         return True
-    return any(base < _vt(v) <= installed for v in SCHEDULE_WORK_VERSIONS)
+    # cr1#991 review: an rc build carries its release's manifest, so both
+    # ends read as their release: an rc seat counts its own release's
+    # schedule items, and its own marker (or an rc of the same release)
+    # covers them once setup ran.
+    lower, upper = _release(base), _release(installed)
+    return any(lower < _vt(v) <= upper for v in SCHEDULE_WORK_VERSIONS)
 
 
 def pending_line(workspace_root, plugin_version: Optional[str] = None,
@@ -308,7 +348,10 @@ def pending_line(workspace_root, plugin_version: Optional[str] = None,
     through the one invite producer (`schedule_config.setup_invite_line`). A
     pure read: no scheduler call, no write.
     """
-    if not schedule_work_pending(workspace_root, plugin_version):
+    # The update bridge is this line's only caller, so it reads as the update
+    # (cr1#991 gap 3).
+    if not schedule_work_pending(workspace_root, plugin_version,
+                                 during_update=True):
         return ""
     try:
         import schedule_config as sc
@@ -325,7 +368,9 @@ def log_schedule_changes_applied(workspace_root, plugin_version: Optional[str] =
     update's `pending_line` goes quiet. Only the two owner skills may write it.
 
     Returns `{written: bool, plugin_version, reason?}`. A second call for the
-    same version writes nothing (`reason: already_applied`)."""
+    same version writes nothing (`reason: already_applied`), and neither does
+    a call from a computer below the newest marker, a newer computer's on
+    the same synced folder (`reason: newer_marker`, cr1#991 gap 2)."""
     out = {"written": False, "plugin_version": None}
     skill = str(source_skill or "").strip()
     if skill not in OWNER_SKILLS:
@@ -338,7 +383,14 @@ def log_schedule_changes_applied(workspace_root, plugin_version: Optional[str] =
         return out
     fingerprint = schedule_fingerprint()
     newest = _newest_applied(workspace_root) or {}
-    if (_vt(newest.get("plugin_version")) == _vt(version)
+    newest_v, this_v = _vt(newest.get("plugin_version")), _vt(version)
+    if newest_v and this_v and newest_v > this_v:
+        # cr1#991 gap 2: a newer computer on this synced folder already applied
+        # its schedule work; an older one's setup never writes under it, so
+        # the newer one does not hear the line once for nothing.
+        out["reason"] = "newer_marker"
+        return out
+    if (newest_v == this_v
             and newest.get("fingerprint") == fingerprint):
         out["reason"] = "already_applied"
         return out

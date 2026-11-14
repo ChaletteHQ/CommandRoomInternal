@@ -92,6 +92,278 @@ def _floor_year(since_ts) -> Optional[int]:
         return None
 
 
+# ---- one log per computer: the merged reader (cr1#1061, parent #790) ----
+#
+# A seat used from two computers through a sync service must never have two
+# writers on one file: the service keeps one version and parks the other as a
+# conflict copy (#724), or flushes a stale copy over a newer one (#385). The
+# fix gives each computer its own log, in a folder BESIDE the live file (owner
+# ruling A2: the live data files stay where they are):
+#
+#     _hq/data/events.jsonl                      today's file, never moved
+#     _hq/data/computers/<writer>/events.jsonl   one per computer
+#
+# and every reader sees ONE merged view: everything from every file, exact
+# duplicates dropped. THIS block is that reader. It writes nothing. A seat
+# with no `computers/` folder -- every seat today -- takes the first branch of
+# `iter_events` and reads byte for byte as before; the merge only runs when a
+# second stream exists.
+
+#: The folder beside the live log that holds one sub-folder per computer.
+COMPUTER_LOGS_DIRNAME = "computers"
+
+#: The field a per-computer entry carries its content fingerprint in. The
+#: reader never trusts a stored value: it recomputes over the entry without it.
+FINGERPRINT_FIELD = "fp"
+
+
+def _chrono_files(data_dir: Path, floor: Optional[int] = None) -> list[Path]:
+    """One log folder's files, chronological: year shards then the active
+    file. The same rule `shard_paths` applies to `_hq/data` itself."""
+    shards = sorted(
+        (p for p in data_dir.glob("events-*.jsonl") if _SHARD_RE.match(p.name)),
+        key=lambda p: _shard_year(p) or 0,
+    )
+    if floor is not None:
+        shards = [p for p in shards if (_shard_year(p) or floor) >= floor]
+    out: list[Path] = list(shards)
+    active = data_dir / "events.jsonl"
+    if active.exists():
+        out.append(active)
+    return out
+
+
+def computer_log_dirs(root: str | Path) -> list[Path]:
+    """Every per-computer log folder (`_hq/data/computers/<writer>/`) holding
+    at least one log file, sorted by writer name. [] on every seat today."""
+    base = _data_dir(root) / COMPUTER_LOGS_DIRNAME
+    try:
+        if not base.is_dir():
+            return []
+        dirs = sorted((d for d in base.iterdir() if d.is_dir()),
+                      key=lambda d: d.name)
+    except OSError:
+        return []
+    return [d for d in dirs if _chrono_files(d)]
+
+
+def has_computer_logs(root: str | Path) -> bool:
+    """True when at least one per-computer log exists beside the live file."""
+    return bool(computer_log_dirs(root))
+
+
+def log_streams(root: str | Path, since_ts=None) -> list[tuple[str, list[Path]]]:
+    """`[(name, files), ...]`: the live log first (its shards then
+    `events.jsonl`, named ""), then each computer's folder by writer name.
+    One computer, today: exactly `[("", shard_paths(root))]`."""
+    out: list[tuple[str, list[Path]]] = [("", shard_paths(root, since_ts=since_ts))]
+    floor = _floor_year(since_ts)
+    for d in computer_log_dirs(root):
+        out.append((d.name, _chrono_files(d, floor)))
+    return out
+
+
+def log_files(root: str | Path, since_ts=None) -> list[Path]:
+    """Every file the merged reader reads, in stream order. For a stat
+    signature or a readability probe -- a cache keyed on `shard_paths` alone
+    would not notice the other computer's appends."""
+    return [p for _name, files in log_streams(root, since_ts=since_ts)
+            for p in files]
+
+
+def fingerprint(ev: dict) -> str:
+    """The content fingerprint of one entry: sha256 over its canonical JSON,
+    without the fingerprint field itself. Two entries are exact duplicates
+    when, and only when, their fingerprints match."""
+    import hashlib
+    body = {k: v for k, v in ev.items() if k != FINGERPRINT_FIELD}
+    canon = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False, default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:32]
+
+
+def _int_seq(ev: dict) -> Optional[int]:
+    s = ev.get("seq")
+    if isinstance(s, int) and not isinstance(s, bool):
+        return s
+    return None
+
+
+def merge_streams(streams: list[list[dict]], report: dict | None = None) -> list[dict]:
+    """Merge already-parsed streams into one list: everything from every
+    stream, exact duplicates (same `fingerprint`) dropped.
+
+    One stream is returned AS IS (same list, nothing fingerprinted), which is
+    what keeps a one-computer seat byte-identical.
+
+    Order: each stream keeps its own order (only heads are compared), and the
+    heads interleave by number, `seq`; an entry without a usable number keeps
+    its place behind the last numbered entry of its own stream. Ties go to the
+    earlier stream (the live log first, then computers by writer name).
+
+    Exact duplicates are counted as a multiset: an entry is kept as many
+    times as the ONE stream holding it most often holds it. So an entry in
+    two files shows once, and a file's own repeated line is kept, as every
+    reader keeps it today, whichever stream comes first.
+
+    `report`, when a dict, is filled with `streams`, `kept`,
+    `duplicates_dropped` and `seq_collisions` (a number held by entries with
+    different content in two streams -- possible when two computers number an
+    entry while out of sync; listed, never resolved here)."""
+    if len(streams) <= 1:
+        out = streams[0] if streams else []
+        if isinstance(report, dict):
+            report.update({"streams": len(streams), "kept": len(out),
+                           "duplicates_dropped": 0, "seq_collisions": []})
+        return out
+    import heapq
+
+    def _keyed(rank: int, evs: list[dict]):
+        carried = -1
+        for idx, ev in enumerate(evs):
+            s = _int_seq(ev)
+            if s is not None:
+                carried = s
+            yield (carried, rank, idx), rank, ev
+
+    fps: list[list[str]] = [[fingerprint(ev) for ev in s] for s in streams]
+    allowed: dict[str, int] = {}
+    for stream_fps in fps:
+        counts: dict[str, int] = {}
+        for fp in stream_fps:
+            counts[fp] = counts.get(fp, 0) + 1
+        for fp, n in counts.items():
+            if n > allowed.get(fp, 0):
+                allowed[fp] = n
+    emitted: dict[str, int] = {}
+    by_seq: dict[int, dict[str, int]] = {}
+    out: list[dict] = []
+    dropped = 0
+    for (_c, rank, idx), _rank, ev in heapq.merge(
+            *(_keyed(r, s) for r, s in enumerate(streams)), key=lambda t: t[0]):
+        fp = fps[rank][idx]
+        if emitted.get(fp, 0) >= allowed[fp]:
+            dropped += 1
+            continue
+        emitted[fp] = emitted.get(fp, 0) + 1
+        s = _int_seq(ev)
+        if s is not None:
+            by_seq.setdefault(s, {}).setdefault(fp, rank)
+        out.append(ev)
+    if isinstance(report, dict):
+        collisions = sorted(s for s, fps in by_seq.items()
+                            if len(set(fps.values())) > 1)
+        report.update({"streams": len(streams), "kept": len(out),
+                       "duplicates_dropped": dropped,
+                       "seq_collisions": collisions})
+    return out
+
+
+def merged_lines(path: str | Path, encoding: str = "utf-8",
+                 errors: Optional[str] = None) -> list[str]:
+    """The lines of the live `events.jsonl`, merged with every computer's own
+    log (cr1#1061 slice 2), for a reader that parses lines itself.
+
+    With no per-computer log beside `path` (every seat with one computer),
+    or for any other path, this is exactly
+    `Path(path).read_text(encoding, errors).splitlines()` -- same lines, same
+    exceptions. Otherwise each file's lines keep their order, the files
+    interleave by number like `merge_streams`, and an exact duplicate line
+    from another computer's file is dropped (same multiset rule). A line that
+    does not parse is kept in its place."""
+    import heapq
+    p = Path(path)
+    kw = {"encoding": encoding}
+    if errors is not None:
+        kw["errors"] = errors
+    if p.name != "events.jsonl" or p.parent.parent.name == COMPUTER_LOGS_DIRNAME:
+        return p.read_text(**kw).splitlines()
+    dirs = computer_log_dirs(p.parent)
+    if not dirs:
+        return p.read_text(**kw).splitlines()
+    streams: list[list[str]] = [p.read_text(**kw).splitlines() if p.exists() else []]
+    for d in dirs:
+        lines: list[str] = []
+        for f in _chrono_files(d):
+            lines.extend(f.read_text(**kw).splitlines())
+        streams.append(lines)
+    parsed: list[list[tuple[Optional[str], Optional[int]]]] = []
+    for lines in streams:
+        row = []
+        for ln in lines:
+            try:
+                ev = json.loads(ln) if ln.strip() else None
+            except ValueError:
+                ev = None
+            if isinstance(ev, dict):
+                row.append((fingerprint(ev), _int_seq(ev)))
+            else:
+                row.append((None, None))
+        parsed.append(row)
+    allowed: dict[str, int] = {}
+    for row in parsed:
+        counts: dict[str, int] = {}
+        for fp, _s in row:
+            if fp:
+                counts[fp] = counts.get(fp, 0) + 1
+        for fp, n in counts.items():
+            allowed[fp] = max(allowed.get(fp, 0), n)
+
+    def _keyed(rank: int):
+        carried = -1
+        for idx, (fp, s) in enumerate(parsed[rank]):
+            if s is not None:
+                carried = s
+            yield (carried, rank, idx)
+
+    emitted: dict[str, int] = {}
+    out: list[str] = []
+    for _c, rank, idx in heapq.merge(*(_keyed(r) for r in range(len(streams)))):
+        fp = parsed[rank][idx][0]
+        if fp is not None:
+            if emitted.get(fp, 0) >= allowed[fp]:
+                continue
+            emitted[fp] = emitted.get(fp, 0) + 1
+        out.append(streams[rank][idx])
+    return out
+
+
+def open_merged(path: str | Path, encoding: str = "utf-8",
+                errors: Optional[str] = None):
+    """`open(path, "r", ...)` for a reader that iterates a file's lines, with
+    every computer's log merged in (cr1#1061). With no per-computer log it IS
+    `open(path, "r", encoding=..., errors=...)`, the very same file object."""
+    import io
+    p = Path(path)
+    if (p.name != "events.jsonl" or p.parent.parent.name == COMPUTER_LOGS_DIRNAME
+            or not computer_log_dirs(p.parent)):
+        kw = {"encoding": encoding}
+        if errors is not None:
+            kw["errors"] = errors
+        return open(p, "r", **kw)
+    return io.StringIO("".join(ln + "\n"
+                               for ln in merged_lines(p, encoding, errors)))
+
+
+def _iter_stream(files: list[Path]) -> Iterator[dict]:
+    for p in files:
+        yield from _iter_file(p)
+
+
+def merge_report(root: str | Path) -> dict:
+    """What the merged view is made of, for system health and tests:
+    `{writers, streams, per_stream, kept, duplicates_dropped, seq_collisions}`.
+    Read-only."""
+    streams = log_streams(root)
+    parsed = [list(_iter_stream(files)) for _name, files in streams]
+    rep: dict = {}
+    merge_streams(parsed, report=rep)
+    rep["writers"] = [name for name, _files in streams if name]
+    rep["per_stream"] = {(name or "events.jsonl"): len(evs)
+                         for (name, _f), evs in zip(streams, parsed)}
+    return rep
+
+
 def _iter_file(p: Path) -> Iterator[dict]:
     """Defensive line-by-line parse — skip blank / unparseable / non-dict lines.
 
@@ -212,10 +484,20 @@ def _record_stale_read(root: str | Path, reader: str) -> None:
 def iter_events(root: str | Path, since_ts=None) -> Iterator[dict]:
     """Generator over every event across all shards + the active file, in chronological
     file order. `since_ts` (ISO string or 'YYYY...') skips whole shards whose year is
-    below the floor — a cheap, filename-only prune that never opens a too-old shard."""
+    below the floor — a cheap, filename-only prune that never opens a too-old shard.
+
+    ONE LOG PER COMPUTER (cr1#1061): when per-computer logs exist beside the
+    live file, this is the merged view (`merge_streams`): every computer's
+    entries, exact duplicates dropped. With none -- every seat today -- the
+    first branch below is the whole function, unchanged."""
     _record_stale_read(root, reader="events_io.iter_events")
-    for p in shard_paths(root, since_ts=since_ts):
-        yield from _iter_file(p)
+    streams = log_streams(root, since_ts=since_ts)
+    if len(streams) == 1:
+        for p in streams[0][1]:
+            yield from _iter_file(p)
+        return
+    yield from merge_streams([list(_iter_stream(files))
+                              for _name, files in streams])
 
 
 def load_all(root: str | Path, since_ts=None) -> list[dict]:
@@ -521,6 +803,10 @@ def shard_invariants(root: str | Path) -> list[str]:
 
 __all__ = ["shard_paths", "active_path", "iter_events", "load_all",
            "count_rows",
+           "COMPUTER_LOGS_DIRNAME", "FINGERPRINT_FIELD",
+           "computer_log_dirs", "has_computer_logs", "log_streams",
+           "log_files", "fingerprint", "merge_streams", "merge_report",
+           "merged_lines", "open_merged",
            "load_events_owner_scoped",
            "load_events_org_scoped", "iter_events_org_scoped",
            "shard_invariants"]

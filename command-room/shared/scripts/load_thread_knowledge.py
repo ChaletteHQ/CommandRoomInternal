@@ -115,6 +115,17 @@ Fix round 3 2026-08-28 (§5c — novel-modality retest):
     facts that never entered the substrate — narrative-only landmines
     remain SESSSTORY1 / brain-sweep territory, not reader territory.
 
+Craft layer 2026-11-11 (SPEC CRAFT1 §4, cr1#397): the profiles named in
+`CRAFT_LAYER` gain the section "craft" (the thread's and its business's
+craft files, placed in front of the decisions); those in `CRAFT_PEOPLE`
+(call prep) also gain "people_craft" (the people on the thread, owner
+excluded, placed last). A draft reads its recipient's craft through the
+helper instead. Both are read through
+`craft_recall.craft_for_task` for the profile's task. Each exists only when
+a file loaded, so a thread with no craft file gets the payload it got before;
+the frozen PROFILES rows are not edited. The memo signature also witnesses
+the craft folders, so a craft file added in-process is seen.
+
 stdlib + sibling shared/scripts modules only.
 """
 from __future__ import annotations
@@ -137,6 +148,8 @@ from entities_io import entities_collection, unwrap_entities
 
 __all__ = [
     "PROFILES",
+    "CRAFT_LAYER",
+    "CRAFT_PEOPLE",
     "ProfileError",
     "ThreadNotFoundError",
     "load_thread_knowledge",
@@ -306,6 +319,26 @@ PROFILES: dict[str, dict] = {
     },
 }
 
+# SPEC CRAFT1 §4 (cr1#397): the craft layer, keyed by profile name -> the
+# task whose scopes it reads (`craft_recall.TASK_SCOPES`). Kept beside the
+# PROFILES table rather than in it, so every frozen row stays byte-identical.
+# A profile not listed here reads no craft. The layer sits in the fixed order
+# brief, state, journal, CRAFT, rulings, then the people on the thread and
+# THEIR craft: "craft" goes in front of "decisions" and "people_craft" last.
+# Each section exists only when at least one file loaded, so a thread with no
+# craft file gets the payload it got before this layer existed.
+CRAFT_LAYER: dict[str, str] = {
+    "email-writer": "draft",
+    "call-prep": "call-prep",
+}
+# The profiles whose payload also carries the people on the thread and their
+# craft ("people_craft"). Call prep reads every attendee. A draft is NOT
+# here: it reads only the craft of the person it is addressed to, resolved
+# by id through `craft_recall.craft_for_task`, never the thread's other
+# people (cr1#397 review finding 3: an email to a colleague on the thread
+# must never apply the key contact's rules).
+CRAFT_PEOPLE: frozenset = frozenset({"call-prep"})
+
 CROSS_THREAD_WINDOW_DAYS = 45   # §0.4
 CROSS_THREAD_CAP = 10           # §0.4
 SESSION_NOTES_MAX_BLOCKS = 5
@@ -358,18 +391,22 @@ def _stat_sig(p: Path, *, content_hash: bool = False):
 
 
 def _signature(root: Path, brain_path: Path | None,
-               notes_paths: list[Path]) -> tuple:
+               notes_paths: list[Path], craft_sig: tuple = ()) -> tuple:
     parts = [
         _stat_sig(root / "_hq" / "data" / "entities.json"),
         _stat_sig(events_io.active_path(root)),
         _stat_sig(root.joinpath(*GAUGE_RELPATH)),
     ]
-    for shard in sorted(events_io.shard_paths(root)):
+    # cr1#1061: per-computer logs too, so another computer's append
+    # invalidates the cache like a local one.
+    for shard in sorted(events_io.log_files(root)):
         parts.append(_stat_sig(shard))
     if brain_path is not None:
         parts.append(_stat_sig(brain_path, content_hash=True))
     for np_ in notes_paths:
         parts.append(_stat_sig(np_, content_hash=True))
+    if craft_sig:
+        parts.append(("craft",) + tuple(craft_sig))
     return tuple(parts)
 
 
@@ -829,6 +866,60 @@ def _note_verbatim_budget(name: str, content, budget: int,
 
 
 # ---------------------------------------------------------------------------
+# Craft layer (SPEC CRAFT1 §4, cr1#397)
+# ---------------------------------------------------------------------------
+
+
+def _owner_id(raw_ent: dict) -> str | None:
+    try:
+        from primary_user import resolve_primary_user_from_entities
+        return resolve_primary_user_from_entities(raw_ent)
+    except Exception:  # noqa: BLE001 - an unresolvable owner excludes no one
+        return None
+
+
+def _craft_subjects(thread: dict) -> list[str]:
+    """The thread itself, then its business: the subjects whose craft is the
+    thread's own layer."""
+    out: list[str] = []
+    for v in (thread.get("id"), thread.get("org_id"),
+              thread.get("affiliation_id")):
+        if isinstance(v, str) and v and v not in out:
+            out.append(v)
+    return out
+
+
+def _craft_signature(root: Path, raw_ent: dict, ent: dict, thread_id: str,
+                     thread: dict) -> tuple:
+    """The cache witness for the craft layer: the thread's subjects' craft
+    folders, and every person's craft folder that exists on disk. The
+    people on the thread are known only after the events load, so every
+    existing person folder is witnessed, from one listing: the cost follows
+    the craft folders, never the people on file (cr1#397 review finding 1)."""
+    try:
+        import craft_recall
+        return craft_recall.craft_signature(
+            root, _craft_subjects(thread), entities=raw_ent)
+    except Exception:  # noqa: BLE001 - a cache witness is never fatal
+        return (("craft_signature_failed", time.time_ns()),)
+
+
+def _section_order(base: list[str], sections: dict) -> list[str]:
+    """The profile's order over the sections built, with the craft layer put
+    in its fixed place: craft in front of the rulings (decisions), or of the
+    cross-thread rows when a profile has no decisions; the people's craft
+    last. With no craft section this is exactly the profile's order."""
+    order = [s for s in base if s in sections]
+    if "craft" in sections:
+        at = next((order.index(s) for s in ("decisions", "cross_thread")
+                   if s in order), len(order))
+        order.insert(at, "craft")
+    if "people_craft" in sections:
+        order.append("people_craft")
+    return order
+
+
+# ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
 
@@ -868,7 +959,8 @@ def load_thread_knowledge(
     ent_path = root / "_hq" / "data" / "entities.json"
     try:
         # §5b.1 — torn-read retry: the canonical DEFENSIVE entities load.
-        ent = unwrap_entities(_read_entities_defensive(ent_path))
+        raw_ent = _read_entities_defensive(ent_path)
+        ent = unwrap_entities(raw_ent)
     except (OSError, json.JSONDecodeError) as e:
         raise ThreadNotFoundError(
             f"{thread_id}: entities register unreadable ({e})") from e
@@ -879,7 +971,11 @@ def load_thread_knowledge(
     # ---- cache probe -------------------------------------------------------
     brain_path, brain_reason = _rtls.resolve_brain_path(root, thread_id)
     notes_paths = _find_session_notes(root, thread)
-    sig = _signature(root, brain_path, notes_paths)
+    craft_task = CRAFT_LAYER.get(profile)
+    craft_sig: tuple = ()
+    if craft_task:
+        craft_sig = _craft_signature(root, raw_ent, ent, thread_id, thread)
+    sig = _signature(root, brain_path, notes_paths, craft_sig)
     key = (str(root), thread_id, profile, now_iso, user_person_id,
            allow_recompute)
     hit = _CACHE.get(key)
@@ -1073,6 +1169,47 @@ def load_thread_knowledge(
                            "coverage_note": note},
         }
 
+    # ---- craft (SPEC CRAFT1 §4, cr1#397) -----------------------------------
+    # The thread's own craft and its business's, then the people on the
+    # thread and theirs. Nothing is added, not even a note, when no file
+    # loads: an entity with no craft file reads nothing and says nothing.
+    if craft_task:
+        mode = prof["cross_thread"] if prof["cross_thread"] != "off" \
+            else "person"
+        people = sorted(_payload_persons(thread, bound, mode)
+                        - {user_person_id, _owner_id(raw_ent), None}) \
+            if profile in CRAFT_PEOPLE else []
+        try:
+            import craft_recall
+            for name, subjects in (("craft", _craft_subjects(thread)),
+                                   ("people_craft", people)):
+                # leads=False: the owner's and the firm's write method
+                # reach a draft through the skill's own helper call, never
+                # through the thread payload (ruling on cr1#399).
+                got = craft_recall.craft_for_task(
+                    root, subjects, craft_task, entities=raw_ent,
+                    leads=False)
+                files = got.get("files") or []
+                if not files:
+                    continue
+                skipped = got.get("skipped") or []
+                sections[name] = {
+                    "content": files,
+                    "provenance": {
+                        "source": "craft files, by the craft/ folder "
+                                  "convention (craft_recall)",
+                        "freshness_seq": None,
+                        "coverage_note": (
+                            f"{len(skipped)} craft file(s) skipped: they do "
+                            "not follow the craft file shape"
+                            if skipped else None),
+                    },
+                }
+        except Exception as e:  # noqa: BLE001 - degrade, never crash
+            for name in ("craft", "people_craft"):
+                sections.pop(name, None)
+            degraded.append(f"craft_failed:{type(e).__name__}")
+
     # ---- coverage (§0.3 — persisted gauge + read-time degradation) ---------
     gauge, stale = _load_gauge(root, thread_id, _max_human_seq(events),
                                allow_recompute=allow_recompute)
@@ -1121,7 +1258,7 @@ def load_thread_knowledge(
         "thread_id": thread_id,
         "profile": profile,
         "sections": sections,
-        "section_order": [s for s in prof["section_order"] if s in sections],
+        "section_order": _section_order(prof["section_order"], sections),
         "coverage": coverage,
         "degraded": degraded,
         "provenance": {

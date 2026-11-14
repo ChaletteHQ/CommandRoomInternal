@@ -99,8 +99,21 @@ never an edit by hand; "also exclude the marketing board" extends the list
 that reads a connector source is named in the reader's map
 (`connector_reads.JOB_READS`) with the kinds it reads, and guard G84 refuses
 a job that reads a source without calling the reader first. The writer refuses an unknown kind, an unknown dial,
-a non-boolean dial, a `close_mode` outside `close` / `propose`, or a scope
-outside `account` / `desktop_only`.
+a non-boolean dial, a `close_mode` outside `close` / `propose`, a scope
+outside `account` / `desktop_only`, or a role outside the account role words.
+
+**Role (cr1#1163, ruling (b) of 2026-11-12).** Set-up asks what each
+connector is used for and what it holds, and records the answer as `role`,
+in the same words a mail account's classification uses (`personal`, `mixed`,
+`business-primary`, `business-secondary`, `shared-support`, `billing`,
+`cold-outreach`), so "personal" means one thing everywhere. A connector whose
+role is `personal` is left out of set-up's pull and out of every
+Maintenance job's read (`connector_reads` turns it away, and the meetings
+window comes back empty with `skip_kind: "personal"`, and a
+receipt never names it as a gap); it is the same wall a personal mail account
+has (#755). `mixed` is read, and the mixed-account dials decide what is
+filed; nothing is asked item by item. A connector with no role (nobody asked)
+is read as before.
 
 **Reachability.** A scheduled fire sees the connectors of the account that
 registered the schedules. A connector attached only in the desktop app is

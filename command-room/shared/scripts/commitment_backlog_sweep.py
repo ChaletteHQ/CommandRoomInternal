@@ -2614,6 +2614,13 @@ def review_expiry_candidates(rows, *, events_path, user_person_id,
         # anything. It parks on the plate until someone claims it.
         if question_written_by_user(ev):
             continue
+        # cr1#771 (owner ruling 2026-11-11): a capture kept after its field
+        # was misread stays on the owner's list, marked unconfirmed, until the
+        # owner confirms, drops or edits it. The drain argues from silence,
+        # and this row is waiting on the owner by design, not forgotten.
+        _d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if _d.get("kept_after_refusal") and _d.get("pending_review") is True:
+            continue
         seen = activity.get(cid)
         if seen is None or seen > cutoff:
             continue

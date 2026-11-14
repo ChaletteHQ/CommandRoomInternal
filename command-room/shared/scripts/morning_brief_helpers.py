@@ -649,6 +649,11 @@ def brief_state(workspace_root: str, *, now_iso: str = "",
     except Exception:  # noqa: BLE001 — the wrapper's own degrade
         pass
     state = cs.compute_brief_state(**kwargs)
+    # cr1#1012: the overdue number is the open list's, exactly as the writer
+    # (`compute_and_log_brief_state`) stamps it, so the composed row is the
+    # writer's row.
+    from open_list import stamp_state_overdue
+    stamp_state_overdue(state, workspace_root, kwargs.get("now_iso"))
 
     counts = {k: v for k, v in state["counts"].items()
               if k not in ("by_kind", "stuck")}
@@ -886,7 +891,8 @@ def plan_maintenance_receipt(workspace_root: str, *,
                              windows: Optional[Dict[str, Any]] = None,
                              completed_at: Optional[Dict[str, Any]] = None,
                              connectors_unreachable: Optional[List[str]] = None,
-                             fire_id: Optional[str] = None
+                             fire_id: Optional[str] = None,
+                             searches_empty: Optional[Dict[str, Any]] = None
                              ) -> Dict[str, Any]:
     """`{rows}` — THE one `maintenance_run` row a maintenance pass owes.
 
@@ -906,6 +912,8 @@ def plan_maintenance_receipt(workspace_root: str, *,
     job id; a completed job left out takes the receipt's own finish time.
     `fire_id` (cr1#977) is the scheduled fire's own id from its plan, stamped
     on the receipt so a later fire can tell this fire finished.
+    `searches_empty` (cr1#1002) is the tool searches that loaded no tool even
+    on their retry, by connector category, handed through to the receipt.
     The answer's `rows` are the receipt and the heartbeat that follows it,
     in that order, for the one append.
     """
@@ -926,7 +934,10 @@ def plan_maintenance_receipt(workspace_root: str, *,
                                              if isinstance(completed_at, dict)
                                              else None),
                                connectors_unreachable=list(connectors_unreachable or []),
-                               fire_id=fire_id)
+                               fire_id=fire_id,
+                               searches_empty=(dict(searches_empty)
+                                               if isinstance(searches_empty, dict)
+                                               else None))
     return {"rows": _jsonable(list(captured))}
 
 

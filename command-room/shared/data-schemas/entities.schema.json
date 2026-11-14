@@ -197,6 +197,30 @@
           },
           "description": "cr1#825. What the person was added on: the source tool's own id for them (`tool_id`) or the company the source stated (`company`), with the kind of source. Written by people_writer on an add and the ids are read by identity_reconcile.sighting_against_record, so a later person of the same name is asked about and never filed here. Optional."
         },
+        "category": {
+          "type": "string",
+          "enum": ["Client contact", "Prospect", "Partner or referral source", "Peer or advisor", "Vendor or service provider", "Team or hiring", "Personal", "Unclear"],
+          "description": "cr1#110 part 1 (train 2 part 3b). The relationship kind. Written ONLY by people_writer.set_person_field (door_set_person_field), undone by brain_undo's person_field_set reverser. Optional."
+        },
+        "introduced_by": {
+          "type": "object",
+          "required": ["person_id", "channel", "evidence", "confidence"],
+          "properties": {
+            "person_id": { "type": "string" },
+            "name": { "type": "string" },
+            "channel": { "type": "string", "enum": ["email", "imessage", "meeting", "contact_card"] },
+            "evidence": { "type": "string" },
+            "confidence": { "type": "string", "enum": ["stated", "card_tag", "inferred"] },
+            "date": { "type": ["string", "null"] },
+            "set_at": { "type": "string" }
+          },
+          "description": "cr1#110 part 2 (train 2 part 3b). Who brought this person to the owner, how, the words that show it and how sure that is. Written ONLY by people_writer.set_person_field. Optional."
+        },
+        "handle_with_care": {
+          "type": "string",
+          "maxLength": 280,
+          "description": "Train 2 part 3b. The owner's own line about this person, shown only on the owner's surfaces (the person card's owner-only section). Written ONLY by people_writer.set_person_field. Optional."
+        },
         "cadence_days": {
           "type": ["number", "null"],
           "description": "SPEC BAL1 D1(b). Personal RE-SURFACE interval in days (date-night cadence for a spouse, call cadence for a parent) — read ONLY by shared/scripts/balance.py. The OPPOSITE of cadence_override_days (dormancy's max-widening suppression knob): this one GENERATES a reconnect nudge when the gap exceeds it. Never routed through dormancy.effective_baseline. Meaningful only with tie=personal. Optional."

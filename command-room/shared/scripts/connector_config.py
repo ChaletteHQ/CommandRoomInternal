@@ -285,6 +285,14 @@ def is_zapier_server(server_id: Optional[str], workspace_root=None,
 #   exclude   names at the kind's grain the jobs never read
 #   scope     `account` (reachable from a scheduled fire) or `desktop_only`
 #             (attached only in the desktop app, unreachable from a fire)
+#   role      what the source holds, in the ACCOUNT role vocabulary
+#             (`CONNECTOR_ROLES`, cr1#1163 ruling (b)): `personal` means the
+#             same as on a mail account (#755's wall): the connector is left
+#             out of the onboarding pull and of every Maintenance job's
+#             read (`connector_reads`; the meetings window comes back empty). `mixed` and the business roles are read as
+#             today. ABSENT means "not asked", and reads as today, so every
+#             existing book is unchanged (unlike an unclassified mail
+#             account, which fails closed at the account layer).
 #
 # Absent fields read as the defaults, so every existing book keeps today's
 # behaviour exactly and nothing migrates. The one writer is
@@ -297,9 +305,15 @@ BOOL_DIALS = ("open_commitments", "close_commitments", "update_people",
 CLOSE_MODES = ("close", "propose")
 CONNECTOR_SCOPES = ("account", "desktop_only")
 SCOPE_ACCOUNT, SCOPE_DESKTOP_ONLY = CONNECTOR_SCOPES
+#: A connector's role: the account roles, minus `unclassified` (a connector
+#: nobody asked about carries no role at all). Kept beside the account
+#: vocabulary so "personal" means one thing everywhere (cr1#1163).
+CONNECTOR_ROLES = ("business-primary", "business-secondary", "mixed",
+                   "personal", "shared-support", "billing", "cold-outreach")
+ROLE_PERSONAL = "personal"
 #: Keys on a declared row that `set_declared_backend` keeps across a re-pin.
 CONNECTOR_SETTING_KEYS = ("kind", "dials", "include", "exclude", "scope",
-                          "set_by", "set_at")
+                          "role", "set_by", "set_at", "dials_set")
 #: The one key under `workspace.connectors` that is not a connector row.
 _ZAPIER_PIN_KEY = "_zapier_server_ids"
 
@@ -392,6 +406,7 @@ def _settings_from_row(category: str, row: Dict[str, Any]) -> Optional[Dict[str,
     mode = str(raw.get("close_mode") or "").strip().lower()
     dials["close_mode"] = mode if mode in CLOSE_MODES else defaults.get("close_mode")
     scope = str(row.get("scope") or "").strip().lower()
+    role = str(row.get("role") or "").strip().lower()
     return {
         "category": category,
         "kind": kind,
@@ -402,6 +417,7 @@ def _settings_from_row(category: str, row: Dict[str, Any]) -> Optional[Dict[str,
         "include": _read_list(row.get("include")),
         "exclude": _read_list(row.get("exclude")),
         "scope": scope if scope in CONNECTOR_SCOPES else SCOPE_ACCOUNT,
+        "role": role if role in CONNECTOR_ROLES else None,
     }
 
 
@@ -409,7 +425,7 @@ def connector_settings(category: str, workspace_root=None,
                        entities: Optional[dict] = None) -> Optional[Dict[str, Any]]:
     """The effective settings of one declared connector:
     `{category, kind, server_id, provider, label, dials, include, exclude,
-    scope}`, absent fields read as the kind's defaults. None when the
+    scope, role}`, absent fields read as the kind's defaults. None when the
     category is undeclared (no row, or a row with no server id) or its kind
     cannot be resolved. Never raises."""
     try:
@@ -464,10 +480,29 @@ def accounts(workspace_root=None, entities: Optional[dict] = None) -> List[Dict[
     return [a for a in acc if isinstance(a, dict)] if isinstance(acc, list) else []
 
 
+#: cr1#1139 (ruling A5): the accounts the owner named as acting for them,
+#: `[{account_mark, named_at, named_by}]` under `workspace`
+#: (`schedule_config.name_acting_account` is the one writer).
+ACTING_ACCOUNTS_KEY = "acting_accounts"
+
+
+def acting_account_marks(workspace_root=None, entities: Optional[dict] = None) -> set:
+    """cr1#1139: the account marks named as acting for the owner. Never raises."""
+    try:
+        rows = workspace_block(workspace_root, entities).get(ACTING_ACCOUNTS_KEY)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {str(r.get("account_mark")).strip() for r in (rows or [])
+            if isinstance(r, dict) and r.get("account_mark")}
+
+
 def account_map_populated(workspace_root=None, entities: Optional[dict] = None) -> bool:
-    """True iff the workspace has classified at least one account. When False,
-    every account is in-scope (R4 — the wall is a no-op)."""
-    return len(accounts(workspace_root, entities)) > 0
+    """True iff the workspace has classified at least one account, OR has an
+    account acting for its owner (cr1#1139 D2 (a): then the wall is on even
+    with nothing classified, so an undeclared mailbox cannot write). When
+    False, every account is in-scope (R4 — the wall is a no-op)."""
+    ent = entities if isinstance(entities, dict) else load_entities(workspace_root)
+    return len(accounts(entities=ent)) > 0 or bool(acting_account_marks(entities=ent))
 
 
 def account_for_address(address: Optional[str], workspace_root=None,
@@ -523,7 +558,8 @@ def _dials_for(rec: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def account_scope(address: Optional[str] = None, account_id: Optional[str] = None,
-                 workspace_root=None, entities: Optional[dict] = None) -> Dict[str, bool]:
+                 workspace_root=None, entities: Optional[dict] = None,
+                 mailbox: bool = False) -> Dict[str, bool]:
     """The effective {surface, write_to_business} dials for an account.
 
     Empty map  → both on (R4 back-compat). Account not found in a populated map
@@ -535,6 +571,14 @@ def account_scope(address: Optional[str] = None, account_id: Optional[str] = Non
         return {"surface": True, "write_to_business": True}
     rec = _resolve_record(address, account_id, None, ent)
     if rec is None:
+        if mailbox and acting_account_marks(entities=ent):
+            # cr1#1139 (ruling A5, D2 (a)): two accounts use this folder, so
+            # a mailbox whose role is not declared may be the second
+            # account's own, personal mail. It writes nothing to the book
+            # until its role is set; it may still be shown. Only when the
+            # lookup is BY THE MAILBOX (`mailbox`): a sender's address that
+            # resolved to no account is not a mailbox, and stays in scope.
+            return {"surface": True, "write_to_business": False}
         # Unknown account in a populated map — do NOT reject already-flowing
         # writes (ACCOUNT_SCOPE §4c). Surfacing/scan layer gates new accounts.
         return {"surface": True, "write_to_business": True}
@@ -542,11 +586,15 @@ def account_scope(address: Optional[str] = None, account_id: Optional[str] = Non
 
 
 def is_in_write_scope(address: Optional[str] = None, account_id: Optional[str] = None,
-                     workspace_root=None, entities: Optional[dict] = None) -> bool:
+                     workspace_root=None, entities: Optional[dict] = None,
+                     mailbox: bool = False) -> bool:
     """THE writer-wall predicate. True = this account's items may be filed into
     the business substrate. Fail-closed only when an account is FOUND and
-    explicitly out of write scope (ACCOUNT_SCOPE §4)."""
-    return account_scope(address, account_id, workspace_root, entities)["write_to_business"]
+    explicitly out of write scope (ACCOUNT_SCOPE §4), or (cr1#1139 D2 (a))
+    when `mailbox` names the mailbox the item was read from and the folder
+    has an account acting for its owner and that mailbox's role is not declared."""
+    return account_scope(address, account_id, workspace_root, entities,
+                         mailbox=mailbox)["write_to_business"]
 
 
 def is_surfaceable(address: Optional[str] = None, account_id: Optional[str] = None,
@@ -859,6 +907,7 @@ def set_connector_settings(workspace_root, category: str, *,
                            include: Optional[List[str]] = None,
                            exclude: Optional[List[str]] = None,
                            scope: Optional[str] = None,
+                           role: Optional[str] = None,
                            add_include: Optional[List[str]] = None,
                            remove_include: Optional[List[str]] = None,
                            add_exclude: Optional[List[str]] = None,
@@ -883,6 +932,7 @@ def set_connector_settings(workspace_root, category: str, *,
     backend first); a kind outside the manifest's vocabulary; a dial name
     outside the five; a non-boolean value on a boolean dial; a `close_mode`
     outside `close` / `propose`; a scope outside `account` / `desktop_only`;
+    a role outside `CONNECTOR_ROLES` (the account roles; `none` clears it);
     a list that is not a list of strings. A refused setting is worse than an
     absent one: a job would read a value nothing defines.
 
@@ -930,6 +980,11 @@ def set_connector_settings(workspace_root, category: str, *,
         scope = str(scope).strip().lower()
         if scope not in CONNECTOR_SCOPES:
             raise ValueError(f"scope must be one of {CONNECTOR_SCOPES}, got {scope!r}")
+    if role is not None:
+        role = str(role).strip().lower()
+        if role not in CONNECTOR_ROLES + ("none",):
+            raise ValueError(f"role must be one of {CONNECTOR_ROLES} (or none), "
+                             f"got {role!r}")
     ent = _load_full(workspace_root)
     ws = _workspace_container(ent)
     conn = ws.get("connectors")
@@ -948,6 +1003,10 @@ def set_connector_settings(workspace_root, category: str, *,
     effective = (_settings_from_row(cat, row) or {}).get("dials") or {}
     effective.update(clean_dials)
     row["dials"] = effective
+    if clean_dials:
+        # cr1#1235: which dials the owner actually named. `dials` holds all
+        # five once anything is set, so it cannot say which were chosen.
+        row["dials_set"] = sorted(set(row.get("dials_set") or []) | set(clean_dials))
     if clean_include is not None:
         row["include"] = clean_include
     elif merges["add_include"] is not None or merges["remove_include"] is not None:
@@ -960,6 +1019,10 @@ def set_connector_settings(workspace_root, category: str, *,
                                      merges["add_exclude"], merges["remove_exclude"])
     if scope is not None:
         row["scope"] = scope
+    if role == "none":
+        row.pop("role", None)
+    elif role is not None:
+        row["role"] = role
     import datetime as _dt
     row["set_by"] = holder
     row["set_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -1177,6 +1240,7 @@ __all__ = [
     "declared_backends", "declared_backend",
     "zapier_server_ids", "is_zapier_server",
     "derive_account_id", "accounts", "account_map_populated",
+    "ACTING_ACCOUNTS_KEY", "acting_account_marks",
     "account_for_address", "account_for_id",
     "account_scope", "is_in_write_scope", "is_surfaceable", "binding_for_address",
     "sender_scope_override",

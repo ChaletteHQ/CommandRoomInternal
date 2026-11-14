@@ -240,7 +240,12 @@ def _out_of_scope(ev: dict, workspace_root) -> bool:
     aid = resolve_account_id(event=ev, workspace_root=workspace_root)
     if not aid:
         return False  # unresolvable → in scope (ACCOUNT_SCOPE §4b)
-    if is_in_write_scope(account_id=aid, workspace_root=workspace_root):
+    # cr1#1139: the id names the MAILBOX only when the row says which mailbox
+    # it was read from; the resolver's last fallback is the sender (`from`).
+    _d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    _p = _d.get("provenance") if isinstance(_d.get("provenance"), dict) else {}
+    by_mailbox = bool(_p.get("account_id") or _d.get("account_address"))
+    if is_in_write_scope(account_id=aid, workspace_root=workspace_root, mailbox=by_mailbox):
         return False
     rec = account_for_id(aid, workspace_root)
     if isinstance(rec, dict):
@@ -250,6 +255,251 @@ def _out_of_scope(ev: dict, workspace_root) -> bool:
         if (rec.get("role") or "").strip().lower() == "mixed" and _has_person_refs(ev):
             return False  # business-by-association (ACCOUNT_SCOPE §1/§8)
     return True
+
+
+#: cr1#1179: connector kinds whose rows may be matched by PROVIDER alone when
+#: they carry no server id. Mail and calendar are left out: their
+#: `source_ref` prefixes are legacy-mapped (a Superhuman row reads `gmail:`),
+#: one provider often fronts a business AND a personal mailbox, and the
+#: account wall already scopes them by mailbox. Matching them by provider
+#: would refuse a business capture from an undeclared second connector.
+_PROVIDER_MATCH_KINDS = frozenset({"meetings", "chat", "documents", "tasks",
+                                   "deals", "contracts"})
+
+
+def _personal_connectors(workspace_root) -> list:
+    """cr1#1179: `[{server_ids, provider}]` for every declared connector whose
+    role is personal (#1178). `provider` is set only for a kind in
+    `_PROVIDER_MATCH_KINDS` whose provider no other declared connector
+    shares. [] on any failure (the wall then works as before, by account)."""
+    try:
+        try:
+            import connector_config as cc
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import connector_config as cc
+        recs = cc.declared_connector_settings(workspace_root)
+        out = []
+        for rec in recs:
+            if rec.get("role") != cc.ROLE_PERSONAL:
+                continue
+            ids = set()
+            try:
+                ids.update(cc.declared_backend_ids(rec["category"], workspace_root))
+            except Exception:  # noqa: BLE001
+                pass
+            if rec.get("server_id"):
+                ids.add(rec["server_id"])
+            prov = str(rec.get("provider") or "").strip().lower() or None
+            shared = any(str(r.get("provider") or "").strip().lower() == prov
+                         and r.get("role") != cc.ROLE_PERSONAL for r in recs)
+            by_provider = (prov if (prov and not shared
+                                    and rec.get("kind") in _PROVIDER_MATCH_KINDS)
+                           else None)
+            out.append({"server_ids": ids, "provider": by_provider})
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _from_personal_connector(ev: dict, personal: list) -> bool:
+    """cr1#1179: True iff the event was captured from a connector the owner
+    called personal: its provenance names that connector's server
+    (`connector`, the key `normalize_provenance` writes, or `server_id`), or,
+    with no server on the row, its provider is a personal connector's
+    (only for the kinds in `_PROVIDER_MATCH_KINDS`). A chat-stated item
+    (`origin: user_stated`) is the owner's own words and never matches.
+    Separate from `_out_of_scope`, which is the ACCOUNT wall and runs only
+    once the account map is populated; this clause runs on every book and
+    for every event family."""
+    if not personal:
+        return False
+    d = _data(ev)
+    if d.get("origin") == ORIGIN_USER_STATED:
+        return False
+    prov = d.get("provenance")
+    sid = None
+    if isinstance(prov, dict):
+        sid = prov.get("connector") or prov.get("server_id")
+    if sid:
+        return any(sid in p["server_ids"] for p in personal)
+    provider = _provider_of(ev)
+    return bool(provider) and any(p["provider"] == provider for p in personal)
+
+
+#: cr1#1181: the off-limits set per workspace, kept until either store changes.
+_OFF_LIMITS_CACHE: dict = {}
+
+
+def _stamp(path: Path):
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def off_limits_senders(workspace_root) -> set:
+    """cr1#1181: the senders the owner put off limits, as bare lower-case
+    addresses (`mail_rules.address_of`).
+
+    Two places say it, and either is enough:
+      * a per-sender override whose `write_to_business` is explicitly off, on
+        any account record (`overrides.senders`, ACCOUNT_SCOPE §1): the
+        "write on" side of the same override is honoured in `_out_of_scope`;
+      * a `hide` rule on one sender that onboarding's off-limits answer wrote
+        (`mail_rules`, `off_limits: true`). An ordinary hide rule only hides
+        mail from the inbox, and is not read here.
+    Read on every append, so it is cached until entities.json or the rules
+    file changes. Never raises: a store that cannot be read puts nobody off
+    limits."""
+    try:
+        import mail_rules
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import mail_rules
+    root = Path(str(workspace_root))
+    key = (str(root), _stamp(root / "_hq" / "data" / "entities.json"),
+           _stamp(mail_rules.store_path(root)))
+    hit = _OFF_LIMITS_CACHE.get(key[0])
+    if hit is not None and hit[0] == key:
+        return set(hit[1])
+    out: set = set()
+    try:
+        from connector_config import accounts, sender_scope_override
+        for rec in accounts(workspace_root):
+            ov = rec.get("overrides")
+            senders = ov.get("senders") if isinstance(ov, dict) else None
+            for addr in (senders or {}) if isinstance(senders, dict) else ():
+                got = sender_scope_override(rec, addr)
+                if got and got.get("write_to_business") is False:
+                    bare = mail_rules.address_of(addr)
+                    if bare:
+                        out.add(bare)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for r in mail_rules.active_rules(mail_rules.load(workspace_root)):
+            if r.get("off_limits") and r.get("mode") == "hide" and r.get("match") == "sender":
+                bare = mail_rules.address_of(r.get("value"))
+                if bare:
+                    out.add(bare)
+    except Exception:  # noqa: BLE001
+        pass
+    _OFF_LIMITS_CACHE[key[0]] = (key, frozenset(out))
+    return out
+
+
+def off_limits_person_ids(workspace_root, off_limits: Optional[set] = None) -> set:
+    """cr1#1181: the people on file whose address is off limits, so a row that
+    names its sender only by person id is caught too. Never raises."""
+    off = off_limits_senders(workspace_root) if off_limits is None else off_limits
+    if not off:
+        return set()
+    # cr1#1230: read on every append once anyone is off limits, so cached
+    # until entities.json changes (or the off-limits set does).
+    key = (str(workspace_root), _stamp(Path(str(workspace_root)) / "_hq" / "data" / "entities.json"),
+           frozenset(off))
+    hit = _OFF_PIDS_CACHE.get(key[0])
+    if hit is not None and hit[0] == key:
+        return set(hit[1])
+    got = _off_limits_person_ids(workspace_root, off)
+    _OFF_PIDS_CACHE[key[0]] = (key, frozenset(got))
+    return got
+
+
+_OFF_PIDS_CACHE: dict = {}
+
+
+def _mail_sources(workspace_root) -> set:
+    """cr1#1230: the declared mail connector's server ids and provider, the
+    marks a mail-derived row's provenance carries. Never raises."""
+    try:
+        from connector_config import workspace_block
+        conns = workspace_block(workspace_root).get("connectors") or {}
+        out = set()
+        for key, rec in (conns.items() if isinstance(conns, dict) else ()):
+            if not isinstance(rec, dict) or not (key == "email" or rec.get("category") == "email"):
+                continue
+            for v in [rec.get("server_id"), rec.get("provider")] + list(rec.get("server_ids") or []):
+                if v:
+                    out.add(str(v))
+        return out
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _off_limits_person_ids(workspace_root, off: set) -> set:
+    try:
+        import mail_rules
+        from connector_config import load_entities
+        ent = load_entities(workspace_root)
+        inner = ent.get("entities") if isinstance(ent.get("entities"), dict) else ent
+        out = set()
+        for person in inner.get("people") or []:
+            if not isinstance(person, dict) or not person.get("id"):
+                continue
+            addrs = [person.get("email")] + list(person.get("emails") or [])
+            if any(mail_rules.address_of(a) in off for a in addrs if a):
+                out.add(str(person["id"]))
+        return out
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def sender_off_limits(workspace_root, *, sender_email=None, sender_person_id=None,
+                      off_limits: Optional[set] = None, person_ids: Optional[set] = None) -> bool:
+    """cr1#1181: one inbound message or capture candidate, by its sender's
+    address or the person it resolved to. The upstream check the mail legs
+    run before anything is captured, closed or moved. Never raises."""
+    try:
+        import mail_rules
+        off = off_limits_senders(workspace_root) if off_limits is None else off_limits
+        if not off:
+            return False
+        if sender_email and mail_rules.address_of(sender_email) in off:
+            return True
+        if sender_person_id:
+            pids = off_limits_person_ids(workspace_root, off) if person_ids is None else person_ids
+            return str(sender_person_id) in pids
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def _from_off_limits_sender(ev: dict, off_limits: set, person_ids: Optional[set] = None,
+                            mail_sources: Optional[set] = None) -> bool:
+    """cr1#1181: True iff the event's sender (`_sender_of`, a display form
+    such as `Name <a@b>` included) is one the owner put off limits. Only for
+    connector-derived rows: a chat-stated item (`origin: user_stated`) is the
+    owner's own words, and an exempt family (an owner's press, a receipt) is
+    not their mail, so neither ever matches. Runs on every book."""
+    if not off_limits:
+        return False
+    if _data(ev).get("origin") == ORIGIN_USER_STATED:
+        return False
+    try:
+        if _classify(ev) == "exempt":
+            return False
+        import mail_rules
+        if mail_rules.address_of(_sender_of(ev) or "") in off_limits:
+            return True
+        # cr1#1230: a MAIL row that names the person only by id (no address
+        # at all) is theirs too, when that person's address is off limits. A
+        # row with an address was judged above (the owner's own sent mail
+        # carries the owner's), and a row from a meeting or any other source
+        # is not their mail: a promise owed to them there is kept.
+        if person_ids and mail_sources and _sender_of(ev) is None:
+            d = _data(ev)
+            prov = d.get("provenance") if isinstance(d.get("provenance"), dict) else {}
+            src = {str(v) for v in (prov.get("connector"), prov.get("server_id"), prov.get("provider")) if v}
+            if not (src & mail_sources):
+                return False
+            cp = d.get("counterparty_id") or ev.get("counterparty_id")
+            return bool(cp) and str(cp) in person_ids
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _workspace_root_from_path(path) -> Optional[Path]:
@@ -265,13 +515,21 @@ def enforce_scope(events: List[dict], *, path=None, workspace_root=None,
                   holder: str = "account_scope_gate") -> List[dict]:
     """Wall a batch of events. Returns them unchanged when in scope; raises
     AccountScopeError on the first violation. No-op unless the account map is
-    populated (R4). Defensive: any internal error → allow the write."""
+    populated (R4), a declared connector is personal (cr1#1179, which walls
+    that connector's captures on every book), or a sender is off limits
+    (cr1#1181, walled on every book too). Defensive: any internal error →
+    allow the write."""
     try:
         if workspace_root is None:
             workspace_root = _workspace_root_from_path(path)
         if workspace_root is None:
             return events
-        if not _account_map_populated(workspace_root):
+        populated = _account_map_populated(workspace_root)
+        personal = _personal_connectors(workspace_root)
+        off_limits = off_limits_senders(workspace_root)
+        off_pids = off_limits_person_ids(workspace_root, off_limits) if off_limits else set()
+        mail_sources = _mail_sources(workspace_root) if off_pids else set()
+        if not populated and not personal and not off_limits:
             return events
     except Exception:
         return events
@@ -280,12 +538,27 @@ def enforce_scope(events: List[dict], *, path=None, workspace_root=None,
         if not isinstance(ev, dict):
             continue
         try:
+            if _from_personal_connector(ev, personal):
+                raise AccountScopeError(
+                    f"event {i} type={ev.get('type')!r} was captured from a "
+                    f"connector the owner called personal (holder={holder}) — "
+                    "a personal source is never read for the business book "
+                    "and nothing from it is filed (cr1#1178, cr1#1179). If it "
+                    "is a work source, change its role with workspace-manager."
+                )
+            if _from_off_limits_sender(ev, off_limits, off_pids, mail_sources):
+                raise AccountScopeError(
+                    f"event {i} type={ev.get('type')!r} is mail from a sender "
+                    f"the owner put off limits (holder={holder}) — their mail "
+                    "is kept out of filing, capture and the record, not only "
+                    "out of the inbox (cr1#1181). To let it in, take the "
+                    "sender off the off-limits list."
+                )
+            if not populated:
+                continue
             mode = _classify(ev)
-        except Exception:
-            continue
-        if mode == "exempt":
-            continue
-        try:
+            if mode == "exempt":
+                continue
             if mode == "strict" and not _has_provenance(ev):
                 raise AccountScopeError(
                     f"event {i} type={ev.get('type')!r} is a provenance-REQUIRED "
@@ -476,7 +749,10 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
             # mailbox — without an account_id / address it cannot resolve to
             # an account; pass (§4b back-compat + never-brick).
             return
-        in_scope = is_in_write_scope(account_id=aid, workspace_root=workspace_root)
+        # cr1#1139: `aid` came from the provenance's account id or the
+        # mailbox address handed in, so it names the mailbox.
+        in_scope = is_in_write_scope(account_id=aid, workspace_root=workspace_root,
+                                     mailbox=True)
     except Exception:
         return
     if not in_scope:
@@ -492,5 +768,6 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
 
 
 __all__ = ["AccountScopeError", "enforce_scope", "enforce_record_scope",
+           "off_limits_senders", "off_limits_person_ids", "sender_off_limits",
            "live_masks", "live_masks_from_events", "filter_masked_events",
            "ORIGIN_CONNECTOR", "ORIGIN_USER_STATED"]

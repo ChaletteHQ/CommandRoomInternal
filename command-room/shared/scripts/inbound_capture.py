@@ -687,9 +687,92 @@ def _summary(counts: dict, cap: int) -> str:
             f"{counts['n_capped']} held for the next pass (this fire writes at "
             f"most {cap})"
         )
+    if counts.get("n_kept"):
+        bits.append(f"{counts['n_kept']} could not be read in full and "
+                    f"{'is' if counts['n_kept'] == 1 else 'are'} kept for you to confirm")
     if counts["n_errors"]:
         bits.append(f"{counts['n_errors']} could not be captured")
     return "; ".join(bits) + "."
+
+
+#: cr1#771: the field on a row kept after its capture was refused, naming what
+#: was changed so the owner and an audit can see it.
+KEPT_AFTER_REFUSAL_FIELD = "kept_after_refusal"
+#: The plain words for each change, joined into the row's review reason.
+_KEPT_WORDS = {
+    "due": "the due date could not be read",
+    "no_due": "no due date was given",
+    "kind": "what kind of item it is could not be read",
+    "direction": "who owes it could not be read",
+}
+
+
+def is_unconfirmed_kept(data) -> bool:
+    """cr1#771 (owner ruling A3, 2026-11-11): is this row still a kept,
+    unconfirmed capture? The mark counts only while the row is held for the
+    owner's confirm; once confirmed it is an ordinary item (the loader also
+    clears the mark on confirm), so a later clean copy folds into it."""
+    d = data if isinstance(data, dict) else {}
+    return bool(d.get(KEPT_AFTER_REFUSAL_FIELD)) and d.get("pending_review") is True
+
+
+KEPT_REVIEW_REASON = ("Kept from your mail although {what}; "
+                      "confirm it, fix it, or let it go.")
+
+
+def keep_refused_capture(item: dict):
+    """cr1#771: `(fixed item, [changed fields])` for a capture the writer
+    refused for a field the extraction misread, or `(None, [])` when nothing
+    here can be fixed without guessing (then the refusal stands). Only the
+    misread fields change, each to the one value that cannot write a wrong
+    date, kind or owner:
+
+      due       a due date that is not a date: no due date, the text kept as
+                written (`due_as_written`);
+      no_due    no due date and no "no due date" mark: no due date;
+      kind      spelled the house way first (case, spaces); if it still names
+                no kind, `promise` (an inbound row always has someone on the
+                other end, so `task` is never the guess);
+      direction spelled the house way first (case, spaces, hyphens); if it
+                still names neither, `reply_owed`, the owner's own plate,
+                held for confirm by design, never someone else's promise.
+
+    Every kept item is `pending_review`, with a reason naming what could not
+    be read. Pure."""
+    from capture_gate import parse_iso_date
+    from event_types import KIND_VALUES
+    if not isinstance(item, dict) or not str(item.get("title") or "").strip():
+        return None, []
+    if item.get("is_draft"):
+        return None, []
+    fixed = dict(item)
+    changed = []
+    direction = str(item.get("direction") or "")
+    if direction not in DIRECTIONS:
+        spelled = re.sub(r"[\s\-]+", "_", direction.strip().lower())
+        fixed["direction"] = spelled if spelled in DIRECTIONS else DIRECTION_REPLY_OWED
+        changed.append("direction")
+    if item.get("kind") not in KIND_VALUES:
+        spelled_kind = re.sub(r"[\s\-]+", "_", str(item.get("kind") or "").strip().lower())
+        # an inbound row always has a counterparty, so it is never a `task`
+        fixed["kind"] = (spelled_kind if spelled_kind in KIND_VALUES
+                         and spelled_kind != "task" else "promise")
+        changed.append("kind")
+    due = str(item.get("due") or "").strip()
+    if due and not parse_iso_date(due):
+        fixed["due"] = None
+        fixed["no_due"] = True
+        fixed["due_as_written"] = due[:80]
+        changed.append("due")
+    elif not due and item.get("no_due") is not True:
+        fixed["no_due"] = True
+        changed.append("no_due")
+    if not changed:
+        return None, []
+    what = ", and ".join(_KEPT_WORDS[c] for c in changed)
+    fixed["pending_review"] = True
+    fixed["review_reason"] = KEPT_REVIEW_REASON.format(what=what)
+    return fixed, changed
 
 
 def capture_inbound_items(
@@ -775,6 +858,7 @@ def capture_inbound_items(
     user_names = ctx.get("user_names") or []
 
     opened, merged, observed, skipped, errors = [], [], [], [], []
+    kept: list = []  # cr1#771: refused captures kept as rows held for confirm
     below_bar, capped = [], []
     batch: list = []
     accepted_open_events: list = []  # in-batch restatement guard
@@ -796,49 +880,98 @@ def capture_inbound_items(
                 "reason": item.get("below_bar_reason") or "below the capture floor",
             })
             continue
-        try:
-            if already_captured(
-                    workspace_root, mid, title, provider=provider,
-                    owner=candidate_owner(
-                        direction, user_person_id=user_person_id,
-                        sender_person_id=item.get("sender_person_id") or "",
-                        sender_name=item.get("sender_name") or "")):
-                skipped.append({"title": title, "message_id": mid})
-                continue
-            ev = build_inbound_commitment_event(
+        def _seen(it) -> bool:
+            return already_captured(
+                workspace_root, mid, title, provider=provider,
+                owner=candidate_owner(
+                    it.get("direction") or "", user_person_id=user_person_id,
+                    sender_person_id=it.get("sender_person_id") or "",
+                    sender_name=it.get("sender_name") or ""))
+
+        def _build(it):
+            return build_inbound_commitment_event(
                 title,
                 message_id=mid,
-                kind=item.get("kind"),
-                direction=direction,
+                kind=it.get("kind"),
+                direction=it.get("direction") or "",
                 user_person_id=user_person_id,
-                sender_person_id=item.get("sender_person_id") or "",
-                sender_name=item.get("sender_name") or "",
+                sender_person_id=it.get("sender_person_id") or "",
+                sender_name=it.get("sender_name") or "",
                 # The name half of the direction fence needs the roster the
                 # batch already loaded — a pure builder cannot resolve it.
                 user_names=user_names,
-                ts=item.get("ts") or "",
-                due=item.get("due"),
-                no_due=bool(item.get("no_due")),
-                evidence=item.get("evidence") or "",
-                primary_thread_id=item.get("primary_thread_id"),
-                person_ids=item.get("person_ids"),
-                classification_confidence=item.get("classification_confidence"),
-                pending_review=bool(item.get("pending_review")),
-                review_reason=item.get("review_reason") or "",
+                ts=it.get("ts") or "",
+                due=it.get("due"),
+                no_due=bool(it.get("no_due")),
+                evidence=it.get("evidence") or "",
+                primary_thread_id=it.get("primary_thread_id"),
+                person_ids=it.get("person_ids"),
+                classification_confidence=it.get("classification_confidence"),
+                pending_review=bool(it.get("pending_review")),
+                review_reason=it.get("review_reason") or "",
                 source_skill=source_skill,
                 provider=provider,
-                thread_id=item.get("thread_id"),
-                is_draft=bool(item.get("is_draft")),
+                thread_id=it.get("thread_id"),
+                is_draft=bool(it.get("is_draft")),
                 workspace_root=workspace_root,  # DUEBEFORE1 (cr1#270): the message's day in the WORKSPACE's zone
-                account_address=item.get("account") or item.get("account_address"),  # cr1#755
+                account_address=it.get("account") or it.get("account_address"),  # cr1#755
             )
+
+        kept_as = None
+        try:
+            if _seen(item):
+                skipped.append({"title": title, "message_id": mid})
+                continue
+            ev = _build(item)
         except InboundItemError as e:
-            errors.append({"title": title, "message_id": mid, "error": str(e)})
-            continue
+            # cr1#771 (design on the ticket, 2026-11-08; the #747 rulings: when
+            # unsure keep both, never lose a promise silently): a capture
+            # refused for a field the extraction misread (a due date that is
+            # not a date, no due and no "no due" mark, an unknown kind, a
+            # mistyped direction) is kept as its own row, that field set to
+            # the one value that cannot write a wrong date, kind or owner,
+            # and held for the owner's confirm. Nothing is held back or
+            # offered again, so nothing has to recognise it later. Any other
+            # refusal (a draft, the owner's own message, no sender, no
+            # title) stands, as before.
+            fixed, changed = keep_refused_capture(item)
+            if fixed is None:
+                errors.append({"title": title, "message_id": mid, "error": str(e)})
+                continue
+            try:
+                if _seen(fixed):
+                    skipped.append({"title": title, "message_id": mid})
+                    continue
+                ev = _build(fixed)
+            except InboundItemError as e2:
+                # Review round 3: the refusal that stands is the one named.
+                errors.append({"title": title, "message_id": mid, "error": str(e2)})
+                continue
+            if fixed.get("due_as_written"):
+                ev["data"]["due_as_written"] = fixed["due_as_written"]
+            ev["data"][KEPT_AFTER_REFUSAL_FIELD] = list(changed)
+            direction = fixed.get("direction") or ""
+            kept_as = {"title": title, "message_id": mid, "reason": str(e),
+                       "changed": list(changed)}
+
+        # Review: a clean capture of a promise kept earlier from a misread
+        # capture is never folded into that unconfirmed row (it would lose its
+        # date and stay unconfirmed); kept rows are left out of its candidates,
+        # so it still folds into a clean row of the same promise (#863), and
+        # otherwise opens its own (#747: when unsure, keep both).
+        def _foldable(o):
+            od = o.get("data") or {}
+            if kept_as is None:
+                return not is_unconfirmed_kept(od)
+            # cr1#771 review: a kept capture never folds into an ordinary
+            # unconfirmed row, which the two-day drain may lapse; it opens its
+            # own, exempt row and the owner clears the duplicate (#747).
+            return not (od.get("pending_review") is True
+                        and not od.get(KEPT_AFTER_REFUSAL_FIELD))
 
         match = matches_open_commitment(
             ev["data"],
-            list(opens) + accepted_open_events,
+            [o for o in list(opens) + accepted_open_events if _foldable(o)],
             person_ids=ev.get("person_ids") or (),
             # The user is a party to EVERY item this lane writes, in both
             # directions — so the party test has to be carried by the other
@@ -849,6 +982,11 @@ def capture_inbound_items(
         )
         if match is not None:
             md = match.get("data") or {}
+            if kept_as is not None:
+                # Already tracked by the row it folds into (#863); the
+                # refusal stays on the receipt with where it went.
+                kept.append(dict(kept_as, landed="merged",
+                                 merged_into_id=md.get("id") or match.get("seq")))
             merged.append({
                 "title": title,
                 "message_id": mid,
@@ -886,8 +1024,13 @@ def capture_inbound_items(
                 # INCAP2 (cr1#192): a progress update on work already tracked
                 # with this person is held for review with a stated reason,
                 # never opened as a new promise. It is still written below.
+                # cr1#771 review: a row kept from a misread capture is not
+                # "the same ask already on your plate" for a clean capture of
+                # it, which would set the clean one aside and lose its date.
                 _narration.hold_if_narration(
-                    ev, list(opens) + accepted_open_events,
+                    ev, [o for o in list(opens) + accepted_open_events
+                         if kept_as is not None
+                         or not is_unconfirmed_kept(o.get("data"))],
                     user_person_id=user_person_id, user_names=user_names,
                     workspace_root=workspace_root)
         else:
@@ -906,6 +1049,20 @@ def capture_inbound_items(
                     workspace_root=workspace_root)
             except Exception:  # noqa: BLE001 - fail quiet: today's capture
                 meetings = meetings if meetings is not None else []
+        if kept_as is not None:
+            # Owner ruling A2 (2026-11-11): a kept row shows on the owner's
+            # list, marked unconfirmed, even where a clean item of the same
+            # kind would wait (a guess, a reply owed with no date, a party
+            # with no record). It is already held for the owner's confirm.
+            # Review: never past the owner's own capture mode for the
+            # relationship, nor for a row between other people.
+            from capture_gate import (OBSERVED_BY_PREFERENCE_REASON,
+                                      OBSERVED_THIRD_PARTY_REASON)
+            if (tier.get("tier") == "observed" and tier.get("reason") not in
+                    (OBSERVED_BY_PREFERENCE_REASON, OBSERVED_THIRD_PARTY_REASON)):
+                tier = {"tier": "open", "reason": "kept for the owner's confirm"}
+            kept.append(dict(kept_as, landed=("set_aside" if tier.get("tier") == "observed"
+                                              else "open")))
         if tier.get("tier") == "observed":
             obs = observed_from_commitment_event(ev, reason=tier.get("reason") or "")
             batch.append(obs)
@@ -943,6 +1100,8 @@ def capture_inbound_items(
         "n_observed": len(observed),
         "n_skipped": len(skipped),
         "n_errors": len(errors),
+        # Only the kept rows that reached the open book are "on your list".
+        "n_kept": sum(1 for k in kept if k.get("landed") == "open"),
         "n_waiting_on": n_waiting_on,
         "n_reply_owed": n_reply_owed,
     }
@@ -955,6 +1114,7 @@ def capture_inbound_items(
         "below_bar": below_bar,
         "capped": capped,
         "errors": errors,
+        "kept": kept,
         "cap": cap,
         "summary": _summary(counts, cap),
     }
@@ -978,4 +1138,7 @@ __all__ = [
     "already_captured",
     "candidate_owner",
     "capture_inbound_items",
+    "keep_refused_capture",
+    "is_unconfirmed_kept",
+    "KEPT_AFTER_REFUSAL_FIELD",
 ]

@@ -245,6 +245,15 @@ def run_recovery_if_needed(
     if not malformed:
         return _no_op_summary("no_corruption_found")
 
+    # cr1#999: ask who is writing BEFORE anything is locked, set aside or
+    # rewritten. The repair's own `corruption_recovery` row goes through the
+    # one append path, which refuses on a merged seat with no writer
+    # identity; asked only there, the log was rewritten first and left with
+    # no record of the repair. Asked here, a refusal touches nothing.
+    refusal = _writer_refusal()
+    if refusal is not None:
+        return refusal
+
     with multi_write_context(workspace_root, holder="recover_corruption"):
         # Re-gather INSIDE the lock so the malformed line numbers match the exact
         # snapshot we quarantine from. A concurrent append between the pre-lock
@@ -324,6 +333,26 @@ def run_recovery_if_needed(
     }
     summary["customer_message"] = format_customer_message(summary)
     return summary
+
+
+def _writer_refusal() -> dict | None:
+    """cr1#999: None when this seat may write; otherwise the refusal summary
+    (`ran: False`, `refused: True`, `skipped_reason:
+    "writer_identity_required"`, `line`: the one plain sentence). The same
+    question the append path asks (`atomic_write._require_named_writer`),
+    asked first."""
+    from atomic_write import _require_named_writer
+
+    try:
+        _require_named_writer()
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ != "WriterIdentityRequired":
+            raise
+        out = _no_op_summary("writer_identity_required")
+        out["refused"] = True
+        out["line"] = str(getattr(exc, "line", "") or exc)
+        return out
+    return None
 
 
 def _no_op_summary(skipped_reason: str) -> dict:
@@ -415,6 +444,10 @@ def _cli() -> int:
         print(customer_message)
         print()  # blank line separator before JSON
     print(json.dumps(summary, indent=2))
+    if summary.get("refused"):
+        # cr1#999: nothing was touched; say so and fail the step.
+        print(summary.get("line") or "Nothing was changed.", file=sys.stderr)
+        return 1
     return 0
 
 

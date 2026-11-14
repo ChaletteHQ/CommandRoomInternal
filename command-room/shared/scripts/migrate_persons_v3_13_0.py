@@ -122,7 +122,8 @@ def _build_first_seen_index(events_path: Path) -> dict[str, str]:
         return earliest
 
     try:
-        text = events_path.read_text(encoding="utf-8")
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        text = "\n".join(_merged_lines(events_path, encoding="utf-8"))
     except OSError:
         return earliest
 

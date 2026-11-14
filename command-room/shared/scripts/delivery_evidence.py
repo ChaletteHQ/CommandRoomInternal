@@ -157,11 +157,47 @@ QUALIFIER_WORDS = frozenset({
     "revised", "latest", "new", "current", "completed", "clean", "full",
     "fully"})
 
+#: The states that say a document is done, in an item's title ("the signed
+#: contract"). On such an item a copy in another state is another document
+#: (cr1#1118, #903 case 5).
+DONE_STATE_WORDS = frozenset({"signed", "countersigned", "executed"})
+
+#: A copy in another state than a done one: an updated or a new draft is not
+#: the signed copy, so it proposes even when it says "signed" as well.
+OTHER_STATE_WORDS = frozenset({"updated", "revised", "new", "latest",
+                               "current", "redlined", "draft", "clean"})
+
+#: Words that open a question. A sentence that starts with one asks
+#: something even with no question mark ("Is this the budget"), and "Will
+#: send" is a promise, not a hand-over: both propose (cr1#1118, #903 cases
+#: 2 and 7).
+QUESTION_LEADS = frozenset({
+    "is", "are", "was", "were", "do", "does", "did", "can", "could",
+    "would", "will", "should", "shall", "has", "have", "may", "might"})
+
+#: A line after a sign-off that opens with one of these and runs to three
+#: words or more is a sentence in Title Case ("Please Sign And Return",
+#: "Is This Right"), not a signature, so it is still read (cr1#1118).
+_SENTENCE_LEADS = QUESTION_LEADS | {"please", "sign", "review", "send",
+                                    "sending", "return"}
+
 #: The verb of the ask, in the item's title.
 ASK_WORDS = frozenset({
     "send", "sending", "sent", "resend", "share", "provide", "forward",
     "deliver", "get", "give", "submit", "return", "confirm", "review",
     "prepare", "finish", "complete", "finalize", "owe", "need", "waiting"})
+
+#: Words a file's name may hold that say nothing about which document it is
+#: ("statement_of_work", "signed_by_lee"). Any other word the tokenizer
+#: drops ("not", "to", "be", "for", "no", "isn't") is read as a word of the
+#: file's own unless the title holds it too, so `contract_not_signed.pdf` and
+#: `contract_for_review.pdf` do not name "the signed contract" (cr1#903).
+FILE_NAME_CONNECTORS = frozenset({"of", "and", "the", "a", "an", "by"})
+
+#: Of those, the ones that say the document is not done yet even when the
+#: file names nothing ("not_signed.pdf", "to_be_signed.pdf"): such a file
+#: keeps the sender's words from closing on their own (cr1#903).
+FILE_NOT_YET_WORDS = frozenset({"not", "no", "be"})
 
 #: Words in a hand-over that say nothing about what is handed over.
 PLAIN_WORDS = frozenset({
@@ -262,6 +298,9 @@ def _is_signature_line(line) -> bool:
         return True
     if text.endswith((".", "!", "?")) or text.lower().startswith(("p.s", "ps ")):
         return False
+    words = text.split()
+    if len(words) >= 3 and words[0].lower().strip(",") in _SENTENCE_LEADS:
+        return False
     return all(word[:1].isupper() or not word[:1].isalpha()
                or word.lower() in _SIGNATURE_CONNECTORS
                for word in text.split())
@@ -292,17 +331,21 @@ def _noise() -> set:
     return _fold_set(QUALIFIER_WORDS) | _fold_set(GENERIC_DOCUMENT_WORDS)
 
 
-def _names_item(tokens: set, words: set, nouns: set) -> int:
+def _names_item(tokens: set, words: set, nouns: set, asks=None) -> int:
     """How many of the item's words `tokens` names, 0 when it does not name
     the item. It takes the item's document noun, or two of its words, or its
     one word when the item has no noun. `tokens` may hold nothing else: no
-    other document, no other word."""
+    other document, no other word. `asks` is the verbs of the ask `tokens`
+    may also hold: every one in a sentence ("sending the contract"), only the
+    title's own in a file's name, because `contract_review.pdf` is waiting on
+    an act while `tax_return.pdf` is the item (cr1#903)."""
     if (tokens & _document_nouns()) - nouns:
         return 0
     shared = tokens & words
     if not shared or not ((shared & nouns) or len(shared) >= 2 or not nouns):
         return 0
-    return 0 if tokens - shared - _noise() - _fold_set(ASK_WORDS) else len(shared)
+    spare = _noise() | (_fold_set(ASK_WORDS) if asks is None else asks)
+    return 0 if tokens - shared - spare else len(shared)
 
 
 def _phrase_re(phrases) -> "re.Pattern":
@@ -356,11 +399,16 @@ def _read_clause(clause, words: set, nouns: set, party_tokens: set) -> tuple:
 def _read_words(body, words: set, nouns: set, party_tokens: set):
     """How many of the item's words the sender's own text names, 0 for a
     hand-over of no named thing; None when it is not a plain hand-over."""
-    handed, named = False, 0
+    handed, named, handover = False, 0, False
     for sentence in _SENTENCE_RE.split(_without_signature(own_words(body))):
         if not sentence.strip():
             continue
-        if sentence.rstrip().endswith("?"):
+        # A question mark anywhere ("Here it is?!"), or a sentence that opens
+        # like a question or a promise, is not a hand-over (cr1#1118).
+        if "?" in sentence:
+            return None
+        lead = _raw_words(sentence)[:1]
+        if lead and lead[0] in QUESTION_LEADS:
             return None
         if " ".join(_raw_words(sentence)) in COURTESY_PHRASES:
             continue
@@ -374,8 +422,12 @@ def _read_words(body, words: set, nouns: set, party_tokens: set):
         if _CITED in kinds and not kinds & {_HANDED, _BARE, _NAMED_ONLY}:
             return None
         handed = handed or bool(kinds - {_COURTESY})
+        handover = handover or bool(_HANDOVER_RE.search(sentence.lower()))
         named = max([named] + [n for _kind, n in read])
-    return named if handed else None
+    # A citation of the promise ("as you requested", "for your records")
+    # is not a hand-over on its own: some sentence must hand the item over
+    # (cr1#1119, #903 case 6).
+    return named if handed and handover else None
 
 
 def _file_tokens(name) -> set:
@@ -384,6 +436,124 @@ def _file_tokens(name) -> set:
     stem = str(name).rsplit(".", 1)[0]
     return {t for t in _tokens(re.sub(r"[_\-.+]+", " ", stem))
             if not any(c.isdigit() for c in t) or re.fullmatch(r"(?:19|20)\d\d", t)}
+
+
+def _file_state_words(name, title_words: set) -> set:
+    """The words of a file's name that the tokenizer drops and the title does
+    not hold: a stop-word other than a connector, or a negative contraction
+    ("isn't"). In a file's name they say what state the document is in."""
+    from cru_match import STOPWORDS
+    stem = re.sub(r"[_\-.+]+", " ", str(name).rsplit(".", 1)[0])
+    return {w for w in _raw_words(stem)
+            if len(w) >= 2 and (w in STOPWORDS or w.endswith("n't"))
+            and w not in FILE_NAME_CONNECTORS and w not in title_words}
+
+
+def _another_state(body, documents, title_words: set) -> bool:
+    """True when the item is a done document ("the signed contract") and the
+    sender's own words or a file's name say the copy is in another state
+    ("updated", "revised", "new"): that copy is not the signed one, so the
+    close proposes (cr1#1118, #903 case 5). A state the title itself holds
+    is the item's own."""
+    if not _fold_set(title_words) & _fold_set(DONE_STATE_WORDS):
+        return False
+    text = _without_signature(own_words(body))
+    said = set()
+    for line in text.splitlines():
+        if not _SENT_FROM_RE.match(line):  # "Sent from my new phone"
+            said |= set(_raw_words(line))
+    # Only a file that names the item speaks for its state: a second,
+    # unrelated attachment ("W9_new.pdf") says nothing about this one.
+    words = _item_terms(" ".join(title_words), ())[0]
+    for name in documents:
+        if _file_tokens(name) & words:
+            said |= set(_raw_words(re.sub(r"[_\-.+]+", " ", str(name))))
+    other = _fold_set(OTHER_STATE_WORDS) - _fold_set(title_words)
+    return bool(_fold_set(said) & other)
+
+
+#: Words that start a clause asking for an act, not a document ("and
+#: confirm the date", "and call me"): such a part of a title is not a second
+#: document (cr1#1119).
+_ACT_LEADS = frozenset({
+    "call", "confirm", "schedule", "set", "book", "let", "tell", "ask",
+    "check", "follow", "meet", "email", "text", "ping", "update", "pay",
+    "sign", "review", "approve", "introduce", "loop", "cc", "send", "share",
+    "get", "give", "submit", "return", "forward", "provide"})
+
+#: Words that say when, never which document ("..., today").
+_TIME_WORDS = frozenset({
+    "today", "tomorrow", "tonight", "asap", "soon", "now", "later", "eod",
+    "eow", "week", "weekend", "month", "morning", "afternoon", "evening",
+    "next", "this", "by", "end", "of", "day", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday"})
+
+#: Where a title joins one owed thing to the next.
+_JOIN_SPLIT_RE = re.compile(
+    r"\s*(?:,|&|\+|\band\b|\bplus\b|\bwith\b|\bas well as\b)\s*",
+    re.IGNORECASE)
+
+
+def _compact_words(text) -> set:
+    """Words with their inner punctuation removed, so "W-9" and "W9" and a
+    file's "W9" are one word; only words holding a digit are kept, the
+    others are already `_tokens`'."""
+    out = set()
+    for w in re.split(r"[\s_]+", str(text or "").lower()):
+        c = re.sub(r"[^a-z0-9]", "", w)
+        if c and any(ch.isdigit() for ch in c) and any(ch.isalpha() for ch in c):
+            out.add(c)
+    return out
+
+
+def _document_parts(title, party_names) -> list:
+    """The owed documents a title joins, each as the set of its own words. A
+    part that opens with an act ("confirm the date"), says only when
+    ("today"), or is only capitalised names ("Acme") is not a document."""
+    text = str(title or "")
+    low = text.lower()
+    # The object of the ask: what follows its first delivery word.
+    lead = None
+    for m in re.finditer(r"[a-z]+", low):
+        if m.group(0) in DELIVERY_LEADS:
+            lead = m.end()
+            break
+    obj = text[lead:] if lead is not None else text
+    noise = (_fold_set(GENERIC_DOCUMENT_WORDS) | _fold_set(QUALIFIER_WORDS)
+             | _fold_set(ASK_WORDS) | _fold_set(PLAIN_WORDS)
+             | _fold_set(_TIME_WORDS) | _name_tokens(party_names))
+    parts = []
+    for i, part in enumerate(_JOIN_SPLIT_RE.split(obj)):
+        words = part.split()
+        if not words:
+            continue
+        if i and words[0].lower() in _ACT_LEADS:
+            continue
+        alpha = [w for w in words if w[:1].isalpha()]
+        if i and alpha and all(w[:1].isupper() for w in alpha):
+            continue
+        own = (_tokens(part) | _compact_words(part)) - noise
+        if own:
+            parts.append(own)
+    return parts
+
+
+def _every_document_named(title, body, documents, party_names=()) -> bool:
+    """False when the item asks for two documents or more ("the signed
+    contract and the lease") and the sender's own words and the files' names
+    do not name every one: one of two is not the item (cr1#1119, #903 case
+    3). A part of the title that is an act, a time or a name is not a
+    document, so "the draft contract and confirm the date" asks for one."""
+    parts = _document_parts(title, party_names)
+    if len(parts) < 2:
+        return True
+    text = _without_signature(own_words(body))
+    said = _tokens(text) | _compact_words(text)
+    for name in documents:
+        stem = str(name).rsplit(".", 1)[0]
+        said |= _file_tokens(name) | _compact_words(re.sub(r"[_\-.+]+", " ", stem))
+        said |= _compact_words(stem)
+    return all(part & said for part in parts)
 
 
 def delivery_strength(body, attachment_names, title, party_names=()) -> int:
@@ -399,11 +569,21 @@ def delivery_strength(body, attachment_names, title, party_names=()) -> int:
     read = _read_words(body, words, nouns, party_tokens)
     if read is None:
         return NO_LINK
+    title_words = set(_raw_words(title))
+    if _another_state(body, documents, title_words):
+        return NO_LINK
+    if not _every_document_named(title, body, documents, party_names):
+        return NO_LINK
+    asks = _fold_set(ASK_WORDS) & _fold_set(title_words)
+    states = [_file_state_words(n, title_words) for n in documents]
     files = [_file_tokens(n) - party_tokens for n in documents]
-    file_grade = max(_names_item(t, words, nouns) for t in files)
+    file_grade = max(_names_item(t | _fold_set(st), words, nouns, asks)
+                     for t, st in zip(files, states))
     if file_grade:
         return max(read, file_grade)
-    return read if all(not t - _noise() for t in files) else NO_LINK
+    not_yet = any(st & FILE_NOT_YET_WORDS or any(w.endswith("n't") for w in st)
+                  for st in states)
+    return read if not not_yet and all(not t - _noise() for t in files) else NO_LINK
 
 
 __all__ = ["NO_LINK", "NON_DELIVERABLE_SUFFIXES", "HANDOVER_PHRASES",

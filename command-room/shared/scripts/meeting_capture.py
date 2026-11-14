@@ -1322,6 +1322,25 @@ def processed_before(workspace_root, source_ref: str, cutoff) -> bool:
         workspace_root, source_ref))
 
 
+#: cr1#1005: the prefix of a pasted note's source_ref.
+PASTED_REF_PREFIX = "pasted:"
+
+
+def pasted_source_ref(text: str) -> str:
+    """The `source_ref` of a pasted note: `pasted:` and the first 16 hex of
+    the sha256 of its whitespace-collapsed text (cr1#1005).
+
+    A meeting from a transcript connector has its own id (`granola:<id>`); a
+    note pasted into a chat had none, so a second chat pasting the same note
+    could name it differently and the re-run check (`rerun_status`) never
+    matched. The same words, however they are spaced or wrapped, give the
+    same ref. Pure: it reads nothing and writes nothing."""
+    import hashlib
+
+    norm = " ".join(str(text or "").split())
+    return PASTED_REF_PREFIX + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
 def rerun_status(workspace_root, source_ref: str) -> dict:
     """The one answer the writers and the receipt share: is this a re-run, and
     how many times has this meeting been processed before now.

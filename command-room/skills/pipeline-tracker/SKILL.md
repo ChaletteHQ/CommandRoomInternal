@@ -1,7 +1,7 @@
 ---
 name: pipeline-tracker
 surfaces: both
-description: "Deal tracking on the workspace itself — capture a deal, watch the pipeline, move deals through lead / qualified / proposal_sent / negotiating, keep a dated next step on each, flag rot, close won or lost with a reason. Fires on: 'pipeline', 'show my pipeline', 'pipeline review', 'deals' (plural), 'show my deals', 'new deal', 'what deals are closing', '[Name] signed', 'closed the deal with [name]', 'we won the [deal]', 'we lost the [deal]', 'mark [deal] won / lost', 'move [deal] to [stage]', 'sent the proposal', 'deal is stalled', 'revenue in play', plus 'tune pipeline-tracker'. Ranked report with tiles and one-tap actions; an explicit win on a prospect org converts them to a client in the same turn. Does NOT fire on 'new prospect' / 'is now a client' (workspace-manager) or 'who went dark' (dormant-customer-scan); never claims bare singular deal."
+description: "Deal tracking on the workspace itself — capture a deal, watch the pipeline, move deals through lead / qualified / proposal_sent / negotiating, keep a dated next step on each, flag rot, close won or lost with a reason. Fires on: 'pipeline', 'show my pipeline', 'pipeline review', 'pipeline by stage', 'deals' (plural), 'show my deals', 'new deal', 'what deals are closing', '[Name] signed', 'closed the deal with [name]', 'we won the [deal]', 'we lost the [deal]', 'mark [deal] won / lost', 'move [deal] to [stage]', 'sent the proposal', 'deal is stalled', 'revenue in play', plus 'tune pipeline-tracker'. Ranked report with tiles and one-tap actions; an explicit win on a prospect org converts them to a client in the same turn. Does NOT fire on 'new prospect' / 'is now a client' (workspace-manager) or 'who went dark' (dormant-customer-scan); never claims bare singular deal."
 ---
 
 ## Entity-resolve enforcement (mandatory)
@@ -78,6 +78,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + one-
 ```
 "pipeline" / "show my pipeline"      → the ranked report
 "pipeline review"                     → same report, review framing (what moved, what's stuck)
+"pipeline by stage"                   → the count per stage, from the pipeline ledger
 "what deals are closing this month"  → the closing subset
 "new deal Acme pilot with Acme Co, [amount]"
 "move Acme pilot to negotiating"
@@ -106,13 +107,23 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-render + one-
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -201,6 +212,20 @@ Render as the OUT2 ranked report (`shared/EXECUTIVE_OUTPUT_STANDARD.md` § "The 
 
 Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' to start one."* — no tile band, no empty frames.
 
+### "pipeline by stage" (the count per stage, from the pipeline ledger; cr1#1018)
+
+A count of open deals per stage is answered from the pipeline ledger (`shared/scripts/ledgers.py`, rebuilt by the daily `number-ledgers` Maintenance job), never by counting deals by hand and never from the ranked report above. Render this one call with `workspace_access.py plan run_helper --json '<it>'` and paste what it prints, verbatim:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "ledgers:pipeline_by_stage"}'
+```
+
+- Render the envelope's `result.text` verbatim: each stage with its count, each deal with the date it entered the stage and its last touch, deal threads with no stage listed as such, and the Sources at the end. Keep the Sources.
+- No money. This answer carries no value, currency or forecast, and none is added from the report, the tiles or the deal records.
+- The stage is the one typed on each deal, kept for the pipeline by the owner's ruling; the last touch is worked out from activity.
+- When `result.counted_from_log` is true, the text already says in one sentence that it was counted from the log because the ledger was older; keep that sentence.
+- `ok:false` is a stop: one sentence, per the preamble's rule 6.
+
 ### "new deal [name] with [org], $[value]"
 
 1. `resolve_all` the org. Unresolved → offer `new prospect [Name]` first (workspace-manager owns org creation — a deal needs a real org). Ambiguous → disambiguation widget.
@@ -220,13 +245,23 @@ Zero open deals: *"No open deals tracked yet. Say 'new deal [name] with [org]' t
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

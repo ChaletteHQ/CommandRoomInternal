@@ -1,7 +1,7 @@
 ---
 name: workspace-manager
 surfaces: both
-description: "Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', style: 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'let's work' / 'lets work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'revive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about', 'next week is about'), no name needed. Not 'list projects' / 'roster' (list-active)."
+description: "Fires on: 'my profile' / 'what do you know about me', 'turn on coaching' / off, 'coach me on', 'how do you talk to me', 'talk to me differently', 'never open with...', 'stop saying...', 'change your tone' / 'change your style'. 'new rule', 'from now on', 'show my rules', 'retire rule', 'let's work', 'I'm here', 'what's going on', 'workspace status', 'end session', 'go [name/org]', 'new project/client/prospect/vendor/org', '[name] is now a client', 'archive [project]', 'revive [project]', 'pull up [name]', 'quick task', 'set my timezone', 'name my AI', 'set first-go', 'customize command room', bare 'undo', 'what accounts do I have', 'export that doc' / 'save that doc to my folder', 'turn off closing when I say it is done', 'turn off parking items nobody touches'. Default when nothing else fits: loose input naming a tracked entity, the day's intent ('tomorrow is about', 'today is about', 'what's tomorrow about'), no name needed. Not 'list projects' (list-active)."
 ---
 
 **Correction in passing (shared contract — `shared/CORRECTION_IN_PASSING.md`).** Before answering any turn, pass the user's message to `correction_turn.handle_correction_turn(workspace_root, text, skill="workspace-manager")`. When it returns a result, say its `receipt` in one clause inside your real answer and then answer the request — never instead of it, never as a question, never as a card. When it returns `None`, proceed exactly as you would have. The module applies the change, writes the correction to the store with `origin: asked`, and logs a `router_miss` when the complaint was about routing; you neither re-apply nor re-record any of that. When the turn is someone holding up a document and saying to make it like that, pass the document body as `document=<the text>` in the same call — that is the only path that banks a structural correction, and without it the shape they just showed you is lost. On a merged seat this call is a writer (cr1#518): write `{"text": "<the message, verbatim>"}` (with `"document"` beside it when there is one) as JSON into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"workspace_root": "<WS>", "skill": "workspace-manager"}, "args_file": "<your scratch>/cr_correction_turn.json", "name": "correction_turn:handle_correction_turn"}'`, paste what it prints and run that; the envelope's `result` is the answer described above.
@@ -12,6 +12,8 @@ description: "Fires on: 'my profile' / 'what do you know about me', 'turn on coa
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - BAD: "✓ [Name] is now a client — engagement edge created from [your org]."
 - GOOD: "✓ [Name] is now a client — linked to [your org]."
+
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## Silent precondition check (before every session-start turn)
 
@@ -138,6 +140,21 @@ A PERSON or ORG match keeps its own lanes (person history / org rollup renderers
 - Any other state (`not_ready`, `unmeasured`) → answer directly, exactly as specified, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — in the response or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
 - `coverage.empty_payload` true → the substrate holds nothing reachable for this thread. Do NOT fabricate thread context: say plainly that the record holds nothing yet, or build from the live connector reads alone. Never render thread context the payload did not supply.
 
+### Asking about a document: the document shelf (cr1#1014)
+
+When the owner asks what a document says (a clause in an agreement, a section of a playbook or a plan, what a file on a thread holds) or which documents a thread has, answer from the document shelf through the read door, in two calls. On a seat whose files are local the same two functions run in this shell.
+
+1. **Find it.** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "doc_shelf:find_documents", "args": {"workspace_root": "<WS>", "query": "<the owner's words>", "thread": "<a thread's name or id, only when one is named>"}}'`, paste what it prints and run that. Each row carries `id`, `path`, `kind`, `date`, `headings`, `about` and `thread_name`; `kind` and `standing` (the documents under `_hq` that no thread holds) filter as well.
+2. **Quote it.** The same, with `"name": "doc_shelf:quote_section"` and `"args": {"workspace_root": "<WS>", "doc": "<the row's id>", "query": "<a clause number, a heading or the owner's words>"}`. Quote `match.text` and name the document and the heading it came from.
+
+Rules:
+- What a document says comes from `quote_section`'s text, read from the file as it is now, never from the row's `about` line or its headings: those are for showing the list (ruling C3).
+- `match` is null: say the document holds no section on that, and offer the `headings` it returned. Never guess a clause.
+- Finding is by keywords over the row's name, headings, line and thread (ruling A7). No match on the shelf: say so in one sentence.
+- `source` is `computed`, or a row is `pending`: there is no stored shelf, or it was not finished. Answer first, then rebuild it once with `plan run_writer` and `"name": "doc_shelf:rebuild_shelf"`, `"args": {"workspace_root": "<WS>"}`. It writes only `_hq/now/shelf.json`.
+- A row marked `gone` was moved or removed since the shelf was built: say so. A row with `copy_of` is a sync copy of the named file: quote the original.
+- Decks and sheets are listed but not read here: say that in one sentence.
+
 ### "customize command room" — the Layer 4 menu (SCL1)
 
 Adopting skills own their own qualified customization triggers (`customize <skill>`,
@@ -152,6 +169,15 @@ to the skill and confirm ("Did you mean email-writer?"). Never write a directive
 workspace-manager routes, the adopting skill writes.
 
 **The whole reply goes through one door (SPEC FIXTRAIN v5.31.0 6.1, R-25 — MANDATORY).** A composer gates the sentence it built; it cannot gate the sentences typed after it. Eleven of the thirteen leaks on the v5.31.0 record were exactly that shape — a clean composed answer, then an ungated paragraph naming files, functions, event names and writer ids. So compose everything you intend to post, hand it to `surface_composers.post` ONCE, and print what it returns as your entire reply: **every sentence this turn posts — the answer and anything after it — renders through `surface_composers.post`; nothing is composed after the composer runs; no file name, function, key or id is named in explanation.** A refused directive is the shape that leaked on 09-16: *"on Mondays lead with my calendar"* was correctly refused and the refusal was then explained with two setting keys and a parser status. Say what cannot be done and what can, in the words the customer used; name no key and no parser.
+
+### Asking what was said in a meeting (cr1#1014)
+
+When the owner asks what was said in a meeting, or what someone said about a topic across meetings, or what feedback people have given, read the stored summaries through the read door before going to any connector:
+
+- **What was said:** render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "meeting_substance:meeting_summaries", "args": {"workspace_root": "<WS>", "query": "<the topic in the owner's words>", "thread": "<a thread's name or id, only when one is named>", "person": "<a person's name or id, only when one is named>", "since": "<YYYY-MM-DD, only when a time is named>"}}'`, paste what it prints and run that. Answer from the rows' `summary` and `topics`, naming the meeting and its date.
+- **Feedback:** the same with `"name": "meeting_substance:feedback_entries"`; `kind` (`request`, `complaint`, `praise`) filters it.
+- **The exact words.** A summary is for display (ruling C3). When the owner asks for a quote, or the summary does not settle the question, search the transcript on demand with the transcript-search skill, using the row's `source_ref`, and quote that.
+- No rows: say the record holds no summary for it in one sentence, then go to the transcript-search skill if a meeting is named.
 
 ### "ask me more" / "ask me less" — how often Command Room asks you (SPEC QUIET1)
 
@@ -172,13 +198,23 @@ The one knob for interaction posture (`commitment-policy.preset`: `engaged` / `l
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -252,13 +288,23 @@ So the phrases are registered in CODE, the way `render_router_misses.CHAT_PHRASE
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -332,13 +378,23 @@ The one switch for the transcript closing-on-evidence pass (`commitment-policy.a
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -411,13 +467,23 @@ The one switch for the question-expiry engine (`commitment-policy.questions.expi
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -490,13 +556,23 @@ Two switches, both default ON, both failing to ON. They gate the identity acts t
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -652,13 +728,23 @@ Two switches, both default ON, both failing to ON. They gate the two ways an ite
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -732,13 +818,23 @@ One switch, default ON, failing to ON. It gates whether repeated corrections tur
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -931,6 +1027,25 @@ the `learned_line_deleted` event and nowhere else. (The learning job does NOT ca
 `profile.filter_learned`: a call would match nothing, since the job keys on `vbu_`/`pwt_`
 fingerprints and the page keys on profile keys.)
 
+### Rules the owner states, and "show my rules" (cr1#1016)
+
+Every skill loads the owner's rules through the one loader (rule 2 of the Access preamble: `context_loader:load_context`), so a rule stored here applies in every skill it names, the same day, and its one line is regenerated into the brief's rules index by the writer itself.
+
+- **A stated rule.** A sentence that sets how work is done from now on ("from now on copy Skyler on anything to Northstar", "new rule: every date carries its year", "from now on drafts never go out on Sundays") and is NOT about how [BrainName] talks (that is the Style section above, STYLEROUTE1, and goes to the persona) is a stated rule. Say it back ONCE as one sentence with where it applies (everywhere, or the skills it names) and ask for the yes. Only on the yes, ONE `plan run_writer` naming `rules_store:state_rule` with `{"workspace_root": "<WS>", "rule": "<the one sentence>", "applies_to": "everywhere", "why": "<their reason, when they gave one>", "said": "<their own words>"}` (`applies_to` is a list of skill folder names when the rule is narrower), then say the writer's `line` verbatim. On anything short of a yes, write nothing. Never a CLAUDE.md edit.
+- **"show my rules" / "what rules do you follow"** → the loader's `index`, one line each in the rule's own words; ids only when asked which ids.
+- **"retire rule [id]" / "drop that rule"** → ONE `plan run_writer` naming `rules_store:retire_rule` with `{"workspace_root": "<WS>", "rule_id": "<id from the index>"}`; say its `line`. A rule whose id starts `lrn_` was learned, not stated: it is taken back where learned lines are, by saying so on "my profile" (the profile section above), never through this writer.
+- **The learning job's own question** ("should this be a rule?", asked at two corrections) is answered through apply-choices, never stored here as well: one rule, one record.
+- **A correction made against a rule** ("you left the year off again", said about a rule in the loaded `rules`) → ONE `plan run_writer` naming `rules_store:record_correction` with `{"workspace_root": "<WS>", "kind": "rule", "rule_id": "<that rule's id>", "said": "<their words>", "skill": "<the skill that answered>"}`. A correction against a wording, term, figure or way of working that names no rule is recorded here only when `correction_turn.handle_correction_turn` returned None for it (it already records the ones it handles), with `kind` set to `wording`, `term`, `figure` or `way_of_working` and no `rule_id`. Then fix the answer. No question: the correction-in-passing contract above still governs the reply.
+
+### Searching the log (cr1#1014)
+
+When the owner asks when something came up, what was said or decided about a topic across the record, or for everything on a topic in a time span ("when did we last talk about the lease?", "what have we decided about hosting?"), search the log itself through the read door: render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "log_search:search_log", "args": {"workspace_root": "<WS>", "query": "<the topic in the owner's words>", "thread": "<a thread's name or id, only when one is named>", "person": "<a person's name or id, only when one is named>", "since": "<YYYY-MM-DD, only when a time is named>", "until": "<YYYY-MM-DD, only when the span has an end>"}}'`, paste what it prints and run that.
+
+- Answer from the hits, newest first unless the owner asked otherwise, each with its date and its source in words (the meeting, the mail or the chat it came from). A promise or a decision also carries its `id`; keep it with the row so a follow-up can open the entry, and never print it to the owner.
+- The snippet is the entry's own words. Matching is by keywords (ruling A7): no hits means no entry holds those words, so say so in one sentence and offer to look under other words.
+- `unmatched_filters` names a thread or a person the record does not know by that name. Then no hits says nothing about the topic: say the name was not found, and offer to search without it.
+- `total` above the hits shown: say how many more there are.
+
 ### "turn on coaching" / "turn off coaching" — the two doors (design memo section 2)
 
 **Nothing is required to start.** Every seat is OBSERVED: the surfaces report the day, note the
@@ -1091,6 +1206,14 @@ print(post(compose(SITE_ROUTER_MISSES, whole_reply), surface="router-misses",
 ```
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
+
+**On a merged seat, the composer and the door run as ONE form (cr1#1141; the form is cr1#1005 part 3's).** Through the workspace door each helper runs in its own process, so `chat_answer` and `post` never meet there, and every relay is refused; `post` is on neither door list at all. Do not call them separately there. Render the combined form with `plan run_writer` and run what it prints: it runs `chat_answer`, the router-misses offer fence and `post` in one process, with the composer's return as the relay. It takes no composer argument: the composer reads the workspace itself. `before` and `after` are the only sentences you add, they are scanned like every other line, and the door refuses any argument it reads as a path (one that starts with a slash or a drive letter, or names a folder), so name no file or folder in them. On a seat whose files are local, nothing changes: run the block above.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "router-misses", "after": ""}}'
+```
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it. If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "router-misses"}` through `plan run_helper` and print its `result` alone.
 
 **What the log is for, and is not for.** The view and cleanup's Monday-note line (three or more redirects to the same skill in 28 days → one sentence) are pointers for whoever tunes this Command Room. No description is ever auto-edited from them. The user's phrases in `said` / `meant` are their own words — they are OWNER-facing only, and they **never become a test row without a human rewriting them into placeholder vocabulary**; the negative-row generator (`tests/gen_negative_rows.py`) reads fences from skill descriptions, never events.
 
@@ -1448,13 +1571,23 @@ All findings written to events.jsonl as `interaction` / `meeting` / `note` / `fi
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1521,13 +1654,23 @@ It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-S
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1595,13 +1738,23 @@ The renderer self-gates and self-limits — read its JSON result, never work aro
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1715,13 +1868,23 @@ This skill's description is frozen at its budget cap, so there is NO dedicated q
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1784,7 +1947,7 @@ print('OK')
 
 **Trigger family**: *"tomorrow is about [X]"*, *"tomorrow: [X]"*, *"tomorrow I'm focused on [X]"*, *"make tomorrow about [X]"*, *"today is about [X]"* / *"today: [X]"* (the same record, `for_date` = today), *"next week is about [X]"* (`for_date` = next Monday), and the corrections *"actually tomorrow is about [Y]"* / *"change tomorrow to [Y]"*. Also answers the read: *"what's tomorrow about"* / *"what is today about"*.
 
-The three bare stems — `tomorrow is about`, `today is about`, `next week is about` — are in the frontmatter description, spelled WITHOUT the `[X]` placeholder. That spelling is the whole point: the runtime router reads the description and matches a declared phrase against what the customer typed, and `tomorrow is about [X]` never matches `tomorrow is about deep work` because the placeholder is not a word anybody says (SURFACEFIX1 F-6 measured exactly that — three announced day-intent stems were dark at the router while every body corpus and every suite said they worked). The bare stem matches; the placeholder does not.
+The bare stems `tomorrow is about` and `today is about` are in the frontmatter description, spelled WITHOUT the `[X]` placeholder. (`next week is about` left the description in cr1#1081 to make room for the stated-rule stems; it routes through the catch-all and the Routing corpus.) That spelling is the whole point: the runtime router reads the description and matches a declared phrase against what the customer typed, and `tomorrow is about [X]` never matches `tomorrow is about deep work` because the placeholder is not a word anybody says (SURFACEFIX1 F-6 measured exactly that — three announced day-intent stems were dark at the router while every body corpus and every suite said they worked). The bare stem matches; the placeholder does not.
 
 **DOES NOT fire on** *"remind me to [X] tomorrow"* (a reminder — show-my-reminders owns that phrase family and only the user may mint one), *"[X] is due tomorrow"* (a commitment due date), or *"what's on tomorrow"* / *"what's my day look like"* (a calendar read — morning-briefing). An intent is what the day is ABOUT; it is not a task, a deadline, or a schedule.
 
@@ -1807,13 +1970,23 @@ The three bare stems — `tomorrow is about`, `today is about`, `next week is ab
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1922,13 +2095,23 @@ On a bare `undo` / "undo that" / "reverse that" with no batch in context — and
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -2031,6 +2214,22 @@ print(post(receipt, surface="undo", workspace=workspace_root,
 
 Hand `post` the receipt as `relayed` so the composer's lines are relayed byte-exact rather than reworded, and hand it the REFS of the rows this undo reversed as `customer_rows` — never their titles as text. The titles are the customer's own words and the door goes and reads them off those rows itself; a title it cannot find on the book is not a title. **The door's internal id and the event type never print at all** — the receipt names the door by its phrase and each row by its title, which is what the reader recognises.
 
+**On a merged seat, the whole undo runs as ONE form (cr1#1147; the form is cr1#1005 part 3's).** Through the workspace door each helper runs in its own process, and `brain_undo` and `post` are on neither door list, so none of the blocks above can run there: not the listing, not the resolving, not the reversal. Do not call them separately there. Render the combined form with `plan run_writer` and run what it prints: the `undo` surface lists, resolves, reverses through `undo_batch` and composes the receipt in one process, and hands the rows it put back to `post` itself. Three shapes, one per turn:
+
+- **A bare `undo`** → the listing (or the plain line that there is nothing to reverse). Hand no composer argument.
+- **A number (`undo 1`, `undo 1a`, `undo all`)** → `composer_args` `{"choice": "<the token>", "undone_by": "<user person_id>"}`. A number that names nothing re-shows the list and reverses nothing.
+- **A description (`undo the three items you let go`)** → `composer_args` `{"phrase": "<what M typed>", "undone_by": "<user person_id>"}`. The answer never quotes those words. They are the person's own and can carry apostrophes, so they travel as `args_file`: write ONE JSON object, `{"workspace_root": "<WS>", "surface": "undo", "composer_args": {"phrase": "<what M typed>", "undone_by": "<user person_id>"}, "after": ""}`, into THIS SESSION'S OWN scratch on the host that runs the door, never under the workspace, and name it in the third line below.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "undo", "after": ""}}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "undo", "composer_args": {"choice": "<all | 1 | 1a | 2 ...>", "undone_by": "<user person_id>"}, "after": ""}}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_undo_post.json"}'
+```
+
+Never hand a number and a description together; the form refuses that before anything runs. The door refuses any argument it reads as a path (one that starts with a slash or a drive letter, or names a folder), so a description with a slash in it (a date such as 11/10) is refused: hand the words with the date spelled out instead. `undone_by` is the person who typed `undo`; left out, the workspace's owner is used. A re-processed meeting is still `undo_after_reprocess`'s, not this form's. On a seat whose files are local, nothing changes: run the blocks above.
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it. If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "undo"}` through `plan run_helper` and print its `result` alone.
+
 - **The 7 days bound the LISTING only.** Reversal legality never expires — every reverser is additive, so reversing an older batch is always safe; the window just matches change-feed relevance. If M names something older, pass its ref through anyway.
 
 ### "new project [Name]" / "new client [Name]"
@@ -2118,13 +2317,23 @@ Same shape as `new vendor` but with `relationship_type: prospect` defaulted. Use
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -2214,13 +2423,23 @@ Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -2753,6 +2972,14 @@ print(post(reply, surface="accounts", workspace=workspace_root,
 
 **The relay is the composer's own return, byte for byte.** The door checks it for presence, in the composer's own order, and for origin — every line must be a line a composer returned in this same run. That is why one extra line that carries anything internal refuses the whole post: the relay vouches for the composer's lines and everything beside them is this product's own words, scanned in full, so an accounts answer with a computer in it is exactly the paragraph this door stops. An ordinary extra sentence that carries nothing internal is accepted — the door is a leak gate, not a length gate, and saying otherwise invites a caller to trust it for a job it does not do. There is no `customer_rows` here.
 
+**On a merged seat, the composer and the door run as ONE form (cr1#1141; the form is cr1#1005 part 3's).** Through the workspace door each helper runs in its own process, so `accounts_surface` and `post` never meet there, and every relay is refused; `post` is on neither door list at all. Do not call them separately there. Render the combined form with `plan run_writer` and run what it prints: it runs `accounts_surface` and `post` in one process, with the composer's return as the relay. It takes no composer argument: the composer reads the workspace itself. `before` and `after` are the only sentences you add, they are scanned like every other line, and the door refuses any argument it reads as a path (one that starts with a slash or a drive letter, or names a folder), so name no file or folder in them. On a seat whose files are local, nothing changes: run the block above.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "accounts", "after": ""}}'
+```
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it. If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "accounts"}` through `plan run_helper` and print its `result` alone.
+
 **Behavior (declare a backend):**
 1. Resolve the connector's MCP **server-id** from the fire-time tool registry (the declared backend is keyed by server-id, not name — the substring approach fails for Superhuman/UUID servers). If the connector is the Zapier send leg, pin it via the setter's `is_zapier=True` path (into `_zapier_server_ids`), not as a category backend (R12).
 2. Call `connector_config.set_declared_backend(workspace_root, category, server_id, provider=…, label=…)`.
@@ -2771,16 +2998,16 @@ print(post(reply, surface="accounts", workspace=workspace_root,
 
 **Behavior (a connector's kind, dials and lists; cr1#667, rulings of 2026-11-03):**
 
-Every declared connector carries a kind (`mail`, `calendar`, `chat`, `meetings`, `tasks`, `documents`, `deals`, `contracts`), five dials (`open_commitments`, `close_commitments`, `close_mode` of `close` or `propose`, `update_people`, `update_projects`), an `include` and an `exclude` list at the kind's grain (channels for chat, boards and projects for tasks, labels or folders for mail and documents, calendars for calendar) and a `scope` (`account`, or `desktop_only` for a connection attached only in the desktop app, which no scheduled fire can reach). The vocabulary and the defaults are the manifest's (`CONNECTORS.md`, "Kinds, dials and lists"); a value the owner never set reads as the kind's default. These are settings, never prose: every Maintenance job reads them before it reads the source, and a prose setting drifts while a dial holds.
+Every declared connector carries a kind (`mail`, `calendar`, `chat`, `meetings`, `tasks`, `documents`, `deals`, `contracts`), five dials (`open_commitments`, `close_commitments`, `close_mode` of `close` or `propose`, `update_people`, `update_projects`), an `include` and an `exclude` list at the kind's grain (channels for chat, boards and projects for tasks, labels or folders for mail and documents, calendars for calendar) a `scope` (`account`, or `desktop_only` for a connection attached only in the desktop app, which no scheduled fire can reach) and, once the owner has said what it holds, a `role` in the account role words (`personal`, `mixed`, `business-primary`, `business-secondary`, `shared-support`, `billing`, `cold-outreach`; cr1#1163). A connector whose role is `personal` is never read by set-up's pull or any Maintenance job, the same wall a personal mail account has; no role means it is read as before. The vocabulary and the defaults are the manifest's (`CONNECTORS.md`, "Kinds, dials and lists"); a value the owner never set reads as the kind's default. These are settings, never prose: every Maintenance job reads them before it reads the source, and a prose setting drifts while a dial holds.
 
-**Trigger phrases (the family; any sentence that names a declared connector, or a channel, board, calendar, label or folder on one, and says what to do with it):** `this board is project tracking`, `a task closed there closes the commitment`, `a task closed there only proposes`, `ignore the marketing board`, `do not read the random channel`, `only read the ops and sales channels`, `do not open commitments from Slack`, `do not close commitments from chat`, `stop reading [connector] for people`, `treat the ops calendar as excluded`, `[connector] is my task tracker` (a kind correction), `[connector] is only on my desktop` (scope).
+**Trigger phrases (the family; any sentence that names a declared connector, or a channel, board, calendar, label or folder on one, and says what to do with it):** `this board is project tracking`, `a task closed there closes the commitment`, `a task closed there only proposes`, `ignore the marketing board`, `do not read the random channel`, `only read the ops and sales channels`, `do not open commitments from Slack`, `do not close commitments from chat`, `stop reading [connector] for people`, `treat the ops calendar as excluded`, `[connector] is my task tracker` (a kind correction), `[connector] is only on my desktop` (scope), `my [connector] is personal` / `[connector] is personal and work mixed` / `[connector] is for work` (role).
 
 1. Resolve the sentence to ONE setter call. The connector is the declared category the owner's words name (its label, its provider or its kind; `email` is the `mail` kind). The words map to values: "is project tracking" / "closes the commitment" to `close_mode: close`; "only proposes" / "ask me first" to `close_mode: propose`; "ignore" / "do not read" / "excluded" / "also exclude" on a channel, board, calendar, label or folder to `add_exclude` (the merge form: it extends the list already there, matched by name or id, case and a leading `#` ignored; "read [name] again" is `remove_exclude`); "only read" to `include` (the whole list, replaced); "also read" to `add_include`; "do not open commitments from" to `open_commitments: false`; "do not close commitments from" to `close_commitments: false`; "stop reading for people" / "for projects" to `update_people` / `update_projects: false`; "is my task tracker" / "is my document store" and the like to `kind`; "only on my desktop" to `scope: desktop_only`. A sentence that names no declared connector, or that maps to no dial, is one question back, never a guess.
-2. Show the table back BEFORE writing and wait for the owner's yes. One row per connector the sentence touches: kind, role (the label), the five dials as they will read after the change, include, exclude, scope. Mark the cells the sentence changes.
-3. On the owner's confirmation, write through the one writer, in process on a seat whose files are here: `connector_config.set_connector_settings(workspace_root, category, kind=..., dials={...}, include=[...], exclude=[...], add_exclude=[...], remove_exclude=[...], add_include=[...], remove_include=[...], scope=..., holder="workspace-manager")`, passing only what the sentence set (the setter merges the dials, and the `add_` / `remove_` forms merge into a list while `include=` / `exclude=` replace it; it refuses an unknown kind, an unknown dial, a non-boolean dial, a `close_mode` outside `close` / `propose` or a scope outside `account` / `desktop_only`, with nothing written). On a merged seat the write goes through the door with the owner's writer identity, the same shape the declaration above uses: render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"category": "<category>", "dials": {<the dials the sentence set>}, "add_exclude": [<the names the sentence excluded>], "workspace_root": "<WS>"}, "name": "connector_config:set_connector_settings"}'` (only the arguments the sentence set), paste what it prints and run that. A refused write is said in the setter's own words and nothing else.
+2. Show the table back BEFORE writing and wait for the owner's yes. One row per connector the sentence touches: kind, label, role, the five dials as they will read after the change, include, exclude, scope. Mark the cells the sentence changes.
+3. On the owner's confirmation, write through the one writer, in process on a seat whose files are here: `connector_config.set_connector_settings(workspace_root, category, kind=..., dials={...}, include=[...], exclude=[...], add_exclude=[...], remove_exclude=[...], add_include=[...], remove_include=[...], scope=..., role=..., holder="workspace-manager")`, passing only what the sentence set ("is personal" is `role="personal"`, "mixed" is `role="mixed"`, "for work" is `role="business-primary"`, "forget what it is" is `role="none"`) (the setter merges the dials, and the `add_` / `remove_` forms merge into a list while `include=` / `exclude=` replace it; it refuses an unknown kind, an unknown dial, a non-boolean dial, a `close_mode` outside `close` / `propose` a scope outside `account` / `desktop_only` or a role outside the account role words, with nothing written). On a merged seat the write goes through the door with the owner's writer identity, the same shape the declaration above uses: render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"category": "<category>", "dials": {<the dials the sentence set>}, "add_exclude": [<the names the sentence excluded>], "workspace_root": "<WS>"}, "name": "connector_config:set_connector_settings"}'` (only the arguments the sentence set), paste what it prints and run that. A refused write is said in the setter's own words and nothing else.
 4. Confirm in plain English with the table as written, and say that it is in effect at the next Maintenance run: *"Done. The marketing board is excluded from Boards; a done task there is not read. In effect on the next run."*
 
-**Forbidden here:** writing `kind`, `dials`, `include`, `exclude` or `scope` with a raw `entities.json` edit; writing before the owner confirms the table; a setting kept as prose anywhere (a note in a file is not a dial); inventing a value for a sentence that maps to none.
+**Forbidden here:** writing `kind`, `dials`, `include`, `exclude`, `scope` or `role` with a raw `entities.json` edit; writing before the owner confirms the table; a setting kept as prose anywhere (a note in a file is not a dial); inventing a value for a sentence that maps to none.
 
 **Drift detect (R13) — the declared backend's server-id is gone or a new one appeared:**
 
@@ -3022,7 +3249,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Also owns the connector & account management verbs (connector-agnostic-v1 C1 — workspace-manager owns the `workspace.connectors` / `workspace.accounts` blocks): 'set my email backend to [connector]', 'set my calendar backend to [connector]', 'use [connector] for email', '[address] is my personal account', '[address] is my business account', '[address] is a second business email', '[address] is mixed', 'mark [address] out of scope', 'stop filing [address]', 'add account [address]', 'what accounts do I have'. Machine-matchable stems for the mechanical matcher: 'set my email backend', 'set my calendar backend', 'is my personal account', 'is my business account', 'is a second business email', 'out of scope', 'stop filing', 'add account'. Behavior in the body's "Connector & account management" section.
 
-> Also owns the DAY-INTENT trigger family via the loose-input catch-all (SPEC BK1, Daily Bookends — same posture as the HIST1 org-money verbs: the description is frozen at its budget cap, so these live HERE and the runtime router reaches them through "loose input naming a tracked entity" / the catch-all): 'tomorrow is about [X]', 'tomorrow: [X]', 'tomorrow I'm focused on [X]', 'make tomorrow about [X]', 'today is about [X]', 'today: [X]', the corrections 'actually tomorrow is about [Y]' / 'change tomorrow to [Y]', and the reads 'what's tomorrow about' / 'what is today about'. Also 'next week is about [X]' (SPEC_SURFACES2_11c WRAP2 4.2 item 2 — the CEO overruling the wrap's derived three in their own words; `for_date` is next Monday, from `coach_turn.next_monday`). Machine-matchable stems for the mechanical matcher, and now for the runtime router too — the three bare stems are in the description without their placeholders: 'tomorrow is about', 'make tomorrow about', 'today is about', 'next week is about', "what's tomorrow about". **An intent phrasing WINS over navigation** — 'tomorrow is about closing Acme Co' writes a day_intent, it does not open the Acme Co thread (the MUST-language gate in the body); bare 'go [name]' / 'pull up [name]' navigation is untouched. Writes ONE typed `day_intent` event through `day_intent.write_day_intent` (origin='manual' always — never `wrap`/`proposed`, which belong to the end-of-day chat); reads through `day_intent.load_day_intent`, never a grep. ENTITY_RESOLVE applies to any name-bearing intent. DOES NOT fire on 'remind me to [X] tomorrow' (show-my-reminders — only the user mints a reminder, and an intent is not one). DOES NOT fire on '[X] is due tomorrow' (a commitment due date). DOES NOT fire on "what's on tomorrow" / "what does my day look like" (morning-briefing — a calendar read). Behavior in the body's "tomorrow is about [X]" section.
+> Also owns the DAY-INTENT trigger family via the loose-input catch-all (SPEC BK1, Daily Bookends — same posture as the HIST1 org-money verbs: the description is frozen at its budget cap, so these live HERE and the runtime router reaches them through "loose input naming a tracked entity" / the catch-all): 'tomorrow is about [X]', 'tomorrow: [X]', 'tomorrow I'm focused on [X]', 'make tomorrow about [X]', 'today is about [X]', 'today: [X]', the corrections 'actually tomorrow is about [Y]' / 'change tomorrow to [Y]', and the reads 'what's tomorrow about' / 'what is today about'. Also 'next week is about [X]' (SPEC_SURFACES2_11c WRAP2 4.2 item 2 — the CEO overruling the wrap's derived three in their own words; `for_date` is next Monday, from `coach_turn.next_monday`). Machine-matchable stems for the mechanical matcher, and for the runtime router where the description carries them (`tomorrow is about` and `today is about`, without their placeholders; `next week is about` left the description in cr1#1081): 'tomorrow is about', 'make tomorrow about', 'today is about', 'next week is about', "what's tomorrow about". **An intent phrasing WINS over navigation** — 'tomorrow is about closing Acme Co' writes a day_intent, it does not open the Acme Co thread (the MUST-language gate in the body); bare 'go [name]' / 'pull up [name]' navigation is untouched. Writes ONE typed `day_intent` event through `day_intent.write_day_intent` (origin='manual' always — never `wrap`/`proposed`, which belong to the end-of-day chat); reads through `day_intent.load_day_intent`, never a grep. ENTITY_RESOLVE applies to any name-bearing intent. DOES NOT fire on 'remind me to [X] tomorrow' (show-my-reminders — only the user mints a reminder, and an intent is not one). DOES NOT fire on '[X] is due tomorrow' (a commitment due date). DOES NOT fire on "what's on tomorrow" / "what does my day look like" (morning-briefing — a calendar read). Behavior in the body's "tomorrow is about [X]" section.
 
 > Also owns the routing-correction verb (SPEC ROUTEMISS1 — body-only; the description is frozen at its budget cap and the runtime router reaches these through the catch-all): 'wrong skill', 'you routed that wrong', 'that should have been [skill or phrase]' — the remainder is re-dispatched as the request and a `router_miss` is logged only when the fences in the body's "Routing corrections" section hold. Machine-matchable stems for the mechanical matcher: 'wrong skill', 'you routed that wrong', 'that should have been'. The redirect shape `no, I meant [X]` is recognised by the handler (`router_miss.split_correction`) but is NOT a stem here or anywhere — `no I meant prep me for my 2pm` belongs to call-prep, and a positive stem would collide with every such remainder. DOES NOT fire on a voice or wording correction after a draft (`no, I meant 'regards'` — the drafting skill's correction lane) or on the answer to a disambiguation question (`no, I meant the other [org]`).
 

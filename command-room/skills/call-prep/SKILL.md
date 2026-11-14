@@ -15,6 +15,8 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"d
 The answer is `c`: `draft_constraints.load_draft_constraints(workspace_root, "call-prep", recipient_id=..., domain=...)`, read beside the data (MIGRATE3-MB). `c["lines"]` are CONSTRAINTS, not suggestions: obey each one. `c["override_block"]` is this skill's learned voice block and supersedes the `## Voice Block` below section by section. Anything the person has STATED in this request outranks all of it. When you have a draft, send the same line again with `"draft": "<the draft>"` added to its args before you show it: the answer's `draft` is the draft through `apply_draft_constraints`, and that is what actually holds the learned paragraph ceiling and drops the phrases they keep taking out. Do not skip this because the corrections log looks short: a recipient who cut two drafts down is the whole reason it exists.
 
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## Deliverable Render Gate (GATE1 — MUST, v3.20.x; ONE GENERATOR v4.5.2 S1)
 
 This skill produces a `.docx` brief deliverable. It MUST be produced through the canonical chokepoint — no exceptions:
@@ -102,6 +104,26 @@ Rules (SPEC_READER1 §5c.6 — prescriptive, not advisory):
 - `coverage.gauge.state == "ready"` → the payload is trusted context. Its provenance and coverage notes may inform the brief's EXISTING disclosure lines (a truncation note; the held-count pointer — the payload's pointer note and block ④'s `needs your call` line are the same fact). Surface behavior is otherwise unchanged.
 - Any other state (`not_ready`, `unmeasured`) → build the brief directly, exactly as specified, with NO coverage apparatus: no gauge language, no coverage line, no ask-first question, no mention of measurement state — in the document or in chat. Until R3's backfill lands, coverage disclosure activates only on gauge-READY threads.
 - `coverage.empty_payload` true → the substrate holds nothing reachable for this thread. Do NOT fabricate thread context: omit the substrate-fed sections and build the brief from the connector-driven assembly alone (calendar, mail, chat, transcripts — those run regardless). Never render thread context the payload did not supply.
+
+### Craft: how the attendees work (cr1#397)
+
+A craft file is how a person or a business does a kind of work, as numbered rules. Call prep reads every scope for the attendees. The `"call-prep"` payload already carries the thread's: `sections.craft` holds the thread's own and its business's files, `sections.people_craft` the files of the people on the thread. For every resolved attendee who is not among those people, read theirs through the read door, one call for all of them:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": ["<attendee person id>", "<attendee person id>"], "task": "call-prep", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Each file in `result.files` carries its scope, its status and its numbered rules; each rule has its own words (`text`) and a `cite_id`. Only confirmed files come back, and the owner's own proposed ones.
+
+- **Use a rule where it changes the prep:** a talking point, a question to ask, the order of the decide block. A rule is method about how someone works, never a fact about the meeting, and it is never quoted inside the brief: the brief is forwardable.
+- **Cite every rule the prep used, from the helper, never by hand.** Pass the `cite_id` of each rule used:
+
+  ```bash
+  python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+  ```
+
+  Each line in `result.lines` is one bullet of the chat `Sources:` section, after the record links, pasted verbatim (for example `"When the liability cap is open, they redline the cap first, because the cap sets the rest of the risk", per how Sam Sample reviews (R3, confirmed Oct)`). The lines are not a source family and not links, and they never go into the brief's own Sources line (PREPSRC1 derives that one). An id in `result.refused` is not cited.
+- **No craft, no mention.** When neither section is in the payload and the helper returns no file, or the prep used no rule, the turn says nothing about craft: no line, no "no method on file".
 
 ---
 
@@ -514,13 +536,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

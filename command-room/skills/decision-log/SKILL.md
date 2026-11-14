@@ -1,7 +1,7 @@
 ---
 name: decision-log
 surfaces: both
-description: "Turn every decision the CEO makes — in meetings, Slack threads, or ad-hoc thinking — into a searchable log with who decided, when, why, and what changed. Fires on: 'we decided [X]' / 'we decided to go with [X]' / 'let's go with option [X]' (logging), 'log decision', 'what did we decide' / 'what did we decide about [topic]' (retrieval), 'decision history', 'why did we choose [X]', 'show me the decision log', plus 'tune decision-log'. Revisit mode (formerly decision-revisit): 'revisit the [topic] decision', 'what decisions should I revisit', 'decisions to revisit', 'decision audit', 'is the [topic] decision still right'. Writes decision events and regenerates the decision-log view; tags extraction misses when a manual log follows a processed meeting. Does NOT fire on 'decision memo on [topic]' (decision-memo-composer — multi-option tradeoff) or 'what should I decide' (advisory, not logging)."
+description: "Turn every decision the CEO makes — in meetings, Slack threads, or ad-hoc thinking — into a searchable log with who decided, when, why, and what changed. Fires on: 'we decided [X]' / 'we decided to go with [X]' / 'let's go with option [X]' (logging), 'log decision', 'what did we decide' / 'what did we decide about [topic]' (retrieval), 'decision history', 'why did we choose [X]', 'show me the decision log', 'pull in my past rulings' (one-time pull of past rulings to confirm), plus 'tune decision-log'. Revisit mode (formerly decision-revisit): 'revisit the [topic] decision', 'what decisions should I revisit', 'decisions to revisit', 'decision audit', 'is the [topic] decision still right'. Writes decision events and regenerates the decision-log view; tags extraction misses when a manual log follows a processed meeting. Does NOT fire on 'decision memo on [topic]' (decision-memo-composer — multi-option tradeoff) or 'what should I decide' (advisory, not logging)."
 ---
 
 ## Skill Boundary (v2.1)
@@ -32,13 +32,23 @@ description: "Turn every decision the CEO makes — in meetings, Slack threads, 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -105,13 +115,23 @@ After the append, regenerate the view:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -256,6 +276,22 @@ The log lives at `[WORKSPACE_ROOT]/_hq/views/DECISION_LOG.md` (v3.13.0+ canonica
 "What was the rationale for deciding on [option]?"
 "Show me all decisions on [project] in [timeframe]"
 ```
+
+**Pulling in past rulings (cr1#1015).** On `pull in my past rulings` (or `import my rulings`), run the one-time pull. It reads the rulings files (the workspace brief, any file whose name says ruling or decision, and any file the owner names) and puts each dated ruling on the Review tab as a decision to confirm, naming the older ruling it would replace. Nothing counts as a decision until the owner confirms it there or in `staff meeting`. Run it once without `apply` and say how many it found, then with `apply: true` when the owner says go:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "past_rulings:pull_past_rulings", "args": {"workspace_root": "<WS>", "apply": false}}'
+```
+
+Paste what it prints and run that. Say its `result.line` and nothing about files or rows. Running it again is safe: a ruling already a decision, already waiting, or recently declined is not proposed twice.
+
+**Answering "what did we decide about [topic]" (cr1#1015 — MANDATORY).** Never answer from the log's words alone: a later ruling may have replaced the one whose words match. Ask the decision list, which reads every replacement link the decision log view reads and follows a replaced ruling to the one that stands now:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "decision_list:what_did_we_decide", "args": {"workspace_root": "<WS>", "topic": "<the topic in the owner'"'"'s words>"}}'
+```
+
+Paste what it prints and run that. Its `result.lines` are one plain line per ruling that stands now, each naming what it replaced, then one per matching ruling that was closed with nothing standing in its place. Hand them unchanged, as the retrieval's `found` rows, to the composer and the one door in "The wrapper text is composed" below; never retype them. Never restate an older ruling as current: when `result.current` is empty and a line says a ruling was replaced, that line is the answer. `decision_list:decision_list` answers the whole list (`standing_only`, `thread` narrow it); every row carries the decision's id and entry number, which is how a detail is checked against the log entry itself.
 
 **Decision Tracking**
 
@@ -586,6 +622,16 @@ print(post(compose(SITE_DECISION_LOG, whole_reply), surface="decision-log",
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
+**On a merged seat, the composer and the door run as ONE form (cr1#1005 part 3, owner ruling 2026-11-12).** Through the workspace door each helper runs in its own process, so a composer run on the read door and `post` run after it never meet, and every relay is refused. Do not call `decision_log_answer` and `post` separately there. Render the combined form with `plan run_writer` and run what it prints: it runs the composer, the offer fence and `post` in one process, with the composer's return as the relay. `composer_args` are the composer's own (`logged`, or `found` and `topic`); `before` and `after` are the only sentences you add, and they are scanned like every other line.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "decision-log", "composer_args": {"found": ["<each result.lines line, unchanged>"], "topic": "<the topic in the owner'"'"'s words>"}, "after": ""}}'
+```
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it.
+
+The doubled-entries line (`decision_log_duplicates_line`, above) goes in `after`, unchanged, when it is not empty. If the door itself refuses the form (`ok` is false, for example a sentence you added that starts like a path), say nothing of why: run `surface_composers:refused_line` with `{"surface": "decision-log"}` through `plan run_helper` and print its `result` alone.
+
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
@@ -594,4 +640,4 @@ Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROS
 
 The complete trigger family and fences for this skill, relocated verbatim from the pre-v4.5.1 description (the routing metadata is budget-capped by the platform; routing correctness is enforced mechanically by tests/triggers.yaml). Everything below remains binding at fire time.
 
-> Turn every decision the CEO makes — in meetings, Slack threads, or ad-hoc thinking — into a searchable log with who decided, when, why, and what changed. Use when the CEO says 'log decision', 'we decided', 'we decided to', 'we're going with', 'let's go with', 'we'll go with', 'what did we decide', 'what did we decide about', 'what did we decide about pricing', 'decision history', 'show me the decision log', 'show decision log', 'show the decision log', 'why did we choose', 'why did we pick'. Writes `decision` events to events.jsonl and regenerates _hq/views/DECISION_LOG.md. Also handles first-run personalization settings — use when the CEO says 'tune my decision log', 'tune decision-log', 'show decision-log settings', 'reset decision-log to defaults'. DOES NOT fire on 'decision memo on', 'decision memo for', 'tradeoff analysis', 'choose between' — those go to decision-memo-composer (v3.8.0+ — structured multi-option tradeoff). Revisit mode (formerly decision-revisit, folded in SKILLMERGE1 2026-09-03) — surface decisions worth re-examining based on elapsed time, contradictory new signal, and whether the original rationale's named conditions still hold: 'what decisions should I revisit', 'decision audit', 'decisions to revisit', 'decision revisit', 'decision review', 'old decisions worth revisiting', 'which decisions are stale', 'review my decisions', 'decisions worth re-examining', 'revisit the hiring decision', 'revisit the pricing decision', 'revisit the' (any single-decision revisit-by-name), 'is the [topic] decision still right'. DOES NOT fire on 'what should I decide' (that's advisory, not logging).
+> Turn every decision the CEO makes — in meetings, Slack threads, or ad-hoc thinking — into a searchable log with who decided, when, why, and what changed. Use when the CEO says 'log decision', 'we decided', 'we decided to', 'we're going with', 'let's go with', 'we'll go with', 'what did we decide', 'what did we decide about', 'what did we decide about pricing', 'decision history', 'show me the decision log', 'show decision log', 'show the decision log', 'pull in my past rulings', 'import my rulings', 'why did we choose', 'why did we pick'. Writes `decision` events to events.jsonl and regenerates _hq/views/DECISION_LOG.md. Also handles first-run personalization settings — use when the CEO says 'tune my decision log', 'tune decision-log', 'show decision-log settings', 'reset decision-log to defaults'. DOES NOT fire on 'decision memo on', 'decision memo for', 'tradeoff analysis', 'choose between' — those go to decision-memo-composer (v3.8.0+ — structured multi-option tradeoff). Revisit mode (formerly decision-revisit, folded in SKILLMERGE1 2026-09-03) — surface decisions worth re-examining based on elapsed time, contradictory new signal, and whether the original rationale's named conditions still hold: 'what decisions should I revisit', 'decision audit', 'decisions to revisit', 'decision revisit', 'decision review', 'old decisions worth revisiting', 'which decisions are stale', 'review my decisions', 'decisions worth re-examining', 'revisit the hiring decision', 'revisit the pricing decision', 'revisit the' (any single-decision revisit-by-name), 'is the [topic] decision still right'. DOES NOT fire on 'what should I decide' (that's advisory, not logging).

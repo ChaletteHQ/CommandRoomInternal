@@ -446,13 +446,21 @@ def run_checks(root: Path) -> list[Finding]:
 
     # C8 — alias targets resolve.
     all_ids = org_ids | person_ids | thread_ids
-    alias_map = aliases.get("mappings") if isinstance(aliases.get("mappings"), list) else None
-    if alias_map is not None:
-        for m in alias_map:
-            cid = m.get("canonical_id")
-            if cid and cid not in all_ids:
-                findings.append(Finding("C8.dead_alias", WARN,
-                    f"alias '{m.get('raw') or m.get('alias') or '?'}' -> '{cid}' which no longer resolves", str(cid)))
+    # cr1#954 / cr1#1011: every aliases.json shape, through the one shared
+    # reader. Before, only the flat-list shape was checked, so a dead alias in
+    # the schema's tiered shape was never reported.
+    # Guarded like this module's other optional imports: if the reader cannot
+    # load, C8 is skipped and every other check still runs.
+    try:
+        from alias_index import alias_rows
+    except Exception:
+        alias_rows = lambda _doc: []  # noqa: E731
+
+    for m in alias_rows(aliases):
+        cid = m["canonical_id"]
+        if cid not in all_ids:
+            findings.append(Finding("C8.dead_alias", WARN,
+                f"alias '{m['raw']}' -> '{cid}' which no longer resolves", str(cid)))
 
     # C9 — active thread folder_name exists on disk.
     for t in threads:

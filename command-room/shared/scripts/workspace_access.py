@@ -137,6 +137,18 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # (absent fields read as the kind's defaults); the setter is on the
     # write list beside it
     "connector_config:connector_settings",
+    # cr1#1179: what a chat must never read (personal connectors and the
+    # mailboxes whose surface dial is off); reads, writes nothing
+    "connector_reads:chat_wall",
+    # cr1#1014 (train 4): keyword search over the log; reads, writes nothing
+    "log_search:search_log",
+    # cr1#1017 (train 8): the per-seat word list and the advisor's sheet; reads, writes nothing
+    "words:load_words",
+    "words:plan_words",
+    "advisor_sheet:questions",
+    "advisor_sheet:load_sheet",
+    "onboarding_confirm:plan_confirm",  # cr1#1163 part 2: the step-5 cards' current values and evidence (writes nothing)
+    "whats_new_setup:plan_whats_new",  # cr1#1235: on an existing seat, the connectors and accounts with no role and the unset step-5 cards (writes nothing)
     # FILECARD1 (cr1#611): has this seat been shown the paste-in block (walks the ledger, writes nothing)
     "claude_instructions:shown_status",
     # DORMSCOPE1 (cr1#170): whose accounts the dormancy scan may rank
@@ -151,6 +163,28 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "entity_resolve:resolve_all",
     "events_io:count_rows",
     "events_io:load_all",
+    # cr1#1018 (train 9): the two number answers. Each reads its ledger, or
+    # counts from the log when the ledger is stale, and writes nothing; the
+    # rebuild that writes the ledgers is the maintenance job's, never here.
+    "ledgers:pipeline_by_stage",
+    "ledgers:sessions_by_client",
+    # cr1#1015 (train 6): the decision list and "what did we decide about
+    # X". Each reads the stored list, or counts from the log when it is
+    # stale, and writes nothing; the rebuild that writes the list is never here.
+    "decision_list:decision_list",
+    "decision_list:what_did_we_decide",
+    # cr1#1016 (train 7): the one loader every skill calls through the
+    # Access preamble's rule 2. It folds the rules fresh from their sources
+    # and writes nothing. The rules are read through it only, so the rules
+    # store's own readers are deliberately not on this list.
+    "context_loader:load_context",
+    # cr1#1016 slice 2: whether each record an answer names is on file
+    # (cr1#785 item 4); reads the log, the register and the rules, writes nothing
+    "context_loader:check_named",
+    # cr1#1016 slice 3: the always-loaded diet's measure and plan; both read
+    # the brief and the log and write nothing (the cut is the writer below)
+    "claude_md_diet:measure",
+    "claude_md_diet:plan",
     "events_io:shard_invariants",
     "events_io:shard_paths",
     # the inbox chain (ORCH1). Every one reads or computes; the rows they
@@ -363,6 +397,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
+    "cockpit_helpers:feed_mail_rules",  # cr1#1020 - the Inbox tab's mail rules and dropped threads, read only
+    "morning_message:hub_address",  # cr1#1017 - the Hub page the morning message reads its Inbox feed from, read only
+    "cockpit_helpers:miss_search_plan",  # cr1#1202 - what the apply run searches for each "Missed something?" press, computed not written
+    "cockpit_helpers:feed_people",  # cr1#1020 - the People tab and the starred people on Home, read only
+    "cockpit_helpers:feed_board",  # cr1#1017 - the Week view's board on Today: due cards and priority lanes, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
     "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
@@ -371,6 +410,30 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:plan_task_registration",  # COCKPIT1 (cr1#608) - the cockpit task's registration, planned and not called
     "cockpit_helpers:plan_cockpit_registration",  # cr1#619 - all four cockpit tasks, planned and not called
     "cockpit_helpers:maintenance_status",  # cr1#666 - the Hub's status/maintenance document, read only
+    # DOORHELP2 (cr1#1005): helpers meeting-notes, people-crm, decision-log and
+    # needs-your-call name on a merged seat. Each reads or computes and
+    # writes nothing.
+    "meeting_capture:rerun_status",  # meeting-notes' re-run check, run BEFORE processing (reads receipts)
+    "narration_names:person_header",  # people-crm's record header, the person's name and never the id
+    "cru_match:load_open_commitments",  # the open-commitment fold (reads events.jsonl)
+    "decision_match:load_open_decisions",  # decision-log's open-decision fold (reads events.jsonl)
+    "surface_composers:refused_line",  # the one sentence when post refuses twice (pure)
+    "needs_review_queue:queue_text",  # needs-your-call's queue page as text, the view command's own page
+    # DOORHELP3 (cr1#1005, part 2). Each computes and writes nothing; the
+    # meeting builders hand back the row the skill lands with append_jsonl.
+    "meeting_capture:build_meeting_event",  # meeting-notes Step 9a1's row, built not written
+    "meeting_capture:build_meeting_processed_event",  # Step 9a2's receipt row, built not written
+    "meeting_capture:already_processed",  # the re-run predicate (reads receipts)
+    "meeting_capture:pasted_source_ref",  # a pasted note's stable source_ref (pure)
+    "cru_match:split_pending_review",  # people-crm Gate 2's split (pure)
+    "narration_names:humanize",  # ids to names in a sentence (pure)
+    "narration_names:name_index",  # the id-to-name index (reads entities.json)
+    "offer_gate:compose",  # an offer line gated before it is said (pure)
+    "offer_gate:fact_close_lines",  # people-crm Gate 2b's close lines (pure)
+    "offer_gate:duplicate_decisions",  # decision-log's doubled-entry count (pure)
+    "offer_gate:decision_log_duplicates_line",  # its sentence (pure)
+    "surface_composers:decision_log_answer",  # decision-log's composed answer (reads)
+    "chat_output_renderer:validate_chat_output",  # the leak scan on a reply (reads)
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -438,6 +501,32 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # read of the activity log; it never reads the scheduler. Its writer,
     # the marker the two owner skills write, is on the write list.
     "schedule_handoff:pending_line",  # cr1#970 - the update's one schedules line, read only
+    # cr1#1014 (train 4, the deep tier): the document shelf's two readers.
+    # Each reads the folder and the stored shelf and writes nothing; the
+    # rebuild is on the write list.
+    "doc_shelf:find_documents",
+    "doc_shelf:quote_section",
+    # cr1#1014 (train 4): what was said in meetings, and the feedback given
+    # in them. Both read the log and write nothing; the writer is on the
+    # write list.
+    "meeting_substance:meeting_summaries",
+    "meeting_substance:feedback_entries",
+    # cr1#397 (SPEC CRAFT1 step 2): craft recall. The craft files a task
+    # reads, the Sources lines for the rules an output used (read back from
+    # the file through each rule's id), and people-crm's two verbs. All four
+    # read and write nothing.
+    "craft_recall:craft_for_task",
+    "craft_recall:cite_rules",
+    "craft_recall:craft_inventory",
+    "craft_recall:match_craft_verb",
+    # cr1#398 (SPEC CRAFT1 step 3): craft capture's read half. Which ask it
+    # is, the sources listed before anything is read, and the preview the
+    # owner confirms, edits or dismisses. All three write nothing; the file,
+    # its event and the view are `craft_capture:write_craft`, on the write
+    # list.
+    "craft_capture:match_capture_ask",
+    "craft_capture:gather_sources",
+    "craft_capture:build_preview",
     "workspace_root:find_workspace_root",
 })
 
@@ -482,6 +571,13 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # one scheduled writer is a whole-file entities.json write plus one
     # `scheduled_writer_declared` row, made on the registering seat.
     "schedule_config:declare_scheduled_writer",
+    # cr1#1138: the deliberate hand-over of the schedules to THIS seat - the
+    # same write as the declaration, with the refusals lifted and the new
+    # holder taking effect at the next slot.
+    "schedule_config:hand_over_schedules",
+    # cr1#1139 (ruling A5): the owner names THIS account as acting for them -
+    # one entities.json key plus one `acting_account_named` row.
+    "schedule_config:name_acting_account",
     # ORCH2C (Night M3 lane 6) - the Waiting On chain
     # (`orchestrator-commitments.md`). The closes its CRU passes plan, the
     # inbound pass end to end, the stamped auto-merges, the first-fire
@@ -527,6 +623,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "tasks_leg:close_tasks_and_receipt",  # cr1#668
     "connector_proposals:propose_from_connectors_and_receipt",  # cr1#668
     "cleanup_actions:sweep_lock_litter",  # MAINTJOBS1
+    "cleanup_actions:tidy_folder",  # cr1#1019 (T10) - the folder tidy, archive first with a manifest; see the writer table row
+    "cleanup_actions:undo_folder_tidy",  # cr1#1019 (T10) - every move of one tidy put back from its manifest; see the writer table row
     "schedule_refresh:log_schedule_refreshed",  # MAINTJOBS1
     "schedule_backend:record_trigger_map",  # MAINTJOBS1
     "release_actions.claude_md_docs_rule_v1:claude_md_docs_rule_v1",  # DOCS lane (DOCS1 D-1): the rule into CLAUDE.md, one applied row
@@ -538,14 +636,23 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
+    "morning_message:plan_send",  # cr1#1017 - the morning message planned (it builds the plate); see the writer table row
+    "morning_message:record",  # cr1#1017 - the morning message sent or skipped, one row; see the writer table row
     "cockpit_helpers:add_chat_priority",  # cr1#776 - see the writer table row
     "cockpit_helpers:apply_review_choices",  # cr1#779 - see the writer table row
     "cockpit_helpers:apply_week_choices",  # cr1#780 - see the writer table row
     "cockpit_helpers:apply_settings_choices",  # cr1#781 - see the writer table row
+    "cockpit_helpers:apply_mail_choices",  # cr1#1020 - see the writer table row
+    "cockpit_helpers:apply_people_choices",  # cr1#1020 - see the writer table row
     "cockpit_helpers:record_page_sends",  # cr1#817 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row
+    "words:set_words",  # cr1#1017 (train 8) - see the writer table row
+    "advisor_sheet:write_sheet",  # cr1#1017 (train 8) - see the writer table row
+    "onboarding_confirm:apply_confirm",  # cr1#1163 part 2 - see the writer table row
+    "whats_new_setup:apply_walk",  # cr1#1235 - see the writer table row
+    "schedule_config:set_morning_time",  # cr1#1163 part 2 - see the writer table row
     # KEEP THIS NAME LAST, directly above the closing brace - the same anchor
     # discipline as `RUN_HELPER_ALLOWLIST`: removal proofs and later lanes
     # (ORCH2 adds entries) anchor on the two-line string
@@ -581,6 +688,10 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "people_writer:door_create_person",  # PEOPLEWRITE2 - people-crm's new person, a duplicate or a one-word name answered (D-W2-5)
     "people_writer:door_update_person",  # PEOPLEWRITE2 - people-crm's field change on a person on file
     "people_writer:door_record_person_fact",  # PEOPLEWRITE2 - people-crm's remember-a-fact, one person_fact_observed row
+    "people_writer:door_set_person_field",  # train 2 part 3b - a person's category, introducer or handle-with-care line, set or cleared, with undo
+    "people_writer:door_attach_phone",  # train 2 part 3b - one number attached, normalised, refused when it is someone else's
+    "people_writer:door_remove_phone",  # train 2 part 3b - one number removed, matched in any spelling
+    "people_writer:door_import_person_facts",  # train 2 part 3c - a list of categories, introducers and numbers in one undo batch; an unknown name judged by the add guard (C1)
     "people_writer:door_auto_add_person",  # PEOPLEWRITE2 - people-crm's rich-context auto-add, the same-name gate first
     # CFGRESET1 (cr1#249): "reset <skill> to defaults" on a merged seat. The
     # writer takes a SKILL name checked against the known list, never a file
@@ -595,11 +706,24 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # corrections store and the ledger. Both are writers, so they are here
     # and never on the read door's list.
     "widget_transport:render_and_persist",  # DOORHELP1 - the card, its audit page landed
+    "needs_review_queue:render_queue_page",  # DOORHELP3 (cr1#1005) - the queue's tap-to-answer page, landed
+    # DOORHELP4 (cr1#1005 part 3, owner ruling 2026-11-12, option a): a
+    # surface's composer and `post` in ONE child process, so `post` vouches
+    # against the register the composer filled. A writer because a refused
+    # post lands its `surface_failed` receipt.
+    "surface_composers:compose_and_post",
     "correction_turn:handle_correction_turn",  # DOORHELP1 - a correction in passing recorded
     # DECDOOR1 (cr1#315): the decision-log view's regeneration. It rewrites
     # the decision log view, so it is a writer and refused on every merged
     # seat without this door.
     "render_decision_log:regenerate",  # DECDOOR1 - the decision log view rewritten
+    "past_rulings:pull_past_rulings",  # cr1#1015 - the one-time pull: past rulings proposed on the Review tab
+    "past_rulings:confirm_past_ruling",  # cr1#1015 - the yes to one: the decision and its replacement links
+    "rules_store:state_rule",  # cr1#1016 - a rule the owner stated, confirmed once with its scope
+    "rules_store:retire_rule",  # cr1#1016 - a stated rule taken back
+    "rules_store:record_correction",  # cr1#1016 - a correction recorded against what it corrects
+    "rules_store:rebuild",  # cr1#1016 - the rules folder, rewritten whole from the sources
+    "claude_md_diet:apply_diet",  # cr1#1016 - the brief cut to about 1,500 words, history moved out
     # OBJDOOR1 (cr1#317): the objective lifecycle writers the objectives
     # skill and the apply-choices `cr-objectives` entry name. Each writes
     # the objective thread and its `objective_*` row through the single
@@ -627,11 +751,13 @@ RUN_WRITER_ALLOWLIST = frozenset({
     # row, the snapshot keyed to it, an edited body's corrections - which a
     # merged seat had no door for, so a click once wrote nothing at all.
     "voice_corrections:record_draft_click",  # DRAFTREC1 - apply-choices Step 4B, the body in args_file
+    "meeting_substance:record_meeting_substance",  # cr1#1014 - see the writer table row
     # cr1#615: the record of a run. Every skill that logs its own receipt, and
     # the detectors' shared signal, were refused on every merged seat, so the
     # run left no record and the reply still read as if it had.
     "receipts:log_receipt",  # cr1#615 - a skill's run or scan receipt
     "dormancy:emit_dormancy_signal",  # cr1#615 - one dormancy_signal row, or nothing to record
+    "doc_shelf:rebuild_shelf",  # cr1#1014 - see the writer table row
     # SWEEPDOOR1 (cr1#938): the backlog sweep's writes, refused on every
     # merged seat, so `clean up my commitments` could not run there at all.
     "commitment_backlog_sweep:scan_staged",  # cr1#938 - the scan over mail staged beside the data
@@ -647,6 +773,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "skill_jobs_door:insights_and_receipt",  # cr1#928 - see the writer table row
     "skill_jobs_door:monthly_report_and_receipt",  # cr1#928 - see the writer table row
     "schedule_handoff:log_schedule_changes_applied",  # cr1#970 - see the writer table row
+    "craft_capture:write_craft",  # cr1#398 - see the writer table row
+    "craft_contract:add_scope",  # cr1#398 - see the writer table row
     "deliverables:land",
 })
 
@@ -659,7 +787,22 @@ HELPER_DOOR_ENV = "CR_HELPER_DOOR"
 #: string is pasted into a shell on the customer's machine, so what crosses is
 #: a reviewed list or it is nothing.
 FORWARD_ENV_KEYS = ("CR_WRITER_ID", "CR_WRITER_DERIVATION",
-                    "CR_FIRED_VIA", "CR_DEVICE_WORKSPACE", "CR_TRIGGERED_BY")
+                    "CR_FIRED_VIA", "CR_DEVICE_WORKSPACE", "CR_TRIGGERED_BY",
+                    "CR_COMPUTER_MARK", "CR_ACCOUNT_MARK")
+
+#: cr1#1138: the ACCOUNT a write comes from, with no folder name and no
+#: organisation in it (`schedule_holder.derive_account_mark`), so the holder of
+#: a folder's schedules survives a renamed folder and an organisation switch.
+#: Derived HERE from the account uuid, like the writer pair; only the mark
+#: crosses, never the uuid. A seat that keeps today's identities forwards none.
+
+#: cr1#922 / cr1#1061 (owner ruling 1a, 2026-11-11): the computer a write
+#: comes from. The model exports `get_device_info`'s device name as
+#: `CR_DEVICE_NAME`; `plan` derives the mark HERE (`computer_mark.derive`) and
+#: only the mark crosses, as `CR_COMPUTER_MARK`. The raw name is never on a
+#: rendered line. Remembered in this session's own scratch like the basename
+#: (PLANID1), because the container's shell keeps no export between commands.
+COMPUTER_MARK_CACHE_NAME = "cr-computer-mark"
 
 #: Where the customer opens the workspace on their own computer. Read here and
 #: carried on the resolver's context; `deliverables` is what spells a path with
@@ -823,9 +966,11 @@ def find(base, md=5):
         if (d / "_hq" / "data" / "entities.json").is_file(): hits.append((len(d.parts), dp)); dn[:] = []
     return Path(sorted(hits)[0][1]) if hits else None
 ws = find(os.environ.get("CR_WORKSPACE") or (Path.home() / "mnt"))
-o = {"ws": None, "basename": None, "runtime_present": False, "runtime_version": None, "manifest_sha": None, "staged_root": None, "brain_file": None, "device_path": os.environ.get("CR_DEVICE_WORKSPACE") or None, "python": "%d.%d.%d" % sys.version_info[:3], "probes": {"replace_over_existing": None, "unlink": None, "flock": None}}
+o = {"ws": None, "basename": None, "runtime_present": False, "runtime_version": None, "manifest_sha": None, "staged_root": None, "brain_file": None, "device_path": os.environ.get("CR_DEVICE_WORKSPACE") or None, "python": "%d.%d.%d" % sys.version_info[:3], "probes": {"replace_over_existing": None, "unlink": None, "flock": None}, "holder": None}
 if ws is not None:
     o["ws"] = str(ws); o["basename"] = ws.name
+    try: h = json.loads((ws / "_hq" / ".system" / "schedule_holder.json").read_text(encoding="utf-8")); o["holder"] = h if isinstance(h, dict) else None
+    except Exception: pass
     o["brain_file"] = str(ws / "CLAUDE.md") if (ws / "CLAUDE.md").is_file() else None
     rt = ws / "_hq" / ".cache" / "cr-runtime"
     try:
@@ -843,9 +988,15 @@ CR_DISCOVER"""
 
 # The keys `discover` answers with, in both faces. BOOT3's bootloader v3 reads
 # exactly these names — a rename here is a break there.
+#
+# WIDENED by cr1#1138 part 2: `holder`, the content of
+# `_hq/.system/schedule_holder.json` (or None) - who holds this folder's
+# scheduled work, read here because discovery is the one block that runs
+# before the runtime is installed, and a computer that does not hold the
+# schedules must stop BEFORE the runtime check can restage into the folder.
 DISCOVER_KEYS = ("ws", "basename", "runtime_present", "runtime_version",
                  "manifest_sha", "staged_root", "brain_file", "device_path",
-                 "python", "probes")
+                 "python", "probes", "holder")
 PROBE_KEYS = ("replace_over_existing", "unlink", "flock")
 
 
@@ -2547,11 +2698,25 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
     if not all(isinstance(r, dict) for r in rows):
         return _refuse("append_jsonl", ctx, started, R_BAD_ARGS, rel=rel,
                        detail="rows must be a list of objects")
+    capture_once = None
     try:
         _ensure_scripts_on_path()
         if _is_append_only(target.name):
             from event_gate import append_event  # type: ignore
+            # cr1#1005: the chokepoint's refusals for THIS append, which only
+            # this process holds, go back on the answer so a caller on a
+            # merged seat can hand them to its receipt.
+            try:
+                from atomic_write import reset_capture_once  # type: ignore
+                reset_capture_once()
+            except Exception:  # noqa: BLE001 - a missing reset never blocks an append
+                pass
             stamped = append_event(target, rows, holder=holder)
+            try:
+                from atomic_write import last_capture_once_refusal  # type: ignore
+                capture_once = last_capture_once_refusal()
+            except Exception:  # noqa: BLE001
+                capture_once = None
         else:
             from atomic_write import atomic_append_jsonl  # type: ignore
             stamped = atomic_append_jsonl(target, rows, holder=holder)
@@ -2573,7 +2738,9 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
         return _refuse("append_jsonl", ctx, started, "append_refused", rel=rel,
                        detail=f"{type(exc).__name__}: {exc}")
     return _envelope("append_jsonl", ctx, started, ok=True, rel=rel,
-                     n=len(stamped), stamped=stamped, **_origin_fields(env))
+                     n=len(stamped), stamped=stamped,
+                     **({"capture_once": capture_once} if capture_once is not None else {}),
+                     **_origin_fields(env))
 
 
 # ---------------------------------------------------------------------------
@@ -3093,6 +3260,94 @@ def _derived_writer_pair(ctx: Dict[str, Any],
         return {}
 
 
+def _computer_mark_to_forward(env: Dict[str, str]) -> Optional[str]:
+    """The computer mark this rendered command carries, or None (cr1#922).
+
+    A handed mark (`CR_COMPUTER_MARK`, already derived) crosses if it is
+    well formed; a device name (`CR_DEVICE_NAME`) is derived here and
+    remembered for the session; with neither, the session's remembered mark.
+    A seat that exports neither and never did forwards nothing, so its
+    rendered lines are byte-identical to before. Never raises."""
+    try:
+        _ensure_scripts_on_path()
+        import computer_mark  # type: ignore
+    except Exception:  # noqa: BLE001 - no module, no mark
+        return None
+    try:
+        handed = str(env.get(computer_mark.MARK_ENV, "")).strip()
+        if handed:
+            return handed if computer_mark.is_mark(handed) else None
+        derived = computer_mark.derive(
+            str(env.get(computer_mark.DEVICE_NAME_ENV, "")))
+        if derived:
+            _remember_scratch(COMPUTER_MARK_CACHE_NAME, derived, env)
+            return derived
+        recalled = _recall_scratch(COMPUTER_MARK_CACHE_NAME, env)
+        return recalled if computer_mark.is_mark(recalled) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _account_mark_to_forward(env: Dict[str, str]) -> Optional[str]:
+    """The account mark this rendered command carries, or None (cr1#1138).
+
+    A handed mark (`CR_ACCOUNT_MARK`) crosses if it is well formed and is
+    never replaced; else it is derived from the account uuid in this process.
+    A seat whose mode keeps today's identities forwards none, the fence the
+    writer pair already applies. Never raises."""
+    try:
+        _ensure_scripts_on_path()
+        import schedule_holder  # type: ignore
+        import writer_identity  # type: ignore
+    except Exception:  # noqa: BLE001 - no module, no mark
+        return None
+    try:
+        handed = str(env.get(schedule_holder.ACCOUNT_MARK_ENV, "")).strip()
+        if handed:
+            return handed if schedule_holder.is_account_mark(handed) else None
+        if not str(env.get(schedule_holder.ACCOUNT_ENV, "")).strip():
+            return None
+        if writer_identity.detected_mode(env) in writer_identity.LEGACY_ID_MODES:
+            return None
+        return schedule_holder.derive_account_mark(
+            env.get(schedule_holder.ACCOUNT_ENV))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _scratch_file(name: str, env: Dict[str, str]) -> Optional[Path]:
+    try:
+        _ensure_scripts_on_path()
+        import delete_grant  # type: ignore
+
+        path, _anchor = delete_grant.session_scratch_file(name, env)
+    except Exception:  # noqa: BLE001
+        return None
+    return path
+
+
+def _remember_scratch(name: str, value: str, env: Dict[str, str]) -> None:
+    path = _scratch_file(name, env)
+    if path is None:
+        return
+    try:
+        if path.is_file() and path.read_text(encoding="utf-8").strip() == value:
+            return
+        path.write_text(value, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _recall_scratch(name: str, env: Dict[str, str]) -> Optional[str]:
+    path = _scratch_file(name, env)
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def _basename_cache(env: Dict[str, str]) -> Optional[Path]:
     """This session's own scratch file for the basename, or None when nothing
     names the session (no scratch, no memory). Resolved by
@@ -3297,6 +3552,12 @@ def forward_env(ctx: Optional[Dict[str, Any]] = None,
         # exported in this shell). It crosses exactly as a derived one would;
         # a seat that keeps today's identities forwards nothing.
         out.update(_handed_writer_pair(env))
+    mark = _computer_mark_to_forward(env)
+    if mark:
+        out["CR_COMPUTER_MARK"] = mark
+    account = _account_mark_to_forward(env)
+    if account:
+        out["CR_ACCOUNT_MARK"] = account
     for key in ("CR_FIRED_VIA", "CR_DEVICE_WORKSPACE", "CR_TRIGGERED_BY"):
         value = str(env.get(key, "")).strip()
         if not value:
@@ -3445,10 +3706,23 @@ def discover(ctx: Optional[Dict[str, Any]] = None, *,
         "device_path": ctx.get("device_path"),
         "python": ctx.get("python"),
         "probes": {"replace_over_existing": None, "unlink": None, "flock": None},
+        "holder": None,
     }
     if ws:
         out["probes"] = _run_probes(Path(ws))
+        out["holder"] = _read_holder(Path(ws))
     return out
+
+
+def _read_holder(ws: Path) -> Optional[Dict[str, Any]]:
+    """cr1#1138 part 2: the holder file's object, as the block reads it, or
+    None. Read only; any failure is None."""
+    try:
+        h = json.loads((ws / "_hq" / ".system" / "schedule_holder.json")
+                       .read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    return h if isinstance(h, dict) else None
 
 
 def _run_probes(ws: Path) -> Dict[str, Any]:

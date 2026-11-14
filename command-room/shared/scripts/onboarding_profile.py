@@ -7,7 +7,8 @@ own order and words), how they like it, and their boundaries — plus
 whatever assessment scores the operator enters by hand, with a consent
 date. NOTHING ON THIS PAGE WAS ASKED OF THE CLIENT BY THE PRODUCT. Say it
 that precisely: onboarding's Phase 0 setup widget still asks the client
-four questions (role, timezone, AI name, email draft posture), so the
+three questions (role, timezone, AI name; draft posture moved to step 5,
+cr1#1163), so the
 unqualified "the product asks the client nothing" is true of the profile
 object and of the interaction preset, and false of onboarding as a whole.
 What is true here without qualification: every write in this module is
@@ -335,8 +336,8 @@ def scan_no_client_question(section_text: str) -> List[str]:
 # populated book" default; review finding M1). The planner's recommendation
 # was 50 events / 5 companies. Measured on this tree, everything a fresh
 # install writes up to and including Phase 0 is the `plugin_install`
-# baseline, the `step_1_setup_v7` fire-marker, the Phase-0
-# `onboarding_checkpoint` and the handful of first-run config rows the four
+# baseline, the `step_1_setup_v8` fire-marker, the Phase-0
+# `onboarding_checkpoint` and the handful of first-run config rows the
 # widget answers produce — under ten events, and ZERO companies (the company
 # seed is Phase 1's). The window between that and 50/5 was a class of real
 # but small books that would auto-fire a seeding: 40 events and 3 companies
@@ -461,12 +462,14 @@ def _ledger_probe(workspace_root, n_events: int) -> Dict[str, bool]:
     yielded zero usable events. Each of those is a book the guard cannot
     see — never an empty folder."""
     try:
-        from events_io import active_path, shard_paths
+        # cr1#1061: `log_files` = the shards, the live file and every
+        # per-computer log; with none it is exactly `shard_paths`.
+        from events_io import active_path, log_files
     except Exception:  # pragma: no cover
         return {"present": False, "unreadable": True}
     paths = []
     try:
-        paths = [Path(x) for x in shard_paths(workspace_root)]
+        paths = [Path(x) for x in log_files(workspace_root)]
     except Exception:
         return {"present": True, "unreadable": True}
     try:
@@ -865,12 +868,14 @@ def setup_widget_html(workspace_root=None, *, plugin_root=None,
 
 
 def draft_posture_line(workspace_root=None, entities: Optional[dict] = None) -> str:
-    """The Q4 spoken line, composed from the same copy the widget renders, so
-    the two can never disagree about which mailbox the customer has."""
+    """The draft question onboarding step 5 asks (cr1#1163 part 2b; it was the
+    widget's Q4), named after the seat's own mailbox from `mail_copy`, so no
+    provider is ever typed by hand."""
     copy = mail_copy(workspace_root, entities)
     return ("How should I handle email drafts? When you ask me to write an "
             f"email, I can show you the draft first and only touch {copy['label']} "
-            f"when you click — or drop every draft straight into {copy['drafts']}. "
+            "when you click Send or Draft, or show the same draft with Draft as the "
+            f"main button, so one tap puts it in {copy['drafts']}. "
             "You can change this anytime by saying 'tune email-writer.'")
 
 
@@ -897,10 +902,14 @@ def draft_posture_line(workspace_root=None, entities: Optional[dict] = None) -> 
 # already imports to compose that card (`setup_widget_html`), and SKILL.md
 # relays it. One function turns the sentence into the SAME tuples the widget's
 # wire carries, and the skill dispatches those through its existing Items.
-SETUP_QUESTION_LABELS = {1: "Your role", 2: "Timezone", 3: "AI name",
-                         4: "Email drafts"}
+SETUP_QUESTION_LABELS = {1: "Your role", 2: "Timezone", 3: "AI name"}
 
-# Q4's auto-queue chip is named after the seat's own mailbox ("Auto-queue to
+# cr1#1163 part 2b: the draft question moved to onboarding step 5. A sentence
+# pasted from an older four-question card still carries it, so it is read when
+# present and never required.
+SETUP_LEGACY_LABELS = {4: "Email drafts"}
+
+# The older card's Q4 auto-queue chip is named after the seat's own mailbox ("Auto-queue to
 # my drafts", "Auto-queue to Stone Mail Drafts" — `mail_copy`), so it is the
 # one answer matched on a prefix rather than a fixed string.
 SETUP_QUEUE_CHIP_PREFIX = "Auto-queue"
@@ -949,10 +958,16 @@ SETUP_SUB_CHIP_LABELS: Dict[str, Dict[str, str]] = {
 SETUP_SUB_ARROW = "→"   # the card's own ` → ` between chip and sub-chip
 SETUP_FREETEXT_DASH = "—"  # the card's own ` — ` before typed detail
 
+_SETUP_ALL_LABELS = {**SETUP_QUESTION_LABELS, **SETUP_LEGACY_LABELS}
 _SETUP_QUESTION_BY_LABEL = {v: k for k, v in SETUP_QUESTION_LABELS.items()}
 _SETUP_SPLIT = re.compile(
     "(" + "|".join(re.escape(v) for v in SETUP_QUESTION_LABELS.values())
     + r")\s*:\s*")
+# The older card's draft answer is read only as the LAST answer of the line,
+# so the same words inside a typed refinement stay the customer's own, and an
+# empty one is dropped rather than blocking a current sentence.
+_SETUP_LEGACY_TAIL = re.compile(
+    r";\s*" + re.escape(SETUP_LEGACY_LABELS[4]) + r"\s*:\s*([^;]*?)\s*;?\s*$")
 
 
 def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
@@ -960,11 +975,11 @@ def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
 
     In: the line the Finish click hands over when no stage takes it —
     `Your role: Run a company → Single operating company; Timezone: Pacific;
-    AI name: Keep Penelope; Email drafts: Show me first`.
+    AI name: Keep Penelope`.
 
     Out: `[{"n": 1, "action": "run-company", "sub": "single-op-co"},
-           {"n": 2, "action": "pacific"}, {"n": 3, "action": "default"},
-           {"n": 4, "action": "show_first"}]` — the SAME four tuples
+           {"n": 2, "action": "pacific"}, {"n": 3, "action": "default"}]`
+    — the SAME three tuples
     `apply choices:` would have delivered, in the same shape, so the skill's
     Items 1-5 dispatch them without knowing which door they came through.
 
@@ -989,15 +1004,20 @@ def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
     """
     if not isinstance(text, str) or not text.strip():
         raise ValueError("no setup sentence to read")
+    legacy = _SETUP_LEGACY_TAIL.search(text)
+    if legacy:
+        text = text[:legacy.start()]
     parts = _SETUP_SPLIT.split(text)
     answers: Dict[int, str] = {}
     for i in range(1, len(parts) - 1, 2):
         n = _SETUP_QUESTION_BY_LABEL[parts[i]]
         if n in answers:
             raise ValueError(
-                f"the setup sentence names {SETUP_QUESTION_LABELS[n]!r} twice; "
+                f"the setup sentence names {_SETUP_ALL_LABELS[n]!r} twice; "
                 "nothing was applied — ask which answer is the current one")
         answers[n] = parts[i + 1].strip().rstrip(";").strip()
+    if legacy and legacy.group(1).strip():
+        answers[4] = legacy.group(1).strip()
     missing = [SETUP_QUESTION_LABELS[n] for n in sorted(SETUP_QUESTION_LABELS)
                if n not in answers or not answers[n]]
     if missing:
@@ -1008,7 +1028,8 @@ def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
               "than assuming a default")
 
     tuples: List[Dict[str, Any]] = []
-    for n in sorted(SETUP_QUESTION_LABELS):
+    for n in sorted(n for n in _SETUP_ALL_LABELS
+                    if n in SETUP_QUESTION_LABELS or n in answers):
         chips, _, free = answers[n].partition(" " + SETUP_FREETEXT_DASH + " ")
         top_label, _, sub_label = chips.strip().partition(
             " " + SETUP_SUB_ARROW + " ")
@@ -1019,7 +1040,7 @@ def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
             action = "auto_queue"
         if action is None:
             raise ValueError(
-                f"the setup sentence's {SETUP_QUESTION_LABELS[n]!r} answer "
+                f"the setup sentence's {_SETUP_ALL_LABELS[n]!r} answer "
                 f"reads {top_label!r}, which is not a chip this card prints; "
                 "nothing was applied — ask the question again rather than "
                 "guessing which answer was meant")
@@ -1028,7 +1049,7 @@ def parse_setup_sentence(text: str) -> List[Dict[str, Any]]:
             sub = SETUP_SUB_CHIP_LABELS.get(action, {}).get(sub_label)
             if sub is None:
                 raise ValueError(
-                    f"the setup sentence refines {SETUP_QUESTION_LABELS[n]!r} "
+                    f"the setup sentence refines {_SETUP_ALL_LABELS[n]!r} "
                     f"with {sub_label!r}, which is not a sub-chip this card "
                     f"prints under {top_label!r}; nothing was applied")
             row["sub"] = sub
@@ -1051,6 +1072,6 @@ __all__ = [
     "scope_hygiene_line",
     "MAIL_LABEL_FALLBACK", "MAIL_TOKENS", "SETUP_WIDGET_REL", "mail_copy",
     "setup_widget_html", "draft_posture_line",
-    "SETUP_QUESTION_LABELS", "SETUP_CHIP_LABELS", "SETUP_SUB_CHIP_LABELS",
+    "SETUP_QUESTION_LABELS", "SETUP_LEGACY_LABELS", "SETUP_CHIP_LABELS", "SETUP_SUB_CHIP_LABELS",
     "SETUP_QUEUE_CHIP_PREFIX", "parse_setup_sentence",
 ]

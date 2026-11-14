@@ -526,14 +526,18 @@ def scrub_exemplar_text(
     org_names: Set[str] = set()
     person_names: Set[str] = set()
     if ents:
-        inner = ents.get("entities") if isinstance(ents.get("entities"), dict) else {}
+        # The nested shape keeps the collections under `entities`; the flat
+        # shape keeps them at the top level (entities_io.unwrap_entities).
+        inner = ents.get("entities") if isinstance(ents.get("entities"), dict) else ents
         for org in inner.get("orgs") or []:
             if isinstance(org, dict):
                 for field in ("canonical_name", "legal_name"):
                     if isinstance(org.get(field), str):
                         org_names.add(org[field])
                 org_names.update(_str_list(org.get("aliases")))
-        for person in inner.get("persons") or []:
+        # `people` is the canonical key (cr1#1056); `persons` is read for any
+        # older shape.
+        for person in [*(inner.get("people") or []), *(inner.get("persons") or [])]:
             if isinstance(person, dict):
                 if isinstance(person.get("canonical_name"), str):
                     person_names.add(person["canonical_name"])
@@ -564,9 +568,14 @@ def scrub_exemplar_text(
     for name, placeholder in sorted(assigned, key=lambda p: -len(p[0])):
         if len(name.strip()) < 3:
             continue  # a 1-2 char alias would shred unrelated words
+        # An apostrophe is part of a word, so "don't" never matches "Don".
+        # A one-word name matches case-sensitively: an alias such as "Will"
+        # must not replace the word "will" (cr1#1056 review). A name of two
+        # or more words still matches in any case.
+        one_word = len(name.split()) == 1
         pattern = re.compile(
-            r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])",
-            re.IGNORECASE,
+            r"(?<![A-Za-z0-9'’])" + re.escape(name) + r"(?![A-Za-z0-9'’])",
+            0 if one_word else re.IGNORECASE,
         )
         if pattern.search(scrubbed):
             scrubbed = pattern.sub(placeholder, scrubbed)

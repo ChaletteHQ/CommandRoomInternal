@@ -27,8 +27,10 @@ THE RULES, both pure:
   * `meeting_grade(row, meeting, names)`: how sure the meeting is about the
     item (a word and its plural are one word). `SURE`: no subject, the
     meeting's title names the subject, or a note is very explicit about the
-    item (`note_is_explicit`). `UNSURE`: one telling word of several in the
-    title, or two subject words in the notes. `NOT_ABOUT` otherwise.
+    item (`note_grade`: the whole phrase, and enough subject words). `UNSURE`:
+    one telling word of several in the title, an explicit note that names too
+    few subject words or goes on past a comma, or two subject words in the
+    notes. `NOT_ABOUT` otherwise.
     `meeting_is_about` is either of the first two. The meeting's own
     attendees are names too: "a call with Alex and Priya" has no subject at
     a meeting Priya attends.
@@ -236,6 +238,42 @@ def _title_of(meeting: dict) -> str:
                     if isinstance(scope, dict) for k in ("title", "subject", "name"))
 
 
+#: A meeting whose title says it did not happen as the item's meeting: it
+#: was cancelled, the owner declined it, or it was a prep for the real one
+#: (cr1#1121, #903 case 10). Such a meeting is never sure; it proposes.
+#: Only the shapes calendars and people use, so a topic or a company name
+#: that happens to hold the word ("Meal Prep Co quarterly", "Declined-payments
+#: review", "Cancelled orders follow-up") is not read as one (cr1#1121
+#: review): a leading "Cancelled:", "Canceled -", "Canceled event:",
+#: "[Declined]", "Prep:" or "Prep for"; a trailing "(cancelled)" or "... prep";
+#: "pre-read", "pre-meeting" or "pre-call" anywhere.
+_TENTATIVE_TITLE_RE = re.compile(
+    r"^\s*[\[(]?\s*(?:cancell?ed(?:\s+event)?|declined)\s*(?:[\])]|:|\s[-–—])"
+    r"|[\[(]\s*(?:cancell?ed|declined)\s*[\])]\s*$"
+    r"|^\s*prep(?:aration)?\s*(?::|\s[-–—]|\s+for\b)"
+    r"|(?<![A-Za-z])prep(?:aration)?\s*$"
+    r"|(?<![A-Za-z])pre[- ]?(?:read|meeting|meet|call)(?![A-Za-z])", re.IGNORECASE)
+#: The same, said by the calendar record itself rather than the title.
+_TENTATIVE_STATES = frozenset({"cancelled", "canceled", "declined"})
+
+
+def meeting_is_tentative(meeting: dict) -> bool:
+    """True when the meeting record says it was cancelled, declined or a prep
+    meeting: in its title, subject or name, or in its own status or the
+    owner's response (cr1#1121, #903 case 10)."""
+    for scope in ((meeting or {}), (meeting or {}).get("data") or {}):
+        if not isinstance(scope, dict):
+            continue
+        # Each title field on its own: the shapes are anchored to its ends.
+        for k in ("title", "subject", "name"):
+            if isinstance(scope.get(k), str) and _TENTATIVE_TITLE_RE.search(scope[k]):
+                return True
+        for k in ("status", "response_status", "self_response", "my_response"):
+            if str(scope.get(k) or "").strip().lower() in _TENTATIVE_STATES:
+                return True
+    return False
+
+
 def meeting_names(meeting: dict, people_names: Optional[dict] = None) -> list:
     """The names of the meeting's attendees: those it carries itself and,
     through `people_names`, those on file for its bound people."""
@@ -256,19 +294,89 @@ def _note_text(meeting: dict) -> str:
                      if isinstance(scope.get(k), str))
 
 
-def note_is_explicit(meeting: dict, pool: set, wanted: set) -> bool:
-    """Does a note say outright that the meeting was about the item? A
-    sentence that opens by saying what the meeting was about, and goes on to
-    name the subject and nothing else: "Topic: lease". Anything less keeps
-    the two-word rule."""
+#: Words that turn a note's "Topic: ..." against the item. They are dropped
+#: as stopwords by the content-word read, so they are looked for in the raw
+#: words (cr1#1120 review: "Topic: lease, but not the renewal").
+_NOTE_NEGATIONS = frozenset({"not", "no", "never", "nor", "without", "isn't",
+                             "wasn't", "won't", "didn't", "don't", "doesn't",
+                             "hasn't", "haven't", "cancelled", "canceled",
+                             "postponed", "skipped"})
+
+
+def _explicit_hits(meeting: dict):
+    """Each sentence that opens by saying what the meeting was about, as
+    (sentence, the phrase after the opening)."""
     for sentence in _NOTE_SPLIT_RE.split(_note_text(meeting)):
         hit = _EXPLICIT_NOTE_RE.match(sentence)
-        if not hit:
+        if hit:
+            yield sentence, hit.group(1)
+
+
+def note_grade(meeting: dict, pool: set, wanted: set) -> int:
+    """How sure a note is that the meeting was about the item. A sentence
+    that opens by saying what the meeting was about ("Topic: ...") is read
+    WHOLE, past any comma.
+
+    `SURE` (closes) only when the phrase stops where it should: nothing after
+    a comma or a semicolon, no negating word ("not", "no", "cancelled"), only
+    subject and scheduling words, and as many subject words as the notes
+    rule asks (two, or the only one): "Agenda: lease renewal".
+
+    `UNSURE` (a proposal, never a close) when its opening names a subject
+    word and holds nothing but subject and scheduling words, yet it names too
+    few of them ("Topic: lease" on a lease renewal), runs on past a comma or
+    a semicolon ("Topic: lease, but not the renewal"), or negates: cr1#1120,
+    #903 case 9, owner ruling 2026-11-12 that such a case proposes and never
+    closes.
+
+    `NOT_ABOUT` otherwise, which keeps the two-word notes rule exactly as
+    before."""
+    allowed = wanted | _fold(SCHEDULING_WORDS)
+    best = NOT_ABOUT
+    for _sentence, phrase in _explicit_hits(meeting):
+        parts = re.split(r"[,;]", phrase, maxsplit=1)
+        opening_text, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+        opening = _fold(_tokens(opening_text))
+        runs_on = bool(re.search(r"[A-Za-z0-9]", rest))
+        raw = {w.strip(".,;:!?\"'()").lower() for w in phrase.split()}
+        negated = bool(raw & _NOTE_NEGATIONS)
+        if not (opening & pool and opening <= allowed):
             continue
-        said = _fold(_tokens(re.split(r"[,;]", hit.group(1))[0]))
-        if said & pool and said <= wanted | _fold(SCHEDULING_WORDS):
-            return True
-    return False
+        if not runs_on and not negated and len(opening & pool) >= min(2, len(pool)):
+            return SURE
+        best = UNSURE
+    return best
+
+
+def _words_outside_unsure_notes(meeting: dict, pool: set, wanted: set) -> set:
+    """The meeting's content words without the explicit-note sentences that
+    only propose, so a two-word match that stands without them is still the
+    #765 notes match (cr1#1120 review)."""
+    allowed = wanted | _fold(SCHEDULING_WORDS)
+    skip = []
+    for sentence, phrase in _explicit_hits(meeting):
+        opening = _fold(_tokens(re.split(r"[,;]", phrase)[0]))
+        if opening & pool and opening <= allowed:
+            skip.append(sentence)
+    if not skip:
+        return _fold(meeting_words(meeting))
+    stripped = dict(meeting or {})
+    data = dict((meeting or {}).get("data") or {})
+    for scope in (stripped, data):
+        for k in ("summary", "notes", "description", "agenda"):
+            if isinstance(scope.get(k), str):
+                text = scope[k]
+                for sentence in skip:
+                    text = text.replace(sentence, " ")
+                scope[k] = text
+    stripped["data"] = data
+    return _fold(meeting_words(stripped))
+
+
+def note_is_explicit(meeting: dict, pool: set, wanted: set) -> bool:
+    """Does a note say outright, and fully, that the meeting was about the
+    item (`note_grade` is `SURE`)?"""
+    return note_grade(meeting, pool, wanted) == SURE
 
 
 def _row_subject(row: dict, meeting: dict, people_names, names) -> set:
@@ -279,6 +387,11 @@ def _row_subject(row: dict, meeting: dict, people_names, names) -> set:
 
 
 def _subject_grade(subject: set, meeting: dict) -> int:
+    return _subject_grade_source(subject, meeting)[0]
+
+
+def _subject_grade_source(subject: set, meeting: dict) -> tuple:
+    """(grade, where it came from: "title", "note" or "notes")."""
     wanted = _fold(subject)
     telling = wanted - _fold(GENERIC_TOPIC_WORDS)
     pool = telling or wanted
@@ -286,22 +399,58 @@ def _subject_grade(subject: set, meeting: dict) -> int:
     # there, and two (or the only one) are sure.
     in_title = telling & _fold(_tokens(_title_of(meeting)))
     if in_title and len(in_title) >= min(2, len(telling)):
-        return SURE
-    if note_is_explicit(meeting, pool, wanted):
-        return SURE
+        return SURE, "title"
+    note = note_grade(meeting, pool, wanted)
+    if note == SURE:
+        return SURE, "note"
     if in_title:
-        return UNSURE
+        return UNSURE, "title"
     # Notes wander: they take two ("gym membership renewal" is not the lease).
+    # A two-word match that stands without the proposing note sentences is
+    # the #765 notes match, whatever those sentences say.
+    if note == UNSURE:
+        rest = _words_outside_unsure_notes(meeting, pool, wanted)
+        if len(pool & rest) >= min(2, len(pool)):
+            return UNSURE, "notes"
+        return UNSURE, "note"
     if len(pool & _fold(meeting_words(meeting))) >= min(2, len(pool)):
-        return UNSURE
-    return NOT_ABOUT
+        return UNSURE, "notes"
+    return NOT_ABOUT, ""
 
 
 def meeting_grade(row: dict, meeting: dict, *, people_names: Optional[dict] = None,
                   names: Iterable = ()) -> int:
     """How sure the meeting is about the item (the module docstring)."""
     subject = _row_subject(row, meeting, people_names, names)
-    return _subject_grade(subject, meeting) if subject else SURE
+    grade = _subject_grade(subject, meeting) if subject else SURE
+    # cr1#1121: a cancelled, declined or prep meeting is never sure.
+    return UNSURE if grade == SURE and meeting_is_tentative(meeting) else grade
+
+
+def note_only_unsure(row: dict, meeting: dict, *, people_names: Optional[dict] = None,
+                     names: Iterable = ()) -> bool:
+    """True when the meeting reads as about the item ONLY through an explicit
+    note that names too few subject words or goes on past a comma
+    (`note_grade` UNSURE). Such a match proposes on every path, a mail item's
+    included, and never closes (cr1#1120, #903 case 9)."""
+    subject = _row_subject(row, meeting, people_names, names)
+    if not subject:
+        return False
+    grade, source = _subject_grade_source(subject, meeting)
+    return grade == UNSURE and source == "note"
+
+
+def proposes_only(row: dict, meeting: dict, *, people_names: Optional[dict] = None,
+                  names: Iterable = ()) -> bool:
+    """True when a match on a mail item must propose, never close: it rests
+    only on a note that proposes (`note_only_unsure`, cr1#1120), or the
+    meeting is cancelled, declined or a prep meeting and is about the item at
+    all (cr1#1121). Every other mail-path match keeps closing as #765 built
+    it."""
+    if note_only_unsure(row, meeting, people_names=people_names, names=names):
+        return True
+    return meeting_is_tentative(meeting) and meeting_grade(
+        row, meeting, people_names=people_names, names=names) != NOT_ABOUT
 
 
 def meeting_is_about(row: dict, meeting: dict, *, people_names: Optional[dict] = None,
@@ -319,11 +468,14 @@ def owed_task_grade(row: dict, meeting: dict, *, people_names: Optional[dict] = 
     its title names attended, and `NOT_ABOUT` otherwise."""
     subject = _row_subject(row, meeting, people_names, names)
     if subject:
-        return _subject_grade(subject, meeting)
-    d = (row or {}).get("data") if isinstance((row or {}).get("data"), dict) else {}
-    named = _fold(_name_tokens(_with_span_names(d.get("title") or (row or {}).get("title"))))
-    present = _fold(_name_tokens(meeting_names(meeting, people_names)))
-    return SURE if named and named <= present else NOT_ABOUT
+        grade = _subject_grade(subject, meeting)
+    else:
+        d = (row or {}).get("data") if isinstance((row or {}).get("data"), dict) else {}
+        named = _fold(_name_tokens(_with_span_names(d.get("title") or (row or {}).get("title"))))
+        present = _fold(_name_tokens(meeting_names(meeting, people_names)))
+        grade = SURE if named and named <= present else NOT_ABOUT
+    # cr1#1121: a cancelled, declined or prep meeting is never sure.
+    return UNSURE if grade == SURE and meeting_is_tentative(meeting) else grade
 
 
 def is_task_capture(row: dict) -> bool:
@@ -361,6 +513,6 @@ def people_names(workspace_root) -> dict:
 
 __all__ = ["NOT_ABOUT", "UNSURE", "SURE", "SCHEDULING_WORDS", "ROLE_WORDS",
            "MEETING_TEXT_FIELDS", "subject_words", "meeting_words", "meeting_names",
-           "note_is_explicit", "meeting_grade", "meeting_is_about", "owed_task_grade",
+           "note_is_explicit", "note_grade", "note_only_unsure", "proposes_only", "meeting_is_tentative", "meeting_grade", "meeting_is_about", "owed_task_grade",
            "is_task_capture", "is_owed_task", "calendar_parties", "row_names",
            "people_names"]

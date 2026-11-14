@@ -2,6 +2,17 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.0.0 (2026-11-14)
+
+Your Hub now holds your whole week: your people, priorities and work in one place, what was done for you, and a short email each morning.
+
+- Your Hub has new tabs: Week, Priorities, Work streams and People. Week shows the next seven days as a board, and More on a card moves it to another day or marks it done. Work streams groups your work, and a click opens where each one stands. People shows what each person owes you and what you owe them, and Send them their list puts a draft in your mail for you to review. The Hub uses your own words for your work.
+- Today now opens with your day in one sentence. The number of things that need you is set when you open it and only goes down as you act; anything new waits in a quiet line. A second look shows only what changed. Done for you counts what was handled for you, and Missed something lets you say what the Hub did not show you.
+- Each morning you can get one short email at your own business address: what the day is about, how many things need you, and a link to your Hub. It goes only to you, once a day. Everything else still waits for your click.
+- Any account or source you mark personal is never read, and people you mark off-limits stay out of your records. Say 'set up what's new' to mark your accounts and confirm your settings in a few minutes.
+- Your folder can now be used from two computers, and by a second account you name as acting for you. Your schedules stay with one computer and account, and you can hand them over.
+- One step to finish this update: open a new chat and type 'set up command room schedules'. It refreshes your morning brief so the morning email can go out.
+
 ## v5.39.0 (2026-11-10)
 
 Your scheduled chats stay the way you set them, and Maintenance, Run Now and meeting capture are more dependable.

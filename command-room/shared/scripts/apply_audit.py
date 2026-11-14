@@ -141,6 +141,18 @@ _OK_STATUSES = frozenset({
     # cr1#195: `people_writer.confirm_person_rename` passes through
     # `people_writer.rename_person`'s receipt, one person_renamed row landed.
     "renamed",
+    # cr1#1171: the Hub's own landed words, which fell through to "error"
+    # (follow-up to cr1#1161). Each is a write that happened:
+    #   edited        cockpit_helpers, a Settings rule saved in the owner's words
+    #   deleted       cockpit_helpers, a Settings rule deleted (its rows written)
+    #   saved         cockpit_helpers, a Review fact saved to the company
+    #   linked        cockpit_helpers, a Review person / thread link written
+    #   not_relevant  cockpit_helpers, a legacy Review row let go (its
+    #                 tombstone written)
+    #   kept          craft_adjust.answer_amend(accept=False), the Review
+    #                 tab's No on a craft rule: the file rewritten and the
+    #                 proposal resolved (review of cr1#1171)
+    "edited", "deleted", "saved", "linked", "not_relevant", "kept",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -295,6 +307,10 @@ _REFUSED_STATUSES = frozenset({
     #     which is `reassign to [name]`'s contract and not this verb's, so
     #     the pick refuses and says which verb to use.
     "malformed", "no_question", "not_an_option",
+    # cr1#1171 review: the Hub's press that needs typed text and arrived with
+    # none (an empty context note, a rule edit with no words). Nothing
+    # written; the owner still owes the text, so the row is still owed.
+    "needs_input",
     # FOLD1A fix round 2 (`eod_question_budget.apply_eod_answers`): the
     # evening's <= 2 pre-picked confirms take exactly `yes` / `no` / `skip`.
     #   unknown_answer — a row arrived carrying something else. NOTHING is

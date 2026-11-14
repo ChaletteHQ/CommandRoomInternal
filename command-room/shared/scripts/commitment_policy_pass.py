@@ -484,6 +484,28 @@ def apply_transcript_results(
             transcript_text=transcript_text or "",
             attendee_records=attendee_records, user_names=gate_names)
 
+    # cr1#910 (owner ruling of 2026-11-11): one tight sentence closes at
+    # most one row. The rows it is judged against, read once.
+    from exit_doors import (SHARED_SENTENCE_REASON, sentence_candidates,
+                            transcript_shared_sentence)
+    gate_pool = None
+    shared_decs: list = []    # every shared-sentence answer read in this pass
+    closed_now: set = set()   # rows this pass closed
+
+    def _shares(cid, quote) -> dict:
+        nonlocal gate_pool, gate_names
+        if gate_names is None:
+            gate_names = _owner_names(workspace_root, user_names)
+        if gate_pool is None:
+            gate_pool = sentence_candidates(
+                workspace_root, source_ref=meeting_ref,
+                open_rows=list(open_rows_by_id.values()), events=events)
+        return transcript_shared_sentence(
+            workspace_root, open_rows_by_id.get(cid) or {}, quote=quote,
+            transcript_text=transcript_text or "", pool=gate_pool,
+            attendee_records=attendee_records, user_names=gate_names,
+            evidence_at=evidence_at, tz=tz)
+
     def _refuse(name):
         counts["n_close_refused"] += 1
         counts["close_refusals"][name] = counts["close_refusals"].get(name, 0) + 1
@@ -545,6 +567,16 @@ def apply_transcript_results(
         tight = ""
         if closing and closes_on and not r.get("parent_blocks"):
             tight = _tight(cid, quote)
+            if tight and evidence_at is not None:
+                # cr1#910: a tight sentence that fits more than one row
+                # closes only the better one; this row, if it is not that
+                # one, is proposed after the loop with the others. Without
+                # the meeting's time fence 1 below refuses, as before.
+                shares = _shares(cid, quote)
+                shared_decs.extend(shares["shared"])
+                if shares["shared"] and not shares["closes"]:
+                    counts["n_close_shared"] = counts.get("n_close_shared", 0) + 1
+                    continue
         not_tight = closing and closes_on and not r.get("parent_blocks") and not tight
         if not_tight or closing \
                 and not closes_on:  # CUT-A switch: closing on evidence is OFF
@@ -693,6 +725,7 @@ def apply_transcript_results(
                 )
                 if res.get("status") == "closed":
                     counts["n_confirm_closed" if machine_confirm else "n_closed"] += 1
+                    closed_now.add(str(cid))
             except (CommitmentIdError, PendingReviewError, OpenSubitemsError,
                     AmbiguousTargetError, ValueError) as exc:
                 # NAME THE REFUSAL (the reconcile-sent pattern): every one of
@@ -767,9 +800,88 @@ def apply_transcript_results(
             already_proposed.add(cid)
     if to_append:
         append_event(events_path, to_append, holder=source_skill)
+    if shared_decs:
+        n = _propose_shared(workspace_root, shared_decs, results=results,
+                            open_rows_by_id=open_rows_by_id, open_ids=open_ids,
+                            closed_now=closed_now, asked=_asked,
+                            chipped={(e.get("data") or {}).get("commitment_id")
+                                     for e in to_append
+                                     if e.get("type") == "commitment_review_proposed"},
+                            already_proposed=already_proposed, meeting_ref=meeting_ref,
+                            transcript_ts=transcript_ts, source_skill=source_skill,
+                            reason=SHARED_SENTENCE_REASON, review_budget=review_budget,
+                            counts=counts)
+        if n:
+            counts["n_proposed_shared"] = n
     counts["batch_id"] = batch_id
     counts["preset"] = preset
     return counts
+
+
+def _propose_shared(workspace_root, decisions, *, results, open_rows_by_id, open_ids,
+                    closed_now, asked, chipped, already_proposed, meeting_ref,
+                    transcript_ts, source_skill, reason, review_budget=None,
+                    counts=None) -> int:
+    """cr1#910: after the pass, the rows a shared sentence fits that did not
+    close are proposed, whatever their score: each other row, and the better
+    row too when it did not close here (nothing then closes, both are
+    asked). Only open rows this meeting could have closed reach here
+    (`exit_doors.shared_sentence`); a row closed in this pass, already
+    carrying a chip from it or already asked (ruling 6) is left alone, and
+    `close_mode_dial.propose_closes` skips one asked before for this meeting.
+    A parent with open sub-items is never asked here (SUB1 D3: the band
+    alone decides it). The fire's one proposal budget (TITLEMINT1) bounds
+    them as it bounds the chips: what does not fit is counted in
+    `n_suppressed` and the budget's `proposals_suppressed`, never silent.
+    Returns how many were written."""
+    from close_mode_dial import asked_evidence, propose_closes
+    from cru_match import _commitment_field, cap_review_proposals, score_match
+    from exit_doors import row_already_asked
+    scores = {r.get("commitment_id"): r.get("score") for r in results or []
+              if isinstance(r, dict)}
+    parents = {r.get("commitment_id") for r in results or []
+               if isinstance(r, dict) and r.get("parent_blocks")}
+    asked_pairs = asked_evidence(workspace_root)
+    rows, seen = [], set()
+    for dec in decisions:
+        ask = list(dec.get("propose") or [])
+        if dec.get("close") and dec["close"] not in closed_now:
+            ask.append(dec["close"])
+        for cid in ask:
+            if (cid in seen or cid not in open_ids or cid in closed_now or cid in chipped
+                    or cid in parents or cid in already_proposed
+                    or (cid, str(meeting_ref or "")) in asked_pairs
+                    or row_already_asked(workspace_root, cid, marks=asked)):
+                continue
+            seen.add(cid)
+            ev = open_rows_by_id.get(cid) or {}
+            title = str(_commitment_field(ev, "title") or "")
+            try:
+                score = float(scores.get(cid) if scores.get(cid) is not None
+                              else score_match(dec.get("sentence"), title))
+            except (TypeError, ValueError):
+                score = 0.0
+            rows.append({"commitment_id": cid, "title": title,
+                         "primary_thread_id": str(ev.get("primary_thread_id") or ""),
+                         "score": round(score, 3),
+                         "evidence": str(dec.get("sentence") or "")[:200],
+                         "evidence_ts": str(transcript_ts) if transcript_ts else None,
+                         "source_ref": meeting_ref or None,
+                         "has_completion_signal": True})
+    if not rows:
+        return 0
+    if review_budget is not None:
+        kept = cap_review_proposals(rows, budget=review_budget)
+        if counts is not None:
+            counts["n_suppressed"] = int(counts.get("n_suppressed") or 0) + len(rows) - len(kept)
+        rows = kept
+        if not rows:
+            return 0
+    res = propose_closes(workspace_root, rows, source_skill=source_skill, reason=reason,
+                         extra={"signal": "completion"})
+    for p in res.get("proposed") or []:
+        already_proposed.add(p.get("commitment_id"))
+    return int(res.get("n_proposed") or 0)
 
 
 def _meeting_closes_held(workspace_root) -> tuple:

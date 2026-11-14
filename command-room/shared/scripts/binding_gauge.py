@@ -437,26 +437,13 @@ def generic_terms_for(entities: dict | None) -> frozenset[str]:
 def _alias_raws_by_thread(aliases_doc: dict | None) -> dict[str, list[str]]:
     """{thread_id: [raw alias phrase, ...]} from an aliases.json document.
 
-    Tolerates both observed mapping shapes: the live flat list
-    (`mappings: [{raw, canonical_id, ...}, ...]`) and the sectioned dict
-    (`mappings: {people: [...], orgs: [...], threads: [...]}`)."""
-    out: dict[str, list[str]] = {}
-    if not isinstance(aliases_doc, dict):
-        return out
-    m = aliases_doc.get("mappings")
-    if isinstance(m, dict):
-        rows = [x for v in m.values() if isinstance(v, list)
-                for x in v if isinstance(x, dict)]
-    elif isinstance(m, list):
-        rows = [x for x in m if isinstance(x, dict)]
-    else:
-        rows = []
-    for row in rows:
-        cid = row.get("canonical_id")
-        raw = row.get("raw")
-        if isinstance(cid, str) and isinstance(raw, str) and raw.strip():
-            out.setdefault(cid, []).append(raw.strip())
-    return out
+    Every shape the product has written (the flat list, the sectioned dict,
+    and the plain or list-valued `{alias: id}` dict) is read by
+    `alias_index`, the one reader every alias reader shares (cr1#954,
+    cr1#1011)."""
+    from alias_index import aliases_by_entity
+
+    return aliases_by_entity(aliases_doc)
 
 
 def _candidate_phrases(thread: dict, alias_raws: dict[str, list[str]]) -> set[str]:

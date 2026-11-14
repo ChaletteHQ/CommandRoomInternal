@@ -230,6 +230,10 @@ def _write_events(events_path: Path, events: list[dict]) -> None:
 
 def _workspace_root(events_path: Path) -> Path:
     # <root>/_hq/data/events.jsonl → root is 3 up.
+    # cr1#1061: a computer's own log, <root>/_hq/data/computers/<mark>/
+    # events.jsonl, is 5 up.
+    if events_path.parent.parent.name == "computers":
+        return events_path.parents[4]
     return events_path.parent.parent.parent
 
 

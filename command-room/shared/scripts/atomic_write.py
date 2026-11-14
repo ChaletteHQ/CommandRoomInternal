@@ -762,6 +762,14 @@ def _note_capture_once(holder: str, split: dict) -> None:
     })
 
 
+def reset_capture_once() -> None:
+    """Clear the last append's refusal record (cr1#1005). The append door
+    calls it before an append, so the record it then reads back is that
+    append's own and never an earlier one's in the same process."""
+    _LAST_CAPTURE_ONCE.update({"holder": "", "n_rerun": 0,
+                               "n_deduped_on_disk": 0, "by_source_ref": {}})
+
+
 def last_capture_once_refusal(source_ref=None) -> dict[str, Any]:
     """What the capture-once filter refused on the last append.
 
@@ -801,6 +809,47 @@ def _receipts_module():
             return None
     except Exception:  # noqa: BLE001
         return None
+
+
+#: cr1#1139 (ruling A5): the top-level field naming the account that wrote a
+#: row, as its org-free account mark (`schedule_holder.account_mark`).
+ACCOUNT_FIELD = "account"
+
+
+def stamp_account(events: list, env=None) -> list:
+    """cr1#1139: every row a seat writes carries that seat's account mark.
+
+    Two accounts may use one folder (ruling A5: one owner, the second acts for
+    the owner). Every row lands in the owner's book, so the book alone cannot
+    say which account wrote it. This is the one place every row passes, so
+    the mark is stamped here, beside `seq` and `ts`: the top-level `account`
+    field, the `ac-` mark that names neither the folder nor the organisation
+    (the account uuid itself never lands).
+
+    A row that already carries a well-formed `account` keeps it (the caller's
+    value wins, as an explicit `seq` does). A seat with no account mark stamps
+    nothing. Rows are new dicts; a caller's own are never mutated. It never
+    raises: identity never blocks a write."""
+    try:
+        try:
+            import schedule_holder as _sh
+        except ImportError:
+            import sys as _sys
+            _here = str(Path(__file__).resolve().parent)
+            if _here not in _sys.path:
+                _sys.path.insert(0, _here)
+            import schedule_holder as _sh
+        mark = _sh.account_mark(env)
+        if not mark:
+            return events
+        out = []
+        for ev in events:
+            if isinstance(ev, dict) and not _sh.is_account_mark(ev.get(ACCOUNT_FIELD)):
+                ev = {**ev, ACCOUNT_FIELD: mark}
+            out.append(ev)
+        return out
+    except Exception:  # noqa: BLE001 - identity never blocks a write
+        return events
 
 
 def stamp_receipt_machine(events: list, env=None) -> list:
@@ -1143,6 +1192,43 @@ def atomic_append_jsonl(
                 except Exception:
                     pass
 
+    # ONE LOG PER COMPUTER (cr1#1061 slice 2). Everything above -- the gate,
+    # the account wall, the dedup flag and the capture-once refusal -- ran
+    # against the live log, as before. Here the append is pointed at THIS
+    # computer's own file when, and only when, it knows of another computer
+    # and does not own the live file (`computer_logs.route`). A computer that
+    # knows of no other gets None and the rest of this function is today's.
+    own_route = None
+    own_floor = 0
+    # The live log, kept by name: the writer lock, the lease and the
+    # capture-once index stay the LIVE log's (and the workspace's) even when
+    # the rows go to this computer's own file, so every process on this
+    # computer still excludes every other one (review round, cr1#1061).
+    live_path = path
+    if is_events:
+        try:
+            import computer_logs as _cl
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            try:
+                import computer_logs as _cl
+            except Exception:
+                _cl = None
+        except Exception:
+            _cl = None
+        if _cl is not None:
+            own_route = _cl.route(path)
+            if own_route is not None:
+                path = Path(own_route["target"])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                own_floor = _cl.merged_seq_floor(Path(own_route["live"]), path)
+            else:
+                # The live file's writer numbers from the merged view too
+                # (ruling 2a): above every computer's own file. 0 when there
+                # is none, so a one-computer seat allocates exactly as today.
+                own_floor = _cl.computer_files_floor(path)
+
     # BUG-8330 item 7 — the stamped copies (assigned seq/ts) are RETURNED so
     # callers that need the allocated seq read it from the return value.
     # Pre-computing via next_seq() then stamping "seq" by hand is the racy
@@ -1218,12 +1304,20 @@ def atomic_append_jsonl(
             # writer gains `receipts.machine_fields()`'s answer in `data`;
             # every other row is the object it was (`stamp_receipt_machine`).
             evs = stamp_receipt_machine(evs)
+            # cr1#1139: and every row names the account that wrote it.
+            evs = stamp_account(evs)
             # R1 — the allocation base is max(file max, .seqhw), NEVER the
             # sidecar alone: a sidecar that fell behind the file (a failed
             # advance, a repair that moved the file without it) must not hand
             # out a seq the ledger already holds. With the guard on and no
             # regression, the two agree and this is the file max.
             next_seq_val = max(existing_max_seq, hw if hw is not None else 0) + 1
+            # cr1#1061 (owner ruling 2a): numbering is the merged view's, so
+            # `own_floor` is the highest number in every OTHER log (the live
+            # file and every computer's own file); 0 on a one-computer seat,
+            # so this is a no-op there and the allocation is today's.
+            if own_floor >= next_seq_val:
+                next_seq_val = own_floor + 1
             # CLOCK1 — a stale machine clock must not stamp the permanent
             # ledger. `clock_stamp` returns the machine reading unchanged
             # unless the ledger PROVES the clock is behind, in which case it
@@ -1407,6 +1501,11 @@ def atomic_append_jsonl(
                     f"and put the scheduled time in the payload."
                 )
 
+        if is_events and own_route is not None:
+            # cr1#1061: computer, its own count and the content fingerprint,
+            # on per-computer entries only (the live file's rows unchanged).
+            _cl.stamp(evs, own_route["mark"],
+                      _cl.own_count(tail.text if tail is not None else ""))
         stamped[:] = evs
         new_lines = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in evs)
 
@@ -1614,7 +1713,7 @@ def atomic_append_jsonl(
                 _sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from source_ref_index import record_keys
             try:
-                record_keys(path.parent.parent.parent, evs)
+                record_keys(live_path.parent.parent.parent, evs)
             except Exception:
                 pass
 
@@ -1674,11 +1773,11 @@ def atomic_append_jsonl(
                     f"{type(_lease_exc).__name__}: {_lease_exc}") from _lease_exc
         _on_lease = _lease_mod is not None and _lock_cm is _lease_mod.events_lease
         import contextlib as _ctx
-        _same_machine = (events_writer_lock(path, holder=holder) if _on_lease
+        _same_machine = (events_writer_lock(live_path, holder=holder) if _on_lease
                          else _ctx.nullcontext())
-        with _same_machine, _lock_cm(path, holder=holder):
+        with _same_machine, _lock_cm(live_path, holder=holder):
             if _on_lease:
-                _lease_mod.check_held(path)
+                _lease_mod.check_held(live_path)
             # SPEC SYNC1 A3 — quarantine auto-reconcile + fail-closed merge-
             # forward, INSIDE the lock, BEFORE the FS-04 check below. Fast no-op
             # unless a marker / quarantine / Drive conflict-copy is present, so
@@ -1709,19 +1808,19 @@ def atomic_append_jsonl(
                     except Exception:
                         pass
             if _on_lease:
-                _lease_mod.check_held(path)
+                _lease_mod.check_held(live_path)
             _read_stamp_write(events)
             if _on_lease:
                 # LEASE3 fix N-1: count what landed under this hold, so a
                 # SECTION holding the lease (events_write_section) can say a
                 # takeover after its appends when it lets go.
-                _lease_mod.note_appended(path, len(stamped))
+                _lease_mod.note_appended(live_path, len(stamped))
         if _on_lease:
             # The release's answer is read, never discarded: a hold taken over
             # AFTER the pre-write check means the batch landed under a lease
             # that was no longer ours. The batch is on disk (retrying would
             # duplicate it), so this is said on stderr, never raised.
-            _rel = _lease_mod.last_release(path) or {}
+            _rel = _lease_mod.last_release(live_path) or {}
             if _rel.get("reason") == "not_ours":
                 import sys as _sys
                 _sys.stderr.write(
@@ -1730,7 +1829,7 @@ def atomic_append_jsonl(
                 # LEASE3 MUST 3 — and ONE marker the health check reads
                 # (`_hq/.system/lease_hold_lost.json`); never raises.
                 try:
-                    _lease_mod.record_hold_lost(path, holder, len(stamped))
+                    _lease_mod.record_hold_lost(live_path, holder, len(stamped))
                 except Exception:
                     pass
     else:

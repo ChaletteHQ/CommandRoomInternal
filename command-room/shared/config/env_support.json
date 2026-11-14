@@ -128,6 +128,12 @@
       "claude_code_local": "full",
       "unknown": "refuse"
     },
+    "craft-capture": {
+      "legacy_cowork": "full",
+      "merged_cloud": "full",
+      "claude_code_local": "full",
+      "unknown": "refuse"
+    },
     "decision-log": {
       "legacy_cowork": "full",
       "merged_cloud": "full",

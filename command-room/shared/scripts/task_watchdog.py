@@ -1931,7 +1931,9 @@ def check_maintenance_jobs(workspace_root, *, now=None) -> list[dict]:
 #: The receipt statuses that served a job (cr1#822), the words cr1#760's
 #: scorer counts as done, plus `partial` (a run that wrote its work and could
 #: not reach the page). A receipt with no status is a legacy shape and served.
-#: Any other word (blocked, skipped, failed, error) did not serve the job.
+#: Any other word (blocked, skipped, failed, error) did not serve the job,
+#: except a skip whose reason is that no such connector is declared
+#: (`maintenance_dispatcher.NOT_DECLARED_SKIP_REASONS`, cr1#1000).
 SERVED_RECEIPT_STATUSES = frozenset({"complete", "degraded", "empty", "partial"})
 
 
@@ -1950,11 +1952,23 @@ def _last_served_receipt_times(workspace_root, job_ids) -> tuple:
         rows = iter_receipts(workspace_root, task_ids=ids)
     except Exception:
         return served, unserved
+    try:  # lazy: maintenance_dispatcher imports this module at load
+        from maintenance_dispatcher import NOT_DECLARED_SKIP_REASONS
+    except Exception:  # noqa: BLE001 - without it every skip stays unserved
+        NOT_DECLARED_SKIP_REASONS = frozenset()
     for r in rows:  # oldest first
         tid = r.get("task_id")
         if tid not in served or r.get("dt") is None:
             continue
         status = str(r.get("status") or "").strip().lower()
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        reason = data.get("skip_reason")
+        if (status == "skipped" and isinstance(reason, str)
+                and reason in NOT_DECLARED_SKIP_REASONS):
+            # cr1#1000: no such connector is declared, so the run did all it
+            # can; it serves the job as the scorer completes it.
+            status = "complete"
         if status and status not in SERVED_RECEIPT_STATUSES:
             if served[tid] is None or r["dt"] > served[tid]:
                 if unserved[tid] is None or r["dt"] > unserved[tid]:
@@ -2969,6 +2983,10 @@ def foreign_writer_count(workspace_root, since=None) -> dict:
         return out
     declared = decl["writer_id"]
     declared_digest = decl.get("device_digest")
+    aliases = set(decl.get("holder_aliases") or [])
+    prev_writer = decl.get("previous_writer_id")
+    effective_dt = (parse_ts(decl["effective_at"])
+                    if isinstance(decl.get("effective_at"), str) else None)
     out["declared"] = declared
     floor = since if since is not None else decl.get("declared_at")
     floor_dt = parse_ts(floor) if isinstance(floor, str) else None
@@ -2999,6 +3017,14 @@ def foreign_writer_count(workspace_root, since=None) -> dict:
             if not isinstance(machine, str) or not machine.strip():
                 continue
             machine = machine.strip()
+            # cr1#1138: the holder's own earlier ids (a renamed folder, another
+            # organisation) are the holder, and so is the previous holder of a
+            # hand-over for receipts written before it took effect.
+            if machine in aliases:
+                continue
+            if (machine == prev_writer and effective_dt is not None
+                    and when < effective_dt):
+                continue
             if machine == declared:
                 digest = data.get("device_digest")
                 if not (declared_digest and isinstance(digest, str)
@@ -3044,10 +3070,14 @@ def _last_stop_after(workspace_path, report: dict) -> str:
     return fire_stop_reason_words(stop.get("abort_code"))
 
 
-def scheduled_writer_lines(workspace_root) -> list:
+def scheduled_writer_lines(workspace_root, env=None) -> list:
     """cr1#605: the one sentence naming the computer that holds the schedules,
     read from the DECLARATION (`workspace.scheduled_writer`), never from
     `_hq/.system/writer_identity.json`, which any seat's cache can rewrite.
+    cr1#1138: the holder AS OF NOW (the previous one while a hand-over is
+    pending), and the account half said relative to the reader (`under this
+    account` / `under another account`) when the declaration carries an
+    account mark and this seat knows its own (`schedule_holder`).
     Empty when nothing is declared. Never raises."""
     try:
         from schedule_config import held_by_line, scheduled_writer
@@ -3057,7 +3087,82 @@ def scheduled_writer_lines(workspace_root) -> list:
         return []
     if not decl:
         return []
-    return [held_by_line(decl.get("device"))]
+    try:
+        import schedule_holder as _sh
+
+        held = _sh.holder_now(decl) or decl
+        words = _sh.holder_account_words(decl, env)
+    except Exception:  # noqa: BLE001 - the plain sentence is always safe
+        held, words = decl, ""
+    return [held_by_line(held.get("device"), words)]
+
+
+#: cr1#1139: how far back the accounts line looks.
+ACCOUNTS_WINDOW_DAYS = 30
+
+
+def writing_accounts(workspace_root, env=None, now=None,
+                     days: int = ACCOUNTS_WINDOW_DAYS) -> dict:
+    """cr1#1139 (ruling A5): the accounts that wrote to this folder lately.
+
+    Every row names the account that wrote it (`atomic_write.stamp_account`,
+    the top-level `account` mark). This counts the rows of the last `days`
+    days by mark, and says which mark is this seat's own. Answers
+    `{"accounts": [{"mark", "n", "this", "acting_for"}], "line": str}` (`acting_for`:
+    named by the owner, `connector_config.acting_account_marks`), the accounts with
+    the most rows first. The line is empty unless two or more accounts wrote:
+    one account on its own folder reads exactly as before. A mark is evidence,
+    not text, so the line never prints one (F16). READ ONLY; never raises."""
+    out = {"accounts": [], "line": ""}
+    try:
+        import events_io
+        import schedule_holder as _sh
+
+        mine = _sh.account_mark(env)
+        at = now or _dt.datetime.now(_dt.timezone.utc)
+        at = at if at.tzinfo else at.replace(tzinfo=_dt.timezone.utc)
+        floor = at - _dt.timedelta(days=days)
+        counts: dict = {}
+        for ev in events_io.iter_events(workspace_root, since_ts=floor.isoformat()):
+            mark = ev.get("account") if isinstance(ev, dict) else None
+            if not _sh.is_account_mark(mark):
+                continue
+            when = event_dt(ev)
+            if when is None or when < floor:
+                continue
+            counts[mark] = counts.get(mark, 0) + 1
+    except Exception:  # noqa: BLE001
+        return out
+    try:
+        import connector_config as _cc
+        acting = _cc.acting_account_marks(workspace_root)
+    except Exception:  # noqa: BLE001
+        acting = set()
+    rows = sorted(({"mark": m, "n": n, "this": m == mine, "acting_for": m in acting}
+                   for m, n in counts.items()),
+                  key=lambda r: (-r["n"], r["mark"]))
+    out["accounts"] = rows
+    if len(rows) < 2:
+        return out
+    this = next((r for r in rows if r["this"]), None)
+    others = [r for r in rows if not r["this"]]
+    n_others = sum(r["n"] for r in others)
+    if this is not None:
+        out["line"] = (f"{len(rows)} accounts write to this folder: this account "
+                       f"({this['n']} {'entry' if this['n'] == 1 else 'entries'} in the last {days} days) and "
+                       + (("another account acting for you" if others[0]["acting_for"] else "another account")
+                          if len(others) == 1 else f"{len(others)} others")
+                       + f" ({n_others}).")
+    else:
+        out["line"] = (f"{len(rows)} accounts write to this folder ({n_others} entries "
+                       f"in the last {days} days); this account wrote none of them.")
+    return out
+
+
+def writing_accounts_lines(workspace_root, env=None, now=None) -> list:
+    """`writing_accounts`'s line as a list, empty when it has none."""
+    line = writing_accounts(workspace_root, env, now).get("line")
+    return [line] if line else []
 
 
 def _foreign_writers(workspace_root) -> dict:
@@ -3204,6 +3309,8 @@ def health_verdict(workspace_root, *, task_records=None, now=None,
         info_lines.append(_off_line)
     # cr1#605: which computer holds the schedules, from the declaration.
     info_lines += scheduled_writer_lines(workspace_root)
+    # cr1#1139: every account that writes here, when there is more than one.
+    info_lines += writing_accounts_lines(workspace_root, now=now)
 
     # MAINT1 (D8): per-JOB receipt gaps inside a healthy maintenance task —
     # the task fired, a job chronically wrote nothing. Job findings ride the

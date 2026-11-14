@@ -113,7 +113,7 @@ display + dispatch only:
   today, the WORKSPACE-LOCAL calendar day of the dispatcher's now;
   `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=…)`
   owns the deterministic slice — REVIEW_CUTC F-4).
-- Dispatch is ONE writer call — `commitment_state.apply_later` — which
+- Dispatch is ONE writer call — `commitment_state.apply_later_covering_folded`, `apply_later` on the line and on every counted copy folded under it (cr1#1012 ruling (b)) — which
   AUTO-ROUTES by ownership (`later_route`) and performs the landing: the
   user's OWN item → `commitment_updated` due-date shift (`deferred`);
   owed-to-you / unowned / visibility-only → `chat_dismissal` carrying
@@ -317,7 +317,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | Action | Display | What it does |
 |---|---|---|
 | `resolved` | Done | Close via `close_commitment(..., resolution="done", user_confirmed=True)`. |
-| `push to [date]` | Later… | `commitment_state.apply_later` — THE writer, never a hand-appended event. Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere), `status: deferred`; owed-to-you/unowned → `chat_dismissal` with `data.snooze_until`, the mute-ledger shape, `status: snoozed`. A date earlier than the live hold on that item is refused, `status: not_sooner`, nothing written (cr1#166). A date already gone is refused too, as `in_the_past`, nothing written, its `ack` naming the day (cr1#849). |
+| `push to [date]` | Later… | `commitment_state.apply_later_covering_folded` (`apply_later` on the line and on each counted copy folded under it, cr1#1012 ruling (b)) — THE writer, never a hand-appended event. Auto-routes (t3 FB-3): own item → `commitment_updated` with `new_due` (the Stage A fold renders the new date everywhere), `status: deferred`; owed-to-you/unowned → `chat_dismissal` with `data.snooze_until`, the mute-ledger shape, `status: snoozed`. A date earlier than the live hold on that item is refused, `status: not_sooner`, nothing written (cr1#166). A date already gone is refused too, as `in_the_past`, nothing written, its `ack` naming the day (cr1#849). |
 | `drop` | Drop | Close via `close_commitment(..., resolution="dropped", user_confirmed=True)` — deliberately let go, distinct from done. |
 | `not mine` | Not mine | Close (`resolution="dropped"`, evidence "not the user's item") — the cross-attendee capture class. When the user NAMES the real owner, route via `reassign to [name]` instead of dropping. |
 | `fix wording [text]` | Fix wording | `commitment_state.edit_commitment_wording` — corrects a mis-extracted title/summary; the projector renders the new text, history keeps the original (S4). |
@@ -765,13 +765,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

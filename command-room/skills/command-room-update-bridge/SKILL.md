@@ -2,10 +2,12 @@
 name: command-room-update-bridge
 surfaces: cowork
 slack_fallback: "Updates apply from a chat with your Command Room folder attached — run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions). Release notes and pending workspace-file migrations, additively, archive-never-delete. Dashboards live in chat now: the old dashboard-install phrases hear that one sentence and nothing is installed. Idempotent — re-runs are safe; detects which workspace migrations and release manifests haven't been applied, announces changes in plain English, and instructs the one-time actions when a release needs them. Touches no scheduled chat. Does NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
+description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install my dashboards', 'install missing dashboards', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions), 'set up what's new', 'walk my connectors', 'confirm my settings' (the one-time setup an existing workspace missed). Release notes and pending workspace-file migrations, additively, archive-never-delete. Dashboards live in chat now: the old dashboard-install phrases hear that one sentence and nothing is installed. Idempotent; announces changes in plain English. Touches no scheduled chat. Does NOT fire on 'level up command room' (level-up-command-room), 'rebuild [artifact]' (level-up-command-room), or 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
+
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## What this skill does
 
@@ -53,7 +55,7 @@ It is **conservative by design.** It does not modify existing data, does not run
 
 > *"Dashboards live in chat now. Say `list active projects` for your Workspace Map, `triage my commitments` for your open commitments, and the quick commands work just by saying them."*
 
-Nothing else runs for those phrases: no Step 0, no version check, no migration, no Phase 4.4 to 4.8, no event, and no workspace file is read. The show-instructions intent (`show my Claude instructions`, `my Claude instructions`, `show me my Claude instructions`; FILECARD1, cr1#611) answers `run_phases` `["5.5"]`: run Phase 5.5 alone, with its step 2 skipped, and STOP; no Step 0, no version check, no migration, no event beyond the one showing row. Every other phrase that reaches this skill is the full-update intent and continues with Step 0 below.
+Nothing else runs for those phrases: no Step 0, no version check, no migration, no Phase 4.4 to 4.8, no event, and no workspace file is read. The show-instructions intent (`show my Claude instructions`, `my Claude instructions`, `show me my Claude instructions`; FILECARD1, cr1#611) answers `run_phases` `["5.5"]`: run Phase 5.5 alone, with its step 2 skipped, and STOP; no Step 0, no version check, no migration, no event beyond the one showing row. The setup intent (`set up what's new`, `walk my connectors`, `confirm my settings`; cr1#1235) answers `run_phases` `["set_up_whats_new_v1"]`, checked before the full-update phrases because the first carries "what's new": run the setup in the `set_up_whats_new_v1` section alone, the part `level_up_lines.setup_part(<that phrase>)` names, and STOP; no Step 0, no version check, no other migration, no `plugin_update` row. Every other phrase that reaches this skill is the full-update intent and continues with Step 0 below.
 
 **Step 0 — Fire-time root guard (SPEC PATHREPAIR1 v2, ruling 3: "once at bridge update").** Before ANY workspace file is read (including the version-triple resolve directly below), confirm this workspace's own registration record still agrees with where it's actually running. Resolve `$PLUGIN_ROOT` / `$WORKSPACE` per the CONTRACT.md Rule 22 preamble (below), then in the SAME bash invocation:
 
@@ -70,13 +72,23 @@ Nothing else runs for those phrases: no Step 0, no version check, no migration, 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -366,6 +378,22 @@ WORKSPACE_MIGRATIONS = [
     apply_once: true                                           // a declined diet is respected — the long-form rules still bind
   },
   {
+    id: "claude_md_diet_v2",                                   // cr1#1016 (owner ruling A5 of 2026-11-10: about 1,500 words always loaded, dated history moved out, cut only after the decision list lands)
+    target_file: "[WORKSPACE_ROOT]/CLAUDE.md",
+    marker: null,                                              // NOT marker-gated: `claude_md_diet:plan` decides whether there is anything to move; the adjudication gate is the other gate
+    type: "announce_with_replacement_block",                   // NEVER silent: the brief is the customer's; show the before and after word counts and what moves, apply only on a yes
+    blocking: false,
+    apply_once: true                                           // a declined cut is respected; `redo workspace migrations` can offer it again
+  },
+  {
+    id: "set_up_whats_new_v1",                                 // cr1#1235 (owner ruling 2026-11-13: existing seats get onboarding's step 1 walk and step 5 cards once, before any client promote)
+    target_file: "[WORKSPACE_ROOT]/_hq/data/entities.json",
+    marker: null,                                              // NOT marker-gated: `whats_new_setup:plan_whats_new` decides whether anything is unset; the adjudication gate is the other gate
+    type: "calibration_question",                              // PROPOSE-AND-CONFIRM, NEVER silent: every answer is the owner's
+    blocking: false,
+    apply_once: true                                           // a declined setup is respected; the phrases and `redo workspace migrations` offer it again
+  },
+  {
     id: "staff_meeting_cadence_mwf_v1",                        // FB-20 (M ruling 2026-07-16 — the brief went read-only; the staff meeting is now the sole adjudication surface)
     target_file: "[WORKSPACE_ROOT]/_hq/data/entities.json",    // workspace.schedule_config["staff-meeting"]
     marker: null,                                              // NOT marker-gated — a schedule is live config, not appended text; the adjudication gate below is the ONLY gate (see the section)
@@ -448,13 +476,23 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"r
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -597,13 +635,23 @@ Run it automatically whenever the update proceeds (independent of which migratio
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -678,13 +726,23 @@ It is **safe and idempotent by design**, via `thread_writer.repair_dual_project_
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1035,6 +1093,44 @@ No preview, no confirm. (The companion weekly-insights job — carried by the `m
 
 > *"Offer: your always-loaded memory file can drop ~30 lines of plumbing (same rules, compressed — nothing about you is removed). Say yes to apply, no to keep it as is."*
 
+### Migration: `claude_md_diet_v2` (cr1#1016 — the always-loaded diet: about 1,500 words, dated history moved out)
+
+**Trigger gate (apply-once):** pending ONLY when the Phase 1 adjudication gate reports this id `unadjudicated` AND `claude_md_diet:plan` (through the read door: `plan run_helper` with `{"name": "claude_md_diet:plan", "args": {"workspace_root": "<WS>"}}`) answers `ok: true`. A plan that answers `reason: nothing_to_move` is not offered and nothing is logged. A plan that answers `reason: rulings_not_on_list` is not offered either: say its `line` once in the update summary (the owner pulls in the past rulings first; the cut comes only after the decision list, ruling A5) and offer again on the next update.
+
+**Why this migration exists:** the brief loads before the first message of every chat. On a long-running seat it grows to many thousands of words, most of it dated history, paid for on every turn while the rules that must hold sit buried in it. The cut moves the dated history out, word for word, to the rules folder's history file, where the one loader reaches it on demand (`context_loader:load_context` with `history`), and turns long hand-written rules into standing rules: their one line stays in view in the brief's rules index and the whole rule loads in every skill.
+
+**Approach (announce with replacement — NEVER silent; the brief is the customer's):**
+
+1. Show the plan's `line` (the before and after word counts and how many blocks move), and the headings the moved blocks sit under. Never paste the moved text into the chat.
+2. Apply ONLY on the customer's yes: ONE `plan run_writer` naming `claude_md_diet:apply_diet` with `{"workspace_root": "<WS>"}`, and say its `line`. The writer refuses exactly when the plan does, so a refusal's `line` is the whole answer. Then log `workspace_migration_applied` with `migration_id: "claude_md_diet_v2"`; on a decline, log the skip with `user_deferred` so `redo workspace migrations` can re-offer.
+
+**Surface ONE plain-English line in the update summary:**
+
+> *"Offer: your always-loaded brief can drop its dated history (kept word for word in a history file I can still read) and get down to about 1,500 words. Say yes to apply, no to keep it as is."*
+
+### Migration: `set_up_whats_new_v1` (cr1#1235 — the connector walk and the confirm step, once, on an existing seat)
+
+**Why this migration exists:** an existing seat never re-runs onboarding (`restart onboarding` is refused on a seat with data). Two onboarding steps that came later never reached it: step 1, what each connector and mail account is for, kept as its role (a source marked personal is never read, cr1#1163 part 1), and step 5, the confirm cards (cr1#1163 part 2). Without them the personal wall, off-limits senders, the two words, draft posture and the morning time stay unset. Onboarding is not redone: the cards are built from what this workspace already holds, never from a fresh pull.
+
+**Trigger gate (apply-once):** pending ONLY when the Phase 1 adjudication gate reports this id `unadjudicated` AND the plan (through the read door: `plan run_helper` with `{"name": "whats_new_setup:plan_whats_new", "args": {"workspace_root": "<WS>"}}`) answers `pending: true`. A plan with nothing to ask is not offered and nothing is logged.
+
+**Surface ONE plain-English line in the update summary:**
+
+> *"Offer: two things new seats are asked at setup can be set here too: what each of your connections and mail accounts is for (anything you call personal is never read), and a short set of settings I worked out from what is already here. Nothing already set is asked again. Say yes to do it now, no to leave it."*
+
+**On a no:** log `workspace_migration_skipped` with `"reason": "user_declined"` and `migration_id: "set_up_whats_new_v1"`. The next update does not offer it again; `redo workspace migrations` and the phrases below bring it back any time.
+
+**On demand.** "set up what's new", "walk my connectors" and "confirm my settings" are the setup intent (the Phase 1 dispatch): they run the same setup outside an update, with no adjudication gate. Read the plan, and when it answers `pending: false` say its `line` and stop. `level_up_lines.setup_part` names the part: "walk my connectors" runs part 1 only, "confirm my settings" part 2 only, "set up what's new" both.
+
+**The setup (on a yes, or on a phrase).** Read the plan once (above). It answers `connectors` and `accounts` with no role yet, and `cards`, the confirm items whose setting does not exist yet, each with `id`, `how`, `sets` and `current`. Anything set is not in the plan, so it is never asked again.
+
+1. **Part 1, the walk** (skip it when the plan has no `connectors` and no `accounts`). Ask about each one, one at a time, in plain words, the way onboarding's step 1 does (`command-room-onboarding` 0b-bis.ii): what the owner uses it for, business or personal or both. Turn each answer into a role in the account role words: `personal`, `mixed`, `business-primary`, `business-secondary` (or `shared-support` / `billing` / `cold-outreach` when that is what it is). No connector is read here; the questions are the owner's. Then save once: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"accounts": {"<address>": "<role>"}, "connectors": {"<category>": "<role>"}, "workspace_root": "<WS>"}, "name": "whats_new_setup:apply_walk"}'`. It sets only what has no role yet; changing a role that is already set is one sentence to workspace-manager. A refusal (`ok: false`) saved nothing: say its `line` and ask that one again. Otherwise say each `applied` line, and name each `failed` one plainly. Say in one line what will and will not be read ("Your personal mail stays out."). A source set `personal` is never read afterwards.
+2. **Part 2, the cards** (skip it when the plan has no `cards`). Follow onboarding's step 5 (`command-room-onboarding` 2a.i-ter), for the plan's `cards` only:
+   - Propose each `proposed` card from what this workspace already holds: the people and companies on file, `_hq/BUSINESS_CONTEXT.md`, the open pieces of work, the events already logged, and the card's own `current` and `evidence`. Each card shows its evidence and its `sets` line verbatim. No connector is read for this, so a source marked personal in part 1 is never touched. When the record is too thin to propose one, ask it as a plain question.
+   - Then ask the `asked` cards, one at a time.
+   - Save once, with every confirmed or edited answer, in step 5's answer shapes: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"args": {"answers": {"<id>": "<answer>"}, "by": "owner", "workspace_root": "<WS>"}, "name": "onboarding_confirm:apply_confirm"}'`. Say its lines the way step 5 does; a refusal saved nothing. When `avoid` was saved, re-render the persona block as step 5 says.
+3. **Log it once**, after the part or parts that ran: `workspace_migration_applied` with `migration_id: "set_up_whats_new_v1"` and `"target_file": "_hq/data/entities.json"`. A setup the owner stops half way is not logged, so the next update offers what is still unset.
+
 ### Migration: `claude_md_research_rule_v1` (RSR1 — the research-routing session rules, silent append)
 
 **Trigger gate (apply-once — see the detection-logic bullet in Phase 1):** pending ONLY when the marker phrase `never the generic built-in deep-research` is absent from the workspace CLAUDE.md AND the Phase 1 adjudication gate (`migration_adjudication.py`) reports this migration id `unadjudicated` — no applied AND no suppressing skipped event in events.jsonl. A customer who deliberately deletes the rules is respected — the bridge never re-adds them; a logged skip is equally durable.
@@ -1344,7 +1440,7 @@ After workspace migrations apply, read per-version release manifests at `$PLUGIN
 
 **Why a manifest-driven layer:** plugin code updates fix forward but don't reach existing workspace state. A user upgrading v3.4.1 → v3.4.5 gets the new code (filter handles all commitment shapes, etc.) but: their previously-dropped commitments still need to be SURFACED on a re-fire; new skills like `process bug report` won't auto-discover themselves; future workspace-data backfills need a hook. Each release that introduces such a follow-up ships a manifest item describing it.
 
-**The schedule release items this skill never runs (cr1#970, the owner's ruling 2026-11-09).** Skip every item on this list as if its detector had answered `applies: False`: run no detector or action for it, write no row for it, and say nothing for it, never the item's text: `v3110_add_friday_wrap_to_existing_schedules`, `v3143_post_update_rebind_recovery`, `v450_reregister_schedules`, `v480_reregister_maintenance`, `v490_instruct_staff_meeting_cadence`, `v500_instruct_commitments_split_migration`, `v5110_instruct_pick_up_the_merge_on_this_computer`, `v5140_instruct_set_up_schedules`, `v5190_instruct_reassert_schedules`, `v5210_instruct_schedule_reregistration`, `v5300_fold_scheduled_fires`, `v5310_readiness_retirement`, `v5330_instruct_schedule_setup`. Two of them act on scheduled chats (the fold writes the switched-off state and its record; the readiness item asks for pauses), so they run in `enable-command-room-schedules/references/schedule-changes.md`, which `set up command room schedules` and `rebuild my hub` run every time, with a listing of their own. Every other one tells the owner to say `set up command room schedules`, and Phase 4.7's one line is the only sentence this update says about scheduled chats. The list is `schedule_handoff.BRIDGE_SKIPPED_RELEASE_ITEMS`; never run an item on it here.
+**The schedule release items this skill never runs (cr1#970, the owner's ruling 2026-11-09).** Skip every item on this list as if its detector had answered `applies: False`: run no detector or action for it, write no row for it, and say nothing for it, never the item's text: `v3110_add_friday_wrap_to_existing_schedules`, `v3143_post_update_rebind_recovery`, `v450_reregister_schedules`, `v480_reregister_maintenance`, `v490_instruct_staff_meeting_cadence`, `v500_instruct_commitments_split_migration`, `v5110_instruct_pick_up_the_merge_on_this_computer`, `v5140_instruct_set_up_schedules`, `v5190_instruct_reassert_schedules`, `v5210_instruct_schedule_reregistration`, `v5300_fold_scheduled_fires`, `v5310_readiness_retirement`, `v5330_instruct_schedule_setup`, `v600_instruct_schedules`. Two of them act on scheduled chats (the fold writes the switched-off state and its record; the readiness item asks for pauses), so they run in `enable-command-room-schedules/references/schedule-changes.md`, which `set up command room schedules` and `rebuild my hub` run every time, with a listing of their own. Every other one tells the owner to say `set up command room schedules`, and Phase 4.7's one line is the only sentence this update says about scheduled chats. The list is `schedule_handoff.BRIDGE_SKIPPED_RELEASE_ITEMS`; never run an item on it here.
 
 ### Step 4.8a — Compute pending remediations
 
@@ -1365,13 +1461,23 @@ Determine `last_applied_version` from the most recent `plugin_update` event in e
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1434,13 +1540,23 @@ For each manifest, for each item, run the detector via bash:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1521,13 +1637,23 @@ Plain ids are enough (`mcp__<connection>__<operation>`); the actions accept obje
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1595,13 +1721,23 @@ print(json.dumps(result))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1671,13 +1807,23 @@ print(json.dumps(result))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

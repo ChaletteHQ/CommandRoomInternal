@@ -113,7 +113,12 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
     commitment items. The capture's receipt carries the window, skip and
     all. Both the incremental pass (`meeting-capture`) and the End of Day
     close (`past-meetings`) read the dial here. With no `meetings`
-    connector declared the window is byte for byte today's."""
+    connector declared the window is byte for byte today's.
+
+    cr1#1163: a `meetings` connector the owner called PERSONAL is never
+    read, not even to fetch: the window comes back EMPTY (start = end, on
+    both pairs) with `meetings_skip_reason` set, so the phases fetch no
+    meeting at all, and the receipt's window carries the reason."""
     from catchup import catchup_window as _window
     from receipts import normalize_task_id
 
@@ -134,6 +139,13 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
     if read and isinstance(out, dict):
         out["connector_read"] = _jsonable(read)
         out["commitment_capture_skip_reason"] = read.get("skip_reason")
+        if read.get("skip_kind") == "personal":
+            out["meetings_skip_reason"] = read.get("skip_reason")
+            for a, b in (("start", "end"), ("start_aware", "end_aware")):
+                if b in out:
+                    out[a] = out[b]
+            if "days" in out:
+                out["days"] = 0
     return out
 
 
@@ -207,7 +219,8 @@ def unprocessed_backlog(workspace_root: str, *, limit: int = 5,
 @answers
 def dedup_meetings(workspace_root: str,
                    records: Optional[List[Dict[str, Any]]] = None,
-                   records_rel: Optional[str] = None) -> Any:
+                   records_rel: Optional[str] = None,
+                   fire: str = "end-of-day") -> Any:
     """Phase 3.5 — `dedup_meetings(<the raw records>, processed=
     processed_index(ws, include_bare_meetings=False))`, projected to the
     seven fields the fire routes on. `include_bare_meetings=False` is
@@ -216,7 +229,9 @@ def dedup_meetings(workspace_root: str,
     from meeting_discovery import processed_index
 
     if records_rel:  # FIX ROUND 2: the day's records, staged beside the data
-        records = _read_staged(workspace_root, records_rel, "meeting_records")
+        # cr1#993: `fire` names whose folder; the End of Day by default.
+        records = _read_staged(workspace_root, records_rel, "meeting_records",
+                               fire)
     prior = processed_index(workspace_root, include_bare_meetings=False)
     keys = ("source_ref", "classification", "classification_reason",
             "certain", "action", "duplicate_of", "note_owner")
@@ -420,7 +435,8 @@ def cru_diagnostic_line(counts: Dict[str, Any], n_stale: int,
 def decision_rows(workspace_root: str, *,
                   transcripts: Optional[List[Dict[str, Any]]] = None,
                   transcripts_rel: Optional[str] = None,
-                  fire_start: str = "") -> Dict[str, Any]:
+                  fire_start: str = "",
+                  fire: str = "end-of-day") -> Dict[str, Any]:
     """Phase 4.6.b — the decision pass, composed and NOT written.
 
     `decision_match.match_transcript_to_decisions` over the open decisions
@@ -438,7 +454,7 @@ def decision_rows(workspace_root: str, *,
 
     if transcripts_rel:  # FIX ROUND 2: the fire's transcripts, staged
         transcripts = _read_staged(workspace_root, transcripts_rel,
-                                   "decision_transcripts")
+                                   "decision_transcripts", fire)  # cr1#993
     events_path = _events_path(workspace_root)
     opens = load_open_decisions(events_path)
     items = list(transcripts or [])
@@ -507,7 +523,8 @@ def prep_feedback(workspace_root: str, *, meeting_id: str = "",
 def run_shadow_lane(workspace_root: str, *,
                     payloads: Optional[List[Dict[str, Any]]] = None,
                     payloads_rel: Optional[str] = None,
-                    fire_start: str = "") -> Dict[str, Any]:
+                    fire_start: str = "",
+                    fire: str = "end-of-day") -> Dict[str, Any]:
     """Phase 4.8's non-attendee lane — a WRITER, on the write list only.
 
     The lane is a shadow ("no substrate writes" is its own contract), but the
@@ -521,7 +538,7 @@ def run_shadow_lane(workspace_root: str, *,
 
     if payloads_rel:  # FIX ROUND 2: the discovered meetings, staged
         payloads = _read_staged(workspace_root, payloads_rel,
-                                "shadow_payloads")
+                                "shadow_payloads", fire)  # cr1#993
     events_path = _events_path(workspace_root)
     report = run_shadow_pass(list(payloads or []),
                              workspace_root=workspace_root,
@@ -960,9 +977,11 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
         `source_skill="apply-choices"` and the `source_ref`;
       * `drop`: the same close with `resolution="dropped"`;
       * `push to [date]`: `commitment_state.parse_later_when(when, now_iso,
-        workspace_path=...)` then ONE `commitment_state.apply_later(...,
-        surface="end-of-day")`, which picks the leg by ownership (own item:
-        `deferred`; owed to you: `snoozed`).
+        workspace_path=...)` then ONE
+        `commitment_state.apply_later_covering_folded(..., surface="end-of-day")`,
+        which picks the leg by ownership (own item: `deferred`; owed to you:
+        `snoozed`) and moves the counted copies folded under the line with it
+        (cr1#1012 ruling (b)).
 
     The close always carries the pointer the resolver answers for that row
     (`session:<receipt id>:row<N>`). `source_ref` is optional and only a
@@ -1013,10 +1032,12 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
                 return {"ok": False, "status": cs.LATER_MISSING_STATUS,
                         "commitment_id": cid, "n": n,
                         "ack": EOD_TAP_NEEDS_DATE_LINE}
-            res = cs.apply_later(workspace_root, cid, when_iso=day,
-                                 actor_id=resolved_by,
-                                 source_skill="apply-choices",
-                                 surface="end-of-day", now_iso=stamp)
+            # cr1#1012 ruling (b): a push covers the counted copies folded
+            # under the line, through the one shared writer.
+            res = cs.apply_later_covering_folded(
+                workspace_root, cid, when_iso=day, actor_id=resolved_by,
+                source_skill="apply-choices", surface="end-of-day",
+                now_iso=stamp)
             status = res.get("status")
             ack = {"deferred": EOD_TAP_DEFERRED_LINE,
                    "snoozed": EOD_TAP_SNOOZED_LINE,
@@ -1051,6 +1072,8 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
                            "snoozed", "not_open")
     out["ack"] = (ack.format(day=res.get("moved_phrase") or day)
                   if verb == "push to [date]" else ack)
+    if verb == "push to [date]" and res.get("covered"):
+        out["ack"] = out["ack"] + " " + cs.folded_covered_line(res["covered"])
     return out
 
 
@@ -1166,9 +1189,14 @@ STAGE_DIRS = {"end-of-day": PACK_DIR_REL,
 #: equal by test, so a typed run still in flight keeps its batch.
 STALE_STAGE_MINUTES = 90
 
-#: The kinds the maintenance fire stages: its two reconcile batches and the
-#: inbound-mail job's batch (cr1#664). A typed run stages the same kinds.
-MAINT_FIRE_KINDS = ("sent_messages", "chat_messages", "inbound_messages")
+#: The kinds the maintenance fire stages: its two reconcile batches, the
+#: inbound-mail job's batch (cr1#664) and, since cr1#993, the meeting-capture
+#: job's three batches (it runs the End of Day's Phases 3 to 4.8, and stages
+#: them in its own folder, never the End of Day's). A typed run stages the
+#: same kinds.
+MAINT_FIRE_KINDS = ("sent_messages", "chat_messages", "inbound_messages",
+                    "meeting_records", "decision_transcripts",
+                    "shadow_payloads")
 
 #: The kinds each fire stages, and the only kinds `stage_fire_input` lands
 #: in that fire's folder: the End of Day every kind; the maintenance fire

@@ -362,6 +362,35 @@ def render_clusters(events, *, workspace_root=None, now_iso=None) -> list:
         return []
 
 
+def unfold_counted(clusters, counted_ids) -> list:
+    """Clusters with every copy the overdue number counts taken out from
+    under a line it does not count (owner ruling of 2026-11-12, cr1#1067:
+    unfold, not "+1 overdue"). Such a copy renders as its own row, so a
+    surface reads it as overdue wherever the count does; the Hub already
+    lists it that way. A line that is counted keeps its copies, and so does
+    every line when the verdict is unknown (`counted_ids` None). A cluster
+    left with no copy is dropped. Pure; the input is not changed."""
+    if counted_ids is None:
+        return list(clusters or [])
+    counted = {str(x) for x in counted_ids}
+    out: list = []
+    for c in clusters or []:
+        if str(c.get("survivor_id")) in counted:
+            out.append(c)
+            continue
+        keep = [f for f in c.get("folded_ids") or [] if str(f) not in counted]
+        if len(keep) == len(c.get("folded_ids") or []):
+            out.append(c)
+            continue
+        if not keep:
+            continue
+        scores = c.get("scores") or {}
+        out.append({**c, "member_ids": [c["survivor_id"]] + keep,
+                    "folded_ids": keep, "n_folded": len(keep),
+                    "scores": {f: scores.get(f) for f in keep}})
+    return out
+
+
 def cluster_index(clusters) -> tuple:
     """`(by_survivor, by_folded)` id maps for the render overlays."""
     by_survivor: dict = {}

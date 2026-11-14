@@ -515,6 +515,59 @@ def _seq_of_change_ref(change) -> Optional[float]:
     return int(n) if n.is_integer() else n
 
 
+def _reverse_person_field_set(workspace_root, change, *, undone_by,
+                              source_skill):
+    # Train 2 part 3b (cr1#110). Lands in the SAME commit as
+    # `people_writer.set_person_field` (the step-10 mandate). The value the
+    # change replaced goes back through the same writer, as a row carrying
+    # `reversal_of` and no batch keys, so it heads no new batch. A field the
+    # record did not have before is cleared.
+    person_id = change.get("person_id")
+    field = change.get("field")
+    if not person_id or not field:
+        raise BrainUndoError("person_field_set reversal needs person_id and field")
+    from people_writer import (_load_entities, _same_fact,
+                               entities_collection, set_person_field)
+    prior = change.get("prior_value") if change.get("prior_present") else None
+    # Only the value this change wrote is undone. A later change to the same
+    # field is somebody's later word, and an older undo must not erase it.
+    people = entities_collection(_load_entities(Path(workspace_root)), "people")
+    record = next((p for p in people if p.get("id") == person_id), {})
+    now = record.get(field)
+    wrote = change.get("value")
+    if _same_fact(field, now, prior) if prior is not None else field not in record:
+        return {"status": "already_put_back", "person_id": person_id, "field": field}
+    if not (_same_fact(field, now, wrote) if wrote is not None else field not in record):
+        raise BrainUndoError(
+            f"{field} has changed again since; that later change is left as it is")
+    res = set_person_field(workspace_root, person_id, field=field, value=prior,
+                           source_skill=source_skill, stamp_batch=False,
+                           reversal_of=_seq_of_change_ref(change))
+    if res.get("status") == "unchanged":
+        return {"status": "already_put_back", "person_id": person_id, "field": field}
+    return {"status": "put_back", "person_id": person_id, "field": field}
+
+
+def _reverse_person_phone_changed(workspace_root, change, *, undone_by,
+                                  source_skill):
+    # Train 2 part 3b (cr1#110 part 4). An attach is undone by removing THAT
+    # number and a removal by attaching it again: never a wholesale restore,
+    # so a number added in between survives the undo.
+    person_id = change.get("person_id")
+    phone = change.get("phone")
+    action = change.get("phone_action")
+    if not person_id or not phone or action not in ("attach", "remove"):
+        raise BrainUndoError(
+            "person_phone_changed reversal needs person_id, phone and phone_action")
+    from people_writer import attach_phone, remove_phone
+    fn = remove_phone if action == "attach" else attach_phone
+    res = fn(workspace_root, person_id, phone, source_skill=source_skill,
+             stamp_batch=False, reversal_of=_seq_of_change_ref(change))
+    if res.get("status") == "unchanged":
+        return {"status": "already_put_back", "person_id": person_id, "phone": phone}
+    return {"status": "put_back", "person_id": person_id, "phone": phone}
+
+
 def _reverse_person_renamed(workspace_root, change, *, undone_by,
                             source_skill):
     # SWITCH2 5.3 (M's ruling 12) - put the name back. Registered in the SAME
@@ -711,6 +764,29 @@ def _reverse_day_intent(workspace_root, change, *, undone_by, source_skill):
             f"day_intent reversal needs a seq-bearing change_ref, got {ref!r}")
     return reverse_day_intent(workspace_root, target_seq,
                               undone_by=undone_by, source_skill=source_skill)
+
+
+def _reverse_craft_scope(workspace_root, change, *, undone_by, source_skill):
+    # CRAFT1 (cr1#396) - take back a kind of work the owner added to the
+    # craft scope list. ADDITIVE: `craft_contract.reverse_scope_added`
+    # appends `craft_scope_removed` naming the added row's seq; the added row
+    # stays in history. The anchor is the seq on `change_ref`, the
+    # day_intent precedent. Never in `brain_proposals.AUTO_ALLOWED`: only
+    # the owner adds a scope.
+    from craft_contract import reverse_scope_added
+
+    ref = str(change.get("change_ref") or "")
+    try:
+        target_seq = int(ref.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise BrainUndoError(
+            f"craft_scope reversal needs a seq-bearing change_ref, got {ref!r}")
+    try:
+        return reverse_scope_added(workspace_root, target_seq,
+                                   undone_by=undone_by,
+                                   source_skill=source_skill)
+    except ValueError as exc:
+        raise BrainUndoError(str(exc)) from exc
 
 
 def _reverse_prep_brief_thread_backfill(workspace_root, change, *, undone_by,
@@ -1827,6 +1903,14 @@ REVERSERS: dict[str, dict] = {
                        "otherwise the day goes quiet again; the original "
                        "stays in history",
     },
+    # CRAFT1 (cr1#396): an owner-added craft scope. Owner-only, never auto.
+    "craft_scope": {
+        "reverse": _reverse_craft_scope,
+        "reverses_via": "craft_scope_removed",
+        "description": "take back a kind of work you added to the list your "
+                       "craft files are filed under; the record of adding it "
+                       "stays in history",
+    },
     # T2.2 (FS-11b-extended backlog sweep): the sweep's expire tombstones are
     # undoable — the reverser appends person_proposal_reopened (additive; the
     # reader honors last-writer), so `undo` after a sweep restores the queue.
@@ -1890,6 +1974,24 @@ REVERSERS: dict[str, dict] = {
         "description": "call someone by the name they were on file under "
                        "before; every spelling they were findable by comes "
                        "back with it",
+    },
+    # Train 2 part 3b - a person's facts and numbers, and the way back.
+    # Lands in the SAME commit as their writers (the step-10 mandate).
+    "person_field_set": {
+        "reverse": _reverse_person_field_set,
+        "reverses_via": "person_field_set (the prior value put back, or the "
+                        "field cleared when there was none, carrying "
+                        "`reversal_of` and no batch keys)",
+        "description": "put a person's category, introducer or care note "
+                       "back to what it was",
+    },
+    "person_phone_changed": {
+        "reverse": _reverse_person_phone_changed,
+        "reverses_via": "person_phone_changed (the number removed again, or "
+                        "attached again, carrying `reversal_of` and no batch "
+                        "keys)",
+        "description": "take back a phone number added to a person, or put "
+                       "back one that was removed",
     },
     "person_split": {
         "reverse": _reverse_person_split,
@@ -2446,6 +2548,9 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
             "change_ref": f"seq:{event_seq(ev)}",
         }
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
+                    # train 2 part 3b: a person's fact and its number
+                    "field", "value", "prior_value", "prior_present",
+                    "phone", "phone_action",
                     "proposal_seq", "proposal_fingerprint",
                     # TTL1 — the Living-Brain proposal id an expiry
                     # tombstone names. The `brain_proposal_expiry` reverser
@@ -3545,6 +3650,9 @@ def resolve_undo_phrase(workspace_root, text, *,
 # the list is read by the person deciding whether to reverse it, and
 # "commitment_merge ×1" is not a thing anyone said or saw happen.
 _CLASS_PHRASES = {
+    # Train 2 part 3b - what the person saw change on someone's record.
+    "person_field_set": "changed a note on someone's record",
+    "person_phone_changed": "changed a phone number on someone's record",
     # SPEC_LEARN1 — what the person actually saw happen. Never a class name,
     # never a skill name, never a store.
     "voice_block_update": "changed how I write for you",
@@ -3568,6 +3676,8 @@ _CLASS_PHRASES = {
     # surface narrating the CEO's OWN batch, and "day_intent ×1" is not a
     # thing anyone said or saw happen.
     "day_intent": "set what the day is about",
+    # CRAFT1 (cr1#396) - the owner's own gesture, never an auto detector's.
+    "craft_scope": "added a kind of work to your craft list",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",

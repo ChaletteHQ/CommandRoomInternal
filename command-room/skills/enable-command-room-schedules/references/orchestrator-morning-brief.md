@@ -10,13 +10,15 @@ This file is the EXACT prompt the bootloader cats and executes for `taskId: morn
 
 **Project routing:** thread / project resolution per `references/PROJECT_MAPPING_RULES.md`.
 
-**Skill delegation rule:** this orchestrator is the SCHEDULED-FIRE wrapper for the existing `morning-briefing` skill. The skill at `skills/morning-briefing/SKILL.md` is the source of truth for the digest's format, section ordering, urgency rules, and relationship-grouped thread layout. This orchestrator's job is to (a) resolve plugin + workspace paths, (b) run the PREP LEG first (Phase 2.95 — SPEC BRIEFMERGE §A), (c) execute the morning-briefing skill's connector/context gather (Steps 1-4) verbatim, (d) run the ONE-command brief-pack driver as the LAST gathering step (T3.2 FB-18 — gather first, driver last, place immediately), (e) COMPOSE the digest as PROSE with every pack block placed and NO widget (FB-20) and save the snapshot (Phase 4), (f) log ONE combined `pack_run` receipt covering both legs (Phase 5), (g) POST the digest once (Phase 6), (h) STOP.
+**Skill delegation rule:** this orchestrator is the SCHEDULED-FIRE wrapper for the existing `morning-briefing` skill. The skill at `skills/morning-briefing/SKILL.md` is the source of truth for the digest's format, section ordering, urgency rules, and relationship-grouped thread layout. This orchestrator's job is to (a) resolve plugin + workspace paths, (b) run the PREP LEG first (Phase 2.95 — SPEC BRIEFMERGE §A), (c) execute the morning-briefing skill's connector/context gather (Steps 1-4) verbatim, (d) run the ONE-command brief-pack driver as the LAST gathering step (T3.2 FB-18 — gather first, driver last, place immediately), (e) COMPOSE the digest as PROSE with every pack block placed and NO widget (FB-20) and save the snapshot (Phase 4), (f) log ONE combined `pack_run` receipt covering both legs (Phase 5), (f2) send the morning message to the owner's own business address, silently (Phase 5.5, cr1#1017), (g) POST the digest once (Phase 6), (h) STOP.
 
 **Receipt BEFORE post (SPEC BRIEFFIX1 Item C, M's ruling 2026-08-09).** The receipt is written in Phase 5 and the digest posts in Phase 6, in that order, and the order is the point. Both orders lose something when a fire dies in the middle; they do not lose the same thing. Receipt-then-post leaves a receipt and no post — which the degrade tier already blesses (a write without a surface is a state this product has always accepted) and which the next fire can see. Post-then-receipt leaves a digest on screen that the substrate has no record of: the watchdog reads it as a fire that never happened, and `mark done [n]` resolves against an OLDER brief's numbering, so a one-tap close lands on the wrong item silently. That is the Bug #98 class with a wrong-close on top, and it happened on 2026-08-09. If the post then fails, the fire is still auditable. Do NOT add a "posted!" confirmation event to compensate — the receipt shape is unchanged and every existing reader must keep working.
 
 **Two legs, one fire (SPEC BRIEFMERGE, M's ruling 2026-08-08).** The separate Upcoming Meetings chat is RETIRED; its prep generation is this fire's first leg. Two things follow and neither is optional: prep runs BEFORE the digest composes, so the meeting section links files that already exist; and the prep leg can NEVER kill the brief — every failure degrades to a line and the brief always renders (Phase 2.95). The `.docx` prep briefs this leg writes to `_hq/meetings/` are documented deliverables, separate from the chat-output surface the STOP CONTRACT governs. **The unattended rule, documents included (IDENT1 I-16; DOCS1 D-3):** those briefs are the ONLY documents this fire produces, and they land in the folder through the write door — the digest's prep pointers name the landed files by their own sentence and never a Claude Doc, a page or a deck (`SHARED_CHAT_OUTPUT_PROTOCOL.md` § The unattended rule → Documents).
 
 ---
+
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## ⛔ STOP CONTRACT (v2.14.14+ — adapted for markdown post) — READ BEFORE YOU DO ANYTHING
 
@@ -380,6 +382,24 @@ If the workspace has **zero commitment events** but ≥3 meeting events on file,
 
 **7-day activity stopgap (v3.11.1 — REQUIRED).** Apply the morning-briefing skill's Step 3b 7-day filter verbatim: for every commitment that would surface in Needs Attention as overdue/stuck, look up the linked thread's max `ts` in events.jsonl across ALL event types. If the thread has any activity in the last 7 days, drop the commitment from the Needs Attention surface (the work is likely done — events.jsonl just doesn't have the resolution event yet). The three header counts continue to reflect raw workspace state; only the actionable surfaced list is filtered.
 
+# Phase 5.5 — The morning message (cr1#1017 behaviour 1; BEFORE the post)
+
+The Hub does not wait to be remembered: each morning the owner gets ONE short email saying what the day is about and how many things need them, with the Hub's link. It is the one send a scheduled fire may make (IDENT1 I-12's named exception, `shared/STOP_CONTRACT.md`), only to the owner's own business address, and it runs here, after the receipt and before the post, so the post's STOP never cuts it off. Silent: nothing about it is said in chat, and nothing in it holds up the digest.
+
+1. **The Hub's Inbox feed.** `run_helper` `morning_message:hub_address` (`{"workspace_root": "<WS>"}`). When `found` is true, load the page's database tool as `cockpit-shared.md` shared step 0 does and `get` `feed/inbox` at that `url`. No Hub, no tool, or a failed read: `inbox` is null.
+2. **Plan and claim it** (sends nothing; a second plan the same day answers `already_sent`):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"inbox": <feed/inbox as read, or null>, "meetings": [<today's calendar events as the gather read them, each {meeting_id, title, start, end, calendar}>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "morning_message:plan_send"}'
+```
+
+3. **`send: false`:** record it and go on to Phase 6: `run_writer` `morning_message:record` with `{"plan": <the plan>, "sent": false, "workspace_root": "<WS>"}`.
+4. **`send: true`:** resolve the mail tools as the inbox task's Phase 2 does (`inbox_helpers:connector_discovery_step`, then `inbox_helpers:mail_seams`), passing `"self_send": <the plan, verbatim>` in `mail_seams`' args. Send resolves ONLY when the answer carries `send_self_only`. Without it, send nothing and record `{"plan": <the plan>, "sent": false, "reason": <the answer's self_send_refused, or "no_send_tool">, "workspace_root": "<WS>"}`.
+5. **Send it, as a new message, from that mailbox:** to exactly the `send_self_only` address and no one else (no cc, no bcc), the plan's `subject` and `body` verbatim. On a backend whose send tool sends an existing draft, first create the draft with the resolved `draft` tool from those same fields, then send that draft; on one whose send tool takes the message itself, send it directly. Never edit the text, never add a recipient, never send twice.
+6. **Record it:** `run_writer` `morning_message:record` with `{"plan": <the plan>, "sent": true, "via": "native", "workspace_root": "<WS>"}`; a send that failed is `{"plan": <the plan>, "sent": false, "reason": "send_failed", "workspace_root": "<WS>"}`. Then Phase 6.
+
+Nothing else in this run, or any other run, passes `self_send`.
+
 # Phase 6 — Post the digest, then STOP
 
 **Convert the document links FIRST — this is the last thing that happens to the text (SPEC BRIEFFIX1 Item A).** The composed digest carries WORKSPACE-RELATIVE pointers, which is correct on disk and dead in chat: Cowork resolves a link against THIS computer's filesystem, so a relative href renders "this file can't be found on your computer" while the document sits in the synced folder. Run the posted copy — and only the posted copy — through the one chokepoint:
@@ -501,13 +521,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

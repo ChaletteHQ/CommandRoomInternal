@@ -70,6 +70,8 @@ The first live `close_budget` verdict put `duration_ms` at 30.9 minutes against 
 
 You are firing the Command Room **End of Day** chat. You are closing the day: reconcile what it discharged, resolve what changed, read the day back, and — LAST — capture the day's meetings.
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## The four phases, and why the order is the contract (SPEC EOD1 §2)
 
 | Order | Phase | What it is |
@@ -377,7 +379,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"c
 
 The answer is `catchup.catchup_window(<WS>, 'past-meetings', floor_hours=24, cap_days=30)`, read where the data is.
 
-**The meetings connector's dials ride the window (cr1#667).** When a `meetings` connector is declared, the answer also carries `connector_read` (its kind, dials and lists, read through `connector_reads` before any source) and `commitment_capture_skip_reason` when its `open_commitments` dial is off. That dial turns away COMMITMENT capture only: every meeting in the window is still fetched and processed below (its `meeting` record, people, projects, the transcript closes of Phase 4.6), and Phase 4 step 5 hands the admission gate an empty `items` list. Keep the reason; the receipt's window carries it.
+**The meetings connector's dials ride the window (cr1#667).** When a `meetings` connector is declared, the answer also carries `connector_read` (its kind, dials and lists, read through `connector_reads` before any source) and `commitment_capture_skip_reason` when its `open_commitments` dial is off. That dial turns away COMMITMENT capture only: every meeting in the window is still fetched and processed below (its `meeting` record, people, projects, the transcript closes of Phase 4.6), and Phase 4 step 5 hands the admission gate an empty `items` list. Keep the reason; the receipt's window carries it. **A meetings connector the owner called personal (cr1#1163)** comes back with `meetings_skip_reason` set and an EMPTY window (start equals end): fetch no meeting at all, from that connector or any other route to it, and run nothing below on meetings; the receipt's window carries the reason.
 
 Use the returned **`start_aware` and `end_aware`** as the Granola query bounds — verbatim, never re-derived in prose. Those are the same two instants as `start` / `end` carrying the machine's UTC offset, and an offset-carrying timestamp is the only unambiguous thing to hand a connector (SPEC CATCHUP1 F-1; the naive pair is machine-local, which is right for receipt math and wrong at a connector boundary — see `shared/scripts/catchup.py`'s connector-boundary note). `extended: true` means this fire is doing catch-up work; that is the ONE flag you need, and it changes nothing about how meetings are processed (every phase below runs identically). `capped: true` means the gap was longer than 30 days and the span was truncated at the ceiling. Neither is ever narrated to the user; the catch-up is silent, and the meetings simply get processed. If the helper errors it returns the plain 24-hour window with `error` set — proceed on that; catch-up must never block the fire.
 
@@ -403,13 +405,23 @@ Call Granola MCP for meetings in `[start_aware, end_aware]`. For each:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -493,13 +505,23 @@ Ask the declared transcript backend for the same window a SECOND way: with the i
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -588,13 +610,23 @@ For each meeting:
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. Then hand that answer to `workspace_access.py discover
-   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-   #    is absent, or its manifest_sha is not this plugin's -- the version alone
-   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+   #    reports, spelled as it reports it>" in front of that first plan, in the
+   #    same command, so each write names the computer it came from (plan keeps
+   #    it for the session). Then hand that answer to `workspace_access.py
+   #    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+   #    runtime is absent, or its manifest_sha is not this plugin's -- the version
+   #    alone no longer changes between builds) is a STOP: run the update-bridge
    #    install step once, resolve and compare again, and if it still lags say
    #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+   #    CONTEXT, always, one call: `plan run_helper` with name
+   #    `context_loader:load_context` and args {"workspace_root": "<WS>",
+   #    "skill": "<this skill's folder name>"}. Follow every rule in its
+   #    `rules`; an answer a rule shaped says so in the rule's own plain words.
+   #    Asked about the owner's own records and nothing on file answers, say
+   #    "I do not have that." The owner's rules are read through this loader
+   #    only.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
    #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -687,13 +719,23 @@ For each meeting:
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. Then hand that answer to `workspace_access.py discover
-   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-   #    is absent, or its manifest_sha is not this plugin's -- the version alone
-   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+   #    reports, spelled as it reports it>" in front of that first plan, in the
+   #    same command, so each write names the computer it came from (plan keeps
+   #    it for the session). Then hand that answer to `workspace_access.py
+   #    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+   #    runtime is absent, or its manifest_sha is not this plugin's -- the version
+   #    alone no longer changes between builds) is a STOP: run the update-bridge
    #    install step once, resolve and compare again, and if it still lags say
    #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+   #    CONTEXT, always, one call: `plan run_helper` with name
+   #    `context_loader:load_context` and args {"workspace_root": "<WS>",
+   #    "skill": "<this skill's folder name>"}. Follow every rule in its
+   #    `rules`; an answer a rule shaped says so in the rule's own plain words.
+   #    Asked about the owner's own records and nothing on file answers, say
+   #    "I do not have that." The owner's rules are read through this loader
+   #    only.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
    #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -827,13 +869,23 @@ For each meeting:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1036,13 +1088,23 @@ Otherwise, for EACH newly-processed meeting transcript, execute via bash:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1147,11 +1209,13 @@ Run it per transcript, immediately after 4.6, before Phase 4.6.b:
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_eod_own_word.json", "name": "exit_doors:apply_own_word_closes"}'
 ```
 
-The file holds `{"source_ref": "granola:<meeting_id>", "transcript_text": "<this transcript>", "user_names": ["<the CEO canonical name>"], "attendee_records": <this meeting's attendee list, or null when there is none>}`.
+The file holds `{"source_ref": "granola:<meeting_id>", "transcript_text": "<this transcript>", "user_names": ["<the CEO canonical name>"], "attendee_records": <this meeting's attendee list, or null when there is none>, "transcript_ts": "<THIS meeting start ts, the same value passed as meeting_ts>"}`.
 
 The answer is `apply_own_word_closes`' own — `n_closed`, `n_statements` and `ambiguous` (own-word: closed=… statements=… ambiguous=…).
 
 **Carry `closed` to Phase 5** as `n_own_word_closed` in the same `capture_leg` block, and `ambiguous` as `n_own_word_ambiguous` (statements that matched two items equally well and therefore closed nothing and asked nothing). Zero is written, not omitted. **The stdout is diagnostic only** — the customer sees these in the CHANGED feed's own line ("Closed N items you said you had finished"), with its `undo`.
+
+One exception to that count's meaning (cr1#910, owner ruling of 2026-11-11): a tight report of two items, with the meeting's start known, closes the item whose own words it says in full and sends the other to the confirm list, or sends both there when neither is clearly better. It is still counted in `ambiguous` when it matched both equally well.
 
 **Failure handling:** identical to 4.6 — swallow, continue, and append a `pack_run.data.errors[]` entry with `"phase": "4.6a_own_word"`.
 
@@ -1198,13 +1262,23 @@ Otherwise, for each newly-processed transcript, execute:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1315,13 +1389,23 @@ The meetings Phase 3.5 classified `non_attendee` run here, and **nowhere else**.
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1688,13 +1772,23 @@ You MUST execute the renderer through the session's bash after the Rule 22 pream
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

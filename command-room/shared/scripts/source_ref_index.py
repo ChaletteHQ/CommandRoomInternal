@@ -365,19 +365,22 @@ def _history_paths(workspace_root) -> list:
     shard-transparent reader. A tree without `events_io` falls back to the
     active file alone, which is what this module read before CAP-F5."""
     try:
-        from events_io import shard_paths
+        from events_io import log_files
     except ImportError:  # pragma: no cover — direct-path import
         try:
             import sys as _sys
             _sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from events_io import shard_paths
+            from events_io import log_files
         except Exception:  # pragma: no cover
             ep = _events_path(workspace_root)
             return [ep] if ep.exists() else []
     except Exception:  # pragma: no cover
         ep = _events_path(workspace_root)
         return [ep] if ep.exists() else []
-    return [p for p in shard_paths(_data_dir(workspace_root)) if p.exists()]
+    # cr1#1061: per-computer logs too, so a call another computer captured
+    # is a HIT here. The keys are a set, so the order of files is moot; with
+    # no per-computer log this is exactly the shard list.
+    return [p for p in log_files(_data_dir(workspace_root)) if p.exists()]
 
 
 def _has_history(workspace_root) -> bool:

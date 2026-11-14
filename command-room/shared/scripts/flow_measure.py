@@ -1076,11 +1076,35 @@ def wrap_line(workspace_root, *, since_iso: Optional[str] = None,
     open_n = plate.get("open")
     if isinstance(open_n, int):
         bits.append(f"{open_n} on your plate")
+    # cr1#1017: the misses the owner told the Hub about this week, a count
+    # and never a run of days. Left out at zero, like every other bit.
+    misses = window_misses(evs, since, now)
+    if misses:
+        bits.append(f"you told me I missed {misses}")
     window = window_phrase(since, now)
     text = (f"{window}: " + ", ".join(bits) + ".") if bits else ""
     return {"text": text, "in": counts["in"], "out": counts["out"],
-            "open": open_n, "pages": plate.get("pages"),
+            "open": open_n, "pages": plate.get("pages"), "misses": misses,
             "window": window, "window_days": max(1, (now - since).days)}
+
+
+#: The owner's "Missed something?" record (cr1#1017), counted by the week.
+MISS_EVENT = "hub_miss_reported"
+
+
+def window_misses(events, since, now) -> int:
+    """How many misses the owner told the Hub about in [since, now): one per
+    `hub_miss_reported` row, a press applied twice counted once."""
+    seen = set()
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("type") != MISS_EVENT:
+            continue
+        ts = _parse(ev.get("ts"))
+        if ts is None or ts < since or ts >= now:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        seen.add(str(d.get("hub_choice") or ev.get("seq")))
+    return len(seen)
 
 
 def operator_block(workspace_root, *, since_iso: str,
@@ -1205,6 +1229,7 @@ __all__ = [
     "day_bounds", "local_day", "measured_days", "measure_day",
     "days_to_measure", "run_measure_job", "write_measure_rows",
     "wrap_line", "operator_block", "window_phrase",
+    "MISS_EVENT", "window_misses",
 ]
 
 

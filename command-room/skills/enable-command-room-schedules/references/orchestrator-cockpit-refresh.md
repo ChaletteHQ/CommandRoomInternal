@@ -34,13 +34,21 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"n
 
 `set` the answer on `feed/plate` (a large answer goes through `file_path`: save it in this session's own scratch first, never in the workspace; pinned by the version rule in `cockpit-shared.md`). The answer carries the header, the focus rows, the chase and schedule rows, the whole plate capped, and the closes of the last 24 hours. Light: `done` with "N on the plate, M closed overnight."
 
-**Then the projects (cr1#660).** One read beside the data, after the plate, so its counts match the closes the plate just showed:
+**Then the work streams and priorities (cr1#660, cr1#1013).** One read beside the data, after the plate, so its counts match the closes the plate just showed. It reads the thread, work-stream and priority cards, the open list and the loose-ends list's items on no thread (the Work streams tab's "No home yet" section, cr1#1013 part 3), and feeds both the Work streams tab and the Priorities tab:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_projects"}'
 ```
 
 `set` the answer on `feed/projects` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). It never changes the light: a failed projects read leaves the old feed in place, and the light says what the plate said.
+
+**Then the Week board (cr1#1017).** One read beside the data, after the work streams: the next seven days' due items from the open list and one lane per confirmed priority, for the Week view on Today (its meetings come from the Today feed's `week`, which the prep run writes):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_board"}'
+```
+
+`set` the answer on `feed/board` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
 **Then the Today lists (cr1#662).** The owner's active reminders and the priority to-dos they added on the page, one read beside the data:
 
@@ -49,6 +57,22 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 ```
 
 `set` the answer on `feed/mine` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
+**Then the mail rules (cr1#1020).** The owner's mail rules in force and the threads dropped from the inbox, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_mail_rules"}'
+```
+
+`set` the answer on `feed/mail_rules` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
+**Then the people (cr1#1020).** Everyone on file with what is open between the owner and them, and who is starred to Home, one read beside the data:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_people"}'
+```
+
+`set` the answer on `feed/people` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
 **Then the Review tab (cr1#779).** The open questions and proposed closes, one read beside the data:
 

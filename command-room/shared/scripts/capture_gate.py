@@ -1462,6 +1462,13 @@ def needs_second_witness(data: dict, *, client_ids=frozenset(),
     # 20 of 672, and 9 of the 9 were the floor's "nothing depends on it".
     if data.get("floor_gated") or data.get("floor_code"):
         return False
+    # cr1#771: A CAPTURE KEPT AFTER A REFUSAL IS NOT HELD FOR A SECOND
+    # SOURCE. The extraction saw the promise and misread one field of it; the
+    # row is kept, that field made safe, and shown on the owner's list for
+    # confirm even where a clean item of its kind would wait (owner ruling
+    # A2, 2026-11-11). Holding it here would set it aside unseen.
+    if data.get("kept_after_refusal"):
+        return False
     if data.get("suspected_duplicate_of"):
         reasons = [r.strip() for r in
                    str(data.get("review_reason") or "").split(";")]
@@ -1587,6 +1594,14 @@ def _name_matches(name, user_names) -> bool:
     return False
 
 
+#: The two observed verdicts that are not the product holding a doubtful row
+#: back: the owner's own capture mode for a relationship, and a row between
+#: other people. cr1#771 (owner ruling A2, 2026-11-11) lifts every other
+#: observed verdict for a capture kept after a refusal, never these two.
+OBSERVED_BY_PREFERENCE_REASON = "kept on file per preference for this relationship"
+OBSERVED_THIRD_PARTY_REASON = "between other people"
+
+
 def classify_capture(
     data: dict,
     *,
@@ -1675,7 +1690,7 @@ def classify_capture(
         # entities file. Fail-open stays fail-open.
         return {"tier": "open", "reason": "track-everything"}
     if effective == MODE_OBSERVED_ONLY:
-        return {"tier": "observed", "reason": "kept on file per preference for this relationship"}
+        return {"tier": "observed", "reason": OBSERVED_BY_PREFERENCE_REASON}
 
     from commitment_parties import (
         counterparty_ids as _cp_ids,
@@ -1722,7 +1737,7 @@ def classify_capture(
     named = [str(n or "").strip() for n in party_names]
     unresolved = any(named) or (party_ids - set(known_ids or ()))
     if party_ids and not unresolved:
-        return {"tier": "observed", "reason": "between other people"}
+        return {"tier": "observed", "reason": OBSERVED_THIRD_PARTY_REASON}
     return {"tier": "observed", "reason": "couldn't confidently tell whose this is"}
 
 
@@ -2142,6 +2157,12 @@ def matches_open_commitment(
     from `workspace_root`) lets a name on one row meet an id on another.
     `person_ids` is not read: the rows say who the parties are.
 
+    cr1#771: a row kept from a partly read capture and not yet confirmed by
+    the owner is never what a clean capture folds into, on any leg (mail,
+    Sent, tasks): the clean one would lose its date to an undated,
+    unconfirmed row. Once the owner confirms it, it is an ordinary row
+    (owner ruling A3, 2026-11-11). A kept capture may still fold into a row.
+
     Returns the FIRST matching open event (append order), else None. Pure
     when `workspace_root` is None.
     """
@@ -2150,10 +2171,14 @@ def matches_open_commitment(
     owner, others = who(data)
     if not others or not ({owner} | others) - {_THE_USER}:
         return None
+    incoming_kept = bool(data.get("kept_after_refusal"))
     for ev in open_events or []:
         if ev.get("type") != "commitment":
             continue
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if (not incoming_kept and d.get("kept_after_refusal")
+                and d.get("pending_review") is True):
+            continue
         if _is_one_promise(data, d, who):
             return ev
     return None

@@ -99,7 +99,20 @@ INTENT_ARTIFACT_ONLY = "artifact_only"
 #: FILECARD1 (cr1#611): the paste-in block, regenerated and shown again. Not
 #: an update: Phase 5.5 alone runs, nothing else is read or written.
 INTENT_SHOW_INSTRUCTIONS = "show_instructions"
-BRIDGE_INTENTS = (INTENT_FULL_UPDATE, INTENT_ARTIFACT_ONLY, INTENT_SHOW_INSTRUCTIONS)
+#: cr1#1235: the one-time setup an existing seat missed (onboarding's connector
+#: walk and confirm cards). Not an update: the setup alone runs.
+INTENT_SETUP_WHATS_NEW = "setup_whats_new"
+BRIDGE_INTENTS = (INTENT_FULL_UPDATE, INTENT_ARTIFACT_ONLY, INTENT_SHOW_INSTRUCTIONS,
+                  INTENT_SETUP_WHATS_NEW)
+
+#: The setup phrases and which part each runs (cr1#1235). Checked BEFORE the
+#: full-update phrases: "set up what's new" carries "what's new".
+SETUP_WHATS_NEW_PHRASES = {
+    "set up what's new": "both", "set up whats new": "both",
+    "walk my connectors": "walk", "confirm my settings": "cards",
+}
+#: What the setup intent runs: the `set_up_whats_new_v1` setup, nothing else.
+SETUP_WHATS_NEW_PHASE = "set_up_whats_new_v1"
 
 #: The full-update phrases (Phase 4.7's intent table, full-update row).
 FULL_UPDATE_PHRASES = (
@@ -151,6 +164,8 @@ def bridge_intent(phrase: object) -> str:
     that reached the bridge is the full update, as it always was.
     """
     text = _normalize_phrase(phrase)
+    if any(p in text for p in SETUP_WHATS_NEW_PHRASES):
+        return INTENT_SETUP_WHATS_NEW
     if any(p in text for p in FULL_UPDATE_PHRASES):
         return INTENT_FULL_UPDATE
     if any(p in text for p in ARTIFACT_ONLY_PHRASES):
@@ -158,6 +173,16 @@ def bridge_intent(phrase: object) -> str:
     if any(p in text for p in SHOW_INSTRUCTIONS_PHRASES):
         return INTENT_SHOW_INSTRUCTIONS
     return INTENT_FULL_UPDATE
+
+
+def setup_part(phrase: object) -> str:
+    """Which part of the setup a setup phrase runs: `walk`, `cards` or
+    `both` (cr1#1235). `both` for anything else."""
+    text = _normalize_phrase(phrase)
+    for p, part in SETUP_WHATS_NEW_PHRASES.items():
+        if p in text:
+            return part
+    return "both"
 
 
 def missing_defaults(installed_ids: Optional[Iterable[str]] = None) -> List[str]:
@@ -211,6 +236,11 @@ def bridge_plan(tools: Optional[Iterable] = None,
         return {"exit": "dashboards_only", "ask": False, "calls": calls,
                 "missing_defaults": missing, "say": [answer(installed_ids)],
                 "log_on_decline": None, "run_phases": []}
+    if intent == INTENT_SETUP_WHATS_NEW:
+        # cr1#1235: the setup's own lines are the turn.
+        return {"exit": "setup_whats_new", "ask": False, "calls": calls,
+                "missing_defaults": missing, "say": [],
+                "log_on_decline": None, "run_phases": [SETUP_WHATS_NEW_PHASE]}
     if intent == INTENT_SHOW_INSTRUCTIONS:
         # FILECARD1 (cr1#611): Phase 5.5 alone, with no print-once gate; the
         # chat says nothing of its own, the step's own lines are the turn.
@@ -234,6 +264,8 @@ def bridge_plan(tools: Optional[Iterable] = None,
 __all__ = ["ARTIFACT_ONLY_PHRASES", "BRIDGE_INTENTS", "CURRENT_DEFAULTS",
            "DASHBOARDS_IN_CHAT", "FULL_UPDATE_PHASES", "FULL_UPDATE_PHRASES",
            "INTENT_ARTIFACT_ONLY", "INTENT_FULL_UPDATE", "INTENT_SHOW_INSTRUCTIONS",
+           "INTENT_SETUP_WHATS_NEW", "SETUP_WHATS_NEW_PHASE", "SETUP_WHATS_NEW_PHRASES",
+           "setup_part",
            "SHOW_INSTRUCTIONS_PHASES", "SHOW_INSTRUCTIONS_PHRASES", "UNPIN_NOTE",
            "UP_TO_DATE", "answer", "bridge_intent", "bridge_plan",
            "missing_defaults", "plan"]

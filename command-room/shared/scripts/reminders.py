@@ -149,8 +149,14 @@ def build_reminder_event(
     source_skill: str = "show-my-reminders",
     primary_thread_id: Optional[str] = None,
     person_ids: Optional[List[str]] = None,
+    undated: bool = False,
 ) -> dict:
     """"remind me about X on [day]" → one `reminder` event.
+
+    `undated` (cr1#1020): the owner asked for a reminder with no day. It
+    still pins from `remind_from` (the day it was added), so it shows at once
+    and stays until it is cleared; the flag only says no day was asked for,
+    so a list can say "no date". A push gives it a day.
 
     `origin` exists in the signature ONLY so a wrong caller fails loud here
     instead of at the gate — anything but `user_explicit` raises.
@@ -189,6 +195,8 @@ def build_reminder_event(
         data["due"] = _as_date(due, "due").isoformat()
     if ref:
         data["ref"] = str(ref)
+    if undated:
+        data["undated"] = True
     rule = validate_repeat(repeat)
     if rule is not None:
         data["repeat"] = rule
@@ -371,6 +379,7 @@ def active_reminders(
                 "due": data.get("due"),
                 "personal": bool(personal),
                 "ref": data.get("ref"),
+                "undated": bool(data.get("undated")),
                 "repeat": repeat,
                 "occurrence": occ,
                 "cleared": False,
@@ -388,6 +397,7 @@ def active_reminders(
                 try:
                     rec["occurrence"] = _as_date(data["remind_from"], "remind_from")
                     rec["cleared"] = False  # push re-arms a cleared one-shot
+                    rec["undated"] = False  # a push gives it a day (cr1#1020)
                 except ReminderError:
                     pass
             if data.get("due"):
@@ -453,6 +463,7 @@ def active_reminders(
                 "due": rec["due"],
                 "personal": rec["personal"],
                 "ref": rec["ref"],
+                "undated": rec.get("undated", False),
                 "repeat": rec["repeat"],
                 "remind_from": occ.isoformat(),
                 "status": status,

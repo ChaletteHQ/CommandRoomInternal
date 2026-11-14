@@ -1,8 +1,10 @@
 ---
 name: dormant-customer-scan
 surfaces: both
-description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', plus 'tune dormant-customer-scan'. Threads lens (formerly thread-resurrection): 'warm threads to revive', 'what conversations went quiet', 'threads I dropped', 'thread resurrection'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'draft an email to [name]' (email-writer), or 'balance check' / 'my white space' (retired Balance phrases — workspace-manager; personal ties are never customers)."
+description: "Surface the customers who have gone quiet relative to their own historical cadence — before the CEO finds out from a revenue report. Fires on: 'which customers have gone dark', 'who went dark', 'dormant customer scan', 'who hasn't replied in a while', 'quiet customers', 'sessions by client', plus 'tune dormant-customer-scan'. Threads lens (formerly thread-resurrection): 'warm threads to revive', 'what conversations went quiet', 'threads I dropped', 'thread resurrection'. Computes per-relationship cadence baselines in code, ranks by cooling severity with evidence, and offers one-tap re-engagement drafts; honors learned suppressions and per-person cadence overrides. Does NOT fire on 'who should I reach out to this week' (relationship-moves — the ranked action pack that CONSUMES this detection), 'draft an email to [name]' (email-writer), or 'balance check' / 'my white space' (retired Balance phrases — workspace-manager; personal ties are never customers)."
 ---
+
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
 
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
@@ -10,7 +12,7 @@ If the scan is invoked with a name-bearing trigger ("dormant scan for [name's cu
 
 ## Skill Boundary (v2.1)
 
-- **Use dormant-customer-scan for:** proactive detection of cadence breaks — two lenses, one skill. The **people lens** (this scan) ranks people/orgs the CEO should reach out to; the **threads lens** (`## Mode: threads`, formerly `thread-resurrection`) finds specific conversations that died mid-step. A person can be active while a thread died, and vice versa.
+- **Use dormant-customer-scan for:** proactive detection of cadence breaks — three lenses, one skill. The **people lens** (this scan) ranks people/orgs the CEO should reach out to; the **threads lens** (`## Mode: threads`, formerly `thread-resurrection`) finds specific conversations that died mid-step. A person can be active while a thread died, and vice versa. The **sessions lens** (`## Mode: sessions`, cr1#1018) counts sessions by client from the sessions ledger; it runs no scan.
 - **Reads from:** `_hq/data/events.jsonl` (canonical Tier 1 source per `references/SOURCE_OF_TRUTH.md` — compute cadence directly from interaction/meeting events per person via `event_references_person` from `cru_match.py`, NOT from the `_hq/views/RELATIONSHIPS.md` projection, which is regenerated lazily by insight-generator and may be stale) + `_hq/data/entities.json` for people/org records + Gmail/Slack for recency confirmation.
 - **Does NOT draft outbound messages itself** — it surfaces the list; the top-3 `draft re-engagement` widget taps (EXEC1) dispatch through apply-choices to `email-writer` / `follow-up-ritual`, which do the drafting (lazy — nothing exists in Gmail until a further click there). If the CEO says "scan for dormant customers and draft re-engagement emails," this skill produces the list, then hands off the same way.
 
@@ -54,10 +56,11 @@ cfg = get_config(workspace_root, "dormant-customer-scan", DEFAULTS)
 `threshold` sets the cadence-break sensitivity. `revenue_weighting` weights the ranked list by
 historical revenue when True. `watch_list` keeps a persistent across-scan watch-list when True.
 
-**Mode dispatch (4 modes):**
+**Mode dispatch (5 modes):**
 
 | Mode | Trigger | Behavior |
 |---|---|---|
+| **Sessions** | "sessions by client", "sessions by client last month" | the sessions lens (`## Mode: sessions` below): one ledger call and its text. No scan, no live-contact check, no config write, no first-run footer; it never counts as this skill's first fire. |
 | **Detect** (default) | "who went dark", "dormant customer scan" | run the scan with `cfg`. On the FIRST fire only (`not is_configured(...)`): `save_skill_config(workspace_root, "dormant-customer-scan", DEFAULTS)` BEFORE rendering, then append the first-run footer. |
 | **Show settings** | "show dormant-customer-scan settings" | render current config in plain English; no scan. |
 | **Tune** | "tune dormant-customer-scan" | pre-filled re-questionnaire OR freeform (table below) → `save_skill_config(..., is_reconfigure=True)` → re-run scan. |
@@ -95,6 +98,7 @@ After applying: `save_skill_config(..., is_reconfigure=True)` + re-run scan + co
 "Quiet customers"
 "Customer dormancy check"
 "Customers who stopped responding"
+"Sessions by client last month"       → the count per client, from the sessions ledger
 ```
 
 Optional scope modifiers the user might pass:
@@ -141,13 +145,23 @@ If the live-check helper isn't available (sandbox / connector failure), you stil
    #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
    #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
    #    before the first plan, so a saved document can name the folder the
-   #    customer opens. Then hand that answer to `workspace_access.py discover
-   #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-   #    is absent, or its manifest_sha is not this plugin's -- the version alone
-   #    no longer changes between builds) is a STOP: run the update-bridge
+   #    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+   #    reports, spelled as it reports it>" in front of that first plan, in the
+   #    same command, so each write names the computer it came from (plan keeps
+   #    it for the session). Then hand that answer to `workspace_access.py
+   #    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+   #    runtime is absent, or its manifest_sha is not this plugin's -- the version
+   #    alone no longer changes between builds) is a STOP: run the update-bridge
    #    install step once, resolve and compare again, and if it still lags say
    #    `lags_line` and stop. There is no container fallback.
    #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+   #    CONTEXT, always, one call: `plan run_helper` with name
+   #    `context_loader:load_context` and args {"workspace_root": "<WS>",
+   #    "skill": "<this skill's folder name>"}. Follow every rule in its
+   #    `rules`; an answer a rule shaped says so in the rule's own plain words.
+   #    Asked about the owner's own records and nothing on file answers, say
+   #    "I do not have that." The owner's rules are read through this loader
+   #    only.
    #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
    #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
    #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -300,6 +314,7 @@ Contact: Aria Sample, aria@example.com, CEO
 - "quiet customers"
 - "customer dormancy check"
 - "customer re-engagement scan"
+- "sessions by client" (the sessions lens, below)
 
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 
@@ -355,6 +370,21 @@ When configured as a recurring scan, this skill implements `shared/RELIABILITY.m
 - **Web search** — news / funding / anniversary triggers for re-engagement angles
 - **_hq/CUSTOMERS.md** — local customer list + annotations
 - **schedule skill** — weekly recurring run
+
+## Mode: sessions, "sessions by client" (the count per client; cr1#1018)
+
+A third lens on the same client activity: how many sessions or meetings each client had over a period ("sessions by client last month", "October sessions by client"). The count comes from the sessions ledger (`shared/scripts/ledgers.py`, rebuilt by the daily `number-ledgers` Maintenance job) in one call, never from a hand count of the log or of the meeting tool, and never from the cadence scan above. Work out the window from the ask: "last month", or no period at all, leaves `start` and `end` null and the answer takes the last calendar month in the workspace's timezone; a named month or range passes its first and last day as `YYYY-MM-DD`. Render this one call with `workspace_access.py plan run_helper --json '<it>'` and paste what it prints, verbatim:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"end": null, "start": null, "workspace_root": "<WS>"}, "name": "ledgers:sessions_by_client"}'
+```
+
+- Render the envelope's `result.text` verbatim. Its first line names the window it counted (`result.window` holds it as `"from"` and `"to"`); then each client with its count and its count by kind, other organisations, how many meetings had no client and how many had no type, and the Sources at the end: each meeting's date, client and title, in plain words. Keep the Sources.
+- A meeting with no client is counted as such and never assigned to a client by its title or by a guess.
+- When `result.counted_from_log` is true, the text already says in one sentence that it was counted from the log because the ledger was older; keep that sentence, and keep `result.timezone_note` when it is set.
+- No money appears in this answer, and the revenue weighting of the cadence scan is not added to it.
+- `ok:false` is a stop: one sentence, per the preamble's rule 6.
+- The pipeline by stage is pipeline-tracker's ("pipeline by stage"), from the pipeline ledger.
 
 ## Mode: threads — "what conversations went quiet" (formerly thread-resurrection)
 
@@ -524,13 +554,23 @@ data_view = {
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

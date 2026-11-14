@@ -721,6 +721,117 @@ LATER_MISSING_INPUT_ACK = (
     "that row and Apply again. Nothing moved.")
 
 
+def folded_under(workspace_root, commitment_id, now_iso: Optional[str] = None) -> list:
+    """The copies folded under one plate line, as the plate shows it now
+    (`plate_view.build_plate`, the fold the owner saw and the Hub reads), or
+    [] when the line has none or the plate cannot be read. Read only."""
+    try:
+        from plate_view import build_plate
+        view = build_plate(str(workspace_root), now_iso=now_iso)
+    except Exception:  # noqa: BLE001 - no plate: no copy is known
+        return []
+    if not isinstance(view, dict) or view.get("ok") is False or view.get("error"):
+        return []
+    for row in view.get("rows") or []:
+        if isinstance(row, dict) and str(row.get("id")) == str(commitment_id):
+            return [str(f) for f in row.get("folded_ids") or []]
+    return []
+
+
+def apply_later_covering_folded(
+    workspace_root,
+    commitment_id,
+    *,
+    when_iso: str,
+    actor_id: str,
+    source_skill: str,
+    reason: str = "pushed to a later date",
+    surface: str = "",
+    brain_batch_id: Optional[str] = None,
+    now_iso: Optional[str] = None,
+    folded_ids: Optional[list] = None,
+    counted_ids: Optional[set] = None,
+) -> dict:
+    """`apply_later` on a plate line, and on the copies folded under it
+    (owner ruling of 2026-11-12 on cr1#1012, option (b)): every surface that
+    snoozes or pushes a folded line (the Hub's Snooze, commitment-triage's
+    Later…, End of Day's push to [date], My Plate's push) calls this, so no
+    copy stays counted or listed while its line is moved.
+
+    As on the Hub (cr1#1133): only copies the overdue number counts move
+    (`open_list.counted_ids`). A copy that is not late, or has no date, keeps
+    its own date: a push never pulls a later date in or gives one. Each copy
+    goes through `apply_later` itself, so it carries its own record (the
+    owner's own copy moves its date; one owed to the owner is hidden until
+    then) and is undone on its own; a copy that fails never undoes the line.
+    The copies are moved only when the line's own write landed.
+
+    `folded_ids` and `counted_ids` let a caller that already holds the plate
+    and the verdict pass them in; otherwise they are read here
+    (`folded_under`, `open_list.counted_ids`), and an unreadable verdict
+    covers no copy. Answers `apply_later`'s dict for the line, plus
+    `covered` (the copy ids moved) and `copies` ([{id, result}], every copy
+    tried, for the caller's audit)."""
+    # The verdict and the fold are read BEFORE the line moves: once it is
+    # pushed it is no longer late, and the plate unfolds what was under it.
+    # The verdict first, because it is cheap: a counted copy is only ever
+    # folded under a counted line (`commitment_cluster.unfold_counted`,
+    # cr1#1067), so a line the number does not count has no copy to cover
+    # and the plate is never built for it.
+    if counted_ids is None and folded_ids is None:
+        try:
+            from open_list import counted_ids as _counted
+            counted_ids = _counted(workspace_root, now_iso)
+        except Exception:  # noqa: BLE001 - no verdict: cover no copy
+            counted_ids = set()
+    if folded_ids is None:
+        folded_ids = (folded_under(workspace_root, commitment_id, now_iso)
+                      if str(commitment_id) in {str(x) for x in counted_ids or ()}
+                      else [])
+    if folded_ids and counted_ids is None:
+        try:
+            from open_list import counted_ids as _counted
+            counted_ids = _counted(workspace_root, now_iso)
+        except Exception:  # noqa: BLE001 - no verdict: cover no copy
+            counted_ids = set()
+    res = apply_later(workspace_root, commitment_id, when_iso=when_iso,
+                      actor_id=actor_id, source_skill=source_skill, reason=reason,
+                      surface=surface, brain_batch_id=brain_batch_id, now_iso=now_iso)
+    out = dict(res or {})
+    out["covered"], out["copies"] = [], []
+    if out.get("status") not in ("deferred", "snoozed") or not folded_ids:
+        return out
+    counted = {str(x) for x in counted_ids or ()}
+    for fid in folded_ids:
+        if str(fid) not in counted:
+            continue
+        try:
+            fh = apply_later(workspace_root, str(fid), when_iso=when_iso,
+                             actor_id=actor_id, source_skill=source_skill,
+                             reason=reason, surface=surface,
+                             brain_batch_id=brain_batch_id, now_iso=now_iso)
+        except Exception as exc:  # noqa: BLE001 - the line's write stands
+            fh = {"status": "error", "error": type(exc).__name__}
+        out["copies"].append({"id": str(fid), "result": fh})
+        if (fh or {}).get("status") in ("deferred", "snoozed"):
+            out["covered"].append(str(fid))
+    return out
+
+
+#: The one sentence a surface adds when a push also moved copies folded under
+#: the line (cr1#1012 ruling (b)). `{n}` is how many.
+FOLDED_COVERED_ONE = "The copy folded under it, too."
+FOLDED_COVERED_MANY = "The {n} copies folded under it, too."
+
+
+def folded_covered_line(covered) -> str:
+    """The sentence for `apply_later_covering_folded`'s `covered`, or ""."""
+    n = len(covered or [])
+    if not n:
+        return ""
+    return FOLDED_COVERED_ONE if n == 1 else FOLDED_COVERED_MANY.format(n=n)
+
+
 def later_needs_input(when_input) -> bool:
     """True when a `push to [date]` arrived with NO usable when-input (None,
     empty, whitespace, or a non-string payload) — the dispatcher refuses it
@@ -1734,6 +1845,7 @@ def commitment_counts(
             user_person_id = resolve_primary_user(workspace_root)
         except Exception:
             user_person_id = None
+    asked_now = now_iso
     if now_iso is None:
         now_iso = datetime.date.today().isoformat()
     movement = None
@@ -1742,9 +1854,17 @@ def commitment_counts(
         movement = derive_commitment_movement(events_path)
     except Exception:
         movement = None
-    return count_commitments(
+    counts = count_commitments(
         opens, user_person_id=user_person_id, now_iso=now_iso, movement=movement
     )
+    # cr1#1012 (train 2): the overdue number is the open list's, the one
+    # the Hub and the brief show (the owner's ruling of 2026-11-11). A list
+    # that cannot be read leaves the book's own number and says so.
+    # The caller's own instant, or none: the open list then reads today in
+    # the workspace's timezone, as the Hub and the brief do (never the
+    # machine's date, which differs near midnight).
+    from open_list import stamp_overdue_or_book
+    return stamp_overdue_or_book(counts, workspace_root, asked_now)
 
 
 # -----------------------------------------------------------------------------
@@ -2073,6 +2193,20 @@ def compute_brief_state(
             clusters = render_clusters(confirmed_top,
                                        workspace_root=workspace_root,
                                        now_iso=now_iso)
+            # cr1#1067 (owner ruling 2026-11-12, unfold): a copy the overdue
+            # number counts is never folded under a line it does not count,
+            # here as on the plate and in triage, so an unfolded copy is an
+            # item of its own on the bookend too. (The bookend still counts
+            # observed rows and folds across blocks, which the plate does
+            # not; that gap predates this.) An unreadable list leaves the
+            # folds as they were.
+            from commitment_cluster import unfold_counted
+            try:
+                from open_list import counted_ids as _counted_ids
+                _counted = _counted_ids(workspace_root, now_iso)
+            except Exception:  # noqa: BLE001 - never a guessed verdict
+                _counted = None
+            clusters = unfold_counted(clusters, _counted)
             if clusters:
                 n_rows = len(confirmed_top)
                 n_items = information_count(n_rows, clusters)
@@ -2338,7 +2472,10 @@ def _brief_state_already_written(events_path, payload) -> bool:
         if not p.exists():
             return False
         now = datetime.datetime.now(datetime.timezone.utc)
-        lines = p.read_text(encoding="utf-8").splitlines()
+        # Every computer's own log too (cr1#1061 slice 3): a brief written on
+        # the other computer within the guard is still this payload's twin.
+        from events_io import merged_lines
+        lines = merged_lines(p, encoding="utf-8")
         for line in reversed(lines[-400:]):
             if '"brief_state"' not in line:
                 continue
@@ -2445,6 +2582,14 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     # fills. `setdefault`, so an explicit caller value still wins.
     kwargs.setdefault("workspace_root", workspace_root)
     state = compute_brief_state(**kwargs)
+    # cr1#1012 (train 2): the brief's overdue number is the open list's, the
+    # same number the Hub's Today strip and Commitments badge show (the
+    # owner's ruling of 2026-11-11, closing cr1#976). The book's own count
+    # kept pending rows out but observed and snoozed rows in; the list's
+    # rule is one function (`open_list.in_headline_overdue`). A list that
+    # cannot be read leaves the book's number and says so in the row.
+    from open_list import stamp_state_overdue
+    stamp_state_overdue(state, workspace_root, kwargs.get("now_iso"))
 
     def _normalize_fired_via(value):
         """The canonical spelling, or the environment's, or `manual`.
@@ -5999,6 +6144,7 @@ __all__ = [
     "later_route",
     "parse_later_when",
     "apply_later",
+    "apply_later_covering_folded", "folded_under", "folded_covered_line",
     "LATER_SNOOZE_VIA",
     # CUT-C item 5 — the date-less Later… refusal
     "LATER_MISSING_STATUS",

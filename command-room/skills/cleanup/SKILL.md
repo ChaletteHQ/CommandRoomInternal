@@ -1,7 +1,7 @@
 ---
 name: cleanup
 surfaces: both
-description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean' (the full pass), 'roll over my session notes' (Step 0b) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (opt-in add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
+description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean', 'tidy my folder', 'roll over my session notes' (Step 0b) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (opt-in add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
 ---
 
 # Cleanup
@@ -78,6 +78,14 @@ print(post(whole_reply, surface="maintenance", workspace=workspace_root,
 
 `relayed` is the composer's own return, and the door checks it twice: for PRESENCE, IN ITS OWN ORDER (paraphrasing it instead of relaying it is a refusal, not a style — and so is shuffling its lines or repeating one of them: a relay is the composer's return, not its ingredients) and for ORIGIN — every line of it must be a line a composer returned in THIS same run, and the check is in full: one unvouched line refuses the whole post. There is no share of a turn a caller may claim as already-checked. `customer_rows` is how a reply says it was composed around the CEO's own words: you name the ROWS (by seq, or by row id) and **the door reads their customer-typed fields off the book itself**. There is no argument for the words — you cannot tell this door what they typed, only which of their rows to go and read, and a call with no `workspace` declares nothing at all. **Be exact about what a declaration does**: it blanks the declared fragment out of the copy the INTERNAL-NAME classes read — `_hq/` paths, data-file and module names, script names, build codes, the vocabulary roster and the record counter — which is most of this gate, so it is not something to hand yourself. Record ids and the absolute-path scan read the whole text whatever was declared. Everything undeclared is this product's own words and is scanned in full. `post` raises rather than returning, and nothing is caught. **If it refuses, post the composer's return on its own** — it is already gated, and the paragraph that could not pass is the paragraph that should not have been written; **if even that refuses, post `surface_composers.refused_line(<surface>)` and nothing else** — one honest sentence that it could not put the answer together, with the phrase offered again. **There is no sentence after it.**
 
+**On a merged seat, the composer and the door run as ONE form (cr1#1141; the form is cr1#1005 part 3's).** Through the workspace door each helper runs in its own process, so `maintenance_answer` and `post`, run there separately, never meet, and every relay is refused; `post` is on neither door list at all. Do not call them separately there. Render the combined form with `plan run_writer` and run what it prints: it runs the composer and `post`, with the composer's return as the relay, in one process. `composer_args` are the composer's own, and `plan` holds only what the answer reads from T1's plan, never the whole plan (its command lines are paths, and the door fences every argument that looks like one): `jobs` as one `{"job_id": ...}` row per due job, `next_up` as its `job_id` and `slot` when the plan has one, and `root_repair` / `min_gap` only when the plan says `blocked`, `in_flight` or `skipped`. `completed` and `failed` are the receipt's lists and `findings` step 5's sentences, the receipt's `summary` last. The door refuses any argument it reads as a path (one that starts with a slash or a drive letter, or names a folder), so name no file or folder in them. `before` and `after` are the only sentences you add, and they are scanned like every other line. On a seat whose files are local, nothing changes: run the block above.
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WS>", "surface": "maintenance", "composer_args": {"plan": {"jobs": [{"job_id": "<each due job id>"}], "next_up": {"job_id": "<next_up job_id>", "slot": "<next_up slot>"}}, "completed": ["<each completed job id>"], "failed": ["<each failed job id>"], "findings": ["<each finding, plainly>", "<the receipt summary>"]}, "after": ""}}'
+```
+
+Print its `result.text` as the entire reply. `result.posted` says which of the three answers it is (`whole`, `composer_only` when your added sentences could not pass, `refused` when even the composer's return could not); the fallback is already done, so there is nothing to retry and no sentence after it. If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "maintenance"}` through `plan run_helper` and print its `result` alone.
+
 ## Step 0b — "roll over my session notes" (the ATTENDED notes pass; runs INSTEAD of the phases below)
 
 This is the remedy the Monday note points at when Phase 2 item 4 returned `aborted` records — never a precondition for the automatic pass, which needs no permission and never waits to be asked. Run it when the phrase is notes-rollover-shaped ("roll over my session notes", "roll over my notes"):
@@ -87,6 +95,14 @@ This is the remedy the Monday note points at when Phase 2 item 4 returned `abort
 3. For each `aborted` record, say in plain English what shape is in the way — *"[Project]'s notes keep their entries one level down under a 'Session Log' heading, so I can't tell where one session ends and the next begins"* — and ask whether to normalise those headings together. One file at a time, never a bulk offer.
 4. **You still never hand-reshape the file.** If the CEO says yes, the only edits you make are to the HEADINGS the record named (promoting `###` session entries to `##`, dating an undated `## Meeting:` block, putting an out-of-order entry back in sequence). Then re-run the function and let it do the split, so the safety copy, the conservation check and the receipt apply exactly as they would on a Sunday night.
 5. If the CEO declines, leave the file untouched and say so. A notes file nobody wants restructured is not a problem to keep raising.
+
+## Step 0c — "tidy my folder" / "undo the folder tidy" (the ATTENDED folder tidy; runs INSTEAD of the phases below)
+
+The same pass as Phase 2 Rule 15, asked for by name (T10, cr1#1019). It moves leftover lock folders, old plugin copies and surplus backups into ONE dated folder under `_archive/`, with a list of everything moved; the live data files are never moved. Nothing is deleted.
+
+1. **"tidy my folder"** (also "tidy the folder"): run the writer `cleanup_actions:tidy_folder` with `{"workspace_root": "<WS>"}` (merged seat: one `plan run_writer` line per the Access preamble; local seat: the `ca.tidy_folder` line in Rule 9's block). Say its `line` verbatim; it names the dated folder (`cleanup-<date>`) and no file or path. When the CEO asks what WOULD move first ("what would a tidy move"), pass `"dry_run": true`: it writes nothing and its `line` says so.
+2. **"undo the folder tidy"**: run the writer `cleanup_actions:undo_folder_tidy` with `{"workspace_root": "<WS>"}` (the newest tidy not yet undone; add `"bucket": "cleanup-<date>"` when the CEO names one). Say its `line` verbatim. An entry whose place is taken again stays in the archive and is counted in the line; nothing is overwritten.
+3. Never move, rename or copy anything by hand to "finish" a tidy, and never name a data file to the CEO. A `remaining` count means the next tidy carries on; say the line and stop.
 
 Cleanup-shaped phrases ("weekly cleanup", "clean up my workspace", "clean up the workspace", "tidy up", "deep clean", "scan everything", "weekly audit", "system review") run the full pass below, exactly as before. When cleanup runs AS a job inside a maintenance fire (scheduled or Step-0 manual), it starts at Phase 1 directly — Step 0 is the entry router for the chat phrase only.
 
@@ -194,16 +210,18 @@ print(json.dumps(records, indent=2))
 
 > **The three compression rules above (2, 3, 7) are AUTOMATIC and never deferred to an attended ask** — same contract as the rollover, for the same reason: they are archive-never-delete memory operations, so there is nothing to ask permission for. They still compress by judgment rather than by a helper, so the receipt is the only proof they ran: **every one of them that does anything must land a record in `actions_taken[]`**, and a week where all three report nothing is a claim that all three ran and found nothing to move. If receipts show they are silently skipping the way the rollover was, they get scripted next — that is a separate spec, not a fire-time improvisation.
 
-9. **Stale lock-file archival** (D6): move `_hq/data/*.lock.stale.*` and `_hq/.system/*.lock.stale.*` sentinels older than **1 hour** into `_archive/stale-locks/` — STALE LOCKS (not memory, not caches; moved, never deleted). The same block moves the `.<name>.tmp.<id>.write` files a save left behind when it died mid-way, once they are a day old, into `_archive/tmp-writes/` (TMPSWEEP1, cr1#137; a fresh one is a save in flight and is left alone). Run the code block below; record both counts into `actions_taken[]`. A 1-hour floor means a writer that's still mid-recovery is never disturbed; the docstring on `atomic_write.py` long claimed "weekly Tidy Up cleans them" but nothing did — this is the implementation.
+9. **Stale lock-file archival** (D6, and Rule 15's folder tidy in the same block): move `_hq/data/*.lock.stale.*` and `_hq/.system/*.lock.stale.*` sentinels older than **1 hour** into `_archive/stale-locks/` — STALE LOCKS (not memory, not caches; moved, never deleted). The same block moves the `.<name>.tmp.<id>.write` files a save left behind when it died mid-way, once they are a day old, into `_archive/tmp-writes/` (TMPSWEEP1, cr1#137; a fresh one is a save in flight and is left alone). Run the code block below; record both counts into `actions_taken[]`. A 1-hour floor means a writer that's still mid-recovery is never disturbed; the docstring on `atomic_write.py` long claimed "weekly Tidy Up cleans them" but nothing did — this is the implementation.
 
 ```bash
 python3 -c "
-import sys; sys.path.insert(0, 'shared/scripts')
+import sys, json; sys.path.insert(0, 'shared/scripts')
 import cleanup_actions as ca
 archived = ca.sweep_stale_locks('<workspace_root>')  # >1h-old only; archive-move, never touches fresh locks
 print('archived', len(archived), 'stale lock files')
 swept = ca.sweep_tmp_write_files('<workspace_root>')  # TMPSWEEP1 (cr1#137): >24h-old orphaned .<name>.tmp.<id>.write files a write left behind when it died mid-way; archive-move into _archive/tmp-writes/, never a delete; lookalikes and live files untouched
 print('archived', len(swept), 'orphaned temp write files')  # this count goes into the Monday note beside the stale-lock count
+tidy = ca.tidy_folder('<workspace_root>')  # Rule 15 (T10, cr1#1019): archive-first into one dated folder + manifest; live data files refused; never a delete
+print(json.dumps({'note': tidy['note'], 'moved': tidy['moved'], 'by_kind': tidy['by_kind'], 'remaining': tidy['remaining'], 'refused': len(tidy['refused']), 'live_unchanged': tidy['live_unchanged']}))
 "
 ```
 
@@ -307,6 +325,8 @@ pending = sn.pending_swept('<workspace_root>')  # [] on a fully-confirmed worksp
 print(json.dumps(pending, indent=2))
 "
 ```
+
+15. **Folder tidy** (T10, cr1#1019; owner ruling A2: the live data files stay where they are): move leftover lock folders (released leases beside the activity log, released more than an hour ago), old plugin copies (runtime copies of a version older than the one before the version in use, older than a day; the copy in use, the version before it and anything newer always stay) and backups past the three newest per data file (only backups named after a data file; a dated multi-file set stays whole) into ONE dated folder, `_archive/cleanup-<date>/`, with `manifest.json` and `MANIFEST.md` written there BEFORE the first move — ARCHIVED, never deleted, every move undoable from the manifest (Step 0c). A live data file or one of its live-state siblings is refused by name wherever it sits, at the plan, again at the move and again at an undo. It runs in Rule 9's block above (the `ca.tidy_folder` line); record its `note` and counts into `actions_taken[]`. On a merged seat the cleanup door job runs this same pass (`skill_jobs_door:cleanup_and_receipt`, pass `folder_tidy`), so do not run it again there.
 
 These rules are non-destructive by design — **nothing is ever deleted, with the ONE ruled exception of Rule 11's stale read-alarm sidecars (derived machine telemetry, LB2 D5).** Memory is compressed/archived in place; caches and >1h-stale locks are MOVED into `_archive/` (never a user's folders or files). Record each action taken into `actions_taken[]` for the `cleanup_run` event.
 
@@ -575,13 +595,23 @@ Convert each project's hand-written People table into the generated Live State b
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -698,13 +728,23 @@ Safe and idempotent by construction: non-empty `projects` records merge into `th
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -777,13 +817,23 @@ Runs right after 3.5a-bis, same DUALKEY1-style shape: a pure mutator plus an own
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -864,13 +914,23 @@ the same clustering writes nothing (HONEST1).
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -940,13 +1000,23 @@ print('n_split_proposals=' + str(counts['n_split_proposals']))
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -1126,6 +1196,21 @@ print(json.dumps({'changed': r['changed'], 'total': r['total'], 'recent': r['rec
 ```
 
 Record into `actions_taken[]` only when `changed` is True. If `monday_line` is non-null, add it VERBATIM to the Monday note's "worth a glance" tier — it is already plain English (*"Three times this month you had to redirect me to call prep; the phrases were: …"*). A null adds nothing: no line, no "routing was fine" filler (COVERQUIET1 posture). Never name the event type, never paraphrase the CEO's phrases, and never propose a description edit from it — the line is a pointer for whoever tunes this Command Room, not an instruction.
+
+### 3.5d5 - Regenerate the craft index view (SPEC CRAFT1 step 1, cr1#396)
+
+`_hq/views/CRAFT.md` lists every craft file (how a person, a business, the owner or the firm does a kind of work) by who it describes, kind of work, status, confidence and last test date, and flags a craft file in an entity folder that no record points at. It is generated from the `craft/` folders and entities.json by `render_craft_view.py`, never hand-edited. Changed-only, so a quiet workspace is a true no-op:
+
+```bash
+python3 -c "
+import sys, json; sys.path.insert(0, 'shared/scripts')
+import cleanup_actions as ca
+r = ca.regenerate_craft_view_if_changed('<workspace_root>')
+print(json.dumps(r))
+"
+```
+
+Record into `actions_taken[]` only when `changed` is True. The door job runs the same pass as `craft_view`.
 
 ### 3.5e — Flag stale analytical views + nudge a paused insight-generator (D5)
 
@@ -1422,6 +1507,7 @@ Lead with what's done and what (if anything) needs eyes. Three tiers, mapped fro
 - **Session notes rolled over** (Phase 2 item 4, Rule 1): fold the count of `rolled_over` records into the "tidied up" line — *"…filed [N] projects' older session notes into their archive so the live notes stay short."* Never name the archive filename, the line counts, or the safety copy unless the CEO asks. `skipped` records are silent.
 - **Session notes that couldn't be rolled automatically** (the `aborted` records): decide from **THIS run's records only** — the fire has no memory of last week's, so never condition the line on how many weeks a file has been failing. When this run returned one or more `aborted` records, add exactly ONE calm line carrying the count and the way to finish the job: *"[N] projects keep their session notes in a shape that's too custom for me to reorganize on my own — say 'roll over my session notes' and I'll do them with you."* At zero aborts, omit the line entirely. Never list the files, never name the reason code, never a path, and never alarm framing — nothing was lost and nothing is broken; those files are simply the ones that need a person in the room.
 - **Lock files archived** (Phase 2 Rule 9, D6): fold the count into the "tidied up" line — *"…tidied away [N] leftover lock files and [M] half-finished save files."* (the second count is the temp-file sweep, cr1#137; omit the clause when it is zero) Plain English; never say "lock.stale" or surface a path. (They're moved to `_archive/`, never deleted — but don't burden the CEO with that detail unless asked.)
+- **Folder tidied** (Phase 2 Rule 15, T10): when `moved` is non-zero, fold its `note` (or the door job's `actions_taken` line, which is the same words) into the "tidied up" line — *"…moved [N] leftover lock folders, [M] old plugin copies and [K] surplus backups into the archive."* (drop a clause at zero; omit entirely when nothing moved). Never name a data file, a folder path or a version; the dated folder's own list is there if the CEO asks.
 - **Delete permission** (Phase 2 Rule 11a, DEL1): when `delete_grant.monday_note_line()` returns a sentence, add it VERBATIM to the "worth a glance" tier — it is already plain English and already free of paths, versions and the tool's name. `None` adds nothing: a week where nothing was asked says nothing about asking (COVERQUIET1 posture). Never pair it with an apology and never re-ask in the note.
 - **Files set aside instead of deleted** (Phase 2 Rule 11a, DEL1 fix round 1 M-2): when `delete_grant.asides_note_line()` returns a sentence, add it VERBATIM to the "worth a glance" tier. It is a COUNT of files the mount would not let me delete, which I renamed out of the way instead — nothing was removed and nothing was lost, and the line says exactly that. `None` (the common case, and always the case on a seat where deletes work) adds nothing. Never name a file, a folder or a path, and never offer to clear them: collecting them is a decision nobody has made.
 - **Read-alarm sidecars pruned** (Phase 2 Rule 11, LB2 D5): ONE line, only when the count is non-zero — fold into the "tidied up" line: *"…cleared [N] old system health notes."* Never say "sidecar", "readalarm", or surface a path; omit entirely at zero (the common case).

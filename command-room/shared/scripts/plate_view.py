@@ -121,13 +121,20 @@ OPEN_BY_DEFAULT = frozenset({BLOCK_DO_IT, BLOCK_CHASE, BLOCK_CONFIRM,
                              BLOCK_PARKED})
 
 HORIZON_OVERDUE = "overdue"
+#: cr1#1043: past its date, but not what the overdue number counts (the
+#: owner's ruling of 2026-11-11: a row waiting for a yes, or snoozed). It
+#: sorts, keeps off Parked and groups exactly where an overdue row does;
+#: only its words differ, so a row never calls itself overdue beside an
+#: overdue count that leaves it out.
+HORIZON_PAST_DUE = "past_due"
 HORIZON_THIS_WEEK = "this_week"
 HORIZON_LATER = "later"
 HORIZON_NO_DATE = "no_date"
-HORIZON_ORDER = (HORIZON_OVERDUE, HORIZON_THIS_WEEK, HORIZON_LATER,
-                 HORIZON_NO_DATE)
+HORIZON_ORDER = (HORIZON_OVERDUE, HORIZON_PAST_DUE, HORIZON_THIS_WEEK,
+                 HORIZON_LATER, HORIZON_NO_DATE)
 HORIZON_TITLES = {
     HORIZON_OVERDUE: "Overdue",
+    HORIZON_PAST_DUE: "Past its date",
     HORIZON_THIS_WEEK: "This week",
     HORIZON_LATER: "Later",
     HORIZON_NO_DATE: "No date",
@@ -137,7 +144,8 @@ HORIZON_TITLES = {
 # the plate cap (QUIET1 D5). The cap parks the oldest captures among the
 # rest (Later + No date). Pinned by membership in `run_quiet1_test` [7];
 # proven by removal in G49 F14.
-CAP_KEEP_HORIZONS = frozenset({HORIZON_OVERDUE, HORIZON_THIS_WEEK})
+CAP_KEEP_HORIZONS = frozenset({HORIZON_OVERDUE, HORIZON_PAST_DUE,
+                               HORIZON_THIS_WEEK})
 
 
 def rests_under_parked(horizon: str) -> bool:
@@ -1035,7 +1043,8 @@ def importance_key(row: dict) -> tuple:
     would hide different rows on two surfaces of one plate.
     """
     hz = row.get("horizon")
-    return (0 if hz == HORIZON_OVERDUE else 1 if hz == HORIZON_THIS_WEEK else 2,
+    return (0 if hz in (HORIZON_OVERDUE, HORIZON_PAST_DUE)
+            else 1 if hz == HORIZON_THIS_WEEK else 2,
             0 if row.get("client") else 1,
             0 if row.get("money") else 1,
             _neg_ts(str(row.get("ts") or "")),
@@ -1690,6 +1699,41 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
     counts = count_commitments(opens, user_person_id=user_person_id,
                                now_iso=(_lnow.isoformat() if _lnow else now_iso),
                                movement=movement)
+    # cr1#1043: the plate's overdue is the open list's verdict, in its
+    # number and on each row (the owner's ruling of 2026-11-11). Every
+    # number a surface states about the plate comes from `plate_numbers`,
+    # so the coach and the measure read the same overdue as the Hub and the
+    # brief. A list that cannot be read leaves the plate's own date test and
+    # says so in `counts["overdue_source"]`.
+    # One read of the list, on the timezone this render already resolved
+    # (F-10 / F-16: one resolve per render). When the list cannot be read
+    # the plate's own date test stands, which is what its pins exercise.
+    _counted: Optional[set] = None
+    try:
+        from open_list import stamp_overdue, verdict as _verdict
+        # No resolvable timezone: the list would fall back to UTC too, so it
+        # is handed UTC rather than trying the same resolve again.
+        _v = _verdict(ws, now_iso,
+                      tzinfo=(_lnow.tzinfo if _lnow is not None
+                              else _dt.timezone.utc))
+        stamp_overdue(counts, ws, now_iso, hc=_v["counts"])
+        _counted = _v["counted_ids"]
+    except Exception:  # noqa: BLE001 - never a guessed number
+        counts["overdue_source"] = "book"
+
+    from cru_match import _commitment_id as _verdict_id
+
+    def _hz(due, ev) -> str:
+        """The row's horizon: the date's, except a row past its date that
+        the overdue number does not count reads Past its date. The row is
+        looked up under the id the verdict uses (`cru_match._commitment_id`,
+        which reads a legacy flat line's top-level id), never the plate's
+        own display id."""
+        hz = horizon_of(due, today)
+        if hz == HORIZON_OVERDUE and _counted is not None \
+                and str(_verdict_id(ev)) not in _counted:
+            return HORIZON_PAST_DUE
+        return hz
     headline = counts["headline"]
     confirmed_all, _pending = split_pending_review(opens)
     top_level, sub_level = partition_subitems(opens)
@@ -1783,8 +1827,10 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
         d = ev.get("data") or {}
         cid = _cid(ev)
         badges: list = []
-        due = d.get("due")
-        overdue = horizon_of(due, today) == HORIZON_OVERDUE
+        # cr1#1043: either spelling of the due date, as the open list and
+        # every count read it (`_commitment_field`: `due` or `due_date`).
+        due = _commitment_field(ev, "due")
+        overdue = _hz(due, ev) == HORIZON_OVERDUE
         question = d.get("question")
         question_by = d.get("question_by")
         # REVIEW_PLATE1_N1 F-2 — a reason that ORIGINATES in stored writer
@@ -1827,7 +1873,7 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
         # WRAPSTAFF1 4.1 (R-23) — the row's horizon, read ONCE for both
         # parked branches below. `overdue` above is the same test narrowed
         # to one horizon; this is the pair `rests_under_parked` reads.
-        row_horizon = horizon_of(due, today)
+        row_horizon = _hz(due, ev)
         # A rested row that is OVERDUE or DUE THIS WEEK does not render under
         # PARKED: it falls through to the block its bucket dictates and
         # CARRIES ITS STORED REASON, so the reader still sees why it was
@@ -1870,7 +1916,7 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
         cid = _cid(ev)
         bucket = bucket_of(ev, user_person_id)
         block, reason, badges, reason_stored = _assign(ev, bucket)
-        due = d.get("due")
+        due = _commitment_field(ev, "due")  # cr1#1043: either spelling
         kids = subs_by_parent.get(cid) or []
         n_open_k = d.get("n_subitems_open")
         n_done_k = d.get("n_subitems_done") or 0
@@ -1884,7 +1930,7 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
             "id": cid,
             "title": row_title(d.get("title"), d.get("summary")),
             "block": block,
-            "horizon": horizon_of(due, today),
+            "horizon": _hz(due, ev),
             "project_key": project_key,
             "project_label": project_label,
             "due": due,
@@ -1960,6 +2006,11 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
     cluster_input = [ev for ev in top_level
                      if _cid(ev) in by_id and not by_id[_cid(ev)]["pending"]]
     clusters = render_clusters(cluster_input, workspace_root=str(ws), now_iso=now_iso)
+    # cr1#1067 (owner ruling 2026-11-12, unfold): a copy the overdue number
+    # counts is never folded under a line it does not count; it renders as
+    # its own row and reads Overdue, as the Hub and the count already do.
+    from commitment_cluster import unfold_counted
+    clusters = unfold_counted(clusters, _counted)
     n_folded = 0
     for c in clusters or []:
         survivor = by_id.get(c["survivor_id"])

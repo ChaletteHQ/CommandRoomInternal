@@ -21,8 +21,8 @@ said on its receipt (`scope: "door"`, plus the passes it did not run):
   * cleanup - the passes of skills/cleanup/SKILL.md that are already code, run
     beside the data: corruption recovery (3b), the dual project key repair
     (3.5a-bis), the integrity inspector (3a, detect only), every active
-    thread's Live State (3.5b), the People, decision log, tracker and
-    routing-corrections views (3.5c-3.5d4), and the two staleness flags
+    thread's Live State (3.5b), the People, decision log, tracker,
+    routing-corrections and craft views (3.5c-3.5d5), and the two staleness flags
     (3.5e, the aliases flag). It lands `cleanup_run`. The Monday note, the
     judgment sweeps written as prose, the watchdog sweep and the event-log
     rotation are NOT run on this shape and are named on the receipt.
@@ -49,6 +49,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import sys
+import time
 from pathlib import Path
 from statistics import median
 from typing import Optional
@@ -75,9 +76,21 @@ CLEANUP_DOOR_PASSES = (
     "decision_log",         # 3.5d
     "master_tracker",       # 3.5d2
     "router_misses",        # 3.5d4
+    "craft_view",           # 3.5d5
+    "folder_tidy",          # Rule 15 (T10, cr1#1019)
     "view_staleness",       # 3.5e
     "aliases_staleness",    # 3.5c's D7 flag
 )
+
+#: The folder tidy inside the weekly cleanup door job (T10, cr1#1019). The
+#: job shares the door's 150 s verb budget with its other passes, so the tidy
+#: gets what is left of `CLEANUP_DOOR_JOB_BUDGET_S` since the job started, at
+#: most `FOLDER_TIDY_DOOR_BUDGET_S`, and is skipped (named on the receipt)
+#: when less than `FOLDER_TIDY_MIN_S` is left; what it does not reach this
+#: week it reaches next week.
+CLEANUP_DOOR_JOB_BUDGET_S = 120.0
+FOLDER_TIDY_DOOR_BUDGET_S = 40.0
+FOLDER_TIDY_MIN_S = 10.0
 
 #: The cleanup passes that need a session reading the workspace, or a person:
 #: not run through the door, and named on the receipt.
@@ -273,6 +286,7 @@ def cleanup_and_receipt(workspace_root, *, maintenance_window=None,
     from receipts import log_receipt, require_writer_identity
 
     require_writer_identity(workspace_root=workspace_root)
+    job_started = time.monotonic()
     ws = _ws(workspace_root)
     via, trig = _run_mode(fired_via, triggered_by)
     actions: list = []
@@ -345,12 +359,33 @@ def cleanup_and_receipt(workspace_root, *, maintenance_window=None,
           "project tracker")
     _view("router_misses", lambda: ca.regenerate_router_misses_if_changed(ws),
           "routing corrections")
+    _view("craft_view", lambda: ca.regenerate_craft_view_if_changed(ws),
+          "list of how people work")
     stale = run("view_staleness", lambda: ca.check_analytical_view_staleness(ws))
     if stale:
         flagged.append("the weekly insight views are older than the record")
     aliases = run("aliases_staleness", lambda: ca.check_aliases_staleness(ws))
     if aliases:
         flagged.append("the name shortcuts list looks out of date")
+
+    # T10 (cr1#1019): the folder tidy, archive first into one dated folder
+    # with a manifest; the live data files are never moved. A short time
+    # budget keeps this pass inside the door's verb budget beside the
+    # others; what it does not reach this week it reaches next week.
+    tidy_budget = min(FOLDER_TIDY_DOOR_BUDGET_S,
+                      CLEANUP_DOOR_JOB_BUDGET_S - (time.monotonic() - job_started))
+    if tidy_budget < FOLDER_TIDY_MIN_S:
+        detail["folder_tidy"] = {"skipped": "no_time_left"}
+    else:
+        tidy = run("folder_tidy", lambda: ca.tidy_folder(ws, time_budget_s=tidy_budget))
+        if isinstance(tidy, dict):
+            detail["folder_tidy"] = {k: tidy.get(k) for k in (
+                "bucket", "moved", "by_kind", "remaining", "counts_before",
+                "counts_after", "live_unchanged")}
+            detail["folder_tidy"]["n_refused"] = len(tidy.get("refused") or [])
+            detail["folder_tidy"]["n_left"] = len(tidy.get("left") or [])
+            if tidy.get("moved"):
+                actions.append(tidy.get("note") or "tidied the folder")
 
     if not ran:
         return {"job_id": JOB_CLEANUP, "ok": False, "status": "not_written",

@@ -286,21 +286,16 @@ def _iter_alias_mappings(aliases: dict) -> list[dict]:
     iterating yielded the string keys and `mapping.get('raw')` raised
     AttributeError, crashing every `resolve()` / `resolve_all()` call).
 
-    Accepts BOTH shapes:
-      - Canonical (v2.21+): `mappings: {people: [...], projects: [...], orgs: [...]}`
-      - Legacy / fallback (older workspaces): `mappings: [...]` (flat list)
+    cr1#954 / cr1#1011: the shapes are read by `alias_index.alias_rows`, the
+    one reader every alias reader shares. Each row carries `raw` and
+    `canonical_id` whatever the file spelled them. Before, this read only the
+    people / projects / orgs tiers, so a nickname kept under `threads` (the
+    tier the test brain writes) never resolved, and a plain or list-valued
+    `{alias: id}` dict gave nothing.
     """
-    mappings = aliases.get("mappings")
-    if isinstance(mappings, list):
-        return [m for m in mappings if isinstance(m, dict)]
-    if isinstance(mappings, dict):
-        out = []
-        for tier_key in ("people", "projects", "orgs"):
-            tier = mappings.get(tier_key) or []
-            if isinstance(tier, list):
-                out.extend(m for m in tier if isinstance(m, dict))
-        return out
-    return []
+    from alias_index import alias_rows
+
+    return alias_rows(aliases)
 
 
 def _unwrap_entities(entities: dict) -> dict:
@@ -436,9 +431,10 @@ def _ledger_stamp(workspace_root: Path) -> "tuple | None":
     """Size, mtime and inode of every ledger file iter_events reads, in order;
     None when any of them cannot be stat'ed (then nothing is cached)."""
     try:
-        from events_io import shard_paths
+        # cr1#1061: every file the merged read covers (per-computer logs too).
+        from events_io import log_files
         stamp = []
-        for p in shard_paths(workspace_root):
+        for p in log_files(workspace_root):
             st = Path(p).stat()
             stamp.append((str(p), st.st_size, st.st_mtime_ns, st.st_ino))
         return tuple(stamp)

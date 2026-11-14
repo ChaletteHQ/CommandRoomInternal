@@ -2,7 +2,7 @@
 name: enable-command-room-schedules
 surfaces: cowork
 slack_fallback: "Scheduled chats are set up from a chat with your Command Room folder attached — say `set up command room schedules` there; your Slack briefs are scheduled server-side and fire on their own."
-description: "Sets up the Command Room schedule: its daily chats and silent background tasks. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats'. Registration is the writer of record for the schedule config. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'list my schedules' / 'configure my schedules' / 'pause [chat]' (change-schedule), or 'show my schedule' (the calendar, no skill)."
+description: "Sets up the Command Room schedule: its daily chats and silent background tasks. Fires on: 'set up command room schedules', 'register my scheduled chats', 'set up my daily chats', 'move my scheduled chats to this computer' (the hand-over), 'this account acts for me' (a second account acting for the owner). Registration is the writer of record for the schedule config. Registers the daily action chats, the weekly surfaces, and one maintenance task carrying the SILENT_TASKS jobs, each loading its steps fresh from the installed plugin at fire time. Proposes optional client-mix tasks (relationship-moves, dormant-customer-scan) — propose, never auto-register. Does NOT fire on 'change my schedule' / 'list my schedules' / 'configure my schedules' / 'pause [chat]' (change-schedule), or 'show my schedule' (the calendar, no skill)."
 ---
 
 <!-- SCHEDULER DISCOVERY >>> -->
@@ -63,13 +63,23 @@ When fired with one of these phrases, this skill runs in **read-only verificatio
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -221,13 +231,23 @@ Absent that explicit confirmation it stays inert (the dispatcher never surfaces 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -582,13 +602,23 @@ The bootloader assumes the orchestrator files exist on disk and contain the OUTP
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -654,6 +684,22 @@ print('orchestrator-files-verified:', json.dumps(out))
 
 If any assertion fails, ABORT the whole skill with a plain-English error: *"One of the Command Room files isn't readable right now. Reinstalling Command Room usually fixes this — ask whoever set it up for you, or reinstall it the same way it was first installed, then say `set up command room schedules` again."* Never register a partial set.
 
+**Step 1.A2 — Hand the schedules to this computer and account, only when the owner asked (cr1#1138). Before Step 1.B, once.** One computer and one account hold a folder's scheduled chats. When the owner said to move them here ("move my scheduled chats to this computer", "hand my scheduled chats to this account", or the same in other words), render ONE write and paste what it prints:
+
+`workspace_access.py plan run_writer --json '{"name": "schedule_config:hand_over_schedules", "args": {"workspace_root": "<WS>", "declared_by": "enable-command-room-schedules", "device_name": "<the name get_device_info reports>"}}'`
+
+- `result.changed: true` → say `result.line` once in the install summary, verbatim. The chats set up on the other computer or account are never deleted or changed from here: from the next slot they stop at their first write and record why.
+- anything else → say nothing about it, and do not carry on with Step 1.B: say once that the hand-over could not be recorded and that nothing was set up.
+
+Without the owner's words, this step does not run: setting up never moves the schedules off another computer or account on its own. The one exception is an account the owner already named as acting for them (Step 1.A3): its setup hands over by itself, at Step 1.B's declaration.
+
+**Step 1.A3 — Name this account as acting for the owner, only when the owner said so (cr1#1139, ruling A5).** Two accounts may use one folder: one owner, and a second account that acts for the owner, with the owner's settings, timezone and voice, writing to the owner's book. When the owner said so from the second account ("this account acts for me", or the same in other words), render ONE write and paste what it prints, then STOP unless the owner also asked to set up:
+
+`workspace_access.py plan run_writer --json '{"name": "schedule_config:name_acting_account", "args": {"workspace_root": "<WS>", "declared_by": "enable-command-room-schedules"}}'`
+
+- Say `result.line` once, verbatim, whatever it is (`changed: true` → named; `reason: "already"`, `"holder"`, `"no_holder"`, `"previous_holder"` or `"no_account"` → nothing was written, and the line says why).
+- From then on, setting up from this account moves the scheduled chats to it (the declaration answers `acting_for: true`), and mail from any mailbox whose role is not declared writes nothing to the book, on either account, until its role is set.
+
 **Step 1.B — Compose every chat's prompt for THIS seat, with the one composer (SCHEDREG1, coordinator decision D-1; ruling R-RW3-3).**
 
 Nothing in this skill substitutes a placeholder by hand any more, and no map of orchestrator files is typed here. The prompt each chat is registered with comes from ONE composer — for a chat, its short STUB from `schedule_refresh.compose_stub_body` (cr1#638: the identity line, the folder, the writer pair, the orchestrator and display name, and one instruction to have the installed plugin compose the full body with `schedule_refresh.compose_bootloader_body` at every fire — all seven placeholders filled, the writer pair baked; `references/orchestrator-map.json` is its map, so `staff-meeting` and every other row resolve; a template fix therefore reaches every chat on its next fire, with nothing to re-register) and, for a silent task (Step 1.D), the same short stub through `schedule_refresh.compose_stub_body`, whose fire composes `schedule_config.compose_silent_task_prompt` (cr1#972) — and the whole registration is planned by ONE call that uses them: `schedule_backend.plan_registration`. The drift compare, the refresh and the dev renderer compose through the same composer, so a chat registered here reads as current everywhere and a second run changes nothing.
@@ -702,8 +748,11 @@ The composed bootloader is what gets passed as the `prompt` argument — never t
 - `result.reason: "bound_elsewhere"` → another computer still holds this workspace's scheduled chats, and nothing was declared. Step 1.B did not refuse (this step only runs when it did not), so this is the one place the customer hears it: say `result.line` and then `result.invite`, once each, verbatim, as the whole reply about schedules, and STOP: execute none of Step 1.B's `creates` or `updates` (a chat registered here would stop itself at every fire, because this computer is not the declared writer).
 - `result.changed: false` with no `reason` → this computer was already the declared writer; say nothing.
 - `result.error: "no_writer_id"` → this seat cannot name itself (every older desktop seat and every local session), so it declares nothing — which is right; say nothing and continue.
-- `result.reason: "other_account"` (cr1#603) → this folder's schedules were set up under another account (the folder's identity file and the declaration both name it), and nothing was declared or re-derived. Say `result.line` once, verbatim, as the whole reply about schedules, and STOP: execute none of Step 1.B's `creates` or `updates`. One owner per folder; a second account acts for the owner and never takes the schedules over.
-- `ok: false`, or any other error → say nothing and continue. Declaring registers nothing, and a failed declaration is never a reason to stop a registration.
+- `result.reason: "other_account"` (cr1#603) → this folder's schedules were set up under another account (the folder's identity file and the declaration both name it), and nothing was declared or re-derived. Say `result.line` once, verbatim, as the whole reply about schedules, and STOP: execute none of Step 1.B's `creates` or `updates`. One owner per folder; a second account never takes the schedules over by setting up, only by the owner's own hand-over (Step 1.A2).
+- `result.reason: "handed_away"` (cr1#1139) → this is the owner's own account, and the schedules were handed to the account acting for them; nothing was declared. Say `result.line` once, verbatim, as the whole reply about schedules, and STOP: execute none of Step 1.B's `creates` or `updates`.
+- `result.acting_for: true` with `result.changed: true` (cr1#1139) → this account acts for the owner, so the declaration handed the schedules to it instead of refusing. Say `result.line` once, verbatim, and carry on: the other account's chats stop at their first write from the next slot, and nothing there is deleted from here.
+- `result.changed: true` with an empty `result.line` (cr1#1138: this computer and account already held the schedules, and the folder was renamed or the organisation changed) → say nothing and continue.
+- `ok: false`, or any other error → a failed declaration stops the registration (cr1#1138): say once that the scheduled chats could not be set up because this computer could not be recorded as the one that runs them, and STOP, executing none of Step 1.B's `creates` or `updates`. A chat registered without a declaration has no holder to check against, so a second computer's chats would write too.
 
 The writer is idempotent (the same id writes no file and no row), writes `workspace.scheduled_writer` plus one `scheduled_writer_declared` row, and never takes an id from anywhere but this seat. What it buys: once a writer is declared, a scheduled chat registered from ANOTHER computer stops itself at its Step 1.5 with one sentence and writes nothing, and `health check` names how many chats another computer is still writing. **Honest limit:** that stop reaches the other computer only after its own Command Room updates; until then its chats have to be deleted there by hand.
 
@@ -805,13 +854,23 @@ Read the per-workspace schedule configuration via the `schedule_config` helper. 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

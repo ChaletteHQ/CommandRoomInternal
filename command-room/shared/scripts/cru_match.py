@@ -980,23 +980,48 @@ def load_events_defensively(
     # everything that matters to the caller provably postdates the floor.
     # The active events.jsonl is never pruned; a non-events.jsonl path
     # ignores since_ts (no shards to prune).
+    #
+    # ONE LOG PER COMPUTER (cr1#1061): an `events.jsonl` path also reads every
+    # per-computer log beside it (`_hq/data/computers/<writer>/`), one stream
+    # per computer, and the streams are merged by `events_io.merge_streams`
+    # (everything from each, exact duplicates dropped). With no per-computer
+    # log -- every seat today -- there is one stream and the result is the
+    # pre-1061 read, byte for byte.
+    streams: list[tuple[str, list[Path]]]
     if path.name == "events.jsonl":
         try:
-            from events_io import shard_paths
-            files = shard_paths(path, since_ts=since_ts)
+            from events_io import log_streams
+            streams = log_streams(path, since_ts=since_ts)
         except Exception:
-            files = [path] if path.exists() else []
+            streams = [("", [path] if path.exists() else [])]
     else:
-        files = [path] if path.exists() else []
-    if not files:
+        streams = [("", [path] if path.exists() else [])]
+    if not any(files for _name, files in streams):
         return [], []
 
-    events: list[dict] = []
+    stream_events: list[list[dict]] = []
     skipped: list[dict] = []
+    for stream_name, files in streams:
+        stream_events.append(
+            _load_stream_defensively(files, skipped, stream_name))
+    if len(stream_events) == 1:
+        return stream_events[0], skipped
+    from events_io import merge_streams
+    return merge_streams(stream_events), skipped
 
+
+def _load_stream_defensively(files, skipped: list, stream_name: str = "") -> list[dict]:
+    """One stream's files (shards then the active file), parsed the way
+    `load_events_defensively` always has; unreadable lines go to `skipped`.
+    A per-computer stream's `shard` label is `computers/<writer>/<file>`, so
+    a skipped line names the computer it came from; the live log's labels
+    are unchanged."""
+    events: list[dict] = []
     for fp in files:
         if not fp.exists():
             continue
+        label = (f"computers/{stream_name}/{fp.name}" if stream_name
+                 else fp.name)
         # FS-15 — when the FINAL non-blank line of a file won't parse, that's
         # the partial-write / truncated-sync-cache signature (not historical
         # junk mid-file): record it in the `.readalarm.json` sidecar the
@@ -1017,7 +1042,7 @@ def load_events_defensively(
                     skipped.append(
                         {
                             "line": i,
-                            "shard": fp.name,
+                            "shard": label,
                             "reason": f"JSONDecodeError: {e.msg}",
                             "value": line[:80],
                         }
@@ -1027,7 +1052,7 @@ def load_events_defensively(
                     skipped.append(
                         {
                             "line": i,
-                            "shard": fp.name,
+                            "shard": label,
                             "reason": "non-dict",
                             "value": repr(ev)[:80],
                         }
@@ -1048,7 +1073,7 @@ def load_events_defensively(
                 # SyntaxError a mid-update truncation leaves) must not turn a
                 # degraded read into a hard failure.
                 pass
-    return events, skipped
+    return events
 
 
 # v4.5.2 R1 perf — per-fire memoization of the open-set projection.
@@ -1068,9 +1093,11 @@ def _events_files_sig(path: Path) -> tuple:
     set load_events_defensively reads). Any append changes st_size."""
     if path.name == "events.jsonl":
         try:
-            from events_io import shard_paths
+            # cr1#1061: every file the merged read covers, so another
+            # computer's append invalidates the cache too.
+            from events_io import log_files
 
-            files = shard_paths(path)
+            files = log_files(path)
         except Exception:
             files = [path] if path.exists() else []
     else:
@@ -1209,6 +1236,22 @@ def _adjudicated_since(ev, evidence_at) -> bool:
     raw = _commitment_field(ev, "adjudicated_at")
     when = _parse_ts(raw) if raw else None
     return when is not None and (evidence_at is None or when >= evidence_at)
+
+
+def _owed_patch(row: dict, event_data, patch_so_far=None) -> dict:
+    """cr1#1011 (owner ruling 2026-11-11, option b): the row patch an owner
+    change makes to the stored direction. The event's stored new direction,
+    or the three fields cleared (`event_data` None: nobody owns it, or an
+    event that stored none), so a value never outlives its owner. A row that
+    never carried one and gets none stays byte-identical."""
+    try:
+        from owed_direction import row_patch
+    except Exception:  # noqa: BLE001 - readers then work direction out
+        return {}
+    # The row as patched so far: two owner changes on one row must see the
+    # direction the first one stored, or a stale value survives the second.
+    current = {**((row or {}).get("data") or {}), **(patch_so_far or {})}
+    return row_patch(current, event_data)
 
 
 def load_open_commitments(
@@ -1422,11 +1465,15 @@ def load_open_commitments(
             # in stderr / log streams. Per the v3.13.8 contract, callers that
             # render to user MUST display skipped to the user explicitly;
             # this log line is the floor, not the ceiling.
+            # print to stderr, not a .write(): this reader is on the access
+            # layer's read list, whose static check names any .write() call
+            # (cr1#1005). Same text, same stream.
             import sys as _sys
-            _sys.stderr.write(
+            print(
                 f"[cru_match] load_open_commitments skipped {len(skipped)} "
                 f"malformed events.jsonl lines in {path.name}: "
-                f"{[s['line'] for s in skipped]}\n"
+                f"{[s['line'] for s in skipped]}",
+                file=_sys.stderr,
             )
     else:
         events = [ev for ev in events if isinstance(ev, dict)]
@@ -1655,7 +1702,12 @@ def load_open_commitments(
                 confirmations[str(target)] = {
                     "owner_id": d.get("new_owner_id"),
                     "owner_name": d.get("new_owner_name"),
+                    # cr1#1011 (ruling 2026-11-11 b): the direction the gate
+                    # stored for the new owner travels with it.
+                    "owed": d,
                     "clear_flags": bool(d.get("review_flags_cleared")),
+                    # cr1#771: whether the product, not the owner, cleared it
+                    "by_machine": d.get("actor_kind") == "machine",
                     "seq": ev.get("seq"),
                     "idx": idx,
                 }
@@ -1773,6 +1825,7 @@ def load_open_commitments(
                            or (restored and d.get("counterparty_cleared") is True)):
                 entry = {
                     "new_owner_id": d.get("new_owner_id"),
+                    "owed": d,  # cr1#1011, as for a Mine
                     "new_counterparty_id": d.get("new_counterparty_id"),
                     "new_owner_name": d.get("new_owner_name"),
                     "new_counterparty_name": d.get("new_counterparty_name"),
@@ -1969,6 +2022,7 @@ def load_open_commitments(
                     patch["pending_review"] = True
                     patch["review_reason"] = _REASSIGN_REVIEW_REASON
                 patch["owner_id"] = entry["new_owner_id"]
+                patch.update(_owed_patch(c, entry.get("owed") or {}, patch))
                 if entry.get("new_owner_name"):
                     patch["owner_name"] = entry["new_owner_name"]
                 patch["reassigned_by_seq"] = entry["seq"]
@@ -2016,6 +2070,7 @@ def load_open_commitments(
                 # open question — the plate parks it, the drain skips it.
                 patch["owner_id"] = ""
                 patch["owner_name"] = None
+                patch.update(_owed_patch(c, None, patch))  # cr1#1011: nobody owns it
                 patch["question"] = entry.get("question")
                 patch["question_by"] = entry.get("question_by")
                 patch["question_seq"] = entry["seq"]
@@ -2032,11 +2087,22 @@ def load_open_commitments(
                     patch["question_by"] = None
                 if entry.get("owner_id"):
                     patch["owner_id"] = entry["owner_id"]
+                    patch.update(_owed_patch(c, entry.get("owed") or {}, patch))
                     if entry.get("owner_name"):
                         patch["owner_name"] = entry["owner_name"]
-                patch["pending_review"] = False
-                patch["review_reason"] = None
-                patch["owner_confirmed_by_seq"] = entry["seq"]
+                # cr1#771 (owner rulings A3 and 2026-11-11): a capture kept
+                # after a refusal stays unconfirmed until the OWNER confirms,
+                # drops or edits it. A machine's clear never stands for that
+                # confirm: the row keeps its question. The kept mark itself is
+                # never cleared here; a kept row counts as kept only while it
+                # is unconfirmed, so the owner's confirm makes it ordinary and
+                # the owner's undo of that confirm makes it kept again.
+                kept_machine = bool((c.get("data") or {}).get("kept_after_refusal")
+                                    and entry.get("by_machine"))
+                if not kept_machine:
+                    patch["pending_review"] = False
+                    patch["review_reason"] = None
+                    patch["owner_confirmed_by_seq"] = entry["seq"]
                 if entry.get("clear_flags"):
                     patch["suspected_duplicate_of"] = None
                     patch["suspected_duplicate_score"] = None
@@ -4089,6 +4155,20 @@ def _commitment_counterparties(ev: dict, user_person_id: str) -> set[str]:
     return ids
 
 
+def _calendar_event_tentative(cev: dict) -> bool:
+    """True when a calendar event says it was cancelled, declined or a prep
+    meeting (cr1#1121): `calendar_subject.meeting_is_tentative` over the
+    event's own title and status fields."""
+    try:
+        from calendar_subject import meeting_is_tentative
+    except Exception:  # noqa: BLE001 - unreadable reads as a real meeting
+        return False
+    return meeting_is_tentative({
+        "title": cev.get("summary") or cev.get("title") or "",
+        "status": cev.get("status"), "response_status": cev.get("response_status"),
+        "self_response": cev.get("self_response"), "my_response": cev.get("my_response")})
+
+
 def match_calendar_to_commitments(
     *,
     open_commitments: list[dict],
@@ -4201,6 +4281,7 @@ def match_calendar_to_commitments(
                     "overlap": overlap,
                     "calendar_event_id": cev.get("calendar_event_id") or "",
                     "matched_cp": sorted(attendees & counterparties),
+                    "event": cev,
                 }
 
         if best is None:
@@ -4219,6 +4300,11 @@ def match_calendar_to_commitments(
             score = best["overlap"]
 
         if recommendation == "auto_resolve" and _is_pending_review(ev):
+            recommendation = "pending_review"
+        # cr1#1121 (#903 case 10): a meeting that was cancelled, declined or a
+        # prep is not the meeting the item asked for. It proposes; this path
+        # still reads no subject.
+        if recommendation == "auto_resolve" and _calendar_event_tentative(best["event"]):
             recommendation = "pending_review"
 
         # MC1: a calendar event with ONE counterparty of a multi-counterparty

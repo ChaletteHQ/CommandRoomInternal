@@ -44,6 +44,8 @@ This protocol was written in Gmail terms. As of the connector-agnostic build it 
 
 ## 1. Lazy draft creation (the big rule)
 
+**The one unpressed send (cr1#1017, the owner's ruling of 2026-11-13).** Nothing in this protocol is ever sent without the owner's press, with one named exception: the morning message, sent by the morning run to the owner's own business-primary address only, through `mail_seams(self_send=...)`. Its rules live in `shared/STOP_CONTRACT.md` ("The ONE scheduled send to the owner"). No draft, reply or follow-up uses `self_send`.
+
 **Do NOT create drafts at fire time.** Generate draft TEXT only. Show full draft inline in the chat turn. Drafts get persisted to the mail connector only when the user EXPLICITLY chooses one of these per-item actions (the tool named is the resolved draft/send tool on the declared backend per §0.5, NOT a hardcoded Gmail tool):
 
 - `N send` → compose + send via the resolved send path (§3c dispatch order).
@@ -191,13 +193,23 @@ If multiple tools match, prefer exact slug match over fuzzy match. If still ambi
     #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
     #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
     #    before the first plan, so a saved document can name the folder the
-    #    customer opens. Then hand that answer to `workspace_access.py discover
-    #    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-    #    is absent, or its manifest_sha is not this plugin's -- the version alone
-    #    no longer changes between builds) is a STOP: run the update-bridge
+    #    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+    #    reports, spelled as it reports it>" in front of that first plan, in the
+    #    same command, so each write names the computer it came from (plan keeps
+    #    it for the session). Then hand that answer to `workspace_access.py
+    #    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+    #    runtime is absent, or its manifest_sha is not this plugin's -- the version
+    #    alone no longer changes between builds) is a STOP: run the update-bridge
     #    install step once, resolve and compare again, and if it still lags say
     #    `lags_line` and stop. There is no container fallback.
     #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+    #    CONTEXT, always, one call: `plan run_helper` with name
+    #    `context_loader:load_context` and args {"workspace_root": "<WS>",
+    #    "skill": "<this skill's folder name>"}. Follow every rule in its
+    #    `rules`; an answer a rule shaped says so in the rule's own plain words.
+    #    Asked about the owner's own records and nothing on file answers, say
+    #    "I do not have that." The owner's rules are read through this loader
+    #    only.
     #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
     #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
     #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

@@ -141,13 +141,13 @@ The owner ruled that the prompt refresh ships with an update and is applied by b
 
 ## Step 7: Record that this version's schedule changes are applied
 
-Last, once steps 2 to 6 ran (each may have planned nothing), write the one record that clears the update's line, through the write door, and paste what it prints. **Only when this run finished the work step 2 planned:** `schedule_handoff.may_record_applied(<step 2's result>, refreshed=REFRESHED, failed_removals=REMOVED_FAILED)` is true (no create left; every prompt update the plan lists was made in this run, by the owner's own registration or by step 6; no planned delete failed; `REFRESHED` is empty from schedule setup, whose Phase 3 already made its updates). Otherwise write no record: the update keeps naming `set up command room schedules` and `rebuild my hub` until a run finishes it. The record also carries a fingerprint of Maintenance's registered stub (cr1#972) and of the shelved, retired and superseded sets (`schedule_handoff.schedule_fingerprint`), so a later change to any of them brings the update's line back:
+Last, once steps 2 to 6 ran (each may have planned nothing), write the one record that clears the update's line, through the write door, and paste what it prints. **Only when this run finished the work step 2 planned:** `schedule_handoff.may_record_applied(<step 2's result>, refreshed=REFRESHED, failed_removals=REMOVED_FAILED)` is true (no create left; every prompt update the plan lists was made in this run, by the owner's own registration or by step 6, or is a chat step 6 judged current; no planned delete failed; `REFRESHED` is empty from schedule setup, whose Phase 3 already made its updates). Otherwise write no record: the update keeps naming `set up command room schedules` and `rebuild my hub` until a run finishes it. The record also carries a fingerprint of Maintenance's registered stub (cr1#972) and of the shelved, retired and superseded sets (`schedule_handoff.schedule_fingerprint`), so a later change to any of them brings the update's line back:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"plugin_version": "<the installed plugin version>", "source_skill": "<this skill>", "workspace_root": "<WS>"}, "name": "schedule_handoff:log_schedule_changes_applied"}'
 ```
 
-Render it with `workspace_access.py plan run_writer --json '…'`. It writes one `schedule_changes_applied` row naming the installed version, and nothing on a second run of the same version. It says nothing: no line comes from this step. When step 1's readback failed, do not write it.
+Render it with `workspace_access.py plan run_writer --json '…'`. It writes one `schedule_changes_applied` row naming the installed version, and nothing on a second run of the same version or on a computer below the newest row's version (a newer computer's on the same synced folder, cr1#991). It says nothing: no line comes from this step. When step 1's readback failed, do not write it.
 
 ## Re-test: a retired maintenance job's stanza is gone from the registered prompt (DOORS1 1.1)
 

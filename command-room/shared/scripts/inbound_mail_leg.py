@@ -96,6 +96,8 @@ MESSAGE_FIELDS = ("message_id", "thread_id", "ts", "sender_email",
 REFUSED_NO_ACCOUNT = "no_account"
 REFUSED_OUT_OF_SCOPE = "out_of_scope"
 REFUSED_UNREADABLE = "accounts_unreadable"
+#: cr1#1181: a message from a sender the owner put off limits.
+REFUSED_OFF_LIMITS = "off_limits"
 
 #: What one capture candidate carries (orchestrator-inbox.md Phase 4b).
 CAPTURE_FIELDS = ("direction", "title", "kind", "due", "no_due", "evidence",
@@ -166,11 +168,23 @@ def _skip_of(rec) -> Optional[str]:
     return str(rec["skip_reason"]) if rec and rec.get("skip_reason") else None
 
 
-def _dial_mode(reads: Dict[str, Any], explicit=None) -> str:
-    """The close mode: the mail connector's `close_mode` dial when one is
-    declared (the ruling: it decides, per connector), else the value asked
-    for, else `close`, the ruled default (close on the deliverable, propose
-    on an acknowledgement)."""
+def _dial_mode(reads: Dict[str, Any], explicit=None, workspace_root=None) -> str:
+    """The close mode: the mail connector's `close_mode` dial as the owner
+    set it (the ruling: it decides, per connector), else the value asked for,
+    else `propose`.
+
+    cr1#1121 (#903 case 11, owner ruling 2026-11-12, option a): a dial left
+    UNSET proposes, on the scheduled job and on a manual run alike; a seat
+    that set the dial keeps its setting. The connector reader fills an unset
+    dial with the kind default (`close`), so the dial is read as the owner
+    left it (`reconcile_inbound_commitments.resolve_dial_mode`); with no
+    workspace root to read it from, the reader's own dial stands, as before."""
+    if workspace_root is not None:
+        from reconcile_inbound_commitments import CLOSE_MODES, resolve_dial_mode
+        raw = resolve_dial_mode(workspace_root, unset=None)
+        if raw in CLOSE_MODES:
+            return raw
+        return _close_mode(explicit) if explicit in CLOSE_MODES else resolve_dial_mode(workspace_root)
     rec = reads.get("close") or reads.get("open")
     dial = ((rec or {}).get("dials") or {}).get("close_mode")
     return _close_mode(dial if dial else explicit)
@@ -499,7 +513,7 @@ def plan_inbound_mail(workspace_root, now=None) -> dict:
         "user_person_id": user,
         "message_fields": list(MESSAGE_FIELDS),
         "capture_fields": list(CAPTURE_FIELDS),
-        "close_mode": _dial_mode(reads),
+        "close_mode": _dial_mode(reads, workspace_root=workspace_root),
         "connector_read": read,
         "include": list((read or {}).get("include") or []),
         "exclude": list((read or {}).get("exclude") or []),
@@ -547,8 +561,27 @@ def partition_by_account(workspace_root, items) -> tuple:
     refused, never read as business. On a seat that has classified nothing
     (R4: the wall is a no-op) every row is kept, today's behaviour."""
     refused = {"n": 0, REFUSED_NO_ACCOUNT: 0, REFUSED_OUT_OF_SCOPE: 0,
-               REFUSED_UNREADABLE: 0}
+               REFUSED_UNREADABLE: 0, REFUSED_OFF_LIMITS: 0}
     rows = [i for i in (items or []) if isinstance(i, dict)]
+    # cr1#1181: a sender the owner put off limits reaches neither half, on
+    # every book: nothing of theirs is captured, closed or moved.
+    try:
+        import account_scope_gate as _asg
+        off = _asg.off_limits_senders(workspace_root)
+        pids = _asg.off_limits_person_ids(workspace_root, off) if off else set()
+    except Exception:  # noqa: BLE001
+        off, pids = set(), set()
+    if off:
+        kept_rows = []
+        for item in rows:
+            if _asg.sender_off_limits(workspace_root, sender_email=item.get("sender_email"),
+                                      sender_person_id=item.get("sender_person_id"),
+                                      off_limits=off, person_ids=pids):
+                refused["n"] += 1
+                refused[REFUSED_OFF_LIMITS] += 1
+                continue
+            kept_rows.append(item)
+        rows = kept_rows
     try:
         import connector_config as cc
         populated = cc.account_map_populated(workspace_root)
@@ -565,7 +598,8 @@ def partition_by_account(workspace_root, items) -> tuple:
             refused[REFUSED_NO_ACCOUNT] += 1
             continue
         try:
-            in_scope = cc.is_in_write_scope(address=addr, workspace_root=workspace_root)
+            in_scope = cc.is_in_write_scope(address=addr, workspace_root=workspace_root,
+                                            mailbox=True)  # `account` IS the mailbox
         except Exception:  # noqa: BLE001 - cannot be shown in scope -> refused
             in_scope = False
         if not in_scope:
@@ -742,6 +776,11 @@ def _held_lines(r: dict) -> str:
     could not write and a read that did not reach the end of its window
     (cr1#742). Empty when neither happened."""
     out = ""
+    kept = r.get("n_capture_kept") or 0
+    if kept:
+        # cr1#771: kept, not lost; the row waits on the owner's list.
+        out += (f" {kept} item{'s' if kept != 1 else ''} could not be read in full "
+                f"and {'are' if kept != 1 else 'is'} on your list to confirm.")
     n = r.get("n_capture_errors") or 0
     if n:
         # The reasons stay on the receipt, under `capture_errors`: a writer's
@@ -795,8 +834,12 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
 
     A capture the job could not write (a due date that is not a date, an
     unknown kind, a mistyped direction, no due and no `no_due`) is named on
-    the receipt under `capture_errors` with its reason. It is not offered
-    again: cr1#771 stays open.
+    the receipt under `capture_errors` with its reason. One refused for a
+    field the extraction misread (a due date that is not a date, no due
+    and no `no_due`, an unknown kind, a mistyped direction) is kept instead
+    (cr1#771): written as its own row with that field made safe, held for
+    the owner's confirm, and listed under `capture_kept`. Nothing is held
+    back or offered again.
 
     Three terminal states, never alike: SKIPPED (no mail backend declared, or
     no account in write scope: nothing read, the receipt says why, and a
@@ -822,7 +865,7 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
     # (`page_until`, the plan's), never at a later page computed now.
     window = _as_fetched(_window(workspace_root), page_until)
     reads = connector_reads_for(workspace_root)
-    mode = _dial_mode(reads, close_mode)
+    mode = _dial_mode(reads, close_mode, workspace_root)
     open_skip, close_skip = _skip_of(reads["open"]), _skip_of(reads["close"])
     try:
         from connector_adapters.provenance import resolve_mail_provider
@@ -938,6 +981,7 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
         "n_below_bar": int(opened.get("n_below_bar") or 0),
         "n_capped": int(opened.get("n_capped") or 0),
         "n_capture_errors": int(opened.get("n_errors") or 0),
+        "n_capture_kept": int(opened.get("n_kept") or 0),
         "n_waiting_on": int(opened.get("n_waiting_on") or 0),
         "n_reply_owed": int(opened.get("n_reply_owed") or 0),
         "n_closed": int(closed.get("n_auto_closed") or 0)
@@ -963,6 +1007,16 @@ def run_inbound_mail(workspace_root, items, *, user_person_id=None,
             {"message_id": _norm(e.get("message_id")),
              "title": _norm(e.get("title")), "reason": _norm(e.get("error"))}
             for e in opened.get("errors") or [] if isinstance(e, dict)
+        ][:CAPTURE_ERRORS_KEPT]
+    if opened.get("kept"):
+        # cr1#771: a refused capture kept as its own row (`landed: open`, held
+        # for the owner's confirm), set aside as any guess is, or folded into
+        # the row already tracking it; with the refusal and what was changed.
+        receipt["capture_kept"] = [
+            {"message_id": _norm(k.get("message_id")), "title": _norm(k.get("title")),
+             "reason": _norm(k.get("reason")), "changed": list(k.get("changed") or []),
+             "landed": _norm(k.get("landed"))}
+            for k in opened.get("kept") or [] if isinstance(k, dict)
         ][:CAPTURE_ERRORS_KEPT]
     from catchup import read_reached_end
     read_complete = read_reached_end(read_complete)

@@ -156,6 +156,12 @@ def _cached_org_scoped_events(workspace_root) -> list:
     try:
         st = path.stat()
         key = (str(path), st.st_size, st.st_mtime_ns)
+        # cr1#1061: the read merges every per-computer log, so the key covers
+        # each of them too; with none, the key is the old one-file key.
+        from events_io import computer_log_dirs, log_files
+        if computer_log_dirs(workspace_root):
+            key = key + tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns)
+                              for p in log_files(workspace_root))
     except OSError:
         return load_events_org_scoped(workspace_root)[0]
     if _EVENTS_CACHE.get("key") == key:

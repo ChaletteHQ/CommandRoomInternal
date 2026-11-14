@@ -147,7 +147,8 @@ def _load_events(p: Path) -> list[dict]:
     if not p.exists():
         return []
     out: list[dict] = []
-    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+    from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+    for line in _merged_lines(p, encoding="utf-8", errors="ignore"):
         if not line.strip():
             continue
         try:

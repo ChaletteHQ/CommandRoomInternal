@@ -113,6 +113,30 @@ from commitment_policy import PROPOSAL_TTL_DAYS as REVIEW_PROPOSAL_TTL_DAYS  # n
 CLOSE_MODE_CLOSE = "close"
 CLOSE_MODE_PROPOSE = "propose"
 CLOSE_MODES = (CLOSE_MODE_CLOSE, CLOSE_MODE_PROPOSE)
+#: cr1#1121 (#903 case 11): what an on-demand caller passes to say "the mail
+#: connector's own close dial". The writer reads the dial; when it is set to
+#: `close` or `propose` that decides, and when it is left unset the run
+#: proposes (owner ruling 2026-11-12). Distinct from None, which keeps every
+#: graded close exactly as before cr1#664.
+CLOSE_MODE_DIAL = "dial"
+
+
+def resolve_dial_mode(workspace_root, *, unset=CLOSE_MODE_PROPOSE):
+    """The mail connector's `close_mode` dial as the owner set it, or `unset`
+    (`propose` by default) when it is not set or cannot be read (cr1#1121):
+    an unset mode never closes on a reply alone."""
+    # The declared row as the owner left it: `connector_reads` fills an unset
+    # dial with the default, which is exactly what must not decide here. The
+    # raw rows, so a row with a dial and no server id still counts (cr1#1121
+    # review).
+    try:
+        from connector_config import declared_backends
+        rec = declared_backends(workspace_root).get("email")
+    except Exception:  # noqa: BLE001 - unreadable reads as unset
+        rec = None
+    dials = (rec or {}).get("dials") if isinstance(rec, dict) else None
+    raw = str(((dials or {}) if isinstance(dials, dict) else {}).get("close_mode") or "").strip().lower()
+    return raw if raw in CLOSE_MODES else unset
 
 #: The reason a close demoted by `close_mode` carries on the confirm list.
 CLOSE_MODE_ACK_REASON = "their reply did not carry the item itself"
@@ -241,8 +265,68 @@ def _open_items_on_thread(message, opens, provider) -> list:
             if isinstance(c, dict) and commitment_matches_thread_ref(c, key)]
 
 
+#: The rows that end an item (`cru_match`'s own closer set).
+_ENDING_TYPES = ("commitment_resolved", "thread_resolved", "commitment_superseded")
+
+
+def closed_items(workspace_root, opens=()) -> list:
+    """cr1#1119 - the items the book has ended and that are not open now,
+    each as its last `commitment` row with its latest wording
+    (`commitment_updated`'s `new_title`) and `_ended_at`, the time of the row
+    that ended it. Read once per run, so the sibling check sees an item that
+    ended on the thread. Pure read; an unreadable book raises to the caller."""
+    from closure_index import closer_target_id
+    from events_io import load_events_owner_scoped
+    events, _skipped = load_events_owner_scoped(str(workspace_root))
+    open_ids = {str(_commitment_id(c)) for c in opens or ()}
+    ended: dict = {}
+    titles: dict = {}
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        et = e.get("type") or ""
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if et in _ENDING_TYPES:
+            cid = str(closer_target_id(e) or "")
+            if cid:
+                ended[cid] = str(e.get("ts") or "")
+        elif et == "commitment_updated" and d.get("new_title"):
+            cid = str(d.get("target_id") or d.get("commitment_id") or "")
+            if cid:
+                titles[cid] = str(d["new_title"])
+    latest: dict = {}
+    for e in events:
+        if not isinstance(e, dict) or e.get("type") != "commitment":
+            continue
+        cid = str(_commitment_id(e))
+        if cid in ended and cid not in open_ids:
+            row = dict(e)
+            data = dict(row.get("data") or {})
+            if cid in titles:
+                data["title"] = titles[cid]
+            row["data"] = data
+            row["_ended_at"] = ended[cid]
+            latest[cid] = row
+    return list(latest.values())
+
+
+def _rivals_while_open(closed, commitment) -> list:
+    """The ended items that were still open when `commitment` was: ended at
+    or after it was captured. An item that ended before this one existed (last
+    month's report on a monthly thread) never competed with it."""
+    from cru_match import _parse_ts
+    born = _parse_ts(str((commitment or {}).get("ts") or ""))
+    out = []
+    for c in closed or ():
+        at = _parse_ts(str(c.get("_ended_at") or ""))
+        if born is None or at is None or at >= born:
+            out.append(c)
+    return out
+
+
 def carries_deliverable(row, message, commitment, *, provider=None,
-                        people_names=None, opens=(), used_messages=()) -> bool:
+                        people_names=None, opens=(), used_messages=(),
+                        closed=()) -> bool:
     """True when the inbound `message` behind a graded close IS the delivery,
     by the sent matcher's own three evidence rules (cr1#664) plus the
     content rule of cr1#764:
@@ -299,7 +383,14 @@ def carries_deliverable(row, message, commitment, *, provider=None,
             provider, message.get("message_id"))) in used_messages:
         return False
     try:
-        siblings = _open_items_on_thread(message, opens, provider)
+        # cr1#1119 (#903 case 8): an item already closed on the thread still
+        # competes. A message that tied two items while both were open does
+        # not become sure of the second once the first has closed.
+        if closed is None:  # the ended items could not be read: no close
+            return False
+        siblings = _open_items_on_thread(
+            message, list(opens or []) + _rivals_while_open(closed, commitment),
+            provider)
     except Exception:  # noqa: BLE001 - the thread cannot be read: no close
         return False
     return attachment_is_the_item(message, commitment, people_names=people_names,
@@ -347,7 +438,7 @@ def _reply_may_close(row, message, commitment, *, user_person_id=None,
 
 def promote_deliveries(pending, inbound_messages, opens, *, close_mode,
                        provider=None, people_names=None, user_person_id=None,
-                       workspace_root=None, used_messages=()):
+                       workspace_root=None, used_messages=(), closed=()):
     """`(promoted, still_pending)` (cr1#764): in `close` mode, a proposal the
     matcher graded on the TITLE path (the reply echoes the item's words, no
     completion language) becomes a close when the message carries the item
@@ -377,7 +468,7 @@ def promote_deliveries(pending, inbound_messages, opens, *, close_mode,
                             workspace_root=workspace_root) and carries_deliverable(
                 row, message, commitment, provider=provider,
                 people_names=people_names, opens=opens,
-                used_messages=used_messages):
+                used_messages=used_messages, closed=closed):
             out = dict(row)
             out["recommendation"] = "auto_resolve"
             out["close_basis"] = _REPLY_BASIS
@@ -393,7 +484,8 @@ def promote_deliveries(pending, inbound_messages, opens, *, close_mode,
 
 
 def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
-                     provider=None, people_names=None, used_messages=()):
+                     provider=None, people_names=None, used_messages=(),
+                     closed=()):
     """`(kept, demoted)`: the graded closes `close_mode` lets stand, and the
     ones it sends to the confirm list instead, each demoted row carrying its
     reason in `close_mode_reason`. `close_mode` None keeps everything (the
@@ -412,7 +504,7 @@ def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
                 row, by_mid.get(str(row.get("message_id") or "")),
                 by_cid.get(str(row.get("commitment_id") or "")),
                 provider=provider, people_names=people_names, opens=opens,
-                used_messages=used_messages):
+                used_messages=used_messages, closed=closed):
             kept.append(row)
             continue
         out = dict(row)
@@ -426,7 +518,7 @@ def apply_close_mode(auto_close, inbound_messages, opens, *, close_mode,
 
 def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
                                  close_mode, provider=None, people_names=None,
-                                 used_messages=()):
+                                 used_messages=(), closed=()):
     """`(kept, demoted)` for the MC1 per-person receipts (cr1#664 review).
 
     A receipt is not a close, but enough of them close the item outright
@@ -453,7 +545,7 @@ def apply_close_mode_to_receipts(partial, inbound_messages, opens, *,
             if mode == CLOSE_MODE_CLOSE and carries_deliverable(
                     {}, by_mid.get(str(r.get("message_id") or "")), commitment,
                     provider=provider, people_names=people_names, opens=opens,
-                    used_messages=used_messages):
+                    used_messages=used_messages, closed=closed):
                 ok.append(r)
             else:
                 held.append(r)
@@ -1263,7 +1355,10 @@ def reconcile_inbound_and_receipt(
     runs before the policy gate and the closure path, on the matcher's own
     grades, and moves no threshold. None (the default, and every caller
     before cr1#664) is byte-identical: nothing is demoted and the audit and
-    the return carry no new key.
+    the return carry no new key. `dial` (cr1#1121, what the on-demand
+    Commitments run passes) reads the mail connector's own dial, and an unset
+    dial proposes (`resolve_dial_mode`); the audit then carries the mode it
+    resolved to.
     """
     if not user_person_id:
         msg = (
@@ -1414,6 +1509,8 @@ def reconcile_inbound_and_receipt(
     # policy gate: a demoted row joins the confirm list like any other.
     n_close_mode_proposed = 0
     n_close_mode_promoted = 0
+    if close_mode == CLOSE_MODE_DIAL:
+        close_mode = resolve_dial_mode(workspace_root)
     if close_mode is not None:
         # cr1#764 - the parties' names on file, set aside when the content
         # rule asks whether a reply's words are about the item.
@@ -1428,6 +1525,12 @@ def reconcile_inbound_and_receipt(
             _used = messages_used_for_proposals(workspace_root)
         except Exception:  # noqa: BLE001
             _used = set()
+        # cr1#1119 (#903 case 8) - the items already closed, so a sibling
+        # does not close on a message that tied it with one of them.
+        try:
+            _closed = closed_items(workspace_root, opens)
+        except Exception:  # noqa: BLE001 - unreadable: nothing closes on a sibling check
+            _closed = None
         # cr1#764 - the genuine delivery whose words also match the title
         # was graded a proposal by the title path; in close mode it closes
         # when the message carries the item on the item's own thread.
@@ -1435,16 +1538,18 @@ def reconcile_inbound_and_receipt(
             pending, inbound_messages, opens, close_mode=close_mode,
             provider=provider, people_names=_people,
             user_person_id=user_person_id, workspace_root=workspace_root,
-            used_messages=_used)
+            used_messages=_used, closed=_closed)
         n_close_mode_promoted = len(_promoted)
         auto_close = list(auto_close) + _promoted
         auto_close, _mode_demoted = apply_close_mode(
             auto_close, inbound_messages, opens, close_mode=close_mode,
-            provider=provider, people_names=_people, used_messages=_used)
+            provider=provider, people_names=_people, used_messages=_used,
+            closed=_closed)
         pending.extend(_mode_demoted)
         partial, _receipts_demoted = apply_close_mode_to_receipts(
             partial, inbound_messages, opens, close_mode=close_mode,
-            provider=provider, people_names=_people, used_messages=_used)
+            provider=provider, people_names=_people, used_messages=_used,
+            closed=_closed)
         pending.extend(_receipts_demoted)
         n_close_mode_proposed = len(_mode_demoted) + len(_receipts_demoted)
 
@@ -2091,4 +2196,5 @@ __all__ = ["reconcile_inbound", "reconcile_inbound_and_receipt",
            "validate_inbound_reconcile_ran", "PrimaryUserUnresolvedError",
            "CHANGE_CLASS", "CLOSE_MODES", "CLOSE_MODE_CLOSE",
            "CLOSE_MODE_PROPOSE", "carries_deliverable", "apply_close_mode",
-           "apply_close_mode_to_receipts"]
+           "apply_close_mode_to_receipts", "CLOSE_MODE_DIAL",
+           "resolve_dial_mode"]

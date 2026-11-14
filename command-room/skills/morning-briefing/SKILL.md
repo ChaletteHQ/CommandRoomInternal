@@ -74,6 +74,8 @@ sentence, never why, and never run the operation another way. A
 `writer_identity_required` envelope carries its own `line`; that sentence is
 the whole answer about it.
 
+**Personal sources, before the first connector read (cr1#1179).** After the resolve step above, render `cd "$PLUGIN_ROOT" && CR_DEVICE_WORKSPACE="<DEVICE>" CR_STAGED_ROOT="<RT>" CR_TRIGGERED_BY=morning-brief python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## Deterministic state computer (mandatory, v3.14.8+)
 
 > **The commitment header counts (`counts["headline"]`: you owe / owed to you / unowned / unconfirmed, plus overdue — v4.5.2 R4, the one bucket export) and the "ball is on you" Needs-Attention list MUST come from `shared/scripts/commitment_state.py::compute_brief_state(...)` (promoted from brief_state.py in Phase 2 Stage A; `brief_state` remains a working import alias) — NOT from re-deriving the open/overdue/whose-turn/drop rules in prose. Its `counts` block delegates to `commitment_state.count_commitments` — the ONE counting API every surface shares. This is the single source of truth for that computation; Steps 3b/3c/3c-bis below document the rules the function already implements and tell you how to gather its inputs. Your job at runtime is to FETCH the inputs (open commitments, per-thread latest-sender, calendar events, per-thread last-activity) and pass them in, then RENDER what comes back. Do not recompute the drops yourself — the function decides, and it is unit-tested (`tests/run_brief_state_test.py`).**
@@ -102,7 +104,7 @@ The email section of morning-briefing is intentionally summary-only — if the u
 
 ## Personification Contract (v3.13.8.4+)
 
-Before rendering the briefing, read `shared/PERSONIFICATION.md` and call `shared/scripts/personification.py::get_brain_name(workspace_root)`. The briefing chat intro line uses the shape `"Morning, {first_name} — {brain_name} here with today's read."` (default `{brain_name}` = `"Penelope"`); the scheduled-task .docx signature line is `"— {brain_name}"` (already implemented in v3.13.8 scheduled-task orchestrators). Don't over-name — one reference in the intro + one in the signature is the rhythm. **Persona precedence (STYLE1 D6):** that intro shape is the DEFAULT, not a mandate — if the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`), the persona outranks it. When the persona calls for skipping pleasantries (minimal encouragement, or a Never-line forbidding greeting openers), drop the salutation entirely and open with the synthesis lead; the `— {brain_name}` signature stays (identity, not pleasantry).
+Before rendering the briefing, read `shared/PERSONIFICATION.md` and call `shared/scripts/personification.py::get_brain_name(workspace_root)`. The briefing chat intro line uses the shape `"Morning, {first_name} — {brain_name} here with today's read."` **`{first_name}` is `pack["owner_first_name"]`, verbatim:** the folder owner's name, read from the folder (cr1#1139, ruling A5). Never the name of the account running this chat, never one from memory or the account's profile: a second account acting for the owner fires this same Brief, and it still greets the owner. When it is empty, the line is `"Morning — {brain_name} here with today's read."` (default `{brain_name}` = `"Penelope"`); the scheduled-task .docx signature line is `"— {brain_name}"` (already implemented in v3.13.8 scheduled-task orchestrators). Don't over-name — one reference in the intro + one in the signature is the rhythm. **Persona precedence (STYLE1 D6):** that intro shape is the DEFAULT, not a mandate — if the workspace CLAUDE.md carries the persona block (`## How {brain_name} talks to …`), the persona outranks it. When the persona calls for skipping pleasantries (minimal encouragement, or a Never-line forbidding greeting openers), drop the salutation entirely and open with the synthesis lead; the `— {brain_name}` signature stays (identity, not pleasantry).
 
 ## Writer Contract
 
@@ -1236,13 +1238,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

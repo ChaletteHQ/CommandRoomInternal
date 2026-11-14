@@ -79,7 +79,8 @@ def _knob_provenance(workspace_root: Path) -> Dict[Tuple[str, str], dict]:
     if not p.exists():
         return out
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        lines = _merged_lines(p, encoding="utf-8")
     except OSError:
         return out
     for line in lines:

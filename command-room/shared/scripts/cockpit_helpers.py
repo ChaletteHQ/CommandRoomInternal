@@ -5,8 +5,9 @@ the page saved, and how a saved choice reaches the book.
 WHAT THE COCKPIT IS
 -------------------
 
-One private artifact page the owner opens each morning. Seven tabs (Today, Inbox,
-Commitments, Projects, Review, Week, Settings; Overdue is a filter inside
+One private artifact page the owner opens each morning. Nine tabs, option D's
+List view (cr1#1013): Today, Week, Inbox, Commitments, Priorities, Work
+streams, People, Review, Settings (`HUB_TABS`; Overdue is a filter inside
 Commitments since cr1#946), one Start button, one light per leg. The page
 keeps its own small database on claude.ai: the feeds a run writes for it, the
 status line per leg, and the choices the owner presses. Nothing on the page
@@ -118,6 +119,16 @@ SCHEDULE_CAP = 4
 #: The page's verbs: a closed subset of the owning surface's own verbs.
 COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "reopen"})
 INBOX_VERBS = frozenset({"send", "draft", "snooze"})
+#: cr1#1020: the inbox presses the owner's mail rules take (`mail_rules`),
+#: applied in code by `apply_mail_choices`, never through a mail handler:
+#: Drop and Teach on an inbox row, and Add, Remove and Bring back on the
+#: rules list (`kind: "mailrule"`).
+INBOX_RULE_VERBS = frozenset({"drop", "teach"})
+MAILRULE_VERBS = frozenset({"add", "remove", "back", "keep", "unkeep"})
+MAIL_SURFACE = "cockpit-mail"
+#: cr1#1020 slice 3: the People tab's presses (`people_view`).
+PERSON_VERBS = frozenset({"star", "unstar"})
+PEOPLE_SURFACE = "cockpit-people"
 #: What each page verb becomes on the apply-choices wire (inbox only; the
 #: commitment verbs are applied here, in this module).
 INBOX_WIRE_ACTION = {"send": "send", "draft": "draft", "snooze": "snooze 3d"}
@@ -285,6 +296,37 @@ def save_config(workspace_root, *, url: str, trigger_id: Optional[str] = None,
 # setup: one account, end to end
 # ---------------------------------------------------------------------------
 
+def _same_account_by_mark(root, environ: Dict[str, str]) -> bool:
+    """cr1#1138: the declaration names THIS account by its mark. A writer id
+    carries the folder's name and the organisation, so after a renamed folder
+    or an organisation switch the ids differ while the account is the same;
+    the mark has neither in it. False whenever either side has no mark."""
+    try:
+        import schedule_config as _sc
+        import schedule_holder as _sh
+
+        decl = _sc.scheduled_writer(root) or {}
+        want = decl.get(_sh.KEY_ACCOUNT)
+        here = _sh.account_mark(environ)
+    except Exception:  # noqa: BLE001 - no mark, no verdict: today's check
+        return False
+    return bool(want and here and want == here)
+
+
+def _acting_for_owner(root, environ: Dict[str, str]) -> bool:
+    """cr1#1139 (ruling A5, D1 (a)): THIS account is one the owner named as
+    acting for them (`connector_config.acting_account_marks`). False whenever
+    this seat has no mark."""
+    try:
+        import connector_config as _cc
+        import schedule_holder as _sh
+
+        here = _sh.account_mark(environ)
+        return bool(here and here in _cc.acting_account_marks(root))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def setup_check(workspace_root, env: Optional[Dict[str, str]] = None,
                 writer_pair=None) -> Dict[str, Any]:
     """Can THIS chat set the cockpit up? `{ok, line, writer_id, declared,
@@ -325,7 +367,13 @@ def setup_check(workspace_root, env: Optional[Dict[str, str]] = None,
         declared = _declared_scheduled_writer(root)
     except Exception:  # noqa: BLE001 - a missing declaration is not a refusal
         declared = None
-    if declared and declared != pair[0]:
+    if declared and declared != pair[0] and not _same_account_by_mark(root, environ):
+        if _acting_for_owner(root, environ):
+            # cr1#1139: an account acting for the owner sets the Hub up after
+            # it takes the schedules over (`hand_over_schedules`), so the page
+            # and its task write as the holder.
+            return {"ok": True, "reason": "acting_for", "acting_for": True, "line": "",
+                    "writer_id": pair[0], "declared": declared, "basename": basename}
         return {"ok": False, "reason": "foreign_account",
                 "line": FOREIGN_ACCOUNT_LINE, "writer_id": pair[0],
                 "declared": declared, "basename": basename}
@@ -901,7 +949,10 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
     a connector unread. A connector is one entry however many jobs read it, by
     the label `run maintenance` says. The receipt keeps no line between "not
     read" and "not confirmed as read", so the words claim only the second.
-    Answers `{failing, unread, line}`; `line` is empty when there is nothing to
+    `left_unread` (cr1#979) is the due connector jobs the newest run left
+    unread; `silent` (cr1#1007) the sources that usually bring items in and
+    have read nothing on their last runs. Answers `{failing, unread,
+    left_unread, silent, line}`; `line` is empty when there is nothing to
     say, and an unreadable read says nothing."""
     import connector_reads as cr
     import maintenance_dispatcher as md
@@ -922,12 +973,60 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
             if int(c.get("fires") or 0) > gap["fires"]:  # the longest run, its start with it
                 gap.update(fires=int(c.get("fires") or 0), since=c.get("since"))
     unread = [gaps[k] for k in sorted(gaps)]
+    try:
+        # cr1#979: the due connector jobs the newest run left unread.
+        left = md.maintenance_left_unread(workspace_root)
+    except Exception:  # noqa: BLE001
+        left = []
     bits = []
     if failing:
         bits.append("Failing: " + ", ".join(f"{f['name']} ({_fires(f['fires'])})" for f in failing) + ".")
     if unread:
         bits.append("Not confirmed read: " + ", ".join(f"{u['label']} ({_fires(u['fires'])})" for u in unread) + ".")
-    return {"failing": failing, "unread": unread, "line": " ".join(bits)}
+    if left:
+        bits.append("Due and not run on the last run: " + ", ".join(task_display_name(j) for j in left) + ".")
+    try:
+        # cr1#1007: a source that usually brings items in and has read
+        # nothing on its last runs, read live off the book.
+        silent = md.maintenance_silent_sources(workspace_root)
+    except Exception:  # noqa: BLE001
+        silent = []
+    if silent:
+        bits.append(md.silent_sources_line(silent))
+    return {"failing": failing, "unread": unread, "left_unread": left,
+            "silent": silent, "line": " ".join(b for b in bits if b)}
+
+
+def schedule_holder_status(workspace_root, env: Optional[Dict[str, str]] = None
+                           ) -> Optional[Dict[str, Any]]:
+    """cr1#1138: which computer and account hold this folder's schedules, for
+    the Hub. `{line, computer, account, pending}`: `line` is the health
+    check's own sentence (`task_watchdog.scheduled_writer_lines`, one
+    producer), `computer` the holder's plain name or None, `account` `this` /
+    `other` / None (relative to the reader; the account is never named),
+    `pending` True while a hand-over has not yet taken effect. None when
+    nothing is declared. READ ONLY, never raises."""
+    try:
+        import schedule_config as _sc
+        import schedule_holder as _sh
+        import task_watchdog as _tw
+
+        decl = _sc.scheduled_writer(workspace_root)
+        if not decl:
+            return None
+        lines = _tw.scheduled_writer_lines(workspace_root, env)
+        held = _sh.holder_now(decl) or {}
+        words = _sh.holder_account_words(decl, env)
+    except Exception:  # noqa: BLE001 - the page keeps its old document
+        return None
+    if not lines:
+        return None
+    account = None
+    for key, said in _sh.ACCOUNT_WORDS.items():
+        if words == said:
+            account = key
+    return {"line": lines[0], "computer": held.get("device"),
+            "account": account, "pending": bool(held.get("pending"))}
 
 
 def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
@@ -938,7 +1037,8 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     UTC ISO}`, each job's newest completion), `hours_behind`
     (`maintenance_dispatcher.maintenance_staleness`, from the newest receipt,
     as of `now_iso`), `behind_hours`, the hours past which it counts as
-    behind, and `failing` and `unread` (cr1#822), which the line names too. It
+    behind, and `failing` and `unread` (cr1#822), `left_unread` (cr1#979) and
+    `silent` (cr1#1007), which the line names too. It
     is data only: Start runs Maintenance on every press
     (cr1#682). A workspace with no Maintenance
     on record answers `idle` with nothing measured; an unreadable book
@@ -946,9 +1046,13 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     now = _now(now_iso)
     doc = status_doc(workspace_root, "maintenance", "idle", MAINTENANCE_NONE_LINE, now_iso=now)
     doc.update({"finished_at": None, "last_completed": {}, "hours_behind": None,
-                "behind_hours": START_MAINTENANCE_BEHIND_HOURS, "failing": [], "unread": []})
+                "behind_hours": START_MAINTENANCE_BEHIND_HOURS, "failing": [], "unread": [],
+                "left_unread": [], "silent": []})
     if not workspace_root or not (Path(str(workspace_root)) / "_hq" / "data").is_dir():
         return doc
+    holder = schedule_holder_status(workspace_root)
+    if holder:
+        doc["holder"] = holder
     try:
         import maintenance_dispatcher as md
 
@@ -971,6 +1075,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         # (cr1#822); which fire left it is its own field, and the page says it.
         "line": " ".join(x for x in (MAINTENANCE_DONE_LINE, trouble["line"]) if x),
         "failing": trouble["failing"], "unread": trouble["unread"],
+        "left_unread": trouble["left_unread"], "silent": trouble["silent"],
         "fired_via": fired_via, "fired_at": fired_at,
         "finished_at": _iso(finished or newest),
         "last_completed": {job: _iso(when) for job, when in sorted(last.items())},
@@ -1070,6 +1175,13 @@ def _workspace_tz(workspace_root):
         return _dt.timezone.utc
 
 
+def _zone_name(workspace_root) -> str:
+    """The workspace's zone as an IANA name the page's Intl can read
+    ("America/Los_Angeles"); "UTC" when none is set or it has no name."""
+    tz = _workspace_tz(workspace_root)
+    return str(getattr(tz, "key", "") or "UTC")
+
+
 def _local_midnight(value, tzinfo) -> Optional[_dt.datetime]:
     """A date-only calendar value (an all-day event) as midnight where the
     owner is, never UTC midnight (cr1#679)."""
@@ -1078,6 +1190,236 @@ def _local_midnight(value, tzinfo) -> Optional[_dt.datetime]:
     except ValueError:
         return None
     return _dt.datetime.combine(d, _dt.time(0), tzinfo)
+
+
+#: The Week view on Today (cr1#1017, option D): seven day columns, today and
+#: the six after it. Each day carries its meetings from the calendar read and
+#: its due items from the open list; under the board, one lane per confirmed
+#: priority across the same days. No money anywhere.
+WEEK_DAYS = 7
+#: Per day: how many meetings and how many due cards travel; the rest are
+#: counted, never dropped silently.
+WEEK_DAY_MEETINGS = 20
+WEEK_DAY_CARDS = 12
+#: How many priority lanes travel under the board.
+WEEK_LANES = 8
+#: A timed event that says time away marks its days only when it runs this
+#: long; a short one ("away from desk, 2pm") is an ordinary meeting.
+WEEK_AWAY_TIMED_HOURS = 20
+#: An all-day event whose title says time away marks its days as away:
+#: "Away, <title>". A business meeting booked on such a day is a clash.
+WEEK_AWAY_RE = re.compile(
+    r"(?i)\b(out of (the )?office|ooo|vacation|holiday|holidays|time off|day off|"
+    r"days off|pto|annual leave|leave|off sick|sick day|away|travel(l)?ing|on leave)\b")
+
+
+def _week_dates(today: _dt.date) -> List[_dt.date]:
+    return [today + _dt.timedelta(days=i) for i in range(WEEK_DAYS)]
+
+
+def _day_name(d: _dt.date, today: _dt.date) -> str:
+    return "Today" if d == today else d.strftime("%A")
+
+
+def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
+    """The seven days' meetings for the Week view, from the same calendar
+    read as the Today list (the run reads seven days for it). Each day: its
+    date, its name ("Today" for the first), `away` (the title of an all-day
+    event that says time away, else None), its meetings in start order, each
+    marked `personal` and, on an away day, `clash` for a business meeting
+    with a time. Days are the owner's own, in the workspace's time zone."""
+    tzinfo = _workspace_tz(workspace_root)
+    today = now.astimezone(tzinfo).date()
+    dates = _week_dates(today)
+    first, last = dates[0], dates[-1]
+    by_day: Dict[_dt.date, List[Dict[str, Any]]] = {d: [] for d in dates}
+    away: Dict[_dt.date, str] = {}
+    for m in meetings or []:
+        if not isinstance(m, dict):
+            continue
+        title = str(m.get("title") or "").strip()[:200]
+        personal = str(m.get("calendar") or "").lower() == "personal"
+        all_day = bool(_DATE_ONLY_RE.match(str(m.get("start") or "").strip()))
+        if all_day:
+            s = _local_midnight(m.get("start"), tzinfo)
+            if s is None:
+                continue
+            e = (_local_midnight(m.get("end"), tzinfo)
+                 if _DATE_ONLY_RE.match(str(m.get("end") or "").strip()) else None)
+            d0 = s.date()
+            d1 = (e.date() if e is not None and e.date() > d0 else d0 + _dt.timedelta(days=1))
+            span = []
+            d = max(d0, first)
+            while d < d1 and d <= last:
+                span.append(d)
+                d += _dt.timedelta(days=1)
+            if not span:
+                continue
+            if WEEK_AWAY_RE.search(title):
+                for d in span:
+                    away.setdefault(d, title or "time away")
+                continue
+            for d in span:
+                by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
+                                  "start": None, "end": None, "all_day": True,
+                                  "personal": personal, "clash": False})
+            continue
+        start = _parse(m.get("start"))
+        if start is None:
+            continue
+        end = _parse(m.get("end")) or (start + _dt.timedelta(hours=1))
+        if end <= start:
+            end = start + _dt.timedelta(minutes=1)
+        # Every day it covers, an event that began before today included
+        # (a conference, a flight over midnight); the end is exclusive.
+        ds = start.astimezone(tzinfo).date()
+        de = (end - _dt.timedelta(microseconds=1)).astimezone(tzinfo).date()
+        span = []
+        d = max(ds, first)
+        while d <= de and d <= last:
+            span.append(d)
+            d += _dt.timedelta(days=1)
+        if not span:
+            continue
+        if WEEK_AWAY_RE.search(title) and end - start >= _dt.timedelta(hours=WEEK_AWAY_TIMED_HOURS):
+            for d in span:
+                away.setdefault(d, title)
+            continue
+        for d in span:
+            by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
+                              "start": _iso(start), "end": _iso(end), "all_day": False,
+                              "personal": personal, "clash": False})
+    days = []
+    for d in dates:
+        ms = by_day[d]
+        if d in away:
+            for x in ms:
+                x["clash"] = bool(not x["all_day"] and not x["personal"])
+        ms.sort(key=lambda x: (not x["all_day"], x["start"] or ""))
+        days.append({"date": d.isoformat(), "name": _day_name(d, today), "away": away.get(d),
+                     "meetings": ms[:WEEK_DAY_MEETINGS], "n_meetings": len(ms),
+                     "n_clashes": sum(1 for x in ms if x["clash"])})
+    return {"today": today.isoformat(), "days": days}
+
+
+def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. The Week view's board (cr1#1017, option D): the next seven days,
+    today first, each with its due items as cards, and under the board one
+    lane per confirmed priority (ruling B2: suggested ones are not on it)
+    with its threads' cards on the same days. Cards come from the open
+    list's confirmed rows both ways, never a second count of the log; a card
+    past its date sits on today, marked `late`. The meetings come from the
+    Today feed's `week` (the calendar read is the prep run's); the page joins
+    them by date. An item on no thread names the seat's word ("No thread").
+    Never writes. No money anywhere."""
+    import thread_cards as tc
+    import words as _w
+
+    now = _now(now_iso)
+    root = Path(str(workspace_root))
+    out: Dict[str, Any] = {"generated_at": _iso(now), "today": None, "days": [], "priorities": [],
+                           "n_due": 0, "n_late": 0, "errors": []}
+    try:
+        seat = _w.load_words(root)
+    except Exception:  # noqa: BLE001 - the defaults name the homeless item
+        seat = None
+    no_home = "No " + _w.label(seat, "thread")
+    try:
+        opens, today, _n, _from_log = tc._open_by_thread(root, _iso(now))
+    except Exception:  # noqa: BLE001 - an unread open list leaves the board empty and says so
+        out["errors"].append("open")
+        opens, today = {}, now.astimezone(_workspace_tz(workspace_root)).date()
+    try:
+        cards, _cl = tc.read_cards(root)
+        names = {str(t): str(c.get("name") or "") for t, c in (cards.get("threads") or {}).items()}
+    except Exception:  # noqa: BLE001 - a card that will not read leaves the thread unnamed
+        out["errors"].append("cards")
+        names = {}
+    dates = _week_dates(today)
+    last = dates[-1]
+    on_day: Dict[str, List[Dict[str, Any]]] = {d.isoformat(): [] for d in dates}
+    seen = set()
+    on_threads: Dict[str, set] = {}
+    for tid, v in opens.items():
+        for direction in ("you_owe", "owed_to_you"):
+            for r in v.get(direction) or []:
+                cid = str(r.get("id") or "")
+                if cid and tid:
+                    on_threads.setdefault(cid, set()).add(str(tid))
+                due = str(r.get("due") or "")[:10]
+                if not cid or cid in seen or not due:
+                    continue
+                try:
+                    d = _dt.date.fromisoformat(due)
+                except ValueError:
+                    continue
+                if d > last:
+                    continue
+                seen.add(cid)
+                late = d < today
+                on_day[(today if late else d).isoformat()].append({
+                    "id": cid, "title": str(r.get("title") or "")[:240], "due": due,
+                    "direction": direction, "late": late, "thread_id": str(tid or ""),
+                    "thread": (names.get(str(tid)) or no_home)[:160] if tid else no_home,
+                })
+    # The items on no thread are not in the per-thread open list: they come
+    # from the loose-ends list's unfiled kind, the same read as the Work
+    # streams tab's "No home yet", confirmed promises only, like the rest.
+    try:
+        import loose_ends as le
+        view = le.loose_ends_view(root, _iso(now), kind=le.KIND_UNFILED)
+    except Exception:  # noqa: BLE001 - the homeless items stay off, and it says so
+        out["errors"].append("no_home")
+        view = {}
+    for r in view.get("rows") or []:
+        cid = str(r.get("id") or "")
+        direction = str(r.get("direction") or "")
+        due = str(r.get("due") or "")[:10]
+        if (not cid or cid in seen or not due or direction not in ("you_owe", "owed_to_you")
+                or "unconfirmed" in (r.get("kinds") or [])):
+            continue
+        try:
+            d = _dt.date.fromisoformat(due)
+        except ValueError:
+            continue
+        if d > last:
+            continue
+        seen.add(cid)
+        late = d < today
+        on_day[(today if late else d).isoformat()].append({
+            "id": cid, "title": str(r.get("title") or "")[:240], "due": due, "direction": direction,
+            "late": late, "thread_id": "", "thread": no_home})
+    order = {"you_owe": 0, "owed_to_you": 1}
+    all_cards: List[Dict[str, Any]] = []
+    for d in dates:
+        key = d.isoformat()
+        cs = on_day[key]
+        cs.sort(key=lambda c: (c["late"], c["due"], order.get(c["direction"], 2), c["title"].lower()))
+        all_cards += cs
+        out["days"].append({"date": key, "name": _day_name(d, today), "due": cs[:WEEK_DAY_CARDS],
+                            "n_due": len(cs), "n_late": sum(1 for c in cs if c["late"]),
+                            "n_more": max(0, len(cs) - WEEK_DAY_CARDS)})
+    out["today"] = today.isoformat()
+    # cr1#1208: the zone the board's days are in, so the page judges a
+    # stale board on the workspace's day, never the viewer's.
+    out["tz"] = _zone_name(workspace_root)
+    out["n_due"] = len(all_cards)
+    out["n_late"] = sum(1 for c in all_cards if c["late"])
+    try:
+        pv = tc.priorities_view(root, _iso(now))
+    except Exception:  # noqa: BLE001 - no priorities leaves the lanes off, and says so
+        out["errors"].append("priorities")
+        pv = {}
+    for p in (pv.get("confirmed") or [])[:WEEK_LANES]:
+        threads = {str(t) for t in p.get("built_from") or []}
+        lane_days = []
+        for d in dates:
+            key = d.isoformat()
+            lane_days.append({"date": key, "cards": [{"id": c["id"], "title": c["title"], "late": c["late"]}
+                                                     for c in on_day[key] if (on_threads.get(c["id"]) or {c["thread_id"]}) & threads]})
+        out["priorities"].append({"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
+                                  "days": lane_days, "n": sum(len(x["cards"]) for x in lane_days)})
+    return _with_words(workspace_root, out)
 
 
 def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
@@ -1153,8 +1495,34 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             if rec.get("dt"):
                 r["prep_at"] = _iso(rec["dt"])
     rows.sort(key=lambda r: r["start"])
-    return {"generated_at": _iso(now), "meetings": rows,
-            "n_meetings": len(rows), "n_prepped": sum(1 for r in rows if r["prep"])}
+    try:
+        week = _week_days(workspace_root, meetings, now)
+    except Exception:  # noqa: BLE001 - the list never fails for the week's sake
+        week = {"today": None, "days": [], "error": True}
+    return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
+            "n_meetings": len(rows), "n_prepped": sum(1 for r in rows if r["prep"]),
+            "week": week, "about": _today_about(workspace_root, now)})
+
+
+def _today_about(workspace_root, now: _dt.datetime) -> Optional[Dict[str, Any]]:
+    """What the owner said today is about (cr1#1017, "one sentence on top"):
+    `{for_date, items: [text, ...]}` from the one day-intent reader, or None.
+
+    Only the owner's own word: a `proposed` guess never renders as fact
+    (`load_day_intent`'s default), and a day with no statement leaves the
+    page to say what the day holds instead. Read only."""
+    try:
+        from day_intent import load_day_intent, workspace_today
+
+        day = workspace_today(workspace_root, now=now).isoformat()
+        rec = load_day_intent(workspace_root, day)
+    except Exception:  # noqa: BLE001 - no timezone or an unreadable book says nothing
+        return None
+    if not rec:
+        return None
+    items = [" ".join(str(i.get("text") or "").split())[:200] for i in rec.get("items") or []]
+    items = [t for t in items if t]
+    return {"for_date": rec.get("for_date"), "items": items} if items else None
 
 
 def _plate_rows(dv: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1246,158 +1614,552 @@ _CLOSER_WORDS = {
 }
 
 
-def _overnight(workspace_root, now: _dt.datetime, hours: int = 24) -> Dict[str, Any]:
+def _changes(workspace_root, now: _dt.datetime, days: Optional[int] = None) -> Dict[str, Any]:
+    """READ. What changed in the book in the last `days` days (default
+    DONE_DAYS, the done strip's window), for Today's "what changed" line
+    (cr1#1017 behaviour 4, which retires the fixed 24-hour overnight count):
+    `{as_of, since, days, closed: [{ts, how}], opened: [ts], capped}`. The
+    page counts from the owner's last look (the done strip's own mark)
+    inside this window. Every count is the log's, never estimated, and
+    follows the done strip's rules (review round 1): one close per
+    commitment, its newest, dropped if the commitment was reopened since;
+    one opening per commitment, its first; the personal lane kept, as the
+    page is the owner's own. Unlike the strip, every close counts here
+    (a tap, a silence close), with its closer in words. At most
+    CHANGES_CAP of each travel, the newest; `capped` says so."""
     from events_io import load_events_org_scoped
 
-    since = now - _dt.timedelta(hours=hours)
-    closed: Dict[str, int] = {}
-    opened = 0
+    days = DONE_DAYS if days is None else days
+    now = now.replace(microsecond=0)   # as_of is whole seconds; nothing past it travels
+    since = now - _dt.timedelta(days=days)
+    closes: Dict[str, Dict[str, str]] = {}   # commitment id -> its standing close
+    first: Dict[str, _dt.datetime] = {}      # commitment id -> when it was first written
     try:
-        events, _skipped = load_events_org_scoped(workspace_root)
-    except Exception:  # noqa: BLE001 - no ledger reads as nothing overnight
+        events = load_events_org_scoped(str(workspace_root), drop_personal=False)[0]
+    except Exception:  # noqa: BLE001 - no ledger reads as nothing changed
         events = []
     for ev in events:
         if not isinstance(ev, dict):
             continue
-        ts = _parse(ev.get("ts"))
-        if ts is None or ts < since:
-            continue
         kind = ev.get("type")
-        if kind == "commitment_resolved":
-            key = str(ev.get("source_skill") or "other").split(":")[0]
-            closed[key] = closed.get(key, 0) + 1
-        elif kind == "commitment":
-            opened += 1
-    lines = [{"n": n, "how": _CLOSER_WORDS.get(k, "closed by " + k.replace("-", " "))}
-             for k, n in sorted(closed.items(), key=lambda kv: -kv[1])]
-    return {"hours": hours, "closed": sum(closed.values()), "opened": opened, "by": lines}
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        ts = _parse(ev.get("ts"))
+        if kind == "commitment":
+            cid = str(d.get("id") or "")
+            if cid and ts is not None and (cid not in first or ts < first[cid]):
+                first[cid] = ts
+        elif kind == "commitment_resolved":
+            cid = str(d.get("commitment_id") or d.get("id") or "")
+            if cid and ts is not None:
+                key = str(ev.get("source_skill") or "other").split(":")[0]
+                closes[cid] = {"at": ts, "how": _CLOSER_WORDS.get(key, "closed by " + key.replace("-", " "))}
+        elif kind == "commitment_reopened":
+            closes.pop(str(d.get("commitment_id") or d.get("target_id") or ""), None)
+    inside = lambda t: since <= t <= now  # noqa: E731
+    closed = sorted(({"ts": _iso(c["at"]), "how": c["how"]} for c in closes.values() if inside(c["at"])),
+                    key=lambda r: r["ts"])
+    opened = sorted(_iso(t) for t in first.values() if inside(t))
+    return {"as_of": _iso(now), "since": _iso(since), "days": days,
+            "closed": closed[-CHANGES_CAP:], "opened": opened[-CHANGES_CAP:],
+            "capped": len(closed) > CHANGES_CAP or len(opened) > CHANGES_CAP}
 
 
-#: The Projects tab (cr1#660): what counts as a live project, the order the
-#: groups show in, and how many rows travel.
+#: The Today tab's "Done for you" strip (cr1#1169 slice 2): how far back the
+#: feed reaches (the page counts from when the owner last looked, inside
+#: this), how many rows of each kind travel, and each kind's words and job
+#: (A4). Every count is the log's, never estimated (the value-receipt rule).
+DONE_DAYS = 7
+#: Today's "what changed" line (cr1#1017 behaviour 4): at most this many
+#: opened and closed times travel, the newest.
+CHANGES_CAP = 1000
+DONE_ROW_CAP = 100
+DONE_KINDS = {
+    "closed": {"one": "commitment closed", "many": "commitments closed",
+               "job": "the log: each commitment_resolved"},
+    "drafted": {"one": "reply drafted", "many": "replies drafted",
+                "job": "the log: each email_drafted"},
+    "meetings": {"one": "meeting captured", "many": "meetings captured",
+                 "job": "the log: each meeting_processed"},
+    "filed": {"one": "item filed to a thread", "many": "items filed to a thread",
+              "job": "the log: each reclassification that gives an item a thread"},
+    "reminders": {"one": "reminder set", "many": "reminders set",
+                  "job": "the log: each reminder"},
+    "filtered": {"one": "email kept out of the way", "many": "emails kept out of the way",
+                 "job": "the last inbox read's receipt: hidden by a rule, noise, dropped by you"},
+}
+#: The closes that count as done for the owner: the value receipt's own
+#: completion routes (`value_receipt.COMPLETION_ROUTES`, pinned equal by
+#: HUBDONE1). Named here, not imported: `value_receipt` renders the Word
+#: receipt, and importing it would put the Hub in the document-render family
+#: (RUNTIMEGATE1's import-graph derivation).
+DONE_COMPLETION_ROUTES = ("fact", "own_word")
+#: The inbox receipt's counters the filtered kind adds up, and their names.
+DONE_FILTER_KEYS = (("n_hidden_by_rule", "hidden_by_rule"), ("n_noise", "noise"),
+                    ("n_dropped_by_preference", "dropped"))
+
+
+#: Where a "Done for you" row came from, by its own type, when its pointer
+#: names nothing (cr1#1184 follow-up).
+_DONE_TYPE_SOURCES = {"email_drafted": "Email", "meeting_processed": "Meeting"}
+
+
+def _done_source(ev: Dict[str, Any], d: Dict[str, Any], ref: Any = None) -> Dict[str, str]:
+    """A "Done for you" row's source, in a word (C3; the thread panel's rule,
+    `_card_source_word`): the pointer's kind, else the row's type, else the
+    step that wrote it. Nothing known is no source line at all (A4), never
+    "Captured" on a strip of things done. Never the pointer, the log row or
+    the event id."""
+    ev = ev if isinstance(ev, dict) else {}
+    d = d if isinstance(d, dict) else {}
+    src = {"source_ref": str(ref or d.get("source_ref") or ev.get("source_ref") or "")}
+    word = _card_source_word(src, ev.get("type"))
+    if word == "Captured":
+        word = (_DONE_TYPE_SOURCES.get(str(ev.get("type") or ""))
+                or _ORIGIN_SKILLS.get(str(ev.get("source_skill") or "").split(":")[0]) or "")
+    return {"word": word} if word else {}
+
+
+def _done_for_you(workspace_root, now: _dt.datetime, days: int = DONE_DAYS) -> Dict[str, Any]:
+    """READ. What Command Room did for the owner in the last `days` days,
+    from the log only: `{as_of, since, days, kinds: {kind: {n, ts_all, rows,
+    job, one, many}}}`. Each row has its time, a title and its source (C3);
+    `ts_all` holds every counted time, so the page counts exactly from when
+    the owner last looked, never from the capped rows. A kind with nothing
+    is absent, so a day with nothing done carries no kinds at all. No money.
+
+    What counts (review round 1, the same rules the other readers use):
+      closed     a close the system proved, by `flow_measure.route_of`'s
+                 completion routes (`DONE_COMPLETION_ROUTES`), of a
+                 commitment on file, once per commitment, and not reopened
+                 since. A silence or lapse close, or the owner's own tap,
+                 is not done for them.
+      filed      an item whose newest move took it from no thread to one;
+                 a bulk move (a batch stamp), a split or an undo is not.
+      reminders  a reminder the owner set (`REMINDER_ORIGIN`), not cleared.
+    (Closes use `DONE_COMPLETION_ROUTES`, the value receipt's routes.)
+      filtered   the newest inbox read's own counts, never summed across
+                 reads (each read sees the same mail again)."""
+    from event_gate import REMINDER_ORIGIN
+    from events_io import load_events_org_scoped
+    from flow_measure import route_of
+    from plate_view import row_title
+    from receipts import receipt_task_id
+
+    since = now - _dt.timedelta(days=days)
+    try:
+        # The personal lane kept: the page is the owner's own (as feed_mine
+        # reads reminders), and a reminder is personal by default.
+        events = load_events_org_scoped(str(workspace_root), drop_personal=False)[0]
+    except Exception:  # noqa: BLE001 - no ledger reads as nothing done
+        events = []
+    titles: Dict[str, str] = {}
+    origins: Dict[str, str] = {}
+    by_seq: Dict[Any, Dict[str, Any]] = {}
+    closes: Dict[str, Dict[str, Any]] = {}      # commitment id -> its standing close
+    moves: Dict[Any, Dict[str, Any]] = {}       # item seq -> its newest move
+    reminders: Dict[str, Dict[str, Any]] = {}   # reminder id -> the reminder
+    inbox: Optional[Dict[str, Any]] = None
+
+    def _when(ev):
+        at = _parse(ev.get("ts"))
+        return at if at is not None and since <= at <= now else None
+
+    def _src(ev, d):
+        # Its source in a word, never a pointer or a log row (cr1#1184 follow-up).
+        return _done_source(ev, d)
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        by_seq[ev.get("seq")] = ev
+        kind = ev.get("type")
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if kind == "commitment":
+            if d.get("id"):
+                titles[str(d["id"])] = row_title(d.get("title"), d.get("summary"))
+                origins[str(d["id"])] = str(d.get("source_ref") or "")
+        elif kind == "commitment_resolved":
+            cid = str(d.get("commitment_id") or d.get("id") or "")
+            if cid:
+                closes[cid] = {"ev": ev, "route": route_of(ev)}   # the newest close stands
+        elif kind == "commitment_reopened":
+            cid = str(d.get("commitment_id") or d.get("target_id") or "")
+            closes.pop(cid, None)
+        elif kind == "reclassification":
+            item = d.get("supersedes_seq") or ev.get("supersedes_seq")
+            if item is not None:
+                moves[item] = ev
+        elif kind == "reminder":
+            if d.get("id") and d.get("origin", REMINDER_ORIGIN) == REMINDER_ORIGIN:
+                reminders[str(d["id"])] = ev
+        elif kind == "reminder_cleared":
+            reminders.pop(str(d.get("id") or d.get("reminder_id") or ""), None)
+        elif kind == "pack_run" and receipt_task_id(ev) == "inbox":
+            at = _when(ev)
+            got = {name: d.get(key) for key, name in DONE_FILTER_KEYS
+                   if isinstance(d.get(key), int) and not isinstance(d.get(key), bool)}
+            if at is not None and got and (inbox is None or _iso(at) >= inbox["ts"]):
+                inbox = {"ts": _iso(at), "source": _src(ev, d), "by": got, "n": sum(got.values())}
+
+    rows: Dict[str, List[Dict[str, Any]]] = {k: [] for k in DONE_KINDS}
+    for cid, c in closes.items():
+        ev = c["ev"]
+        at = _when(ev)
+        if at is None or c["route"] not in DONE_COMPLETION_ROUTES or cid not in titles:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        # Where the promise came from, in a word: "From a meeting" on a
+        # closed row means the promise, never what closed it (review). What
+        # closed it stands in only when the origin names nothing.
+        src = (_done_source({"type": "commitment"}, {}, origins.get(cid)) if origins.get(cid) else {})             or _done_source(ev, d)
+        rows["closed"].append({"ts": _iso(at), "source": src, "title": titles[cid][:240]})
+    threads = _thread_names(workspace_root)
+    for item, ev in moves.items():
+        at = _when(ev)
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        new = str(d.get("new_primary_thread_id") or "")
+        if at is None or not new or str(d.get("old_primary_thread_id") or "") \
+                or d.get("brain_batch_id") or d.get("brain_change_class"):
+            continue
+        it = by_seq.get(item) or {}
+        idata = it.get("data") if isinstance(it.get("data"), dict) else {}
+        rows["filed"].append({"ts": _iso(at), "source": _src(ev, d),
+                              "title": row_title(idata.get("title"), idata.get("summary"))[:240] or "An item",
+                              "thread": threads.get(new) or None})
+    for ev in reminders.values():
+        at = _when(ev)
+        if at is not None:
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            rows["reminders"].append({"ts": _iso(at), "source": _src(ev, d),
+                                      "title": str(d.get("summary") or "A reminder")[:240]})
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") not in ("email_drafted", "meeting_processed"):
+            continue
+        at = _when(ev)
+        if at is None:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev["type"] == "email_drafted":
+            rows["drafted"].append({"ts": _iso(at), "source": _src(ev, d),
+                                    "title": str(d.get("subject") or d.get("title") or "A reply")[:240]})
+        else:
+            rows["meetings"].append({"ts": _iso(at), "source": _src(ev, d),
+                                     "title": str(d.get("title") or d.get("meeting_title") or "A meeting")[:240]})
+    kinds: Dict[str, Any] = {}
+    for key, words in DONE_KINDS.items():
+        if key == "filtered":
+            if inbox and inbox["n"] > 0:
+                kinds[key] = dict(words, n=inbox["n"], by=inbox["by"], ts=inbox["ts"],
+                                  ts_all=[inbox["ts"]], source=inbox["source"], rows=[])
+            continue
+        found = sorted(rows[key], key=lambda r: r["ts"], reverse=True)
+        if found:
+            kinds[key] = dict(words, n=len(found), ts_all=[r["ts"] for r in found],
+                              rows=found[:DONE_ROW_CAP], n_hidden=max(0, len(found) - DONE_ROW_CAP))
+    return {"as_of": _iso(now), "since": _iso(since), "days": days, "kinds": kinds}
+
+
+def _thread_names(workspace_root) -> Dict[str, str]:
+    from entities_io import entities_collection, read_entities_json
+
+    try:
+        ent = read_entities_json(Path(str(workspace_root)) / "_hq" / "data" / "entities.json")
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+    return {str(t["id"]): str(t.get("display_name") or t.get("canonical_name") or t.get("name") or "")[:160]
+            for t in entities_collection(ent, "projects") if isinstance(t, dict) and t.get("id")}
+
+
+#: The Work streams tab (cr1#660, rebuilt by cr1#1013 part 2): the order the
+#: status groups sort in, and how many rows travel. What counts as live is
+#: the thread cards' rule (`thread_cards.DONE_STATUSES`); `PROJECT_DONE` is
+#: kept for the Week tab's own reads.
 PROJECT_LIVE_ORDER = ("active", "scoping", "paused", "dormant")
 PROJECT_DONE = ("archived", "completed", "resolved", "retired", "closed")
 PROJECTS_CAP = 200
+#: The words hook for the Hub's tabs (cr1#1013 part 2): option D's List view
+#: tabs, in order, each with the label it shows. The page's nav is pinned to
+#: this list (HUBLIST1). Train 8's per-seat word list (`words.py`) replaces
+#: the labels here and nowhere else; the keys are wire names and never change
+#: (`projects` is the Work streams tab, whose feed is still `feed/projects`).
+HUB_TABS = (("today", "Today"), ("week", "Week"), ("inbox", "Inbox"),
+            ("plate", "Commitments"), ("priorities", "Priorities"),
+            ("projects", "Work streams"), ("people", "People"),
+            ("review", "Review"), ("settings", "Settings"))
+#: The tabs whose label is a seat's word (cr1#1017 part 1b), by the key in
+#: `words.DEFAULTS`; every other tab keeps its label from `HUB_TABS`.
+HUB_TAB_WORDS = {"projects": "work_stream"}
+
+
+def hub_words(workspace_root) -> Dict[str, Any]:
+    """READ (cr1#1017 part 1b, ruling A6). The seat's words as every Hub feed
+    carries them under `words`: the word for one piece of work and for a group
+    of them, each `{one, many}`, whether the seat set them (`source`, `set`),
+    and the tabs in `HUB_TABS` order with the seat's label on each. The page
+    reads the labels from here (train 3); a seat with no list reads the ruled
+    defaults, which are `HUB_TABS` as written. Never raises: a list that will
+    not read costs the seat's words for one render, never the feed."""
+    import words as _w
+    try:
+        doc = _w.load_words(workspace_root) if workspace_root else None
+    except Exception:  # noqa: BLE001 - the feed renders on the defaults
+        doc = None
+    if not isinstance(doc, dict):
+        doc = {"words": _w._defaults(), "source": "default", "set": []}
+    w = doc["words"]
+    tabs = [{"key": key, "label": (_w.label(w, HUB_TAB_WORDS[key], many=True, title=True)
+                                   if key in HUB_TAB_WORDS else text)}
+            for key, text in HUB_TABS]
+    return {"thread": dict(w["thread"]), "work_stream": dict(w["work_stream"]),
+            "source": doc.get("source") or "default", "set": list(doc.get("set") or []),
+            "tabs": tabs}
+
+
+def _with_words(workspace_root, feed, seat: Optional[Dict[str, Any]] = None):
+    """Every feed's return: the feed with the seat's words on it (`seat`
+    when the feed already read them)."""
+    if isinstance(feed, dict):
+        feed["words"] = seat if seat is not None else hub_words(workspace_root)
+    return feed
+
+
+def _seat_word(seat: Dict[str, Any], key: str, *, many: bool = False) -> str:
+    import words as _w
+    return _w.label(seat, key, many=many)
+
+
+#: How many confirmed priorities travel on the page.
+PRIORITIES_CAP = 40
+
+
+#: Where a card line came from, in a word, by the row's own type when its
+#: pointer names no source (cr1#1013 part 4). Words only: the panel never
+#: shows a record id, an event id or a pointer.
+_CARD_TYPE_SOURCES = {"meeting": "Meeting", "meeting_processed": "Meeting",
+                      "email_sent": "Email", "email_received": "Email",
+                      "interaction": "Contact", "note": "Note", "memo": "Memo",
+                      "insight": "Note", "decision": "Decision",
+                      "session_chapter": "Chat"}
+#: How many open rows each way the thread panel lists (the card's own cap).
+PANEL_OPEN_ROWS = 3
+#: How many people from activity the thread panel names.
+PANEL_PEOPLE = 5
+
+
+def _card_source_word(src: Any, etype: Any = None) -> str:
+    """One card line's source, in a word: the pointer's scheme when it names
+    one, else the row's type. Never the pointer itself (ruling C3: the card
+    is for display; the source is where recall goes)."""
+    ref = str((src or {}).get("source_ref") or "") if isinstance(src, dict) else ""
+    scheme = ref.split(":", 1)[0].lower() if ref else ""
+    if scheme in ("session", "chat"):
+        return "Chat"
+    if scheme == "user":
+        return "You"
+    if scheme == "granola":
+        # A meeting pointer that names no real meeting is the owner's own
+        # entry, as Commitments' "Where this came from" reads it (cr1#725).
+        from capture_gate import granola_ref_ok
+        if not granola_ref_ok(ref):
+            return "You"
+    return (_ORIGIN_SOURCES.get(scheme) or _CARD_TYPE_SOURCES.get(str(etype or ""))
+            or "Captured")
+
+
+def _card_line(sec: Any, cap: int = 200) -> Optional[Dict[str, Any]]:
+    """A card section's text and day, for a row's More."""
+    if not isinstance(sec, dict) or not sec.get("text"):
+        return None
+    return {"text": str(sec["text"])[:cap], "day": sec.get("day") or None}
+
+
+def _thread_panel(c: Dict[str, Any], mine: List[dict], theirs: List[dict],
+                  late_known: bool) -> Dict[str, Any]:
+    """The thread detail panel (cr1#1013 part 4): the card, each line with
+    where it came from in a word. A section nothing fills is absent (ruling
+    A4). Open rows go by title, linked on the page to the Commitments tab
+    searched to them. No ids, no money."""
+    out: Dict[str, Any] = {"status": str((c.get("status") or {}).get("value") or "active")}
+    stands = [{"text": str(ln.get("text") or "")[:200], "day": ln.get("day") or None,
+               "from": _card_source_word(ln.get("source"), ln.get("type"))}
+              for ln in ((c.get("stands") or {}).get("lines") or []) if ln.get("text")]
+    if stands:
+        out["stands"] = stands[:3]
+    dec = c.get("last_decision")
+    if isinstance(dec, dict) and dec.get("text"):
+        out["last_decision"] = {"text": str(dec["text"])[:200], "day": dec.get("day") or None,
+                                "from": _card_source_word(dec.get("source"), "decision")}
+    mv = c.get("last_moved")
+    if isinstance(mv, dict) and mv.get("day"):
+        out["moved"] = {"day": mv["day"], "from": _card_source_word(mv.get("source"), mv.get("type"))}
+    people = [{"name": str(p.get("name") or "")[:120], "n": int(p.get("rows") or 0)}
+              for p in ((c.get("people") or {}).get("rows") or []) if p.get("name")]
+    if people:
+        out["people"] = people[:PANEL_PEOPLE]
+    if late_known:
+        def lines(rows):
+            return [{"title": str(r.get("title") or "")[:160], "due": str(r.get("due") or "")[:10] or None,
+                     "overdue": bool(r.get("overdue"))} for r in rows[:PANEL_OPEN_ROWS]]
+        if mine:
+            out["you_owe"], out["n_you_owe"] = lines(mine), len(mine)
+        if theirs:
+            out["owed_to_you"], out["n_owed_to_you"] = lines(theirs), len(theirs)
+    return out
+
+
+def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
+    """The Priorities tab: the confirmed priorities and the suggested ones,
+    apart (ruling B2), from the priority cards. No money."""
+    pv = tc.priorities_view(root, now_iso)
+    conf = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
+             "due": p.get("due") or None, "horizon": str(p.get("horizon") or "")[:80] or None,
+             "overdue": bool(p.get("overdue")),
+             "threads": list(p.get("built_from") or []), "says": str(p.get("says") or ""),
+             "still_a_priority": (p.get("still_a_priority") or {}).get("ask")}
+            for p in pv.get("confirmed") or []]
+    sugg = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
+             "company_id": str(p.get("company_id") or ""), "why": str(p.get("why") or ""),
+             "threads": list(p.get("built_from") or []),
+             "waits_for": str(p.get("waits_for") or "")}
+            for p in pv.get("suggested") or []]
+    return {"confirmed": conf[:PRIORITIES_CAP], "n_confirmed": len(conf), "suggested": sugg}
+
+
+#: The "No home yet" section of the Work streams tab (cr1#1013 part 3): how
+#: many rows travel. The count travels whole; the head always shows it.
+NO_HOME_CAP = 200
+#: How each kind of row reads on the page, by where it came from.
+NO_HOME_FROM = {"open_list": "open", "observed_tier": "heard"}
+
+
+def _no_home_source(src: Any) -> Dict[str, str]:
+    """A "No home yet" row's source, in a word (C3; the thread panel's rule,
+    `_card_source_word`): the pointer's scheme when it names one, else the
+    step that wrote the row, else "Captured". Never the pointer, the log row
+    or the event id."""
+    src = src if isinstance(src, dict) else {}
+    word = _card_source_word(src)
+    if word == "Captured":
+        word = _ORIGIN_SKILLS.get(str(src.get("skill") or "").split(":")[0]) or word
+    return {"word": word}
+
+
+def _feed_no_home(root: Path, now_iso: str) -> Dict[str, Any]:
+    """The "No home yet" section (cr1#1013 part 3): every open promise and
+    every heard line on no thread, read from the loose-ends list's `unfiled`
+    kind (`loose_ends.loose_ends_view`), never a second count of the log.
+    Each row says which way it runs and who it is with (never the owner),
+    its date and how long it has waited, and keeps its source (C3). The
+    section is always present, empty or not, and never narrowed by the
+    company filter: an item with no thread has no company. No money."""
+    import loose_ends as le
+    view = le.loose_ends_view(root, now_iso, kind=le.KIND_UNFILED)
+    names = _person_names(root)
+    owner = _owner_id(root)
+    today = str(view.get("today") or "")
+    rows = []
+    for r in view.get("rows") or []:
+        direction = str(r.get("direction") or "")
+        # The other party, never the owner. Only a row that runs one way
+        # names a side; a heard line or an unowned row names who it is with.
+        if direction == "owed_to_you":
+            cands = [r.get("owner_id")]
+        elif direction == "you_owe":
+            cands = list(r.get("counterparty_ids") or [])
+        else:
+            cands = [r.get("owner_id")] + list(r.get("counterparty_ids") or [])
+        who_id = next((str(c) for c in cands if c and str(c) != owner and names.get(str(c))), "")
+        who = names.get(who_id, "")
+        due = str(r.get("due") or "")[:10]
+        rows.append({
+            "id": str(r.get("id") or ""),
+            "title": str(r.get("title") or "")[:240],
+            "from": NO_HOME_FROM.get(str(r.get("from") or ""), "open"),
+            "direction": direction or None,
+            "with": who[:120] or None,
+            "due": due or None,
+            "overdue": bool(due and today and due < today),
+            "age_days": r.get("age_days"),
+            "waiting_for_yes": "unconfirmed" in (r.get("kinds") or []),
+            "source": _no_home_source(r.get("source")),
+        })
+    return {"rows": rows[:NO_HOME_CAP], "n": len(rows), "n_hidden": max(0, len(rows) - NO_HOME_CAP),
+            "job": le.KIND_INFO[le.KIND_UNFILED]["job"],
+            "counted_from_log": bool(view.get("counted_from_log"))}
 
 
 def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
-    """READ. The Projects tab: every project that is not archived, completed
-    or resolved, with its organization, its status, the last thing that
-    happened on it (`thread_activity.derive_from_events`, the C3 rule every
-    surface uses) and its open and overdue commitments
-    (`cru_match.load_open_commitments`, the counting API). Sorted by group,
-    then most recent activity first. Never writes; a missing book answers an
-    empty feed."""
-    from entities_io import entities_collection, read_entities_json, unwrap_entities
+    """READ. The Work streams tab and the Priorities tab (option D's List
+    view, cr1#1013 part 2), built only from the now layer: the thread,
+    work-stream and priority cards (`thread_cards`) and the open list, never
+    re-derived from the log here.
+
+    Each row is one live thread's card: its name, its company and
+    `company_id` (the per-company filter key, ruling B3), its status, the day
+    it last moved, its open rows both ways and the next step (the open list,
+    read live), its main contact worked out from activity (never the owner,
+    cr1#981; the hand-typed key contact no longer shows, ruling A4), where it
+    stands and its last decision. `work_stream` names the parent thread a row
+    sits under; `work_streams` lists each work stream's threads; `companies`
+    lists the companies the filter offers; `priorities` carries the
+    Priorities tab; `no_home` carries the items on no thread (part 3,
+    `_feed_no_home`), present even when the cards cannot be read. Never writes; a missing book answers an empty feed. No
+    money anywhere."""
+    import thread_cards as tc
 
     now = _now(now_iso)
-    data_dir = Path(str(workspace_root)) / "_hq" / "data"
+    out: Dict[str, Any] = {"generated_at": _iso(now), "rows": [], "n_rows": 0,
+                           "n_hidden": 0, "by_status": {}, "work_streams": [],
+                           "companies": [], "errors": [],
+                           "priorities": {"confirmed": [], "n_confirmed": 0, "suggested": []},
+                           "no_home": {"rows": [], "n": 0, "n_hidden": 0}}
+    root = Path(str(workspace_root))
+    # cr1#1013 part 3: items with no thread are never hidden, so this is read
+    # before (and apart from) the cards.
     try:
-        ent = read_entities_json(data_dir / "entities.json")
-    except (FileNotFoundError, ValueError, OSError):
-        ent = {}
-    if not isinstance(ent, dict):
-        ent = {}
-    container = unwrap_entities(ent) if ent else {}
-    orgs = {}
-    for o in (container.get("orgs") or []):
-        if isinstance(o, dict) and o.get("id"):
-            orgs[o["id"]] = o.get("display_name") or o.get("canonical_name") or o.get("name") or ""
-    projects = [p for p in (entities_collection(ent, "projects") if ent else [])
-                if isinstance(p, dict) and p.get("id")
-                and str(p.get("status") or "active").lower() not in PROJECT_DONE]
-
-    events_path = data_dir / "events.jsonl"
-    activity: Dict[str, str] = {}
-    events: List[Dict[str, Any]] = []
+        out["no_home"] = _feed_no_home(root, _iso(now))
+    except Exception:  # noqa: BLE001 - an unread loose-ends list says so, never a guessed empty
+        out["errors"].append("no_home")
+        out["no_home"] = {"rows": [], "n": None, "n_hidden": 0}
     try:
-        from events_io import load_events_org_scoped
-        from thread_activity import ALL_TYPES, derive_from_events
-
-        # The org-scoped reader, never a raw read of the log (the personal
-        # firewall's D4c guard): the same rows every other surface counts.
-        events = load_events_org_scoped(str(workspace_root))[0] if events_path.exists() else []
-        activity = {tid: act.ts.isoformat() for tid, act in derive_from_events(
-            events, activity_types=ALL_TYPES, honor_reclassifications=True).items()}
-    except Exception:  # noqa: BLE001 - a bad log row leaves the dates blank, never the tab
-        pass
-    opens: List[Dict[str, Any]] = []
+        cards, from_log = tc.read_cards(root)
+    except Exception:  # noqa: BLE001 - no cards answers an empty tab, and says so
+        out["errors"].append("cards")
+        return _with_words(workspace_root, out)
+    late_known = True
+    today = now.date()
     try:
-        from cru_match import _commitment_field, load_open_commitments
-
-        opens = load_open_commitments(events_path, events=events) if events else []
-    except Exception:  # noqa: BLE001
-        opens = []
-    open_n: Dict[str, int] = {}
-    over_n: Dict[str, int] = {}
-    next_of: Dict[str, Dict[str, str]] = {}
-    who_of: Dict[str, Dict[str, int]] = {}
-    people = _person_names(workspace_root)
-    decided: Dict[str, int] = {}
-    week_ago = now - _dt.timedelta(days=7)
-    try:
-        from decision_match import load_open_decisions
-        from event_refs import threads_of as _threads
-
-        # The open set, not raw rows: a decision since superseded or restamped
-        # is not one this project decided (cr1#731).
-        scoped = {e.get("seq") for e in events if isinstance(e, dict)}
-        for ev in (load_open_decisions(events_path) if events_path.exists() else []):
-            if ev.get("seq") not in scoped:  # the org-scoped rows only: the personal firewall
-                continue
-            at = _parse(ev.get("ts"))
-            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-            if at is not None and at >= week_ago and not d.get("pending_review"):
-                for tid in _threads(ev):
-                    decided[tid] = decided.get(tid, 0) + 1
-    except Exception:  # noqa: BLE001 - a bad row leaves the count off, never the tab
-        decided = {}
-    if opens:
-        from commitment_state import _now_calendar_day, is_overdue
-        from event_refs import threads_of
-
-        try:
-            day = _now_calendar_day(_iso(now), workspace_path=str(workspace_root))
-            today_iso = day.isoformat() if day else _iso(now)
-        except Exception:  # noqa: BLE001
-            today_iso = _iso(now)
-
-        for ev in opens:
-            try:
-                late = is_overdue(_commitment_field(ev, "due"), today_iso)
-            except Exception:  # noqa: BLE001
-                late = False
-            for tid in threads_of(ev):
-                open_n[tid] = open_n.get(tid, 0) + 1
-                if late:
-                    over_n[tid] = over_n.get(tid, 0) + 1
-                # cr1#731: the card's next step and key contact.
-                due = _commitment_field(ev, "due")
-                d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
-                held = next_of.get(tid)
-                if due and (held is None or str(due) < str(held["due"])):
-                    next_of[tid] = {"title": str(_commitment_field(ev, "title") or "")[:160], "due": str(due)[:10]}
-                who = (people.get(str(d.get("counterparty_id") or "")) or d.get("counterparty_name")
-                       or next(iter(d.get("counterparty_names") or []), ""))
-                if who:
-                    seen = who_of.setdefault(tid, {})
-                    seen[str(who)] = seen.get(str(who), 0) + 1
-
+        opens, today, _n, list_from_log = tc._open_by_thread(root, _iso(now))
+    except Exception:  # noqa: BLE001 - an unread open list leaves the counts off, never guessed
+        opens, list_from_log, late_known = {}, True, False
+        out["errors"].append("open")
     rows = []
-    for p in projects:
-        pid = p["id"]
-        status = str(p.get("status") or "active").lower()
+    for tid, c in (cards.get("threads") or {}).items():
+        v = opens.get(tid) or {}
+        mine, theirs = list(v.get("you_owe") or []), list(v.get("owed_to_you") or [])
+        nxt = tc.pick_next(mine, theirs, today)
+        company = c.get("company") or {}
+        key = (c.get("people") or {}).get("key_contact") or {}
         rows.append({
-            "id": pid,
-            "name": str(p.get("display_name") or p.get("canonical_name") or p.get("name") or pid)[:160],
-            "org": str(orgs.get(p.get("org_id") or p.get("affiliation_id")) or "")[:120],
-            "status": status,
-            "last_activity": activity.get(pid) or p.get("last_activity") or p.get("first_seen") or None,
-            "open": open_n.get(pid, 0),
-            "overdue": over_n.get(pid, 0),
-            "next": next_of.get(pid),
-            "contact": (max(who_of[pid].items(), key=lambda kv: kv[1])[0][:120] if who_of.get(pid) else None),
-            "decided_week": decided.get(pid, 0),
+            "id": tid,
+            "name": str(c.get("name") or tid)[:160],
+            "org": str(company.get("name") or "")[:120],
+            "company_id": str(c.get("company_id") or ""),
+            "status": str((c.get("status") or {}).get("value") or "active"),
+            "work_stream": str((c.get("parent") or {}).get("id") or ""),
+            "last_activity": (c.get("last_moved") or {}).get("day") or None,
+            "open": len(mine) + len(theirs) if late_known else None,
+            "you_owe": len(mine), "owed_to_you": len(theirs),
+            "overdue": sum(1 for r in mine + theirs if r.get("overdue")) if late_known else None,
+            "next": ({"title": str(nxt.get("title") or "")[:160],
+                      "due": str(nxt.get("due") or "")[:10] or None,
+                      "overdue": bool(nxt.get("overdue")), "direction": nxt.get("direction")}
+                     if nxt else None),
+            "contact": str(key.get("name") or "")[:120] or None,
+            "stands": [{"text": str(ln.get("text") or "")[:200], "day": ln.get("day") or None}
+                       for ln in ((c.get("stands") or {}).get("lines") or [])][:tc.STANDS_LINES],
+            "last_decision": _card_line(c.get("last_decision")),
+            "panel": _thread_panel(c, mine, theirs, late_known),
         })
     rank = {s: i for i, s in enumerate(PROJECT_LIVE_ORDER)}
     rows.sort(key=lambda r: str(r["last_activity"] or ""), reverse=True)
@@ -1405,12 +2167,33 @@ def feed_projects(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     by_status: Dict[str, int] = {}
     for r in rows:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1
-    return {
-        "generated_at": _iso(now),
-        "rows": rows[:PROJECTS_CAP], "n_rows": len(rows),
-        "n_hidden": max(0, len(rows) - PROJECTS_CAP),
-        "by_status": by_status,
-    }
+    shown = rows[:PROJECTS_CAP]
+    seen = {r["id"] for r in shown}
+    streams = []
+    for wid, w in (cards.get("work_streams") or {}).items():
+        if wid not in seen:
+            continue
+        streams.append({"id": wid, "name": str(w.get("name") or wid)[:160],
+                        "company_id": str(w.get("company_id") or ""),
+                        "threads": [t for t in (w.get("built_from") or []) if t in seen],
+                        "says": str(w.get("says") or "")})
+    streams.sort(key=lambda s: (s["name"].lower(), s["id"]))
+    companies: Dict[str, Dict[str, Any]] = {}
+    for r in shown:
+        if r["company_id"]:
+            e = companies.setdefault(r["company_id"], {"id": r["company_id"], "name": r["org"], "n": 0})
+            e["n"] += 1
+    try:
+        out["priorities"] = _feed_priorities(tc, root, _iso(now))
+    except Exception:  # noqa: BLE001 - an unread priority list leaves that tab empty, and says so
+        out["errors"].append("priorities")
+    out.update({
+        "rows": shown, "n_rows": len(rows), "n_hidden": max(0, len(rows) - PROJECTS_CAP),
+        "by_status": by_status, "work_streams": streams,
+        "companies": sorted(companies.values(), key=lambda e: (e["name"].lower(), e["id"])),
+        "counted_from_log": bool(from_log or list_from_log),
+    })
+    return _with_words(workspace_root, out)
 
 
 #: The Review tab (cr1#779): at most this many rows are today's, the rest sit
@@ -1433,7 +2216,14 @@ REVIEW_ACCEPT_VERBS = ("confirm proposal", "add person", "confirm [type]")
 REVIEW_SAME_AS_VERB = "same as [existing]"
 REVIEW_VERBS = frozenset(REVIEW_CLOSE_VERBS + REVIEW_ROW_VERBS + REVIEW_ACCEPT_VERBS + (REVIEW_SAME_AS_VERB,))
 #: A yes the row's kind words for itself.
-REVIEW_YES_LABELS = {"learned_rule": "Yes", "archived_activity": "Bring it back"}
+REVIEW_YES_LABELS = {"learned_rule": "Yes", "archived_activity": "Bring it back",
+                     "craft_amend": "Use the new text", "craft_rule": "Add the rule",
+                     "past_ruling": "Add to decisions"}
+#: cr1#401: a No on an amend keeps the rule, which is the owner confirming it.
+REVIEW_NO_LABELS = {"craft_amend": "Keep the rule"}
+#: cr1#400: at most this many craft questions (new rules and amends) on the
+#: tab at a time; the rest wait until these are answered or skipped.
+REVIEW_CRAFT_KINDS = ("craft_rule", "craft_amend")
 #: Why an accept is not on the row. The rest of the row still answers here.
 REVIEW_CHAT_WHY = {
     "project": "To accept this one, say `staff meeting` in a chat: a new project needs its folder and a first read of your connectors.",
@@ -1447,7 +2237,10 @@ REVIEW_PERSON_MANY_LINE = "To say who this is, say `staff meeting` in a chat: mo
 REVIEW_SAME_AS_GONE_LINE = "That row names nobody on file to link to; nothing was written."
 #: The keys the writers read, off the proposal event, onto the row.
 REVIEW_ROW_KEYS = ("proposed_money", "fact", "category", "proposed_role", "to_org_id",
-                   "objective_id", "source_event_seq")
+                   "objective_id", "source_event_seq",
+                   # cr1#401: an amend shows the old and the new text side by side
+                   "old_text", "new_text", "craft_question", "craft_contradictions",
+                   "craft_confidence", "craft_pending")
 #: What only the writers read. It stays off the page.
 REVIEW_WRITER_KEYS = REVIEW_ROW_KEYS + ("name", "source_ref", "skill", "knob", "target_id")
 #: A row a press no longer finds in the queue, and the typed value a row lacks.
@@ -1604,6 +2397,10 @@ def _review_ask(item: Dict[str, Any], verb: str) -> Dict[str, Any]:
         return {"ask": "Different wording, if this is not right", "required": not item.get("fact")}
     if kind == "org":
         return {"ask": "A different name, if this one is wrong"}
+    if kind == "craft_rule":  # cr1#400: confirm, edit or dismiss
+        return {"ask": "Your own words for the rule, if these are not right"}
+    if kind == "past_ruling":  # cr1#1073: the owner's wording replaces the file's
+        return {"ask": "Your own words for the ruling, if these are not right"}
     if kind == "person_update" and item.get("proposal_kind") == "role_change":
         return {"ask": "The role" if not item.get("proposed_role") else "A different role, if this one is wrong",
                 "required": not item.get("proposed_role")}
@@ -1641,8 +2438,8 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     try:
         items = bp.rank_proposals(bp.load_open_proposals(str(workspace_root), "staff-meeting", now_iso=iso_now))
     except Exception:  # noqa: BLE001 - an unreadable queue is said, never shown as empty
-        return {"generated_at": iso_now, "rows": [], "n_open": 0, "n_hidden": 0, "accept_rates": {},
-                "line": "", "errors": ["review"]}
+        return _with_words(workspace_root, {"generated_at": iso_now, "rows": [], "n_open": 0, "n_hidden": 0, "accept_rates": {},
+                "line": "", "errors": ["review"]})
     events = _review_events(workspace_root)
     # The open projection, never the capture event: a due date moved since
     # capture is the one that counts (the reducer owns truth).
@@ -1680,6 +2477,19 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             return (0, "", 0)
         return (1, str((by_seq.get(it.get("seq")) or {}).get("source_skill") or it.get("detector") or ""), 0 if kind == "person" else 1)
     weighed.sort(key=lambda w: (w[0],) + _grouping(w[2]))
+    try:
+        from craft_sweep import MAX_ON_REVIEW as _craft_cap
+    except Exception:  # noqa: BLE001 - the owner's ruling, five per card
+        _craft_cap = 5
+    _n_craft, _kept = 0, []
+    for w in weighed:
+        if str(w[2].get("kind") or "") in REVIEW_CRAFT_KINDS:
+            _n_craft += 1
+            if _n_craft > _craft_cap:
+                continue
+        _kept.append(w)
+    n_craft_waiting = max(0, _n_craft - _craft_cap)
+    weighed = _kept
     rows: List[Dict[str, Any]] = []
     for n, (_w, reason, it) in enumerate(weighed[:REVIEW_CAP]):
         kind = str(it.get("kind") or "")
@@ -1702,7 +2512,8 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         verbs = [{"action": v,
                   "label": (REVIEW_YES_LABELS.get(kind, display_label(v) or v) if v == "confirm proposal"
                             else (("Same as " + str(same_as.get("value") or "").strip()).strip() if v == REVIEW_SAME_AS_VERB and same_as
-                                  else (display_label(v) or v))),
+                                  else (REVIEW_NO_LABELS.get(kind, display_label(v) or v) if v == "dismiss proposal"
+                                        else (display_label(v) or v)))),
                   **{k: w for k, w in _review_ask(full, v).items() if w}} for v in answers]
         # cr1#775: where the question came from, so a project question sits
         # beside the person questions from the same read.
@@ -1719,9 +2530,18 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             "today": n < REVIEW_TODAY, "board": board or None,
             "data": {**bp._row_target_ids(it), **{k: full[k] for k in REVIEW_ROW_KEYS if k in full}},
         })
-    return {"generated_at": iso_now, "rows": rows, "n_open": len(weighed),
-            "n_hidden": max(0, len(weighed) - REVIEW_CAP),
-            "line": "" if rows else REVIEW_EMPTY_LINE, "accept_rates": _review_rates(events)}
+    # cr1#401: stale and never-tested craft files, and corrections attached to a
+    # rule. A list with the phrase that acts on each, never a question.
+    try:
+        import craft_adjust
+
+        craft = craft_adjust.review_list(workspace_root, now_iso=iso_now)
+    except Exception:  # noqa: BLE001 - the questions still show
+        craft = {"stale": [], "untested": [], "evidence": [], "errors": ["craft"]}
+    return _with_words(workspace_root, {"generated_at": iso_now, "rows": rows, "n_open": len(weighed) + n_craft_waiting,
+            "n_hidden": max(0, len(weighed) - REVIEW_CAP) + n_craft_waiting,
+            "line": "" if rows else REVIEW_EMPTY_LINE, "accept_rates": _review_rates(events),
+            "craft": craft})
 
 
 def _review_close(workspace_root, c: Dict[str, Any], actor: str, now) -> Dict[str, Any]:
@@ -1906,6 +2726,26 @@ def _accept_org(ws, row, text, actor, events_path, now):
     return out
 
 
+def _no_question(ws, row: Dict[str, Any], handler: Dict[str, Any], line: str, now) -> tuple:
+    """cr1#1171: a voice-rule or past-ruling writer that finds no question.
+    Those writers answer `already_resolved` for a question answered elsewhere,
+    so `no_question` means the writer and the queue disagree about the row.
+    If the queue no longer holds it, nothing is owed: a no-op
+    (`already_resolved`, the writer's word kept beside it). If the queue still
+    holds it open, the press did not land: an error, never a suppressed row
+    (`apply_audit`'s never-optimistic rule; review of cr1#1171)."""
+    try:
+        import brain_proposals as bp
+
+        held = str(row.get("id")) in {str(p.get("id")) for p in bp.load_open_proposals(
+            str(ws), "staff-meeting", now_iso=_iso(now) if now else None)}
+    except Exception:  # noqa: BLE001 - cannot tell: never optimistic
+        held = True
+    if held:
+        return handler, "error", ROW_ERROR_LINE
+    return {**handler, "status": "already_resolved", "writer_status": "no_question"}, "already", line
+
+
 def _accept_learned_rule(ws, row, text, actor, events_path, now):
     """The one yes `learning_pass` keeps for a voice question: it writes the
     rule and answers the row, so nothing else resolves it. The rule's Undo is on
@@ -1917,9 +2757,64 @@ def _accept_learned_rule(ws, row, text, actor, events_path, now):
     handler = {"status": status, "answered": True}
     if status == "applied":
         return handler, "applied", str(res.get("line") or "")
-    if status in ("already_resolved", "no_question"):
+    if status == "no_question":
+        return _no_question(ws, row, handler, REVIEW_GONE_LINE, now)
+    if status == "already_resolved":
         return handler, "already", REVIEW_GONE_LINE
     return handler, "refused" if status == "refused" else "error", str(res.get("line") or ROW_ERROR_LINE)
+
+
+def _accept_craft_rule(ws, row, text, actor, events_path, now):
+    """cr1#400: a rule the nightly sweep saw is saved through the capture
+    writer. `confirm_rule` reads the proposal from the book and answers the
+    row itself."""
+    import craft_sweep
+
+    res = craft_sweep.confirm_rule(ws, str(row.get("id")), resolved_by=actor, edit=text or None,
+                                   now_iso=_iso(now), source_skill=COMMITMENT_SRC)
+    handler = {"status": res.get("status"), "answered": True}
+    if res.get("ok"):
+        return handler, "applied", str(res.get("line") or "")
+    if res.get("status") == "already_resolved":
+        return handler, "already", REVIEW_GONE_LINE
+    return handler, "refused", str(res.get("line") or ROW_ERROR_LINE)
+
+
+def _accept_past_ruling(ws, row, text, actor, events_path, now):
+    """cr1#1073 item 1: a past ruling pulled from the rulings files becomes a
+    decision, dated the day it was ruled, with the rulings it replaces closed.
+    `confirm_past_ruling` reads the proposal from the book and answers the
+    row itself; a typed line is the owner's own wording for it."""
+    import past_rulings
+
+    res = past_rulings.confirm_past_ruling(ws, str(row.get("id")), resolved_by=actor,
+                                           source_skill=COMMITMENT_SRC, text=text or None)
+    status = res.get("status")
+    handler = {"status": status, "answered": True,
+               **{k: res[k] for k in ("decision_id", "replaced") if res.get(k)}}
+    if status == "applied":
+        return handler, "applied", str(res.get("line") or "")
+    if status == "no_question":
+        return _no_question(ws, row, handler, REVIEW_GONE_LINE, now)
+    if status == "already_resolved":
+        return handler, "already", str(res.get("line") or REVIEW_GONE_LINE)
+    return handler, "error", str(res.get("line") or ROW_ERROR_LINE)
+
+
+def _accept_craft_amend(ws, row, text, actor, events_path, now):
+    """cr1#401: the new text goes into the craft file and the old is kept as
+    superseded. `answer_amend` reads the proposal from the book and answers the
+    row itself."""
+    import craft_adjust
+
+    res = craft_adjust.answer_amend(ws, str(row.get("id")), accept=True, resolved_by=actor,
+                                    now_iso=_iso(now), source_skill=COMMITMENT_SRC)
+    handler = {"status": res.get("status"), "answered": True}
+    if res.get("ok"):
+        return handler, "applied", str(res.get("line") or "")
+    if res.get("status") == "already_resolved":
+        return handler, "already", REVIEW_GONE_LINE
+    return handler, "refused" if res.get("status") == "refused" else "error", str(res.get("line") or ROW_ERROR_LINE)
 
 
 def _accept_config_drift(ws, row, text, actor, events_path, now):
@@ -2002,6 +2897,8 @@ _REVIEW_ACCEPTS = {
     "person_update": _accept_person_update, "entity_fact": _accept_entity_fact, "org_money": _accept_org_money,
     "org": _accept_org, "config_drift": _accept_config_drift, "objective_link": _accept_objective_link,
     "learned_rule": _accept_learned_rule, "archived_activity": _accept_archived_activity,
+    "craft_amend": _accept_craft_amend, "craft_rule": _accept_craft_rule,
+    "past_ruling": _accept_past_ruling,
 }
 #: The legacy rows whose `not relevant` is theirs, not a proposed close's.
 _REVIEW_LEGACY_DECLINES = ("org", "project")
@@ -2035,11 +2932,24 @@ def _review_queue_answer(ws, verb: str, row: Dict[str, Any], text: str, actor: s
         if kind == "org":
             append_event(events_path, {"type": "org_proposal_declined", "source_skill": COMMITMENT_SRC,
                                        "data": {"name": str(row.get("title") or row.get("name") or "")}}, holder="cockpit_helpers")
-            return {"status": "declined"}, "applied", "Let go."
+            # cr1#1171: one org_proposal_declined row landed. `declined` is
+            # a refusal word in the audit (orphan_note: nothing resolved), so
+            # this landed decline answers `dismissed`, which the audit counts ok.
+            return {"status": "dismissed"}, "applied", "Let go."
         handler = hold_item(str(ws), n, source_skill=COMMITMENT_SRC, surface=REVIEW_SURFACE,
                             ttl_days=REVIEW_DECLINE_DAYS, now_iso=_iso(now))
         return handler, "applied", "Let go."
     # A decline: `dismiss proposal` or `proposal not relevant`.
+    if kind == "craft_amend":  # cr1#401: No keeps the rule, the owner's word on it
+        import craft_adjust
+
+        res = craft_adjust.answer_amend(ws, n, accept=False, resolved_by=actor, now_iso=_iso(now),
+                                        source_skill=COMMITMENT_SRC)
+        if res.get("ok"):
+            return {"status": res.get("status")}, "applied", str(res.get("line") or "Kept.")
+        if res.get("status") == "already_resolved":
+            return {"status": "already_resolved"}, "already", REVIEW_GONE_LINE
+        return {"status": res.get("status")}, "refused" if res.get("status") == "refused" else "error",             str(res.get("line") or ROW_ERROR_LINE)
     if kind == "objective_link":
         _review_objective_pair(ws, row, events_path, now, confirmed=False)
     if is_bp:
@@ -2098,13 +3008,16 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
                 handler = {"status": "error"}
             elif (verb in REVIEW_ACCEPT_VERBS or verb == REVIEW_SAME_AS_VERB or verb == "proposal not relevant"
                   or (verb == "not relevant" and n.split(":", 1)[0] in _REVIEW_LEGACY_DECLINES)
-                  or (verb == "dismiss proposal" and kind in ("objective_link", "person_link"))):
+                  or (verb == "dismiss proposal" and kind in ("objective_link", "person_link", "craft_amend"))):
                 # Read per row: an earlier row in this batch may have answered it.
                 by_seq = {e.get("seq"): e for e in _review_events(workspace_root) if isinstance(e, dict)}
                 queue = {str(i.get("id")): i for i in bp.load_open_proposals(str(workspace_root), "staff-meeting", now_iso=_iso(now))}
                 live = queue.get(n)
                 if live is None:
-                    handler = {"status": "not_open"}
+                    # cr1#1161: answered already (another page, a double
+                    # press). Nothing was written, so the audit records a
+                    # no-op; `not_open` reads as an error there.
+                    handler = {"status": "already_resolved"}
                     r.update(outcome="already", line=REVIEW_GONE_LINE)
                 else:
                     text = str(c.get("input") or "").strip()
@@ -2299,9 +3212,9 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
              "objectives": [str(x)[:200] for x in (sec.get("objective_rows") or [])][:12],
              "open_proposals": sec.get("open_proposals")}
     empty = not (decided or dormant or archived or recap["changes"] or recap["decided_lines"])
-    return {"generated_at": iso_now, "decided": decided, "n_decided": n_decided, "dormant": dormant, "archived": archived,
+    return _with_words(workspace_root, {"generated_at": iso_now, "decided": decided, "n_decided": n_decided, "dormant": dormant, "archived": archived,
             "recap": recap, "rules": rules[:WEEK_DECIDED_CAP], "n_rules": len(rules),
-            "line": (WEEK_RULES_LINE if rules else WEEK_EMPTY_LINE) if empty and not errors else "", "errors": errors}
+            "line": (WEEK_RULES_LINE if rules else WEEK_EMPTY_LINE) if empty and not errors else "", "errors": errors})
 
 
 def _bring_back(workspace_root, tid: str, actor: str) -> None:
@@ -2590,9 +3503,9 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         guide = usage_guide.guide(ws)
     except Exception:  # noqa: BLE001
         errors.append("guide")
-    return {"generated_at": iso_now, "rules": rules[:SETTINGS_RULES_CAP], "n_rules": len(rules), "guide": guide,
+    return _with_words(workspace_root, {"generated_at": iso_now, "rules": rules[:SETTINGS_RULES_CAP], "n_rules": len(rules), "guide": guide,
             "budget": budget, "connectors": connectors, "accounts": accounts, "caps": caps, "exits": exits,
-            "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors}
+            "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors})
 
 
 def _rule_live(workspace_root, rid: str, now_iso: str) -> Optional[Dict[str, Any]]:
@@ -2745,7 +3658,7 @@ def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]
                 rule = _rule_live(workspace_root, n, iso_now)
                 if rule is None:
                     r.update(outcome="already", line=RULE_GONE_LINE)
-                    handler = {"status": "not_open"}
+                    handler = {"status": "already_resolved"}  # cr1#1161: a no-op, not an error
                 elif verb == "rule edit" and not text:
                     r.update(outcome="refused", line=RULE_EDIT_NEEDS_TEXT_LINE)
                     handler = {"status": "needs_input"}
@@ -2825,10 +3738,13 @@ def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str
         if o.get("outcome") == "replied" and isinstance(o.get("latency_days"), (int, float)):
             gaps.setdefault(str(o.get("recipient") or "").strip().lower(), []).append(float(o["latency_days"]))
     out: Dict[str, Dict[str, Any]] = {}
+    # cr1#1012: a row is offered a chase as late only when the open list
+    # counts it overdue.
+    counted_ids = _counted_ids(workspace_root, now)
     for ev in partition_subitems(opens)[0]:
         cid = str(_commitment_id(ev))
         if bucket_of(ev, owner) != BUCKET_OWED_TO_YOU or cid in muted \
-                or not is_overdue(_commitment_field(ev, "due"), today.isoformat()) \
+                or cid not in counted_ids \
                 or not counterparty_count(ev, workspace_root=str(workspace_root)):
             continue
         pid = str(_commitment_field(ev, "owner_id") or "")
@@ -2846,6 +3762,17 @@ def _chase_offers(workspace_root, opens: List[Dict[str, Any]], origins: Dict[str
                                   escalate_after=escalate, last_touch=touches.get(pid), last_heard=heard.get(pid),
                                   chases=[day for day, to in chased.get(cid, []) if to in mine], today=today)
     return out
+
+
+def _counted_ids(workspace_root, now: _dt.datetime) -> set:
+    """THE Hub's answer to "is this row overdue": the ids the open list's
+    overdue number counts (`open_list.in_headline_overdue`, the owner's
+    ruling of 2026-11-11). Every Hub path that marks, orders, counts or
+    offers a row as late reads this, never a date test of its own
+    (cr1#1012). Raises when the list cannot be read; each caller then shows
+    no late answer rather than a guessed one."""
+    from open_list import counted_ids
+    return counted_ids(workspace_root, _iso(now))
 
 
 def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str, Any]],
@@ -2872,6 +3799,9 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
     day = _now_calendar_day(_iso(now), workspace_path=str(workspace_root))
     today = day.isoformat() if day else _iso(now)[:10]
     muted = active_dismissal_target_ids(load_events_owner_scoped(str(workspace_root))[0], _iso(now))
+    # cr1#1012: which rows the overdue number counts is the open list's own
+    # verdict, stamped on each row, never re-derived here or on the page.
+    counted_ids = _counted_ids(workspace_root, now)
     names = _person_names(workspace_root)
     threads = _names_by_id(_entities(Path(str(workspace_root))), "threads")
 
@@ -2884,7 +3814,8 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
             primary_counterparty_name(ev, workspace_root=str(workspace_root)) or ""
         return {"late": is_overdue(raw, today), "bucket": bucket, "due": due.isoformat() if due else "",
                 "due_phrase": render_due_phrase(due.isoformat(), today) if due else "",
-                "who": str(who)[:120], "snoozed": str(_commitment_id(ev)) in muted}
+                "who": str(who)[:120], "snoozed": str(_commitment_id(ev)) in muted,
+                "counted": str(_commitment_id(ev)) in counted_ids}
 
     top, _steps = partition_subitems(opens)
     by_id = {str(r.get("id")): r for r in rows}
@@ -2893,14 +3824,24 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
         row = by_id.get(str(_commitment_id(ev)))
         if row is not None:
             row.update(extra)
-    # A copy folded into a late row is that row's "+1 more".
-    covered = {str(f) for r in rows if r.get("late") for f in r.get("folded_ids") or []}
+    # A copy folded into a late row is that row's "+1 more"; a counted row
+    # says how many promises it stands for, so the panel's parts add up to
+    # the count.
+    # cr1#1012: only a COUNTED line covers its copies; a copy under a line
+    # that is not counted (snoozed, or waiting for a yes) is listed itself.
+    covered = {str(f) for r in rows if r.get("counted") for f in r.get("folded_ids") or []}
+    for r in rows:
+        if r.get("counted"):
+            r["n_counted"] = 1 + sum(1 for f in r.get("folded_ids") or [] if str(f) in counted_ids)
     sent = {str(r.get("id")) for r in rows[:PLATE_ROW_CAP]}
     late: List[Dict[str, Any]] = []
     for ev, extra in stamped:
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         cid = str(_commitment_id(ev))
-        if cid in sent or cid in covered or d.get("tier") == TIER_OBSERVED or extra["snoozed"] or not extra["late"]:
+        # cr1#1012: the panel lists what the overdue number counts, by the
+        # open list's verdict; a row waiting for the owner's yes is not late
+        # (the ruling of 2026-11-11) and stays on Commitments to confirm.
+        if cid in sent or cid in covered or not extra["counted"]:
             continue
         late.append(by_id.get(cid) or {
             "id": cid, "n": None, "title": row_title(d.get("title"), d.get("summary"))[:240], "lane": "",
@@ -2908,6 +3849,7 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
             "context": " · ".join(x for x in (extra["due_phrase"], extra["who"]) if x)[:160],
             "horizon": "overdue", "pending": extra["bucket"] == "unconfirmed",
             "origin": origins.get(cid), **extra})
+        late[-1]["n_counted"] = 1 + sum(1 for f in late[-1].get("folded_ids") or [] if str(f) in counted_ids)
     late.sort(key=lambda r: (str(r.get("due") or ""), str(r.get("id") or "")))
     return late[:OVERDUE_EXTRA_CAP], max(0, len(late) - OVERDUE_EXTRA_CAP)
 
@@ -2952,11 +3894,28 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - the Overdue tab says it has no answer; the plate still draws
         pass
     do_it = [r for r in rows if r["lane"] in ("do_it", "confirm")]
-    order = {"overdue": 0, "this_week": 1}
-    focus = sorted(do_it, key=lambda r: (order.get(str(r["horizon"]), 2), r["order"]))[:FOCUS_CAP]
+    # cr1#1012: a row leads "Move these today" as overdue only when the open
+    # list counts it; a row past its date that is not counted (waiting for a
+    # yes, snoozed) ranks with this week's rows. An older run with no verdict
+    # keeps the plate's own horizon.
+    def _rank(r: Dict[str, Any]) -> int:
+        if "counted" in r:
+            return 0 if r["counted"] else 1 if r["horizon"] in ("overdue", "past_due", "this_week") else 2
+        return {"overdue": 0, "this_week": 1}.get(str(r["horizon"]), 2)
+    focus = sorted(do_it, key=lambda r: (_rank(r), r["order"]))[:FOCUS_CAP]
     chase = [r for r in rows if r["lane"] == "chase"][:CHASE_CAP]
     schedule = [r for r in rows if r["lane"] == "schedule"][:SCHEDULE_CAP]
     counts = dict(dv.get("plate_counts") or {})
+    # cr1#1012 (train 2; closes cr1#976): the numbers the page shows come
+    # from the open list, the one count the brief and chat read too, never
+    # from the rows sent (the 150-row cap made "150" a cap, not a count).
+    # A list that cannot be read leaves the key out and the page counts its
+    # rows as before.
+    try:
+        from open_list import headline_counts
+        counts["open_list"] = headline_counts(workspace_root, now_iso=_iso(now))
+    except Exception:  # noqa: BLE001 - never a guessed number
+        pass
     feed = {
         "generated_at": _iso(now),
         "header": str(dv.get("header") or ""),
@@ -2967,18 +3926,34 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         "rows": rows[:PLATE_ROW_CAP], "n_rows": len(rows),
         "n_hidden": max(0, len(rows) - PLATE_ROW_CAP),
         "late_rows": late_rows, "n_late_hidden": n_late_hidden, "overdue_ok": overdue_ok,
-        "overnight": _overnight(workspace_root, now),
+        # cr1#1017 behaviour 4: what opened and closed, with times, so Today
+        # shows only what changed since the owner last looked
+        "changes": _changes(workspace_root, now),
+        # cr1#1017 behaviour 3: the workspace's own today, so Today can tell
+        # a row due today from the backlog without the browser clock
+        "today": now.astimezone(_workspace_tz(workspace_root)).date().isoformat(),
     }
+    try:
+        feed["done"] = _done_for_you(workspace_root, now)
+    except Exception:  # noqa: BLE001 - an unread log leaves the strip off, never a guessed count
+        feed["done"] = {"kinds": {}, "errors": ["done"]}
     try:
         offers = _chase_offers(workspace_root, opens or [], origins, now)
     except Exception:  # noqa: BLE001 - a bad record takes the press off the row, never the plate
         offers = {}
+    seat = hub_words(workspace_root)
+    import plate_view as _pv
+    # Every list the rows travel in, the capped ones included: a row past
+    # PLATE_ROW_CAP can still ride `focus` or `chase` (cr1#1017 part 1b).
+    for r in rows + list(feed.get("late_rows") or []) + list(focus) + list(chase):
+        if isinstance(r, dict) and r.get("project") == _pv.NO_PROJECT_LABEL:
+            r["project"] = "No " + _seat_word(seat, "thread")
     for r in feed["rows"] + feed.get("late_rows", []):
         offer = offers.get(str(r.get("id")))
         if offer:
             r["chase"] = None if offer.get("note") else offer
             r["chase_note"] = offer.get("note") or ""
-    return feed
+    return _with_words(workspace_root, feed, seat)
 
 
 class _InboxPage(HTMLParser):
@@ -3079,6 +4054,9 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
     what the owner acts on."""
     parser = _InboxPage()
     parser.feed(str(page_html or ""))
+    import inbox_helpers as _ih
+
+    own = _ih.own_addresses(workspace_root)
     by_subject: Dict[str, List[Dict[str, Any]]] = {}
     for it in items or []:
         if isinstance(it, dict):
@@ -3102,10 +4080,20 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
         actions = [a for a in it["actions"] if a in INBOX_WIRE_ACTION.values() or a in ("send", "draft")]
         if not body or blanks:
             actions = [a for a in actions if a not in ("send", "draft")]
+        # cr1#936: a reply goes to everyone on the newest message, the owner
+        # left out. The page's own To and Cc, and the joined thread's, together.
+        rcpt = _ih.reply_all_recipients(thread or {}, own)
+        to = [a for a in _ih._addresses(meta.get("to", "")) if _ih._own_key(a) not in own]
+        if not own:  # fail closed, as `reply_all_recipients` does: the sender alone
+            to = to[:1]
+        to += [a for a in rcpt["to"] if a not in to]
+        cc = [a for a in (_ih._addresses(meta.get("cc", "")) if own else []) + rcpt["cc"]
+              if _ih._own_key(a) not in own and a not in to]
+        cc = list(dict.fromkeys(cc))
         rows.append({
             "n": it["n"], "kind": kind, "name": it["name"][:120], "subject": subject[:200],
             "why": it["why"][:240],
-            "draft": {"to": meta.get("to", ""), "cc": meta.get("cc", ""),
+            "draft": {"to": ", ".join(to) if to else meta.get("to", ""), "cc": ", ".join(cc),
                       "subject": meta.get("subject", ""), "body": body, "blanks": blanks,
                       "voice_block_sha256": (thread.get("voice_block_sha256") if thread else None)},
             "actions": actions,
@@ -3114,9 +4102,116 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
             "message_ts": str(thread.get("ts") or "") if thread else None,
             "fire_stamp": fire_stamp,
         })
-    return {"generated_at": _iso(_now(now_iso)), "fire_stamp": fire_stamp,
+    return _with_words(workspace_root, {"generated_at": _iso(_now(now_iso)), "fire_stamp": fire_stamp,
             "page_rel": page_rel, "header": parser.header, "items": rows,
-            "n_items": len(rows), "n_drafted": sum(1 for r in rows if r["draft"]["body"])}
+            "n_items": len(rows), "n_drafted": sum(1 for r in rows if r["draft"]["body"]),
+            "filtered": feed_filtered(workspace_root, items)})
+
+
+#: cr1#1169: the Inbox tab's Filtered list, the threads the inbox read set
+#: aside, grouped by why, in this order. `actions` are the presses a row of
+#: that group takes: `keep` (show it anyway), `never` (never filter this
+#: sender: an always-show rule on the address, `mail_rules` `add`), `back`
+#: (a dropped thread brought back). An already-handled thread takes none: the
+#: owner's reply on the sibling thread keeps it out whatever a rule says.
+FILTERED_GROUPS = (
+    ("rule", "Your mail rules", ("keep", "never")),
+    ("dropped", "Dropped by you", ("back",)),
+    ("newsletters", "Newsletters and marketing", ("keep", "never")),
+    ("noise", "Noise", ("keep", "never")),
+    ("preference", "You asked not to see these", ("keep", "never")),
+    ("handled", "Already handled", ()),
+)
+FILTERED_CAP = 40
+#: The plain words for each noise class (`inbox_helpers.NOISE_CLASSES`).
+FILTERED_NOISE_WORDS = {"listings": "a listing", "calendar": "a calendar notice",
+                        "security": "a security notice", "self_test": "a self-test message",
+                        "marketing": "a newsletter or marketing mail"}
+FILTERED_PREF_WORDS = {"newsletter": "you told Command Room to stop showing newsletters like this",
+                       "sender": "you told Command Room to stop showing mail from this sender"}
+FILTERED_HANDLED_WHY = "you already replied on another thread"
+FILTERED_DROPPED_WHY = "you dropped this thread"
+
+
+def feed_filtered(workspace_root, items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """READ. The Inbox tab's Filtered list (cr1#1169): every fetched thread
+    the inbox read set aside, grouped by why, each row with its reason and its
+    source (the thread, and the rule when a rule set it aside). Computed from
+    the same `items` the inbox leg handed `run_inbox_surface`, through the
+    same cut (`inbox_helpers.select_priority`), so the list is exactly what
+    that read left out. The sender and the subject only: original mail text
+    stays out, as on the rest of the tab. A group with nothing is left out."""
+    import inbox_helpers as _ih
+    import mail_rules as _mr
+
+    items = [i for i in items or [] if isinstance(i, dict)]
+    if workspace_root is None:
+        return {"groups": [], "n": 0}
+    # Owner ruling, 2026-11-13 (cr1#1169): the section says that mail from an
+    # account marked personal is never read, so none of it is listed. Only
+    # the fact travels, never the account's address.
+    personal = _has_personal_account(workspace_root)
+    if not items:
+        return {"groups": [], "n": 0, "personal_not_read": personal}
+    sel = _ih.select_priority(str(workspace_root), items)
+    rules = {r.get("id"): r for r in (_mr.load(workspace_root).get("rules") or []) if isinstance(r, dict)}
+
+    def row(item, group, why, rule=None):
+        sender = _mr.address_of(item.get("sender_email") or item.get("sender") or "")
+        out = {"group": group, "why": why,
+               "thread_id": str(item.get("thread_id") or "") or None,
+               "message_ts": str(item.get("ts") or item.get("message_ts") or "") or None,
+               "name": str(item.get("sender_name") or sender or "")[:120],
+               "sender": sender or None,
+               "subject": str(item.get("subject") or "")[:200],
+               # C3: the row points to its source: the thread (its link when the
+               # fetch gave one) and, for a rule, the rule.
+               "source": {"kind": "mail", "thread_id": str(item.get("thread_id") or "") or None,
+                          "url": str(item.get("url") or "") or None}}
+        if rule is not None:
+            out["source"]["rule_id"] = rule.get("id")
+            out["source"]["rule"] = _mr.plain(rule)
+        return out
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {g: [] for g, _l, _a in FILTERED_GROUPS}
+    for item in sel.get("hidden") or []:
+        why = item.get("mail_rule")
+        if why == "dropped":
+            buckets["dropped"].append(row(item, "dropped", FILTERED_DROPPED_WHY))
+            continue
+        rule = rules.get(why)
+        buckets["rule"].append(row(item, "rule", (_mr.plain(rule) if rule else str(why or "a mail rule")), rule))
+    for item in sel.get("noise_items") or []:
+        cls = str(item.get("noise_class") or "marketing")
+        group = "newsletters" if cls == "marketing" else "noise"
+        buckets[group].append(row(item, group, FILTERED_NOISE_WORDS.get(cls, "noise")))
+    for item in sel.get("dropped") or []:
+        buckets["preference"].append(row(item, "preference",
+                                         FILTERED_PREF_WORDS.get(item.get("preference"), FILTERED_PREF_WORDS["sender"])))
+    for item in sel.get("suppressed") or []:
+        buckets["handled"].append(row(item, "handled", FILTERED_HANDLED_WHY))
+    groups = []
+    for key, label, actions in FILTERED_GROUPS:
+        rows = buckets[key]
+        if not rows:
+            continue
+        for r in rows:
+            r["actions"] = [a for a in actions
+                            if (a != "never" or r["sender"]) and (a == "never" or r["thread_id"])]
+        groups.append({"key": key, "label": label, "n": len(rows), "rows": rows[:FILTERED_CAP]})
+    return {"groups": groups, "n": sum(g["n"] for g in groups), "personal_not_read": personal}
+
+
+def _has_personal_account(workspace_root) -> bool:
+    """True when the seat has a mail account marked personal (cr1#1169): its
+    mail is never fetched (cr1#755), so the Filtered list can hold none."""
+    try:
+        import connector_config as _cc
+        # Case and spaces aside, as the inbox fetch plan reads the role (review).
+        return any(str(a.get("role") or "").strip().lower() == _cc.ROLE_PERSONAL
+                   for a in _cc.accounts(workspace_root))
+    except Exception:  # noqa: BLE001 - an unread account map says nothing, never a guess
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -3230,14 +4325,19 @@ PAGE_RECORD_VERBS = ("send", "draft")
 PAGE_RECORD_OUTCOMES = ("applied",)
 PAGE_RECORD_SOURCE = "email-writer"
 PAGE_CHOICE_KEY = "page_choice_id"
-#: The page's own choice kinds that carry a mail: a reply, and a chase (cr1#219).
-PAGE_RECORD_KINDS = ("inbox", "chase")
-#: A chase is the product's own text, so it is recorded under the commitments
-#: surface with no snapshot: an edit to it is no lesson about the owner's voice.
+#: The page's own choice kinds that carry a mail: a reply, a chase (cr1#219),
+#: and a person's list from the People tab (cr1#1017 part A).
+PAGE_RECORD_KINDS = ("inbox", "chase", "list")
+#: A chase and a list are the product's own text, so each is recorded under
+#: the commitments surface with no snapshot: an edit to it is no lesson about
+#: the owner's voice.
 PAGE_CHASE_SOURCE = "commitment-triage"
+#: The two directions a person's list is drafted in (`chase_policy.LIST_WORDS`).
+PAGE_LIST_DIRECTIONS = ("owed_to_you", "you_owe")
 PAGE_RECORD_LINE = "Recorded in your book."
 PAGE_RECORD_ALREADY_LINE = "Already in your book."
 PAGE_RECORD_NO_RECIPIENT_LINE = "No recipient on the press, so nothing was recorded."
+PAGE_LIST_SEND_LINE = "A list from the Hub is only ever a draft, so a send of one was not recorded."
 
 
 def _record_claim_live(choice: Dict[str, Any], now: _dt.datetime) -> bool:
@@ -3277,6 +4377,9 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
         res = c.get("result") if isinstance(c.get("result"), dict) else {}
         if str(c.get("kind") or "") not in PAGE_RECORD_KINDS or verb not in PAGE_RECORD_VERBS or res.get("outcome") not in PAGE_RECORD_OUTCOMES:
             continue
+        # A list is only ever a draft: the owner sends it from their own mail.
+        if str(c.get("kind") or "") == "list" and verb != "draft":
+            continue
         seen.add(cid)
         if _record_claim_live(c, now) and str(c.get("record_claimed_by")) != rid_:
             taken.append(cid)
@@ -3290,6 +4393,10 @@ def plan_page_records(workspace_root=None, choices: Optional[List[Any]] = None, 
                  "title": str(c.get("title") or "")[:200]}
         if str(c.get("kind") or "") == "chase":
             entry["chase_for"] = str(c.get("n") or "")
+        if str(c.get("kind") or "") == "list":
+            entry["list_for"] = str(c.get("n") or "")
+            direction = str(c.get("direction") or "")
+            entry["list_direction"] = direction if direction in PAGE_LIST_DIRECTIONS else ""
         if _record_claim_live(c, now):
             held.append(cid)
             entries.append(entry)
@@ -3384,6 +4491,10 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
             draft = e.get("draft") if isinstance(e.get("draft"), dict) else {}
             found = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", str(draft.get("to") or ""))
             recipient = found.group(0).lower() if found else ""
+            if e.get("list_for") and verb != "draft":
+                r.update(outcome="refused", line=PAGE_LIST_SEND_LINE)
+                results.append(r)
+                continue
             if not cid or verb not in PAGE_RECORD_VERBS or not recipient:
                 r.update(outcome="refused", line=PAGE_RECORD_NO_RECIPIENT_LINE)
                 results.append(r)
@@ -3398,10 +4509,12 @@ def record_page_sends(workspace_root, entries: Optional[List[Dict[str, Any]]] = 
                     provider=provider, server_id=server_id, address=address,
                     topic=str(draft.get("subject") or ""), recipient_id=_recipient_person(workspace_root, recipient),
                     domain=recipient.rsplit("@", 1)[-1].lower(), voice_block_sha256=e.get("voice_block_sha256"),
-                    source_skill=PAGE_CHASE_SOURCE if e.get("chase_for") else PAGE_RECORD_SOURCE,
-                    snapshot=not e.get("chase_for"),
+                    source_skill=PAGE_CHASE_SOURCE if (e.get("chase_for") or e.get("list_for")) else PAGE_RECORD_SOURCE,
+                    snapshot=not (e.get("chase_for") or e.get("list_for")),
                     extra={PAGE_CHOICE_KEY: cid, "sent_from": "hub",
-                           **({"chase_for": e["chase_for"]} if e.get("chase_for") else {})})
+                           **({"chase_for": e["chase_for"]} if e.get("chase_for") else {}),
+                           **({"list_for": e["list_for"], "list_direction": e.get("list_direction") or ""}
+                              if e.get("list_for") else {})})
                 if not res.get("ok"):
                     r.update(outcome="error", line=str(res.get("line") or ROW_ERROR_LINE))
                     results.append(r)
@@ -3524,6 +4637,8 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
     review: List[Dict[str, Any]] = []
     week: List[Dict[str, Any]] = []
     settings: List[Dict[str, Any]] = []
+    mail: List[Dict[str, Any]] = []
+    people: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     seen = set()
     tokens_seen = set(str(t) for t in (used_tokens or []) if isinstance(t, str) and t)
@@ -3553,6 +4668,37 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                                "action": verb, "input": raw.get("input"),
                                "created_at": str(raw.get("created_at") or ""),
                                "title": str(raw.get("title") or "")[:200]})
+        elif kind == "person":
+            # cr1#1020 slice 3: a star or an unstar on the People tab.
+            if verb not in PERSON_VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            people.append({"id": cid, "action": verb, "person_id": str(raw.get("n") or "")[:80],
+                           "title": str(raw.get("title") or "")[:200]})
+        elif (kind == "inbox" and verb in INBOX_RULE_VERBS) or kind == "mailrule":
+            # cr1#1020: a drop, a taught rule or a rule written by hand. It
+            # names its thread or its rule, never a row number, so an inbox
+            # read landing since does not make it stale.
+            if kind == "mailrule" and verb not in MAILRULE_VERBS:
+                refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
+                                "reason": "unknown_verb"})
+                continue
+            typed = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+            mail.append({"id": cid, "action": verb,
+                         "thread_id": raw.get("thread_id") or typed.get("thread_id") or None,
+                         "message_ts": raw.get("message_ts") or None,
+                         "title": str(raw.get("title") or "")[:200],
+                         "match": str(typed.get("match") or "")[:20],
+                         "value": str(typed.get("value") or "")[:200],
+                         "note": str(typed.get("note") or "")[:NOTE_CAP],
+                         "mode": str(typed.get("mode") or "")[:10],
+                         "rule_id": str(typed.get("rule_id") or raw.get("n") or "")[:40],
+                         # cr1#1169: the undo of "never filter this sender".
+                         "restore": typed.get("restore") is True,
+                         # cr1#1230: the owner's second press, after the page
+                         # said an off-limits sender's mail would be filed again.
+                         "confirmed": typed.get("confirmed") is True or raw.get("confirmed") is True})
         elif kind == "inbox":
             if verb not in INBOX_VERBS:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
@@ -3624,9 +4770,10 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             settings.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
                              "input": str(typed.get("text") or "")[:NOTE_CAP],
                              "title": str(raw.get("title") or "")[:200]})
-        elif kind in ("reminder", "todo"):
-            # cr1#662: the Today page's own lists, written by apply_hub_choices.
-            verbs = REMINDER_VERBS if kind == "reminder" else TODO_VERBS
+        elif kind in ("reminder", "todo", "miss"):
+            # cr1#662: the Today page's own lists, written by apply_hub_choices;
+            # cr1#1017: the header's "Missed something?", answered there too.
+            verbs = REMINDER_VERBS if kind == "reminder" else TODO_VERBS if kind == "todo" else MISS_VERBS
             if verb not in verbs:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
                                 "reason": "unknown_verb"})
@@ -3637,9 +4784,89 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=kind or "none"),
                             "reason": "unknown_kind"})
     return {"commitment": commitment, "inbox": inbox, "hub": hub, "review": review, "week": week,
-            "settings": settings, "refused": refused, "skipped": skipped,
-            "n_waiting": len(commitment) + len(inbox) + len(hub) + len(review) + len(week) + len(settings),
+            "settings": settings, "mail": mail, "people": people, "refused": refused, "skipped": skipped,
+            "n_waiting": (len(commitment) + len(inbox) + len(hub) + len(review) + len(week)
+                          + len(settings) + len(mail) + len(people)),
             "n_refused": len(refused)}
+
+
+def apply_mail_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                       now_iso=None, resolved_by: str = "") -> Dict[str, Any]:
+    """WRITE. The inbox's own presses on the owner's mail rules (cr1#1020):
+    Drop a thread, teach a rule from one email's note, add a rule by hand,
+    remove one, bring a dropped thread back. `choices` are `plan_apply`'s
+    `mail` list. Each writes `_hq/data/mail-rules.json` through
+    `mail_rules.apply_choices` and answers `{id, outcome, line}`; nothing is
+    sent and the book is not touched. `resolved_by` is taken for the apply
+    leg's one call shape and not used: the rules are the workspace's own."""
+    import mail_rules
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    out = mail_rules.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    # The book keeps one audit row for the batch, like every Hub writer: what
+    # was pressed and how it landed, never the rule's words.
+    status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
+    audit = [{"n": r.get("id"), "action": str(next((c.get("action") for c in choices or []
+                                                     if isinstance(c, dict) and c.get("id") == r.get("id")), "") or ""),
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}}
+             for r in out.get("results") or []]
+    if audit:
+        try:
+            ev = build_apply_choices_applied_event(source=INBOX_SRC, actions=audit)
+            ev["data"]["surface"] = MAIL_SURFACE
+            append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
+        except Exception as exc:  # noqa: BLE001 - the rules landed; the answer says the audit did not
+            out["audit_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def apply_people_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
+                         now_iso=None, resolved_by: str = "") -> Dict[str, Any]:
+    """WRITE. The People tab's stars (cr1#1020 slice 3): a person starred to
+    Home or unstarred, in `_hq/data/hub-stars.json` through
+    `people_view.apply_choices`, then one `apply_choices_applied` audit row.
+    `choices` are `plan_apply`'s `people` list. Nothing is sent; no record
+    of the person changes. `resolved_by` is taken for the apply leg's one
+    call shape and not used."""
+    import people_view
+    from apply_audit import build_apply_choices_applied_event
+    from event_gate import append_event
+
+    out = people_view.apply_choices(workspace_root, choices, now_iso=_iso(_now(now_iso)))
+    status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
+    by_id = {c.get("id"): c for c in choices or [] if isinstance(c, dict)}
+    audit = [{"n": (by_id.get(r.get("id")) or {}).get("person_id") or r.get("id"),
+              "action": str((by_id.get(r.get("id")) or {}).get("action") or ""),
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}}
+             for r in out.get("results") or []]
+    if audit:
+        try:
+            ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
+            ev["data"]["surface"] = PEOPLE_SURFACE
+            append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl", ev, holder="cockpit_helpers")
+        except Exception as exc:  # noqa: BLE001 - the stars landed; the answer says the audit did not
+            out["audit_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def feed_people(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. The People tab and the starred people on Home (cr1#1020 slice 3):
+    every person on file but the owner, with company, how known, last
+    contact and what is open between the owner and them
+    (`people_view.people`)."""
+    import people_view
+
+    return _with_words(workspace_root, people_view.people(workspace_root, now_iso=_iso(_now(now_iso))))
+
+
+def feed_mail_rules(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ. The Inbox tab's rules list (cr1#1020): the owner's mail rules in
+    force and the threads dropped, each with one plain line
+    (`mail_rules.feed`)."""
+    import mail_rules
+
+    return _with_words(workspace_root, mail_rules.feed(workspace_root, now_iso=_iso(_now(now_iso))))
 
 
 #: The Today page's own lists (cr1#662): reminders the owner adds, clears or
@@ -3654,8 +4881,64 @@ MINE_CAP = 60
 REMINDER_NEEDS_TEXT_LINE = "A reminder needs a few words."
 REMINDER_NEEDS_DATE_LINE = "A reminder needs a day: a date, or a number of days from today."
 TODO_NEEDS_TEXT_LINE = "A to-do needs a few words."
+#: "Missed something?" (cr1#1017, train 8 behaviour 6): the header entry on
+#: every tab. The owner says in a sentence what the Hub failed to show; the
+#: apply run looks for it in the book, answers what it found and why it was
+#: missed, files it, and logs the miss (`MISS_EVENT`) so the week's measure
+#: counts it and the miss is kept as a lesson.
+MISS_VERBS = frozenset({"tell"})
+MISS_EVENT = "hub_miss_reported"
+MISS_REF_SCHEME = "user:hub_miss"
+MISS_TEXT_CAP = 600
+MISS_NEEDS_TEXT_LINE = "Say in a few words what was missed."
+#: Words in a "you missed..." sentence that name the miss, not the item.
+MISS_FILLER = frozenset({"missed", "miss", "missing", "forgot", "forgotten", "show", "showed", "shown",
+                         "hub", "didn", "didnt", "wasn", "wasnt", "isn", "isnt", "never", "should",
+                         "need", "needs", "remember", "remind", "item", "list", "thing", "also", "too"})
+#: Why the Hub did not show it, by what the book holds. Each answer names
+#: what was found, then why, then what was filed.
+MISS_WHY = {
+    "listed": "It is on your list{where}, so the Hub had it; it may have sat below what you looked at.",
+    "waiting": "It was waiting for your yes on Review, so it was not on your list yet.",
+    "snoozed": "You snoozed it until {until}, so it was out of view.",
+    "closed": "It was closed on {day}, so it left your list.",
+    "heard": "It was heard on {day}{source} but held back as not certain enough to track.",
+    "mentioned": "It came up on {day}{source}, but no promise was taken from it.",
+    "not_found": "Nothing Command Room has read mentions it, so it never reached the Hub.",
+    "reminder": "You have a reminder for it from {until}, so it was on your reminders, not your list.",
+}
+#: The verdicts that mean the item is live already: nothing is filed, so
+#: the hit must hold every word of the owner's sentence.
+MISS_LIVE = frozenset({"listed", "waiting", "snoozed", "reminder"})
+#: The kinds the miss files as a new item: the book held no live row for it.
+MISS_FILES = frozenset({"closed", "heard", "mentioned", "not_found"})
+#: cr1#1202: the apply run also searches the business mailbox and the
+#: meetings connector for each waiting miss, through the personal-source
+#: wall (cr1#1179), at most this many results each, over this many days.
+MISS_SEARCH_LIMIT = 5
+MISS_SEARCH_DAYS = 90
+#: Why the Hub missed an item found only live, by where it was found. Each
+#: files the item but `inbox` (the Hub had it, on the Inbox tab).
+MISS_LIVE_WHY = {
+    "filtered": "It is in your mail, but it was filtered{by}, so it never reached the Hub.",
+    "closed_thread": "It is in your mail, but that thread was closed: {by}.",
+    "never_fetched": "It is in your mail, but the inbox read never fetched it, so it never reached the Hub.",
+    "inbox": "It is on your Inbox tab, so the Hub had it; it may have sat below what you looked at.",
+    "meeting_unprocessed": "It came up in your meeting \"{title}\" on {day}, which Command Room has not processed yet.",
+    "meeting_no_promise": "It came up in your meeting \"{title}\" on {day}, but no promise was taken from it.",
+}
+MISS_LIVE_FILES = frozenset({"filtered", "closed_thread", "never_fetched", "meeting_unprocessed",
+                             "meeting_no_promise"})
+#: Said with a "not found" answer whenever the wall names a personal source:
+#: those are never searched, whatever the owner asked about.
+MISS_PERSONAL_LINE = "Your personal sources are never searched, so anything only there was not looked at."
+MISS_SEARCHED_WORDS = {("mail",): "your mail", ("meetings",): "your meetings",
+                       ("mail", "meetings"): "your mail and meetings"}
 REMINDER_GONE_LINE = "That reminder is no longer active."
 REMINDER_PAST_LINE = "That day has passed; pick today or a later day."
+#: cr1#1020: a reminder made from a commitment with no day asked for.
+REMINDER_UNDATED_LINE = "Reminder set, with no date. It stays on your reminders until you clear it."
+REMINDER_REF_CAP = 80
 SUMMARY_CAP = 240
 
 
@@ -3724,6 +5007,7 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
                 "remind_from": r.get("remind_from"), "due": r.get("due"),
                 "status": r.get("status"), "days_pinned": r.get("days_pinned") or 0,
                 "repeat": bool(r.get("repeat")), "personal": bool(r.get("personal")),
+                "undated": bool(r.get("undated")), "ref": r.get("ref"),
             })
     except Exception:  # noqa: BLE001 - no reminders read leaves the list empty, never the page
         reminders_out = []
@@ -3745,9 +5029,9 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         todos = []
         errors.append("todos")
     todos.sort(key=lambda t: (t["priority"], str(t["added"])))
-    return {"generated_at": _iso(now), "today": today.isoformat(),
+    return _with_words(workspace_root, {"generated_at": _iso(now), "today": today.isoformat(),
             "reminders": reminders_out, "todos": todos[:MINE_CAP],
-            "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors}
+            "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors})
 
 
 PRIORITY_LEVELS = {"high": 1, "medium": 2, "low": 3}
@@ -3890,8 +5174,397 @@ def _todo_id(events_path, ref: str) -> Optional[str]:
     return None
 
 
+def _miss_terms(text: str) -> List[str]:
+    from log_search import _tokens
+    return [t for t in _tokens(text) if t not in MISS_FILLER]
+
+
+def _miss_find(root: Path, text: str, now: _dt.datetime, *, skip_ref: str = "") -> Dict[str, Any]:
+    """What the book holds for a missed item, and why the Hub did not show
+    it: `{why, terms, found_seq, found_id, source, title, thread, day}`. Read
+    only.
+
+    The book is read on the owner's tier (the Hub is the owner's own page, so
+    a personal reminder or a promise to a personal contact is found too) and
+    matched by the item's own words with the log search's word rules
+    (`log_search._tokens` over `_text_of`, ruling A7), each entry scored on
+    ALL its words, never a snippet. A hit counts only when it holds at least
+    half the sentence's words (two when there are two or more). The best is
+    the one holding the most, then a promise before a heard line before any
+    other entry, then the newest.
+
+    A verdict that files nothing (`listed`, `waiting`, `snoozed`,
+    `reminder`: the item is live already) needs EVERY word of the sentence
+    in the entry; a weaker hit never stops the item being filed. A promise
+    is judged by the open set (`cru_match.load_open_commitments`, so a
+    reopened one is open) and the open list (snoozed, waiting for a yes,
+    held back); a promise not open is `closed`, dated by its closing row
+    (`closure_index`). A close row found by its words stands for its promise.
+    `skip_ref` leaves out the to-do this same press filed (a retry)."""
+    import open_list as ol
+    import reminders as rm
+    from closure_index import CLOSER_TYPES, closer_target_id
+    from cru_match import load_open_commitments
+    from events_io import load_events_owner_scoped
+    from log_search import _searchable, _text_of, _tokens
+
+    terms = _miss_terms(text)
+    out: Dict[str, Any] = {"why": "not_found", "terms": terms}
+    if not terms:
+        return out
+    need = max(1 if len(terms) == 1 else 2, (len(terms) + 1) // 2)
+    try:
+        events = load_events_owner_scoped(str(root))[0]
+    except Exception:  # noqa: BLE001 - an unreadable book answers "not found", and says so
+        return dict(out, unread=True)
+    by_id: Dict[str, Dict[str, Any]] = {}
+    closes: Dict[str, Dict[str, Any]] = {}
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment" and d.get("id"):
+            by_id.setdefault(str(d["id"]), ev)
+        elif ev.get("type") in CLOSER_TYPES:
+            tid = closer_target_id(ev)
+            if tid:
+                closes[str(tid)] = ev
+    try:
+        open_ids = {str((e.get("data") or {}).get("id")) for e in
+                    load_open_commitments(root / "_hq" / "data" / "events.jsonl", events=events)}
+    except Exception:  # noqa: BLE001 - an unread open set judges nothing live
+        open_ids = set()
+    try:
+        tz = ol._workspace_tz(root)
+        rows = {str(r.get("id")): r for r in (ol.read_list(root, now, tz)[0].get("rows") or [])}
+    except Exception:  # noqa: BLE001
+        rows = {}
+    try:
+        today = now.astimezone(ol._workspace_tz(root)).date()
+        live_reminders = {str(r.get("id")) for r in rm.load_active_reminders(root, today, surface="m_facing")}
+    except Exception:  # noqa: BLE001
+        live_reminders = set()
+    threads = _thread_names(root)
+    from connector_adapters.provenance import dedup_key_of
+    skip_key = dedup_key_of(skip_ref) if skip_ref else None
+
+    def _verdict(ev: Dict[str, Any]) -> Dict[str, Any]:
+        t = str(ev.get("type") or "")
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if t in CLOSER_TYPES:
+            ev = by_id.get(str(closer_target_id(ev) or "")) or ev
+            t = str(ev.get("type") or "")
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if t == "commitment_observed":
+            return {"why": "heard"}
+        if t == "reminder":
+            return {"why": "reminder" if str(d.get("id") or "") in live_reminders else "mentioned",
+                    "until": str(d.get("remind_from") or "")[:10]}
+        if t != "commitment" or not d.get("id"):
+            return {"why": "mentioned"}
+        cid = str(d["id"])
+        if cid not in open_ids:
+            closer = closes.get(cid)
+            return {"why": "closed", "day": str((closer or {}).get("ts") or "")[:10] or None}
+        row = rows.get(cid)
+        if row is None:
+            return {"why": "listed"}          # open, though not a row of its own (a step)
+        if ol.is_snoozed(row, now):
+            return {"why": "snoozed", "until": str(row.get("snooze_until") or "")[:10]}
+        if row.get("observed"):
+            return {"why": "heard"}
+        if not row.get("confirmed"):
+            return {"why": "waiting"}
+        return {"why": "listed"}
+
+    rank = {"commitment": 0, "commitment_observed": 1, "reminder": 1}
+    scored = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        t = str(ev.get("type") or "")
+        if t == MISS_EVENT or not (t in ("commitment", "commitment_observed", "reminder")
+                                   or t in CLOSER_TYPES or _searchable(t)):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if skip_key is not None and dedup_key_of(d.get("source_ref")) == skip_key:
+            continue
+        if t in CLOSER_TYPES:
+            target = by_id.get(str(closer_target_id(ev) or ""))
+            words = set(_tokens(_text_of(ev) + "\n" + (_text_of(target) if target else "")))
+        else:
+            words = set(_tokens(_text_of(ev)))
+        n = sum(1 for term in terms if term in words)
+        if n < need:
+            continue
+        seq = ev.get("seq") if isinstance(ev.get("seq"), int) else -1
+        scored.append((-n, rank.get(t if t not in CLOSER_TYPES else "commitment", 2), -seq, n, ev))
+    scored.sort(key=lambda s: s[:3])
+    for _neg, _rk, _s, n, ev in scored:
+        v = _verdict(ev)
+        if v["why"] in MISS_LIVE and n < len(terms):
+            continue          # a live verdict needs every word; a weaker hit never stops the filing
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        th = str(ev.get("primary_thread_id") or d.get("primary_thread_id") or "")
+        out.update(v)
+        out.update(found_seq=ev.get("seq"), found_id=str(d.get("id") or "") or None, found_n=n,
+                   title=" ".join(str(d.get("title") or d.get("summary") or d.get("subject") or "").split())[:160],
+                   source=str(d.get("source_ref") or ev.get("source_ref") or ""),
+                   thread=threads.get(th) or None)
+        if not out.get("day"):
+            out["day"] = str(ev.get("ts") or "")[:10] if v["why"] != "closed" else None
+        return out
+    return out
+
+
+def _miss_line(found: Dict[str, Any], filed: bool) -> str:
+    why = found["why"]
+    src = found.get("source") or ""
+    words = {"where": (" under " + found["thread"]) if found.get("thread") else "",
+             "until": found.get("until") or "later", "day": found.get("day") or "an earlier day",
+             "source": (" in " + src) if src else "", "by": found.get("by") or "",
+             "title": str(found.get("title") or "").strip()[:160]}
+    head = ("Found it: " + str(found.get("title") or "").strip()[:160] + ". ") if why != "not_found" else ""
+    body = (MISS_LIVE_WHY.get(why) or MISS_WHY[why]).format(**words)
+    searched = MISS_SEARCHED_WORDS.get(tuple(found.get("searched") or ()))
+    if why == "not_found" and searched:
+        body = MISS_WHY["not_found"].replace(", so it", f", nor does anything in {searched}, so it")
+    if why == "not_found" and found.get("personal"):
+        body += " " + MISS_PERSONAL_LINE
+    tail = " Added to your list." if filed else " Nothing new was added."
+    return (head + body + tail).strip()
+
+
+def miss_search_plan(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = None,
+                     *, now_iso=None) -> Dict[str, Any]:
+    """READ/COMPUTE (cr1#1202). What the apply run searches for each waiting
+    "Missed something?" press, before it hands the hub list to the writer:
+    `{searches: [{id, query, terms}], limit, days}`. The query is the item's
+    own words without the words that only name the miss ("you missed",
+    "forgot"); a press with no such words is left out (the writer refuses
+    it). The run searches the business mailbox and the meetings connector
+    with each query, through the personal-source wall it read at the start
+    (`connector_reads:chat_wall`): never a personal connector, never a
+    walled mailbox. At most `limit` results each, from the last `days`."""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for c in choices or []:
+        if not isinstance(c, dict) or str(c.get("kind") or "").strip().lower() != "miss" \
+                or str(c.get("action") or "").strip().lower() != "tell":
+            continue
+        cid = str(c.get("id") or "").strip()
+        inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+        terms = _miss_terms(" ".join(str(inp.get("text") or "").split())[:MISS_TEXT_CAP])
+        if not cid or cid in seen or not terms:
+            continue
+        seen.add(cid)
+        out.append({"id": cid, "query": " ".join(terms), "terms": terms})
+    return {"searches": out, "limit": MISS_SEARCH_LIMIT, "days": MISS_SEARCH_DAYS}
+
+
+def _miss_walled(wall: Dict[str, Any], hit: Dict[str, Any]) -> bool:
+    """A hit the personal-source wall forbids: a personal connector's server,
+    or a walled mailbox (its kept senders aside). A hit the wall cannot place
+    (no server on a walled kind, no mailbox on a server that carries a walled
+    one) is treated as walled: it is never used on a guess. A kept sender's
+    mail is walled here too: it may be shown, but an answer is written."""
+    import connector_reads as _cr
+    sid = str(hit.get("server_id") or "").strip()
+    kind = "meetings" if hit.get("source") == "meeting" else "email"
+    for c in wall.get("connectors") or []:
+        if sid and sid in (c.get("server_ids") or []):
+            return True
+        if not sid and str(c.get("category") or "") == kind:
+            return True
+    if hit.get("source") == "mail":
+        boxes = [m for m in wall.get("mailboxes") or [] if isinstance(m, dict)]
+        box = str(hit.get("mailbox") or "").strip()
+        if not box:
+            # no mailbox named: walled when any mailbox is, unless the hit's
+            # server carries none of them
+            return any((not sid) or sid in (m.get("server_ids") or []) for m in boxes)
+        # A kept sender is shown, never written (CHAT_WALL.md): a miss answer
+        # is written to the book, so even a kept sender's mail is not used.
+        return not _cr.chat_mail_allowed({"mailboxes": [dict(m, except_senders=[]) for m in boxes]},
+                                         account=box, sender=hit.get("sender"))
+    return False
+
+
+def _miss_live(root: Path, found: Dict[str, Any], entry: Dict[str, Any],
+               inbox: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """cr1#1202: the book's answer, bettered by what the live search found.
+
+    `entry` is `{searched, hits}` for this press: what the run searched
+    (`mail`, `meetings`) and each hit as read. Every hit is first held to the
+    personal-source wall (`connector_reads.chat_wall`, read here from the
+    book, never trusted from the run): a walled hit is dropped unread, and a
+    "not found" answer then says personal sources are never searched. A hit
+    counts by the book's word rule; it answers only when the book's answer
+    would file the item anyway and the hit holds more of the words (or the
+    book found nothing). A mail hit is placed by the Inbox feed: set aside by
+    the read (`filtered`: a rule, a drop, noise, a preference; or a closed
+    thread), on the Inbox tab (`inbox`, which needs every word and files
+    nothing), else never fetched. A meeting hit says whether Command Room
+    processed that meeting. Read only."""
+    import connector_reads as _cr
+    from log_search import _tokens
+
+    out = dict(found)
+    srch = entry.get("searched") if isinstance(entry.get("searched"), list) else []
+    searched = [k for k in ("mail", "meetings") if k in srch]
+    if searched:
+        out["searched"] = searched
+    wall = _cr.chat_wall(root)
+    personal = bool(wall.get("connectors") or wall.get("mailboxes"))
+    terms = found.get("terms") or []
+    if not terms or not wall.get("readable"):
+        # an unread wall cannot say what is personal: no hit is used
+        out["personal"] = personal
+        out.pop("searched", None) if not wall.get("readable") else None
+        return out
+    inbox = inbox if isinstance(inbox, dict) else {}
+    need = max(1 if len(terms) == 1 else 2, (len(terms) + 1) // 2)
+    filtered: Dict[str, Dict[str, Any]] = {}
+    fl = inbox.get("filtered") if isinstance(inbox.get("filtered"), dict) else {}
+    groups = fl.get("groups") if isinstance(fl.get("groups"), list) else []
+    for g in groups:
+        rows_ = g.get("rows") if isinstance(g, dict) and isinstance(g.get("rows"), list) else []
+        for r in rows_:
+            if isinstance(r, dict) and r.get("thread_id"):
+                filtered.setdefault(str(r["thread_id"]), dict(r, group=r.get("group") or g.get("key")))
+    items = inbox.get("items") if isinstance(inbox.get("items"), list) else []
+    on_tab = {str(i.get("thread_id")) for i in items if isinstance(i, dict) and i.get("thread_id")}
+    hits = entry.get("hits") if isinstance(entry.get("hits"), list) else []
+    scored = []
+    for h in hits:
+        if not isinstance(h, dict) or h.get("source") not in ("mail", "meeting") or _miss_walled(wall, h):
+            continue
+        words = set(_tokens(" ".join(str(h.get(k) or "") for k in ("subject", "title", "snippet"))))
+        n = sum(1 for t in terms if t in words)
+        if n >= need:
+            scored.append((-n, 0 if h["source"] == "mail" else 1, n, h))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    book_n = found.get("found_n") or 0
+    for _neg, _k, n, h in scored:
+        if found["why"] not in MISS_FILES or (found["why"] != "not_found" and n <= book_n):
+            break
+        title = " ".join(str(h.get("subject") or h.get("title") or "").split())[:160]
+        v: Dict[str, Any] = {"title": title, "found_n": n, "found_seq": None, "found_id": None, "thread": None,
+                             "day": str(h.get("ts") or "")[:10] or None}
+        if h["source"] == "mail":
+            tid = str(h.get("thread_id") or "")
+            v.update(found_where="mail", source=str(h.get("url") or "") or (f"mail:{tid}" if tid else ""))
+            row = filtered.get(tid) if tid else None
+            if row is not None:
+                group = str(row.get("group") or "")
+                rsrc = row.get("source") if isinstance(row.get("source"), dict) else {}
+                rule = " ".join(str(rsrc.get("rule") or "").split())[:160]
+                v["filter"] = group
+                if group == "handled":
+                    v.update(why="closed_thread", by=str(row.get("why") or FILTERED_HANDLED_WHY))
+                elif group == "rule":
+                    v.update(why="filtered", rule=rule or None,
+                             by=f' by your mail rule "{rule}"' if rule else " by one of your mail rules")
+                elif group in ("noise", "newsletters"):
+                    v.update(why="filtered", by=" as " + str(row.get("why") or "noise"))
+                else:
+                    v.update(why="filtered", by=": " + str(row.get("why") or FILTERED_DROPPED_WHY))
+            elif tid and tid in on_tab:
+                if n < len(terms) or found["why"] != "not_found":
+                    continue          # the Hub had it only if every word is there, and
+                    #                   it never stops the filing of what the book would file
+                v.update(why="inbox")
+            else:
+                v.update(why="never_fetched")
+        else:
+            mid = str(h.get("meeting_id") or "")
+            v.update(found_where="meeting", source=str(h.get("url") or "") or (f"meeting:{mid}" if mid else ""),
+                     why="meeting_no_promise" if mid and _meeting_processed(root, mid) else "meeting_unprocessed")
+        out.update(v)
+        return out
+    out["personal"] = personal
+    return out
+
+
+def _meeting_processed(root: Path, meeting_id: str) -> bool:
+    """Has Command Room processed this meeting: a `meeting_processed` row
+    whose pointer ends in its id."""
+    try:
+        from events_io import load_events_org_scoped
+        for ev in load_events_org_scoped(str(root), drop_personal=False)[0]:
+            if isinstance(ev, dict) and ev.get("type") == "meeting_processed":
+                d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                # the meeting's own id is the pointer's last part (`granola:<id>`)
+                tail = str(d.get("source_ref") or ev.get("source_ref") or "").rsplit(":", 1)[-1]
+                if tail and tail == meeting_id:
+                    return True
+    except Exception:  # noqa: BLE001 - an unread log has processed nothing it can show
+        return False
+    return False
+
+
+def _miss_written(root: Path) -> Dict[str, Dict[str, Any]]:
+    """Every miss already answered, by the press's id: a press applied twice
+    answers from its first write."""
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        from events_io import load_events_org_scoped
+        for ev in load_events_org_scoped(str(root), drop_personal=False)[0]:
+            if isinstance(ev, dict) and ev.get("type") == MISS_EVENT:
+                d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                if d.get("hub_choice"):
+                    out[str(d["hub_choice"])] = d
+    except Exception:  # noqa: BLE001 - no log means nothing answered yet
+        return out
+    return out
+
+
+def _apply_miss(root: Path, c: Dict[str, Any], actor: str, now: _dt.datetime,
+                answered: Dict[str, Dict[str, Any]], live: Optional[Dict[str, Any]] = None,
+                inbox: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """One "Missed something?" press: find, answer, file, log."""
+    import commitment_state as cs
+    from event_gate import append_event
+
+    inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+    text = " ".join(str(inp.get("text") or "").split())[:MISS_TEXT_CAP]
+    choice_id = str(c.get("id") or "").strip()
+    if choice_id and choice_id in answered:
+        d = answered[choice_id]
+        return {"outcome": "applied", "replayed": True, "line": d.get("line") or "",
+                "why": d.get("why"), "commitment_id": d.get("filed_id")}
+    if not text:
+        return {"outcome": "error", "line": MISS_NEEDS_TEXT_LINE}
+    ref = f"{MISS_REF_SCHEME}:{choice_id}"
+    events_path = root / "_hq" / "data" / "events.jsonl"
+    # A retry after the to-do landed but the record did not: reuse that
+    # to-do, and leave it out of the search so it is not its own answer.
+    filed_id = _todo_id(events_path, ref) if choice_id else None
+    found = _miss_find(root, text, now, skip_ref=ref)
+    entry = (live or {}).get(choice_id) if isinstance(live, dict) and choice_id else None
+    if isinstance(entry, dict):
+        found = _miss_live(root, found, entry, inbox)
+    if (found["why"] in MISS_FILES or found["why"] in MISS_LIVE_FILES) and not filed_id:
+        out = cs.create_personal_task(str(root), title=text[:240], owner_id=actor, source_ref=ref,
+                                      source_skill=SOURCE_SKILL, source=TODO_SOURCE)
+        filed_id = (((out or {}).get("commitment") or {}).get("data") or {}).get("id") \
+            or _todo_id(events_path, ref)
+    line = _miss_line(found, bool(filed_id))
+    data = {"hub_choice": choice_id, "text": text, "why": found["why"], "line": line,
+            "found_seq": found.get("found_seq"), "found_id": found.get("found_id"),
+            "found_source": found.get("source") or None, "filed_id": filed_id,
+            "terms": found.get("terms") or [], "found_where": found.get("found_where"),
+            "filter": found.get("filter"), "rule": found.get("rule"), "searched": found.get("searched")}
+    append_event(root / "_hq" / "data" / "events.jsonl",
+                 {"type": MISS_EVENT, "source_skill": SOURCE_SKILL, "person_ids": [actor] if actor else [],
+                  "data": {k: v for k, v in data.items() if v not in (None, "", [])}},
+                 holder="cockpit_helpers")
+    return {"outcome": "applied", "line": line, "why": found["why"], "commitment_id": filed_id}
+
+
 def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
-                      *, resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
+                      *, resolved_by: str = "", now_iso=None, live: Optional[Dict[str, Any]] = None,
+                      inbox: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """A WRITER. The Today page's reminder and to-do choices, each through
     the owning writer:
 
@@ -3901,7 +5574,18 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
       * reminder `push`: one `reminder_updated` with the new day;
       * todo `add`: `commitment_state.create_personal_task` with the priority
         and `source = TODO_SOURCE`, owned by the owner, its pointer unique to
-        the choice so the same words added twice are two items.
+        the choice so the same words added twice are two items;
+      * miss `tell` (cr1#1017): the header's "Missed something?". The book is
+        searched for the item (`_miss_find`); the answer says what was found
+        and why the Hub did not show it; an item with no live row is filed as
+        a to-do; one `hub_miss_reported` row records the miss (the week's
+        measure counts it). A press already answered answers again from it.
+        cr1#1202: `live` carries, by the press's id, what the apply run's
+        search of the business mailbox and meetings found (`{searched,
+        hits}`, from `miss_search_plan`), and `inbox` the Inbox feed as read
+        (`feed/inbox`, its `filtered` list and `items`); `_miss_live` judges
+        them through the personal-source wall and says where it was found
+        and why it was missed. Without them the book alone answers.
 
     A to-do is closed, snoozed or reopened as a commitment, through
     `apply_commitment_choices`. A refusal of one row never stops the rest.
@@ -3920,6 +5604,7 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
     root = Path(str(workspace_root))
     events_path = root / "_hq" / "data" / "events.jsonl"
     written = _hub_writes_in_book(root)
+    answered = _miss_written(root) if any(str(c.get("kind") or "").strip().lower() == "miss" for c in rows) else {}
     active = None
     results: List[Dict[str, Any]] = []
     for c in rows:
@@ -3933,13 +5618,27 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                 r.update(_replayed(written[choice_id], verb))
             elif kind == "reminder" and verb == "add":
                 text = str(inp.get("summary") or "").strip()[:SUMMARY_CAP]
-                when, why = _hub_day_checked(inp.get("when"), now, root)
+                # cr1#1020: a reminder made from a commitment names it (`ref`),
+                # and may have no day: the owner asked for one without a date.
+                ref = str(inp.get("ref") or "").strip()[:REMINDER_REF_CAP] or None
+                undated = inp.get("undated") is True and not str(inp.get("when") or "").strip()
+                when, why = (None, None) if undated else _hub_day_checked(inp.get("when"), now, root)
                 if not text:
                     r.update(outcome="error", line=REMINDER_NEEDS_TEXT_LINE)
+                elif undated:
+                    today = cs._now_calendar_day(_iso(now), workspace_path=str(root)) or now.date()
+                    ev = rm.build_reminder_event(text, remind_from=today, ref=ref, undated=True,
+                                                 source_skill=SOURCE_SKILL)
+                    ev.setdefault("data", {})["hub_choice"] = choice_id
+                    append_event(events_path, ev, holder="cockpit_helpers")
+                    r.update(outcome="applied", line=REMINDER_UNDATED_LINE, reminder_id=ev["data"]["id"])
                 elif not when:
                     r.update(outcome="error", line=why)
                 else:
-                    ev = rm.build_reminder_event(text, remind_from=when, source_skill=SOURCE_SKILL)
+                    # A day asked for is the day it pins from, as on the Today
+                    # page; it is not a deadline (show-my-reminders sets
+                    # `due` only for a real one).
+                    ev = rm.build_reminder_event(text, remind_from=when, ref=ref, source_skill=SOURCE_SKILL)
                     ev.setdefault("data", {})["hub_choice"] = choice_id
                     append_event(events_path, ev, holder="cockpit_helpers")
                     r.update(outcome="applied", line=f"Reminder set for {when}.",
@@ -3970,6 +5669,8 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                         ev.setdefault("data", {})["hub_choice"] = choice_id
                         append_event(events_path, ev, holder="cockpit_helpers")
                         r.update(outcome="applied", line=f"Moved to {when}.")
+            elif kind == "miss" and verb == "tell":
+                r.update(_apply_miss(root, c, actor, now, answered, live, inbox))
             elif kind == "todo" and verb == "add":
                 text = str(inp.get("title") or "").strip()
                 ref = f"{TODO_REF_SCHEME}:{c.get('id')}"
@@ -4143,6 +5844,7 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
     # A note and a snooze land first; a close and a reopen land in the order
     # they were pressed, against the state the batch has written so far.
     order = {"context": 0, "snooze": 1}
+    counted_now: Optional[set] = None  # the overdue verdict, read once if a snooze needs it
     results: List[Dict[str, Any]] = []
     audit: List[Dict[str, Any]] = []
     for c in sorted(rows, key=lambda c: (order.get(str(c.get("action") or ""), 2),
@@ -4154,8 +5856,12 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         try:
             if verb not in COMMITMENT_VERBS:
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
+                # cr1#1171: an empty handler result is audited ok
+                handler = {"status": "error", "error": "unknown_verb", "verb": verb}
             elif cid not in seqs:
                 r.update(outcome="error", line=GONE_LINE)
+                # cr1#1171: an error naming the id the book does not hold
+                handler = {"status": "error", "error": "unknown_id", "commitment_id": cid}
             elif verb in ("done", "confirm"):
                 row = open_rows.get(cid)
                 if row is None and cid in ledger_open:
@@ -4166,10 +5872,14 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 elif row.get("pending"):
                     from needs_review_queue import done_items
 
-                    handler = done_items(str(workspace_root), [cid], resolved_by=actor,
-                                         source_skill="apply-choices", attested_ids=[cid],
-                                         now_iso=_iso(now))
-                    done = (handler or {}).get("n_done")
+                    res = done_items(str(workspace_root), [cid], resolved_by=actor,
+                                     source_skill="apply-choices", attested_ids=[cid],
+                                     now_iso=_iso(now))
+                    done = (res or {}).get("n_done")
+                    # cr1#1161: the audit reads this row's own answer (`done`,
+                    # or `not_pending` when another page got there first). The
+                    # batch dict has no status, which the audit counts as an error.
+                    handler = ((res or {}).get("results") or [{"status": "not_pending"}])[0]
                     r.update(outcome="applied" if done else "already",
                              line="Confirmed and closed." if done else ALREADY_CLOSED_LINE)
                     if done:
@@ -4221,6 +5931,9 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 text = str(c.get("input") or "").strip()[:NOTE_CAP]
                 if not text:
                     r.update(outcome="error", line=EMPTY_NOTE_LINE)
+                    # cr1#1171 review: an empty handler result is audited ok
+                    handler = {"status": "needs_input", "error": "empty_note",
+                               "commitment_id": cid}
                 else:
                     from orphan_note import reroute_orphan_note
 
@@ -4240,14 +5953,37 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     r.update(outcome="error", line=SNOOZE_NEEDS_DATE_LINE)
                     handler = {"status": "missing_when"}
                 else:
-                    handler = cs.apply_later(str(workspace_root), cid, when_iso=when,
-                                             actor_id=actor, source_skill=COMMITMENT_SRC,
-                                             reason=SNOOZE_REASON, surface=SOURCE_SKILL,
-                                             brain_batch_id=label, now_iso=_iso(now))
+                    # Owner ruling 2 of 2026-11-12 (cr1#1012), scope (b): a
+                    # snooze on a line covers the copies folded under it that
+                    # the overdue number counts, through the one shared
+                    # writer every surface that pushes a line calls
+                    # (`commitment_state.apply_later_covering_folded`). The
+                    # Hub hands it the fold it already holds and the
+                    # verdict, read once per batch.
+                    folded = list((open_rows.get(cid) or {}).get("folded_ids") or [])
+                    if folded and counted_now is None:
+                        try:
+                            counted_now = _counted_ids(workspace_root, now)
+                        except Exception:  # noqa: BLE001 - no verdict: cover no copy
+                            counted_now = set()
+                    full = cs.apply_later_covering_folded(
+                        str(workspace_root), cid, when_iso=when, actor_id=actor,
+                        source_skill=COMMITMENT_SRC, reason=SNOOZE_REASON,
+                        surface=SOURCE_SKILL, brain_batch_id=label, now_iso=_iso(now),
+                        folded_ids=folded, counted_ids=counted_now or set())
+                    handler = {k: v for k, v in (full or {}).items() if k not in ("covered", "copies")}
                     st = (handler or {}).get("status")
                     if st in ("deferred", "snoozed"):
                         r.update(outcome="applied",
                                  line=str((handler or {}).get("ack") or f"Moved to {when}."))
+                        # Each copy carries its own audit entry and its own undo.
+                        for copy in full.get("copies") or []:
+                            audit.append({"n": copy["id"], "action": "snooze", "handler_result": copy["result"],
+                                          "note": f"cockpit {label}, folded under {cid}"})
+                        covered = list(full.get("covered") or [])
+                        r["covered"] = covered
+                        if covered:
+                            r["line"] = r["line"] + " " + cs.folded_covered_line(covered)
                     else:
                         r.update(outcome="error", line=str((handler or {}).get("ack") or NOT_OPEN_LINE))
             elif verb == "reopen":
@@ -4673,7 +6409,9 @@ __all__ = [
     "ORIGIN_LINE_CAP",
     "feed_review", "apply_review_choices", "REVIEW_EMPTY_LINE",
     "land_registration", "LANDING_ID",
-    "PROJECT_LIVE_ORDER", "PROJECTS_CAP",
+    "PROJECT_LIVE_ORDER", "PROJECTS_CAP", "HUB_TABS", "FILTERED_GROUPS", "feed_filtered", "PRIORITIES_CAP",
+    "NO_HOME_CAP",
+    "feed_board", "WEEK_AWAY_TIMED_HOURS", "WEEK_DAYS", "WEEK_DAY_MEETINGS", "WEEK_DAY_CARDS", "WEEK_LANES", "WEEK_AWAY_RE",
     "maintenance_status", "START_MAINTENANCE_BEHIND_HOURS",
     "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
 ]

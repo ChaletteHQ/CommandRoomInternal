@@ -62,6 +62,7 @@ path itself (lock, seq, ts, atomic rename) is unaffected by the env var.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from typing import Any, List
@@ -135,6 +136,83 @@ def _ulid() -> str:
 def new_commitment_id() -> str:
     """Mint a canonical commitment id: cmt_<ULID> (ratified 2026-07-01)."""
     return "cmt_" + _ulid()
+
+
+def new_decision_id() -> str:
+    """Mint a canonical decision id: dec_<ULID> (cr1#1011, train 1 section B).
+
+    Same alphabet as the promise and reminder ids, its own prefix. Before,
+    decisions carried no id and every reader made one up from the row's seq
+    (`decision_seq_<n>`), so a decision's name depended on where it sat in the
+    log."""
+    return "dec_" + _ulid()
+
+
+# A decision id spelled like the readers' seq fallback (`decision_seq_<n>`) or
+# like a bare seq would shadow the decision that already answers to that
+# spelling, so a close meant for it would land on the new one.
+_DECISION_SEQ_SPELLING_RE = re.compile(r"^(?:decision_seq_)?0*\d+$")
+_DECISION_CLOSER_TYPES = frozenset({"decision_resolved", "decision_superseded"})
+
+# 3d (cr1#1011): the events that hand a promise to a new owner. Each carries
+# the new owner in data.new_owner_id and gets the new direction stored.
+_OWNER_CHANGE_TYPES = frozenset({"commitment_reassigned", "commitment_updated"})
+
+
+def _decision_key(ev: dict):
+    """The id both decision readers key a decision by (`decision_match.
+    _decision_id`, `render_decision_log._decision_id`): data.id, then the
+    top-level id, then `decision_seq_<seq>` only for a decision with neither."""
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    return data.get("id") or ev.get("id") or f"decision_seq_{ev.get('seq', '?')}"
+
+
+def _decision_universe(ledger_events: list) -> tuple:
+    """(keys, seqs) of every decision in the ledger: the key the readers close
+    it by, and its integer seq, which the seq-field targets name."""
+    keys, seqs = set(), set()
+    for ev in ledger_events:
+        if not isinstance(ev, dict) or ev.get("type") != "decision":
+            continue
+        key = _decision_key(ev)
+        if isinstance(key, (str, int)) and not isinstance(key, bool):
+            keys.add(key)
+        seq = ev.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            seqs.add(seq)
+    return keys, seqs
+
+
+def _decision_close_targets(ev: dict, etype: str) -> tuple:
+    """(ids, seqs) a decision close names, in every spelling a reader closes
+    on: the shared chains, plus `data.id` and the top-level `decision_id` and
+    `id`, which `decision_match.load_open_decisions` also honours."""
+    from event_types import decision_resolve_targets, decision_supersede_targets
+    ids, seqs = (decision_resolve_targets(ev) if etype == "decision_resolved"
+                 else decision_supersede_targets(ev))
+    ids = list(ids)
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    for extra in (data.get("id"), ev.get("decision_id"), ev.get("id")):
+        if extra not in (None, "") and extra not in ids:
+            ids.append(extra)
+    return ids, list(seqs)
+
+
+def _decision_close_resolves(target_ids, target_seqs, keys: set, seqs: set) -> bool:
+    """True when the close lands on a real decision the way the readers match
+    it: an id equal to a decision's key (so `decision_seq_<n>` names only an
+    id-less decision at seq n; a decision with its own id answers to that id),
+    or an integer seq equal to a decision's seq."""
+    for raw in target_ids:
+        try:
+            if raw in keys:
+                return True
+        except TypeError:
+            continue
+    for raw in target_seqs:
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw in seqs:
+            return True
+    return False
 
 
 def new_reminder_id() -> str:
@@ -327,6 +405,43 @@ def gate_events(
                 by_id[commitment_key(b_ev)] = b_ev
         _universe.append((by_id, by_seq))
         return _universe[0]
+
+    # cr1#1011: the decisions a decision close may name. Built once per batch,
+    # only when a decision close is present. Every decision in this batch that
+    # carries its own id joins wherever it sits, like the promise universe
+    # (a close may come before its decision); a minted id joins as it is
+    # stamped.
+    _decisions: list = []
+    batch_decision_ids: set = set()
+    for b_ev in events:
+        if isinstance(b_ev, dict) and b_ev.get("type") == "decision":
+            own = _decision_key(b_ev)
+            if isinstance(own, str) and own.strip() and not own.startswith("decision_seq_"):
+                batch_decision_ids.add(own.strip())
+
+    def _decision_targets_known():
+        if _decisions:
+            return _decisions[0]
+        try:
+            from cru_match import load_events_defensively
+            loaded, _skipped = load_events_defensively(events_jsonl_path)
+        except Exception:
+            loaded = []
+        _decisions.append(_decision_universe(loaded))
+        return _decisions[0]
+
+    # 3d: the primary user, read once per batch and only when a promise or
+    # an owner change needs it. No ledger path, no user: nothing is stored.
+    _user: List[Any] = []
+
+    def _you():
+        if not _user:
+            if events_jsonl_path is None:
+                _user.append(None)
+            else:
+                from owed_direction import user_beside_ledger
+                _user.append(user_beside_ledger(events_jsonl_path))
+        return _user[0]
 
     out: List[dict] = []
     for i, ev in enumerate(events):
@@ -642,6 +757,61 @@ def gate_events(
                 )
             ev["data"] = data
 
+        # 3b (cr1#1011). Decision identity: every decision has an id when it
+        # is written. A row with no id gets dec_<ULID>; a top-level id an older
+        # writer put on the row is carried into data.id (the readers already
+        # take data.id first, then the top-level id, so its name is unchanged).
+        if etype == "decision":
+            data = ev.get("data")
+            data = {**data} if isinstance(data, dict) else {}
+            raw_id = data.get("id")
+            if raw_id in (None, "") or (isinstance(raw_id, str) and not raw_id.strip()):
+                top = ev.get("id")
+                raw_id = top if isinstance(top, str) and top.strip() else new_decision_id()
+            if not isinstance(raw_id, str):
+                raise EventGateError(
+                    f"decision event has a non-string data.id {raw_id!r} "
+                    f"(holder={holder}). Pass a string id or omit data.id to "
+                    "have a dec_<ulid> minted."
+                )
+            trimmed = raw_id.strip()
+            if _DECISION_SEQ_SPELLING_RE.match(trimmed):
+                raise EventGateError(
+                    f"decision event data.id {raw_id!r} is spelled like the "
+                    f"seq fallback the readers give an id-less decision "
+                    f"(holder={holder}). A close naming that spelling means "
+                    "the older decision at that seq; this id would take it. "
+                    "Omit data.id to have a dec_<ulid> minted."
+                )
+            data["id"] = trimmed
+            ev["data"] = data
+            batch_decision_ids.add(trimmed)
+
+        # 4c (cr1#1011). A decision close names a decision, and that decision
+        # exists. Before, an empty or mistyped target was written and closed
+        # nothing, while the same mistake on a promise was refused. Presence is
+        # checked always; existence when the ledger is in hand and the posture
+        # is strict, like the promise closers (4a).
+        if etype in _DECISION_CLOSER_TYPES:
+            target_ids, target_seqs = _decision_close_targets(ev, etype)
+            if not target_ids and not target_seqs:
+                raise EventGateError(
+                    f"{etype} event names no decision (holder={holder}). Pass "
+                    "the decision's id in data.decision_id (its dec_<ulid>; "
+                    "decision_seq_<n> only for a decision written with no id)."
+                )
+            if strict_enum and events_jsonl_path is not None:
+                known_ids, known_seqs = _decision_targets_known()
+                if not _decision_close_resolves(
+                    target_ids, target_seqs, known_ids | batch_decision_ids, known_seqs
+                ):
+                    raise EventGateError(
+                        f"{etype} event names {list(target_ids) + list(target_seqs)!r}, "
+                        f"which is no decision in the ledger or this batch "
+                        f"(holder={holder}). A close that names nothing real "
+                        "closes nothing; pass the decision's own id."
+                    )
+
         # 4. Fail-loud rejection of id-less closures.
         if etype == "commitment_resolved" and not _has_closure_id(ev):
             raise EventGateError(
@@ -734,6 +904,22 @@ def gate_events(
                     f"data.fingerprint; holder={holder}) — an unanchored clear "
                     "unmutes nothing. Write through mute_ledger.clear_dismissal."
                 )
+
+        # 3d (cr1#1011, owner ruling 2026-11-11 option b): direction is
+        # stored on the promise and updated when it changes hands. The gate
+        # is the only writer: a caller's value is replaced, and dropped when
+        # the owner or the primary user is unknown (owed_direction.py).
+        if etype == "commitment" or etype in _OWNER_CHANGE_TYPES:
+            data = ev.get("data")
+            if isinstance(data, dict):
+                import owed_direction as _od
+                if etype == "commitment":
+                    owner = _od.owner_of(ev)
+                    ev["data"] = _od.stamp(data, owner, _you() if owner else None)
+                else:
+                    new_owner = data.get("new_owner_id")
+                    ev["data"] = _od.stamp_new(
+                        data, new_owner, _you() if new_owner else None)
 
         out.append(ev)
     return out

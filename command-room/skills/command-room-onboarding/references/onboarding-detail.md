@@ -4,6 +4,8 @@ This file contains procedures, templates, examples, and calibration guides extra
 
 ---
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## v3.4.1 onboarding-v2 deltas (2026-05-17 — post-M-testing iteration)
 
 Two changes on top of the v2 compression:

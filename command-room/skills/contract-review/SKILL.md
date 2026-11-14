@@ -108,7 +108,11 @@ Close every no-standard review with one line offering the wizard ("Want me to ca
 
 Read the document. Use:
 - For PDF: PDF MCP's `read_pdf_content` + structural-extraction prompt
-- For .docx: python-docx parsing
+- For .docx: `docx_accepted.read_docx(path)` (`shared/scripts/docx_accepted.py`), never a bare python-docx `paragraph.text` read. It answers the draft as it would print with every tracked change accepted (inserted text in, deleted text out), plus `tracked_changes` (the `ins`, `del`, `moveFrom` and `moveTo` revisions, counted by tag whatever their author or date) and `has_tracked_changes`. A bare `paragraph.text` read skips every tracked insertion (cr1#1004).
+
+When `has_tracked_changes` is true, say so in the review's opening line, with the counts from `tracked_changes`, and say the review reads the draft with those changes accepted.
+
+**A clause is missing only after you confirm it is.** Before any finding says a clause, section or paragraph is missing, search the accepted text for its heading, its number and its key words. A gap in the numbering, a stray mark where a paragraph should be, or a cross-reference that points past a gap is a reason to look again, never evidence of a drafting error on its own. If the search finds it, it is not missing.
 
 Extract:
 - Parties (names, addresses, signature blocks)
@@ -139,6 +143,19 @@ Extract:
   ```
 
 - Read entities.json for the resolved counterparty org record (prior contract history, relationship tier).
+- **Craft: whose review method applies (cr1#397).** A craft file is how a person or a business does a kind of work, as numbered rules; a contract review reads review methods in a fixed order: the owner's own (`_hq/craft/review.md`), then the firm's (`_hq/craft/firm/review.md`), then the client's, and the helper puts the owner's and the firm's first by itself. A business's review file is read ONLY when this review is done FOR that business as the client, on its own contract ("review this contract for Acme Co"). The counterparty's file is never read: pass the resolved counterparty org as `counterparty_ids` and the helper drops it even if it was also named as a subject. Ids come from the resolver above, never a name match; with no client, `subject_ids` is empty and the owner's and the firm's method still load. Read them through the read door, in one call:
+
+  ```bash
+  python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"counterparty_ids": ["<counterparty org id>"], "subject_ids": ["<client org id>"], "task": "contract-review", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+  ```
+
+  Each file in `result.files` carries its status and its numbered rules; each rule has its own words (`text`) and a `cite_id`. Only confirmed files come back, and the owner's own proposed ones. Apply a rule where it changes the review (the order the clauses are read, what is flagged red, what is never accepted); a rule is method, never content, and its words never appear in the review document. After the review is saved, cite every rule it used, from the helper, never by hand:
+
+  ```bash
+  python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+  ```
+
+  Each line in `result.lines` is one bullet of a chat `Sources:` section between the one-line summary and the H2 doc link, pasted verbatim (for example `"When a contract arrives, they read the termination clause first, because the exit decides the risk", per how you review (R1, confirmed Oct)`). An id in `result.refused` is not cited. **When no method loaded**, the result carries `empty_line` ("No stored method was found, so this review follows your standard terms only."): that sentence, verbatim, is the one `Sources:` bullet for craft. Contract review is the only skill that says this; the others stay silent when no craft file loads.
 - Read `_hq/data/events.jsonl` for prior `contract_reviewed` events involving the counterparty OR matching deviation classes — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read.
 - **Duplicate-contract check (ADV1).** Compute this contract's `term_summary_hash` (the same hash written on the `contract_reviewed` event) early, then scan prior `contract_reviewed` events for a matching `data.term_summary_hash`. On a hit, surface one line up front: *"Heads up — you reviewed this exact contract on [date of the prior event]. Want the diff against last time, or a fresh full review?"* This is what makes the otherwise-write-only `term_summary_hash` field earn its place.
 
@@ -343,13 +360,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

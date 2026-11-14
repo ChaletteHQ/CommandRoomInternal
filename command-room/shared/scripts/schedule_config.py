@@ -1996,6 +1996,9 @@ DISPLAY_NAMES: dict[str, str] = {
     "binding-gauge": "Memory Coverage Check",  # GAUGEJOB1 — the daily binding-gauge refresh (a maintenance JOB, not a task; same reason for the row). "Memory Coverage Check", not "Binding Gauge": the render is read by a CEO, and the noun has to name what is being measured rather than the mechanism measuring it
     "daily-measure": "Flow Check",  # MEASURE1 (SPEC_FLOW1 Lane D) — the daily flow measure (a maintenance JOB, not a task; same reason for the row). Names what the CEO gets, not the mechanism: "Daily Measure" would tell a reader nothing and "Flow Measure" is a plumbing noun on its own. FIX ROUND 1 (reviewer F-6): the first cut said "Weekly Flow Measure" on a job whose nominal_cron is `0 0 * * *` — a wrong cadence claim in the ONE place that documents cadence (change-schedule's roster prose, "each runs when due"). This name makes no cadence claim at all
     "people-update": "People Update",  # cr1#665 (lane 3 of cr1#609) - the daily people update (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id). Names what the CEO gets, and makes no cadence claim
+    "number-ledgers": "Session and Pipeline Counts",  # cr1#1018 (train 9) - the sessions and pipeline ledgers rebuilt daily (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English). Names what the owner gets and claims no cadence.
+    "decision-list": "Decision List",  # cr1#1073 - the decision list rebuilt daily inside `maintenance`, never a task of its own
+    "open-list": "Open Promises List",  # cr1#1012 (train 2) - the open list rebuilt inside `maintenance`, never a task of its own
     "project-update": "Project Update",  # cr1#665 - the daily project update (a maintenance JOB, not a task; same reason for the row)
     "tasks-capture": "Task Board Check",  # cr1#668 (lane 6 of cr1#609) - the tasks leg's capture half (a maintenance JOB, not a task; the row exists so the watchdog's job-level line reads as English and never as a bare id). Names what is checked, makes no cadence claim
     "tasks-close": "Task Board Done Check",  # cr1#668 - the tasks leg's close half (a maintenance JOB, not a task; same reason for the row)
@@ -3598,6 +3601,11 @@ SCHEDULED_WRITER_LINES: dict = {
     # from the declaration (`held_by_line`), never from the identity file.
     "held_by": "Your scheduled chats run on {name}.",
     "held_by_nameless": "Your scheduled chats run on one declared computer.",
+    # cr1#1138: the same sentence naming the account half, said relative to
+    # the reader (`schedule_holder.ACCOUNT_WORDS`); the account is never named.
+    "held_by_account": "Your scheduled chats run on {name}, {account}.",
+    "held_by_nameless_account": (
+        "Your scheduled chats run on one declared computer, {account}."),
     # cr1#603: a registration from an account that is neither the one the
     # folder's identity file names nor the declared scheduled writer is
     # refused, instead of re-deriving the identity under it (A5: one owner).
@@ -3606,17 +3614,71 @@ SCHEDULED_WRITER_LINES: dict = {
         "folder, so this account cannot hold them. Set them up again from "
         "that account, or delete them there first."
     ),
+    # cr1#1139: the owner's own account, after the hand-over to the account
+    # acting for them. Nothing was changed.
+    "handed_away": (
+        "Your scheduled chats now run from the account that acts for you, so "
+        "nothing was set up here. To run them from this account again, say "
+        "`move my scheduled chats to this computer`."
+    ),
 }
 
 #: BIND3 - the refusal's `reason`, the same word `plan_registration` answers.
 REASON_DECLARE_BOUND_ELSEWHERE = "bound_elsewhere"
 #: cr1#603 - the refusal's `reason` when another ACCOUNT holds the schedules.
 REASON_DECLARE_OTHER_ACCOUNT = "other_account"
+#: cr1#1139 - the refusal's `reason` for the account the schedules were
+#: handed away from (the owner, after an acting account took them over).
+REASON_DECLARE_HANDED_AWAY = "handed_away"
+
+#: cr1#1139 (ruling A5, D1 (a)): the row written when the owner names a
+#: second account as acting for them.
+ACTING_ACCOUNT_NAMED = "acting_account_named"
+#: What the owner hears when this account is named, and when it already was.
+ACTING_ACCOUNT_LINES = {
+    "named": (
+        "This account now acts for you on this folder. Setting up from here "
+        "moves the scheduled chats to it. From now on, mail from a mailbox you "
+        "have not called business or personal writes nothing to your book, on "
+        "either account, until you say which it is."
+    ),
+    "already": "This account already acts for you on this folder.",
+    "holder": (
+        "This account already holds this folder's scheduled chats, so there "
+        "is nothing to name."
+    ),
+    "no_account": (
+        "This seat cannot tell which account it is, so nothing was recorded."
+    ),
+    "no_holder": (
+        "No account runs this folder's scheduled chats yet, so there is "
+        "nothing to act for. Set them up from the account that should run "
+        "them."
+    ),
+    "previous_holder": (
+        "This account handed its scheduled chats to the account that acts "
+        "for you, so it cannot act for you as well. To run them from here "
+        "again, say `move my scheduled chats to this computer`."
+    ),
+}
 
 
-def held_by_line(device_name=None) -> str:
-    """cr1#605: the sentence naming the declared holder of the schedules."""
+def held_by_line(device_name=None, account_words: str = "") -> str:
+    """cr1#605: the sentence naming the declared holder of the schedules.
+    cr1#1138: with `account_words` (`under this account` / `under another
+    account`, `schedule_holder.holder_account_words`) it names the account
+    half too; any other value is not said."""
     name = _clean_device_name(device_name)
+    words = str(account_words or "").strip()
+    try:
+        from schedule_holder import ACCOUNT_WORDS as _AW
+        if words not in _AW.values():
+            words = ""
+    except Exception:  # noqa: BLE001 - the plain sentence is always safe
+        words = ""
+    if words:
+        key = "held_by_account" if name else "held_by_nameless_account"
+        return SCHEDULED_WRITER_LINES[key].format(name=name, account=words)
     if not name:
         return SCHEDULED_WRITER_LINES["held_by_nameless"]
     return SCHEDULED_WRITER_LINES["held_by"].format(name=name)
@@ -3869,14 +3931,234 @@ def scheduled_writer(workspace_root) -> Optional[dict]:
         out["previous_device"] = prev_device
     if isinstance(prev_digest, str) and re.match(r"^[0-9a-f]{64}$", prev_digest):
         out["previous_device_digest"] = prev_digest
+    # cr1#1138: the holder's two marks, and a pending hand-over. Read only
+    # when stored and well formed; an old declaration reads exactly as before.
+    for key, value in _holder_fields(row).items():
+        out[key] = value
     return out
+
+
+def name_acting_account(workspace_root, *, declared_by: str, now_iso=None,
+                        env=None) -> dict:
+    """cr1#1139 (ruling A5, D1 (a)): the owner names THIS account as acting
+    for them, once ("this account acts for me").
+
+    Records this seat's account mark (`schedule_holder.account_mark`; the
+    account uuid never lands) in `workspace.acting_accounts`
+    (`connector_config.ACTING_ACCOUNTS_KEY`) with one
+    `acting_account_named` row. From then on:
+      * setting up from this account hands the schedules to it
+        (`_declare_scheduled_writer`: the other-account refusal becomes
+        `hand_over_schedules`), taking effect at the next slot;
+      * the folder's mail wall is on, and a mailbox whose role is not
+        declared writes nothing to the book (D2 (a),
+        `connector_config.account_scope`).
+
+    Answers `{changed, account_mark, reason?, line, error}`. Writes nothing
+    when this seat knows no account (`no_account`), when this account already
+    holds the schedules (`holder`: it is the owner's own seat), or when it is
+    already named (`already`). Never raises."""
+    out = {"changed": False, "account_mark": None, "line": "", "error": None}
+    who = str(declared_by or "").strip()
+    if not who:
+        out["error"] = "declared_by must be a non-empty string"
+        return out
+    try:
+        _sh = _holder_module()
+        mark = _sh.account_mark(env)
+    except Exception:  # noqa: BLE001
+        mark = None
+    if not mark:
+        out.update(reason="no_account", line=ACTING_ACCOUNT_LINES["no_account"])
+        return out
+    out["account_mark"] = mark
+    cc = _connector_config()
+    current = scheduled_writer(workspace_root)
+    if current is None:
+        # Nothing to act for: the first account to set up simply holds.
+        out.update(reason="no_holder", line=ACTING_ACCOUNT_LINES["no_holder"])
+        return out
+    if current.get("account_mark") == mark:
+        out.update(reason="holder", line=ACTING_ACCOUNT_LINES["holder"])
+        return out
+    if current.get("previous_account_mark") == mark:
+        # The owner's own account after the hand-over: naming it too would
+        # let the two hand the schedules back and forth on every setup.
+        out.update(reason="previous_holder", line=ACTING_ACCOUNT_LINES["previous_holder"])
+        return out
+    if mark in cc.acting_account_marks(workspace_root):
+        out.update(reason="already", line=ACTING_ACCOUNT_LINES["already"])
+        return out
+    path = cc._entities_path(workspace_root)
+    if not path.is_file():
+        out["error"] = "no_entities"
+        return out
+    ent = cc._load_full(workspace_root)
+    if not ent:
+        out["error"] = "entities_unreadable"
+        return out
+    if now_iso is None:
+        from datetime import datetime as _datetime, timezone as _timezone
+        now_iso = _datetime.now(_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ws = cc._workspace_container(ent)
+    rows = [r for r in (ws.get(cc.ACTING_ACCOUNTS_KEY) or []) if isinstance(r, dict)]
+    rows.append({"account_mark": mark, "named_at": now_iso, "named_by": who})
+    ws[cc.ACTING_ACCOUNTS_KEY] = rows
+    ent["last_writer"] = who
+    ent["last_updated"] = now_iso
+    try:
+        cc._write_entities(workspace_root, ent, holder=f"schedule:{who}")
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    out.update(changed=True, line=ACTING_ACCOUNT_LINES["named"])
+    try:
+        import sys as _sys
+        _here = str(Path(__file__).resolve().parent)
+        if _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from event_gate import append_event
+        append_event(Path(str(workspace_root)) / "_hq" / "data" / "events.jsonl",
+                     {"type": ACTING_ACCOUNT_NAMED, "source_skill": who,
+                      "data": {"account_mark": mark, "named_by": who}},
+                     holder=f"schedule:{who}")
+        out["event_written"] = True
+    except Exception as exc:  # noqa: BLE001 - the record stands; the row is the audit
+        out["event_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _holder_module():
+    try:
+        import schedule_holder as _sh
+    except ImportError:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import schedule_holder as _sh
+    return _sh
+
+
+def _is_computer_mark(value) -> bool:
+    return isinstance(value, str) and bool(
+        re.match(r"^pc-[0-9a-f]{12}$", value.strip()))
+
+
+def _holder_fields(row: dict) -> dict:
+    """cr1#1138: the well-formed holder keys of a stored declaration."""
+    out: dict = {}
+    try:
+        sh = _holder_module()
+    except Exception:  # noqa: BLE001 - no module, no marks: today's reading
+        return out
+    for key, ok in ((sh.KEY_ACCOUNT, sh.is_account_mark),
+                    (sh.KEY_COMPUTER, _is_computer_mark),
+                    (sh.KEY_PREV_ACCOUNT, sh.is_account_mark),
+                    (sh.KEY_PREV_COMPUTER, _is_computer_mark),
+                    (sh.KEY_PREV_WRITER,
+                     lambda v: isinstance(v, str)
+                     and bool(_SCHEDULED_WRITER_ID_RE.match(v)))):
+        value = row.get(key)
+        if ok(value):
+            out[key] = value.strip()
+    when = row.get(sh.KEY_EFFECTIVE)
+    if isinstance(when, str) and sh._parse(when) is not None:
+        out[sh.KEY_EFFECTIVE] = when
+    aliases = row.get("holder_aliases")
+    if isinstance(aliases, list):
+        good = [a for a in aliases if isinstance(a, str)
+                and _SCHEDULED_WRITER_ID_RE.match(a)]
+        if good:
+            out["holder_aliases"] = good[-5:]
+    return out
+
+
+def holder_file_path(workspace_root) -> Path:
+    """cr1#1138 part 2: `_hq/.system/schedule_holder.json` in this folder."""
+    try:
+        rel = _holder_module().HOLDER_FILE_REL
+    except Exception:  # noqa: BLE001
+        rel = ("_hq", ".system", "schedule_holder.json")
+    return Path(workspace_root).joinpath(*rel)
+
+
+def sync_holder_file(workspace_root, *, overwrite: bool = True) -> bool:
+    """Write the holder file from the declaration as it stands (cr1#1138 part 2).
+
+    The bootloader reads this small file before the runtime check, where the
+    declaration in `entities.json` cannot be read through a helper yet. It is
+    a copy of the declaration's holder fields and nothing else
+    (`schedule_holder.holder_file_doc`): no computer name, no folder path.
+    Written only when it is missing, unreadable or different, so a refused or
+    unchanged declaration leaves it byte-identical. With `overwrite=False` a
+    readable file is never replaced, only a missing or damaged one: a seat
+    whose `entities.json` lags the synced folder must not put an older holder
+    back (review of part 2). No declaration: nothing
+    is written and nothing is removed. Returns True when it wrote. Never
+    raises: the declaration is the record, this file only makes a second run
+    stop sooner."""
+    try:
+        doc = _holder_module().holder_file_doc(scheduled_writer(workspace_root))
+        if not doc:
+            return False
+        path = holder_file_path(workspace_root)
+        try:
+            found = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - missing or damaged: write it
+            found = None
+        if found == doc:
+            return False
+        if not overwrite and isinstance(found, dict) and found.get("writer_id"):
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from atomic_write import atomic_write_json
+        atomic_write_json(path, doc)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def declare_scheduled_writer(workspace_root, writer_id=None, *,
                              declared_by: str, now_iso=None,
                              device_name=None, device_workspace=None,
-                             registered=None) -> dict:
+                             registered=None, take_over: bool = False) -> dict:
+    """Declare THIS workspace's one scheduled writer, then bring the holder
+    file (`sync_holder_file`, cr1#1138 part 2) in line. A call that changed
+    the declaration (a new one, a refresh, a hand-over) rewrites it; any
+    other answer (unchanged, refused) only writes a MISSING or damaged file,
+    never replaces a readable one, so a seat whose `entities.json` copy lags
+    the synced folder cannot put an older holder back. The declaration
+    itself is `_declare_scheduled_writer`, documented there."""
+    out = _declare_scheduled_writer(workspace_root, writer_id,
+                                    declared_by=declared_by, now_iso=now_iso,
+                                    device_name=device_name,
+                                    device_workspace=device_workspace,
+                                    registered=registered, take_over=take_over)
+    sync_holder_file(workspace_root,
+                     overwrite=bool(isinstance(out, dict) and out.get("changed")))
+    return out
+
+
+def _declare_scheduled_writer(workspace_root, writer_id=None, *,
+                              declared_by: str, now_iso=None,
+                              device_name=None, device_workspace=None,
+                              registered=None, take_over: bool = False) -> dict:
     """Declare THIS workspace's one scheduled writer — THE writer for that act.
+
+    HOLDER MARKS (cr1#1138). The declaration also carries this seat's account
+    mark and computer mark (`schedule_holder.marks_here`: as the door handed
+    them, or derived here) when the seat knows them. A seat whose marks equal
+    the declared holder's IS the holder, whatever its writer id and folder path
+    say now: a renamed folder or another organisation re-declares in place
+    (the new id and digest, the same marks, `line` empty) and is not refused
+    as another account or as bound elsewhere. Another computer by mark, on the
+    same folder path, is bound elsewhere (the path digest cannot tell them
+    apart; the mark can).
+
+    `take_over` (cr1#1138, `hand_over_schedules`): the deliberate hand-over.
+    Neither refusal applies; the declaration names this seat, keeps who held
+    it as `previous_*`, and takes effect at `effective_at`
+    (`schedule_holder.effective_at`, the next slot), until when the previous
+    holder still holds.
 
     `writer_id` is an `acct-` + twelve-hex id, or None for "this seat's own
     writer id" (`writer_identity.writer_id`, which on a merged seat is the id
@@ -3978,8 +4260,43 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
     stored_id = (str(stored_before.get("writer_id") or "").strip()
                  if isinstance(stored_before, dict) else "")
     existing = scheduled_writer(workspace_root)
-    if (stored_id and stored_id != writer and existing is not None
-            and existing["writer_id"] != writer and existing["writer_id"] == stored_id):
+    # cr1#1138: this seat's marks, and whether it already IS the holder.
+    try:
+        _sh = _holder_module()
+        here_marks = _sh.marks_here()
+    except Exception:  # noqa: BLE001 - no marks: today's comparison
+        _sh, here_marks = None, {"account": None, "computer": None}
+    here_account = here_marks.get("account")
+    here_computer = here_marks.get("computer")
+    is_holder = bool(_sh is not None and existing is not None and _sh.same_holder(
+        existing, account=here_account, computer=here_computer))
+    other_account_by_mark = bool(
+        existing is not None and existing.get("account_mark") and here_account
+        and existing["account_mark"] != here_account)
+    # cr1#1139 (ruling A5, D1 (a)): an account the owner named as acting for
+    # them, when another account (or an unmarked declaration) holds the
+    # schedules, is not refused: its setup IS the hand-over
+    # (`hand_over_schedules`), taking effect at the next slot like any other.
+    # Decided on its own terms, not only when the other-account refusal
+    # would have fired: an older declaration with no mark, after the folder's
+    # identity file was rewritten, would otherwise be read as bound elsewhere.
+    if (not take_over and not is_holder and existing is not None and here_account
+            and existing.get("account_mark") != here_account
+            and here_account in _connector_config().acting_account_marks(workspace_root)):
+        take_over = True
+        out["acting_for"] = True
+    other_account = bool(not take_over and not is_holder and (other_account_by_mark or (
+            stored_id and stored_id != writer and existing is not None
+            and existing["writer_id"] != writer
+            and existing["writer_id"] == stored_id)))
+    if other_account:
+        if here_account and existing is not None and (
+                existing.get("previous_account_mark") == here_account):
+            # cr1#1139: the owner's own account, after the schedules were
+            # handed to the account acting for them.
+            out["reason"] = REASON_DECLARE_HANDED_AWAY
+            out["line"] = SCHEDULED_WRITER_LINES["handed_away"]
+            return out
         out["reason"] = REASON_DECLARE_OTHER_ACCOUNT
         out["line"] = SCHEDULED_WRITER_LINES["other_account"]
         return out
@@ -3996,36 +4313,102 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
     digest = device_digest(device_workspace)
 
     current = scheduled_writer(workspace_root)
-    if current is not None and current["writer_id"] == writer:
+    marks_new = bool(current is not None and (
+        (here_account and current.get("account_mark") != here_account)
+        or (here_computer and current.get("computer_mark") != here_computer)))
+    # cr1#1138: an older declaration carries no marks. The seat may add its
+    # own only when it PROVES it is the declared one: the same id, the same
+    # folder path and the same computer name, all known on both sides. A seat
+    # that cannot prove it (no name, no path, a nameless declaration) leaves
+    # the declaration as it is, today's no-op, so a second computer on the
+    # same path can never claim the schedules silently by registering first.
+    unmarked = bool(current is not None and not current.get("account_mark")
+                    and not current.get("computer_mark"))
+    provable = bool(
+        current is not None and digest is not None and device is not None
+        and current.get("device_digest") == digest
+        and current.get("device") == device)
+    if current is not None and current["writer_id"] == writer and (
+            not marks_new or (unmarked and not provable and not take_over)):
         same_place = (digest is None
                       or current.get("device_digest") == digest)
         same_name = device is None or current.get("device") == device
         if same_place and same_name:
             out["declared_at"] = current["declared_at"]
             return out  # already declared — no write, no row
-    # BIND3 (D-T2-1, D-T3-1): another computer holds the declaration - move
-    # it only when no registered chat sits there; otherwise refuse, write
-    # nothing, and hand back the one sentence naming the holder.
-    verdict = declaration_verdict(current, device_workspace, registered)
-    if verdict["bound"]:
-        out["reason"] = REASON_DECLARE_BOUND_ELSEWHERE
-        out["line"] = bound_elsewhere_declare_line(verdict["holder"])
-        out["invite"] = bound_elsewhere_invite(workspace_root)
-        return out
+    # cr1#1138: the holder itself, after a renamed folder or another
+    # organisation, re-declares in place: same marks, the new id and digest,
+    # any pending hand-over kept. Said to nobody (`line` stays empty). So is
+    # the first re-registration after the update on the declared seat, which
+    # only adds the marks an older declaration did not carry (`provable`).
+    refresh = is_holder
+    adding_marks = bool(
+        current is not None and not take_over and current["writer_id"] == writer
+        and marks_new and unmarked and provable)
+    took_from = {}
+    holder_keep: dict = {}
+    verdict = {"bound": False, "holder": None, "previous_count": 0}
+    if refresh:
+        for key in ("account_mark", "computer_mark", "effective_at",
+                    "previous_writer_id", "previous_account_mark",
+                    "previous_computer_mark", "previous_device",
+                    "previous_device_digest"):
+            if current.get(key):
+                holder_keep[key] = current[key]
+        # The holder's earlier writer ids, so the health check does not count
+        # its own chats, still stamped with the old id, as another computer's.
+        aliases = [a for a in (current.get("holder_aliases") or [])
+                   + [current["writer_id"]] if a != writer]
+        if aliases:
+            holder_keep["holder_aliases"] = list(dict.fromkeys(aliases))[-5:]
+    elif take_over and current is not None:
+        # cr1#1138: the deliberate hand-over. Whoever holds NOW (the previous
+        # holder of a still-pending hand-over, else the declared one) becomes
+        # `previous_*`, and the new holder takes effect at the next slot.
+        held = _sh.holder_now(current, now_iso) if _sh is not None else None
+        held = held or {}
+        for src, dst in (("writer_id", "previous_writer_id"),
+                         ("account_mark", "previous_account_mark"),
+                         ("computer_mark", "previous_computer_mark"),
+                         ("device", "previous_device"),
+                         ("device_digest", "previous_device_digest")):
+            if held.get(src):
+                took_from[dst] = held[src]
+        verdict["previous_count"] = 1 if held.get("device") else 0
+    else:
+        # BIND3 (D-T2-1, D-T3-1): another computer holds the declaration -
+        # move it only when no registered chat sits there; otherwise refuse,
+        # write nothing, and hand back the one sentence naming the holder.
+        verdict = declaration_verdict(current, device_workspace, registered)
+        # cr1#1138: another computer BY MARK on the same folder path (or one
+        # the digest cannot place) is bound too: the path digest cannot tell
+        # two computers of one account with the same user path apart.
+        if (not verdict["bound"] and current is not None
+                and current.get("computer_mark") and here_computer
+                and current["computer_mark"] != here_computer
+                and (not digest or not current.get("device_digest")
+                     or current["device_digest"] == digest)):
+            verdict = {"bound": True, "holder": current.get("device"),
+                       "previous_count": 0}
+        if verdict["bound"]:
+            out["reason"] = REASON_DECLARE_BOUND_ELSEWHERE
+            out["line"] = bound_elsewhere_declare_line(verdict["holder"])
+            out["invite"] = bound_elsewhere_invite(workspace_root)
+            return out
+        # BRIDGE2 (Train 2 §4 MUST 2, F-OFF-1): a declaration that moves off
+        # a computer the old one named carries that computer - its name and
+        # its folder digest - so the takeover is visible on the book, not
+        # only the account id (which is the same for two computers of one
+        # account).
+        if current is not None and (current.get("device") or current.get("device_digest")):
+            if (current.get("device_digest") != digest
+                    or (device is not None and current.get("device") != device)):
+                if current.get("device"):
+                    took_from["previous_device"] = current["device"]
+                if current.get("device_digest"):
+                    took_from["previous_device_digest"] = current["device_digest"]
     previous = current["writer_id"] if current is not None else None
     out["previous"] = previous
-    # BRIDGE2 (Train 2 §4 MUST 2, F-OFF-1): a declaration that moves off a
-    # computer the old one named carries that computer - its name and its
-    # folder digest - so the takeover is visible on the book, not only the
-    # account id (which is the same for two computers of one account).
-    took_from = {}
-    if current is not None and (current.get("device") or current.get("device_digest")):
-        if (current.get("device_digest") != digest
-                or (device is not None and current.get("device") != device)):
-            if current.get("device"):
-                took_from["previous_device"] = current["device"]
-            if current.get("device_digest"):
-                took_from["previous_device_digest"] = current["device_digest"]
     out.update(took_from)
 
     cc = _connector_config()
@@ -4049,6 +4432,17 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
     if digest:
         row["device_digest"] = digest
     row.update(took_from)
+    # cr1#1138: the holder's marks, and a hand-over's effective time.
+    holder_fields: dict = {}
+    if here_account:
+        holder_fields["account_mark"] = here_account
+    if here_computer:
+        holder_fields["computer_mark"] = here_computer
+    if refresh:
+        holder_fields.update(holder_keep)
+    elif take_over and current is not None and _sh is not None:
+        holder_fields["effective_at"] = _sh.effective_at(now_iso)
+    row.update(holder_fields)
     ws[SCHEDULED_WRITER_KEY] = row
     ent["last_writer"] = who
     ent["last_updated"] = now_iso
@@ -4075,6 +4469,13 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
                                      verdict["previous_count"])
         if out["line"] != declared_line(device):
             out["invite"] = took_over_invite(workspace_root)
+    if refresh or adding_marks:
+        # cr1#1138: the holder re-declared in place; nothing to say.
+        out["line"] = ""
+        out["invite"] = ""
+        out["refreshed"] = True
+    if holder_fields.get("effective_at") and not refresh:
+        out["effective_at"] = holder_fields["effective_at"]
 
     event = {
         "type": SCHEDULED_WRITER_DECLARED,
@@ -4087,6 +4488,11 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
     if digest:
         event["data"]["device_digest"] = digest
     event["data"].update(took_from)
+    event["data"].update(holder_fields)
+    if refresh or adding_marks:
+        event["data"]["refreshed"] = True
+    if take_over:
+        event["data"]["handed_over"] = True
     try:
         import sys as _sys
         _here = str(Path(__file__).resolve().parent)
@@ -4101,6 +4507,124 @@ def declare_scheduled_writer(workspace_root, writer_id=None, *,
         out["error"] = "append_failed"
     return out
 
+
+def hand_over_schedules(workspace_root, writer_id=None, *, declared_by: str,
+                        now_iso=None, device_name=None,
+                        device_workspace=None) -> dict:
+    """Hand this folder's scheduled work to THIS seat (cr1#1138).
+
+    The one verb that moves the holder deliberately: the owner's word on the
+    computer and account that should hold the schedules (and the verb a second
+    account acting for the owner calls, #1139). It is
+    `declare_scheduled_writer(take_over=True)`: neither the other-account nor
+    the bound-elsewhere refusal applies, the declaration names this seat with
+    its marks, keeps whoever holds now as `previous_*`, and takes effect at
+    `effective_at` (`schedule_holder.HANDOVER_DELAY_SECONDS` later). Until
+    then the previous holder's fires still write and this seat's are refused;
+    after it, the reverse, on every write through the door. The previous
+    holder's registered chats are never touched from here: they keep firing
+    and stop at the door, each leaving its one stop record.
+
+    Returns `declare_scheduled_writer`'s answer, plus `effective_at`."""
+    return declare_scheduled_writer(workspace_root, writer_id,
+                                    declared_by=declared_by, now_iso=now_iso,
+                                    device_name=device_name,
+                                    device_workspace=device_workspace,
+                                    registered=None, take_over=True)
+
+
+
+# ---------------------------------------------------------------------------
+# cr1#1163 part 2 - the morning brief's time, set from the onboarding confirm
+# ---------------------------------------------------------------------------
+
+MORNING_TASK_ID = "morning-brief"
+_HHMM_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$", re.IGNORECASE)
+
+
+def _parse_time_of_day(text) -> Optional[tuple]:
+    """`(hour, minute)` for "7", "7:30", "7:30am", "19:15"; None otherwise."""
+    m = _HHMM_RE.match(str(text or ""))
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2) or 0)
+    half = (m.group(3) or "").lower()
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = (hour % 12) + (12 if half == "pm" else 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour, minute
+
+
+def set_morning_time(workspace_root, time: str, *,
+                     source_skill: str = "command-room-onboarding") -> dict:
+    """A WRITER (cr1#1163 part 2). The time the morning brief arrives, in the
+    workspace's timezone, as the morning brief's `schedule_config` override
+    (the store `load_schedule_config` reads, so registration uses it), with
+    the days it already runs on kept, and one `schedule_config_changed` row
+    through `log_schedule_config_change`.
+
+    It only sets the time a schedule will be REGISTERED at. When the morning
+    brief is already registered on this seat (a row in the trigger map), it
+    writes nothing and answers `registered`: moving a live schedule is
+    `change-schedule`'s job, which re-anchors the live task too. Answers
+    `{ok, cron, label, line}` or `{ok: False, reason, line}`."""
+    from atomic_write import atomic_write_json_locked
+
+    hm = _parse_time_of_day(time)
+    if hm is None:
+        return {"ok": False, "reason": "bad_time",
+                "line": f"\"{time}\" is not a time of day, like 7:30 or 8am. Nothing changed."}
+    ws = Path(workspace_root)
+    path = ws / "_hq" / "data" / "entities.json"
+    try:
+        import schedule_backend as _sb
+        registered = MORNING_TASK_ID in (_sb.read_trigger_map(ws) or {})
+    except Exception:  # noqa: BLE001 - no map is no registration
+        registered = False
+    if registered:
+        return {"ok": False, "reason": "registered",
+                "line": ("Your morning brief is already scheduled. Say \"move my morning "
+                         "brief to " + _format_time(*hm) + "\" and I'll move it. Nothing changed.")}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {"ok": False, "reason": "unreadable",
+                "line": "Your settings could not be read, so the time is unchanged."}
+    if not isinstance(data, dict):
+        return {"ok": False, "reason": "unreadable",
+                "line": "Your settings could not be read, so the time is unchanged."}
+    current = load_schedule_config(path).get(MORNING_TASK_ID, {}).get(
+        "cron", DEFAULT_SCHEDULES[MORNING_TASK_ID]["cron"])
+    fields = str(current).split()
+    days = fields[2:] if len(fields) == 5 else ["*", "*", "1-5"]
+    cron = " ".join([str(hm[1]), str(hm[0])] + days)
+    parse_cron(cron)
+    workspace = data.get("workspace")
+    if not isinstance(workspace, dict):
+        workspace = {}
+        data["workspace"] = workspace
+    store = workspace.get("schedule_config")
+    if not isinstance(store, dict):
+        store = {}
+        workspace["schedule_config"] = store
+    spec = dict(store.get(MORNING_TASK_ID) or {})
+    spec["cron"] = cron
+    spec["label"] = cron_to_english(cron)
+    store[MORNING_TASK_ID] = spec
+    try:
+        data["version"] = int(data.get("version", 0)) + 1
+    except (TypeError, ValueError):
+        data["version"] = 1
+    data["last_writer"] = source_skill
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json_locked(path, data, holder=source_skill)
+    log_schedule_config_change(ws, [{"task_id": MORNING_TASK_ID, "cron": cron,
+                                     "enabled": None}], source_skill=source_skill)
+    return {"ok": True, "cron": cron, "label": spec["label"],
+            "line": f"Your morning brief will arrive at {spec['label']}."}
 
 __all__ = [
     "rm_supersede_plan",
@@ -4184,4 +4708,7 @@ __all__ = [
     "device_digest",
     "scheduled_writer",
     "declare_scheduled_writer",
+    "hand_over_schedules", "holder_file_path", "sync_holder_file",
+    "name_acting_account", "ACTING_ACCOUNT_NAMED", "ACTING_ACCOUNT_LINES",
+    "set_morning_time",
 ]

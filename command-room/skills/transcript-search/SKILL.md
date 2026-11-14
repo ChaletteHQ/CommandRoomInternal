@@ -8,6 +8,8 @@ description: "Search across all meeting transcripts for mentions of a topic, pro
 
 Cross-meeting topic search. The user wants to know what was said about something — a project, a competitor, a deal, a feature, a person who wasn't necessarily a meeting attendee — without having to remember which specific meeting it came up in.
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## Writer Contract (v3.7.1+ — substrate-aware; v3.14.6+ — reconcile-on-read)
 
 Before writing to any workspace file, read `shared/WORKSPACE_API.md`.
@@ -64,6 +66,10 @@ If the trigger names a SPECIFIC person AND a topic ("what did Bo say about X"), 
 
 If the topic is ambiguous or empty (e.g., `"transcript search"` with no topic), surface plain English: *"What should I look for across your meetings?"*
 
+### Step 0.5: Read what is already stored (cr1#1014)
+
+Before going to the transcripts, read the stored summaries of what was said through the read door: render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "meeting_substance:meeting_summaries", "args": {"workspace_root": "<WS>", "query": "<the topic>", "person": "<the person filter, only when one is named>"}}'`, paste what it prints and run that. Rows that match are part of the answer: for each, give the meeting's title and date, what its `summary` and `topics` say about the topic, and its source in words (the meeting and the tool its transcript is in, never the raw `source_ref`), under a heading such as "From the stored meeting summaries". A summary is for display (ruling C3): when the owner wants what was actually said, the steps below still search the transcripts, starting with the meetings those rows name, and the snippets follow the summaries. When Step 0.5 found rows, Step 1's no-connector stop and Step 4's no-meetings line do not apply: answer from the rows, and with no transcript source add one sentence that the exact words need one connected. No rows: carry on below as before.
+
 ### Step 1 — Discover the transcript connector
 
 ```bash
@@ -79,13 +85,23 @@ If the topic is ambiguous or empty (e.g., `"transcript search"` with no topic), 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -145,7 +161,7 @@ print(f'PLATFORM={result.platform}')
 "
 ```
 
-If no transcript tool is discovered, surface plain English: *"I don't see a meeting transcript source connected yet. Connect Granola or Fireflies in your settings and I'll be able to search through your meetings."* STOP.
+If no transcript tool is discovered and Step 0.5 found no rows, surface plain English: *"I don't see a meeting transcript source connected yet. Connect Granola or Fireflies in your settings and I'll be able to search through your meetings."* STOP.
 
 ### Step 2 — List candidate meetings
 
@@ -186,13 +202,23 @@ Session 22 (Phase 2E test) verified that Cowork called Granola NL and got correc
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -279,13 +305,23 @@ For each candidate meeting (literal-token OR entity-expanded — see Step 2.5):
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -341,7 +377,7 @@ print(f'SCORE={score}')
 
 Sort candidates by `score × recency_decay` where recency_decay is a simple linear factor: 1.0 for today, 0.5 for 90 days ago. Take top 5. The `score >= 0.20` floor applies to LITERAL-TOKEN candidates only (keep the bar low — topic search is exploratory); entity-expanded / attendee-matched candidates are EXEMPT from the floor, per Step 3's rule 4 — they're in the set by attendee match, not token score, and the 0.20 filter would silently undo that rule.
 
-If no candidate scores ≥ 0.20 → surface plain English: *"I couldn't find any meetings where '[topic]' came up in the last 90 days. Try a different phrasing, or ask me to look back further."*
+If no candidate scores ≥ 0.20 and Step 0.5 found no rows → surface plain English: *"I couldn't find any meetings where '[topic]' came up in the last 90 days. Try a different phrasing, or ask me to look back further."*
 
 ### Step 5 — Render the results
 

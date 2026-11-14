@@ -382,7 +382,10 @@ def newest_substrate_ts(workspace_root=None) -> Optional[_dt.datetime]:
     try:
         if not path.exists():
             return None
-        text = path.read_text(encoding="utf-8")
+        # cr1#1061: the newest stamp in ANY computer's log counts; with no
+        # per-computer log this is the live file's text, as before.
+        from events_io import merged_lines
+        text = chr(10).join(merged_lines(path, encoding="utf-8"))
     except OSError:
         return None
     return max_ts_in_jsonl_text(text)

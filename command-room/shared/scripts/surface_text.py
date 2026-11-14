@@ -38,8 +38,9 @@ __all__ = [
 #: The due buckets a My Plate section is split into, in order. The widget's
 #: rows carry their due date in `data.due` (ISO) or in the context tag
 #: ("due May 25"); a row with neither is "No date".
-DUE_GROUPS = (("overdue", "Overdue"), ("this_week", "This week"),
-              ("later", "Later"), ("no_date", "No date"))
+DUE_GROUPS = (("overdue", "Overdue"), ("past_due", "Past its date"),
+              ("this_week", "This week"), ("later", "Later"),
+              ("no_date", "No date"))
 
 #: The ONE push sentence per surface: counts only, no name, no path, no tool.
 PUSH_LINES = {
@@ -163,6 +164,12 @@ def _item_due(item: Dict[str, Any], today: _dt.date) -> Optional[_dt.date]:
 
 
 def _due_group(item: Dict[str, Any], today: _dt.date) -> str:
+    # cr1#1043: the plate's own horizon when the row carries one, which is
+    # the open list's verdict (Overdue only when the overdue number counts
+    # it, else Past its date); the date alone only for an older view.
+    hz = item.get("horizon")
+    if hz in {k for k, _ in DUE_GROUPS}:
+        return str(hz)
     due = _item_due(item, today)
     if due is None:
         return "no_date"

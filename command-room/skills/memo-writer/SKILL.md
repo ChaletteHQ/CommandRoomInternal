@@ -156,6 +156,29 @@ If type is unclear, ask ONE question: "Is this a decision doc, a scope doc, a st
 - `PROJECT_BRAIN.md` — facts, people, decisions history
 - Last 5 events in the project from `events.jsonl` — from the Reads section's org-scoped load (`load_events_org_scoped`), never a raw read
 - Any referenced prior memos
+- The craft of the business the memo is for (below)
+
+#### Craft: how the business the memo is for works (cr1#397)
+
+A craft file is how a person or a business does a kind of work, as numbered rules. A memo reads the write and decide scopes of the business it is for. Its subjects are ids, resolved through `entity_resolve:resolve_all` as everywhere else, never matched by name: the memo's project, that project's business, and the person the memo is addressed to when its audience is one named person. Make this call on EVERY memo, through the read door, in one call: with those ids when they resolve, and with an empty list (`"subject_ids": []`) when none does (a memo with no project, business or named reader). Never skip it because nothing resolved: the same call returns your own write method.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": ["<project id>", "<business org id>"], "task": "memo", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Each file in `result.files` carries its scope, its status and its numbered rules; each rule has its own words (`text`) and a `cite_id`. Only confirmed files come back, and the owner's own proposed ones.
+
+**Your own method comes first (ruling on cr1#399).** The same call returns, before any other file, your own write method (`_hq/craft/write.md`) and then your firm's (`_hq/craft/firm/write.md`), on every memo, without your id being passed. Your and your firm's write scope loads on every memo; your firm's other scopes load only when the memo is for the firm itself (its own project or business is the subject), and your own other scopes load only when you are yourself the named reader. When both apply, the owner's method sets how he writes; a recipient's or business's file adds what that relationship needs. Cite every rule of either that the memo used, the owner's first, in the order `result.files` gives. Craft is method, not voice: the voice calibration stays the voice source. If a craft rule and the voice block conflict, voice wins on wording and craft wins on structure.
+
+- **Apply a rule where the memo is the kind of work it describes** (how that business wants a decision framed, what it never accepts in writing). A rule is method, never content: its words never appear in the memo.
+- **Cite every rule the memo used, from the helper, never by hand.** After the memo is saved, pass the `cite_id` of each rule it used:
+
+  ```bash
+  python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+  ```
+
+  Each line in `result.lines` is one bullet of a chat `Sources:` section between the one-line summary and the H2 doc link, pasted verbatim (for example `"When they write to a vendor, they put the ask in the subject line, because their vendors read subjects only", per how Acme Co writes (R1, confirmed Oct)`). An id in `result.refused` is not cited. The lines stay in chat: never in the memo, which is written to be distributed.
+- **No craft, no mention.** When the helper returns no file, or the memo used no rule, the turn says nothing about craft: no line, no "no method on file".
 
 ### Phase 3 — Voice-calibrated draft (two-step)
 
@@ -203,13 +226,23 @@ Rewrite what fails, re-check once, then continue. Also apply the universal banne
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

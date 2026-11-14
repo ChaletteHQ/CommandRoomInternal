@@ -172,21 +172,42 @@ def _compute_last_activity(events: list[dict]) -> dict[str, str]:
 
 
 def _collect_aliases(aliases_data: dict | None) -> dict[str, list[str]]:
-    """entity_id → list of alias strings."""
+    """entity_id → list of alias strings, from every aliases.json shape.
+
+    cr1#954: the shapes are read by `alias_index`, the one reader every alias
+    reader shares. The local parser this replaces took a tiered or list-valued
+    `mappings` dict as `{alias: id}` and crashed on the list."""
     out: dict[str, list[str]] = defaultdict(list)
     if not aliases_data:
         return out
+    try:
+        shared = Path(__file__).resolve().parents[2] / "shared" / "scripts"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        from alias_index import aliases_by_entity
+
+        out.update(aliases_by_entity(aliases_data))
+        return out
+    except Exception:
+        pass
+    # Standalone posture (no shared scripts beside this file): the flat list
+    # and plain pairs, read without ever raising. The shared reader above is
+    # the real one; this keeps the roster rendering when it is absent.
     mappings = aliases_data.get("mappings", aliases_data) if isinstance(aliases_data, dict) else []
-    if isinstance(mappings, dict):
-        # Legacy/simple format: {"alias": "entity_id", ...}
+    if isinstance(mappings, list):
+        pairs = [((m.get("alias") or m.get("raw")),
+                  (m.get("entity_id") or m.get("canonical_id") or m.get("target_id")))
+                 for m in mappings if isinstance(m, dict)]
+    elif isinstance(mappings, dict):
+        pairs = []
         for alias, eid in mappings.items():
-            out[eid].append(alias)
-    elif isinstance(mappings, list):
-        for m in mappings:
-            alias = m.get("alias") or m.get("raw")
-            eid = m.get("entity_id") or m.get("canonical_id") or m.get("target_id")
-            if alias and eid:
-                out[eid].append(alias)
+            for one in (eid if isinstance(eid, list) else [eid]):
+                pairs.append((alias, one))
+    else:
+        pairs = []
+    for alias, eid in pairs:
+        if isinstance(alias, str) and alias.strip() and isinstance(eid, str) and eid.strip():
+            out[eid.strip()].append(alias.strip())
     return out
 
 

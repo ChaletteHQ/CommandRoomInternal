@@ -68,13 +68,23 @@ Success is a substrate artifact a validator reads back, never a narration:
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -195,6 +205,23 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
 
    Never invent thread_id or for_date — an unresolvable thread means the leg silently skips that session's file write (events still land; §0 Ruling 4), and for_date must be the day the session actually happened so a sweep that runs late doesn't misdate the entry.
 
+3.6. **Method signal for craft files (cr1#400).** While you read each session, and each meeting processed in the window, note any **method signal**: a person explaining why they do something their way, correcting a draft, walking through their own review, or refusing something on principle. Only method, never a matter's facts, a figure or a third party's name. Each one is a candidate:
+
+   ```python
+   craft_candidates = [
+     {"subject_id": "<person, org or project id whose method it is; the owner's own id for the owner>",
+      "scope": "<review | decide | write | run-a-meeting | sell, or a scope the owner added>",
+      "text": "When <situation>, they <action>, because <reason>.",
+      "section": "Rules",   # or "What they never do", or "Order of work"
+      "evidence": ["session:<session id>"]},   # or "meeting:<seq>" for a processed meeting
+     # new material that says a CONFIRMED rule is wrong: name the rule it contradicts
+     {"text": "<what the rule should now say>", "evidence": ["meeting:<seq>"],
+      "contradicts": "<craft file path>#R<n>"},
+   ]
+   ```
+
+   Nothing is written to a craft file here. The write core turns each candidate into a question on the Hub's Review tab, always asking first: a new rule, or an amend shown beside the rule it contradicts. It drops a candidate with no evidence it can find, one carrying a figure or a tracked name, one already in its file, and one the owner dismissed in the last ninety days. No craft question is asked anywhere else. A window with no clean signal passes an empty list.
+
 4. **Write + receipt — ONE call.** It dedups every item on its content hash through `.source_refs.idx`, appends the survivors via `append_event()`, composes+appends each session's narrative block via `session_narrative.compose_and_append` (Step 3.5's `sessions` list), and lands the `session_sweep_run` receipt — `n_narratives_composed` counts how many blocks actually landed:
 
    ```python
@@ -209,6 +236,9 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
                                # fired_via: omit on the nightly fire or a catch-up (the
                                # seat decides); pass "manual" on a 'run session sweep'
                                # chat phrase or Run Now (v4.5.2 receipt contract)
+                               craft_candidates=craft_candidates,  # Step 3.6's list (cr1#400)
+                               craft_sessions=[<every session id read this run>],  # a chat
+                                                    # cited as craft evidence counts only if read
                                sessions=sessions)  # Step 3.5's list; omit/empty is a
                                                     # clean no-op, same skip-not-fail
                                                     # posture as an empty items list

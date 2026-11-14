@@ -3719,14 +3719,28 @@ def _overdue_lane_rows(ws, *, now_iso: str) -> list:
         sys.stderr.write(f"[needs_review_queue] overdue read degraded: "
                          f"{exc}\n")
         return out
+    # cr1#1043: the fork asks only about rows the overdue number counts (the
+    # owner's ruling of 2026-11-11): a row waiting for a yes, snoozed or
+    # observed only is not overdue. A list that cannot be read asks about
+    # nothing rather than about the wrong rows.
+    try:
+        from open_list import counted_ids
+        counted = counted_ids(ws, now_iso)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[needs_review_queue] overdue verdict degraded: "
+                         f"{exc}\n")
+        return out
     for ev in rows or []:
+        if str(_commitment_id(ev)) not in counted:
+            continue
         # `data["due"]` off the OPEN-SET projection — the one place the
         # capture's date, every later deferral and any clear have already
         # been folded together, and the same expression
         # `commitment_state.effective_due` reads. A row pushed to a new date
         # must arrive here carrying the NEW one, or the fatigue rule re-asks
         # about a deadline the customer already moved.
-        due = (ev.get("data") or {}).get("due")
+        # cr1#1043: either spelling, as the open list reads it (`due` first).
+        due = _commitment_field(ev, "due")
         if not due:
             continue
         row = {"commitment_id": _commitment_id(ev),
@@ -3973,6 +3987,17 @@ def held_important_section(workspace_root, *, now_iso: str | None = None,
 # CLI
 # ---------------------------------------------------------------------------
 
+def queue_text(workspace_root, now_iso: str | None = None, *,
+               group_by: str = GROUP_MEETING) -> str:
+    """The queue page as text, READ ONLY: exactly what `view` prints
+    (cr1#1005). It is the door form of Step 1 on a merged seat, where the
+    command line cannot reach the files; the CLI below prints this same
+    string, so the two cannot drift."""
+    view = build_queue_view(workspace_root, now_iso=now_iso,
+                            group_by=group_by, screen_lifetime=True)
+    return render_text(view)
+
+
 def main(argv=None) -> int:
     # Windows pipes default to cp1252 and the output carries middots.
     try:
@@ -3993,17 +4018,18 @@ def main(argv=None) -> int:
     # widget renders (the skill's Step 1), so it screens the same way. Two
     # renders of one page that disagree about which questions are live is
     # the drift the single predicate exists to stop.
-    view = build_queue_view(args.workspace, now_iso=args.now,
-                            group_by=args.group_by, screen_lifetime=True)
     if args.command == "view-json":
+        view = build_queue_view(args.workspace, now_iso=args.now,
+                                group_by=args.group_by, screen_lifetime=True)
         print(json.dumps(view, ensure_ascii=False))
     else:
-        print(render_text(view))
+        print(queue_text(args.workspace, args.now, group_by=args.group_by))
     return 0
 
 
 __all__ = [
     "build_queue_view",
+    "queue_text",
     "render_text",
     "parse_selection",
     "individually_named",

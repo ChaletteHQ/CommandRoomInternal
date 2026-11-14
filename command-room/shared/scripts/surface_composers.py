@@ -55,6 +55,8 @@ PUBLIC API
   maintenance_answer(plan, ...) -> str   maintenance Run Now (cleanup Step 0)
   reprocess_receipt(...) -> str          scan-for-commitments / reprocess chat
   decision_log_answer(...) -> str        decision-log's wrapper text
+  router_misses_answer(...) -> str       workspace-manager's router misses
+  accounts_answer(...) -> str            workspace-manager's accounts answer
   billing_door_line(vendor) -> str       the inbox billing-domains phrase door
   add_billing_domain(ws, domain) -> dict the door's writer (path never renders)
   billing_door_receipt(result) -> str    what to say once the door was used
@@ -673,6 +675,233 @@ def post(text: str, *, surface: Optional[str] = None, workspace=None,
 
 
 # ---------------------------------------------------------------------------
+# THE COMBINED DOOR FORM (cr1#1005 part 3)
+#
+# `post` vouches a relay against `_COMPOSED_HASHES`, which only the composer
+# that ran IN THIS PROCESS can fill. On a merged seat the door runs every
+# helper in its own child process, so a composer run through the read door
+# and `post` run after it never met, and every relay was refused. The
+# owner's ruling of 2026-11-12 is option (a): one door form per surface that
+# runs the surface's composer and `post` in ONE process. The register is
+# filled by the composer's own return, exactly as in a single in-shell run;
+# nothing is signed, nothing is skipped, and the caller never names the
+# relay: it names the surface and the composer's arguments, and the form
+# relays what the composer returned.
+# ---------------------------------------------------------------------------
+
+#: The surfaces the combined form serves: the composer it runs (None for a
+#: surface whose skill writes its own sentences and relays nothing), the
+#: keyword arguments a caller may hand that composer with each one's kind
+#: (the form fills `workspace` itself), the ones it must be handed, and the
+#: offer fence's site the whole reply passes first, as the surface's own
+#: in-shell block does. A surface is added here, not in the door.
+#: Kinds: `text` is text or nothing; `lines` a list of text; `count` a
+#: whole number (never a bool) or nothing; `dict` a mapping; `notes` a list
+#: of text or nothing per item.
+COMPOSE_AND_POST_SURFACES = {
+    "decision-log": {"composer": "decision_log_answer",
+                     "args": {"logged": "text", "found": "lines",
+                              "topic": "text"},
+                     "offer_site": "decision log"},
+    # cleanup's "run maintenance now" (cr1#1141).
+    "maintenance": {"composer": "maintenance_answer",
+                    "args": {"plan": "dict", "completed": "lines",
+                             "failed": "lines", "findings": "notes"},
+                    "required": frozenset({"plan"})},
+    # scan-for-commitments' reprocess receipt (cr1#1141).
+    "scan-for-commitments": {"composer": "reprocess_receipt",
+                             "args": {"added": "count", "already_had": "count",
+                                      "scanned": "count", "source_label": "text"},
+                             "required": frozenset({"added"})},
+    # operator-report: the report's own text, stamped by `say` (cr1#1141).
+    "operator-report": {"composer": "say", "args": {"text": "text"},
+                        "required": frozenset({"text"}),
+                        "offer_site": "operator report"},
+    # onboarding's restart probe has no composer: its whole reply is this
+    # product's own words, in `before`, scanned in full, relaying nothing
+    # (cr1#1141).
+    "onboarding": {"composer": None, "args": {},
+                   "offer_site": "onboarding probe"},
+    # Workspace-manager's two composed answers (cr1#1141 part 2). Both
+    # composers live in their own modules and take only the workspace, so
+    # the thin composers below call them in this same process and their
+    # lines reach `post` already stamped by `say`.
+    "router-misses": {"composer": "router_misses_answer", "args": {},
+                      "offer_site": "router misses"},
+    "accounts": {"composer": "accounts_answer", "args": {}},
+    # Workspace-manager's bare "undo" (cr1#1147). `brain_undo` is on neither
+    # door list, so on a merged seat the listing, the resolving and the
+    # reversal all happen inside this one writer process: a number OR the
+    # person's own description, never both. The composer hands back the rows
+    # it reversed with its text, and they reach `post` as `customer_rows`.
+    "undo": {"composer": "undo_answer",
+             "args": {"choice": "text", "phrase": "text", "undone_by": "text"},
+             "one_of": frozenset({"choice", "phrase"})},
+}
+
+
+def _log_refusal(workspace_root, surface, exc) -> None:
+    """ONE `surface_failed` receipt for a refusal the form caught before
+    `post` could write its own (the composer's gate, the offer fence). The
+    receipt carries the exception's class, never its message."""
+    if workspace_root is None:
+        return
+    try:
+        from surface_drivers import log_surface_failed
+        log_surface_failed(workspace_root, str(surface or "chat"), exc,
+                           mode="manual")
+    except Exception:  # noqa: BLE001 - a receipt never blocks the answer
+        pass
+
+
+def _arg_kind_ok(kind: str, value) -> bool:
+    """One composer argument against its kind in the table."""
+    if kind == "dict":
+        return isinstance(value, dict)
+    if value is None:
+        return True
+    if kind == "text":
+        return isinstance(value, str)
+    if kind == "count":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "lines":
+        return (isinstance(value, (list, tuple))
+                and all(isinstance(x, str) for x in value))
+    if kind == "notes":
+        return (isinstance(value, (list, tuple))
+                and all(x is None or isinstance(x, str) for x in value))
+    return False
+
+
+def _composer_args_ok(form: dict, kwargs: dict) -> bool:
+    """The composer's own arguments: only its names, each of its kind, and
+    every required one handed and not empty."""
+    kinds = form.get("args") or {}
+    if set(kwargs) - set(kinds):
+        return False
+    for key in form.get("required") or ():
+        value = kwargs.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return False
+    # At most one of these may be handed (undo: a number or a description).
+    if len([k for k in form.get("one_of") or () if kwargs.get(k) is not None]) > 1:
+        return False
+    return all(_arg_kind_ok(kinds[key], value) for key, value in kwargs.items())
+
+
+def compose_and_post(workspace_root, surface: str,
+                     composer_args: Optional[dict] = None,
+                     before: str = "", after: str = "",
+                     customer_rows: Optional[Iterable] = None) -> dict:
+    """Compose and post one surface's reply in ONE process (cr1#1005 part 3).
+
+    Runs the surface's composer (`COMPOSE_AND_POST_SURFACES`) with
+    `composer_args`, joins `before`, its return and `after` into the whole
+    reply, passes it through the surface's offer fence and then `post`, with
+    the composer's return as `relayed`. What it answers is what the skill
+    prints, whole:
+
+      `{"posted": "whole", "text": ...}`          the whole reply passed;
+      `{"posted": "composer_only", "text": ...,   it did not, so the
+        "refused": <exception class>}`             composer's return alone,
+                                                  through the same offer
+                                                  fence (the skills' own
+                                                  fallback);
+      `{"posted": "refused", "text": ...,         even that did not, or the
+        "refused": <exception class>}`             composer itself refused,
+                                                  so `refused_line(surface)`.
+
+    Every refusal lands exactly ONE `surface_failed` receipt: `post`'s own,
+    or, when the composer or the offer fence refused before `post` ran, the
+    form's. Only the exception's CLASS is in the answer, never its message,
+    which can name the very words that were refused. An unknown surface, or
+    a composer argument outside the surface's own, of the wrong kind or a
+    required one missing, is refused before anything runs or is written:
+    `{"posted": None, "refused": "unknown_surface" | "bad_composer_args"}`.
+
+    A composer may return `{"text": ..., "customer_rows": [...]}` instead of
+    its text alone (undo, cr1#1147): the rows it touched in this same run
+    are declared to `post` alongside the caller's own `customer_rows`.
+
+    A surface with no composer (onboarding, cr1#1141) relays nothing: its
+    whole reply is `before` and `after`, scanned in full, and when that
+    cannot pass the answer is the refused line, since there is no composer's
+    return to fall back to. With no words at all it answers
+    `{"posted": None, "refused": "nothing_to_post"}` and writes nothing.
+    """
+    form = COMPOSE_AND_POST_SURFACES.get(str(surface or ""))
+    if form is None:
+        return {"posted": None, "refused": "unknown_surface"}
+    if composer_args is not None and not isinstance(composer_args, dict):
+        return {"posted": None, "refused": "bad_composer_args"}
+    kwargs = dict(composer_args or {})
+    if not _composer_args_ok(form, kwargs):
+        return {"posted": None, "refused": "bad_composer_args"}
+    # An argument handed as nothing takes the composer's own default, never
+    # None: `maintenance_answer` counts `completed`, and `reprocess_receipt`
+    # would say "None" for a missing label (cr1#1141 review).
+    kwargs = {key: value for key, value in kwargs.items() if value is not None}
+    before = "" if before is None else before
+    after = "" if after is None else after
+    if not isinstance(before, str) or not isinstance(after, str):
+        return {"posted": None, "refused": "bad_composer_args"}
+    if form["composer"] is None and not (before.strip() or after.strip()):
+        # No composer and no words: there is nothing to post (cr1#1141).
+        return {"posted": None, "refused": "nothing_to_post"}
+
+    def _fenced(text: str) -> str:
+        if not form.get("offer_site"):
+            return text
+        from offer_gate import compose as _offer_compose
+        return _offer_compose(form["offer_site"], text)
+
+    if form["composer"] is None:
+        # The skill writes its own sentences: nothing to relay, and the
+        # whole reply is scanned in full (cr1#1141, onboarding).
+        composed = ""
+    else:
+        try:
+            composed = globals()[form["composer"]](**kwargs,
+                                                   workspace=workspace_root)
+        except Exception as exc:  # noqa: BLE001 - the composer's gate refused
+            _log_refusal(workspace_root, surface, exc)
+            return {"posted": "refused", "text": refused_line(surface),
+                    "refused": type(exc).__name__}
+        if isinstance(composed, dict):
+            # The composer's own rows, named by ref (cr1#1147, undo).
+            customer_rows = (list(customer_rows or [])
+                             + list(composed.get("customer_rows") or []))
+            composed = str(composed.get("text") or "")
+    whole = "\n\n".join(part for part in (before.strip(), composed,
+                                           after.strip()) if part)
+    try:
+        fenced = _fenced(whole)
+    except Exception as exc:  # noqa: BLE001 - refused before post could log
+        _log_refusal(workspace_root, surface, exc)
+        refused = type(exc).__name__
+    else:
+        try:
+            text = post(fenced, surface=surface, workspace=workspace_root,
+                        customer_rows=customer_rows, relayed=composed)
+            return {"posted": "whole", "text": text}
+        except Exception as exc:  # noqa: BLE001 - post wrote its receipt
+            refused = type(exc).__name__
+    if not composed:
+        # No composer's return to fall back to: the refused line.
+        return {"posted": "refused", "text": refused_line(surface),
+                "refused": refused}
+    try:
+        # The composer's return alone, through the same offer fence: already
+        # gated, and a second refusal is not a second receipt's worth of
+        # news, so no workspace here.
+        text = post(_fenced(composed), surface=surface, relayed=composed)
+        return {"posted": "composer_only", "text": text, "refused": refused}
+    except Exception:  # noqa: BLE001
+        return {"posted": "refused", "text": refused_line(surface),
+                "refused": refused}
+
+
+# ---------------------------------------------------------------------------
 # NAMES IN WORDS
 # ---------------------------------------------------------------------------
 
@@ -861,6 +1090,124 @@ def decision_log_answer(*, logged: Optional[str] = None,
     head = f"{_count(len(rows), 'decision')} on record{about}:"
     return say("\n".join([head] + [f"- {r}" for r in rows]),
                workspace=workspace)
+
+
+def router_misses_answer(*, workspace=None) -> str:
+    """"Show me the router misses" — `render_router_misses.chat_answer`.
+
+    A thin composer for the combined door form (cr1#1141 part 2): the answer
+    is composed, gated and stamped by `chat_answer` itself, which ends in
+    `say`, so its return is a relay this process can vouch.
+    """
+    from render_router_misses import chat_answer
+    return chat_answer(workspace)
+
+
+def accounts_answer(*, workspace=None) -> str:
+    """"What accounts do I have" — `connector_config.accounts_surface`.
+
+    A thin composer for the combined door form (cr1#1141 part 2): every line
+    `accounts_surface` returns has already left through `say`, so the joined
+    lines are a relay this process can vouch, in the composer's own order.
+    """
+    from connector_config import accounts_surface
+    return "\n".join(accounts_surface(workspace)["lines"])
+
+
+UNDO_EMPTY_LINE = "Nothing automatic in the last 7 days to reverse."
+UNDO_NO_NUMBER_LINE = "Nothing on the recent list has that number. Here it is again:"
+
+
+def _listed_batch(batches: Sequence, ref) -> Optional[dict]:
+    """The listed run or group whose ref is `ref`, for the receipt's label."""
+    for run in batches or ():
+        if run.get("batch_ref") == ref:
+            return run
+        for kid in run.get("children") or ():
+            if kid.get("batch_ref") == ref:
+                return kid
+    return None
+
+
+def undo_answer(*, choice: Optional[str] = None, phrase: Optional[str] = None,
+                undone_by: Optional[str] = None, workspace=None) -> dict:
+    """A bare "undo", whole, in ONE process (cr1#1147).
+
+    Workspace-manager's handler for a bare `undo` in a fresh chat, for the
+    combined door form: `brain_undo` is on neither door list, so on a merged
+    seat the listing, the resolving and the reversal all run here.
+
+      no `choice` and no `phrase`  the numbered listing, or the plain line
+                                   that there is nothing to reverse;
+      `choice` ('all', '1', '1a')  that batch is reversed; a number that
+                                   names nothing re-shows the list;
+      `phrase` (the person's own   `resolve_undo_phrase`; one fit is
+       description)                reversed, otherwise `phrase_door_lines`,
+                                   which never quotes the typed words.
+
+    The reversal is the person's own gesture, so it is stamped with
+    `undone_by`, or the workspace's owner when none is handed. Returns
+    `{"text", "customer_rows"}`: the receipt names each row by its title,
+    and `customer_rows` names the rows it put back by ref, so the door reads
+    their words off the book itself.
+    """
+    from brain_undo import (batch_ref_for_ordinal, phrase_door_lines,
+                            recent_auto_batches, resolve_undo_phrase,
+                            undo_batch, undo_listing_lines, undo_receipt_lines)
+    ws = str(workspace)
+    batches = recent_auto_batches(ws)
+    lead: list = []
+    batch = None
+    if phrase is not None and phrase.strip():
+        hit = resolve_undo_phrase(ws, phrase, batches=batches)
+        if hit.get("status") != "resolved":
+            if hit.get("status") != "ambiguous" and not batches:
+                return {"text": say(UNDO_EMPTY_LINE, workspace=ws),
+                        "customer_rows": []}
+            # `no_match` carries no candidates: re-show the listing itself
+            # (cr1#1147 review), never a heading over an empty list.
+            lines = phrase_door_lines({**hit, "batches": batches})
+            return {"text": say("\n".join(lines), workspace=ws),
+                    "customer_rows": []}
+        ref, batch = hit.get("batch_ref"), hit.get("batch")
+        if hit.get("widened"):
+            lead = ["That one is from a while back."]
+    elif choice is not None and choice.strip():
+        ref = batch_ref_for_ordinal(batches, choice)
+        if ref is None:
+            lines = ([UNDO_NO_NUMBER_LINE] + undo_listing_lines(batches)
+                     if batches else [UNDO_EMPTY_LINE])
+            return {"text": say("\n".join(lines), workspace=ws),
+                    "customer_rows": []}
+        batch = _listed_batch(batches, ref)
+    else:
+        lines = undo_listing_lines(batches)
+        return {"text": say("\n".join(lines) if lines else UNDO_EMPTY_LINE,
+                            workspace=ws), "customer_rows": []}
+    who = (undone_by or "").strip()
+    from event_types import is_person_actor
+    if not is_person_actor(who):
+        # Only a person id is stamped as a person's own act: a name or an
+        # unfilled placeholder falls back to the owner (cr1#1147 review).
+        from primary_user import resolve_primary_user
+        who = resolve_primary_user(ws) or ""
+    result = undo_batch(ws, ref, undone_by=who, source_skill="workspace-manager")
+    undone = [r["change"]["change_ref"] for r in result.get("results") or ()
+              if r.get("status") == "undone"
+              and (r.get("change") or {}).get("change_ref")]
+    receipt = lead + undo_receipt_lines(ws, result, batch=batch)
+    try:
+        text = say("\n".join(receipt), workspace=ws)
+    except Exception:  # noqa: BLE001 - the rows are already back
+        # The reversal has happened; a receipt that cannot pass must not
+        # turn into "it did not work" (cr1#1147 review). Say how many came
+        # back, naming none of them.
+        n_back = int(result.get("n_undone") or 0) + int(result.get("n_already") or 0)
+        lines = [f"Put {_count(n_back, 'thing')} back."]
+        if int(result.get("n_errors") or 0):
+            lines.append(f"{_count(int(result['n_errors']), 'change')} did not go back.")
+        text = say("\n".join(lead + lines), workspace=ws)
+    return {"text": text, "customer_rows": undone}
 
 
 # ---------------------------------------------------------------------------

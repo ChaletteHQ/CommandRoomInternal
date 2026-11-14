@@ -63,7 +63,8 @@ def _index_org_hints_by_person(events_path: Path) -> dict[str, list[str]]:
     if not events_path.exists():
         return {}
 
-    for line in events_path.read_text("utf-8").splitlines():
+    from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+    for line in _merged_lines(events_path, "utf-8"):
         if not line.strip():
             continue
         try:

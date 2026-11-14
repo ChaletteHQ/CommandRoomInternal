@@ -73,13 +73,23 @@ A scheduler tool you cannot see yet may only be waiting to be loaded. Load first
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the
@@ -264,7 +274,10 @@ The first answer carries `integ` (`org_writer.count_failing_orgs(ws)`),
 SYNC1 B4, the .git-in-Drive advisory), `n_new_duplicate_seqs` (`seq_health`'s
 `detect_and_mark(ws)` read — BUG-8330 item 7c, READ-ONLY here, no --mark;
 cleanup marks weekly), and `seq_gap`, the missing-entry report of
-`detect_and_mark_gaps(ws)` — LEDGERFENCE1, READ-ONLY here too. The two
+`detect_and_mark_gaps(ws)` — LEDGERFENCE1, READ-ONLY here too, and
+`computers` (`computer_logs.health(ws)`, cr1#1061 slice 3: which computers
+write this seat, which one owns the activity log, a count per computer and any
+entry number given out on two). The two
 missing-entry lines are composed from that report by `seq_health` alone — the
 one module that says them — and it reads no workspace, so it runs right here:
 
@@ -295,6 +308,7 @@ that answer's list followed by `git_lint`.
 - **Duplicate-seq line (BUG-8330 item 7c):** `n_new_duplicate_seqs > 0` → *"[n] activity-log entries share a record number — the weekly cleanup will mark them; new ones appearing means something is writing the log wrong."* Zero → render nothing (a marked historic duplicate is known, not news).
 - **Missing-entry lines (LEDGERFENCE1 — CONTRACT Rule 31):** `seq_gap_line` non-empty → render it VERBATIM, every line of it (it is composed by `seq_health.gap_notice`, never re-worded here, so this surface and the Monday note say the same words). Empty string → render nothing (a marked historic stretch is known, not news). A duplicate number is two events written with the same number; a missing stretch is numbers that are not in the log. `scan_gaps` classifies every stretch on POSITIVE evidence only — the numbering visibly restarting, or a recorded repair that NAMES the numbers it set aside — and everything it cannot account for is a removal. `gap_notice` then says one plain sentence per class present: a removal first, then a repair, then a restarted numbering. Never drop a line because it sounds harmless, never re-word a line to say more than it says, never offer to put entries back, never suggest restoring a backup, and never edit the log to "tidy" it: this skill is read-only, and CONTRACT Rule 31 binds every other one.
 - **The standing missing-entry line (LEDGERFENCE1 fix round 3 — this surface ONLY):** `seq_gap_standing` non-empty → render it VERBATIM, on its own line, right after `seq_gap_line`. Empty → render nothing. This is the ONE thing about a missing stretch that keeps being said after the news is spent: `gap_notice` says a stretch once and the weekly mark makes sure it is never said again, which is right for a restarted numbering and right for a repair, and wrong for entries nothing accounts for — a customer who was away on the one Monday it was said would otherwise never learn of it. `gap_standing_line` returns an empty string while `seq_gap_line` is still saying it, so the two are never both on screen. It is composed in `seq_health`, never re-worded here, and it lives on the health check ALONE: the Monday maintenance note stays once-only and the morning brief never sees any of it.
+- **The computers lines (cr1#1061 slice 3):** every line in `computers.lines` renders VERBATIM, after the missing-entry lines, each on its own line. Empty list → render nothing (a seat used from one computer says nothing here, exactly as before). They say which computers write this seat, which one owns the activity log (and whether the owner chose it), how many entries each computer keeps in its own log, and, with a ⚠, any entry number given out on two computers while they were out of sync. This skill changes none of it. Two commands change it, and the owner runs them in a terminal, never this skill: `computer_logs.py --workspace <WS> --own-live-log` on the computer that should own the activity log (the owner's one-time switch), and `computer_logs.py --workspace <WS> --undo` to switch each computer's own log off and fold every computer's entries back into the activity log (`--dry-run` first says what it would fold; `--routing-on` turns it back on). If the owner asks how to do either, say which command and where; do not run it.
 
 Then stop. No widget on the health check (the Staff Meeting surface below has its own render contract), no doc, no follow-up question.
 

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -72,6 +73,13 @@ BLOCK_PERSONA = "persona"
 # (default on, fail-to-default); a workspace with nothing stated never gets
 # the block and stays byte-identical to pre-PROFILE1.
 BLOCK_PROFILE = "profile"
+# cr1#1016 (train 7, cr1#788 item 3): the one-line index of every rule on file
+# rides the same generated-block contract, so it is always in view while the
+# rule itself loads in full only with the skill it applies to. Its body comes
+# from the one loader (`context_loader.index_for_brief`), never from the rules
+# store directly. Dormancy-gated like the persona: a workspace with no rules
+# never gets the block, and one whose last rule is retired clears it.
+BLOCK_RULES = "rules"
 SOURCE_LINE = "_Full register: `_hq/data/entities.json` · views: `_hq/views/`_"
 
 # Above this many VISIBLE orgs (post passive/archived exclusion) the register
@@ -274,6 +282,68 @@ def _profile_body(ws: Path) -> str:
         return ""
 
 
+def _rules_body(ws: Path):
+    """Body for the rules index block: one line per live rule, from the one
+    loader. Empty when there are none, which clears a stale block. None when
+    a source could not be read: then the block is left as it is, because an
+    unreadable log is not "no rules"."""
+    try:
+        from context_loader import index_for_brief
+        return "\n".join(index_for_brief(ws))
+    except Exception:
+        return None
+
+
+def _block_body(claude_md: Path, block_id: str):
+    """The text between a block's markers, or None when it is not there."""
+    try:
+        text = claude_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"<!--\s*LIVE-STATE:" + re.escape(block_id) + r"\b[^>]*-->\n?(.*?)"
+                  r"<!--\s*/LIVE-STATE:" + re.escape(block_id) + r"\s*-->", text, re.S)
+    return m.group(1).rstrip() if m else None
+
+
+def _rules_status(ws: Path, claude_md: Path):
+    """(body, dirty) for the rules block. Dirty is decided on the body itself,
+    not only on the log's seq: a learned rule can stop applying when its voice
+    block changes, with no new row on the log."""
+    body = _rules_body(ws)
+    if body is None:
+        return None, False
+    present = read_block_meta(claude_md, BLOCK_RULES) is not None
+    if not body and not present:
+        return body, False
+    if not present:
+        return body, True
+    meta = read_block_meta(claude_md, BLOCK_RULES) or {}
+    return body, (_block_body(claude_md, BLOCK_RULES) != body.rstrip()
+                  or meta.get("logic_v") != LOGIC_VERSION)
+
+
+def regenerate_rules_block(workspace_root) -> dict:
+    """Redraw ONLY the rules index block (cr1#1016). The rules writers call
+    this, so stating a rule never adds or rewrites the other generated blocks."""
+    ws = Path(workspace_root)
+    claude_md = ws / "CLAUDE.md"
+    if not claude_md.exists():
+        return {"status": "no_claude_md"}
+    body, dirty = _rules_status(ws, claude_md)
+    if body is None:
+        return {BLOCK_RULES: "skipped_unreadable"}
+    if not body and read_block_meta(claude_md, BLOCK_RULES) is None:
+        # No rules and no block: the block does not take part, so a brief
+        # with no rules is byte-identical to before (the persona precedent).
+        return {"status": "dormant"}
+    if not dirty:
+        return {BLOCK_RULES: "unchanged"}
+    return {BLOCK_RULES: render_block(
+        claude_md, BLOCK_RULES, body, generated_at=_now_iso(),
+        source_seq=_latest_seq(ws), logic_version=LOGIC_VERSION,
+        create_after_heading="## Workspace register (generated)")["status"]}
+
+
 def needs_regenerate(workspace_root: str | Path) -> bool:
     ws = Path(workspace_root)
     claude_md = ws / "CLAUDE.md"
@@ -285,6 +355,8 @@ def needs_regenerate(workspace_root: str | Path) -> bool:
         blocks.append(BLOCK_PERSONA)
     if _profile_block_active(ws, claude_md):
         blocks.append(BLOCK_PROFILE)
+    if _rules_status(ws, claude_md)[1]:
+        return True
     return any(
         needs_render(claude_md, b, seq, logic_version=LOGIC_VERSION)
         for b in blocks)
@@ -334,6 +406,10 @@ def regenerate(workspace_root: str | Path) -> dict:
             )["status"]
         else:
             out[BLOCK_PROFILE] = "unchanged"
+    # cr1#1016: the rules index, dirty-checked on its body.
+    rules_out = regenerate_rules_block(ws)
+    if BLOCK_RULES in rules_out:
+        out[BLOCK_RULES] = rules_out[BLOCK_RULES]
     for block_id, body_fn in ((BLOCK_ORGS, _org_body),
                               (BLOCK_WORKSTREAMS, _workstream_body)):
         # Honor the dirty-check BEFORE rebuilding (v5.10.0 flake fix): the

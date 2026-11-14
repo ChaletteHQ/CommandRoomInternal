@@ -4,6 +4,8 @@
 
 Read `cockpit-shared.md` in this folder first and do its shared step 0 and shared step 1 with leg `apply`. Then this leg, then the shared last step.
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## The leg: what the page saved, into the book
 
 **Claim before acting (cr1#675).** Two Apply runs can overlap: the hourly fire and a press on the page, a Start over, a retried run. A press must never be applied twice, because a send would go out twice. So this run claims each choice before it acts on any, with its own id (`<this session id>`, the same `run_id` its light carries):
@@ -24,7 +26,7 @@ Then read the choices again (step 1's `query`, for the versions the claim left),
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the documents as read>], "inbox_fire_stamp": "<feed/inbox fire_stamp, or null>", "now_iso": "<now ISO>", "run_id": "<this session id>", "used_tokens": [<the tokens list of config/sent_tokens, or []>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:plan_apply"}'
 ```
 
-Six lists come back, plus `skipped`: the choices another run holds or no run claimed. Write nothing on a skipped choice.
+Eight lists come back, plus `skipped`: the choices another run holds or no run claimed. Write nothing on a skipped choice.
 
 Every result below is written on its choice as `result`, with `applied: true` and `applied_at`, as an `update` pinned by the version rule in `cockpit-shared.md`.
 
@@ -56,10 +58,28 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"d
 
 `set` the answer's `tokens` (as `{"tokens": [...]}`) and keep the version that write returns for the next send in this run. An answer with `already: true` means the record read already holds this token (another run recorded it and sent, or is sending): write nothing and refuse the choice with the planner's reused-token line. A pinned write refused because the record changed is redone once after a fresh `get`, through the same helper call, with the same `already` rule; a write that still fails means this send is not made: its result is `{"outcome": "error", "line": "The send could not be recorded, so it was not sent; press Send again on the page."}`. A run that dies between the record and the send leaves a token no later run accepts, which is the point: a press is sent at most once, and the owner presses Send again when it was not sent. Then dispatch the tuple through `skills/apply-choices/SKILL.md`'s `cr-inbox` handlers exactly as the widget's Apply does, `send` sending through the declared mail backend and `draft` landing in Drafts; write each handler's one-line ack as the choice's `result` (`applied` on success, `error` with the ack otherwise). A choice the page did not confirm never sends; the planner has already refused it.
 
-**`hub`** (cr1#662): the Today page's reminders and priority to-dos. One writer call, `resolved_by` again left empty:
+**`hub`** (cr1#662): the Today page's reminders and priority to-dos, and the header's "Missed something?" (cr1#1017: the writer searches the book for the item, answers what it found and why it was missed, files it and records the miss).
+
+**First, a live search for each "Missed something?" press (cr1#1202).** When the hub list holds a choice with `kind` `miss`, search the business mailbox and the meetings connector for it before the writer call, through the wall read at the top of this run (`connector_reads:chat_wall`). No miss in the list: skip this and pass neither `live` nor `inbox`.
+
+1. Plan the searches:
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the hub list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_hub_choices"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choices": [<the hub list, as it came back>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:miss_search_plan"}'
+```
+
+2. For each entry in its `searches`, search with its `query`, at most `limit` results per source, from the last `days`:
+   - **Mail:** the business mailbox only, with the mail connector's thread search (load the mail tools as the `inbox` step does, without `pressed_send`). Never a server in the wall's `connectors`; on a server that also carries a mailbox in the wall's `mailboxes`, search the business mailbox only. Each thread found is one hit `{"source": "mail", "server_id": ..., "mailbox": <the address it is in>, "thread_id": ..., "subject": ..., "sender": ..., "ts": ..., "url": ...}`: the subject and sender only, never the mail's text.
+   - **Meetings:** the meetings connector's search, unless that connector is in the wall's `connectors`. Each meeting found is one hit `{"source": "meeting", "server_id": ..., "meeting_id": ..., "title": ..., "ts": ..., "url": ..., "snippet": <at most one sentence>}`.
+   - A source not connected, one the wall names, or a search that fails is not listed in that press's `searched`.
+3. `get` `feed/inbox` (its `filtered` list says why the inbox read set a thread aside).
+
+Write nothing from a walled source and say nothing about it here. The writer holds every hit to the wall again, from the book, and its answer says in general words that personal sources are never searched.
+
+Then one writer call, `resolved_by` again left empty, with `live` (by each search's `id`: `{"searched": [<"mail" and/or "meetings">], "hits": [<the hits as read>]}`) and `inbox` (the `feed/inbox` document as read, or null):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the hub list, as it came back>], "inbox": <feed/inbox as read, or null>, "live": {<search id>: {"hits": [<hits>], "searched": [<sources searched>]}}, "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_hub_choices"}'
 ```
 
 Write each result as that choice's `result` (the whole result object, so the page can match a new item to its row; an `error` field in it stays there for the receipt). A press already in the book answers from its first write (`replayed: true`), so a retried run never writes a reminder twice. Then refresh the Today lists so the page shows them at once: `run_helper` with `cockpit_helpers:feed_mine` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/mine`. A reminder the owner added is still the owner's own: the page carries their words and their day, and this run only writes them.
@@ -87,6 +107,22 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 ```
 
 Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_settings` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/settings`; a reworded or switched-off rule also moves the Week tab, so run the step headed **Then the Week tab** in `orchestrator-cockpit-refresh.md` and `set` its answer on `feed/week`.
+
+**`mail`** (cr1#1020): the Inbox tab's presses on the owner's mail rules, a thread dropped, a rule taught from one email's note, a rule added by hand or removed, a dropped thread brought back. Nothing here sends or reads mail. One writer call, `resolved_by` again left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the mail list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_mail_choices"}'
+```
+
+Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the rules list so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_mail_rules` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/mail_rules`. The rules apply from the next inbox read.
+
+**`people`** (cr1#1020): the People tab's stars, a person starred to Home or unstarred. Nothing here sends anything or changes a person's record. One writer call, `resolved_by` again left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the people list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_people_choices"}'
+```
+
+Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the people so Home and the tab show the change at once: `run_helper` with `cockpit_helpers:feed_people` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/people` (the same `file_path` rule for a large answer).
 
 **The page's own sends and drafts (cr1#817).** A Send or Draft the page made itself (cr1#710, cr1#727) went out through the mail connector with no record in the book. This run writes that record, once however many runs overlap. `query` on `choices` with `where: [["by_page", "==", true]]`, keep each document's `version`, and plan:
 

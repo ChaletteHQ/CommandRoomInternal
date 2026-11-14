@@ -35,9 +35,13 @@ Public API
   backfill_session_notes(root, folder_name, project_display=None, today=None) -> str | None
   rollover_session_notes(root, threshold_lines=150, keep_entries=5, today=None) -> list[dict]
   regenerate_decision_log_if_changed(root) -> dict
+  regenerate_craft_view_if_changed(root) -> dict
   check_analytical_view_staleness(root, now=None) -> list[dict]
   insight_generator_staleness(root, now=None, threshold_days=14) -> dict
   check_aliases_staleness(root) -> dict | None
+  plan_folder_tidy(root, now=None) -> dict      # T10 (cr1#1019): read-only plan + re-count
+  tidy_folder(root, dry_run=False, ...) -> dict # archive-first into _archive/cleanup-<date>/ + manifest
+  undo_folder_tidy(root, bucket=None) -> dict   # every move put back from the manifest
 """
 from __future__ import annotations
 
@@ -59,6 +63,7 @@ from event_time import event_time  # noqa: E402
 import render_decision_log  # noqa: E402
 import render_master_tracker  # noqa: E402
 import render_router_misses  # noqa: E402
+import render_craft_view  # noqa: E402
 
 
 # --- D6: stale lock-file sweep (archive-move, never delete) --------------------
@@ -90,6 +95,9 @@ _ARCHIVE_ROOT = "_archive"
 # fire that refuses to run — the sweep would cause the outage it is tidying up
 # after. Retirement of old versions is `runtime_cache_report`, which reports
 # and deletes nothing (§0.26; on the merged mount deletes are refused anyway).
+# ONE named exception, T10 (cr1#1019): `tidy_folder` archive-moves a stage
+# the `current.json` pointer does NOT name (and not the version below it),
+# never the pointer or the stage it names; see its block at the end.
 RUNTIME_CACHE_REL = "_hq/.cache/cr-runtime"
 
 
@@ -1148,6 +1156,15 @@ def regenerate_router_misses_if_changed(root: str | Path) -> dict[str, Any]:
     return render_router_misses.regenerate_if_changed(root)
 
 
+def regenerate_craft_view_if_changed(root: str | Path) -> dict[str, Any]:
+    """Regenerate `_hq/views/CRAFT.md` (SPEC CRAFT1 step 1, cr1#396) from the
+    craft folders, writing only if the content changed. Thin wrapper over the
+    view's owner so cleanup records into actions_taken ONLY when `changed` is
+    True. The weekly cleanup is what keeps the index of craft files current
+    and names a craft file no record points at."""
+    return render_craft_view.regenerate_if_changed(root)
+
+
 def router_misses_monday_line(root: str | Path) -> Optional[str]:
     """The Monday-note sentence for repeated redirects (SPEC ROUTEMISS1 D3),
     or None when no skill was redirected to 3+ times in 28 days — cleanup
@@ -1212,7 +1229,8 @@ def _insight_last_run_epoch(root: Path) -> float | None:
     events = root / "_hq" / "data" / "events.jsonl"
     _INSIGHT_TYPES = {"insight", "classification_review", "project_proposal", "org_proposal"}
     if events.is_file():
-        for line in events.read_text(encoding="utf-8", errors="ignore").splitlines():
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        for line in _merged_lines(events, encoding="utf-8", errors="ignore"):
             line = line.strip()
             if not line:
                 continue
@@ -1301,3 +1319,737 @@ def check_aliases_staleness(root: str | Path) -> dict | None:
                 "view_mtime": view.stat().st_mtime,
                 "source_mtime": aliases_json.stat().st_mtime}
     return None
+
+
+
+# --- T10 (cr1#1019): folder tidy, archive first, never touching live files ----
+#
+# A large seat holds tens of thousands of files of which a small working set
+# matters: over a thousand released lease folders beside the live data (#974
+# is the code fix that stops new ones; this tidy moves the ones already
+# there), retired unpacked runtime copies under the runtime cache, and backup
+# copies past the hygiene rule's three newest per data file.
+#
+# THE CONTRACT (owner ruling A2: the live data files stay where they are):
+#   * Archive first, never delete. Every move is ONE `os.replace` into ONE
+#     dated folder, `_archive/cleanup-YYYY-MM-DD/` (a second tidy the same day
+#     gets `-2`; the folder is CLAIMED with one `os.mkdir`, so two tidies
+#     never share one), mirroring the workspace-relative path the way every
+#     archive move in this module does (`_hq` mirrors as `hq-system-locks`,
+#     HQRESOLVE1).
+#   * The dated folder carries `manifest.json` (machine-readable, written
+#     BEFORE the first move and rewritten after the last, so a tidy cut short
+#     is still undoable) and `MANIFEST.md` (the same list for a person).
+#     `undo_folder_tidy` puts every moved entry back from `manifest.json`,
+#     which it treats as data: every entry is fenced again before it moves.
+#   * THE FENCE is `_tidy_refusal`, asked by the planner, again by the mover
+#     immediately before each move, and again by the undo: a live data file
+#     or one of its live-state siblings (`TIDY_LIVE_NAMES`,
+#     `_tidy_is_live_name`) is never moved or recreated, whatever folder it
+#     sits in and however much it looks like junk; neither is anything that
+#     is not the shape its class moves, a folder that holds a live file or a
+#     `_hq` folder, a symlink, or anything outside the three tidy areas.
+#   * Three classes, each in ONE folder, non-recursive:
+#       lease_folder   `_hq/data/*.lease.released.<stamp>-...`, released more
+#                      than an hour ago by BOTH its name's stamp and its mtime
+#       runtime_copy   `_hq/.cache/cr-runtime/<stage>` and `cr-runtime-<v>.zip`
+#                      whose version is BELOW the version before the one the
+#                      `current.json` pointer names, older than a day; the
+#                      stage in use, its version, the version below it and
+#                      anything newer are never moved; no readable pointer ->
+#                      the whole class is left alone
+#       surplus_backup `_hq/data/_backups/<data file name>.<...>` past the
+#                      three newest per data file, grouped by the full data
+#                      file name (the prefix `atomic_write`'s restore and
+#                      `reconcile_forward._backup_set` read by); any other
+#                      backup shape (a dated multi-file set) is left alone
+#   * A time budget covers the whole call, planning included; the live-file
+#     fingerprint is size and mtime only (no live file is ever opened, so a
+#     concurrent write on Windows is never blocked by this tidy).
+#   * The runtime-cache exemption above (ACCESS1) still holds for every OTHER
+#     sweep. This tidy is its one named exception.
+TIDY_BUCKET_PREFIX = "cleanup-"
+TIDY_MANIFEST_JSON = "manifest.json"
+TIDY_MANIFEST_MD = "MANIFEST.md"
+TIDY_KEEP_BACKUPS = 3
+TIDY_LEASE_MIN_AGE_S = 3600
+TIDY_RUNTIME_MIN_AGE_S = 24 * 3600
+#: Moves per call; a call that stops short says how many remain, and the next
+#: call carries on (idempotent). Sized for the door's 150 s verb budget.
+TIDY_MAX_MOVES = 1500
+TIDY_TIME_BUDGET_S = 100.0
+
+#: The live data files (owner ruling A2). Exact names.
+TIDY_LIVE_NAMES = frozenset({"entities.json", "events.jsonl", "aliases.json",
+                             "processed-meetings.json"})
+#: Their live-state siblings, by the shape each writer gives them:
+#: `.writer.lock` / `.writer.lock.info` / `.writer.lock.sentinel`
+#: (writer_lock), `.source_refs.idx` (source_ref_index), `<ledger>.seqhw`
+#: and `<ledger>.seqregression.json` (atomic_write), and the LIVE lease
+#: `<ledger>.lease` (lease_lock; a released one carries `.released.`).
+TIDY_LIVE_CONTAINS = (".writer.lock", ".source_refs.idx")
+TIDY_LIVE_SUFFIXES = (".seqhw", ".seqregression.json", ".lease")
+
+_TIDY_LEASE_DIR = "_hq/data"
+_TIDY_BACKUP_DIR = "_hq/data/_backups"
+_TIDY_RUNTIME_DIR = RUNTIME_CACHE_REL
+_TIDY_AREAS = {"lease_folder": _TIDY_LEASE_DIR,
+               "surplus_backup": _TIDY_BACKUP_DIR,
+               "runtime_copy": _TIDY_RUNTIME_DIR}
+_TIDY_KINDS = ("lease_folder", "runtime_copy", "surplus_backup")
+_TIDY_LEASE_INFIX = ".lease.released."
+_TIDY_LEASE_STAMP_RE = re.compile(r"\.lease\.released\.(\d{10,})-")
+_TIDY_RUNTIME_ZIP_RE = re.compile(r"^cr-runtime-(.+)\.zip$")
+_TIDY_RUNTIME_STAGE_RE = re.compile(r"^(.+)-([0-9a-f]{8}|stage)$")
+#: Backup groups: the full data file name, followed by a separator.
+_TIDY_BACKUP_GROUPS = tuple(sorted(TIDY_LIVE_NAMES, key=len, reverse=True))
+_TIDY_KIND_WORDS = {"lease_folder": ("leftover lock folder", "leftover lock folders"),
+                    "runtime_copy": ("old plugin copy", "old plugin copies"),
+                    "surplus_backup": ("surplus backup", "surplus backups")}
+_TIDY_NOT_REACHED = "not reached (time budget)"
+
+
+def _tidy_is_live_name(name: str) -> bool:
+    """True for a live data file or a live-state sibling, by name alone. The
+    one predicate the planner, the mover and the undo all ask."""
+    if name in TIDY_LIVE_NAMES:
+        return True
+    if any(tok in name for tok in TIDY_LIVE_CONTAINS):
+        return True
+    return name.endswith(TIDY_LIVE_SUFFIXES)
+
+
+def _rel_posix(root: Path, p: Path) -> str:
+    return p.relative_to(root).as_posix()
+
+
+def _tidy_refusal(root: Path, src: Path, kind: str) -> str | None:
+    """Why `src` must NOT be moved by the tidy, or None when it may be.
+
+    Asked for every entry when the plan is made and by the mover immediately
+    before its one `os.replace`."""
+    if kind not in _TIDY_AREAS:
+        return "unknown_kind"
+    try:
+        if src.is_symlink():
+            return "symlink"
+        rel = _rel_posix(root, src)
+    except (OSError, ValueError):
+        return "outside_workspace"
+    if rel.split("/", 1)[0] == _ARCHIVE_ROOT:
+        return "already_archived"
+    if rel.rsplit("/", 1)[0] != _TIDY_AREAS[kind]:
+        return "outside_tidy_area"
+    if _tidy_is_live_name(src.name):
+        return "live_file"
+    if not src.exists():
+        return "gone"
+    shape = _tidy_shape_refusal(src, kind)
+    if shape:
+        return shape
+    if src.is_dir():
+        return _tidy_subtree_refusal(src, kind)
+    return None
+
+
+def _tidy_subtree_refusal(src: Path, kind: str) -> str | None:
+    for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+        if "_hq" in dirnames:
+            return "holds_hq_folder"
+        if kind != "runtime_copy" and any(
+                _tidy_is_live_name(n) for n in list(dirnames) + filenames):
+            # A runtime stage ships seed copies named like the data files
+            # (`shared/data-schemas/seed/`); it is fenced by the pointer and
+            # the `_hq` check instead.
+            return "holds_live_file"
+        for n in dirnames:
+            if os.path.islink(os.path.join(dirpath, n)):
+                return "holds_symlink"
+    return None
+
+
+def _runtime_stage_version(stage: Path) -> str:
+    """A stage's plugin version: its own manifest's, else its name less a
+    `-<sha8>` suffix (`workspace_access.verify_command`'s naming)."""
+    import json as _json
+    try:
+        v = _json.loads((stage / "manifest.json").read_text(encoding="utf-8")
+                        ).get("plugin_version")
+        if isinstance(v, str) and v:
+            return v
+    except (OSError, ValueError, AttributeError):
+        pass
+    m = _TIDY_RUNTIME_STAGE_RE.match(stage.name)
+    return m.group(1) if m else stage.name
+
+
+def _runtime_keep(cache: Path) -> tuple[dict | None, str | None]:
+    """`({in_use, floor}, None)`, or `(None, reason)` when the pointer cannot
+    be trusted. `in_use` is the stage the pointer names; `floor` is the
+    version below which a stage or zip may retire: the highest version below
+    the current one (the version before it stays), else the current one. A
+    version at or above the floor never moves."""
+    import json as _json
+    try:
+        pointer = _json.loads((cache / "current.json").read_text(encoding="utf-8"))
+        current_version = pointer.get("version")
+        current_dir = pointer.get("dir") or current_version
+    except (OSError, ValueError, AttributeError):
+        return None, "no_current_pointer"
+    if (not isinstance(current_dir, str) or not current_dir
+            or not isinstance(current_version, str) or not current_version
+            or Path(current_dir).name != current_dir
+            or not (cache / current_dir).is_dir()):
+        return None, "pointer_target_missing"
+    versions = set()
+    try:
+        for d in cache.iterdir():
+            if d.is_dir() and not d.is_symlink() and (d / "manifest.json").is_file():
+                versions.add(_runtime_stage_version(d))
+    except OSError:
+        return None, "cache_unreadable"
+    older = [v for v in versions if _version_key(v) < _version_key(current_version)]
+    floor = max(older, key=_version_key) if older else current_version
+    return {"in_use": current_dir, "floor": floor}, None
+
+
+def _tidy_shape_refusal(src: Path, kind: str) -> str | None:
+    """The check that `src` IS what its class moves, so a plan (or a
+    manifest) naming anything else in a tidy area is refused: a released
+    lease carries `.lease.released.`; a surplus backup is a file named after
+    a data file; a runtime copy is a stage folder (it has a `manifest.json`)
+    or a `cr-runtime-<v>.zip`, never the stage the pointer names and never a
+    version at or above the floor (the pointer re-read here, every time)."""
+    name = src.name
+    if kind == "lease_folder":
+        return None if _TIDY_LEASE_INFIX in name else "wrong_shape"
+    if kind == "surplus_backup":
+        return None if src.is_file() and _backup_group(name) else "wrong_shape"
+    # runtime_copy
+    if src.is_file():
+        m = _TIDY_RUNTIME_ZIP_RE.match(name)
+        if not m:
+            return "wrong_shape"
+        version = m.group(1)
+    elif (src / "manifest.json").is_file():
+        version = _runtime_stage_version(src)
+    else:
+        return "wrong_shape"
+    keep, why = _runtime_keep(src.parent)
+    if keep is None:
+        return why
+    if name == keep["in_use"]:
+        return "runtime_in_use"
+    if _version_key(version) >= _version_key(keep["floor"]):
+        return "runtime_kept"
+    return None
+
+
+def _entry_age(p: Path, now: float) -> float | None:
+    try:
+        return now - p.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _lease_age(p: Path, now: float) -> float | None:
+    """A released lease's age: the YOUNGER of its mtime and the release time
+    stamped in its name (`lease_lock._released_name`: microseconds), so a
+    stale lease renamed a moment ago is never taken mid-release."""
+    age = _entry_age(p, now)
+    m = _TIDY_LEASE_STAMP_RE.search(p.name)
+    if m and age is not None:
+        try:
+            age = min(age, now - int(m.group(1)) / 1_000_000)
+        except (ValueError, OverflowError):
+            pass
+    return age
+
+
+def _plan_runtime(root: Path, now: float, out: dict) -> None:
+    cache = root / _TIDY_RUNTIME_DIR
+    if not cache.is_dir():
+        return
+    keep, why = _runtime_keep(cache)
+    if keep is None:
+        out["skipped"].append({"kind": "runtime_copy", "reason": why})
+        return
+    for d in sorted(cache.iterdir()):
+        is_stage = d.is_dir() and (d / "manifest.json").is_file()
+        is_zip = d.is_file() and _TIDY_RUNTIME_ZIP_RE.match(d.name)
+        if not (is_stage or is_zip):
+            continue
+        version = (_runtime_stage_version(d) if is_stage
+                   else _TIDY_RUNTIME_ZIP_RE.match(d.name).group(1))
+        if d.name == keep["in_use"] or _version_key(version) >= _version_key(keep["floor"]):
+            continue
+        age = _entry_age(d, now)
+        if age is None or age < TIDY_RUNTIME_MIN_AGE_S:
+            continue
+        _plan_add(root, d, "runtime_copy", out)
+
+
+def _backup_group(name: str) -> str | None:
+    """The data file a backup belongs to: its name starts with the data
+    file's full name and a separator. A file named exactly like a data file
+    joins that group, where the fence refuses it if it is ever surplus. None
+    for any other name (left alone)."""
+    for g in _TIDY_BACKUP_GROUPS:
+        if name == g or (name.startswith(g) and name[len(g)] in "._-"):
+            return g
+    return None
+
+
+def _plan_backups(root: Path, out: dict) -> None:
+    d = root / _TIDY_BACKUP_DIR
+    if not d.is_dir():
+        return
+    groups: dict[str, list] = {}
+    for p in d.iterdir():
+        if not p.is_file() or p.is_symlink():
+            continue
+        g = _backup_group(p.name)
+        if g is None:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        groups.setdefault(g, []).append((mtime, p.name, p))
+    for g in sorted(groups):
+        rows = sorted(groups[g], key=lambda r: (r[0], r[1]), reverse=True)
+        for _m, _n, p in rows[TIDY_KEEP_BACKUPS:]:  # newest three stay
+            _plan_add(root, p, "surplus_backup", out)
+
+
+def _plan_leases(root: Path, now: float, out: dict) -> None:
+    d = root / _TIDY_LEASE_DIR
+    if not d.is_dir():
+        return
+    for p in sorted(d.iterdir()):
+        if _TIDY_LEASE_INFIX not in p.name:
+            continue
+        age = _lease_age(p, now)
+        if age is None or age < TIDY_LEASE_MIN_AGE_S:
+            continue
+        _plan_add(root, p, "lease_folder", out)
+
+
+def _plan_add(root: Path, p: Path, kind: str, out: dict) -> None:
+    why = _tidy_refusal(root, p, kind)
+    rel = _rel_posix(root, p)
+    if why:
+        out["refused"].append({"kind": kind, "path": rel, "reason": why})
+        return
+    out["moves"].append({"kind": kind, "from": rel, "is_dir": p.is_dir()})
+
+
+def _tidy_counts(root: Path) -> dict:
+    """The re-count: the entries in each tidy folder (not recursive, so it
+    stays cheap on a seat with thousands of lease folders). Read-only."""
+    out = {"lease_folders": 0, "backups": 0, "runtime_copies": 0,
+           "entries_in_tidy_folders": 0}
+    n = 0
+    d = root / _TIDY_LEASE_DIR
+    if d.is_dir():
+        names = [p.name for p in d.iterdir()]
+        n += len(names)
+        out["lease_folders"] = sum(1 for x in names if _TIDY_LEASE_INFIX in x)
+    b = root / _TIDY_BACKUP_DIR
+    if b.is_dir():
+        entries = list(b.iterdir())
+        n += len(entries)
+        out["backups"] = sum(1 for p in entries if p.is_file())
+    c = root / _TIDY_RUNTIME_DIR
+    if c.is_dir():
+        entries = list(c.iterdir())
+        n += len(entries)
+        out["runtime_copies"] = sum(
+            1 for p in entries
+            if (p.is_dir() and (p / "manifest.json").is_file())
+            or (p.is_file() and _TIDY_RUNTIME_ZIP_RE.match(p.name)))
+    out["entries_in_tidy_folders"] = n
+    return out
+
+
+def _live_fingerprint(root: Path) -> list[dict]:
+    """Every live data file and live-state sibling in `_hq/data/` and
+    `_hq/.system/`: size and mtime by `stat` alone. No live file is opened
+    (on Windows an open handle makes a concurrent `os.replace` onto the file
+    fail). Read-only; the manifest carries it before and after."""
+    rows = []
+    for area in ("_hq/data", "_hq/.system"):
+        d = root / area
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir()):
+            if not _tidy_is_live_name(p.name):
+                continue
+            row: dict = {"path": _rel_posix(root, p)}
+            try:
+                st = p.stat()
+                row["size"] = st.st_size
+                row["mtime_ns"] = st.st_mtime_ns
+            except OSError:
+                row["size"] = None
+            rows.append(row)
+    return rows
+
+
+def plan_folder_tidy(workspace_root, *, now: float | None = None) -> dict:
+    """READ-ONLY. What `tidy_folder` would move, what it refuses and why, and
+    the re-count as it stands. Writes nothing, creates nothing.
+
+    Returns `{moves: [{kind, from, is_dir}], refused: [{kind, path, reason}],
+    skipped: [{kind, reason}], by_kind: {kind: n}, counts: {...}}`."""
+    root = Path(workspace_root)
+    now = time.time() if now is None else now
+    out: dict = {"moves": [], "refused": [], "skipped": []}
+    _plan_leases(root, now, out)
+    _plan_runtime(root, now, out)
+    _plan_backups(root, out)
+    out["by_kind"] = {k: sum(1 for m in out["moves"] if m["kind"] == k)
+                      for k in _TIDY_KINDS}
+    out["counts"] = _tidy_counts(root)
+    return out
+
+
+def _claim_tidy_bucket(root: Path, today: str) -> str:
+    """Claim the first free dated folder, `cleanup-<today>`, then `-2`, `-3`,
+    with ONE `os.mkdir` each: a folder that already exists (an earlier tidy,
+    a tidy running at the same moment, or a person's own dated cleanup with
+    its own MANIFEST.md) is never written into."""
+    arch = root / _ARCHIVE_ROOT
+    arch.mkdir(parents=True, exist_ok=True)
+    base = f"{TIDY_BUCKET_PREFIX}{today}"
+    name, n = base, 2
+    while True:
+        try:
+            os.mkdir(arch / name)
+            return name
+        except FileExistsError:
+            name = f"{base}-{n}"
+            n += 1
+
+
+def _tidy_dest(root: Path, src: Path, bucket: str) -> Path:
+    """Where `src` goes inside the dated folder: the workspace-relative path,
+    `_hq` mirrored as `hq-system-locks` (HQRESOLVE1). No folder is made and no
+    suffix is applied here (the mover refuses a taken slot instead)."""
+    rel = src.relative_to(root)
+    rel = Path(*(_HQ_MIRROR_RENAME if part == "_hq" else part for part in rel.parts))
+    return root / _ARCHIVE_ROOT / bucket / rel
+
+
+def _write_tidy_manifest(root: Path, bucket: str, record: dict) -> None:
+    import json as _json
+
+    folder = root / _ARCHIVE_ROOT / bucket
+    atomic_write_text(folder / TIDY_MANIFEST_JSON,
+                      _json.dumps(record, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(folder / TIDY_MANIFEST_MD, _render_tidy_manifest(record))
+
+
+def _live_row_state(before: dict, after: dict | None) -> str:
+    if not after:
+        return "missing after the tidy"
+    same = all(before.get(k) == after.get(k) for k in ("size", "mtime_ns"))
+    return "unchanged" if same else "written by Command Room while the tidy ran; not moved"
+
+
+def _render_tidy_manifest(record: dict) -> str:
+    lines = [f"# Folder tidy, {record.get('date')}", "",
+             "Everything below was MOVED here, never deleted. Each line names "
+             "where it came from and where it is now. Ask Command Room to "
+             "\"undo the folder tidy\" to put every entry back, or move an "
+             "entry back by hand.", "",
+             f"Status: {record.get('status')}.", ""]
+    before = record.get("counts_before") or {}
+    after = record.get("counts_after") or {}
+    lines += ["## Re-count", "", "| | before | after |", "|---|---|---|"]
+    for key, label in (("lease_folders", "Leftover lock folders"),
+                       ("runtime_copies", "Plugin copies"),
+                       ("backups", "Backups"),
+                       ("entries_in_tidy_folders", "Entries in the three tidied folders")):
+        lines.append(f"| {label} | {before.get(key, '')} | {after.get(key, '')} |")
+    lines += ["", "## Live data files (never moved, never opened)", "",
+              "| file | size before | size after | |", "|---|---|---|---|"]
+    after_rows = {r["path"]: r for r in record.get("live_after") or []}
+    for r in record.get("live_before") or []:
+        a = after_rows.get(r["path"])
+        state = _live_row_state(r, a) if record.get("live_after") is not None else ""
+        lines.append(f"| {r['path']} | {r.get('size')} | {a.get('size') if a else ''} | {state} |")
+    for kind in _TIDY_KINDS:
+        rows = [m for m in record.get("moves") or [] if m["kind"] == kind]
+        if not rows:
+            continue
+        lines += ["", f"## {_TIDY_KIND_WORDS[kind][1].capitalize()} ({len(rows)})", ""]
+        for m in rows:
+            lines.append(f"- `{m['from']}` -> `{m['to']}` ({m.get('state', 'planned')})")
+    refused = record.get("refused") or []
+    if refused:
+        lines += ["", f"## Left alone on purpose ({len(refused)})", ""]
+        for r in refused:
+            lines.append(f"- `{r['path']}`: {r['reason']}")
+    if record.get("undo"):
+        u = record["undo"]
+        lines += ["", "## Undo", "",
+                  f"Undone {u.get('at')}: {u.get('restored', 0)} put back, "
+                  f"{len(u.get('left') or [])} left where they are."]
+    return "\n".join(lines) + "\n"
+
+
+def _tidy_counts_phrase(by_kind: dict) -> str | None:
+    parts = []
+    for kind in _TIDY_KINDS:
+        n = by_kind.get(kind, 0)
+        if n:
+            one, many = _TIDY_KIND_WORDS[kind]
+            parts.append(f"{n:,} {one if n == 1 else many}")
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _tidy_line(by_kind: dict, bucket: str | None, remaining: int,
+               *, dry_run: bool = False) -> str:
+    """What a person reads after an attended tidy: counts and the dated
+    folder's name, never a path."""
+    said = _tidy_counts_phrase(by_kind)
+    if said is None:
+        return "The folder is already tidy; nothing was moved."
+    if dry_run:
+        return f"A tidy would move {said} into the archive. Nothing was moved."
+    line = (f"Moved {said} into the archive folder {bucket}, with a list of "
+            "everything moved. Your data files were not touched.")
+    if remaining:
+        line += f" {remaining:,} more will move on the next tidy."
+    return line
+
+
+def tidy_folder(workspace_root, *, dry_run: bool = False,
+                today: str | None = None, now: float | None = None,
+                max_moves: int = TIDY_MAX_MOVES,
+                time_budget_s: float = TIDY_TIME_BUDGET_S) -> dict:
+    """THE WRITER (on `workspace_access.RUN_WRITER_ALLOWLIST`). Move the
+    planned entries into `_archive/cleanup-<today>/`, archive first, each by
+    ONE `os.replace`, after writing the manifest. Names its writer first.
+
+    `time_budget_s` covers the whole call from its start, planning included;
+    what it does not reach is counted in `remaining` and the next tidy
+    carries on. `dry_run=True` answers the plan and writes nothing. A move
+    the mount refuses is named in `left` and not retried. Returns `{bucket,
+    moved, by_kind, refused, skipped, left, remaining, counts_before,
+    counts_after, live_unchanged, dry_run, line, note}`: `line` is for an
+    attended ask (it names the dated folder), `note` is the same counts with
+    no folder name (the weekly note). `bucket` is None when nothing moved
+    (a folder is made only once a move is due; every move the mover then
+    refuses is named in its manifest)."""
+    from receipts import require_writer_identity
+
+    started = time.monotonic()
+    root = Path(workspace_root)
+    require_writer_identity(workspace_root=root)
+    now = time.time() if now is None else now
+    today = today or datetime.date.today().isoformat()
+    plan = plan_folder_tidy(root, now=now)
+    moves = plan["moves"][:max(0, int(max_moves))]
+    result: dict = {"bucket": None, "moved": 0,
+                    "by_kind": {k: 0 for k in _TIDY_KINDS},
+                    "refused": list(plan["refused"]), "skipped": plan["skipped"],
+                    "left": [], "remaining": len(plan["moves"]) - len(moves),
+                    "counts_before": plan["counts"], "counts_after": plan["counts"],
+                    "live_unchanged": True, "dry_run": bool(dry_run), "note": None}
+    if dry_run:
+        result["planned"] = plan["moves"]
+        result["remaining"] = len(plan["moves"])
+        result["line"] = _tidy_line(plan["by_kind"], None, 0, dry_run=True)
+        return result
+    if not moves or time.monotonic() - started > time_budget_s:
+        result["remaining"] = len(plan["moves"])
+        result["line"] = (_tidy_line({}, None, 0) if not plan["moves"] else
+                          f"The tidy ran out of time before it started; "
+                          f"{len(plan['moves']):,} entries will move on the next tidy.")
+        return result
+    bucket = _claim_tidy_bucket(root, today)
+    live_before = _live_fingerprint(root)
+    for m in moves:
+        m["to"] = _rel_posix(root, _tidy_dest(root, root / m["from"], bucket))
+        m["state"] = "planned"
+    record = {"kind": "folder_tidy", "issue": "cr1#1019", "date": today,
+              "bucket": bucket, "status": "in progress",
+              "counts_before": plan["counts"], "live_before": live_before,
+              "live_after": None, "moves": moves, "refused": result["refused"],
+              "skipped": plan["skipped"]}
+    _write_tidy_manifest(root, bucket, record)  # the journal, before any move
+    for m in moves:
+        if time.monotonic() - started > time_budget_s:
+            m["state"] = _TIDY_NOT_REACHED
+            continue
+        src = root / m["from"]
+        why = _tidy_refusal(root, src, m["kind"])  # asked again, at the move
+        if why:
+            m["state"] = f"refused: {why}"
+            result["refused"].append({"kind": m["kind"], "path": m["from"],
+                                      "reason": why})
+            continue
+        dest = root / m["to"]
+        if dest.exists() or dest.is_symlink():
+            m["state"] = "left: archive slot taken"
+            result["left"].append({"path": m["from"], "reason": "dest_exists"})
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(str(src), str(dest))
+        except OSError as exc:
+            m["state"] = f"left: {type(exc).__name__}"
+            result["left"].append({"path": m["from"], "reason": type(exc).__name__})
+            continue
+        m["state"] = "moved"
+        result["moved"] += 1
+        result["by_kind"][m["kind"]] += 1
+    not_reached = [m for m in moves if m["state"] == _TIDY_NOT_REACHED]
+    result["remaining"] += len(not_reached)
+    live_after = _live_fingerprint(root)
+    counts_after = _tidy_counts(root)
+    result["counts_after"] = counts_after
+    result["live_unchanged"] = live_before == live_after
+    record.update({"status": "done",
+                   "moves": [m for m in moves if m["state"] != _TIDY_NOT_REACHED],
+                   "counts_after": counts_after, "live_after": live_after,
+                   "refused": result["refused"], "left": result["left"],
+                   "remaining": result["remaining"]})
+    _write_tidy_manifest(root, bucket, record)
+    if result["moved"]:
+        result["bucket"] = bucket
+        said = _tidy_counts_phrase(result["by_kind"])
+        result["note"] = f"moved {said} into the archive"
+    result["line"] = _tidy_line(result["by_kind"], bucket, result["remaining"])
+    return result
+
+
+def _newest_tidy_bucket(arch: Path) -> str | None:
+    import json as _json
+
+    found = []
+    if not arch.is_dir():
+        return None
+    for d in arch.iterdir():
+        mf = d / TIDY_MANIFEST_JSON
+        if not (d.name.startswith(TIDY_BUCKET_PREFIX) and mf.is_file()):
+            continue
+        try:
+            rec = _json.loads(mf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("kind") == "folder_tidy" \
+                and not rec.get("undo"):
+            found.append((str(rec.get("date") or ""), mf.stat().st_mtime, d.name))
+    return max(found)[2] if found else None
+
+
+def _undo_refusal(root: Path, bucket: str, m: dict) -> str | None:
+    """Why one manifest entry must NOT go back. The manifest is data: the
+    entry is fenced exactly as a forward move would be, by its ORIGINAL
+    place (a live name or a live-state sibling is never recreated, whether
+    or not one is there now), by its class shape, and by its archived slot
+    (inside THIS dated folder, no symlink on the way)."""
+    src_rel, dest_rel = str(m.get("from") or ""), str(m.get("to") or "")
+    kind = m.get("kind")
+    if (kind not in _TIDY_AREAS or not src_rel
+            or ".." in Path(src_rel).parts or ".." in Path(dest_rel).parts
+            or src_rel.rsplit("/", 1)[0] != _TIDY_AREAS[kind]):
+        return "not_this_tidy"
+    src = root / src_rel
+    dest = root / dest_rel
+    if dest != _tidy_dest(root, src, bucket):
+        return "not_this_tidy"
+    if _tidy_is_live_name(src.name):
+        return "live_file"
+    if kind == "lease_folder" and _TIDY_LEASE_INFIX not in src.name:
+        return "wrong_shape"
+    if kind == "surplus_backup" and not _backup_group(src.name):
+        return "wrong_shape"
+    if kind == "runtime_copy" and dest.exists() and not (
+            _TIDY_RUNTIME_ZIP_RE.match(src.name) or (dest / "manifest.json").is_file()):
+        return "wrong_shape"
+    folder = root / _ARCHIVE_ROOT / bucket
+    p = dest
+    while p != folder and p != p.parent:
+        if p.is_symlink():
+            return "symlink"
+        p = p.parent
+    if dest.is_dir():
+        sub = _tidy_subtree_refusal(dest, kind)
+        if sub:
+            return sub
+    return None
+
+
+def undo_folder_tidy(workspace_root, bucket: str | None = None) -> dict:
+    """THE UNDO WRITER (on `RUN_WRITER_ALLOWLIST`). Put every entry a tidy
+    moved back where it came from, from that tidy's `manifest.json`. `bucket`
+    names the dated folder; None means the newest tidy not yet undone.
+
+    Every entry is fenced again (`_undo_refusal`); an entry whose original
+    place is taken again, or whose archived copy is gone, is left and named.
+    Nothing is overwritten and nothing is deleted. Returns `{bucket,
+    restored, left, line}`."""
+    import json as _json
+
+    from receipts import require_writer_identity
+
+    root = Path(workspace_root)
+    require_writer_identity(workspace_root=root)
+    arch = root / _ARCHIVE_ROOT
+    none = {"bucket": bucket, "restored": 0, "left": [],
+            "line": "There is no folder tidy to undo."}
+    if bucket is None:
+        bucket = _newest_tidy_bucket(arch)
+        if bucket is None:
+            return none
+        none["bucket"] = bucket
+    if Path(bucket).name != bucket or not bucket.startswith(TIDY_BUCKET_PREFIX):
+        return none
+    folder = arch / bucket
+    try:
+        record = _json.loads((folder / TIDY_MANIFEST_JSON).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return none
+    if not isinstance(record, dict) or record.get("kind") != "folder_tidy":
+        return none
+    restored, left = 0, []
+    for m in record.get("moves") or []:
+        if not isinstance(m, dict):
+            continue
+        src_rel = str(m.get("from") or "")
+        dest = root / str(m.get("to") or "")
+        why = _undo_refusal(root, bucket, m)  # fenced first: the manifest is data
+        if why:
+            left.append({"path": src_rel, "reason": why})
+            continue
+        if not (dest.exists() or dest.is_symlink()):
+            if m.get("state") == "moved":
+                left.append({"path": src_rel, "reason": "archived_copy_gone"})
+            continue
+        src = root / src_rel
+        if src.exists() or src.is_symlink():
+            left.append({"path": src_rel, "reason": "original_place_taken"})
+            continue
+        try:
+            src.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(str(dest), str(src))
+        except OSError as exc:
+            left.append({"path": src_rel, "reason": type(exc).__name__})
+            continue
+        m["state"] = "restored"
+        restored += 1
+    record["undo"] = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
+                      "restored": restored, "left": left}
+    record["status"] = "undone"
+    _write_tidy_manifest(root, bucket, record)
+    line = (f"Put back {restored:,} moved entr{'y' if restored == 1 else 'ies'}."
+            if restored else "Nothing was put back.")
+    if left:
+        line += f" {len(left):,} could not go back and stay in the archive."
+    return {"bucket": bucket, "restored": restored, "left": left, "line": line}

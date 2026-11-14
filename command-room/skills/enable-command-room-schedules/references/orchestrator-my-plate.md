@@ -18,6 +18,8 @@ The **ZERO-MANIPULATION CONTRACT** from `orchestrator-commitments.md` applies ve
 
 ---
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
 ## Step 0 — FOLD1A gate (SPEC_FLOW1 Lane H, 2026-09-07) — MANDATORY, before Phase 1
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** run this check FIRST, before Phase 1, right after the Access preamble has resolved this seat — one call, beside the data:
@@ -243,7 +245,7 @@ Parse `N action` (with or without period). All writes through the canonical help
 - `N send` → per `EMAIL_DRAFT_PROTOCOL.md` §3c dispatch order (Zapier-threaded first if configured, native threaded fallback, standalone last). Confirm `✓ Sent to [name] at HH:MM`. Write `outreach_sent` (`source_skill='commitments'`). Commitment stays open with new context.
 - `N draft` (and the FB-17-retired `N edit then send` alias, accepted ONLY from in-flight widgets) → v2.12.2/v2.14.4 semantics unchanged (replace body with input verbatim, then lazy-create the draft / send).
 - `N keep` → no-op. Confirm `N status kept in Drafts.`
-- `N push to [date]` (displays **Later…**) → parse via `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=workspace_root)` (today = the workspace-local day of `<now_iso>`, REVIEW_CUTC F-4), then ONE call to `commitment_state.apply_later(workspace_root, <data.id verbatim>, when_iso=<the resolved ISO date>, actor_id=<user person_id>, source_skill="commitments", surface="my-plate", now_iso=<now_iso>)` — never a hand-appended event (APPLYAUDIT1 part 3: a hand-append returns no status, so the Apply receipt booked every push as an error). Every row on THIS chat is the owner's own, so the writer routes to the `commitment_updated` due-date shift (`data.new_due`) and returns `{"status": "deferred"}`; update any staged draft to mention the new date. A date already gone is refused as `in_the_past` with nothing written: say its `ack` verbatim and touch no draft (cr1#849).
+- `N push to [date]` (displays **Later…**) → parse via `commitment_state.parse_later_when(<input>, <now_iso>, workspace_path=workspace_root)` (today = the workspace-local day of `<now_iso>`, REVIEW_CUTC F-4), then ONE call to `commitment_state.apply_later_covering_folded(workspace_root, <data.id verbatim>, when_iso=<the resolved ISO date>, actor_id=<user person_id>, source_skill="commitments", surface="my-plate", now_iso=<now_iso>)` (cr1#1012 ruling (b): it pushes the line and every copy folded under it that the overdue number counts; add `commitment_state.folded_covered_line(<its covered>)` to the ack when it is not empty, and keep each `copies[i].result` beside the line's own result: each is that copy's own `apply_later` return, so an `undo` restores every moved copy by its own id) — never a hand-appended event (APPLYAUDIT1 part 3: a hand-append returns no status, so the Apply receipt booked every push as an error). Every row on THIS chat is the owner's own, so the writer routes to the `commitment_updated` due-date shift (`data.new_due`) and returns `{"status": "deferred"}`; update any staged draft to mention the new date. A date already gone is refused as `in_the_past` with nothing written: say its `ack` verbatim and touch no draft (cr1#849).
 - `N resolved` → `commitment_state.close_commitment(workspace_root, <data.id verbatim>, resolved_by=<user person_id>, evidence="user marked complete via the My Plate task", source_skill="commitments", user_confirmed=True)`. Parent-with-open-sub-items raises `OpenSubitemsError` → one-line cascade confirm, then re-dispatch with `close_subitems=True`.
 - `N promote` (Personal→Promised) → `promote_task_to_commitment(workspace_root, <id>, new_kind="promise", source_skill="commitments", reason="user promoted from My Plate")`. Ack names the counterparty it will be tracked against (or notes it needs one — the §5 gate will nudge at the next capture).
 - `N make task` (Promised→Personal demote) → `promote_task_to_commitment(..., new_kind="task", reason="user demoted from My Plate")`.
@@ -294,13 +296,23 @@ Propagated by `scripts/dev/propagate_access_preamble.py`; the canonical copy is 
 #    MODE; and DEVICE = the entry in get_device_info's connectedFolders whose
 #    last path segment is WS's basename -- export CR_DEVICE_WORKSPACE="$DEVICE"
 #    before the first plan, so a saved document can name the folder the
-#    customer opens. Then hand that answer to `workspace_access.py discover
-#    --compare '<its JSON>'` in this shell: `runtime_lags: true` (the runtime
-#    is absent, or its manifest_sha is not this plugin's -- the version alone
-#    no longer changes between builds) is a STOP: run the update-bridge
+#    customer opens. Put CR_DEVICE_NAME="<the device name get_device_info
+#    reports, spelled as it reports it>" in front of that first plan, in the
+#    same command, so each write names the computer it came from (plan keeps
+#    it for the session). Then hand that answer to `workspace_access.py
+#    discover --compare '<its JSON>'` in this shell: `runtime_lags: true` (the
+#    runtime is absent, or its manifest_sha is not this plugin's -- the version
+#    alone no longer changes between builds) is a STOP: run the update-bridge
 #    install step once, resolve and compare again, and if it still lags say
 #    `lags_line` and stop. There is no container fallback.
 #  2 BRAIN. When BRAIN is not null, `plan read` it first -- one call.
+#    CONTEXT, always, one call: `plan run_helper` with name
+#    `context_loader:load_context` and args {"workspace_root": "<WS>",
+#    "skill": "<this skill's folder name>"}. Follow every rule in its
+#    `rules`; an answer a rule shaped says so in the rule's own plain words.
+#    Asked about the owner's own records and nothing on file answers, say
+#    "I do not have that." The owner's rules are read through this loader
+#    only.
 #  3 HELPERS. One verb is one call (150 s budget). Render the command ONLY with
 #    `workspace_access.py plan run_helper --json '{"name":"<module:function>",
 #    "args":{...}}'` and paste what it prints, verbatim -- INCLUDING the

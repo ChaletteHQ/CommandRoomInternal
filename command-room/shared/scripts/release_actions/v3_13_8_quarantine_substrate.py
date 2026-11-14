@@ -50,6 +50,17 @@ def auto_quarantine_malformed(
             "fallback_prompt": None,
         }
 
+    if summary.get("refused"):
+        # cr1#999: the repair asked who is writing first and touched nothing.
+        # Not applied: the item stays due and is tried again next time.
+        return {
+            "success": False,
+            "ran": False,
+            "context": {},
+            "error": summary.get("line") or "writer_identity_required",
+            "fallback_prompt": None,
+        }
+
     if not summary.get("ran"):
         # Already-recovered or nothing-to-recover. No surface.
         return {

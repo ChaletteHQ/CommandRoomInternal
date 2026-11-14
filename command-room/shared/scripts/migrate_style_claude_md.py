@@ -159,7 +159,8 @@ def _already_migrated(workspace_root, candidate: str) -> bool:
     if not events_path.exists():
         return False
     try:
-        for line in events_path.read_text(encoding="utf-8").splitlines():
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        for line in _merged_lines(events_path, encoding="utf-8"):
             line = line.strip()
             if not line:
                 continue

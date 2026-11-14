@@ -867,11 +867,27 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
                 out.append(ev)
                 continue
             data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            # cr1#771: a row kept from a misread capture (undated, held for
+            # the owner's confirm) is never what a clean capture folds into
+            # or is flagged against: that would hide the clean one, its date
+            # with it. Both stay; the owner clears the duplicate (#747). Once
+            # the owner confirms it, it is an ordinary row (ruling A3).
+            def _unconfirmed_kept(o):
+                od = o.get("data") or {}
+                return bool(od.get("kept_after_refusal")) and od.get("pending_review") is True
+            # cr1#771 review: and a kept capture never folds into an ordinary
+            # unconfirmed row, which the two-day drain may lapse.
+            def _ordinary_unconfirmed(o):
+                od = o.get("data") or {}
+                return od.get("pending_review") is True and not od.get("kept_after_refusal")
+            cands = ([o for o in open_commitments if not _ordinary_unconfirmed(o)]
+                     if data.get("kept_after_refusal")
+                     else [o for o in open_commitments if not _unconfirmed_kept(o)])
             # AUTOAPPLY §4c — the auto tier is evaluated FIRST, above the
             # flag. A duplicate the gate is certain about is STAMPED for the
             # merge instead of flagged for a question.
             auto = None if rail_is_dead else find_auto_merge(
-                data, open_commitments, name_index=name_index, now_dt=now_dt,
+                data, cands, name_index=name_index, now_dt=now_dt,
                 workspace_root=workspace_root,
             )
             if auto is not None and auto["survivor_id"] != data.get("id"):
@@ -882,7 +898,7 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
                 out.append({**ev, "data": new_data})
                 continue
             match = find_suspected_duplicate(
-                data, open_commitments, name_index=name_index, now_dt=now_dt,
+                data, cands, name_index=name_index, now_dt=now_dt,
                 workspace_root=workspace_root,
             )
             if match is None or match["commitment_id"] == data.get("id"):
@@ -897,11 +913,11 @@ def flag_suspected_duplicates(events: list, events_jsonl_path) -> list:
             door = None
             if not _door_dedup_disabled():
                 door = find_suspected_duplicate(
-                    data, open_commitments, name_index=name_index,
+                    data, cands, name_index=name_index,
                     now_dt=now_dt, window_days=DOOR_WINDOW_DAYS,
                     workspace_root=workspace_root,
                 )
-            door_row = next((o for o in open_commitments if door is not None
+            door_row = next((o for o in cands if door is not None
                              and _commitment_id(o) == door["commitment_id"]), None)
             if (door is not None and door["commitment_id"] != data.get("id")
                     and door_row is not None

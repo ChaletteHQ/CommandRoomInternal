@@ -206,7 +206,13 @@ def health_substrate(workspace_root: str) -> Dict[str, Any]:
     substrate ALARM lines are not here: they sweep resolved alerts as they
     run, so they come through `plan run_writer
     substrate_health:substrate_alarm_lines`.
+
+    `computers` (cr1#1061 slice 3) is `computer_logs.health`: which
+    computers write this seat, which one owns the activity log, a count per
+    computer and any number given out on two. Its `lines` are empty on a seat
+    with one computer, so that seat's health check is unchanged.
     """
+    import computer_logs
     import seq_health
     from brain_proposals import load_open_proposals
     from org_writer import count_failing_orgs
@@ -230,6 +236,7 @@ def health_substrate(workspace_root: str) -> Dict[str, Any]:
         # one module that composes those (LEDGERFENCE1), and it does so over
         # this report wherever the caller runs — it reads no workspace.
         "seq_gap": seq_gap,
+        "computers": computer_logs.health(workspace_root),
     })
 
 

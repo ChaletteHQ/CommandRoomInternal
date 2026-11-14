@@ -754,7 +754,8 @@ def _latest_repair_event(root) -> Optional[dict]:
     carries no `path_repair` event at all."""
     events_path = Path(root).joinpath(*MARKER_RELPARTS)
     try:
-        text = events_path.read_text(encoding="utf-8")
+        from events_io import merged_lines as _merged_lines  # cr1#1061: every computer's log
+        text = "\n".join(_merged_lines(events_path, encoding="utf-8"))
     except OSError:
         return None
     latest = None

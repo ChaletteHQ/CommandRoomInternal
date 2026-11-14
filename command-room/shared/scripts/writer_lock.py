@@ -401,6 +401,16 @@ def _write_info_sidecar(lock_path: Path, holder: str, mode: str) -> None:
             "mode": mode,
             "seqhw_seen": seqhw_seen,
         }
+        # cr1#922: the computer, beside the account+workspace `machine_id`,
+        # so two computers on one account are told apart. Absent where no
+        # lasting fact names the computer (the stamp keeps its old shape).
+        try:
+            import computer_mark as _cm  # type: ignore
+            mark = _cm.computer_mark()
+        except Exception:
+            mark = None
+        if mark:
+            info["computer"] = mark
         atomic_write_text(
             lock_path.parent / INFO_FILENAME,
             json.dumps(info) + "\n",

@@ -27,7 +27,7 @@ Command Room is a Claude Code plugin distributed via the Cowork marketplace. The
 
 - **The substrate**: every meeting, email, decision, commitment, and intel item flows into a structured event log (`events.jsonl`) + a relationship/project graph (`entities.json`). This is the moat. Everything else is read or write against it.
 - **The daily loop**: the Command Room Hub shows the inbox, the plate and the week, and Morning Brief and the silent Maintenance task are what stays on a schedule (cr1#618, #847). Most days the operator spends 5-15 minutes on what they surface.
-- **The on-demand surface**: <!-- skill-count -->61 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
+- **The on-demand surface**: <!-- skill-count -->62 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
 - **Voice calibration**: every writing skill runs voice calibration on every fire so drafts sound like the operator. The voice corpus grows over time as the operator sends sent-mail samples.
 
 What it is NOT:
@@ -260,7 +260,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 
 ## The on-demand surface — skills by intent
 
-<!-- skill-count -->61 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
+<!-- skill-count -->62 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
 
 ### "Brief me on something"
 
@@ -443,7 +443,7 @@ command-room/
 ├── RELEASE_NOTES.md                   # All releases, newest first (rendered from shared/releases/)
 ├── README.md                          # Marketplace-facing description
 │
-├── skills/                            # <!-- skill-count -->61 skills, one directory each
+├── skills/                            # <!-- skill-count -->62 skills, one directory each
 │   ├── morning-briefing/SKILL.md
 │   ├── inbox-triage/SKILL.md
 │   ├── workspace-manager/SKILL.md

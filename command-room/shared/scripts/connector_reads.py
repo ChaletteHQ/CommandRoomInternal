@@ -15,7 +15,9 @@ and why it may not:
 `purpose` is one of `open`, `close`, `people`, `projects`. `skip_reason` is
 set, in plain words, when the dial for that purpose is off (`skip_kind:
 "dial"`), or when the connector is declared `desktop_only` and this is a
-cloud fire, where it cannot be reached (`skip_kind: "reachability"`). A leg
+cloud fire, where it cannot be reached (`skip_kind: "reachability"`), or
+when the owner said the source is personal (`skip_kind: "personal"`,
+cr1#1163: never read for any purpose, never named as a gap). A leg
 calls this first, records a skip honestly on its own receipt (the chat leg's
 skip-receipt pattern), and reads nothing it was turned away from.
 
@@ -86,6 +88,9 @@ _PURPOSE_DIAL = {
 }
 SKIP_DIAL = "dial"
 SKIP_REACHABILITY = "reachability"
+#: The owner said the source is personal (cr1#1163): never read, for any
+#: purpose, on any fire, and never named as a gap (like a dial turned off).
+SKIP_PERSONAL = "personal"
 SCOPE_COMPUTER = "computer"
 SCOPE_CONTAINER = "container"
 
@@ -126,6 +131,12 @@ def _with_skip(rec: Dict[str, Any], purpose: str, cloud: bool) -> Dict[str, Any]
     out["reachable_hint"] = rec.get("scope") or cc.SCOPE_ACCOUNT
     out["skip_reason"] = None
     out["skip_kind"] = None
+    if rec.get("role") == cc.ROLE_PERSONAL:
+        out["skip_kind"] = SKIP_PERSONAL
+        out["skip_reason"] = (
+            f"the {rec.get('label') or rec.get('category')} connection is "
+            "personal, so it is never read")
+        return out
     if rec.get("scope") == cc.SCOPE_DESKTOP_ONLY and cloud:
         out["skip_kind"] = SKIP_REACHABILITY
         out["skip_reason"] = (
@@ -235,6 +246,7 @@ def unreachable_declared(workspace_root, env: Optional[dict] = None) -> List[str
         return []
     return sorted({str(r["category"]) for r in records
                    if r.get("scope") == cc.SCOPE_DESKTOP_ONLY and r.get("category")
+                   and r.get("role") != cc.ROLE_PERSONAL
                    and _any_dial_on(r, PURPOSES)})
 
 
@@ -261,6 +273,7 @@ def job_connectors(workspace_root, job_id: str) -> List[str]:
         return []
     return sorted({str(r["category"]) for r in records
                    if r.get("kind") in kinds and r.get("category")
+                   and r.get("role") != cc.ROLE_PERSONAL
                    and _any_dial_on(r, purposes)})
 
 
@@ -353,10 +366,114 @@ def unread_line(workspace_root, not_read=(), unconfirmed=()) -> str:
     return " ".join(out)
 
 
+# ---------------------------------------------------------------------------
+# cr1#1179: the same wall for the CHATS. A chat reads its connectors in the
+# conversation, where no Python step sees the tools, so the wall is asked
+# once, before the first read (`shared/CHAT_WALL.md`), and obeyed: never a
+# listed server, never a listed mailbox except its kept senders, nothing
+# written from either. The writer side is structural
+# (`account_scope_gate.enforce_scope` refuses a capture from a personal
+# connector).
+# ---------------------------------------------------------------------------
+
+def chat_wall(workspace_root) -> Dict[str, Any]:
+    """What a chat must never read, from the book as it stands.
+
+    `{readable, connectors, mailboxes}`:
+      * `connectors` - every declared connector whose role is personal:
+        `{category, label, server_ids}` (the declared id and its recorded
+        aliases). Never call a tool on these servers, for any purpose.
+      * `mailboxes` - every classified account whose surface dial is off
+        (a personal account's default, or one the owner dialled off):
+        `{address, server_ids, except_senders}`. On a mail server that also
+        carries a business mailbox, read only the business mailbox; a message
+        from this one is never shown unless its sender is one the owner opted
+        into surfacing (ACCOUNT_SCOPE's per-sender opt-in), and nothing from
+        it is ever written.
+    An empty map reads everything (R4). An unreadable book answers an empty
+    wall with `readable: False`: a chat cannot know what to hide, so it says
+    nothing it read came from a checked wall. READ ONLY; never raises."""
+    out: Dict[str, Any] = {"readable": False, "connectors": [], "mailboxes": []}
+    try:
+        cc = _cc()
+        ent = cc.load_entities(workspace_root)
+        if not isinstance(ent, dict) or not ent:
+            return out
+        out["readable"] = True
+        for rec in cc.declared_connector_settings(workspace_root, ent):
+            if rec.get("role") != cc.ROLE_PERSONAL:
+                continue
+            ids = []
+            try:
+                ids = list(cc.declared_backend_ids(rec["category"], workspace_root))
+            except Exception:  # noqa: BLE001
+                ids = []
+            if rec.get("server_id") and rec["server_id"] not in ids:
+                ids.insert(0, rec["server_id"])
+            out["connectors"].append({"category": rec.get("category"),
+                                      "label": rec.get("label") or rec.get("category"),
+                                      "server_ids": ids})
+        if cc.account_map_populated(entities=ent):
+            for acc in cc.accounts(entities=ent):
+                addr = cc._norm_addr(acc.get("address"))
+                if not addr or cc._dials_for(acc).get("surface"):
+                    continue
+                kept = []
+                ov = acc.get("overrides")
+                senders = ov.get("senders") if isinstance(ov, dict) else None
+                if isinstance(senders, dict):
+                    for sender in senders:
+                        o = cc.sender_scope_override(acc, sender)
+                        if o and o.get("surface") is True:
+                            kept.append(cc._norm_addr(sender))
+                binds = acc.get("bindings") if isinstance(acc.get("bindings"), list) else []
+                out["mailboxes"].append({
+                    "address": addr,
+                    "server_ids": [b["server_id"] for b in binds
+                                   if isinstance(b, dict) and b.get("server_id")],
+                    "except_senders": sorted(set(kept))})
+    except Exception:  # noqa: BLE001 - a reader never raises
+        return {"readable": False, "connectors": [], "mailboxes": []}
+    return out
+
+
+def chat_tool_allowed(wall: Optional[Dict[str, Any]], tool_id: str) -> bool:
+    """May a chat call this tool at all? False for a tool on a personal
+    connector's server. A mail server is answered per mailbox
+    (`chat_mail_allowed`), never here."""
+    try:
+        sid = _cc().server_id_of(tool_id)
+    except Exception:  # noqa: BLE001
+        sid = None
+    if not sid or not isinstance(wall, dict):
+        return True
+    for c in wall.get("connectors") or []:
+        if sid in (c.get("server_ids") or []):
+            return False
+    return True
+
+
+def chat_mail_allowed(wall: Optional[Dict[str, Any]], *, account: Optional[str],
+                      sender: Optional[str] = None) -> bool:
+    """May a chat show this message? False when it came from a walled
+    mailbox and its sender is not one the owner kept."""
+    if not isinstance(wall, dict) or not account:
+        return True
+    from email.utils import parseaddr
+    a = (parseaddr(str(account))[1] or str(account)).strip().lower()
+    s = (parseaddr(str(sender or ""))[1] or str(sender or "")).strip().lower()
+    for m in wall.get("mailboxes") or []:
+        if m.get("address") == a:
+            return bool(s) and s in (m.get("except_senders") or [])
+    return True
+
+
 __all__ = [
     "PURPOSES", "JOB_READS", "JOB_PURPOSES", "SKIP_DIAL", "SKIP_REACHABILITY",
+    "SKIP_PERSONAL",
     "SCOPE_COMPUTER", "SCOPE_CONTAINER",
     "cloud_fire", "connector_scope", "for_job", "for_category", "allowed",
     "unreachable_categories", "unreachable_declared", "job_connectors",
     "read_outcome", "unread_line",
+    "chat_wall", "chat_tool_allowed", "chat_mail_allowed",
 ]

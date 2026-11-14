@@ -1207,7 +1207,9 @@ def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
 def calendar_proposals(rows, meeting_events, *, user_id="", now_iso=None,
                        window_days: int = 45, people_names=None) -> list:
     """cr1#765, owner ruling 2026-11-07: the task-captured items the user owes
-    whose meeting may be about them, and no meeting surely is. Same shape as
+    whose meeting may be about them, and no meeting surely is; and, since
+    cr1#1120 (#903 case 9), any item whose meeting is about it only through an
+    explicit note that names too few subject words or runs on. Same shape as
     `calendar_matches`. Asked about, never closed."""
     return _calendar_pairs(rows, meeting_events, user_id=user_id, now_iso=now_iso,
                            window_days=window_days, people_names=people_names)[1]
@@ -1218,7 +1220,8 @@ def _calendar_pairs(rows, meeting_events, *, user_id, now_iso, window_days,
     """`(sure, unsure)`: the two lists above, in one pass."""
     from datetime import timedelta
     from calendar_subject import (SURE, UNSURE, calendar_parties, is_owed_task,
-                                  meeting_is_about, owed_task_grade)
+                                  meeting_is_about, owed_task_grade,
+                                  proposes_only)
     from event_time import event_time
     out = []
     unsure = []
@@ -1249,7 +1252,12 @@ def _calendar_pairs(rows, meeting_events, *, user_id, now_iso, window_days,
             others = _meeting_party_ids(ev) - {str(user_id or "")}
             if not (others if owed_task else parties & others):
                 continue
+            # cr1#1120: an explicit note that names too few subject words, or
+            # goes on past a comma, proposes on a mail item too; so does a
+            # cancelled, declined or prep meeting (cr1#1121). Every other
+            # match on the mail path keeps closing as #765 built it.
             grade = (owed_task_grade(row, ev, people_names=people_names) if owed_task
+                     else UNSURE if proposes_only(row, ev, people_names=people_names)
                      else SURE if meeting_is_about(row, ev, people_names=people_names)
                      else 0)
             if not grade:

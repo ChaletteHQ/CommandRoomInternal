@@ -1,5 +1,8 @@
 # Orchestrator prompt — Historical Backfill (one-shot chunk)
 
+**Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
+
 > LATE-FIRE EXEMPT (one-shot backfill chunk): this is not a recurring reader-facing chat, so the shared lateness tiers do not apply — run in full whenever fired. Documented v4.5.1-era hygiene so the omission reads as a contract, not a gap.
 
 This file is the EXACT prompt registered through `schedule_backend.plan_create` for `taskId: cr-historical-backfill-N` (one-shot, fires once at the scheduled time then expires). One-time per chunk. Multiple chunks are scheduled at install time by `enable-command-room-schedules` Phase 4 to walk back the user's last 12 months of metadata.

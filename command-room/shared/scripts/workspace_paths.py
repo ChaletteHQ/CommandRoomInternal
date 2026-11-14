@@ -114,6 +114,15 @@ POINTER_FIELDS: tuple = (
     # the plugin_update_remediation row it writes — declared here the day it
     # was added, so the guard-tier sweep reads it from the first release.
     "receipt_path",
+    # cr1#1015 (train 6). `past_rulings` records where a past ruling was read
+    # (`CLAUDE.md`, `_hq/strategy/...`) on its `brain_proposal`; relative by
+    # construction (`past_rulings._rel`), declared the day it was added.
+    "source_file",
+    # cr1#401. `craft_adjust` records which craft file a contradiction, an
+    # owner's answer or an attached correction is about, and the amend
+    # proposal's target; relative by construction (`craft_adjust._rel`),
+    # declared the day it was added.
+    "craft_path",
 )
 
 # The generated-deliverable file types CONTRACT.md Rule 3 governs — the ones a
