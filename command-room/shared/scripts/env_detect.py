@@ -4,11 +4,11 @@
 Command Room now runs in three places that look alike from inside a skill and
 behave nothing alike:
 
-  * `legacy_cowork`      — the old desktop Cowork sandbox: the workspace is
+  * `legacy_cowork`      — the legacy desktop Cowork sandbox: the workspace is
                            mounted under `<session>/mnt/`, plugin files live at
                            `<session>/mnt/.remote-plugins/plugin_*/`, the host
                            clock is the customer's own clock.
-  * `merged_cloud`       — the merged claude.ai + Cowork container: the plugin
+  * `merged_cloud`       — the merged Claude app container: the plugin
                            is SYNCED to `/root/.claude/plugins/synced/<org>_<account>/cr/`,
                            the workspace is NOT on this filesystem at all (it is
                            FUSE-mounted in a sandbox VM on the customer's PC and
@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-# The ONE legal home of the old Cowork tool strings (GUARD1, guard G67). This
+# The ONE legal home of the legacy Cowork tool strings (GUARD1, guard G67). This
 # module recognises a legacy tool list by asking the shim which SEAM an id now
 # belongs to, so no dead tool literal lives here. Same package, stdlib-only, no
 # side effects. If the shim is somehow absent (a partial copy in the sandbox
@@ -289,7 +289,7 @@ def _read_signals(env: Dict[str, str], root, names: list) -> Dict[str, Any]:
     #
     #   * `CLAUDE_CODE_REMOTE=true` with ANY entrypoint. S1 keeps the exact
     #     `remote_cowork` pair as the strongest form; this is the same flag with
-    #     a different entrypoint value (a scheduled task is not a Cowork tab).
+    #     a different entrypoint value (a scheduled task is not a legacy Cowork tab).
     #   * a non-empty `CLAUDE_CODE_REMOTE_SESSION_ID`.
     #   * the account uuid WITHOUT `CLAUDE_PLUGIN_ROOT` — the merged app's Code
     #     tab carries the uuid and sets the plugin root natively, and it must

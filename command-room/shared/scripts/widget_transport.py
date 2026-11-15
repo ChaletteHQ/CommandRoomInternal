@@ -21,7 +21,7 @@ chain + persist + audit trail.
 DELIVERY (reworked T2 — the F2 gate)
 ------------------------------------
 
-The integration-2026-07 + full-stack dogfood cycles CONFIRMED that Cowork's
+The integration-2026-07 + full-stack dogfood cycles CONFIRMED that the Claude app's
 `mcp__visualize__show_widget` has NO `file_uri` parameter (CHANGELOG Bug #67;
 schema = loading_messages / title / widget_code only). The former contract —
 "hand transport['file_uri'] to show_widget" — was impossible on the live
@@ -34,7 +34,7 @@ runtime, and the runtime silently improvised a freelance render every time
   2. Each page is render+validate+persisted here (validators fire, audit file
      written), and DELIVERED by relaying `transport["html"]` — the persisted
      page's validated bytes, VERBATIM — as `show_widget`'s `widget_code`.
-     The scaffold is diet-minified (renderer, T2) so a page fits one Cowork
+     The scaffold is diet-minified (renderer, T2) so a page fits one Claude app
      Read (25K-token cap).
 
 The persist step is the validation gate + audit trail, not the delivery
@@ -405,7 +405,7 @@ def render_and_persist(
         round-trip contract is references/SLACK_BUTTON_BRIDGE_SPEC.md).
 
     Mute/dismissal filters and cross-surface dedup run UPSTREAM in the data
-    view build (projectors/orchestrators) exactly as for cowork — both targets
+    view build (projectors/orchestrators) exactly as for `cowork_html` — both targets
     consume the identical, already-filtered view; nothing about the slack
     target bypasses them.
 
@@ -628,9 +628,9 @@ def _render_and_persist_slack(
     suppress_ids: Optional[set] = None,
     read_only: bool = False,
 ) -> dict:
-    """The slack target (SPEC_SLACK1 C-1). Same shape as the cowork path:
+    """The slack target (SPEC_SLACK1 C-1). Same shape as the `cowork_html` path:
     gates → paginate → emit → leak scan + structural contract → persist →
-    return. Raises exactly like the cowork path (CanonicalActionError,
+    return. Raises exactly like the `cowork_html` path (CanonicalActionError,
     DataShapeError, LeakDetectedError, SlackBlockContractError) — a payload
     that fails a gate is reported, never degraded (FS-08)."""
     import json as _json
@@ -650,7 +650,7 @@ def _render_and_persist_slack(
 
     profile = load_profile("slack", skill=data_view.get("source_skill"))
 
-    # Gate 1 family — the SAME pre-render validators the cowork path runs
+    # Gate 1 family — the SAME pre-render validators the `cowork_html` path runs
     # inside render_chat_output_widget (canonical actions, data shape, pulse
     # richness, send-class emails, voice-tell backstop).
     validate_data_view(data_view)
@@ -676,7 +676,7 @@ def _render_and_persist_slack(
     payload = emit_slack_payload(view, profile, read_only=read_only)
 
     # Gate 2 — the leak scan, extended over the Block Kit text render (C-1).
-    # Same scanner, same blocking semantics as the cowork HTML path; the
+    # Same scanner, same blocking semantics as the `cowork_html` path; the
     # PGUARD1 org-surface personal scan rides the same `surface` tag.
     validate_chat_output(
         blocks_text_render(payload),

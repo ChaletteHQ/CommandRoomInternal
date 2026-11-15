@@ -1,7 +1,7 @@
 ---
 name: commitment-backlog-sweep
 surfaces: both
-description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles, then asks about the rest in ONE digest. Add `show me first` to preview. Both drains also run on their own, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-list), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'."
+description: "One pass over the OPEN commitment backlog, over mail history the daily passes skip. Fires on: 'clean up my commitments', 'sweep my backlog', 'backlog sweep', 'commitment amnesty', 'review amnesty', 'expire the review pile', 'review amnesty including what I un-did', 'drop everything from that meeting' (not the write-up), 'drop everything that ingest captured', 'drop everything that import captured', 'commitment backlog'. Closes what delivery evidence settles; asks about the rest in ONE digest. Add `show me first` to preview. Both drains also run on their own, silently. DOES NOT fire on 'process the meeting' / 'meeting notes' (meeting-notes), 'triage my commitments' / 'review my open commitments' / 'burn down my commitments' (commitment-triage — no mail history), 'clean up my workspace' / 'tidy up' / 'weekly cleanup' (cleanup), 'show my list' (show-my-reminders), 'reconcile my sent mail' (reconcile-sent), or 'scan for commitments'."
 ---
 
 # commitment-backlog-sweep
@@ -817,7 +817,7 @@ Does NOT fire on: 'show my list', 'whats on my list', 'my list' — show-my-remi
 
 Does NOT fire on: 'reconcile my sent mail', 'catch up my sent mail' — reconcile-sent, the daily forward pass over new mail since the cursor.
 
-Does NOT fire on: 'scan for commitments', 'what am i waiting on' — scan-for-commitments creates items from sources; the daily Waiting On chat renders the actionable subset. This skill settles what is already open.
+Does NOT fire on: 'scan for commitments', 'what am i waiting on' — scan-for-commitments creates items from sources; 'show waiting' (or the Hub's Commitments tab) renders the actionable subset. This skill settles what is already open.
 
 **Why the fence with commitment-triage is a real line and not a coin toss.** Both
 surfaces touch the open set, and they answer different questions.

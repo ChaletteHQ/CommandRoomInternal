@@ -4,12 +4,6 @@ surfaces: both
 description: "Produce a verified, cited research brief on any company, person, market, or topic — multi-source, adversarially checked — then fold the findings into the CEO's workspace so they compound. Fires on: 'research [company/person/topic]', 'deep dive on [topic]', 'what's the story on [company]', 'look into [topic]', 'recent sentiment on [topic]' / 'last 30 days on [topic]' (recency mode). Owns ALL research intents — including any ask the generic built-in deep-research skill could take. It is workspace-blind: no entity framing, no Tavily/Vibe Prospecting enrichment, findings not saved. Any 'research', 'deep dive on', 'look into', 'background on' phrasing routes HERE. Output: cited brief saved to the project folder, key facts folded into workspace records. Does NOT fire on 'prep me for [meeting]' (call-prep), 'who is [name]' (people-crm), or 'break down this article' (intel-intake — the CEO already has the source)."
 ---
 
-## Recommended Model
-
-**Default: Opus.** Framing the question against the workspace, judging source quality, cross-checking claims, and deciding what is worth saving are all judgment calls — this is exactly where Opus earns its cost. The brief is read and acted on by the CEO, and bad synthesis is worse than no brief.
-
----
-
 ## Entity-resolve + canonical-helper enforcement (mandatory, v3.13.8+)
 
 If the skill is invoked with a name-bearing trigger ("research [company]", "background on [person]", "look into [client]"), you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` FIRST to resolve the named scope to an existing person / org / project before any web search or substrate query. This is what lets the brief say "Acme Co — the prospect from your Northstar intro, last touched 12d ago" instead of treating it as a cold name. See `shared/ENTITY_RESOLVE_PROTOCOL.md` for the full contract. If `resolve_all` returns no match, proceed with research and stub the entity only at save-time via the canonical writers (never hand-edit entities.json).

@@ -985,7 +985,7 @@ def _log_gauge_receipt(workspace_root, out, *, fired_via) -> None:
 
 
 def main(argv: list[str]) -> int:
-    # Self-configure UTF-8 — Cowork invokes this from a cp1252 Windows
+    # Self-configure UTF-8 — the Claude app invokes this from a cp1252 Windows
     # console; never rely on the caller setting PYTHONUTF8 (the
     # verify_fleet/tag_release unicode-crash class). Same pattern as
     # tests/run_all.py.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-time corruption alarms (FS-15 — corruption must be loud).
 
-The 2026-07-14 fullstack dogfood found Cowork's sync cache serving a TRUNCATED
+The 2026-07-14 fullstack dogfood found the legacy Cowork app's sync cache serving a TRUNCATED
 entities.json for ~90 minutes while the copy on disk AND in Drive were both
 clean. Every defensive reader did exactly what it was written to do — caught
 the parse failure and served its fallback — and the workspace ran degraded
@@ -103,9 +103,9 @@ def sidecar_path(target: str | Path) -> Path:
 
 def remedy_line() -> str:
     """The one remedy every FS-15 surface must carry (dogfood-verified: a
-    plain window close leaves Cowork's stale sync cache live)."""
+    plain window close leaves the app's stale sync cache live)."""
     return (
-        "Fully quit and reopen Cowork (quit the app completely — closing the "
+        "Fully quit and reopen the Claude app (quit the app completely — closing the "
         "window is not enough) so it drops the stale sync cache."
     )
 

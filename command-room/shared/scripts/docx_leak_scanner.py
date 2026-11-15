@@ -6,7 +6,7 @@ WHY THIS EXISTS
 ---------------
 
 Bug #57: decision-memo-composer shipped a memo containing the literal
-substring `project_020` in body prose — only Cowork's post-hoc audit caught
+substring `project_020` in body prose — only a legacy Cowork post-hoc audit caught
 it. Bug #59: board-pack-assembler shipped substrate paths (events.jsonl,
 _hq/...) in Appendix C. Bug #54: the prior extract-text validator returned
 0 characters on some docx outputs, producing "false-clean" verdicts that

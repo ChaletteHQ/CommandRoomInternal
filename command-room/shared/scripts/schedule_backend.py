@@ -431,7 +431,7 @@ def registration_gate(
 
     Returns `{"allowed", "line", "reason_code", "blocked_since", "reason",
     "unblock_evidence"}`. The legacy backend is always allowed — the fleet on
-    desktop Cowork keeps working exactly as it does today. The cloud backend is
+    the legacy desktop Cowork app keeps working exactly as it does today. The cloud backend is
     blocked by the shipped config until the v3 bootloader and the workspace
     access layer are on one cut (gap analysis §0.9).
     """
@@ -724,7 +724,7 @@ def min_gap_minutes(cron: str) -> Optional[int]:
 
 
 class LegacyBackend:
-    """Desktop Cowork, v5.29.0 fleet. Byte-for-byte today's behaviour.
+    """Legacy desktop Cowork, v5.29.0 fleet. Byte-for-byte today's behaviour.
 
     `normalize` is the identity: the legacy listing already hands back the five
     keys every reader wants, and `cronExpression` is already machine-local.
@@ -2483,7 +2483,8 @@ def bridge_plan(tools, *, workspace_root, abs_path: Optional[str] = None,
     the customer's own times (cr1#890). A survivor the owner paused on this
     seat is kept like any other, its update prompt-only, and the line says it
     stays paused (cr1#914). A legacy scheduler refuses with the
-    invite line as before.
+    invite line as before, and carries `pauses` (cr1#1100): the switch-off
+    plans for each shelved chat it still has enabled, since it has no delete.
     """
     sc = _schedule_config()
     if reinstall:
@@ -2653,12 +2654,21 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
                            "updated_names": [], "reinstall_line": "", "gone_ids": [],
                            "duplicates": {}, "copies": {}, "listing_loaded": False,
                            "paused_names": [], "quiet": False, "owner_line": "",
-                           "owner_tail": "", "kept_names_all": []}
+                           "owner_tail": "", "kept_names_all": [],
+                           "pauses": [], "pause_ids": [], "legacy_pause_line": ""}
     if backend is None or backend.id != "cloud":
         out["line"] = sc.setup_invite_line(
             tools, workspace_root=workspace_root, abs_path=abs_path, env=env,
             invite=FIRST_REGISTRATION_INVITE, alternative=FIRST_REGISTRATION_ALTERNATIVE)
         out["reason"] = "legacy_backend" if backend is not None else "no_scheduler"
+        # cr1#1100 (owner ruling 2026-11-14, the safe half): the older desktop
+        # scheduler has no delete, so a shelved chat registered there keeps
+        # firing. It is switched off instead, never deleted: `pauses` are
+        # `plan_update(enabled=False)` plans the schedule-changes step runs.
+        if backend is not None and backend.id == LegacyBackend.id:
+            out["pauses"] = legacy_shelved_pauses(backend, registered)
+            out["pause_ids"] = [p.task_id for p in out["pauses"]]
+            out["legacy_pause_line"] = legacy_pause_line(out["pause_ids"])
         return out
     # cr1#942: no listing is not an empty account. `[]` is a listing that was
     # read and carries nothing (the readback rule: never substitute `[]` for a
@@ -2848,6 +2858,64 @@ def _bridge_reinstall_plan(tools, *, workspace_root, abs_path, registered,
         out["reinstall_line"] += " " + HUB_ONE_TASK_LINE
         out["owner_line"] += " " + HUB_ONE_TASK_LINE
     return out
+
+
+#: cr1#1100: the one line the owner hears when shelved chats are switched off
+#: on the older desktop scheduler, and the one for a pause that did not land.
+LEGACY_PAUSED_LINE = ("This computer's older scheduler has no delete, so I switched off "
+                      "{names}: the Command Room Hub shows {them} now, and {their} "
+                      "phrases still run {them} any time.")
+LEGACY_NOT_PAUSED_LINE = ("{names} could not be switched off this time; "
+                          "I'll try again the next time you set up your schedules.")
+
+
+def legacy_shelved_pauses(backend, registered) -> list:
+    """cr1#1100. Pure. The switch-off plans for every shelved chat the older
+    desktop scheduler still has ENABLED, one per task id, in the listing's
+    order. A chat already off is left alone (so a second run plans nothing),
+    as is one whose `enabled` the listing does not state. Morning Brief and
+    Maintenance are never shelved, so never planned. `registered` that is not
+    a list (a failed read) plans nothing."""
+    sc = _schedule_config()
+    if backend is None or getattr(backend, "id", None) != LegacyBackend.id:
+        return []
+    if not isinstance(registered, (list, tuple)):
+        return []
+    plans, seen = [], set()
+    for rec in registered:
+        if not isinstance(rec, (TaskRecord, dict)):
+            continue
+        tid = str(_rec_get(rec, "taskId") or "").strip()
+        if not sc.is_shelved(tid) or tid in seen:
+            continue
+        if _rec_get(rec, "enabled") is not True:
+            continue
+        plan = backend.plan_update(tid, enabled=False)
+        if isinstance(plan, Refusal):
+            continue
+        seen.add(tid)
+        plans.append(plan)
+    return plans
+
+
+def legacy_pause_line(paused_task_ids, failed_task_ids=()) -> str:
+    """cr1#1100. Pure. The ONE line the schedule-changes step says after the
+    legacy switch-offs ran: the chats whose pause landed, then any that did
+    not. "" when nothing was planned."""
+    sc = _schedule_config()
+    done = [sc.task_display_name(t) for t in (paused_task_ids or [])
+            if str(t or "").strip()]
+    failed = [sc.task_display_name(t) for t in (failed_task_ids or [])
+              if str(t or "").strip()]
+    parts = []
+    if done:
+        many = len(done) > 1
+        parts.append(LEGACY_PAUSED_LINE.format(
+            names=_join_names(done), them="them" if many else "it",
+            their="their" if many else "its"))
+    if failed:
+        parts.append(LEGACY_NOT_PAUSED_LINE.format(names=_join_names(failed)))
+    return " ".join(parts)
 
 
 def record_removals(workspace_root, task_ids, *, source_skill: str = "command-room-update-bridge") -> dict:

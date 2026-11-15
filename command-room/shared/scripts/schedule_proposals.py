@@ -14,7 +14,7 @@ this is a NEW nudge, not a fix to an existing one.
 
 DESIGN RULES:
 
-- **Propose, never auto-register.** Registration requires Cowork's
+- **Propose, never auto-register.** Registration requires the legacy Cowork
   first-fire approval UX; silent registration attempts are a known
   reliability trap. The proposal line routes the CEO to the EXISTING add
   path ("say 'add staff meeting'"); nothing here registers anything.
@@ -27,7 +27,7 @@ DESIGN RULES:
   THIS module — it never proposed removals and still doesn't. Their
   supersede shipped in LB2 as the `rm_supersede_v1` update-bridge migration
   (propose-and-confirm, adjudication-gated, never silent —
-  `schedule_config.rm_supersede_plan` is the pure planner; the bridge
+  `schedule_config.rm_supersede_plan` was the pure planner, and both left with the update floor in cr1#1101; the bridge
   executes on the user's yes).**
 - **Never both:** the Staff Meeting's moves section consumed dormancy
   detection (as relationship-moves did), so dormant-customer-scan was offered
@@ -479,7 +479,7 @@ def plan_readiness_retirements(registered_ids=None, task_records=None,
     `log_readiness_retirement()` per entry, and ONE
     `schedule_config.readiness_retirement_summary()` line in the update ack.
     Splitting plan from execution is what makes the class testable without a
-    scheduler — the same split `rm_supersede_plan` uses.
+    scheduler — the same split the retired `rm_supersede_plan` used.
 
     IDEMPOTENT ON TWO FENCES, deliberately.
 

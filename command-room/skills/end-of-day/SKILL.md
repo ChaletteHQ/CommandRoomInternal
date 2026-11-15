@@ -1,7 +1,7 @@
 ---
 name: end-of-day
 surfaces: both
-description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day', and the scheduled evening chat: reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, reads the day in the plate's shape (opened, closed, slipped), and asks at most two pre-picked confirms drawn from the Staff Meeting's own weekly five — a stated tomorrow renders as fact. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
+description: "Close the day in one pass. Fires on 'end of day', 'close out my day', 'daily wrap', 'wrap my day' (on demand): reconciles the day's sent mail and chat, synthesizes how the day went in grounded prose, reads the day in the plate's shape (opened, closed, slipped), and asks at most two pre-picked confirms drawn from the shared weekly question budget — a stated tomorrow renders as fact. Does NOT fire on 'morning briefing', 'weekly recap', 'friday wrap', 'end session', or 'process the call'."
 ---
 
 # End of Day — the evening bookend

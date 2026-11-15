@@ -7,7 +7,7 @@ WHY
 
 A path that is correct where it was WRITTEN is not correct where it is READ.
 The Command Room workspace is Drive-synced across machines and also mounts
-inside Cowork's per-session sandbox, so the SAME logical folder resolves under
+inside the legacy Cowork per-session sandbox, so the SAME logical folder resolves under
 three different absolute roots depending on where a fire happened to run:
 
   1. a session mount   — `/sessions/<session-slug>/mnt/<workspace>/_hq/...`
@@ -47,7 +47,7 @@ THE CONTRACT
     are NOT the same string and never were. What gets PERSISTED (a receipt
     pointer, the saved digest snapshot) stays workspace-relative — that is what
     makes one file mean one file on every machine. What gets POSTED into chat
-    has to be machine-ABSOLUTE, because Cowork's `computer://` opener resolves
+    has to be machine-ABSOLUTE, because the Claude app's `computer://` opener resolves
     against this computer's filesystem and a relative href is a card that says
     "this file can't be found on your computer" while the file sits in the
     synced folder (field-verified 2026-08-09). `machine_absolute()` is the
@@ -152,7 +152,7 @@ LEGACY_ABSOLUTE_SHAPES: tuple = (
     SHAPE_POSIX_ABSOLUTE,
 )
 
-# `/sessions/<slug>/mnt/<workspace-basename>/` — Cowork's per-session sandbox
+# `/sessions/<slug>/mnt/<workspace-basename>/` — the legacy Cowork per-session sandbox
 # mount. The slug is machine-generated and never reproduced here.
 _SESSION_MOUNT_RE = re.compile(r"^/sessions/[^/]+/mnt/[^/]+/")
 
@@ -340,7 +340,7 @@ def _anchor_split(norm: str) -> Optional[str]:
 
 def is_session_mount_root(value) -> bool:
     """True when `value` — a workspace ROOT, never a file pointer — sits
-    inside a Cowork per-session sandbox: `/sessions/<slug>/...` in any
+    inside a legacy Cowork per-session sandbox: `/sessions/<slug>/...` in any
     shape, including the bare session directory and the `mnt/<workspace>`
     mount point itself (SPEC PATHREPAIR1 v2, ruling 2: 'ephemeral roots are
     unwritable, ever'). Wider than `_SESSION_MOUNT_RE` (which requires

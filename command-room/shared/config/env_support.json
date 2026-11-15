@@ -6,7 +6,7 @@
     "pinned by tests/run_env_detect_test.py, so a new skill without a row is a red.",
     "full = the skill runs as shipped. degraded = it runs with the part that needs the",
     "missing surface named and skipped. refuse = it declines in one plain sentence.",
-    "merged_cloud: only the five `surfaces: cowork` skills differ; every other skill is",
+    "merged_cloud: only the five desktop-only (`surfaces: cowork`) skills differ; every other skill is",
     "`full` because it degrades at the access layer, not by policy.",
     "unknown (§0.34): a READER proceeds behind a banner line; a WRITER refuses. The",
     "writer set is derived, never hand-listed - a skill is a writer iff its SKILL.md",
@@ -212,23 +212,11 @@
       "claude_code_local": "full",
       "unknown": "refuse"
     },
-    "level-up-command-room": {
-      "legacy_cowork": "full",
-      "merged_cloud": "refuse",
-      "claude_code_local": "full",
-      "unknown": "degraded"
-    },
     "list-active": {
       "legacy_cowork": "full",
       "merged_cloud": "full",
       "claude_code_local": "full",
       "unknown": "refuse"
-    },
-    "log-resolution": {
-      "legacy_cowork": "full",
-      "merged_cloud": "full",
-      "claude_code_local": "full",
-      "unknown": "degraded"
     },
     "meeting-notes": {
       "legacy_cowork": "full",

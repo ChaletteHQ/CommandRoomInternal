@@ -3,7 +3,7 @@
 Late-fire detection + graceful degradation (Phase 3 Reliability, R4 — 2026-07;
 lateness ledger + run-mode gate v4.5.2 R2).
 
-Cowork fires a missed scheduled task at next app launch, hours or days
+The legacy Cowork scheduler fires a missed scheduled task at next app launch, hours or days
 after its cron slot — a "Friday wrap + Monday preview" delivered Sunday is
 stale, and pre-R4 nothing in the orchestrator knew it was late. Every chat
 orchestrator calls `check_lateness()` at the top of its run (the shared
@@ -400,7 +400,7 @@ def slot_provenance(workspace_root, task_id, *, now=None,
     fire, `manual` for chat-verb re-fires), so Run Now is a third provenance
     with no word for itself.
 
-    THE PROBE FOR A REAL DISCRIMINATOR, and its answer: there is none. Cowork
+    THE PROBE FOR A REAL DISCRIMINATOR, and its answer: there is none. The legacy scheduler
     registers ONE prompt body per task and replays it byte-identically for the
     cron fire and for a Run Now press — the bootloader's own Step 2.5 says so
     in as many words ("this prompt is not evidence of the run mode"). The
@@ -963,7 +963,7 @@ def check_lateness(
         # plus the ack line to post in place of the surface.
         #
         # THE RESIDUAL, STATED HONESTLY (spec §0-2). Run mode is
-        # self-reported: Cowork replays one byte-identical prompt for a cron
+        # self-reported: the legacy scheduler replays one byte-identical prompt for a cron
         # fire and a Run Now press, so this module cannot attest that a fire
         # calling itself `scheduled` really was. A manual fire that
         # mislabels itself degrades to a skip plus an ack — cheap, honest, and

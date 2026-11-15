@@ -46,7 +46,7 @@ Why the v2.14.38 fix wasn't enough:
   - This is the bug Sam hit twice: 2026-05-07 (forked Josh's thread) and
     2026-05-12 (4 of 4 replies forked on the recipient side).
 
-Diagnosis from Sam's 2026-05-12 Cowork session reading Zapier's actual
+Diagnosis from Sam's 2026-05-12 legacy Cowork session reading Zapier's actual
 behavior: the field accepts header-format values; rejects hex resource IDs.
 
 USAGE (from an orchestrator's `N send` reply handler at fire time):
@@ -259,7 +259,7 @@ def build_zapier_send_payload(
       - the Gmail message-resource ID (`19e036260f1c5ddd`-style hex)
 
     Both hex variants are rejected by Zapier with "Requested entity was not
-    found" (verified 2026-05-12 by Sam's Cowork session).
+    found" (verified 2026-05-12 by Sam's legacy Cowork session).
 
     Empty `cc` / `bcc` strings are dropped from the payload — Zapier's Gmail
     Reply action treats empty strings as literal recipients in some

@@ -108,7 +108,7 @@ Phrasing:
 
 The empty-state widget data view shape (`widget_mode: "all_clear_summary"`) already supports the `header` + `summary_line` + optional `tracked_items` fields. Use those to encode the explanation + fallback link. The renderer enforces no bottom buttons on empty states (per v2.14.18 hand-built-widget post-mortem) — don't add "Run scan" or "Re-fire" buttons; the empty state is informational.
 
-**Implementation guidance per orchestrator (5 scheduled + Friday Wrap):**
+**Implementation guidance per orchestrator (history: written for the chats now shelved or retired; Morning Brief is the one scheduled chat today, and the rule applies to any on-demand list):**
 
 - **cr-upcoming-meetings:** if 0 events ahead, explain whether tomorrow is empty too or just blocked-from-loading. Link to today's wrapped-meeting recap if applicable.
 - **cr-past-meetings:** if 0 meetings to process, link to yesterday's Past Meetings recap.
@@ -292,7 +292,7 @@ Items never run together visually. One blank line between every item, and betwee
 
 ### Rule 5 — Per-item action pills (v2.10.5+ format)
 
-Every orchestrator (Inbox, Commitments, Staff Meeting, Past Meetings, Upcoming Meetings — ALL of them now) renders actions as a per-item **pill line** directly under the item content.
+Every action surface (the Hub's tabs and every on-demand list; the Inbox, Commitments, Staff Meeting, Past Meetings and Upcoming Meetings chats that first used it are shelved or retired) renders actions as a per-item **pill line** directly under the item content.
 
 **Pill format:**
 

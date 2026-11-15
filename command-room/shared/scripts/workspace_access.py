@@ -406,6 +406,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:newer_message_arrived",  # COCKPIT1 (cr1#608) - the send gate: did the thread move after the draft
+    "cockpit_helpers:reply_reaches_everyone",  # cr1#1251 - the reply-all gate: a group reply a mail service cannot carry is refused, computed not written
     "cockpit_helpers:sent_tokens_update",  # cr1#684 - the used-token record a run writes before a send, composed not typed
     "cockpit_helpers:plan_task_registration",  # COCKPIT1 (cr1#608) - the cockpit task's registration, planned and not called
     "cockpit_helpers:plan_cockpit_registration",  # cr1#619 - all four cockpit tasks, planned and not called
@@ -882,6 +883,12 @@ R_WRITER_OWNED = "writer_owned"
 #: cr1#385: the ledger on disk is older than the copy last written (FS-04); the
 #: append was set aside and the envelope carries `atomic_write`'s plain line.
 R_SUBSTRATE_REGRESSED = "substrate_regressed"
+#: cr1#1058: a run door's argument carried a `computer:` link. The link is
+#: built beside the data, never handed across a command line (the Friday
+#: Wrap's closing lines rest on this). Its own reason, because the text is not
+#: a path outside the folder and `refused_path`'s "Not saved" line would be
+#: wrong about it.
+R_REFUSED_COMPUTER_LINK = "refused_computer_link"
 
 #: WSPLACE1 (cr1#546): the placeholder skill text carries for the anchored
 #: workspace. The run doors put the anchored workspace in for it before
@@ -1991,6 +1998,21 @@ def listing_fence_view(name: str, args: Any) -> Any:
     return dict(args, **{key: [_without_folders(r) for r in args[key]]})
 
 
+#: cr1#1058: the `computer:` link scheme in any of its spellings
+#: (`computer:///...`, the Windows-native `computer://C:\...`), any case. The
+#: scheme and its slash, never the bare word, so prose such as "on your
+#: computer: a card is open" stays content.
+COMPUTER_LINK_RE = re.compile(r"computer:/", re.IGNORECASE)
+
+
+def _carries_computer_link(value: str) -> bool:
+    """True when a helper argument carries a `computer:` link anywhere in it,
+    at any length. Until cr1#1058 only Windows refused one, and only because
+    `Path.resolve` fails on that text there; on macOS and Linux the text
+    resolved inside the workspace and passed."""
+    return bool(COMPUTER_LINK_RE.search(value))
+
+
 def _looks_like_path(value: str) -> bool:
     """True when a helper argument is path-shaped and must therefore be fenced.
 
@@ -2020,7 +2042,9 @@ def fence_helper_args(vm_path: Path, args: Any) -> Optional[Tuple[str, str]]:
 
     Every string anywhere in the argument structure is walked — a path hidden
     one list or dict deep is still a path. The fence is `fence_path`'s, so a
-    helper argument can reach exactly what `read` and `write` can reach.
+    helper argument can reach exactly what `read` and `write` can reach. A
+    string carrying a `computer:` link is refused `refused_computer_link`
+    first, whatever its shape or length (cr1#1058).
     """
     stack = [args]
     seen = 0
@@ -2036,6 +2060,11 @@ def fence_helper_args(vm_path: Path, args: Any) -> Optional[Tuple[str, str]]:
         if depth > ARG_DEPTH_CAP:            # nested past any real form
             return ("<arguments nested too deep to fence>", R_BAD_ARGS)
         if isinstance(item, str):
+            # cr1#1058: a `computer:` link never crosses a command line, on
+            # any host and at any length; checked before the path shape,
+            # which a long text skips.
+            if _carries_computer_link(item):
+                return (item, R_REFUSED_COMPUTER_LINK)
             if not _looks_like_path(item):
                 continue
             _, reason = fence_path(vm_path, item)

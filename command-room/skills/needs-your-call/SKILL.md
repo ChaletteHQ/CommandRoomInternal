@@ -1,7 +1,7 @@
 ---
 name: needs-your-call
 surfaces: both
-description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Nothing clears until you name it. Read-only modes: 'show watching' / 'what's on watch' (the watch list); 'show me what you'd hide' / 'what would you hide' / 'held candidates' (the would-hold review, formerly held-review — looking changes nothing; 'turn on held' / 'turn off held' are its switches). Also the project-binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'revisit' a decision (decision-log), 'clean up my workspace' / 'maintenance' (cleanup)."
+description: "The one queue for unconfirmed extractions — items the workspace THINKS it heard a promise in but will not act on until you say. Fires on: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. Nothing clears until you name it. Read-only modes: 'show watching' / 'what's on watch' (the watch list); 'show me what you'd hide' / 'what would you hide' / 'held candidates' (the would-hold review, formerly held-review — looking changes nothing; 'turn on held' / 'turn off held' are its switches). Also the binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. Does NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' (show-my-reminders), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'revisit' a decision (decision-log), 'clean up my workspace' / 'maintenance' (cleanup)."
 ---
 
 # needs-your-call
@@ -217,8 +217,8 @@ anyone else to.
   meeting groups from THIS queue, through the same builder and the same
   confirm/drop fence — one queue, two places to answer it, no second ledger.
   This skill is still on-demand only and registers no scheduled task; the
-  staff meeting is already scheduled, and the fold is a section there, not an
-  appointment of its own.
+  staff meeting is on demand too (its scheduled chat retired, cr1#176), and
+  the fold is a section there, not an appointment of its own.
 
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
@@ -228,7 +228,7 @@ Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROS
 
 The complete trigger family and fences for this skill (the description is budget-capped by G11; everything here is binding at fire time and enforced by tests/triggers.yaml).
 
-> The queue: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. The watch list: 'show watching', 'what are you watching', 'what's on watch'. The would-hold review (Mode, read-only — formerly held-review, folded in SKILLMERGE1 2026-09-03): 'show me what you'd hide', 'what would you hide', 'show me what you would have hidden', 'what would you have hidden', 'show me what you would have held', 'held candidates'; its switches: 'turn on held', 'hide the weak ones', 'turn off held', 'stop hiding the weak ones'. The binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. DOES NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' / 'my list' (show-my-list), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'end of day' / 'close out my day' (end-of-day), 'clean up my workspace' / 'maintenance' / 'deep clean' (cleanup), 'backfill commitments' / 'scan for commitments' (scan-for-commitments), or 'revisit the [topic] decision' (decision-log).
+> The queue: 'needs your call', 'what needs my call', 'clear the queue', 'review the queue', 'confirm queue', 'unconfirmed extractions'. The watch list: 'show watching', 'what are you watching', 'what's on watch'. The would-hold review (Mode, read-only — formerly held-review, folded in SKILLMERGE1 2026-09-03): 'show me what you'd hide', 'what would you hide', 'show me what you would have hidden', 'what would you have hidden', 'show me what you would have held', 'held candidates'; its switches: 'turn on held', 'hide the weak ones', 'turn off held', 'stop hiding the weak ones'. The binding review: 'review project bindings', 'backfill bindings', 'which project does this belong to'. DOES NOT fire on 'commitment triage' / 'triage my commitments' (commitment-triage), 'show my list' / 'my list' (show-my-reminders), 'clean up my commitments' / 'backlog sweep' (commitment-backlog-sweep), 'end of day' / 'close out my day' (end-of-day), 'clean up my workspace' / 'maintenance' / 'deep clean' (cleanup), 'backfill commitments' / 'scan for commitments' (scan-for-commitments), or 'revisit the [topic] decision' (decision-log).
 
 ## Writer Contract
 

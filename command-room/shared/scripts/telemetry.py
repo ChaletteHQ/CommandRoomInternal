@@ -6,7 +6,7 @@ Per M's v2.13.2 ask: scheduled tasks consume heavily. Before optimizing, MEASURE
 where the spend concentrates. This module provides a deterministic helper that
 adds usage fields to every `pack_run` event written by orchestrators.
 
-Cowork's MCP doesn't expose per-fire token counts to the agent natively, so we
+The Claude app's MCP doesn't expose per-fire token counts to the agent natively, so we
 proxy via:
   - prompt_chars: size of the orchestrator prompt at fire time
   - response_chars: total chars of widget HTML + Briefs section + Sources +

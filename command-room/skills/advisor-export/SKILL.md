@@ -4,10 +4,6 @@ surfaces: both
 description: "Distill a person into a portable Advisor Profile — a structured read of how they think, decide, and argue — that a boardroom seat can use as a real 'guest director'. Fires on: 'forge my advisor profile', 'export my advisor profile', 'create my board persona' (high-fidelity, from your own history, shareable), 'model [name] as an advisor', 'add [name] as an advisor' (local read of a colleague from your transcripts — flagged as your read, never shareable out), 'import advisor profile', 'load advisor profile', 'show my guest bench', 'who's on my guest bench'. Does NOT fire on 'convene the board' / 'configure my board' (boardroom — the seats), 'add [name] to my contacts' / 'who is [name]' (people-crm), or 'draft an email as [name]' (email-writer)."
 ---
 
-## Recommended Model
-
-**Default: Opus.** Forging a faithful thinking-model from substrate — distilling decision heuristics, stated positions, and blind spots without putting words in someone's mouth — is judgment-heavy. Sonnet is acceptable for the mechanical `import` / `show my guest bench` modes.
-
 ## Entity-resolve + canonical-helper enforcement
 
 This skill has name-bearing triggers ("model [name] as an advisor", "export [name]'s profile"). Before resolving any named person you MUST call `shared/scripts/entity_resolve.py::resolve_all(workspace_root, query)` per `shared/ENTITY_RESOLVE_PROTOCOL.md`. Fall back to substring grep ONLY if `resolve_all` returns no candidates. If the name resolves to multiple people, disambiguate before forging — never guess. All person reads/writes go through `shared/scripts/people_writer.py`; never hand-edit `entities.json`.

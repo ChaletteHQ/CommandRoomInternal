@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
 
 
 def threads_of(ev: dict) -> set[str]:
@@ -224,10 +223,3 @@ def _load_files(paths) -> list[dict]:
             if isinstance(ev, dict):
                 out.append(ev)
     return out
-
-
-def events_for_threads(events: Iterable[dict], thread_ids: set[str]) -> list[dict]:
-    """Subset of events touching any of `thread_ids` (via the dual-layer
-    reader)."""
-    tset = {t for t in thread_ids if t}
-    return [ev for ev in events if threads_of(ev) & tset]

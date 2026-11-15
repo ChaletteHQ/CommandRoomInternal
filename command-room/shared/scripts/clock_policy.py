@@ -28,7 +28,7 @@ only place that picks between them:
     registry (a non-empty `triggers` map — the positive evidence that
     registration happened the merged way).
   * **Legacy seats** — today's machine-local clock, byte for byte
-    (`datetime.now().astimezone()`), because on a desktop Cowork seat the
+    (`datetime.now().astimezone()`), because on a legacy desktop Cowork seat the
     machine clock IS the clock cron evaluates in and R8 still holds.
 
 WHAT THIS MODULE DOES NOT DO

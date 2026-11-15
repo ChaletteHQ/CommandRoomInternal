@@ -5,7 +5,7 @@ scheduled task (MAINT1, 2026-07).
 
 WHY ONE TASK
 ------------
-Every new taskId needs a manual Run Now per client machine (Cowork's one-time
+Every new taskId needs a manual Run Now per client machine (the legacy Cowork app's one-time
 permission gate), so every release that added a silent task created a
 fleet-wide silent-failure risk: the task registers on update but never fires,
 and nothing visible breaks (`task_watchdog.check_tasks`'s `never_authorized`
@@ -269,7 +269,7 @@ MAINTENANCE_JOBS: dict[str, dict] = {
     # only accept a single string. The outer `maintenance` TASK's own
     # registered cron (`schedule_config.DEFAULT_SCHEDULES["maintenance"]`)
     # is a different story — that one genuinely is a single string handed
-    # to Cowork's registrar, and DOES cross-product (see its own comment).
+    # to the legacy scheduler's registrar, and DOES cross-product (see its own comment).
     "meeting-capture": {
         "skill": ("end-of-day capture leg, incremental "
                   "(orchestrator-past-meetings.md Phase D under the "
@@ -1801,7 +1801,7 @@ def _check_and_repair_root(workspace_root, *, now: Optional[_dt.datetime] = None
     stale self-reported value to `workspace_root` ITSELF via
     `trusted_candidate` — no filesystem scan, no guess. `workspace_root` is
     not a candidate this function is proposing; it is the directory this
-    code is DEMONSTRABLY executing against (Cowork's bash discovery /
+    code is DEMONSTRABLY executing against (the legacy Cowork bash discovery /
     CONTRACT.md Rule 22 already resolved and verified it before this script
     was ever invoked). Passing it corrects the stale self-reference.
 

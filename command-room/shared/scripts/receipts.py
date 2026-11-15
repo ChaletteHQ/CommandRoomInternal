@@ -730,7 +730,7 @@ def _machine_name() -> Optional[str]:
 
     THE FINDING (2026-08-17). This was `platform.node()`, and rule 4 of
     `RECEIPT_CONTRACT.md` says the field exists so "readers can't tell two
-    machines from a double-registration bug". Inside Cowork's sandbox
+    machines from a double-registration bug". Inside the legacy Cowork sandbox
     `platform.node()` returns the SAME string on every physical machine — 840
     receipts written from two different computers all carry one value — so the
     field answered the question it exists for with a constant. Swapping it for

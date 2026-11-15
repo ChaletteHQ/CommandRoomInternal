@@ -2,7 +2,7 @@
 
 # How Command Room Works
 
-A single reference for understanding the plugin end-to-end — written for the operator who uses it in Cowork AND the developer who maintains it in Code. Read in order, or skip to a section.
+A single reference for understanding the plugin end-to-end — written for the owner who uses it in the Claude app AND the developer who maintains it in Code. Read in order, or skip to a section.
 
 ---
 
@@ -23,11 +23,11 @@ A single reference for understanding the plugin end-to-end — written for the o
 
 ## What Command Room actually is
 
-Command Room is a Claude Code plugin distributed via the Cowork marketplace. The product promise from `plugin.json`: *"Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace."* In practice, that means:
+Command Room is a Claude plugin installed through the Claude app's plugin marketplace. The product promise from `plugin.json`: *"Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace."* In practice, that means:
 
 - **The substrate**: every meeting, email, decision, commitment, and intel item flows into a structured event log (`events.jsonl`) + a relationship/project graph (`entities.json`). This is the moat. Everything else is read or write against it.
 - **The daily loop**: the Command Room Hub shows the inbox, the plate and the week, and Morning Brief and the silent Maintenance task are what stays on a schedule (cr1#618, #847). Most days the operator spends 5-15 minutes on what they surface.
-- **The on-demand surface**: <!-- skill-count -->62 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
+- **The on-demand surface**: <!-- skill-count -->60 skills accessible by trigger phrase (the number is rendered from `skills/` and pinned by guard G17 — never hand-edit it). Writing (email, memo, one-pager, decision-memo), prep (call-prep, intro-broker, contract-review), people (people-crm, team-intelligence), deals (pipeline-tracker), scheduling (calendar-writer), surfacing (dormant-customer-scan — people + threads lenses — and decision-log's revisit mode), lifecycle (onboarding, update-bridge), and meta (workspace-manager catch-all).
 - **Voice calibration**: every writing skill runs voice calibration on every fire so drafts sound like the operator. The voice corpus grows over time as the operator sends sent-mail samples.
 
 What it is NOT:
@@ -92,7 +92,7 @@ The three files above are the middle and top of a three-layer memory. Naming the
 
 | Layer | What it is | Where it lives | Written by |
 |---|---|---|---|
-| **L1 — episodic** | The raw record of everything that was said: full session transcripts of every Command Room chat, plus meeting transcripts. Verbatim, complete, and **free** — Cowork retains it whether or not we do anything, and (proven 2026-07-01) it is readable from inside a scheduled task. | Cowork's session store + the connected meeting-transcript sources (Granola, etc.) | Nobody — it accrues automatically as the CEO works |
+| **L1 — episodic** | The raw record of everything that was said: full session transcripts of every Command Room chat, plus meeting transcripts. Verbatim, complete, and **free** — the Claude app retains it whether or not we do anything, and (proven 2026-07-01) it is readable from inside a scheduled task. | The Claude app's session store + the connected meeting-transcript sources (Granola, etc.) | Nobody — it accrues automatically as the CEO works |
 | **L2 — canonical** | The extracted, deduped, queryable timeline: one structured event per consequential thing. This is what almost every skill reads and writes. | `_hq/data/events.jsonl` | Many skills, all through the `append_event()` gate |
 | **L3 — semantic** | The consolidated understanding: the relationship/project graph, plus the synthesized analytical views (TIMELINE / RELATIONSHIPS / COMMITMENT_AGING / DORMANT / THEMES). | `_hq/data/entities.json` + `_hq/views/` | `people-crm` / `workspace-manager` (graph); `insight-generator` (views) |
 
@@ -250,7 +250,7 @@ Unlike the 6 daily tasks, this is a **markdown-post orchestrator**, not a widget
 Each widget orchestrator follows the same architecture:
 1. **Renderer pipeline**: `shared/scripts/build_*_input.py` projects entities + events into a structured input JSON. Then `shared/scripts/chat_output_renderer.py::render_chat_output_widget(data_view)` produces HTML bytes.
 2. **Validators**: `validate_rendered_widget(html)` checks structural invariants (every input-bearing button has its matching wrapper). `validate_chat_output` runs leak-scanner regexes. Both raise on violation.
-3. **`mcp__visualize__show_widget(html)`**: posts the widget to the Cowork chat surface.
+3. **`mcp__visualize__show_widget(html)`**: posts the widget to the chat.
 4. **Apply-choices**: user clicks per-item buttons, widget batches selections, fires one consolidated `apply choices: [...]` submission. The `apply-choices` skill parses + dispatches each action.
 5. **STOP CONTRACT** (v3.5.0+: `shared/STOP_CONTRACT.md`): the widget IS the chat turn. No narration after. No file-write fallback. No markdown-list substitute.
 
@@ -260,7 +260,7 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 
 ## The on-demand surface — skills by intent
 
-<!-- skill-count -->62 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
+<!-- skill-count -->60 skills total in `skills/` (rendered from the tree; G17 pins it). Organized here by user intent so you can find the right one quickly.
 
 ### "Brief me on something"
 
@@ -320,7 +320,6 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 | `command-room-onboarding` | First install (auto), `set up command room`, `restart onboarding` | 6-phase M1 onboarding (~40 min) distributed across 13 chats. |
 | `command-room-update-bridge` | `update command room`, `what's new`, `install latest` | Applies workspace migrations + plays release manifests (v3.4.5+); says the one dashboards sentence (nothing is installed — Night M3). Touches no scheduled chat (cr1#970): at most one line naming `set up command room schedules`. |
 | `enable-command-room-schedules` | `set up command room schedules`, `change schedule` | Registers / re-registers the first-install set: Morning Brief and the silent Maintenance task. |
-| `level-up-command-room` | `level up command room`, `install workspace map`, `rebuild quick commands`, `show me dashboards` | Answers the one dashboards sentence. The sidebar dashboards (Workspace Map, Quick Commands, My Open Commitments) are retired on every seat (Night M3); the Workspace Map is `list active projects` in chat. |
 
 ### "Pull in / file existing context"
 
@@ -344,7 +343,6 @@ This architecture is the product's hardest-won discipline. Pre-v2.14.x the agent
 | Skill | Trigger | What it does |
 |---|---|---|
 | `list-active` | `list projects`, `active projects`, `roster` | Zero-interaction tree render of all projects. |
-| `log-resolution` | (auto on ✓ done clicks) | Writes thread_resolved events when user clicks ✓ in a widget. |
 | `apply-choices` | (auto on Apply all clicks) | Receives consolidated widget submission, dispatches each action. |
 
 ---
@@ -367,7 +365,7 @@ Day-1 customers register **no** scheduled tasks during onboarding. When ready, t
 
 ### Plugin updates
 
-Updates happen via Cowork's UI (Customize → Personal Plugins → Check for updates → Update). Plugin code refreshes on disk; restart Cowork to pick up new code.
+Updates happen in the Claude app's plugin settings (Check for updates, then Update). Plugin code refreshes on disk; fully quit and reopen the Claude app to pick up new code.
 
 After restart, the customer can run `update command room` to fire `command-room-update-bridge`, which:
 1. Says the one dashboards sentence — dashboards live in chat now; nothing is installed (Night M3).
@@ -380,7 +378,7 @@ Every release ships a manifest at `shared/releases/v<X.Y.Z>.json`. Mandatory —
 
 Manifest schema in `references/RELEASE_MANIFEST.md`. Two action types currently supported:
 - `announce_only` — informational, no user action required (uses `release_detectors.always` detector).
-- `instruct_user` — tells the user what to type/click in Cowork (e.g., "re-fire your Commitments task"). Has a real detector that gates whether to surface.
+- `instruct_user` — tells the user what to type/click in the Claude app (e.g., "set up my hub"). Has a real detector that gates whether to surface.
 
 Future action types (`apply_workspace_migration`, `programmatic_refire`) will be added as needed.
 
@@ -396,7 +394,7 @@ Current model established 2026-06-22 (the "cr1 model"). Documented in the stagin
 
 **A dedicated working clone is the edit surface.** Path: `~/repos/cr1-canonical/command-room/` — a git clone of **`chaletteholdings/cr1`**, the private staging repo. Edits land there directly and push to `cr1`.
 
-**Do not edit any Command Room clone under `~/.claude/plugins/marketplaces/`.** Those are Cowork's locally-installed copies — read-only install caches, coupled to the Cowork install location and stale the moment staging moves ahead. The legacy staging marketplace clone's remote was renamed to `oldtest` and retired on 2026-06-22.
+**Do not edit any Command Room clone under `~/.claude/plugins/marketplaces/`.** Those are the Claude app's locally-installed copies — read-only install caches, coupled to the app's install location and stale the moment staging moves ahead. The legacy staging marketplace clone's remote was renamed to `oldtest` and retired on 2026-06-22.
 
 ### Staging vs production
 
@@ -420,15 +418,14 @@ A promote fans the core out from staging to every per-client repo via `scripts/p
 6. Write plugin.json; `RELEASE_NOTES.md` is re-rendered from the release manifests after step 7 (the engineering changelog stays in the staging repo)
 7. **(v0.4.1+) MANDATORY release manifest at `shared/releases/v<X.Y.Z>.json`** — Step 5.5. Step 6 has a pre-commit gate that aborts if missing.
 8. Commit + push to staging
-9. Mirror to Cowork local-uploads (bypass VHD cache)
-10. Tell the operator what to do in Cowork
+9. Tell the owner to update in the Claude app (history: the Cowork-era ritual also mirrored to Cowork local-uploads to bypass its VHD cache)
 
 Production promote is a separate command (`promote v3.X.Y`). It fans staging out to every per-client repo (see above), commits + tags + pushes each.
 
 ### Marketplace.json contract (non-negotiable)
 
-- **NO `version` field on the plugin entry.** Field present → Cowork treats plugin as "already at this version" and grays out Update button. Field absent → Cowork falls back to commit-SHA detection. Documented as Claude Code GitHub issues #52218, #26744, #31462.
-- Plugin internal name lowercase only. `CR` was rejected at sync; `cr` works. Cowork title-cases for display.
+- **NO `version` field on the plugin entry.** Field present → the Claude app treats the plugin as "already at this version" and grays out Update button. Field absent → the app falls back to commit-SHA detection. Documented as Claude Code GitHub issues #52218, #26744, #31462.
+- Plugin internal name lowercase only. `CR` was rejected at sync; `cr` works. The Claude app title-cases it for display.
 
 ---
 
@@ -443,7 +440,7 @@ command-room/
 ├── RELEASE_NOTES.md                   # All releases, newest first (rendered from shared/releases/)
 ├── README.md                          # Marketplace-facing description
 │
-├── skills/                            # <!-- skill-count -->62 skills, one directory each
+├── skills/                            # <!-- skill-count -->60 skills, one directory each
 │   ├── morning-briefing/SKILL.md
 │   ├── inbox-triage/SKILL.md
 │   ├── workspace-manager/SKILL.md
@@ -492,13 +489,11 @@ command-room/
 │       ├── tool_discovery.py          # MCP tool discovery (Gmail, Calendar, etc.)
 │       ├── zapier_send.py             # Zapier reply-thread helpers (latest message id)
 │       └── release_detectors/         # (v3.4.5+) Per-release manifest detectors
-│           ├── always.py
-│           └── v3_4_4_dropped_commitments.py
+│           └── always.py
 │
 ├── references/                        # Higher-level architecture docs
 │   ├── HOW_COMMAND_ROOM_WORKS.md      # THIS DOC
 │   ├── VIEW_GENERATION.md             # How TIMELINE / DECISION_LOG / etc. regen
-│   ├── RUNTIME_DEBUGGING.md           # Cowork-as-runtime-debugger templates
 │   ├── RELEASE_MANIFEST.md            # (v3.4.5+) Manifest schema + writing contract
 │   └── (more)
 │
@@ -513,7 +508,7 @@ command-room/
 ### What lives in your workspace (the operator's machine)
 
 ```
-<workspace-root>/                       # the folder the user mounted in Cowork — whatever they named it, wherever it lives on their machine
+<workspace-root>/                       # the folder the user opened in the Claude app — whatever they named it, wherever it lives on their machine
 ├── CLAUDE.md                           # Personal-instructions file Claude reads on every session
 ├── _hq/
 │   ├── data/
@@ -580,7 +575,7 @@ The same word ("confidence threshold") used in multiple places with different sc
 
 ### Cowork-as-runtime-debugger
 
-When something misfires in Cowork, the fastest diagnostic is: have Cowork dump the raw state it's working with. The Cowork sandbox has tools the customer wouldn't normally invoke. Templates at `references/RUNTIME_DEBUGGING.md`. Pattern:
+When something misfires in Cowork, the fastest diagnostic is: have Cowork dump the raw state it's working with. The Cowork sandbox has tools the customer wouldn't normally invoke. Pattern:
 
 ```
 Dump the current state of <X>. Output as fenced JSON / markdown. Don't summarize, don't explain — just print the raw state so the maintainer can debug.
@@ -654,7 +649,7 @@ The inbound triage skill (`process-bug-report`) was moved to the chalette intern
 | Run a project | `new project` / `go [project name]` / `archive [project]` |
 | List projects | `list projects` / `roster` |
 | See what you snoozed | `show muted` |
-| Update the plugin | (UI: Personal Plugins → Update → restart Cowork) then `update command room` |
+| Update the plugin | (Claude app plugin settings → Update → fully quit and reopen the app) then `update command room` |
 | See your Workspace Map | `list active projects` (dashboards live in chat) |
 | Set up scheduled chats | `set up command room schedules` |
 | Change scheduled-chat timing | `change my schedule` / `move morning brief to 8 AM` |

@@ -106,7 +106,7 @@ Every closure event MUST use one of these exact shapes:
 | Event type | Required id field | Canonical writer helper |
 |---|---|---|
 | `commitment_resolved` | `data.commitment_id` | [`commitment_state.close_commitment`](../shared/scripts/commitment_state.py) — THE closure path (Stage B, F2). `cru_match.build_commitment_resolved_event` is the legacy shape helper: construction-only, never build-and-append in new code. |
-| `thread_resolved` | `data.id` (preferred) OR `data.thread_id` | `log-resolution` SKILL.md |
+| `thread_resolved` | `data.id` (preferred) OR `data.thread_id` | [`commitment_state.resolve_thread`](../shared/scripts/commitment_state.py) |
 | `decision_resolved` | `data.decision_id` (or `data.id`) | decision-log SKILL.md |
 | `decision_superseded` | `data.supersedes_seq` (NOT a data.id field — points at original event seq) | decision-log SKILL.md |
 | `commitment_review_dismissed` | `data.commitment_id` | [`cru_match.build_commitment_review_dismissed_event`](../shared/scripts/cru_match.py) |

@@ -312,7 +312,7 @@ Some files stay markdown-native in v2.0 because their content is narrative, not 
 | `PROJECT_CONTEXT.md` (per project) | Per-project brief; prose-heavy |
 | `PROJECT_BRAIN.md` (per project) | Free-form institutional memory |
 | `CONFLICTS.md` | Append log; human-readable by design |
-| `CLAUDE.md` | Generated hot cache; markdown per Cowork convention |
+| `CLAUDE.md` | Generated hot cache; markdown per Claude's CLAUDE.md convention |
 | `briefings/*.md`, `summaries/*.md`, `audit-reports/*.md` | Point-in-time reports |
 | `intel/KNOWLEDGE_BASE.md`, `intel/*.md` | Narrative research |
 | `SESSION_NOTES_[NAME].md` (per project) | Append log; human-readable by design |

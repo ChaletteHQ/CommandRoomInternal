@@ -23,16 +23,16 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
 
 ## Patterns (seeded 2026-05-13)
 
-### Cowork shows old plugin behavior after an update
+### The Claude app shows old plugin behavior after an update
 
 **Signature:**
   - Keywords: stale, old version, didn't update, still showing, behavior didn't change, version mismatch, update didn't work
   - Skill name: any
   - Symptom: plugin.json version differs from what user expected after running update
 
-**Likely cause:** Cowork's VHD-cache is holding the previous plugin state — the update wrote to disk but Cowork is still serving the cached version in this session.
+**Likely cause:** the app is holding the previous plugin state — the update wrote to disk but the app is still serving the cached version in this session.
 
-**User-side fix:** Fully quit Cowork (confirm the process is gone in Task Manager / Activity Monitor — not just the window). Reopen. Plugin should now show the new behavior. This is the v3.2.1 documented workaround.
+**User-side fix:** Fully quit the Claude app (confirm the process is gone in Task Manager / Activity Monitor — not just the window). Reopen. Plugin should now show the new behavior.
 
 **Escalate?** try-first
 
@@ -45,9 +45,9 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
   - Skill name: command-room-onboarding
   - Symptom: events.jsonl contains a prior `onboarding_checkpoint` with `status: "complete"` (M1 phase `"6"`, legacy onboarding-v2 phase `"5"`, or pre-v2 phase `"7"`)
 
-**Likely cause:** Phase 0a's existing-workspace guard isn't reading the prior checkpoint correctly — usually because the user pointed Cowork at the parent folder instead of the workspace folder, OR the checkpoint event was overwritten by a workspace-ingest run.
+**Likely cause:** Phase 0a's existing-workspace guard isn't reading the prior checkpoint correctly — usually because the user opened the parent folder instead of the workspace folder, OR the checkpoint event was overwritten by a workspace-ingest run.
 
-**User-side fix:** Confirm Cowork is pointed at the workspace folder (the one containing `_hq/`), not the parent. If still firing, say `skip onboarding` to bypass and `workspace-manager` will take over.
+**User-side fix:** Confirm the chat is opened on the workspace folder (the one containing `_hq/`), not the parent. If still firing, say `skip onboarding` to bypass and `workspace-manager` will take over.
 
 **Escalate?** try-first
 
@@ -135,9 +135,9 @@ Loaded by `report-bug/SKILL.md` Step 3. Each entry is a pattern that has shipped
   - Skill name: enable-command-room-schedules (any orchestrator)
   - Symptom: any
 
-**Likely cause:** Three common causes — (1) computer was asleep at fire time (scheduled tasks need the machine awake), (2) connector was deauthorized between schedule registration and fire time, (3) Cowork wasn't running when the cron triggered.
+**Likely cause:** Three common causes — (1) computer was asleep at fire time (scheduled tasks need the machine awake), (2) connector was deauthorized between schedule registration and fire time, (3) the Claude app wasn't running when the cron triggered.
 
-**User-side fix:** Check (a) was your computer on at the scheduled time? (b) is Cowork open right now? (c) try the manual trigger phrase for the missing task (e.g., `triage my inbox`, `morning briefing`). If the manual fire works but the schedule never fires, that's a real bug worth reporting.
+**User-side fix:** Check (a) was your computer on at the scheduled time? (b) is the Claude app open right now? (c) try the manual trigger phrase for the missing task (e.g., `morning briefing`, `run maintenance now`). If the manual fire works but the schedule never fires, that's a real bug worth reporting.
 
 **Escalate?** try-first
 

@@ -906,7 +906,7 @@ def confirm_pointer_line(n_items: int) -> Optional[str]:
     # the brief point the reader at the retired chat by name on a workspace
     # where the split had registered — the brief's prose kept a "pre-CTS1"
     # fallback the model applied by judgement, and this line was its source. There is no on-disk schedule registry code can
-    # read (registration lives in the Cowork scheduler and is only known to
+    # read (registration lives in the Claude app's scheduler and is only known to
     # a fire through the connector's list), so the fallback is DROPPED
     # rather than made mechanical: one sentence, one chat, the one that
     # owns the confirm tail.

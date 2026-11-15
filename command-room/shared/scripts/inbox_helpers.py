@@ -1945,16 +1945,6 @@ INVITE_ACTIONS = ("{n} accept", "{n} propose [time]", "{n} decline [reason]",
 CR_SURFACE_DRIVERS = ("run_inbox_surface",)
 
 
-class InboxDriverRefused(RuntimeError):
-    """A refusal the driver answers with instead of writing: `reason` plus the
-    sentences that are the fire's whole final response."""
-
-    def __init__(self, reason: str, lines: List[str]):
-        super().__init__(reason)
-        self.reason = reason
-        self.lines = [str(x) for x in lines if str(x).strip()]
-
-
 def _sender_domain(item: Dict[str, Any]) -> str:
     domain = str(item.get("domain") or "").strip().lower()
     if domain:

@@ -650,7 +650,7 @@ Deferred from A6 (logged in the build report): inline scheduling and the NL-retr
 
 ## Scheduling
 
-The canonical Inbox scheduled task (7:15 AM weekdays) already exists in the standard schedule set — customers turn it on via `set up command room schedules` and adjust it via `change my schedule`. Do NOT offer to register a separate ad-hoc recurring run from this skill.
+The Inbox scheduled chat is shelved (the Hub replaced it, cr1#618 and #847); this skill runs on demand. Do NOT offer to register a recurring run from this skill.
 
 ## Integration
 

@@ -133,7 +133,7 @@ account is out-of-scope for never enters these files:
   its state) — these are *composed from* already-scoped substrate, so they
   inherit scope transitively. A `surface:on, write_to_business:off` item can
   reach an ephemeral brief but MUST NOT reach an exportable artifact (§3).
-- Scheduled-chat transcripts — a Cowork *session* setting the plugin cannot
+- Scheduled-chat transcripts — a Claude app *session* setting the plugin cannot
   control (H-B). The writer-side ingest guard is the backstop; the honest
   answer for regulated clients is session hygiene (§5).
 

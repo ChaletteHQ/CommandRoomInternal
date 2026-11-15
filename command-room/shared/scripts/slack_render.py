@@ -19,7 +19,7 @@ full gate stack around it (canonical-action / data-shape / pulse-richness /
 send-class gates BEFORE emission via `chat_output_renderer.validate_data_view`;
 the leak scan over this module's text render + the structural block contract
 AFTER). Skills never import this module directly — the transport is the one
-call, same as the cowork path.
+call, same as the desktop (`cowork`) path.
 
 NATIVE 2026 BLOCKS (§10.4)
 ==========================
@@ -83,7 +83,7 @@ _KNOWN_BLOCK_TYPES = {
     "data_table", "data_visualization",
 }
 
-# The FB-4 primary-verb set, carried over from the cowork widget: these render
+# The FB-4 primary-verb set, carried over from the desktop (`cowork`) widget: these render
 # as one-tap buttons; everything else rides the "— more —" select.
 _PRIMARY_VERBS = ("send", "draft", "resolved", "mark done", "mark received",
                   "confirm", "snooze 3d")
@@ -132,7 +132,7 @@ def _truncate(text: str, cap: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _wire_value(n, action: str, src: str | None) -> str:
-    """The element `value`: the SAME tuple shape the cowork widget's Apply
+    """The element `value`: the SAME tuple shape the desktop (`cowork`) widget's Apply
     batch carries — the listener composes `apply choices: [...]` from these
     verbatim (statelessness is why apply-choices ports with zero changes)."""
     tup = {"n": n, "action": action}
@@ -234,7 +234,7 @@ def _select_element(owner_n, actions: list, src: str | None, *, action_id: str,
 
 def _item_action_elements(item: dict, src: str | None, *, block_index: int) -> list[dict]:
     """Primary verbs → buttons; tail verbs → one '— more —' select; each
-    sub_item with actions → its own select. Mirrors the cowork FB-4/T2.2
+    sub_item with actions → its own select. Mirrors the desktop (`cowork`) FB-4/T2.2
     row chrome on Slack's element vocabulary."""
     n = item.get("n")
     actions = [str(a) for a in (item.get("actions") or [])]
@@ -377,14 +377,14 @@ def chart_to_block(chart: dict) -> dict:
 
 def emit_slack_payload(data: dict, profile: dict, *,
                        read_only: bool = False) -> dict:
-    """The SAME data view the cowork widget renders → {"blocks", "text"}.
+    """The SAME data view the desktop (`cowork`) widget renders → {"blocks", "text"}.
 
     Called ONLY by `widget_transport.render_and_persist(target="slack")`
     (gates run there). The `text` value is the mrkdwn notification fallback —
     a numbered digest, never the whole payload.
 
     SPEC_WIDGETRO1 §2-1 (CUT-C item 9) — `read_only=True` is the slack twin
-    of the cowork read-only page: the rows keep the verbs the surface
+    of the desktop (`cowork`) read-only page: the rows keep the verbs the surface
     declares and the batch footer (Apply selected / Snooze rest) is not
     emitted."""
     src = data.get("source_skill")

@@ -40,15 +40,15 @@ With a card tool in the chat, the link and the saved-to line are the words besid
 
 5. **Source-citation links stay in the `Sources:` section as plain inline links** per `_hq/CONVENTIONS_SOURCE_LINKS.md` (the canonical convention doc lives in the workspace, not the plugin) — `_link(label, url)` returns `[label](url)`. Gmail threads, Granola transcripts, Drive docs, calendar events in `Sources:` do NOT use the H2 format. Source citations and generated-deliverable links are visually distinct on purpose: one is action ("open this thing I made"), the other is provenance ("here's what informed it").
 
-6. **In-widget `artifact_link.url`** — kept as data-only per `orchestrator-upcoming-meetings.md` line 256 (Cowork's iframe sandbox doesn't reliably resolve `computer://` links inside widget HTML; the widget side is unpainted post-v2.12.0). The H2 link below the widget IS the surface that actually opens — don't try to paint anything inside the iframe.
+6. **In-widget `artifact_link.url`** — kept as data-only per `orchestrator-upcoming-meetings.md` line 256 (the Claude app's iframe sandbox doesn't reliably resolve `computer://` links inside widget HTML; the widget side is unpainted post-v2.12.0). The H2 link below the widget IS the surface that actually opens — don't try to paint anything inside the iframe.
 
-**URL format (v3.13.0+ — native Windows form):** Cowork's Windows local-file resolver opens the native form: `computer://C:\Users\Sample\Desktop\Claude\Command Room\...\file.docx` — TWO slashes (not three), backslashes preserved, spaces UNENCODED. (The space in `Command Room` is the load-bearing part of this example, not the username.) URL-encoded variants (`%20` for space, `%3A%5C` for `:` and `\`) do NOT open. POSIX absolute paths (macOS/Linux) keep the existing `computer:///url-encoded-path` form — only the Windows-with-space case was broken pre-v3.13.0.
+**URL format (v3.13.0+ — native Windows form):** The Claude app's Windows local-file resolver opens the native form: `computer://C:\Users\Sample\Desktop\Claude\Command Room\...\file.docx` — TWO slashes (not three), backslashes preserved, spaces UNENCODED. (The space in `Command Room` is the load-bearing part of this example, not the username.) URL-encoded variants (`%20` for space, `%3A%5C` for `:` and `\`) do NOT open. POSIX absolute paths (macOS/Linux) keep the existing `computer:///url-encoded-path` form — only the Windows-with-space case was broken pre-v3.13.0.
 
 This format is produced by `shared/scripts/brief_path.py` `get_brief_artifact_url()`. The path is hidden behind the link label — never appears as visible text per Rule 4.
 
 **Cloud-mounted workspaces (v5.9.2+, platform-neutral v5.11.1 — cloud-aware opener):** a `computer://` link only opens a file that exists on the customer's own machine. A workspace mounted from Google Drive, OneDrive, or SharePoint resolves to a **session-scoped** root (`/sessions/<id>/...` — `brief_path.is_session_scoped_path()` is the test), so a `computer://` link there is a guaranteed "Failed to load local file." on click even though the deliverable saved fine (QMG field reports, 2026-07-28 / 2026-07-31 / 2026-08-11 — the third was a OneDrive/SharePoint workspace the v5.9.2 Drive-only lookup could never serve, BUG-8538). On a session-scoped workspace root, after saving the deliverable, look up the saved file's web link on the workspace's OWN cloud platform: discover the drive tool with the workspace host preferred — `tool_discovery.discover_drive_tool(tools, "search", prefer_platform=tool_discovery.infer_workspace_drive_platform(workspace_root))`, never first-match when more than one drive is connected (first-match can search the drive that does not hold the workspace) — then search `_hq/meetings/<filename>` or the deliverable's own folder (`google_drive` → the Drive web link; `onedrive` / `m365_sharepoint`, e.g. the Microsoft 365 connector's `sharepoint_search` → the OneDrive/SharePoint web URL) and build the link via `brief_path.get_brief_opener_url(absolute_path, drive_web_url)` — the web URL becomes the opener. If the lookup finds nothing and another drive platform is connected (whether or not a preference was inferred), try that one before giving up. If no lookup succeeds there is NO link for a cloud-mounted workspace (SPEC_NIGHTM2 §5 item 2): `get_brief_opener_url` answers with an empty string rather than a dead one carrying this run's own id, and the surface says where the document went in words, with no href. Host-native roots (Windows drive letter, real local folder) are unaffected — `get_brief_opener_url` returns the same `computer://` form as before.
 
-**Persist relative, post absolute (SPEC BRIEFFIX1 Item A, 2026-08-09).** These are two different strings for one file and confusing them is a bug in either direction. Anything PERSISTED — a receipt pointer, a saved digest snapshot — is workspace-relative (`_hq/meetings/<file>.docx`), because a machine-absolute path is valid only on the machine and in the session that wrote it (BRIEFMERGE §C, `workspace_paths.assert_workspace_relative` refuses one at the write). Anything POSTED to chat is machine-absolute in the `computer://` form above, because Cowork resolves the href against THIS computer's filesystem.
+**Persist relative, post absolute (SPEC BRIEFFIX1 Item A, 2026-08-09).** These are two different strings for one file and confusing them is a bug in either direction. Anything PERSISTED — a receipt pointer, a saved digest snapshot — is workspace-relative (`_hq/meetings/<file>.docx`), because a machine-absolute path is valid only on the machine and in the session that wrote it (BRIEFMERGE §C, `workspace_paths.assert_workspace_relative` refuses one at the write). Anything POSTED to chat is machine-absolute in the `computer://` form above, because the Claude app resolves the href against THIS computer's filesystem.
 
 A surface that composes text carrying persisted pointers (the morning brief is the one that does) converts ONCE at post time, on the posted copy only, with `chat_output_renderer.absolutize_doc_links(<the composed text>, <the workspace root>)` — called by that surface's own step, beside the data (on a merged seat, through the workspace access layer like every other read of the workspace — Rule 22), never imported into a shell that does not hold the workspace. It resolves each pointer through `workspace_paths`' anchor machinery and `brief_path.get_brief_opener_url` (so a Drive-mounted workspace gets its web link, per the paragraph above) and leaves everything that is not a workspace-relative deliverable link untouched. **Enforced, not requested:** `validate_chat_output` refuses a rendered payload that still carries a workspace-relative doc href — a card that says "this file can't be found on your computer" while the file sits in the synced folder was the 2026-08-09 field report, and prose asking politely for a conversion is presumed skipped.
 
@@ -402,7 +402,7 @@ The reasoning: chat is for in-the-moment-actionable surfaces. CRU resolutions ar
 - Score < 0.30: no action.
 
 **Three CRU paths active:**
-- **Path 1 — apply-choices in-Cowork sends.** Catches sends made through Cowork.
+- **Path 1 — apply-choices in-chat sends.** Catches sends made from a Claude app chat.
 - **Path 2 — Commitments orchestrator pre-render scan.** Bulk mail search for outbound sends since last fire. Catches sends made directly from native mail clients.
 - **Path 3 — Past Meetings transcript cross-reference.** Catches resolutions / schedule shifts / new asks mentioned in meeting transcripts.
 
@@ -500,7 +500,7 @@ Honest classification of every rule above: **ENFORCED** = a test or a runtime va
 |---|---|---|---|
 | 1 | Widget is the only action surface | ENFORCED | `chat_output_renderer.render_chat_output_widget` + `chat_output_validator` (renderer-validator suite) |
 | 2 | Apply-time drafts return a widget | ENFORCED | apply-choices routes through the same render chain (Rule 28 §7) |
-| 3 | Documents clickable in Cowork | GUIDANCE | The `doc_headline_link` helper exists, but no test asserts skills *call* it vs hand-rolling a path. Soft convention. |
+| 3 | Documents clickable in the Claude app | GUIDANCE | The `doc_headline_link` helper exists, but no test asserts skills *call* it vs hand-rolling a path. Soft convention. |
 | 4 | No technical language post-widget | ENFORCED | leak scanner (`validate_chat_output`) + `run_customer_facing_voice_test` + `run_no_*` guards |
 | 5 | Action labels: canonical set | ENFORCED | `render_chat_output_widget` raises `ValueError` on any non-`CANONICAL_ACTIONS` verb |
 | 6 | Plain-English clarity on every action | GUIDANCE | Label *legibility* is judgment; the canonical-set membership (Rule 5) is the enforced half. |
@@ -541,7 +541,7 @@ change supersedes — and **DELETE the superseded sentence, never annotate it**.
 Both 2026-07-01 audits independently identified stale-sediment-next-to-its-
 replacement as the #1 root cause of customer-facing contradictions (~a third
 of all findings). Incident narratives that justify a rule move to
-`references/HISTORY.md` with a one-line citation left in place; rules stay,
+`references/HISTORY.md` in the staging repo with a one-line citation left in place; rules stay,
 stories archive, superseded facts die.
 
 Reviewer checklist form: "does this diff change behavior? → grep the skill for
@@ -556,7 +556,7 @@ skill and no freelance path composes email text directly via a mail connector
 tool. thread-resurrection's "revival draft via chained email-writer" is the
 established pattern; this rule generalizes it to every draft-producing turn.
 
-Why: the mid-turn bypass (Bug #104 — see references/HISTORY.md). Skills route
+Why: the mid-turn bypass (Bug #104 — see references/HISTORY.md in the staging repo). Skills route
 on user messages only, so an email that arises as a sub-step of a bigger task
 never hits the router — and a turn that skips email-writer skips the customer's
 voice block, length target, two-pass critique, and voice-tell detector all at

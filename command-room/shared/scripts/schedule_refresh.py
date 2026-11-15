@@ -41,7 +41,7 @@ THREE FUNCTIONS, THREE RULINGS:
   core cadence change as "customized" and freeze it forever — the exact
   freeze this spec exists to thaw — while treating any divergence as
   uncustomized would silently destroy an out-of-band edit (a cron moved in
-  the Cowork UI writes no override; only the table's silence protects it).
+  the legacy Cowork UI writes no override; only the table's silence protects it).
   `confirm_required`
   is hardcoded False: there is no fourth outcome, and Ruling 1's "drop the
   confirm prompt from this path" is the fence `apply_schedule_refresh` gates
@@ -80,7 +80,7 @@ and the same one the rest of the plugin already treats as "the customer
 touched this" (see `schedule_config.py`'s own docstring: "a SPARSE override
 store — an entry means the operator customized this; missing means
 default"). But the override store is deliberately sparse, and NOT every
-customization writes one — a cadence edited in the Cowork UI, or kept by
+customization writes one — a cadence edited in the legacy Cowork UI, or kept by
 declining a bridge migration (`staff_meeting_cadence_mwf_v1`'s decline path
 writes NOTHING by design), leaves no entry. The shipped-default table
 (`schedule_config.SHIPPED_CRON_HISTORY`) closes that gap from the other
@@ -170,7 +170,7 @@ def plan_schedule_refresh(task_id: str, field: str, *, live_value,
                           shipped_defaults=None) -> dict:
     """Classify a single task/field diff.
 
-    `live_value` — what is actually registered right now (the live Cowork
+    `live_value` — what is actually registered right now (the live legacy Cowork
     task's cron/label, or the currently-registered prompt text).
     `new_default` — what core ships as of THIS run (`DEFAULT_SCHEDULES[...]`
     for cron/label, or the freshly-composed bootloader body for prompt).
@@ -184,7 +184,7 @@ def plan_schedule_refresh(task_id: str, field: str, *, live_value,
     the table — i.e. the live value is one core itself shipped, so the
     change is provably core-authored (Ruling §0.1). A live value in neither
     the table nor the override store was put there by something other than
-    core (an out-of-band Cowork-UI edit, a hand-fix) and is `preserve` —
+    core (an out-of-band legacy Cowork-UI edit, a hand-fix) and is `preserve` —
     silent refresh never guesses about provenance. Pass None ONLY for a
     field with no shipped-default table and no customization surface
     (`prompt`), where any surviving diff is core-authored by construction.
@@ -199,7 +199,7 @@ def plan_schedule_refresh(task_id: str, field: str, *, live_value,
     elif shipped_defaults is not None and live_value not in tuple(shipped_defaults):
         # The shipped-default table says core never shipped this value, and
         # no override explains it either: someone other than core set it
-        # (out-of-band edit — the Cowork UI, a hand-fix). Not core-authored,
+        # (out-of-band edit — the legacy Cowork UI, a hand-fix). Not core-authored,
         # so never silently re-anchored (Ruling §0.1). Undo path unchanged:
         # `change my schedule` still moves it any time.
         decision = DECISION_PRESERVE
@@ -228,7 +228,7 @@ def apply_schedule_refresh(workspace_root, plan: dict, *, source_skill: str) -> 
 
     The caller is responsible for the actual `update_scheduled_task` /
     prompt-write call on `applied: True` — this function's job is the
-    classification gate and the receipt, not the Cowork API call, so a
+    classification gate and the receipt, not the scheduler API call, so a
     caller composing multiple field-plans for one task can batch them into
     a single `update_scheduled_task` (cron/label/prompt together) while
     still receipting per field.
@@ -409,7 +409,7 @@ def _announce_line(ev: dict) -> str:
 #
 # The v5.28.0 attended test (Step 0) found all seven bootloaders still
 # stamped v5.20.0 after two updates: the Code-session run could not see
-# Cowork's scheduler store, and the earlier runs had not applied the refresh
+# the legacy Cowork scheduler store, and the earlier runs had not applied the refresh
 # either. When a registered BODY still differs from the composed one AFTER
 # an update's Step 1.C readback, the customer needs exactly one sentence
 # naming the exact phrase to type — not a per-task list, not a diagnosis,

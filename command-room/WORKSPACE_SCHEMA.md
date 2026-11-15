@@ -6,7 +6,7 @@ Canonical contract between Command Room skills and user workspace structure. All
 
 ```
 [WORKSPACE_ROOT]/
-├── CLAUDE.md                      # Working memory hot cache (auto-loaded by Cowork each session)
+├── CLAUDE.md                      # Working memory hot cache (auto-loaded by Claude each session)
 ├── _hq/                           # Workspace control center
 ├── _people/                       # Team intelligence (leadership team, key people)
 ├── _exploring/                    # Active exploration items
@@ -16,7 +16,7 @@ Canonical contract between Command Room skills and user workspace structure. All
 
 ## CLAUDE.md (Working Memory — Auto-Generated)
 
-Hot cache file that Cowork loads automatically every session. Contains user identity, active projects, top 15-20 contacts with nicknames, decoded shorthand/terms, quick command reference, and session rules. ~80 lines max.
+Hot cache file that Claude loads automatically every session. Contains user identity, active projects, top 15-20 contacts with nicknames, decoded shorthand/terms, quick command reference, and session rules. ~80 lines max.
 
 **File creation rules:**
 - Onboarding Phase 4 generates it from onboarding data

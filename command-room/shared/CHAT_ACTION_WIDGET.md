@@ -1,6 +1,6 @@
 # Chat Action Widget — All-Batch Surface (v2.10.9+)
 
-> Canonical spec for the action surface across every Command Room scheduled-task skill (Staff Meeting, Commitments, Inbox, Past Meetings, Upcoming Meetings) AND on-demand `meeting-notes` Step 9 OPEN ITEMS section.
+> Canonical spec for the action surface across every Command Room widget skill AND the on-demand `meeting-notes` Step 9 OPEN ITEMS section. History: it was written for the scheduled Staff Meeting, Commitments, Inbox, Past Meetings and Upcoming Meetings chats; those chats were shelved on 2026-11-03 (SHELVE1, cr1#618) and the Hub replaced them. What registers today is Morning Brief and the silent Maintenance task.
 
 ## Why this exists
 
@@ -205,7 +205,7 @@ As of v2.10.9 end-of-day, `apply-choices` is built and all 5 orchestrators + `me
 
 ## Post-widget chat-links section (v2.12.0+)
 
-Hyperlinks inside the widget's iframe are unreliable — Cowork's iframe sandbox blocks `computer://` links and even some `https://` links don't fire on click consistently. **Hyperlinks in regular chat markdown work reliably** (verified Apr 30 by M).
+Hyperlinks inside the widget's iframe are unreliable — the Claude app's iframe sandbox blocks `computer://` links and even some `https://` links don't fire on click consistently. **Hyperlinks in regular chat markdown work reliably** (verified Apr 30 by M).
 
 So the architecture is:
 - **Widget HTML** = action surface only (buttons + inputs). NO source/brief links inside.
@@ -328,7 +328,7 @@ Rows are the FULL open set sorted by age (promises AND tasks; stale tasks flagge
 | `never track this` | Never track (permanent) | Appends a suppression pattern to `_hq/config/commitment-rules.md` (extractors read it before writing) + closes the item (`resolution="dropped"`). Permanent — the label says so; every TIMED mute is reversible via the S4 ledger (`show muted` + Unmute). |
 | `skip` | Snooze (1 day) | 1-day mute (unchanged semantics; label now states the duration). |
 
-### Confirm section — "Needs a quick confirm" (v4.6.1 W4b, the daily Waiting On chat — CTS1; pre-split: the Commitments chat — + the triage Unconfirmed block)
+### Confirm section — "Needs a quick confirm" (v4.6.1 W4b, the daily Waiting On chat — CTS1; pre-split: the Commitments chat — + the triage Unconfirmed block; history: both chats were shelved 2026-11-03 and the Hub replaced them)
 
 Rows come from `confirm_flow` selectors: captures younger than the 7-day
 escalation pin that are

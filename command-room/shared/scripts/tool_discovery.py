@@ -1113,23 +1113,6 @@ def _ask_once_line(detected: list, operation_label: str) -> str:
             "(or the other one). Command Room remembers it.")
 
 
-def _ambiguity_note(detected: list, operation_label: str,
-                    chosen: Optional[str]) -> str:
-    """The plain-English half of DD-3. `detected` is the sorted list of
-    DISTINCT mail platforms present with NOTHING declared; the note names all
-    of them and which one the seam read, so a workspace with two inboxes can
-    PROVE which one answered instead of reading an empty result as a quiet
-    week. Never rendered when a backend is declared — that IS the deliberate
-    answer."""
-    names = ", ".join(detected)
-    head = f"{len(detected)} mail connectors detected ({names})"
-    tail = ("declare your mail backend to make this deliberate "
-            "(workspace.connectors.email).")
-    if chosen:
-        return f"{head}; reading {chosen} — {tail}"
-    return f"{head}; none of them exposes a {operation_label} tool — {tail}"
-
-
 def _discover_mail_tool(
     tools: Iterable[ToolDescriptor],
     operation_keywords: list,

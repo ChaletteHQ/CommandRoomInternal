@@ -10,12 +10,12 @@ DATA, resolved one way everywhere:
 
   - The Slack listener's system-prompt append declares `SURFACE=slack` and
     exports the same value as an env var for scripts (B-3).
-  - Cowork sets nothing — absent env means `cowork`, which keeps every
+  - The Claude app sets nothing — absent env means `cowork`, which keeps every
     existing desktop code path byte-identical by construction.
 
 Presentation knobs for the slack surface live in
 `shared/config/surface_profiles.json` (§10.3) — JSON-editable, shipped
-through the normal plugin-update ritual, read here. The cowork profile is
+through the normal plugin-update ritual, read here. The `cowork` profile is
 deliberately empty: desktop presentation is the untouched default and this
 module must never grow a knob that changes it.
 
@@ -86,7 +86,7 @@ def load_profile(surface: str | None = None, *, skill: str | None = None) -> dic
     overrides merged over the surface default.
 
     slack: JSON `slack.default` merged over the baked-in floor, then
-    `slack.per_skill[<skill>]` merged over that. cowork: always `{}` —
+    `slack.per_skill[<skill>]` merged over that. `cowork`: always `{}` —
     desktop takes no knobs from this file by design.
     """
     surface = surface or current_surface()

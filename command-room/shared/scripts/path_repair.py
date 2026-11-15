@@ -6,7 +6,7 @@ after REVIEW_PATHREPAIR1_2026-08-27's FAIL verdict).
 A folder move or rename silently breaks every scheduled task. Task
 registration stores an absolute workspace path (`_hq/workspace_config.json`
 `workspace_root`, written by `enable-command-room-schedules` Step 0.C and
-baked into each Cowork bootloader as `<WORKSPACE_BASENAME>` — see
+baked into each legacy Cowork bootloader as `<WORKSPACE_BASENAME>` — see
 `scheduled-task-bootloader.md`); rename or move the workspace folder and that
 stored path goes dead with no error and no signal (BACKLOG row PATHREPAIR1 —
 observed in six separate workspaces, every machine).
@@ -15,7 +15,7 @@ WHY V2 (the F1 finding, read literally)
 -----------------------------------------
 v1 compared the stored path against THIS PROCESS's OWN filesystem view — a
 reachability check ("does os.path.isfile() answer yes at this string"). That
-is vantage-BLIND: a Cowork scheduled fire runs inside a per-session sandbox
+is vantage-BLIND: a legacy Cowork scheduled fire runs inside a per-session sandbox
 mount (`/sessions/<slug>/mnt/<basename>/...`, a NEW slug every fire —
 `workspace_paths.py`, field-verified 2026-08-08) where the stored MACHINE
 path can never resolve at all, and a real multi-machine workspace legitimately
@@ -60,10 +60,10 @@ RULINGS (binding)
    record is a migration, and migrations do not run silently.
 6. Bridge call site wired (review F2). The once-at-update leg exists and is
    tested, not just described (`command-room-update-bridge/SKILL.md`).
-7. Cowork verification is load-bearing: a fixture reproducing the
+7. Legacy Cowork verification is load-bearing: a fixture reproducing the
    session-mount vantage must prove a HEALTHY workspace probed from it
    classifies UNKNOWN with zero writes across repeated fires. Fleet-ward
-   shipping (a manifest line) waits on ONE supervised live Cowork fire —
+   shipping (a manifest line) waits on ONE supervised live legacy Cowork fire —
    out of scope for this branch; see the BUILD record.
 
 THE FINGERPRINT (unchanged from v1)
@@ -79,7 +79,7 @@ THE VANTAGE
 -----------
 `current_vantage(current_root, machine=None, home=None)` builds the small
 dict `classify_root` needs: `current_root` is NEVER a stored value — it is
-the directory THIS caller is demonstrably already running against (Cowork's
+the directory THIS caller is demonstrably already running against (the legacy Cowork
 bash discovery / CONTRACT.md Rule 22, resolved and verified before this
 module is ever imported). `machine` is looked up LAZILY, and only when a
 registration's `machines` block actually exists (`machine_identity.py`'s
@@ -231,7 +231,7 @@ def registration(root) -> dict:
 # ---------------------------------------------------------------------------
 
 def is_session_mount_root(value) -> bool:
-    """True when `value` is a workspace ROOT sitting inside a Cowork
+    """True when `value` is a workspace ROOT sitting inside a legacy Cowork
     per-session sandbox mount — thin wrapper over `workspace_paths`' own
     session-mount shape (the canonical vantage/mount machinery this module
     integrates with rather than reimplementing). Coerces to `str` first —
@@ -852,7 +852,7 @@ def fire_time_guard(workspace_root, *, now: Optional[_dt.datetime] = None,
     """Validate-or-repair-or-alarm-or-stay-quiet for ONE fire, against the
     workspace this code is demonstrably already running against
     (`workspace_root` — already resolved and verified by the caller's own
-    discovery, Cowork's bash Rule 22 or the maintenance dispatcher's
+    discovery, the legacy Cowork bash Rule 22 or the maintenance dispatcher's
     bootloader Step 1).
 
     `machine` / `home` are optional overrides for `current_vantage` — real

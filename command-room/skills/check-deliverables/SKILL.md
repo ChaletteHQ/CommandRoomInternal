@@ -24,8 +24,8 @@ The save-time voice + leak gates only run when a deliverable routes through the
 normal writer (`brief_writer.make_brief`). Live testing proved that route is not
 guaranteed: given a busy batch, the model routinely hand-rolls a Word doc (or
 drafts an email/memo as a markdown file, saves a premium-HTML brief/scorecard,
-or drafts as chat text) and the gates never fire. Automatic same-turn enforcement was attempted and is not reachable in the
-Cowork runtime (plugin and user-scope hooks both proved dead). So enforcement
+or drafts as chat text) and the gates never fire. Automatic same-turn enforcement was attempted and was not reachable in the
+runtime of the time (plugin and user-scope hooks both proved dead). So enforcement
 moves to **detection the CEO invokes**: one command that reads the produced
 output and flags what didn't pass — which IS reliable, because the runtime
 honors skills. The scanner opens the file itself, so a hand-rolled doc is caught

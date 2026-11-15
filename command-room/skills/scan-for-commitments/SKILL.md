@@ -1,7 +1,7 @@
 ---
 name: scan-for-commitments
 surfaces: both
-description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate commitment events. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. Use when meetings/emails are on file but no commitment events exist. Idempotent — a re-run skips anything it already picked up, so running it twice never doubles the list. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (just opens the commitments-tracker artifact)."
+description: "One-shot bulk scan over historic Granola transcripts and Gmail threads to retroactively populate commitment events. Triggers: 'scan for commitments', 'backfill commitments', 'populate commitments', 'extract commitments from history', 'why don't I have any commitments', 'commitments are empty', 'commitments not showing up', 'where are my commitments', 'rebuild commitments from history', 'historical commitment scan', 'one-time commitment backfill'. Use when meetings/emails are on file but no commitment events exist. Idempotent — a re-run skips anything it already picked up, so running it twice never doubles the list. DOES NOT fire on 'log a commitment' (workspace-manager owns explicit single logs) or 'show me my commitments' (commitment-triage)."
 ---
 
 **Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
@@ -23,7 +23,7 @@ If the user's phrasing is ambiguous ("get my commitments going"), prefer this sk
 
 ## Why this exists
 
-The daily Commitments scheduled chat and `triage my commitments` aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (History: every sidebar dashboard is retired — the People Network + Commitments Tracker pair in v2.9.0, the Workspace Map in Night M3.)
+The Hub's Commitments tab and `triage my commitments` aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (History: every sidebar dashboard is retired — the People Network + Commitments Tracker pair in v2.9.0, the Workspace Map in Night M3.)
 
 Earlier releases expected `meeting-notes` to write commitments but the contract was implicit (no schema doc, no explicit step). Many transcripts were processed without producing commitment events. `scan-for-commitments` is the one-shot fix.
 

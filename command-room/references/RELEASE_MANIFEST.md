@@ -26,7 +26,7 @@ The manifests under `shared/releases/` ship to every client repo, and so does `R
   "items": [
     {
       "id": "v344_refire_commitments",
-      "detector_module": "release_detectors.v3_4_4_dropped_commitments",
+      "detector_module": "release_detectors.<your_detector>",
       "detector_function": "count_dropped_open_commitments",
       "prompt_template": "v3.4.4 fixed a filter that was silently dropping commitments. Your workspace has {count} open commitment events that should have been surfacing but weren't (breakdown: {by_shape}). Re-fire your Commitments task now to see them, or wait for tomorrow's scheduled 8:30 AM fire.",
       "action": "instruct_user"
@@ -98,7 +98,7 @@ A detector function lives at `shared/scripts/release_detectors/<module>.py` and 
 - Should be idempotent under re-runs and degrade gracefully (return `{"applies": False, "context": {}}`) when the events file doesn't exist or is unreadable, rather than raising.
 - Is also CLI-invokable (`if __name__ == "__main__": ...`) so the update-bridge skill can shell out via `bash python <module>.py <events_path>` and parse the JSON result, avoiding a full Python import chain.
 
-See `release_detectors/v3_4_4_dropped_commitments.py` for the canonical example, and `release_detectors/always.py` for the trivial always-applies detector used by `announce_only` items.
+See `release_detectors/always.py` for the trivial always-applies detector used by `announce_only` items. The v3.4.4 detector this section used as its example left with the update floor (cr1#1101) and is kept in git history; a detector with real logic follows the contract above.
 
 ## Action contract (auto_apply, v3.14.4+)
 
@@ -130,13 +130,13 @@ def fn(events_jsonl_path, workspace_root, detector_context) -> dict:
 - If the action returned `fallback_prompt` text AND the manifest item provides `fallback_prompt_template`: bridge surfaces it as if the item were `instruct_user`. Logs `release_action_failed_fallback` event.
 - Otherwise: bridge logs `release_action_failed` event silently and does NOT surface anything. The customer experience is "the thing just didn't happen this time" — better than a confusing prompt about something they don't understand.
 
-See `release_actions/v3_13_8_quarantine_substrate.py` for the canonical example (wraps an existing idempotent helper) and `release_actions/__init__.py` for the contract docstring.
+See `release_actions/stamp_light_preset.py` for a live example and `release_actions/__init__.py` for the contract docstring.
 
 ## What the update-bridge does with manifests
 
 Per the post-v3.4.5 phases in `skills/command-room-update-bridge/SKILL.md`:
 
-1. Determine the user's `last_applied_version` from the most recent `plugin_update` event in events.jsonl. If none exists, fall back to `last_onboarding_complete` version. If neither exists, treat as `0.0.0`.
+1. Determine the user's `last_applied_version` from the most recent `plugin_update` event in events.jsonl. If none exists, fall back to `last_onboarding_complete` version. If neither exists, treat as `5.33.2`, the update floor (cr1#1101, owner ruling 2026-11-14); `release_remediation_selector.py` also raises any older version to the floor, so no manifest at or below v5.33.2 plays and the v3 and v4 manifests are gone from `shared/releases/` (their notes are kept as text in `docs/history/RELEASE_NOTES_v3_v4.md`).
 2. Enumerate all `shared/releases/v*.json` files. Filter to versions `> last_applied AND <= current_plugin_version`. Sort ascending.
 3. For each manifest in order:
    - For each item, run its detector against the user's events.jsonl.
@@ -155,6 +155,8 @@ Per the post-v3.4.5 phases in `skills/command-room-update-bridge/SKILL.md`:
 ## Auto-application landed in v3.14.4
 
 The MVP shipping in v3.4.5 only supported `instruct_user` and `announce_only`. v3.14.4 added `auto_apply` (per the non-technical-customer principle in CONTRACT.md Rule 28) and migrated the pre-existing items that were inappropriately `instruct_user`:
+
+History: these manifests and their modules left with the update floor (cr1#1101).
 
 | Item | Pre-v3.14.4 | Post-v3.14.4 |
 |---|---|---|

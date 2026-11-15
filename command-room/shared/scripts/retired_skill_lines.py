@@ -11,6 +11,11 @@ lane), `workspace-manager` for the other two (the catch-all). This module is
 where the sentences live, so the skills, the update bridge and the suite read
 one copy.
 
+cr1#1102 (the owner, 2026-11-14) retired two more: `level-up-command-room`,
+which only ever answered the dashboards sentence, and `log-resolution`, which
+caught the per-click prompt of a dashboard no version still ships. Both
+folders are gone and `workspace-manager` answers their phrases.
+
 Shape borrowed from `level_up_lines` (the retired dashboards): constants, no
 workspace access, nothing in the text that names a file, a script or an event.
 3.10-safe, stdlib only.
@@ -20,11 +25,15 @@ from __future__ import annotations
 
 from typing import Dict
 
+from level_up_lines import DASHBOARDS_IN_CHAT
+
 #: The three retired skills and the skill that answers their phrases now.
 RETIRED_SKILLS: Dict[str, str] = {
     "show-my-list": "show-my-reminders",
     "balance": "workspace-manager",
     "board-pack-assembler": "workspace-manager",
+    "level-up-command-room": "workspace-manager",
+    "log-resolution": "workspace-manager",
 }
 
 #: `show my list` and its family. The items that were still open were moved
@@ -51,10 +60,25 @@ BOARD_PACK_RETIRED = (
     "voice, or `one-pager on [topic]` for a one-page brief."
 )
 
+#: `level up command room` and every sidebar-dashboard phrase. The sentence
+#: is the dashboards sentence itself, so the retired skill and the update
+#: bridge keep saying one thing.
+LEVEL_UP_RETIRED = DASHBOARDS_IN_CHAT
+
+#: `log resolved: [id]`, the per-click prompt an old dashboard sends. Nothing
+#: is closed from it: the id came from a page that no longer refreshes.
+LOG_RESOLUTION_RETIRED = (
+    "That button is from an older dashboard and no longer closes anything. "
+    "Say `triage my commitments` to close it from your list, or tell me what "
+    "you finished."
+)
+
 _LINES: Dict[str, str] = {
     "show-my-list": DISCUSS_LIST_RETIRED,
     "balance": BALANCE_RETIRED,
     "board-pack-assembler": BOARD_PACK_RETIRED,
+    "level-up-command-room": LEVEL_UP_RETIRED,
+    "log-resolution": LOG_RESOLUTION_RETIRED,
 }
 
 
@@ -71,5 +95,6 @@ def owner_of(skill: str) -> str:
 
 __all__ = [
     "BALANCE_RETIRED", "BOARD_PACK_RETIRED", "DISCUSS_LIST_RETIRED",
+    "LEVEL_UP_RETIRED", "LOG_RESOLUTION_RETIRED",
     "RETIRED_SKILLS", "line_for", "owner_of",
 ]

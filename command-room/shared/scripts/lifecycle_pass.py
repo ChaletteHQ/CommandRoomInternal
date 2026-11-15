@@ -328,12 +328,6 @@ def _activity_types(workspace_root) -> list:
                 or DEFAULT_CONFIG["activity_event_types"])
 
 
-def _last_activity(workspace_root) -> dict:
-    """{thread_id: datetime} — THE derivation. Never `thread.last_activity`
-    (deprecated, F-61: no code path maintains it)."""
-    return {tid: dt for tid, (dt, _seq) in _last_activity_full(workspace_root).items()}
-
-
 def _last_activity_full(workspace_root) -> dict:
     """{thread_id: (datetime, seq|None)}: the same derivation, with the
     activity event's place in the book beside its time (cr1#761: the daily

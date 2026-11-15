@@ -12,7 +12,7 @@ running it disagreed with the save-time writer gate scanning the SAME
 artifact class (`docx` passed 74% and never recorded a fail; `turn_hook`
 failed 94% of what it scanned), and 185 `docx` / 4 `premium_html` `gate_ran`
 events in the live census carried no `result` field at all — a defect a
-reader silently tolerated. M ruled 2026-09-07: Cowork never runs plugin
+reader silently tolerated. M ruled 2026-09-07: the legacy Cowork app never runs plugin
 hooks, so the hook is retired outright (see `hooks/` removal, this same
 lane) and the honest instrument left standing is the SAVE-TIME writer gate
 (`brief_gates.emit_gate_ran_audit` for `docx`/`premium_html`,
@@ -117,7 +117,7 @@ usage pattern, not a transient "just configured, give it a minute" state.
 Making never-fired reportable without a registration anchor to gate it would
 alarm every workspace that simply doesn't use one of the three gated
 document kinds — a far larger false-alarm surface than task_alarm's single
-one-time Cowork-permission-gate case, and exactly the "lights up on day one"
+one-time legacy Cowork permission-gate case, and exactly the "lights up on day one"
 failure this ruling exists to avoid. Building a bespoke registration-time
 system for writer surfaces (which do not have one today) is a real feature,
 out of scope for a MED, non-blocking fix. `dark_writer_lines` therefore keeps

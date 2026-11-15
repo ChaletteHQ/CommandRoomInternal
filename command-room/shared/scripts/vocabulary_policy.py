@@ -23,7 +23,7 @@ This module is the single source both gates read:
   INTERNAL_VOCAB    Command Room's internal architecture vocabulary —
                     never appears on ANY customer-visible surface: chat
                     narration, widget text, docx bodies, or the skill
-                    descriptions Cowork renders in the Plugins UI (the
+                    descriptions the Claude app renders in the Plugins UI (the
                     F-05 leak: "Internal dispatch layer ... payload ..."
                     shown to the customer as a skill description).
                     run_banned_terms_guard_test scans shipped prose

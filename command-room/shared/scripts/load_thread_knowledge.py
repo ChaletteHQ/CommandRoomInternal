@@ -68,8 +68,8 @@ each as (size, mtime_ns); .md inputs (brain file, session notes) additionally
 carry a CONTENT hash, because bulk regens rewrite files in place and destroy
 mtime as a signal (the known R1 hazard).
 
-THE MEMO CACHE IS PER-PROCESS. Cowork invokes scripts as fresh OS processes
-per call, so across Cowork invocations every call is a cold build — the cache
+THE MEMO CACHE IS PER-PROCESS. The Claude app invokes scripts as fresh OS processes
+per call, so across app invocations every call is a cold build — the cache
 helps test/battery contexts (many calls, one process) only. Callers must not
 rely on cross-invocation memoization, and must not treat a cold call's cost
 as a regression.
@@ -1276,7 +1276,7 @@ def load_thread_knowledge(
 
 if __name__ == "__main__":
     import sys
-    # Self-configure UTF-8 — Cowork invokes this from a cp1252 Windows
+    # Self-configure UTF-8 — the Claude app invokes this from a cp1252 Windows
     # console; never rely on the caller setting PYTHONUTF8 (the
     # verify_fleet/tag_release unicode-crash class). Same pattern as
     # tests/run_all.py.

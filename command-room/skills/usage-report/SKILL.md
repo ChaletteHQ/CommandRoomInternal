@@ -157,16 +157,10 @@ If the workspace has no receipts at all: surface plain English `(Nothing to repo
 Command Room usage — last 7 days
 
 By scheduled chat:
-  Inbox             ran 5x   avg 6.2k words   avg 12 lookups   avg 8 seconds
-  Commitments       ran 5x   avg 9.8k words   avg 22 lookups   avg 14 seconds
-  Staff Meeting     ran 5x   avg 4.1k words   avg 8 lookups    avg 6 seconds
-  End of Day        ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds   ← uses the most
-  Upcoming Meetings ran 5x   avg 11.2k words  avg 18 lookups   avg 12 seconds
+  Morning Brief     ran 5x   avg 18.3k words  avg 35 lookups   avg 24 seconds
 
 Background tasks (silent — no chat output, so no word counts):
-  Sent-mail check   ran 6x
-  Nightly sweep     ran 4x
-  Weekly cleanup    ran 1x
+  Maintenance       ran 20x
 
 Where the lookups go:
   Gmail thread searches:     35
@@ -174,7 +168,7 @@ Where the lookups go:
   Calendar:                  12
   Meeting transcripts:       10
 
-Total this week: 25 runs, ~245k words processed, ~205 lookups, about 5 1/2 minutes of run time.
+Total this week: 25 runs, ~92k words processed, ~175 lookups, about 2 minutes of chat run time.
 
 Traceable closes: 23 of 25 (92%) point back to the email, meeting, or message that closed them. 6 of those point to the surface and moment you closed them, with no message or meeting behind it. 2 closed with nothing to point back to.
 ```

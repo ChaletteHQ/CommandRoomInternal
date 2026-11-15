@@ -76,11 +76,6 @@ OWNER_SKILLS = ("enable-command-room-schedules", "cockpit-setup")
 #: `run_cr970_bridge_no_scheduler_test`, so a new one cannot be missed. The
 #: bridge's Phase 4.8 names the same ids.
 SCHEDULE_RELEASE_ITEMS = {
-    "v3110_add_friday_wrap_to_existing_schedules": "3.11.0",
-    "v3143_post_update_rebind_recovery": "3.14.3",
-    "v450_reregister_schedules": "4.5.0",
-    "v480_reregister_maintenance": "4.8.0",
-    "v490_instruct_staff_meeting_cadence": "4.9.0",
     "v500_instruct_commitments_split_migration": "5.0.0",
     "v5110_instruct_pick_up_the_merge_on_this_computer": "5.11.0",
     "v5140_instruct_set_up_schedules": "5.14.0",
@@ -91,7 +86,13 @@ SCHEDULE_RELEASE_ITEMS = {
     "v5330_instruct_schedule_setup": "5.33.0",
     "v600_instruct_schedules": "6.0.0",
 }
-BRIDGE_SKIPPED_RELEASE_ITEMS = tuple(SCHEDULE_RELEASE_ITEMS)
+#: The update floor (cr1#1101): the bridge never plays a manifest at or below
+#: v5.33.2 (`release_remediation_selector.UPDATE_FLOOR`, applied by the
+#: command line the bridge calls), so only the items above it need skipping.
+UPDATE_FLOOR = "5.33.2"
+BRIDGE_SKIPPED_RELEASE_ITEMS = tuple(
+    item for item, version in SCHEDULE_RELEASE_ITEMS.items()
+    if tuple(int(x) for x in version.split(".")) > tuple(int(x) for x in UPDATE_FLOOR.split(".")))
 
 #: The versions whose manifest ships schedule work: what `pending_line`
 #: compares the seat's last applied schedule version against.
@@ -222,15 +223,6 @@ def _baseline(events, installed: tuple) -> Optional[tuple]:
         if v and v < installed and (best is None or v > best):
             best = v
     return best
-
-
-def applied_version(workspace_root) -> Optional[str]:
-    """The version the newest `schedule_changes_applied` row names, or None."""
-    data = _newest_applied(workspace_root)
-    if not data:
-        return None
-    version = data.get("plugin_version")
-    return str(version).strip() if isinstance(version, str) and version.strip() else None
 
 
 #: The fixed placeholders the baked Maintenance prompt is composed with for

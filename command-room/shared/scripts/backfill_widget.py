@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BACKFILL2 — R3b: the binding backfill as a one-tap Cowork widget.
+"""BACKFILL2 — R3b: the binding backfill as a one-tap widget in the Claude app.
 
 BACKFILL1 (`backfill_bindings.py`) is the ENGINE and is not touched here: it
 derives the candidate rows (the gauge's own walk), refuses name-only and
@@ -20,7 +20,7 @@ coerced into a bind. "Apply all" applies the taps, not the page.
 THE SNAPSHOT FENCE RIDES THE PAYLOAD. The wire id of every row is
 `bind:<seq>:<snapshot_max_seq>` — the propose snapshot the row was derived
 from is baked into the id the button carries, so a click that lands hours
-later (Cowork chats are persistent) hands `apply` the snapshot the user
+later (Claude app chats are persistent) hands `apply` the snapshot the user
 actually READ, and `backfill_bindings.apply` refuses if the substrate has
 moved past it (its own exact-match fence). Rows from two different renders
 in one batch are refused wholesale — one adjudication, one snapshot.

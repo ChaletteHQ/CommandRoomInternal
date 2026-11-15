@@ -344,24 +344,6 @@ def regenerate_rules_block(workspace_root) -> dict:
         create_after_heading="## Workspace register (generated)")["status"]}
 
 
-def needs_regenerate(workspace_root: str | Path) -> bool:
-    ws = Path(workspace_root)
-    claude_md = ws / "CLAUDE.md"
-    if not claude_md.exists():
-        return False
-    seq = _latest_seq(ws)
-    blocks = [BLOCK_ORGS, BLOCK_WORKSTREAMS]
-    if _persona_block_active(ws, claude_md):
-        blocks.append(BLOCK_PERSONA)
-    if _profile_block_active(ws, claude_md):
-        blocks.append(BLOCK_PROFILE)
-    if _rules_status(ws, claude_md)[1]:
-        return True
-    return any(
-        needs_render(claude_md, b, seq, logic_version=LOGIC_VERSION)
-        for b in blocks)
-
-
 def regenerate(workspace_root: str | Path) -> dict:
     """Redraw both generated blocks in <workspace>/CLAUDE.md. Returns per-block
     statuses. A CLAUDE.md without markers gets the blocks appended at the end

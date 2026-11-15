@@ -20,7 +20,7 @@ Without this skill, customer support flow is: user emails the maintainer → the
 
 With this skill: user hits the failure, says "report this," answers ONE question, the skill assembles the diagnostic payload, and the email that lands in the maintainer's inbox already contains the verification surface. The maintainer opens it, reads it, confirms or rejects in one pass.
 
-Half the bugs fixed in v3.x have been one-keypress user-side fixes (full-quit Cowork, rerun update, retry). Those should never reach the maintainer. The known-issue-patterns reference file catches them before escalation.
+Half the bugs fixed in v3.x have been one-keypress user-side fixes (fully quit and reopen the Claude app, rerun update, retry). Those should never reach the maintainer. The known-issue-patterns reference file catches them before escalation.
 
 ## Behavior
 

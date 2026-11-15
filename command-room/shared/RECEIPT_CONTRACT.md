@@ -35,7 +35,7 @@ every writer calls one helper; every reader goes through one parser.
    schedules are per-machine (F-38); without it readers can't tell two
    machines from a double-registration bug. **It is NOT the hostname
    (SPEC SCHED1, 2026-08-17).** It was — `platform.node()` — and inside
-   Cowork's sandbox that returns the same string on every physical machine,
+   the legacy Cowork sandbox (history) that returns the same string on every physical machine,
    so 840 receipts written from two computers all carried one value and the
    field answered its own question with a constant. Every other
    sandbox-visible name has the same defect: they describe the sandbox, not
@@ -316,7 +316,7 @@ file mtimes remain a freshness FALLBACK in the watchdog forever.
 Every fire determines its run mode BEFORE the lateness check, and passes it
 to both `check_lateness(fired_via=...)` and the closing `log_receipt`:
 
-- **`scheduled`** — the session was started by Cowork's scheduler executing
+- **`scheduled`** — the session was started by the Claude app's scheduler executing
   this task's registered bootloader prompt: a scheduled-task harness fire,
   with no human message initiating the turn. App-launch catch-up deliveries
   of a missed slot are still scheduler-initiated → detect as `scheduled`;

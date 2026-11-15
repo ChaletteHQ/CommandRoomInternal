@@ -31,6 +31,14 @@ import sys
 from pathlib import Path
 
 
+#: The update floor (cr1#1101, owner ruling 2026-11-14). Every seat is at
+#: v5.33.2 or later, so the update starts there: a seat with no
+#: `plugin_update` row and no finished onboarding, or with a row older than
+#: this, is read as v5.33.2 and no manifest at or below it plays. The v3 and
+#: v4 manifests were removed on the same ruling.
+UPDATE_FLOOR = "5.33.2"
+
+
 def parse_version(v: str) -> tuple[int, ...]:
     """'3.13.8.1' -> (3, 13, 8, 1). Raises ValueError on a non-numeric segment
     so a stray filename can't masquerade as a version."""
@@ -60,6 +68,17 @@ def version_in_range(v: str, last_applied: str, current: str) -> bool:
     """
     pv = parse_version(v)
     return parse_version(last_applied) < pv <= parse_version(current)
+
+
+def effective_last_applied(last_applied) -> str:
+    """The version the update starts from: `last_applied`, raised to
+    `UPDATE_FLOOR` when it is older, missing or not a version."""
+    try:
+        if parse_version(last_applied) >= parse_version(UPDATE_FLOOR):
+            return str(last_applied).strip()
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return UPDATE_FLOOR
 
 
 def select_pending_manifests(releases_dir, last_applied: str, current: str) -> list[dict]:
@@ -109,13 +128,15 @@ def _main(argv: list[str]) -> int:
               file=sys.stderr)
         return 2
     releases_dir, last_applied, current = argv[1], argv[2], argv[3]
-    out = select_pending_manifests(releases_dir, last_applied, current)
+    # The bridge calls this command line, so the floor is applied here: the
+    # pure selector above stays a plain range for its own tests.
+    out = select_pending_manifests(releases_dir, effective_last_applied(last_applied), current)
     print(json.dumps(out, indent=2))
     return 0
 
 
-__all__ = ["parse_version", "version_lt", "version_ge", "version_in_range",
-           "select_pending_manifests"]
+__all__ = ["UPDATE_FLOOR", "parse_version", "version_lt", "version_ge",
+           "version_in_range", "effective_last_applied", "select_pending_manifests"]
 
 
 if __name__ == "__main__":

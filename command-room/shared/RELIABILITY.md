@@ -49,7 +49,7 @@ Before producing output, check `_hq/BUSINESS_CONTEXT.md` for an "Out of office" 
 
 ### 4. Missed-fire recovery + late-fire tiers (Phase 3 / R4)
 
-When Cowork fires a missed slot late (machine was off/asleep), every CHAT orchestrator determines its run mode (`shared/RECEIPT_CONTRACT.md` § Run-mode detection) and computes its lateness at the top of the run via `shared/scripts/late_fire.py::check_lateness` — machine-local math (cron evaluates on the machine clock; workspace TZ is presentation-only) — and branches:
+When the Claude app fires a missed slot late (machine was off/asleep), every CHAT orchestrator determines its run mode (`shared/RECEIPT_CONTRACT.md` § Run-mode detection) and computes its lateness at the top of the run via `shared/scripts/late_fire.py::check_lateness` — machine-local math (cron evaluates on the machine clock; workspace TZ is presentation-only) — and branches:
 
 - **Manual fire (typed trigger / Run Now / re-run)** — never late: no tier math, no banner, no event (v4.5.2 R2 — F-47 P1a wrote three false late_fires in one afternoon before this gate).
 - **< 3h late** — run normally, no mention.

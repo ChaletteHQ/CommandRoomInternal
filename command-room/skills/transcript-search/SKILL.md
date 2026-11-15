@@ -148,7 +148,7 @@ python3 -c "
 import sys
 sys.path.insert(0, 'shared/scripts')
 from tool_discovery import discover_transcript_tool, ToolDescriptor
-# Build the actual tool list from Cowork's available tools — orchestrator
+# Build the actual tool list from the host's available tools — orchestrator
 # passes the real list at fire time, not stub data (same construction as
 # every other tool_discovery call site).
 tools = [
@@ -183,9 +183,9 @@ Why layer-on-top, not either-or:
 - **entity_resolve** is excellent at attendee-match — it pulls every meeting where a person/org/project member attended, even when the brand name was never spoken (the code-named-project class)
 - The union covers both classes; either alone misses the other's specialty
 
-Session 22 (Phase 2E test) verified that Cowork called Granola NL and got correct results — but skipped entity_resolve entirely. Output was right by luck of Granola NL's strength on that particular query; an attendee-only-relevance query would have returned empty. The layer-on-top contract means the resolver runs every time, and contributes whatever it can.
+Session 22 (Phase 2E test) verified that the model called Granola NL and got correct results — but skipped entity_resolve entirely. Output was right by luck of Granola NL's strength on that particular query; an attendee-only-relevance query would have returned empty. The layer-on-top contract means the resolver runs every time, and contributes whatever it can.
 
-**Why this step exists in the first place:** the 2026-05-20 Cowork handoff diagnosed the bug exactly. A user ran "search transcripts for [code-named project]" and got "couldn't find any" — even though the project has 6+ meetings in the last week and is fully modeled in entities.json (org + project + 3 people + 8 aliases). The brand name is never spoken in transcripts (the team refers to "the app," "the game," etc.). Literal-token scoring on the brand name returns zero. Per #18: this happens for EVERY early-stage venture, code-named project, or company whose brand name doesn't get spoken in meetings.
+**Why this step exists in the first place:** the 2026-05-20 handoff diagnosed the bug exactly. A user ran "search transcripts for [code-named project]" and got "couldn't find any" — even though the project has 6+ meetings in the last week and is fully modeled in entities.json (org + project + 3 people + 8 aliases). The brand name is never spoken in transcripts (the team refers to "the app," "the game," etc.). Literal-token scoring on the brand name returns zero. Per #18: this happens for EVERY early-stage venture, code-named project, or company whose brand name doesn't get spoken in meetings.
 
 **The fix:** resolve the topic via `shared/scripts/entity_resolve.py` to see if it names a person/org/project the workspace knows about. If yes, EXPAND the candidate set + the search-term set:
 

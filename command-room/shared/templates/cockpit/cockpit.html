@@ -1822,7 +1822,7 @@
     if (act === "send") {
       // cr1#936: Microsoft 365's reply tool answers the sender alone, so a
       // reply with anyone else on it is never sent from here.
-      if (dropsOthers(d)) { banner(OUTLOOK_GROUP_LINE, true, ""); return; }
+      if (dropsOthers(d)) { banner(dropsLine(d, "send"), true, ""); return; }
       var first = S.pendingSend[k];
       if (!first) { S.pendingSend[k] = Date.now(); renderInbox(); setTimeout(function () { if (S.pendingSend[k]) { delete S.pendingSend[k]; renderInbox(); } }, 20000); return; }
       // A double-click is one press, never the confirmation (cr1#677).
@@ -1835,7 +1835,7 @@
       saveChoice(base); return;
     }
     // cr1#936: on Microsoft 365 the same tool would make a draft that answers the sender alone.
-    if (act === "draft" && dropsOthers(d)) { banner(OUTLOOK_GROUP_DRAFT_LINE, true, ""); return; }
+    if (act === "draft" && dropsOthers(d)) { banner(dropsLine(d, "draft"), true, ""); return; }
     if (act === "draft") { base.action = "draft"; if (canDraftDirect(it)) { draftDirect(base, it); return; } saveChoice(base); return; }
     if (act === "snooze") { base.action = "snooze"; saveChoice(base); return; }
     // cr1#1020: Reply opens a box on a row with no draft; Drop takes the
@@ -1876,7 +1876,22 @@
   // reply tool takes no recipients and answers the sender alone.
   var OUTLOOK_GROUP_LINE = "Microsoft 365 replies from the Hub go to the sender only, and this one has others on it. Reply from Outlook so nobody is left off. Nothing was sent.";
   var OUTLOOK_GROUP_DRAFT_LINE = "Microsoft 365 drafts from the Hub answer the sender only, and this one has others on it. Reply from Outlook so nobody is left off. No draft was made.";
-  function dropsOthers(d) { return !!(MAIL && MAIL.provider === "outlook" && (addrList(d && d.to).length + addrList(d && d.cc).length) > 1); }
+  // cr1#1251: a page that does not know its seat's mail backend (no declared
+  // mail connector, so MAIL is null) cannot vouch that a reply reaches
+  // everyone either: it would go to the Apply run, whose backend may answer
+  // the sender alone. A reply to one person still goes on.
+  var NO_BACKEND_GROUP_LINE = "The Hub does not know which mail service this seat replies through, so it cannot be sure this reply reaches everyone on it. Reply from your mail app so nobody is left off. Nothing was sent.";
+  var NO_BACKEND_GROUP_DRAFT_LINE = "The Hub does not know which mail service this seat replies through, so it cannot be sure this draft reaches everyone on it. Reply from your mail app so nobody is left off. No draft was made.";
+  function dropsOthers(d) {
+    // each person once, whatever the case, as the Apply run's gate counts them
+    var seen = {}; addrList(d && d.to).concat(addrList(d && d.cc)).forEach(function (a) { seen[a.toLowerCase()] = true; });
+    if (Object.keys(seen).length <= 1) return false;
+    return !MAIL || MAIL.provider === "outlook";
+  }
+  function dropsLine(d, act) {
+    if (!MAIL) return act === "draft" ? NO_BACKEND_GROUP_DRAFT_LINE : NO_BACKEND_GROUP_LINE;
+    return act === "draft" ? OUTLOOK_GROUP_DRAFT_LINE : OUTLOOK_GROUP_LINE;
+  }
   function htmlBody(t) { return String(t || "").split(/\r?\n/).map(function (l) { return esc(l); }).join("<br>"); }
   function tsAfter(v, base) { var a = typeof v === "number" ? v : Date.parse(String(v)); return !isNaN(a) && a > base + 1000; }
   function canDirect(it) {

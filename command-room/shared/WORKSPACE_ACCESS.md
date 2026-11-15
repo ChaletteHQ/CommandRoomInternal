@@ -309,6 +309,7 @@ Every host-face call prints exactly one JSON line carrying `ok`, `verb`, `ws`, `
 | `folder_not_attached` | the workspace is not mounted right now | `device_request_folder_access` |
 | `refused_path` / `refused_runtime_cache` / `refused_lock_file` | the path fence | — |
 | `refused_path` with `line` | on the run doors, a path argument outside the workspace or a `workspace_root` that is not the anchored workspace; on every verb, a `<WS>` left in a path (cr1#546). `line` is the one sentence, and it is the whole answer: "Not saved: ..." on a write, "Not read: ..." on a read, "Not removed: ..." on a remove. Never report the change as saved | none |
+| `refused_computer_link` | on the run doors, an argument carrying a `computer:` link (`computer:///...` or `computer://C:\...`, any case, any length, at any depth). The link is built beside the data, never handed across a command line; prose that only says "computer:" is content. Before cr1#1058 only Windows refused it, and only because the text could not resolve as a path there | none |
 | `refused_append_only` | whole-file write to the ledger | `append_jsonl` |
 | `writer_owned` | `write` on a file one named writer owns (`WRITER_OWNED_FILES`: `_hq/inbox/LAST_TRIAGE.txt`, whose time only `inbox_helpers:stamp_last_triage` may set); `name` is that writer | `run_writer` |
 | `refused_protected` | `remove` on the substrate itself, a lock, a sidecar or the runtime cache | — |

@@ -10,7 +10,8 @@ the same answer, on every seat: dashboards live in chat, and here is what to
 say instead.
 
 This module is where that answer lives, as constants, so the skill that owns
-the phrases (`level-up-command-room`) and the update bridge's Phase 4 say it
+the phrases (`workspace-manager`, since `level-up-command-room` retired in
+cr1#1102) and the update bridge's Phase 4 say it
 from one home and the suite can pin both against it.
 
 `plan(tools)` is the whole behaviour of the retired surface, as data: whatever

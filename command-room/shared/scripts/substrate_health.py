@@ -21,7 +21,7 @@ Checks:
   - FS-15 (read-time): `.readalarm.json` sidecars dropped by the defensive
     readers (read_alarm.py) when a read served corrupt bytes MID-FIRE. This
     catches what the scan-time parse check cannot: the 2026-07-14 dogfood had
-    Cowork's sync cache serve a truncated entities.json for ~90 minutes while
+    the legacy Cowork app's sync cache serve a truncated entities.json for ~90 minutes while
     disk and Drive were both clean — by the time any scan ran, the file read
     clean again and the evidence was gone. The sidecar survives the window;
     a recent alarm is surfaced even when the file is healthy NOW.
@@ -631,7 +631,7 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
     for b in bad:
         lines.append(
             f"⚠ I couldn't read your {b['file']} — it may be mid-sync or "
-            f"corrupted. If this persists, fully quit and reopen Cowork."
+            f"corrupted. If this persists, fully quit and reopen the Claude app."
         )
     # FS-15 read-time alarms. Files already reported unreadable above are
     # skipped (one loud line per file, not two). What's left is either the
@@ -650,17 +650,17 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
         if a["still_bad"]:
             lines.append(
                 f"⚠ Your {a['file']} failed to read {times}{when} and still "
-                f"looks cut off. Fully quit and reopen Cowork (quit the app "
+                f"looks cut off. Fully quit and reopen the Claude app (quit the app "
                 f"completely — closing the window is not enough), then check "
                 f"again. Your records are very likely intact in Drive."
             )
         else:
             lines.append(
                 f"⚠ Your {a['file']} failed to read {times}{when} but reads "
-                f"fine now — Cowork's sync cache likely served a cut-off copy "
+                f"fine now — the app's sync cache likely served a cut-off copy "
                 f"for a while. Anything I produced in that window may have "
                 f"used incomplete records, so double-check recent outputs. If "
-                f"it happens again, fully quit and reopen Cowork (quit the "
+                f"it happens again, fully quit and reopen the Claude app (quit the "
                 f"app completely — closing the window is not enough)."
             )
     # CLOCKTS1 — forward-dated stamps. Named, counted, and ahead of the

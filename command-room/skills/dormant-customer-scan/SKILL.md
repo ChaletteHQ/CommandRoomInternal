@@ -630,7 +630,7 @@ The data view travels as `{"data_view": <the data view above>}`, written as JSON
 
 ### Output Structure (widget — what the rendered surface looks like)
 
-The widget renders as a Cowork action card. Conceptually, what the user sees:
+The widget renders as an action card in chat. Conceptually, what the user sees:
 
 ```
 3 conversations worth reviving

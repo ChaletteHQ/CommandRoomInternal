@@ -1,7 +1,7 @@
 ---
 name: weekly-recap
 surfaces: both
-description: "Pulls 7 (or 30) days of context across every connected source — Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, and every meeting-transcript source — into one structured recap: what happened, decisions made over email, threads of note, new people, anomalies, and what Command Room chats produced. Fires on: 'weekly recap', 'what happened this week', 'recap my week', 'monthly recap', 'what happened this month', plus 'tune weekly-recap'. Runs as the Friday-wrap scheduled chat's engine and on demand. Does NOT fire on 'operator report' / 'show me the value' (operator-report — lift accounting), 'value receipt' (value-receipt), or 'weekly insights' (insight-generator — pattern synthesis, not events digest). Owns the named forms above; cedes a bare `morning brief` to the app's own daily-brief route."
+description: "Pulls 7 (or 30) days of context across every connected source — Gmail/Outlook, Calendar, Slack/Teams, Drive/OneDrive, and every meeting-transcript source — into one structured recap: what happened, decisions made over email, threads of note, new people, anomalies, and what Command Room chats produced. Fires on: 'weekly recap', 'what happened this week', 'recap my week', 'monthly recap', 'what happened this month', plus 'tune weekly-recap'. On demand only. Does NOT fire on 'operator report' / 'show me the value' (operator-report — lift accounting), 'value receipt' (value-receipt), or 'weekly insights' (insight-generator — pattern synthesis, not events digest). Owns the named forms above; cedes a bare `morning brief` to the app's own daily-brief route."
 ---
 
 # Weekly Recap — 7-Day Cross-Connector Synthesis
@@ -82,18 +82,15 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 | **Reset** | "reset weekly-recap to defaults" | `plan run_writer` naming `skill_config_writer:reset_skill_config` with `{"skill_name": "weekly-recap", "workspace_root": "<WS>"}` as its args (in-shell on a seat whose files are local: `reset_skill_config(workspace_root, "weekly-recap")`); say its `line` → next fire is a first-fire again. |
 
 **The first-run block (transport):** the on-demand fire ends in a chat summary + a `.docx` link
-(not an action widget), so it uses a 2–3 line FOOTER after the recap. The scheduled Friday fire
-(`orchestrator-friday-wrap.md`) appends the same footer (that orchestrator is a markdown post, not
-a widget — see its first-run note).
+(not an action widget), so it uses a 2–3 line FOOTER after the recap. (The Friday Wrap scheduled
+chat that also used this footer is shelved, cr1#618 and #847.)
 
 > *First time recapping your week. I set 2 defaults: **I lead with the themes, not the numbers** ·
 > **I split what you owe into work for others vs your own projects**. Say "tune my weekly recap" to
 > change either, or just tell me ("lead with the numbers" / "external work only").*
 
-The footer renders exactly once ever (`is_configured` gate). Day/time of the scheduled fire is
-`change-schedule` (the friday-wrap task), not tune. The scheduled Friday Wrap fire follows
-`shared/RELIABILITY.md` (skip-don't-fail when the workspace isn't ready, OOO handling,
-missed-fire recovery, connector-timeout degradation) — the on-demand trigger is unaffected.
+The footer renders exactly once ever (`is_configured` gate). There is no scheduled fire to move:
+the recap runs when the user asks for it.
 
 **Freeform tune (natural language → config):**
 

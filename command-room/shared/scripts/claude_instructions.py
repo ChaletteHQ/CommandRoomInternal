@@ -103,7 +103,7 @@ DAILY_DOZEN: Tuple[Tuple[str, str], ...] = (
 #: asked to say, and the chat's own apply path.
 NOT_IN_MAP: frozenset = frozenset({
     "apply-choices", "command-room-onboarding", "command-room-update-bridge",
-    "enable-command-room-schedules", "level-up-command-room", "session-backfill",
+    "enable-command-room-schedules", "session-backfill",
     "session-sweep", "workspace-ingest", "ingest-context", "scaffold-automation",
 })
 

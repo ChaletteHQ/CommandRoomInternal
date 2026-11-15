@@ -94,9 +94,6 @@ When the trigger is read-only (`list my schedules`, `show my scheduled chats`, `
 Your current Command Room schedule:
 
   Morning Brief       — 7 AM weekdays
-  Inbox               — 7:15 AM weekdays
-  End of Day          — 5 PM weekdays
-  Friday Wrap         — 1 PM Fridays
 
 Background maintenance (runs quietly, no chat output):
   Maintenance         — 6:45 AM, 12:45 PM, 4:45 PM, and 5:45 PM daily
@@ -402,9 +399,8 @@ Before writing, show a diff:
 ```
 Here's what I'll change:
 
-  Inbox          7 AM weekdays  →  8 AM weekdays
-  Pulse          [paused]       →  active, 9 AM weekdays
-  End of Day     5 PM weekdays  →  4:30 PM weekdays
+  Morning Brief  7 AM weekdays  →  8 AM weekdays
+  Maintenance    [paused]       →  active
 
 Proceed? (yes / no / cancel)
 ```
@@ -653,9 +649,8 @@ If a changed task turns out not to be registered at all (it was in the "Availabl
 One-line confirmation per change, only after Step 7's update plans were executed and actually succeeded. A refusal is not a change: it gets the refusal's sentence, and nothing else. No CHANGELOG narration, no internal mechanics.
 
 ```
-✓ Inbox now runs at 8 AM weekdays.
-✓ Pulse resumed.
-✓ End of Day now runs at 4:30 PM weekdays.
+✓ Morning Brief now runs at 8 AM weekdays.
+✓ Maintenance resumed.
 
 Your new schedule starts tomorrow morning.
 ```
@@ -683,7 +678,7 @@ Stop. No widget, no follow-up suggestion, no "want to change anything else?"
 - **Do NOT fire, run, or invoke a task from this skill — ever.** A cron move is a config write + re-anchor, nothing else: no catch-up runs, no late_fire events, no lateness receipts (F-51 — Step 7's "schedule change NEVER fires the task" rule).
 - **Do NOT write directly to entities.json without atomic_write_json.** Drive-sync corruption risk.
 - **Do NOT pass `prompt` to an update plan.** Step 7 re-anchors cron and enabled ONLY. Prompt content is registration's job (`set up command room schedules`).
-- **Do NOT render a task as scheduled unless it is registered.** The merged config alone is not evidence a task exists in Cowork's scheduler — that's the R1 ghost-task bug.
+- **Do NOT render a task as scheduled unless it is registered.** The merged config alone is not evidence a task exists in the host's scheduler — that's the R1 ghost-task bug.
 - **Do NOT densify the config.** `workspace.schedule_config` is a sparse override store — an entry means "operator customized this." Never write default values for tasks the user didn't change (it would destroy the "non-default cron = user-set" signal every consumer relies on).
 - **Do NOT prompt for changes if the user asked for read-only mode.** `show my scheduled chats` is read-only — render and stop.
 - **Do NOT introduce new taskIds via this skill.** Tasks are defined in `schedule_config.py` `DEFAULT_SCHEDULES`; the add flow only registers tasks that already exist there.

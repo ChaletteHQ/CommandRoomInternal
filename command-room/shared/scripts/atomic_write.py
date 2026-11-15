@@ -12,7 +12,7 @@ When a skill writes entities.json with `path.write_text(...)` or `open(...,
   3. close
 
 If Drive for Desktop syncs during step 1 or step 2, the partial-write state
-gets propagated. Other consumers (Cowork, the same workspace on another
+gets propagated. Other consumers (the Claude app, the same workspace on another
 machine, another skill running concurrently) see a truncated or partial
 entities.json and either error out or fall back to backups.
 
@@ -22,8 +22,8 @@ Evidence this has happened:
     bash-rewriting a clean version
   * Cracks-watch fire on Apr 28 noted "the live entities.json is currently
     truncated mid-file at person_058" and fell back to a backup
-  * Cowork bridge fire on Apr 29 reported the same truncation symptom while
-    the live file on disk was actually valid (38353 bytes) — Cowork was
+  * A legacy Cowork bridge fire on Apr 29 reported the same truncation symptom while
+    the live file on disk was actually valid (38353 bytes) — the legacy app was
     seeing a stale Drive-sync view of a partial-write state from a prior
     skill's non-atomic write
 
@@ -41,7 +41,7 @@ NEW valid content (after rename), never a torn write.
 
 This module is a hard dependency for any skill that writes entities.json,
 events.jsonl, aliases.json, or any other workspace data substrate file
-that Cowork / cross-machine sync / weekly-audit reads.
+that the Claude app / cross-machine sync / weekly-audit reads.
 
 USAGE:
 
@@ -605,7 +605,7 @@ def events_freshness(events_path: str | Path) -> dict:
 
     A regression (file_max_seq < seqhw_max) means the view we can see is behind
     its own high-water — a mid-sync flush, a stale Drive last-writer-wins copy,
-    or (the row-17 class) a Cowork sandbox mount serving a copy from a
+    or (the row-17 class) a legacy Cowork sandbox mount serving a copy from a
     pre-recovery lineage. Reads are stale even with zero laptop involvement, and
     because `atomic_append_jsonl` is read-modify-write, a write through a stale
     view rewrites the whole file from stale content — a stale READ becomes a
@@ -1003,7 +1003,7 @@ def atomic_append_jsonl(
     Non-events.jsonl writes take NO lock (they have their own contracts).
 
     Use for events.jsonl, staging_emissions.jsonl, classifier_feedback.jsonl,
-    .backfill_cursor — anything Cowork or cross-machine sync reads.
+    .backfill_cursor — anything the Claude app or cross-machine sync reads.
 
     Batched appends (one call with N events) are still preferred where a
     writer has N related events — a batch is one lock hold, one fsync and one

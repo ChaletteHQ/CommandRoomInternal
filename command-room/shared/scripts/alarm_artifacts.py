@@ -171,17 +171,17 @@ has already reached.
 There are two possible causes, and the recovery step is different for each.
 **Verify which one is true before taking any recovery action.**
 
-1. **Stale view (most likely, usually transient).** A Cowork sandbox mount or a
+1. **Stale view (most likely, usually transient).** A Claude app sandbox mount or a
    mid-sync Drive cache is serving an older copy while the real file on the
    primary machine is already whole. If so, nothing is wrong with your data —
-   the view just needs to catch up. Fully quit and reopen Cowork (quit the app
+   the view just needs to catch up. Fully quit and reopen the Claude app (quit the app
    completely — closing the window is not enough) and re-check; the alert will
    clear itself on the next healthy check.
 
 2. **Real clobber (multi-machine Drive last-writer-wins).** A trailing machine
    (usually a laptop that came online) flushed an out-of-date `events.jsonl`
    over the live one. If — and only if — the primary machine also shows the low
-   number after a full Cowork restart, recover the log from Drive version
+   number after a full Claude app restart, recover the log from Drive version
    history and merge, then let the reconciler replay the quarantined batches.
 
 If you are not sure which case you are in, ask me to walk you through checking —

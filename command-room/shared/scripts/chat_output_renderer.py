@@ -139,7 +139,7 @@ def doc_headline_link(label: str, url: str) -> str:
 
     Why H2 + arrow + bold: M's testing surfaced that plain inline `computer://`
     links get buried in long chat responses and missed. The link underline +
-    text color are controlled by Cowork's chat renderer (no skill can override
+    text color are controlled by the Claude app's chat renderer (no skill can override
     them). The three knobs available to a skill — heading size, bold weight,
     leading arrow glyph — together make the link pop without leaking the
     underlying path (path stays in the href, never in the label per Rule 4).
@@ -172,7 +172,7 @@ def doc_headline_link(label: str, url: str) -> str:
     # nothing; the landing's own `opener_line` is the pointer. The Slack form
     # (SPEC_SLACK1 C-4) never carried a URL - `computer://` is dead there and
     # the listener uploads the file into the thread - so it is RETIRED the
-    # same way: on the slack surface this answers "" too. The cowork return
+    # same way: on the slack surface this answers "" too. The desktop (`cowork` surface) return
     # WITH a URL is byte-identical to pre-SLACK1.
     if _current_surface() == "slack":
         return _slack_doc_headline(label)
@@ -184,7 +184,7 @@ def doc_headline_link(label: str, url: str) -> str:
 def _current_surface() -> str:
     """The active render surface via surface_context (SLACK1 B-3). Import
     tolerance mirrors turn_backstop — a partial plugin update must not brick
-    every doc link; absent module ≡ cowork (today's behavior)."""
+    every doc link; absent module ≡ the `cowork` surface (today's behavior)."""
     try:
         from surface_context import current_surface
         return current_surface()
@@ -704,7 +704,7 @@ def _render_section(section: dict) -> list[str]:
 def render_chat_output(data: dict) -> str:
     """Render a full chat output from a structured data view.
 
-    Returns a markdown-formatted string ready to post to chat. Cowork chat
+    Returns a markdown-formatted string ready to post to chat. The Claude app
     renders the markdown (headers, bold, italic, links, dividers) into proper
     visual hierarchy.
 
@@ -791,13 +791,10 @@ __all__ = [
     "CanonicalActionError",
     "LeakDetectedError",
     "DataShapeError",
-    "PulseRichnessError",
     "WrapperContractError",
     "WidgetFeedbackContractError",
     "REQUIRED_INPUT_ACTION_IDS",
     "EMAIL_REQUIRED_ACTIONS",
-    "PULSE_PERSON_DORMANT_ACTIONS",
-    "PULSE_REQUIRED_METADATA_KEYS",
 ]
 
 
@@ -879,61 +876,6 @@ class DataShapeError(ValueError):
 
     The fix is always at the orchestrator level — fix the data view before
     rendering. Never disable this validator.
-    """
-
-
-class PulseRichnessError(DataShapeError):
-    """FOSSIL VALIDATOR (LIFECYCLE1, 2026-08-02) — the Pulse chat is RETIRED and
-    nothing builds this item shape any more. The validator STAYS: it is keyed on
-    a shape fingerprint, not on a task id, so it costs nothing on surfaces that
-    never emit that shape, and deleting a gate is how a shape quietly comes back
-    thin. Do NOT build a new surface to this contract — `verb_taxonomy` and
-    `CANONICAL_ACTIONS` are the live authority on any card you are rendering.
-
-    Raised when a Pulse (cr-dont-forget) person-dormant item is too thin to
-    render usefully. Per M's 2026-05-07 testing on Sam's bare card: *"the
-    information was pretty bare and it was bringing up something from a couple
-    of weeks ago. there was not a link to the email, the description was very
-    sparse."*
-
-    The v2.14.28+ contract requires 4 mandatory metadata rows on every
-    person-dormant card: Last contact / Why they matter / Open context / What's
-    at stake. The v2.14.38+ contract additionally requires `original_thread` to
-    be populated when the source is an email or transcript thread.
-
-    The recurring failure mode (per M's memory): the orchestrator agent
-    improvises around the canonical contract and emits 1-2 sparse rows or a
-    plain-text Open context with no markdown link. This validator blocks the
-    render before show_widget so the agent can't ship a bare card.
-
-    Specific rules enforced:
-
-    1. **Mandatory metadata keys.** Every Pulse person-dormant item must have
-       all 4 keys present in its metadata: `Last contact`, `Why they matter`,
-       `Open context`, `What's at stake`. Empty/None values are OK ONLY if they
-       use the explicit fallback strings spec'd in the contract (e.g.,
-       `(no role tracked yet — ...)`); silently omitting a key is forbidden.
-
-    2. **Last contact must include a topic.** The `Last contact` value must
-       contain both a date pattern AND a topic separator (em-dash or hyphen
-       with surrounding spaces). Catches the bare `"18 days ago"` failure mode
-       — the date alone doesn't tell M what the last touch was about.
-
-    3. **Source links must populate original_thread.** If `Open context` value
-       contains a Gmail or Granola URL (or `Last contact` references an email
-       subject pattern), the `original_thread` field MUST be populated with at
-       minimum a non-empty `url`. Mirrors the inbox-triage / commitments
-       pattern so Pulse cards get the same collapsible thread accordion the
-       customer already knows.
-
-    Fingerprint for "Pulse person-dormant item":
-       - `icon == "👤"`, AND
-       - actions array (after stripping `<n> ` prefix) intersects with
-         `{"investigate", "draft re-engagement", "schedule catchup [when]"}`.
-
-    The fix is always at the orchestrator level. Don't disable this validator
-    or relax the rules — that's how the v2.14.x agent-improvises-around-canonical
-    failure class keeps shipping.
     """
 
 
@@ -1164,7 +1106,7 @@ def _validate_send_class_email_addresses(data: dict) -> None:
     via a single-field input.
 
     The pre-v3.13.8 renderer shipped widgets where the send button rendered
-    but could not actually fire (Cowork's B5-* surfaces). Per the v3.13.8
+    but could not actually fire (the legacy Cowork app's B5-* surfaces). Per the v3.13.8
     architectural review: do not render chrome that cannot succeed.
     """
     issues = []
@@ -1203,142 +1145,6 @@ def _validate_send_class_email_addresses(data: dict) -> None:
             "Send-class chrome would render but could not succeed (Bug #44). "
             "Fix at the orchestrator level — degrade to the `add email then send` "
             "recovery verb when an item's recipient has no actionable email:\n  - "
-            + "\n  - ".join(issues)
-        )
-
-
-# v2.14.38+ — Pulse person-dormant fingerprint + validator.
-# Catches the agent-improvises-around-canonical-paths failure mode where the
-# orchestrator ships bare cards with 1-2 metadata rows and no source link.
-# Per M's 2026-05-07 testing on Sam's bare card.
-
-PULSE_PERSON_DORMANT_ACTIONS = frozenset({
-    "investigate",
-    "draft re-engagement",
-    "schedule catchup [when]",
-})
-
-PULSE_REQUIRED_METADATA_KEYS = ("Last contact", "Why they matter", "Open context", "What's at stake")
-
-# Source URL hosts that indicate an email/transcript thread is anchoring the item.
-# When present in Open context (or other metadata), original_thread must be populated.
-_PULSE_SOURCE_URL_HOSTS = ("mail.google.com", "notes.granola.ai", "fireflies.ai", "outlook.office.com", "outlook.office365.com")
-
-
-def _is_pulse_person_dormant_item(item: dict) -> bool:
-    """True if the item shape matches a Pulse person-dormant / pattern-break
-    card. Fingerprint: 👤 icon + actions intersect with the Pulse-specific verbs.
-
-    Person-shape cards on OTHER orchestrators (e.g., people-crm `tell me about`
-    output) have different action sets and won't match.
-    """
-    if item.get("icon") != "👤":
-        return False
-    n_str = str(item.get("n", ""))
-    stripped_actions = set()
-    for a in item.get("actions", []) or []:
-        s = _strip_n_prefix_for_validation(a, n_str)
-        stripped_actions.add(s)
-    return bool(stripped_actions & PULSE_PERSON_DORMANT_ACTIONS)
-
-
-def _has_pulse_source_url(value: str) -> bool:
-    """True if the metadata value contains a Gmail/Granola/transcript URL host.
-    Used to detect that an item references an email or transcript thread, in
-    which case original_thread must be populated.
-    """
-    if not isinstance(value, str) or not value:
-        return False
-    v = value.lower()
-    return any(host in v for host in _PULSE_SOURCE_URL_HOSTS)
-
-
-def _validate_pulse_richness(data: dict) -> None:
-    """Walk every item; raise PulseRichnessError on any Pulse person-dormant
-    card that's too thin to render usefully.
-
-    Three rules (all blocking):
-      1. All 4 mandatory metadata keys must be present (empty fallback strings OK).
-      2. `Last contact` must contain both a date AND a topic separator.
-      3. If `Open context` (or any metadata value) contains a Gmail/Granola URL,
-         `original_thread` must be populated with a non-empty url.
-    """
-    issues: list[str] = []
-    for section in data.get("sections", []) or []:
-        for item in section.get("items", []) or []:
-            if not _is_pulse_person_dormant_item(item):
-                continue
-            n = item.get("n", "?")
-            metadata = item.get("metadata") or []
-            keys_present = {(k or "") for k, _ in metadata}
-
-            # Rule 1: all 4 mandatory keys present
-            missing_keys = [k for k in PULSE_REQUIRED_METADATA_KEYS if k not in keys_present]
-            if missing_keys:
-                issues.append(
-                    f"item {n!r} is a Pulse person-dormant card but missing required "
-                    f"metadata keys: {missing_keys}. The v2.14.28+ contract requires "
-                    f"all 4 keys ({list(PULSE_REQUIRED_METADATA_KEYS)}); use explicit "
-                    f"fallback strings like '(no role tracked yet)' if data is genuinely "
-                    f"unavailable, but never silent-omit."
-                )
-
-            # Rule 2: Last contact must include a topic, not just a date
-            last_contact_value = ""
-            open_context_value = ""
-            for k, v in metadata:
-                if k == "Last contact":
-                    last_contact_value = v or ""
-                elif k == "Open context":
-                    open_context_value = v or ""
-            if last_contact_value:
-                # Reject "18 days ago" alone or "Apr 18" alone — needs date + topic.
-                # Heuristic: an em-dash or " — " indicates date + topic separator.
-                # Allow explicit fallback strings starting with "(" (e.g., "(no contact tracked)").
-                is_fallback = last_contact_value.strip().startswith("(")
-                has_separator = " — " in last_contact_value or " – " in last_contact_value
-                if not is_fallback and not has_separator:
-                    issues.append(
-                        f"item {n!r} 'Last contact' value is too bare: {last_contact_value!r}. "
-                        f"Must include both a date AND the topic/subject of the last touch, "
-                        f"separated by ' — '. Pattern: '18 days ago — Apr 18, Slack DM about Q3 OKR'. "
-                        f"Pre-v2.14.28 cards just said 'X days ago' with no story — this rule "
-                        f"blocks that regression. If genuinely no topic is known, use the explicit "
-                        f"fallback '(last touch context unavailable — open thread to read)'."
-                    )
-
-            # Rule 3: source URL → original_thread required
-            references_thread = (
-                _has_pulse_source_url(open_context_value)
-                or any(_has_pulse_source_url(v) for _, v in metadata)
-            )
-            if references_thread:
-                orig = item.get("original_thread")
-                if not isinstance(orig, dict):
-                    issues.append(
-                        f"item {n!r} references a Gmail/Granola/transcript thread "
-                        f"in its metadata but has no `original_thread` field. Per the "
-                        f"v2.14.38+ contract: when Pulse pulls from a source, the source "
-                        f"must be linked AND (for email/transcript) the thread must "
-                        f"render in the same collapsible block inbox-triage uses. "
-                        f"Populate `original_thread` with author/date/subject/body/url. "
-                        f"Per M's 2026-05-07 ask after testing Sam's bare card."
-                    )
-                elif not (orig.get("url") or "").strip():
-                    issues.append(
-                        f"item {n!r} has `original_thread` but no `url`. The url field "
-                        f"is required so the renderer can show the ↗ Open in Gmail / "
-                        f"↗ Open in Granola link. If the source was deleted or "
-                        f"permission-denied, leave the url populated and put "
-                        f"'(thread body unavailable — open in Gmail to read)' in body."
-                    )
-
-    if issues:
-        raise PulseRichnessError(
-            "Pulse richness validation failed — orchestrator built person-dormant "
-            "cards that are too thin or missing source links. Fix at the "
-            "orchestrator level (re-pull thread/transcript data, use the explicit "
-            "fallback strings spec'd in orchestrator-dont-forget.md):\n  - "
             + "\n  - ".join(issues)
         )
 
@@ -1425,7 +1231,7 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
          (internal IDs, event types, schema fields, phase labels, etc.).
       2. `_scan_for_path_leaks` — catches absolute filesystem paths that do
          not fall under the user's runtime-resolved workspace, the plugin
-         root, or the Cowork session mount. Closes the v3.5.3 class of bug
+         root, or the legacy Cowork session mount. Closes the v3.5.3 class of bug
          (author's local Drive path leaking into chat output for users whose
          workspace lives somewhere else).
       3. SPEC PGUARD1 D2 — when `surface` is an org/board/client/external tag
@@ -1451,7 +1257,7 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
       - plugin_root — explicit absolute path of the installed plugin copy.
         If None, resolved via `_resolve_plugin_root()`.
         When BOTH workspace and plugin_root resolve to None (e.g. local
-        pytest with no Cowork session), the path scan no-ops — we have no
+        pytest with no legacy Cowork session), the path scan no-ops — we have no
         trusted prefix to compare against. ID-leak scan still runs.
 
     Used by:
@@ -1824,7 +1630,7 @@ _LEAK_PATTERNS = [
     # Apply-payload string (the JSON wire format must never reach chat as visible text)
     (_leak_re.compile(r"^apply\s+choices\s*:", _leak_re.IGNORECASE | _leak_re.MULTILINE),
      "apply-payload string leak"),
-    # Internal narration patterns (Cowork-side LLM thinking out loud)
+    # Internal narration patterns (app-side LLM thinking out loud)
     (_leak_re.compile(r"\b(?:Now\s+(?:appending|fetching|reading|writing|loading)|"
                       r"Pack\s+run\s+complete|"
                       r"writing\s+to\s+events\.jsonl|"
@@ -1851,7 +1657,7 @@ _LEAK_PATTERNS = [
      "widget-improvisation leak (too large)"),
     (_leak_re.compile(r"\brender\s+validated\s+(?:cleanly|but)\b", _leak_re.IGNORECASE),
      "widget-improvisation leak (render validated but...)"),
-    # EW2+T (F-09) — a Cowork platform style block (`::view-transition-group`
+    # EW2+T (F-09) — a Claude app platform style block (`::view-transition-group`
     # animation CSS) echoed into chat text immediately before a show_widget
     # render. The token exists nowhere in plugin-produced HTML, so any
     # occurrence in scanned output is a widget-bytes echo. The widget_code
@@ -2388,7 +2194,7 @@ def scan_for_generic_summary(text):
 # same bug class can't reach the user.
 #
 # Per CONTRACT.md Rule 22, the workspace and plugin root are derived from
-# CLAUDE_CODE_TMPDIR — the only Cowork-set env var we rely on. If discovery
+# CLAUDE_CODE_TMPDIR — the only env var the legacy Cowork sandbox sets that we rely on. If discovery
 # fails (no env var, no matching folder), the scan no-ops rather than
 # false-alarming — better to skip than to lie. The static grep test plus
 # the source-doc placeholders still cover that case in CI.
@@ -2472,7 +2278,7 @@ def _resolve_workspace_prefix():
     `_hq/` folder. That subdirectory's absolute path IS the workspace.
 
     Returns None when:
-      - CLAUDE_CODE_TMPDIR is not set (local pytest, non-Cowork environment)
+      - CLAUDE_CODE_TMPDIR is not set (local pytest, outside the legacy Cowork sandbox)
       - The mnt directory doesn't exist
       - No mounted folder contains an `_hq/` child
 
@@ -2498,7 +2304,7 @@ def _resolve_workspace_prefix():
                 continue
             if (child / "_hq").is_dir():
                 return str(child)
-            # One level deeper (covers some Cowork connect layouts)
+            # One level deeper (covers some legacy Cowork connect layouts)
             for grandchild in child.iterdir():
                 if grandchild.is_dir() and (grandchild / "_hq").is_dir():
                     return str(grandchild)
@@ -2507,7 +2313,7 @@ def _resolve_workspace_prefix():
     return None
 
 
-#: Where the merged claude.ai + Cowork container syncs the plugin bundle
+#: Where the merged Claude app container syncs the plugin bundle
 #: (`<org>_<account>/cr/`). A constant so a fixture can point it at a planted
 #: tree — the real path exists only inside the container.
 SYNCED_PLUGIN_REGISTRY = "/root/.claude/plugins/synced"
@@ -2517,7 +2323,7 @@ def _resolve_synced_plugin_root():
     """Rule 22 stage 2 — the synced registry, content-addressed.
 
     A scheduled fire in the merged container has no `$CLAUDE_PLUGIN_ROOT` and
-    no Cowork `mnt/` shape; the bundle is synced to
+    no legacy Cowork `mnt/` shape; the bundle is synced to
     `/root/.claude/plugins/synced/<org>_<account>/cr/`. The candidate must
     carry `shared/scripts/chat_output_renderer.py`, so a bucket holding some
     other pack can never win a positional first-match.
@@ -2546,14 +2352,14 @@ def _resolve_plugin_root():
 
     Discovery order:
       1. `$CLAUDE_PLUGIN_ROOT` — Claude Code provides it natively; on the
-         headless VM the Cowork sandbox shape below does not exist at all
+         headless VM the legacy Cowork sandbox shape below does not exist at all
          (this was a silent contributor to the VM doc-render failures).
       2. The merged environment's SYNCED registry:
          `/root/.claude/plugins/synced/<org>_<account>/cr/` — where the
          container installs the bundle, and the only place a scheduled fire
          can find it, since `$CLAUDE_PLUGIN_ROOT` is empty there (ENV1,
          Rule 22 stage 2, 2026-09-19). CONTENT-ADDRESSED on the same marker.
-      3. Cowork sandbox shape: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` →
+      3. Legacy Cowork sandbox shape: $CLAUDE_CODE_TMPDIR → strip trailing `/tmp` →
          `<session>/mnt/.remote-plugins/plugin_*/` — CONTENT-ADDRESSED: the
          match must contain `shared/scripts/chat_output_renderer.py`, so a
          second installed plugin (a client add-on pack) can never win the
@@ -2600,12 +2406,12 @@ def _resolve_plugin_root():
 
 
 def _resolve_session_mnt_prefix():
-    """The Cowork session's `mnt/` directory absolute path. Any path under
+    """The legacy Cowork session's `mnt/` directory absolute path. Any path under
     this prefix is by definition under the user's session (workspace folder,
     plugin folder, or another mounted connector folder). Used as a permissive
     safety net so that a path under `mnt/` that's not under the more specific
     workspace prefix (e.g., a path into another connected folder the user
-    mounted) doesn't flag as a leak. Returns None outside Cowork.
+    mounted) doesn't flag as a leak. Returns None outside the legacy Cowork sandbox.
     """
     tmpdir = _os_mod.environ.get("CLAUDE_CODE_TMPDIR")
     if not tmpdir:
@@ -2631,13 +2437,13 @@ def _scan_for_path_leaks(text, *, workspace=None, plugin_root=None):
          in explicitly or resolved via `_resolve_workspace_prefix()`.
       2. `plugin_root` (the installed plugin copy under `mnt/.remote-plugins/`)
          — passed in explicitly or resolved via `_resolve_plugin_root()`.
-      3. The Cowork session's `mnt/` directory — auto-resolved via
+      3. The legacy Cowork session's `mnt/` directory — auto-resolved via
          `_resolve_session_mnt_prefix()`. Catches paths under other mounted
          folders the user connected (e.g., a Drive folder mounted as a
          separate connector). These are still ON the user's machine, so they
          resolve cleanly when clicked — no 404 class of bug.
 
-    If all three prefixes resolve to None (local pytest, non-Cowork
+    If all three prefixes resolve to None (local pytest, outside the legacy Cowork
     environment, or workspace/plugin discovery failure), the scan no-ops
     and returns []. Callers passing explicit `workspace=` and `plugin_root=`
     can override the discovery for test isolation.
@@ -3025,13 +2831,13 @@ def validate_data_view(data: dict) -> None:
     (SPEC_SLACK1 C-1 — the slack target runs the SAME gate stack).
 
     Mirrors render_chat_output_widget's gates 1–1e exactly, in order:
-    canonical-action validator, data-shape validator, Pulse-richness
-    validator, send-class email-address validator, and the non-blocking
+    canonical-action validator, data-shape validator, send-class
+    email-address validator, and the non-blocking
     voice-tell backstop. The special widget modes (`all_clear_summary`,
     `onboarding_setup`) return early exactly as the HTML path does — those
     modes carry no action rows for the gates to check.
 
-    Raises: CanonicalActionError, DataShapeError, PulseRichnessError — the
+    Raises: CanonicalActionError, DataShapeError — the
     same exceptions, so callers on any surface handle one vocabulary.
     """
     widget_mode = data.get("widget_mode", "all_batch_widget")
@@ -3039,7 +2845,6 @@ def validate_data_view(data: dict) -> None:
         return
     _validate_canonical_actions(data)
     _validate_data_shape(data)
-    _validate_pulse_richness(data)
     _validate_send_class_email_addresses(data)
     try:
         from turn_backstop import scan_data_view_for_tells
@@ -3106,7 +2911,7 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document",
       - `wrapper="document"` (DEFAULT — back-compat): emits a complete HTML
         document with `<!DOCTYPE>`, `<html>`, `<head>`, `<body>`. Suitable for
         environments that want a standalone HTML file (the legacy behavior all
-        callers got pre-v3.13.0). Cowork's chat-markdown renderer can accept
+        callers got pre-v3.13.0). The Claude app's chat-markdown renderer can accept
         this form too (it strips the chrome internally).
 
       - `wrapper="fragment"`: emits the inner widget content only — `<style>`
@@ -3168,7 +2973,6 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document",
     #      send/edit/draft actions, or edit-then-* actions over blank
     #      metadata/body. M's Apr 30 testing traced "Edit then send didn't
     #      open" to data-shape inconsistency, not a misspelled label;
-    #   1c Pulse richness (v2.14.38+) — bare person-dormant cards;
     #   1d send-class chrome must carry a valid email (v3.13.8+, Bug #44) —
     #      an unsendable item uses the `add email then send` recovery verb;
     #   1e turn-level voice-tell backstop (SPEC GATE1) — NON-BLOCKING by
@@ -3323,7 +3127,7 @@ def render_chat_output_widget(data: dict, *, wrapper: str = "document",
     scan_rendered_html(html)
 
     # Gate 3 (v2.14.35+): self-validate the structural button-to-wrapper invariant
-    # before returning. Per Cowork's 2026-05-07 follow-up after the v2.14.34 fix:
+    # before returning. Per the legacy Cowork app's 2026-05-07 follow-up after the v2.14.34 fix:
     # "every action whose data-input-type !== 'none' must have a matching
     # .cr-action-input wrapper". v2.14.34 made this a separate function
     # `validate_rendered_widget()` that the orchestrator must call between
@@ -3734,7 +3538,7 @@ def _render_original_thread_html(orig: dict) -> str:
     replying to, inline. v2.12.4 adds an "Open in Gmail / source" link at the top
     of the expanded body when `url` is present, per M's Apr 30 ask: "I dont see
     the link to see the original thread in gmail." The link uses target="_blank"
-    so it opens in a new Cowork tab / external browser.
+    so it opens in a new Claude app tab / external browser.
     """
     if not orig:
         return ""
@@ -3936,7 +3740,7 @@ def _detect_input_type(action: str) -> Optional[str]:
     # the org genuinely isn't determinable. Single-line text input (org names are
     # short — not paragraph text, so don't waste vertical space with a multi-line
     # textarea). Pre-v2.14.29 the `[org]` placeholder fell through to None and
-    # the button was a dead toggle with no input affordance — Cowork diagnostic
+    # the button was a dead toggle with no input affordance — a legacy Cowork diagnostic
     # 2026-05-06 D3 caught it.
     if "[org]" in a:
         return "when-text"  # reuse the single-line text-input wrapper
@@ -4010,7 +3814,7 @@ def _action_display_label(action: str) -> str:
     # v2.14.29+ — for `[org]`-style placeholders that name a thing the user types
     # (org name, person name), strip the brackets but KEEP the inner word so the
     # button reads "Add as person to org" instead of "Add as person to" (which
-    # was meaningless without context — Cowork diagnostic 2026-05-06 D3). This
+    # was meaningless without context — legacy Cowork diagnostic 2026-05-06 D3). This
     # only applies to placeholders that are NOUN labels (org/name/team) — content
     # placeholders like [text]/[change]/[reason] still strip fully because they
     # don't carry semantic meaning ("Edit text" is no clearer than "Edit").
@@ -4447,12 +4251,6 @@ def _render_verb_button_input(action: str, item_n, item: Optional[dict] = None,
         is_required=True, thing=thing)
 
 
-def _render_primary_button(action: str, item_n) -> str:
-    """Back-compat alias — the row's promoted primary button (WG1-A: use
-    _render_verb_button directly for secondary buttons)."""
-    return _render_verb_button(action, item_n, primary=True)
-
-
 def _strip_action_n_prefix(action: str, item_n) -> str:
     """Strip a leading item-id prefix from an action label so the button shows just the verb.
 
@@ -4596,7 +4394,7 @@ def _render_widget_item(item: dict) -> str:
 
     # v2.14.14+ — inline artifact links REMOVED from widget body. Per M's testing:
     # documents linked from inside the widget iframe don't open correctly across
-    # tasks (the iframe sandbox blocks `computer://` hrefs in some Cowork builds,
+    # tasks (the iframe sandbox blocks `computer://` hrefs in some legacy Cowork builds,
     # and even when they work the user-facing experience was inconsistent). The
     # post-widget Briefs / Sources markdown sections are now the ONLY correct
     # place for clickable artifact links — those render in regular chat where
@@ -5313,9 +5111,9 @@ _CSS_FEATURE_BLOCKS: list[tuple[str, str]] = [
 #
 # Notes carried over from the button-era template:
 #   - dataset-iteration lookups, never CSS attribute selectors (action strings
-#     contain spaces/brackets; some Cowork iframe builds fail the escaped
+#     contain spaces/brackets; some legacy Cowork iframe builds fail the escaped
 #     selector silently — Sam's Apr 29 wrapper-never-opened bug).
-#   - bind immediately, never DOMContentLoaded (Cowork injects into an
+#   - bind immediately, never DOMContentLoaded (the Claude app injects into an
 #     already-loaded iframe — the v2.11.1→v2.11.2 bug).
 #   - visible wrapper-missing caption (v2.14.34 — renderer-bypass class).
 # ============================================================================
@@ -5968,7 +5766,7 @@ def _count_total_selectable_items(sections: list[dict]) -> int:
 # WHY: the delivery contract changed from "hand a file:// URI to show_widget"
 # (impossible — show_widget has no file_uri param, Bug #67) to "paginate by
 # design and relay each validated PAGE's bytes as show_widget's `widget_code`."
-# For that relay to fit a single Cowork Read page (25K-token cap) the fixed
+# For that relay to fit a single Claude app Read page (25K-token cap) the fixed
 # scaffold had to shrink: it was 35KB (CSS 16KB + JS 19KB + brand SVG), which
 # left almost no room per page. Minifying the two big constants at emit time
 # (source stays fully commented for maintainers) cuts the scaffold ~43% with

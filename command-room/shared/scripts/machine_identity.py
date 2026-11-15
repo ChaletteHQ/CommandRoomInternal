@@ -6,7 +6,7 @@ ledger). `RECEIPT_CONTRACT.md` rule 4 says the `machine` field rides on every
 receipt because "schedules are per-machine (F-38); without it readers can't
 tell two machines from a double-registration bug". The field was never a
 hardcoded constant — `receipts._machine_name()` has always stamped
-`platform.node()` — but inside Cowork's sandbox `platform.node()` returns the
+`platform.node()` — but inside the legacy Cowork sandbox `platform.node()` returns the
 SAME string on every physical machine. 840 receipts written from two different
 computers all carry the identical value, so the one field whose entire job is
 telling two machines apart tells a reader nothing, and swapping the hostname

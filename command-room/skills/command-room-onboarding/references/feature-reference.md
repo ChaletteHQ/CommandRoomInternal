@@ -12,19 +12,19 @@ Updated table for M1's 6-phase architecture (scheduled-task generation stripped 
 | **Morning Briefing** | Not set up during onboarding. Becomes a daily scheduled chat once the customer opts in via `set up command room schedules` (post-call); also available on demand via `what's going on`. |
 | **MASTER_TRACKER with rolling backup** | Phase 1a workspace build (tracker built live), backup infra created silently. |
 | **Tiered interaction log compression** | Silent — built into person profiles. Mentioned if customer asks about data retention. |
-| **Meeting Notes processing** | On-demand `process the call`. Becomes the Past Meetings daily chat once the customer opts into schedules. |
-| **Weekly Recap / Friday Wrap** | On-demand `weekly-recap` (covers the 7-day window at full depth, produces .docx + inline summary) — this is also the deeper last-week read onboarding points the customer to in Phase 2b. Becomes the `friday-wrap` weekly scheduled chat once the customer opts into schedules. |
+| **Meeting Notes processing** | On-demand `process the call`. Maintenance's meeting-capture step also captures each day's meetings on its own (the Past Meetings chat is retired). |
+| **Weekly Recap / Friday Wrap** | On-demand `weekly-recap` (covers the 7-day window at full depth, produces .docx + inline summary) — this is also the deeper last-week read onboarding points the customer to in Phase 2b. On demand only (the Friday Wrap chat is shelved). |
 | **Decision Log** | Phase 1a (created via view regeneration from events.jsonl); enriched on demand as the customer logs decisions and runs `weekly-recap`. |
 | **Communication Profile / Brand Voice** | Phase 1a workspace build (deep voice scan over 60d of sent emails — mechanics measured, lexicon + moves extracted, verbatim examples pulled, traits ranked, confidence flagged); proven twice in Chat 4 — Phase 2a Voice contrast (three-way memory proof) and Phase 5b Brand voice calibration proof (voice profile mirrored from `BRAND_VOICE.md`, then generic vs. voice-calibrated email side-by-side). |
 | **People CRM** | Phase 1a workspace build (PEOPLE.md populated from scan); deep dive via Phase 5 training command 2 (`tell me about [person]`). |
 | **Intel Intake** | Not surfaced in M1 — customer discovers organically. |
-| **Call Prep** | Phase 5 training command 1 (`prep me for [meeting]`). Becomes the Upcoming Meetings daily chat once the customer opts into schedules. |
+| **Call Prep** | Phase 5 training command 1 (`prep me for [meeting]`). Its daily prep runs inside the Morning Brief (the Upcoming Meetings chat is retired). |
 | **Workspace Map (in chat)** | Customer-opened Chat 3 at Phase 1b (`list active projects`). The sidebar artifact is retired (Night M3). |
 | **Quick Commands** | Retired with the sidebar (Night M3) — the commands work just by saying them. |
 | **Project deep-dive** | DEFERRED to M2 (`go [Project]`). |
 | **Person deep-dive** | Phase 5 training command 2 (`tell me about [person]`), then on-demand thereafter. Deeper deep-dive lives in M2. |
 | **Scheduled tasks (2 first-install)** | NOT registered by onboarding (stripped 2026-06). The customer opts in after the call by running `set up command room schedules` in a fresh chat → `enable-command-room-schedules` registers `morning-brief` and the silent `maintenance`. The Hub replaced the other daily chats (cr1#618, #847). Phase 6 points the customer to it. |
-| **cr-m1-backfill (one-shot deep read)** | REMOVED from onboarding (2026-06). Onboarding no longer registers a deep-read scheduled task; the equivalent last-7-days read is available on demand via `weekly-recap`. The orchestrator body at `references/m1-backfill-orchestrator.md` is retained for reference but unwired. |
+| **cr-m1-backfill (one-shot deep read)** | REMOVED from onboarding (2026-06). Onboarding no longer registers a deep-read scheduled task; the equivalent last-7-days read is available on demand via `weekly-recap`. |
 | **Beats (Mirror v1 → Voice contrast → Insights)** | Chat 4 (the AI's home chat on Opus). Phase 2a delivers Mirror v1 + Voice contrast immediately. Phase 2b's Insights are user-triggered by typing `show me what's next` — computed from the 60-day metadata scan (no deep-read wait). There is no Mirror v2 deep-specifics pass in onboarding; Phase 2b points the customer to `weekly-recap` for the sharper read. |
 | **Compounding-loop framing** | Phase 3 in Chat 4 (every meeting / decision / follow-up / `weekly-recap` compounds on the 60-day baseline). |
 | **Run Now ritual** | REMOVED (2026-06). Onboarding registers nothing, so there is nothing to Run Now. The customer authorizes the scheduled chats themselves after opting in via `set up command room schedules`. |

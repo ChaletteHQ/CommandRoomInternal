@@ -2,7 +2,7 @@
 name: command-room-onboarding
 surfaces: cowork
 slack_fallback: "Setup runs from a chat with your Command Room folder attached — onboard Command Room there; once set up, just talk to me here."
-description: "First-install setup for a new Command Room workspace — a guided ~30-minute flow that names the AI operator, scans every connected source, builds the workspace data layer, calibrates the writing voice from sent mail, and proves the system back before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Also the advisor's sheet: 'set up the advisor's sheet', 'change the word for threads'."
+description: "First-install setup for a new Command Room workspace: walks the connectors and data sources first, then the AI's name and timezone, pulls from the sources the owner declared, shows back what it knows, and confirms before handoff to the coach chat. Fires on: 'set up command room', 'command room setup', 'get started with command room', 'onboard me', 'restart onboarding', and automatically on a fresh install with no workspace. Honors a pre-call ONBOARDING_SEED.json brief as anchor truth when present. Registers NO scheduled tasks (that is 'set up command room schedules' — enable-command-room-schedules, run separately). Also the advisor's sheet: 'set up the advisor's sheet', 'change the word for threads'."
 ---
 
 # Command Room Onboarding — M1 (2026-05-23)
@@ -188,7 +188,7 @@ Phase 0's existing-workspace guard reads the most recent `onboarding_checkpoint`
 
 **Where:** Chat 1.
 
-**Customer action:** Opens Cowork → clicks "+ New Chat" → types `set up command room` → Enter.
+**Customer action:** Opens the Claude app → starts a new chat in the Command Room folder → types `set up command room` → Enter.
 
 ### 0a. Workspace guard (route detection — preserved from prior onboarding versions)
 
@@ -1219,7 +1219,7 @@ After the Phase 6 message, show the customer the one block they paste into their
 
 ### 6c. (removed) Day-1 + week-1 retention one-shots
 
-**Removed in the Command Room build (2026-06).** Onboarding no longer registers the `cr-day1-checkin` or `cr-week1-followup` one-shot scheduled tasks — onboarding registers no scheduled tasks of any kind. Retention after the call now rides on the customer opting into the daily/weekly scheduled chats themselves (the Phase 6 message points them to `set up command room schedules`) plus their permanent coach surface in Chat 4. The `{SKILL_DIR}/references/day1-checkin-orchestrator.md` and `{SKILL_DIR}/references/week1-followup-orchestrator.md` prompt bodies (skill-local) are retained in the repo for reference but are no longer wired to any registration.
+**Removed in the Command Room build (2026-06).** Onboarding no longer registers the `cr-day1-checkin` or `cr-week1-followup` one-shot scheduled tasks — onboarding registers no scheduled tasks of any kind. Retention after the call now rides on the customer opting into the daily/weekly scheduled chats themselves (the Phase 6 message points them to `set up command room schedules`) plus their permanent coach surface in Chat 4.
 
 ### 6b. Coach handoff
 
@@ -1264,8 +1264,8 @@ Read **{SKILL_DIR}/references/feature-reference.md** (skill-local) for the full 
 - Does not fire on lifecycle commands like "new project [name]" — that's `workspace-manager`.
 - Does not re-onboard once complete unless the customer explicitly asks ("restart onboarding", "reset my command room", or invokes an upgrade trigger — see Phase 0a).
 - Does not import existing customer files. Workspace ingest is handled by the separate `workspace-ingest` skill — invoked outside onboarding.
-- Does not configure connectors directly — surfaces the inventory for the customer to authorize via Cowork settings.
-- **Does not register ANY scheduled tasks (Command Room build, 2026-06).** No daily/weekly tasks, no `cr-m1-backfill` deep-read one-shot, no `cr-day1-checkin` / `cr-week1-followup` retention one-shots. The customer opts into the daily/weekly scheduled chats themselves by running `set up command room schedules` in a fresh chat — `enable-command-room-schedules` is the only path that registers them, and it works because it runs in its own chat. Onboarding only points the customer to it (Phase 6).
+- Does not configure connectors directly — surfaces the inventory for the customer to authorize in the Claude app's connector settings.
+- **Does not register ANY scheduled tasks (Command Room build, 2026-06).** No daily/weekly tasks, no `cr-m1-backfill` deep-read one-shot, no `cr-day1-checkin` / `cr-week1-followup` retention one-shots. The customer opts into the Morning Brief and the Maintenance task themselves by running `set up command room schedules` in a fresh chat — `enable-command-room-schedules` is the only path that registers them, and it works because it runs in its own chat. Onboarding only points the customer to it (Phase 6).
 - Does not run a 7-day deep read during onboarding. The Insights come from the 60-day metadata scan; the deeper last-week read is available on demand via `weekly-recap`.
 - Does not run the historical 12-month backfill. Skipped per M1; customers can extend per-project via `backfill [N] months on [project]` anytime.
 - Does not run a live briefing inside Chat 1. Chat 4 handles the substantive proof.

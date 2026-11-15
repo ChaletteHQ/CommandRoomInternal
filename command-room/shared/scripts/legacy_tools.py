@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Legacy tool-name shim — the ONE legal home of the old Cowork tool strings.
+"""Legacy tool-name shim — the ONE legal home of the legacy Cowork tool strings.
 
 Night M1, GUARD1 (spec `SPEC_NIGHTM1_LANES_2026-09-19.md` §5 item 1; gap
 analysis §7.2.2 exemption 1; environment breakdown §6.2).
 
 WHY THIS FILE EXISTS
 --------------------
-The merged claude.ai + Cowork app no longer exposes the tools Command Room was
+The merged Claude app no longer exposes the tools Command Room was
 written against: `mcp__scheduled-tasks__*`, `mcp__cowork__*`,
 `mcp__workspace__*`, `mcp__writeback__*`, the sidebar's `window.cowork`
 runtime, and lowercase connector prefixes such as `mcp__granola__`. Un-merged
-seats (the v5.29.0 desktop Cowork fleet) still expose them, so the strings
+seats (the legacy v5.29.0 desktop Cowork fleet) still expose them, so the strings
 cannot simply be deleted: something has to RECOGNISE an old id when it appears
 in a legacy tool list and say which seam now owns that behaviour.
 

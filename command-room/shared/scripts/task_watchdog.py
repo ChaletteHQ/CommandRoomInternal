@@ -4,14 +4,14 @@ Scheduled-task fired-recency watchdog (Phase 3 Reliability, W1 — 2026-07).
 
 Scheduled tasks fail silently at four joints and no symptom reaches the
 user: registration never happened (onboarding registers zero tasks by
-design), silent tasks never cleared Cowork's first-fire permission gate,
+design), silent tasks never cleared the legacy Cowork first-fire permission gate,
 the laptop slept through the fire window, or a platform fault (folder
 rename, VHD cache, connector drop) broke the task path. A customer named
 the purchase-driving pain verbatim on a 2026-06 call: "I don't know if
 it's lagging or if dispatch forgot." This module is the detector for all
 four.
 
-DESIGN RULES (from the owning spec + Cowork decisions):
+DESIGN RULES (from the owning spec + legacy Cowork decisions):
 
 - **Enforcement binds to substrate artifacts (audit events), never emitted
   text** — the Bug #98 lesson generalized. The watchdog READS receipts
@@ -84,7 +84,7 @@ STATUSES per task:
                      (< 3 weekdays): first fire simply hasn't landed yet.
   never_authorized — registered, no receipt ever, and >= 3 weekdays have
                      passed since registration: almost certainly the
-                     Cowork first-fire permission gate was never cleared
+                     legacy Cowork first-fire permission gate was never cleared
                      (the silent-task ghost class W2's ritual closes).
   not_registered   — enabled in the merged schedule config but absent from
                      the registered set. Later-add tasks (not first-install)
@@ -647,15 +647,6 @@ def _iter_events(workspace_root) -> Iterable[dict]:
         return
 
 
-def _event_matches_task(ev: dict, spec: dict) -> bool:
-    """Back-compat shim — the matcher is the receipt contract's
-    (`receipts.receipt_task_id`), which parses every legacy shape forever."""
-    if ev.get("type") not in spec["types"]:
-        return False
-    tid = _receipt_task_id(ev)
-    return tid is not None and spec is RECEIPT_SPECS.get(tid, spec)
-
-
 def last_receipts(workspace_root, task_ids=None) -> dict[str, Optional[_dt.datetime]]:
     """Newest substrate receipt per task, machine-local naive datetimes.
 
@@ -979,7 +970,7 @@ def read_workspace_config(workspace_root) -> dict:
 # ---------------------------------------------------------------------------
 # R-M1-6 — the platform declined the fire (SPEC_MERGEFIX1 F13).
 #
-# This PC's pre-merge Cowork store recorded `maintenance` and `staff-meeting`
+# This PC's pre-merge legacy Cowork store recorded `maintenance` and `staff-meeting`
 # skipped with `reason: global_limit` three times each on 2026-09-08. Read
 # from here that is indistinguishable from a computer that slept: no receipt,
 # two missed slots, `late`, and a sentence telling the customer to go and

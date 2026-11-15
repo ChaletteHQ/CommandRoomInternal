@@ -51,7 +51,7 @@ table, which must never be silenced by a chat's own earlier alarm (ruling
 §0.4 — "check my schedules" always renders the full current truth).
 
 NEVER_AUTHORIZED VS LATE — TWO DIFFERENT SENTENCES (ruling #3). A task that
-never fired at all (the global_limit-skip class — Cowork's one-time
+never fired at all (the global_limit-skip class — the legacy Cowork app's one-time
 permission gate was never cleared) and a task that fired before and then
 stopped have different fixes, and conflating them sends the customer to
 say the wrong thing. `_never_authorized_line` always reads "was never set

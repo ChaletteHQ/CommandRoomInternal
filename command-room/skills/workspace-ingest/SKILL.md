@@ -155,7 +155,7 @@ Each parser also runs the **connector-assisted inference pass** — for every or
 
 ### Phase 3.5: Parse Completeness Check (hard gate)
 
-Before any JSON is written, verify the parser didn't silently drop entries. This is the fix for the v2.7.5-era Parser C under-extraction bug (see references/HISTORY.md).
+Before any JSON is written, verify the parser didn't silently drop entries. This is the fix for the v2.7.5-era Parser C under-extraction bug (see references/HISTORY.md in the staging repo).
 
 **Procedure — run for each structured registry the parser consumed:**
 
@@ -198,7 +198,7 @@ This snapshot — not the source backup in `_archive/ingest_source_*` (which bac
 
 ### Phase 4: Write JSON sources (mode-aware — v2.14.20+)
 
-All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON files, `atomic_append_jsonl` for events.jsonl) — consistent with every other writer in the plugin (v2.14.20 retired the last hand-rolled tmp+rename holdout — see references/HISTORY.md).
+All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON files, `atomic_append_jsonl` for events.jsonl) — consistent with every other writer in the plugin (v2.14.20 retired the last hand-rolled tmp+rename holdout — see references/HISTORY.md in the staging repo).
 
 **BOOTSTRAP mode** (target workspace has no `_hq/data/entities.json` yet — fresh-install with prior data):
 

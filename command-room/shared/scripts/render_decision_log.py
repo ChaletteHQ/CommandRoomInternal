@@ -10,7 +10,7 @@ to the workspace timezone via `shared/scripts/tz.py`, and atomic-writes
 
 WHY THIS EXISTS:
 
-Per the 2026-05-20 Cowork handoff #12/#20: decisions land in events.jsonl
+Per the 2026-05-20 legacy Cowork handoff #12/#20: decisions land in events.jsonl
 canonically (M had 138 decisions in his substrate as of that date) but
 the human-readable view at `_hq/views/DECISION_LOG.md` was last regenerated
 2026-05-10 and showed only 81 decisions — ~57 stale. There was no regenerator

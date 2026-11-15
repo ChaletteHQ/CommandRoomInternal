@@ -75,7 +75,7 @@ Use these to deliver the three-layer value proposition. Pick the language that m
 ### Layer 1: "Claude will actually know you"
 
 **For technical users:**
-"Right now, every time you open Cowork, Claude starts fresh — no persistent memory of your business, projects, or preferences. After setup, Claude becomes a personalized system that maintains context across sessions. You explain once, and it knows permanently. No more re-explaining scope, priorities, or history."
+"Right now, every time you open a new chat, Claude starts fresh — no persistent memory of your business, projects, or preferences. After setup, Claude becomes a personalized system that maintains context across sessions. You explain once, and it knows permanently. No more re-explaining scope, priorities, or history."
 
 **For non-technical users:**
 "Right now, every conversation with Claude starts from zero. You tell Claude who you are, what you're working on, what happened last time. After we set this up, Claude will know your business, your projects, your people, and how you like to work. You never have to explain again."
@@ -321,7 +321,7 @@ Help them understand the difference:
 
 Ask where they want the cleanup to land:
 
-**Option 1: Ready in Cowork when you open it**
+**Option 1: Ready in the Claude app when you open it**
 - Pro: You see it immediately when you start your session
 - Con: It's one more thing in your feed
 

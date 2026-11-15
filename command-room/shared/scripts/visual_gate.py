@@ -19,7 +19,7 @@ THE CONTRACT (read before wiring a skill to this)
 - **NEVER raises into the calling skill.** Any failure at any rung returns
   `None`. `None` means: renderer unavailable, gate skipped — the skill notes it
   in the `visual_gate` audit event and proceeds. Behavior with no renderer is
-  byte-identical to pre-OUT2 (Cowork sandboxes may lack BOTH renderers — the
+  byte-identical to pre-OUT2 (legacy Cowork sandboxes may lack BOTH renderers — the
   gate upgrades machines that CAN render; it never degrades ones that can't).
 - Pages 1–2 only, dpi clamped to 100–150, output to a fresh SESSION TEMP dir
   (`tempfile.mkdtemp`) — NEVER the workspace. Previews are ephemeral critique

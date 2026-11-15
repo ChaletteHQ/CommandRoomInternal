@@ -25,7 +25,7 @@ One `router_miss` event per correction, through `event_gate.append_event`
   routed_to    the skill that took the PREVIOUS turn — known ONLY when that
                turn was a scheduled fire (the newest event on the log is a
                `pack_run`; its task_id is the answer). Otherwise null. There
-               is no session-local state in a Cowork chat, and the previous
+               is no session-local state in a Claude app chat, and the previous
                turn's skill is not derivable from the correction phrase, so
                this field is never guessed (DD-2). `previous_turn_skill`
                is the ONLY legal source.

@@ -96,7 +96,7 @@ from typing import Optional
 
 
 DEFAULT_SCHEDULES: dict[str, dict] = {
-    # v2.14.27+ — bare taskIds (no cr- prefix) so Cowork's sidebar title formatting renders cleanly.
+    # v2.14.27+ — bare taskIds (no cr- prefix) so the legacy Cowork sidebar title formatting renders cleanly.
     # v3.12.0 — `inbox` shifted from 7:00 to 7:15 so it no longer collides with `morning-brief`
     # at 7:00 AM. Pre-v3.12.0 both tasks shared the 7 AM slot; the comment in this file used to
     # tell the operator to fix it manually via change-schedule. Now the default is correct
@@ -125,7 +125,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # CTS1 (2026-07, §10.3 RULED: fresh taskIds) — the daily Commitments chat
     # split into TWO surfaces. `commitments` is REMOVED from the default set
     # (row disabled on migration per the enable-command-room-schedules Phase 1
-    # legacy table — the v2.14.27 pattern; Cowork derives the sidebar title
+    # legacy table — the v2.14.27 pattern; the legacy Cowork app derives the sidebar title
     # FROM the taskId, so a re-scope would have left it saying "Commitments"
     # forever). Its DISPLAY_NAMES row stays for legacy renders. Neither new
     # task is first-install (same later-add posture the old `commitments`
@@ -208,7 +208,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     #
     # Phase 3 / R4 (2026-07): default moved 16:00 -> 13:00 Fridays for NEW
     # installs only. Live evidence: the 4 PM Friday slot was routinely missed
-    # (laptop closed for the weekend) and Cowork fired the wrap on Sunday —
+    # (laptop closed for the weekend) and the legacy scheduler fired the wrap on Sunday —
     # a >24h-late weekly recap, the exact case the R4 degrade tier suppresses.
     # 1 PM Fridays is reliably inside working hours. EXISTING registrations
     # are untouched: registration never re-anchors a live task's cron, and
@@ -249,7 +249,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # task's extra fires).
     #
     # SPELLING, PER CRON-LIBRARY REALITY (SPEC CAPSLOT1 §0.1): this cron is
-    # the literal string handed to Cowork's `create_scheduled_task` /
+    # the literal string handed to the legacy scheduler's `create_scheduled_task` /
     # `update_scheduled_task` as `cronExpression` — ONE 5-field expression,
     # verified against the live tool contract (a single string field, no
     # compound/list form). A flat cron field cannot pair a distinct minute
@@ -290,7 +290,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
     # could still be mid-chain when the same task's NEXT fire (15 minutes
     # later) asks the dispatcher what is due, and every not-yet-receipted
     # job — including the `--apply` jobs — would be listed due again if
-    # Cowork ran same-task fires concurrently. That risk is guarded
+    # the legacy scheduler ran same-task fires concurrently. That risk is guarded
     # MECHANICALLY: `maintenance_dispatcher.dispatch_plan`'s min-gap guard
     # (`_check_min_gap`) refuses to dispatch ANYTHING on a `scheduled` fire
     # whose predecessor maintenance fire's own START landed under
@@ -424,7 +424,7 @@ DEFAULT_SCHEDULES: dict[str, dict] = {
 # schedule_config override exists) — a live value in this tuple is one core
 # itself shipped, so the customer demonstrably never moved it. A live cron in
 # NEITHER this tuple nor the override store was set by something other than
-# core (an out-of-band edit in the Cowork UI, a hand-fixed task, an override
+# core (an out-of-band edit in the legacy Cowork UI, a hand-fixed task, an override
 # write that never landed) and is always `preserve`: silent refresh is for
 # core-authored values only (Ruling §0.1), never a guess about provenance.
 #
@@ -564,7 +564,7 @@ def shelved_line(task_id: str) -> str:
 # an entry here without a DEFAULT_SCHEDULES row is a registration-time error.
 #
 # `reason` is the one-line customer-facing explanation the W2 install ritual
-# prints next to each silent task, because silent tasks never clear Cowork's
+# prints next to each silent task, because silent tasks never clear the legacy Cowork
 # first-fire permission gate on their own: the customer has to Run Now each
 # one once, and they'll only do that if they know why it exists.
 #
@@ -1106,8 +1106,8 @@ RETIRED_TASKS: dict[str, dict] = {
         "retired_in": "V533",
         "retirement_class": "readiness",
         # The last shipped default cron, kept here (not in DEFAULT_SCHEDULES)
-        # so the staff-meeting fold (`rm_supersede_plan`) can still tell a
-        # customized Sunday time from the default one.
+        # as history; the staff-meeting fold that read it left with the
+        # update floor (cr1#1101).
         "cron": "0 17 * * 0",
         # Re-offer gate (internal): the Staff Meeting's "This week's moves"
         # section is the surface; a standalone Sunday fire returns only if
@@ -2504,7 +2504,7 @@ def load_schedule_view(
     """The registration-aware schedule view (Phase 3 / corrected R1).
 
     `load_schedule_config` merges defaults + overrides but knows nothing
-    about what is actually registered in Cowork's scheduler — so later-add
+    about what is actually registered in the legacy Cowork scheduler — so later-add
     tasks rendered as live scheduled tasks on workspaces where they were
     never added (the relationship-moves ghost). This wrapper partitions the
     merged view against the registered-task set.
@@ -2924,67 +2924,11 @@ def log_schedule_config_change(workspace_root, changes, *,
         return None
 
 
-def rm_supersede_plan(registered_tasks: list) -> dict | None:
-    """LB2 §3d — the `rm_supersede_v1` planner (pure; the update bridge
-    executes it, adjudication-gated, on the user's explicit yes — NEVER
-    silently).
-
-    LB1 R4 left workspaces that already registered a standalone
-    relationship-moves chat in a permanent fork: R4's own suppression rule
-    means they are never offered the staff meeting, so the moves never merge
-    into the one adjudication surface. This plans the fold: given the LIVE
-    registered task records (from the scheduler MCP — each carries at least
-    `taskId` and `cron`), returns None when no standalone relationship-moves
-    registration exists (nothing to supersede — most workspaces), else:
-
-        {"marker": "rm_supersede_v1",
-         "remove_task_id": "relationship-moves",
-         "staff_meeting_registered": bool,   # already there → register step skipped
-         "carry_cron": str | None}           # the RM chat's CUSTOM cron, to
-                                             # carry onto a NEW staff-meeting
-                                             # registration; None = RM was on
-                                             # its default → use the
-                                             # staff-meeting default (M/W/F)
-
-    Decline path and idempotency are the bridge's adjudication machinery
-    (`migration_adjudication` on the marker id) — this planner holds no
-    state. The RM skill, its orchestrator, and Pulse are untouched by design.
-    """
-    # cr1#176: the Staff Meeting is a readiness retirement, so there is no
-    # scheduled chat left to fold Relationship Moves into. Registering it here
-    # would hand a customer back the chat the update just switched off.
-    # Relationship Moves is readiness-retired too; the readiness migration
-    # switches a live one off by class, so nothing is left behind.
-    if is_retired_task("staff-meeting"):
-        return None
-    rm = None
-    sm_registered = False
-    for t in registered_tasks or []:
-        if not isinstance(t, dict):
-            continue
-        tid = t.get("taskId") or t.get("task_id") or t.get("id")
-        if tid == "relationship-moves":
-            rm = t
-        elif tid == "staff-meeting":
-            sm_registered = True
-    if rm is None:
-        return None
-    rm_default = (DEFAULT_SCHEDULES.get("relationship-moves", {}).get("cron")
-                  or RETIRED_TASKS.get("relationship-moves", {}).get("cron"))
-    rm_cron = (rm.get("cron") or "").strip()
-    carry = rm_cron if (rm_cron and rm_cron != rm_default) else None
-    return {
-        "marker": "rm_supersede_v1",
-        "remove_task_id": "relationship-moves",
-        "staff_meeting_registered": sm_registered,
-        "carry_cron": carry,
-    }
-
 # ---------------------------------------------------------------------------
 # COPY1 (SPEC_NIGHTM1_LANES §7, 2026-09-19) — THE SCHEDULER-AVAILABILITY GUARD
 #
 # The product stops promising schedules it cannot deliver. On a merged seat
-# (the claude.ai + Cowork app) the old scheduler tool is simply not there, and
+# (the merged Claude app) the old scheduler tool is simply not there, and
 # registration through the new one is gated off until the bootloader and the
 # workspace access layer ship on one cut (gap analysis §0.9). Every surface
 # that would REGISTER, REFRESH or MOVE a scheduled chat asks this module first
@@ -4627,7 +4571,6 @@ def set_morning_time(workspace_root, time: str, *,
             "line": f"Your morning brief will arrive at {spec['label']}."}
 
 __all__ = [
-    "rm_supersede_plan",
     "DEFAULT_SCHEDULES",
     "SHIPPED_CRON_HISTORY",
     "FIRST_INSTALL_TASK_IDS",

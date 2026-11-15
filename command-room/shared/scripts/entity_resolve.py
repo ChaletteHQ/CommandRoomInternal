@@ -5,7 +5,7 @@ org / project record in `entities.json` via exact alias match → fuzzy
 (edit-distance) → phonetic (Soundex) — in that order (v3.13.0+).
 
 WHY THIS EXISTS:
-  Per the 2026-05-20 Cowork handoffs #18 (transcript-search) and #31
+  Per the 2026-05-20 legacy Cowork handoffs #18 (transcript-search) and #31
   (workspace-manager): two skills hit the same problem class — a user types
   a name M's workspace knows about, but the skill's lookup misses because:
 

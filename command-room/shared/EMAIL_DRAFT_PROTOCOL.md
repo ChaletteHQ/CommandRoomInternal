@@ -136,13 +136,13 @@ If a user pings about Zapier failing to thread despite the Zap firing successful
 
 When dispatching `N send`, scan available MCP tools for the Zapier integration. Try THREE detection paths in order (v2.12.6+ — broadened per M's testing where the v2.12.5 narrow match missed his configured Zap):
 
-1. **Tool-name slug match** — any `mcp__zapier_*` tool whose name contains `command_room_send_threaded_email` (case-insensitive, allowing slug variations like `command-room-send-threaded-email`, `command_room__send_threaded_email`, `command_room_send_threaded_email_via_gmail`, etc.). Cowork's Zapier MCP typically exposes Zaps by title slug.
+1. **Tool-name slug match** — any `mcp__zapier_*` tool whose name contains `command_room_send_threaded_email` (case-insensitive, allowing slug variations like `command-room-send-threaded-email`, `command_room__send_threaded_email`, `command_room_send_threaded_email_via_gmail`, etc.). The Zapier connector typically exposes Zaps by title slug.
 2. **Tool-description fuzzy match** — if no slug match, scan the description of every `mcp__zapier_*` tool for `Command Room` AND (`Send Threaded Email` OR `threaded`). Handles Zapier MCP versions that expose Zaps by UUID and put the Zap title in the description instead.
 3. **Permissive Gmail-send fallback (v2.12.6+)** — if neither name-slug nor description-fuzzy matches, scan ALL `mcp__zapier_*` tools for any whose name OR description contains BOTH `gmail` (or `email`) AND (`send` OR `reply`). If exactly ONE matches, use it as the Zapier-send candidate. If multiple match, use the first one whose name contains `command` or `room` (any casing); otherwise pick the first one whose name contains `send` (heuristic). If still ambiguous, surface a one-time per-session note listing the candidates so the user can rename the right Zap to the canonical name. This catches the "user wired up the Zap but used a slightly different name" case without false-positive matching to Calendar / Drive / etc. (Zapier non-email tools have neither `gmail` nor `send-email` in their names.)
 
 **Diagnostic surfacing (v2.12.6+):** when discovery completes (matched or not), log the result internally so the apply-choices `Sent emails` section can include diagnostic context if `send` fails. If discovery FAILED (no Zapier tool matched any of the 3 paths above) AND the user's `N send` falls back to native Gmail with a threading error, surface a one-time per-session note in the consolidated ack:
 
-> *"Zapier send tool not detected — falling back to native Gmail. Confirm your Zap exists in Cowork → Settings → Connectors → Zapier, named exactly `Command Room — Send Threaded Email` (em-dash). If it's there with a different name, rename it; otherwise see the Zapier setup guide."*
+> *"Zapier send tool not detected — falling back to native Gmail. Confirm your Zap exists in the Claude app's Settings → Connectors → Zapier, named exactly `Command Room — Send Threaded Email` (em-dash). If it's there with a different name, rename it; otherwise see the Zapier setup guide."*
 
 Do NOT surface internal tool IDs or schemas — just the plain-English direction. The setup guide is the recovery path.
 
@@ -297,7 +297,7 @@ Don't duplicate the dispatch logic in each orchestrator. Reference §3c.
 
 ### §3c HARD SCOPE (v2.12.5+ — calendar NEVER through Zapier)
 
-**Zapier scope is locked to email send/draft ONLY.** It NEVER touches calendar, drive, contacts, or any other Google Workspace surface — even if Cowork's Zapier MCP exposes those tools.
+**Zapier scope is locked to email send/draft ONLY.** It NEVER touches calendar, drive, contacts, or any other Google Workspace surface — even if the Zapier connector exposes those tools.
 
 Specifically: the Zapier-tool discovery in §3c is gated to tools whose name contains `send_threaded_email` (or fuzzy description match for "Send Threaded Email"). The agent MUST NOT use any other `mcp__zapier_*` tool. Calendar, Drive, Sheets, Docs, etc. — even when Zapier exposes them — are excluded by scope.
 
@@ -315,7 +315,7 @@ When discovering MCP tool IDs for non-email-send operations:
 
 If the agent ever surfaces a permission prompt asking "Claude wants to use Google Calendar from Zapier" (or similar), THAT'S A BUG — the orchestrator's tool discovery picked up a Zapier-namespaced calendar tool when it should have picked the native one. The fix is in the discovery code, not in the user's permission grant. M's standing rule per Apr 30: *"calendar never goes through zapier - it goes through native connector."*
 
-Why this rule exists: Zapier's Google Calendar tool has a different OAuth scope, different permission model, different rate limits, and different failure modes than the native Calendar MCP. Mixing namespaces creates inconsistent behavior across users (one workspace might have the Zap, another not). Native Calendar MCP is universal — every Cowork install with Calendar OAuth has it.
+Why this rule exists: Zapier's Google Calendar tool has a different OAuth scope, different permission model, different rate limits, and different failure modes than the native Calendar MCP. Mixing namespaces creates inconsistent behavior across users (one workspace might have the Zap, another not). Native Calendar MCP is universal — every Claude app install with Calendar OAuth has it.
 
 ### Calendar action handlers (each orchestrator's reply-handling)
 
@@ -384,7 +384,7 @@ Action labels in the rendered HTML MAY interpolate names and friendly text (e.g.
 
 Workspaces installing v2.9.3+ fresh: orchestrators behave correctly out of the box. No drafts auto-created.
 
-Workspaces upgrading from v2.9.2 with existing scheduled tasks: the next fire of each orchestrator picks up the new behavior (orchestrator prompts are read at fire time, not pinned at registration time — verified per Cowork's empirical model). No re-registration needed.
+Workspaces upgrading from v2.9.2 with existing scheduled tasks: the next fire of each orchestrator picks up the new behavior (orchestrator prompts are read at fire time, not pinned at registration time — verified per the Cowork-era empirical model (history)). No re-registration needed.
 
 Existing Gmail drafts from v2.9.2 fires (if any): stay in Gmail Drafts. Not auto-cleaned. M can manually delete or leave as historical residue.
 

@@ -5,10 +5,10 @@ Deliverable content sweep (SPEC GATE2 D2/D3) — the load-bearing detector.
 WHY THIS EXISTS
 ---------------
 GATE1 tried to FORCE every deliverable through `brief_writer.make_brief` so the
-save-time voice + leak gates would run. Live Cowork proved that fails: given a
+save-time voice + leak gates would run. The live legacy Cowork app proved that fails: given a
 realistic batch, the LLM hand-rolled all three .docx via one `python-docx`
 script — 0 `gate_ran`, every gate bypassed. The bypass routes can't be removed
-(the generic docx skill is a Cowork built-in; the LLM can `pip install docx`).
+(the generic docx skill is a Claude app built-in; the LLM can `pip install docx`).
 
 So GATE2 stops trying to guarantee the route and instead SCANS WHAT WAS ACTUALLY
 PRODUCED. This module sweeps the deliverables on disk + any chat-rendered
@@ -39,7 +39,7 @@ Used by:
 
 RETIRED (OUTGATE1, 2026-09-08): `gate2_turn_sweep.py`, the best-effort
 same-turn `Stop`-hook runner, and `hooks/hooks.json` that wired it. M ruled
-2026-09-07 that Cowork never runs plugin hooks — confirmed by
+2026-09-07 that the legacy Cowork app never runs plugin hooks — confirmed by
 BUG_2026-08-04_no-alarm-when-scheduled-surfaces-stop's sibling finding that
 the hook silently stopped emitting for two weeks and nothing noticed. Its one
 detector that this module did not already cover —

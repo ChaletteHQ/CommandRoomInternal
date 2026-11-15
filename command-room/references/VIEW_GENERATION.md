@@ -631,7 +631,7 @@ Active threads with no activity in 14+ days, sorted by days-since-activity desc.
 </for>
 ```
 
-**days_quiet threshold** defaults to 14 but is per-kind: relationship=30, theme=60, ritual=2x-cadence. These defaults live in `references/DORMANCY_DEFAULTS.md` (to be added; v2.1 uses 14 universal until that ships).
+**days_quiet threshold** defaults to 14 but is per-kind: relationship=30, theme=60, ritual=2x-cadence.
 
 **Size target:** <15 KB.
 

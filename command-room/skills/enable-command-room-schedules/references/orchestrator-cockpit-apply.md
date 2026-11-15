@@ -44,6 +44,14 @@ Its `results` carry one `{id, outcome, line}` per choice. An answer with `ok: fa
 
 Each entry carries the `draft` the owner pressed (`to`, `cc`, `subject`, `body`) and the `thread_id` it belongs to (cr1#677). The email that goes out is that draft, in that thread: pass the entry's `draft` as the tuple's `input`, and when the handler's own row `n` names a different thread from the entry's `thread_id`, refuse the choice with the planner's stale line and send nothing. The row number is only a label; it can point at another thread once a new inbox read lands. An entry with no `draft` or no `thread_id` is refused the same way: a draft the run cannot place in its thread is not sent on a guess.
 
+Before every `send` and `draft`, ask the reply-all gate with the mail service `mail_seams` answered (`declared_email.provider`, cr1#1251): a reply to more than one person on a mail service whose reply tool answers the sender alone (Microsoft 365), or on one the run cannot name, is never sent or drafted, because it would leave people off:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"action": "<send or draft>", "draft": <the entry's draft>, "platform": "<mail_seams declared_email.provider, or null>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:reply_reaches_everyone"}'
+```
+
+`refuse: true` writes `{"outcome": "refused", "line": <the answer's line>, "reason": "group_reply_backend"}` as the choice's result and sends or drafts nothing; never fall back to a reply to the sender alone or to a new mail outside the thread.
+
 Before a `send`, read its thread once through the mail connector (the entry's `thread_id`) and hand the thread's messages to the gate, which decides in code:
 
 ```bash

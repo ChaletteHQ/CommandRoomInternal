@@ -653,8 +653,9 @@ each later phase's source-of-truth check passes without re-opening it. A type
 whose writer names a phase later than the one that shipped is
 registered-but-not-yet-written — expected until its phase lands.
 
-The pack ships in `packs/coach/` and reaches only the client repos that name
-`"packs": ["coach"]` in `_chalette/clients.json`; the types are core-owned
+History: the pack was to ship in `packs/coach/` to the client repos that named
+it in `_chalette/clients.json`; the empty scaffold was retired on 2026-11-14
+(cr1#1257) and is rebuilt if a coach pack is designed. The types are core-owned
 because the enum is core-owned. On a non-coach workspace nothing writes them —
 same posture as any other registered-but-unwritten type, no migration, no
 reader change.
@@ -956,7 +957,7 @@ Hard rules:
   **Named consumers:** `load_open_commitments` (closer since v3.14.5 + the C4
   survivor-provenance fold — `data.merged_source_refs`/`data.merged_from` on
   the survivor's in-memory copy), `close_commitment`'s idempotency index,
-  `email_outcomes`, `audit_closure_integrity`. Suspected duplicates are
+  `email_outcomes`. Suspected duplicates are
   FLAGGED at capture by `shared/scripts/commitment_dedup.py` (hooked inside
   the single append path, same doctrine as the gate): the new commitment
   lands with `data.pending_review: true` + `data.suspected_duplicate_of` —
@@ -1492,7 +1493,7 @@ the NAIVE terminal fold go red.
   style correction with no tune verb — "never open with X", "stop saying Y" —
   ALWAYS after an explicit user confirm), `command-room-onboarding` (exactly
   once, the D7 provisional initial set — the ONLY unconfirmed write this lane
-  permits), and `shared/scripts/migrate_style_claude_md.py` (the STYLEROUTE1
+  permits), and, until cr1#1098 deleted it, `migrate_style_claude_md.py` (history: the STYLEROUTE1
   one-shot, supervised — `--apply` only, never scheduled — that migrates a
   freelanced CLAUDE.md style rule into this store; origin `asked`, same as
   workspace-manager's tune path). Events are BUILT by
@@ -1518,7 +1519,7 @@ The catch-all promised for five months that a routing correction would be
 appended to a `_hq/ROUTER_MISSES.md` log "reviewed weekly" — a prose contract
 with no trigger, no writer and no reviewer; the file never existed on any
 workspace. ROUTEMISS1 replaces the prose file with ONE typed event and ONE
-rendered view. The correction verb is a Cowork chat verb (no hook): the verb
+rendered view. The correction verb is a chat verb (no hook): the verb
 handler re-dispatches the CEO's real request in the same turn and logs the
 miss as a side effect.
 

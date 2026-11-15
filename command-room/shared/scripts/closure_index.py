@@ -410,9 +410,9 @@ def build_commitment_universe(events):
 def resolve_closure_target(ev: dict, by_id: dict, by_seq: dict):
     """The commitment EVENT a closer resolves to, or None when nothing
     matches. Mirrors normalize_commitment_id's amnesty WITHOUT raising:
-    exact id → legacy seq spelling → seq-alias fields. Extracted from
-    audit_closure_integrity so the write gate rejects what the audit would
-    later flag — same resolver, both ends (BUG-8330 item 3: the gate's
+    exact id → legacy seq spelling → seq-alias fields. Extracted from the
+    one-time closure audit (since deleted, cr1#1098) so the write gate
+    rejects what that audit flagged — same resolver, both ends (BUG-8330 item 3: the gate's
     presence check let `cmt_TYPO` through clean)."""
     raw = closer_target_id(ev)
     if raw:

@@ -54,13 +54,13 @@ Non-match (name appears mid-message, not addressing) — these route through nor
 
 After the strip-and-re-dispatch, the routed specialist still gets the brain_name via its own `get_brain_name()` call for personification copy. The gate does NOT carry brain_name through as a parameter — every consumer reads it fresh from entities.json at render time so renames propagate instantly.
 
-Closes the Bug #82 vocative-routing miss (see references/HISTORY.md).
+Closes the Bug #82 vocative-routing miss (see references/HISTORY.md in the staging repo).
 
 ### MUST-language enforcement gate — new-project lifecycle (v3.13.8.4+)
 
 > **When the user's input matches any new-project trigger phrase — `new project`, `new project [Name]`, `new project in command room`, `build a new project in command room`, `start a new project`, `create a new project`, `add a new project`, `set up a new project`, `I want to start/add/create a new project`, `new client`, `start a new client`, `add a new client` — OR when the user describes the act of starting a new initiative and asks to track it ("I'm starting something new with X, can you set up a project?", "I just signed Y, add them"), you MUST execute the "new project [Name]" lifecycle command (full procedure in the section below). **CARVE-OUT (SPEC PIPE1):** `new deal …` phrasings are NOT this gate — they belong to pipeline-tracker (a deal thread on an existing org, not a project scaffold); and a "signed"-shaped utterance naming an org that already has an OPEN DEAL thread is a deal-won declaration (pipeline-tracker's closure path), not a new-project request — check before scaffolding. If the project name is not inline in the trigger, the FIRST follow-up question is "What's the project name?" — never "What do you want me to do?" / "How can I help?" / any open-ended re-prompt. The routing is locked the moment the trigger fires; only the name (and downstream details) are collected from there.**
 
-Closes the Bug #82 new-project routing miss — the gate makes the trigger a one-way door; once fired, the only remaining question is the name (story in references/HISTORY.md).
+Closes the Bug #82 new-project routing miss — the gate makes the trigger a one-way door; once fired, the only remaining question is the name (story in references/HISTORY.md in the staging repo).
 
 ### MUST-language enforcement gate — day-intent phrasings beat navigation (SPEC BK1)
 
@@ -78,7 +78,7 @@ Closes the Bug #82 new-project routing miss — the gate makes the trigger a one
 >
 > **The `open_proposal` hit (WG1-B D-B5):** a result with `entity_type: "open_proposal"` means no record exists yet but an add-person proposal is PENDING. Never ask cold "who is [Name]?" — surface the proposal with its snippet (*"[Name] has a pending add-person proposal from [date] — '[evidence]'. Add them / not relevant?"*) and adjudicate through the existing confirm flow (`add person` / `proposal not relevant` / `snooze proposal 7d`, the staff-meeting person-row wire). A mention corroborates; it never auto-confirms.
 
-Closes Session-22 Bug #11 — the three stated consumers shipped without actually invoking the resolver; the LLM substituted grep (story in references/HISTORY.md).
+Closes Session-22 Bug #11 — the three stated consumers shipped without actually invoking the resolver; the LLM substituted grep (story in references/HISTORY.md in the staging repo).
 
 The resolver is NOT optional. (The ladder, tiers, and fallback rules live in `shared/ENTITY_RESOLVE_PROTOCOL.md` — never re-explained here.) Substring grep is the FALLBACK when the resolver returns nothing, not a shortcut to skip the resolver.
 
@@ -89,7 +89,7 @@ Workspace-manager is the catch-all. When a turn doesn't cleanly fire a specialis
 1. **Explicit lifecycle command** (new project, end session, let's work, what's going on, prep call, archive, etc.) → execute the matching section below.
 2. **Specialist skill matched cleanly** → step aside, let that skill run. (workspace-manager still silently updates activity counters but doesn't take the turn.)
 2a. **Day-intent phrasing** (SPEC BK1) → the MUST-language gate above already took the turn. Steps 3 and 4 are not reachable for `tomorrow is about [X]` / `today is about [X]` / `what's tomorrow about`, name or no name — a day-intent that mentions an org is still a day-intent, not a request to open that org's thread.
-3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware; pass `include_open_proposals=True` per the gate above). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context — when the match is a tracked THREAD, the substrate side comes through the MANDATORY catch-all context load below (one reader call) — and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. An `open_proposal` hit follows the gate's proposal-surface shape — never a cold "who is that?". **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md).** Await the user's next instruction after loading.
+3. **Name-mention, no clear action** → scan input for project/person/org names against `_hq/data/aliases.json` and `_hq/data/entities.json` via `shared/scripts/entity_resolve.py` (v3.13.0+ — fuzzy/phonetic-aware; pass `include_open_proposals=True` per the gate above). The helper returns a confidence-sorted match (tiers + confidences live in `shared/ENTITY_RESOLVE_PROTOCOL.md`, never re-explained here). If a tier-1 or tier-2 match returns, load that context — when the match is a tracked THREAD, the substrate side comes through the MANDATORY catch-all context load below (one reader call) — and respond with a one-line status of what's loaded. If only a tier-3 (phonetic) match returns, surface "Did you mean `[match]`?" with the name as a single-option confirm, then load on yes. An `open_proposal` hit follows the gate's proposal-surface shape — never a cold "who is that?". **Never fall to step 5 (Ambiguous → ask one question) when the helper returns a candidate — that's the 2026-05-20 routing-miss class this step exists to prevent (see references/HISTORY.md in the staging repo).** Await the user's next instruction after loading.
 3a. **Deal-thread handoff (SPEC PIPE1, D11).** When the resolver's match (step 3 or 4) lands on a thread with `kind: "deal"` — "where are we with the Beacon Logistics deal", "status on the Acme pilot" — load it and hand the turn to pipeline-tracker's single-deal view (stage, days in stage, next step or the missing-next-step flag, value, recent activity) instead of the generic thread status. `go [deal name]` navigation itself stays here; the STATUS rendering for a deal is pipeline-tracker's.
 4. **Name-mention + action signal** — phrases like "prep", "follow up on", "status", "draft", "what did we decide with" paired with a name → load the name's context (a THREAD match loads through the MANDATORY catch-all context load below — same one-call rule as step 3) and route to the matching specialist (call-prep / follow-up-ritual / etc.).
 5. **Ambiguous** (no name, no clear intent — "help", "catch me up", "what now") → see **"Step 5 — Ambiguity handling (strict shape)"** below. The bug shape this prevents: emitting 4 open-ended clarifying questions instead of ONE question with concrete options.
@@ -1229,11 +1229,11 @@ The brain-name vocative routing gate at the top of "Default Behavior on Every Tu
 
 Before writing to any workspace file, read `shared/WORKSPACE_API.md`. All writes must follow the File Ownership Map, Write Protocol, and Append Format defined there. JSON sources live in `_hq/data/`; markdown views in `_hq/views/` are regenerated by their deterministic renderer scripts (`shared/scripts/render_*.py`) and must not be written directly. Violations go to `_hq/CONFLICTS.md`.
 
-**Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` / `events.jsonl` / `aliases.json` MUST go through `shared/scripts/atomic_write.py`. The helper handles fsync + atomic-rename + Drive-sync safety. Hand-rolled writes via `path.write_text()` / `open(path, "w")` / `open(path, "a")` are FORBIDDEN — they have produced truncated-file corruption incidents in v2.7-v2.10.4 (evidence in references/HISTORY.md). Use `atomic_write_json` for entities.json / aliases.json. Use `atomic_append_jsonl` for events.jsonl appends — pass batches when you have multiple events. Full bash + python invocation patterns in `shared/WORKSPACE_API.md` § "Write atomically".
+**Atomic-write requirement (v2.10.5+):** ALL writes to `_hq/data/entities.json` / `events.jsonl` / `aliases.json` MUST go through `shared/scripts/atomic_write.py`. The helper handles fsync + atomic-rename + Drive-sync safety. Hand-rolled writes via `path.write_text()` / `open(path, "w")` / `open(path, "a")` are FORBIDDEN — they have produced truncated-file corruption incidents in v2.7-v2.10.4 (evidence in references/HISTORY.md in the staging repo). Use `atomic_write_json` for entities.json / aliases.json. Use `atomic_append_jsonl` for events.jsonl appends — pass batches when you have multiple events. Full bash + python invocation patterns in `shared/WORKSPACE_API.md` § "Write atomically".
 
 You are the **primary writer** for:
 
-- `_hq/data/entities.json` — project records: create via `thread_writer.create_thread`, update via `thread_writer.update_thread`, **archive via `shared/scripts/thread_archive.py::archive_thread`** (the archive path for archiving a project as a project — record stamp + `status_change` + view regen in one call; see the "archive [project]" handler. A lost deal and an archived objective also land `status: "archived"` on their own threads through `deal_state` / `objective_state`, which own those lifecycles — you do not archive those from here). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md.)
+- `_hq/data/entities.json` — project records: create via `thread_writer.create_thread`, update via `thread_writer.update_thread`, **archive via `shared/scripts/thread_archive.py::archive_thread`** (the archive path for archiving a project as a project — record stamp + `status_change` + view regen in one call; see the "archive [project]" handler. A lost deal and an archived objective also land `status: "archived"` on their own threads through `deal_state` / `objective_state`, which own those lifecycles — you do not archive those from here). `shared/scripts/render_master_tracker.py` regenerates `_hq/views/MASTER_TRACKER.md` and the backward-compat copy at `_hq/MASTER_TRACKER.md` from the substrate — run it after writes (end-session Step 2.5; cleanup Phase 3.5d2 is the weekly backstop). There is **no** background "writer helper": the tracker is only as fresh as the last renderer run. (v4.2.0 frozen-tracker fix — see references/HISTORY.md in the staging repo.)
 - `_hq/data/events.jsonl` — append events of type `status_change`, `scope_change`, `commitment`, `commitment_resolved`, `meeting`, `decision` (when captured via end-session review), `briefing`, `note`, `org_proposed` (from Reactive Org Discovery — canonical top-level type per `shared/data-schemas/events.schema.json`, NOT wrapped inside a `note` event), `workspace_setting_changed` (timezone changes), `connector_backend_changed` / `account_classified` / `account_role_changed` / `account_scope_masked` / `account_scope_restored` (connector-agnostic-v1 — the account-map lifecycle, written via the `connector_config.py` setter + `event_gate.append_event`), `day_intent` (SPEC BK1 — "tomorrow is about X", written ONLY via `day_intent.write_day_intent` with `origin='manual'`; never hand-built, and the reversal goes through `brain_undo.undo_batch`), plus `interaction` / `meeting` / `note` events emitted from passive-capture during Step 2a of "what's going on", Step 3a of "new project", and Step 1a of "end session".
 
   **The own-word door comes FIRST (CLOSETRUTH1 3.5 — MANDATORY).** When the turn REPORTS work already done in the person's own words — "I sent Bo the deck, I sent Quinn the engagement agreement, and I paid the invoice", one sentence or several in one turn — do NOT call `close_commitment` yourself, row by row. Pass the turn to `shared/scripts/exit_doors.py::close_from_own_word(workspace_root, <what they typed>)`. It grades the sentences against the open rows with route 2's own matcher and bar, honours the customer's own-word switch at the writer, mints ONE `own_` batch across every row it closes, and returns `receipt_line` — relay that verbatim, exactly as returned — it already offers the undo in its own words, so do not append, reword or "correct" its closing clause. Then ack nothing else about the closes. **Why this is not optional:** on 2026-09-13 three rows closed correctly off exactly this turn and minted no batch, because the chat path called the commitment writer directly; nothing listed for `undo`, the receipt offered none, and the only reason `undo` worked at all was that the same chat still remembered what it had closed. A close that is reversible only inside the turn that made it is not reversible. The transcript pass and this door are the same rail and the same batch shape — a close the person spoke into a call and one they typed here behave identically. Rows the door reports as `ambiguous` or `no_match` are NOT yours to close by hand. **The sentence for a report that matched nothing is the door's too (LEARNFIX1 1.6 — MANDATORY):** if `no_match_line` comes back non-empty, say it verbatim, as its own line after `receipt_line`, and say nothing else about those reports — do not name the sentence that missed, do not list candidate rows, and never end with an offer to close one on the person's word. An offer is a question wearing a statement's clothes, and a question on this path is the defect: the product either acts or says plainly that it did not. The person can always say what they meant next, and `show my list` is there when they want to look. The paragraph below is for the OTHER shape — a turn that points at a row and says close it ("mark done", "that's handled", a number from a list, an end-session review) — never for a completion report.
@@ -1349,7 +1349,7 @@ The user has context in their head that won't make it into the system unless you
 
 ## Connected Source Checks
 
-Many commands pull from connected tools (Gmail, Calendar, Slack, Drive) to stay current with what's happened outside of Cowork. These checks are baked into the commands below — not a separate step the user has to remember.
+Many commands pull from connected tools (Gmail, Calendar, Slack, Drive) to stay current with what's happened outside of Command Room. These checks are baked into the commands below — not a separate step the user has to remember.
 
 **If a connector is available, use it. If it's not connected, skip gracefully — never error or ask the user to connect something mid-command.**
 
@@ -1395,7 +1395,7 @@ Full briefing across everything. This is the daily entry point — it should ref
 
 **Step 1a: Overlay events.jsonl on top of the tracker (v3.11.4 — REQUIRED, per SOURCE_OF_TRUTH.md)**
 
-MASTER_TRACKER.md is a regenerated projection of `_hq/data/entities.json` + `_hq/data/events.jsonl`, not the source — the overlay bug class (see references/HISTORY.md).
+MASTER_TRACKER.md is a regenerated projection of `_hq/data/entities.json` + `_hq/data/events.jsonl`, not the source — the overlay bug class (see references/HISTORY.md in the staging repo).
 
 Apply the same Step 3a overlay shape `morning-briefing` uses:
 
@@ -1450,7 +1450,7 @@ Quick-load mode. The user is sitting down and wants to start working — load co
 1. **Buffer check (v1.7.0+):** Check if `_hq/.buffer/session_buffer.md` exists and is non-empty. If so, before loading projects, surface the crash recovery prompt: "I found notes from your last session that weren't saved. Here's what I captured: [summary]. Want me to process these into your projects?" Wait for user confirmation before proceeding. If user confirms, process the buffer per Session Buffer section below. Then continue with normal load.
 2. Read `_hq/MASTER_TRACKER.md` for **orientation only** — per `references/SOURCE_OF_TRUTH.md`, this is a Tier 2 view, not canonical state. The user gets a fast "Loaded — N active projects" confirmation; no surface decisions are made from the tracker in this mode.
 3. Read `_hq/BUSINESS_CONTEXT.md` (first time per session only)
-4. If CLAUDE.md exists in workspace root, Cowork already loaded it — its hot cache (people, projects, terms) covers most quick questions without extra reads
+4. If CLAUDE.md exists in workspace root, the host already loaded it — its hot cache (people, projects, terms) covers most quick questions without extra reads
 
 **Decision-driving reads in `let's work` mode** — if the user follows up with a question that needs current state (e.g. "what's overdue?", "did Sam reply?", "what changed yesterday?"), do NOT answer from the tracker. Switch to the canonical source: a question about ONE tracked project/person/org is the catch-all ladder's step 3/4 shape — thread context arrives through `load_thread_knowledge(workspace_root, thread_id, "catch-all")` per the MANDATORY catch-all context load above (never a by-hand substrate read); a workspace-WIDE question (everything overdue, everything that changed) reads the canonical substrate the way "what's going on" Step 1a specifies. The tracker is sufficient for "do I have a project called X?" but NOT for "is X still waiting on me?"
 
@@ -1637,7 +1637,7 @@ cd "$PLUGIN_ROOT" && python3 shared/scripts/render_thread_live_state.py "<worksp
 
 It runs a cheap dirty-check (one seq compare) and rewrites ONLY the `<!-- LIVE-STATE:people -->` block — and only when a thread-tagged event newer than the block exists — byte-preserving every durable section outside the markers. High-signal members render directly; inherited (pre-split umbrella) / low-signal people render in the "Proposed — confirm to add" line for the weekly confirm-gate. NEVER hand-edit People or Status into the brain; the renderer owns that block. Full rules: `references/BRAIN_FILE_CONTRACT.md`.
 
-**Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate; if it's rendered into the brain but not surfaced, the confirm-people workflow dead-ends (Bug #86 — see references/HISTORY.md). Surface the block from the brain region; do not re-derive the People list by hand.
+**Surface the rendered block — mandatory (v3.18.2+, Bug #86).** After the renderer runs, READ BACK the `<!-- LIVE-STATE:people -->` region from `PROJECT_BRAIN.md` and surface it in the **People** block of the first response (see the response shape below). The **"Proposed — confirm to add"** line in particular MUST appear in the response whenever the renderer produced one — it is the actionable handle for the confirm-gate; if it's rendered into the brain but not surfaced, the confirm-people workflow dead-ends (Bug #86 — see references/HISTORY.md in the staging repo). Surface the block from the brain region; do not re-derive the People list by hand.
 
 **Memory-anchor render — runs on EVERY `go [project]`, after the Live State refresh (GORENDER1, coverage-gated).** The five memory sections MIGRATE1 seeded into `PROJECT_BRAIN.md` (`where-things-stand`, `what-we-decided`, `whats-owed`, `landmines-judgment`, `how-we-work-this`) are rendered from the canonical reader (profile "go-render") by the deterministic anchor renderer:
 
@@ -1802,7 +1802,7 @@ cd "$PLUGIN_ROOT" && python3 shared/scripts/render_person_history.py "<workspace
 
 Read the written view back from `_hq/views/people/` and surface it: how-we-met, last touch (derived from events — never the stored date field), cadence, the role/company lineage lines, and any recorded facts. (Freshness: the renderer just recompiled this view from events.jsonl in the same turn, so the render IS the overlay — no separate freshness step applies to a view you just regenerated; never surface a history view you did NOT just render without re-running the renderer first.) When the match is an ORG and the form is **`go [org] all` / `go [org] rollup`**, additionally run `python3 shared/scripts/render_org_history.py "<workspace_root>" "<org_id>"` and fold the compiled block (money tag, derived stats, open deals, people movement, context & news) into the rollup view. Both renderers are deterministic compiles over events — defensive reads, drop-empty sections, tolerant of legacy records missing every new field. Surface the compiled content; never re-derive the history by hand.
 
-**Why default 1 month, not 12:** keeps the first-call demo light (~30-40K vs 250-400K tokens on a heavy project — see references/HISTORY.md). Customers extend on demand with `backfill [N] months on [project]` (caps at 36 months), raise the global default via `set first-go to N months` (see below), or edit `workspace.first_go_months` in entities.json directly.
+**Why default 1 month, not 12:** keeps the first-call demo light (~30-40K vs 250-400K tokens on a heavy project — see references/HISTORY.md in the staging repo). Customers extend on demand with `backfill [N] months on [project]` (caps at 36 months), raise the global default via `set first-go to N months` (see below), or edit `workspace.first_go_months` in entities.json directly.
 
 **First-`go` is intentionally slow on first open** (~5-15 seconds wall-clock at 1 month, longer for heavier defaults). Surface in plain English using the actual configured value: `(Loading [project] for the first time — pulling [N] months of context. Subsequent opens will be instant.)` where `[N]` is `workspace.first_go_months`. Subsequent `go` calls hit the 5-second target.
 
@@ -2400,7 +2400,7 @@ print('PROSPECT_CREATED org=' + org['id'] + ' engagement=' + eng['id'] + ' from=
 
 ### "[Name] is now a client" — prospect → client conversion (v3.18.6+, Bug #91)
 
-The closing move of the prospect lifecycle, and the target of the `new prospect` offer above. This section is the handler (before v3.18.6 it was a dead promise — see references/HISTORY.md).
+The closing move of the prospect lifecycle, and the target of the `new prospect` offer above. This section is the handler (before v3.18.6 it was a dead promise — see references/HISTORY.md in the staging repo).
 
 Triggers: `[Name] is now a client`, `[Name] is a client now`, `promote [Name] to client`, `convert [Name] to client` — when `[Name]` resolves to an existing org that is NOT already a client. (`[Name] signed` / `[Name] closed` moved to pipeline-tracker with SPEC PIPE1 — those are deal-outcome verbs; pipeline-tracker owns ALL of them and its `deal_state.close_deal(convert_prospect=True)` runs THIS SAME conversion atomically, so "Acme signed" closes the deal AND converts in one turn. This section keeps only the administrative verbs above.)
 
@@ -2571,7 +2571,7 @@ Capture and update everything. This is the save button — nothing persists with
 
 **Step 2.5: Regenerate the projected views (deterministic — never hand-rendered)**
 
-After the source writes in Step 2, regenerate the views from the substrate by running their renderer scripts. This is the step whose absence froze the tracker (v4.2.0 — see references/HISTORY.md). Run all three so no view drifts:
+After the source writes in Step 2, regenerate the views from the substrate by running their renderer scripts. This is the step whose absence froze the tracker (v4.2.0 — see references/HISTORY.md in the staging repo). Run all three so no view drifts:
 
 ```bash
 python3 -c "
@@ -2593,7 +2593,7 @@ Each renderer atomic-writes its `_hq/views/*.md` plus the back-compat `_hq/*.md`
 **The ROWS written into the table are a different question, and the answer is the confirmed half (INTAKE2).** PERSON.md is a user-readable Tier 2 file: an unconfirmed extraction rendered in someone's commitment table reads as work that person holds, which nobody has agreed to. So when rewriting the Active Commitments rows, take `cru_match.split_pending_review(...)[0]`; the raw list is for the closure diff only. Nothing is lost — this step regenerates from canonical state every session, so an item confirmed later simply appears in the next regen. The PERSON.md tables are then rewritten to match canonical state; never read from the table and copied back, which would just re-anchor whatever stale state was already there.
 
 **Step 4: Prompt for missing context**
-10. Ask: "Anything else happen today that didn't come up? Any commitments made outside of Cowork — calls, texts, in-person conversations?"
+10. Ask: "Anything else happen today that didn't come up? Any commitments made outside of Command Room — calls, texts, in-person conversations?"
 
 **Step 5: Observations**
 11. Offer grounded observations that are backed by real data:
@@ -2888,7 +2888,7 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
 - Do NOT modify historical event timestamps in `events.jsonl` — they stay as-recorded; only future renders use the new TZ.
 - Do NOT change a customer's requested cadence here. Re-anchoring an EXISTING cron to the new zone through `schedule_backend.plan_realign` is this handler's job (step 4) because the customer's chosen clock time is what is being preserved; moving a chat to a DIFFERENT time is `change-schedule`'s, through `schedule_backend.plan_update`. Surface a one-line follow-up if they want a different time, not just a different zone.
 
-**Why this exists:** product-level requirement — every Command Room workspace has one canonical timezone; display + schedule TZ default to the same value at install (`command-room-onboarding` Phase 0 widget Q3). Plumbing that reads the setting: `shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`. (Origin in references/HISTORY.md.)
+**Why this exists:** product-level requirement — every Command Room workspace has one canonical timezone; display + schedule TZ default to the same value at install (`command-room-onboarding` Phase 0 widget Q3). Plumbing that reads the setting: `shared/scripts/tz.py` `load_workspace_tz()` + `to_local()`. (Origin in references/HISTORY.md in the staging repo.)
 
 ---
 
@@ -2911,7 +2911,7 @@ Updates the workspace's canonical timezone. Every CR skill that emits a timestam
 Two skills were retired on the owner's ruling of 2026-11-06 and their folders
 are gone: `balance` and `board-pack-assembler`. Their phrases still get an
 answer, ONE sentence each, verbatim from `retired_skill_lines` (the
-`level-up-command-room` shape): nothing is computed, read or written, no
+dashboards-sentence shape): nothing is computed, read or written, no
 workaround is offered, and the turn ends there.
 
 - Any Balance phrase (`balance check`, `how's my white space`, `my white
@@ -2936,6 +2936,32 @@ A `board update` is memo-writer's; a `one-pager` is one-pager-composer's;
 `prep me for the board meeting` stays call-prep's. The shared board-pack
 renderers (`brief_writer`, `deck_writer`, `scorecard`) are untouched library
 code and nothing here calls them.
+
+Two more were retired on the owner's ruling of 2026-11-14 (cr1#1102), the
+same way:
+
+- Any sidebar-dashboard phrase (`level up command room`, `level up my
+  command room`, `level me up`, `show me dashboards`, `what dashboards can I
+  install`, `show me what I can enable`, `add more dashboards`, `install
+  workspace map`, `enable workspace map`, `re-install workspace map`,
+  `rebuild workspace map`, `install orgs map`, `enable orgs map`, `rebuild
+  orgs map`, `install quick commands`, `enable quick commands`, `rebuild
+  quick commands`, `install my commitments`, `enable my commitments`,
+  `rebuild my commitments dashboard`, `my commitments dashboard`) →
+  `retired_skill_lines.LEVEL_UP_RETIRED`, the dashboards sentence:
+
+> *"Dashboards live in chat now. Say `list active projects` for your Workspace Map, `triage my commitments` for your open commitments, and the quick commands work just by saying them."*
+
+  If the customer asks about a dashboard still pinned from an earlier
+  version, add `level_up_lines.UNPIN_NOTE`, once. `install my dashboards`
+  and `update command room` stay the update bridge's.
+
+- `log resolved: [id]` and `log resolved: [id] ([kind])`, the per-click
+  prompt an old dashboard sends → `retired_skill_lines.LOG_RESOLUTION_RETIRED`.
+  Nothing is closed from the id: it came from a page that no longer
+  refreshes, and the customer closes the item from their list instead.
+
+> *"That button is from an older dashboard and no longer closes anything. Say `triage my commitments` to close it from your list, or tell me what you finished."*
 
 ---
 
@@ -3030,7 +3056,7 @@ Server UUIDs rotate on reconnect (CONTRACT Rule 22), so this WILL happen on live
 
 ### "name my AI [name]" / "set my AI name to [name]" / "name my AI skip" (v3.13.8.2 — Bug #72)
 
-Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onboarding (2026-05-23+) captures this via Phase 0 widget Q4. Upgrade customers (v3.11.x → v3.13.8.x) need this command (Bug #72 — see references/HISTORY.md).
+Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onboarding (2026-05-23+) captures this via Phase 0 widget Q4. Upgrade customers (v3.11.x → v3.13.8.x) need this command (Bug #72 — see references/HISTORY.md in the staging repo).
 
 **Trigger phrases (case-insensitive):** `name my AI [name]`, `name my ai [name]`, `set my AI name to [name]`, `set ai name to [name]`, `name my chief of staff [name]`, `name my AI Penelope`, `name my AI skip`, `skip naming my AI`, `name my AI no name`.
 
@@ -3063,9 +3089,9 @@ Sets the customer-facing AI name (`workspace.brain_name`). Fresh-install M1 onbo
 - Do NOT modify historical event timestamps or rename brain_name in past events — `brain_name_captured` and `brain_name_declined` are append-only.
 - Do NOT auto-substitute the name into prior briefing text or .docx artifacts retroactively — the field is read at render time by skills that need it, so the change propagates forward only.
 
-**Read consumers:** every brain_name consumer (scheduled-task orchestrators, onboarding, coach, and the customer-facing chat/deliverable surfaces across workspace-manager, morning-briefing, call-prep, meeting-notes, follow-up-ritual, cleanup, decision-memo-composer, board-pack-assembler, list-active) reads `workspace.brain_name` fresh at render time via `shared/scripts/personification.py::get_brain_name(workspace_root)` (default "Penelope" if unset). **Renames propagate forward only — no retroactive substitution into prior .docx artifacts or scheduled-task outputs already on disk.** Full per-surface consumer list in references/HISTORY.md → "Appendix — brain_name read consumers."
+**Read consumers:** every brain_name consumer (scheduled-task orchestrators, onboarding, coach, and the customer-facing chat/deliverable surfaces across workspace-manager, morning-briefing, call-prep, meeting-notes, follow-up-ritual, cleanup, decision-memo-composer, board-pack-assembler, list-active) reads `workspace.brain_name` fresh at render time via `shared/scripts/personification.py::get_brain_name(workspace_root)` (default "Penelope" if unset). **Renames propagate forward only — no retroactive substitution into prior .docx artifacts or scheduled-task outputs already on disk.** Full per-surface consumer list in references/HISTORY.md in the staging repo → "Appendix — brain_name read consumers."
 
-(Why this command exists: Bug #72 — see references/HISTORY.md.)
+(Why this command exists: Bug #72 — see references/HISTORY.md in the staging repo.)
 
 ---
 
@@ -3255,6 +3281,7 @@ The complete trigger family and fences for this skill, relocated verbatim from t
 
 > Also owns org money & fact statements via the loose-input catch-all (SPEC HIST1 Part A, D8 ruled DEFER: these live HERE, not in the budget-frozen description; the runtime router reaches them through "loose input naming a tracked entity"): '[Org] is a $[N] account', '[Org] is a $[N]/yr account', 'remember [fact] about [Org]' when the name resolves to a tracked ORG, and loose org-news statements (a note-that phrasing whose name resolves to an ORG, e.g. a Series A announcement about Acme Co) route here; a PERSON hit is people-crm's fact verb, which owns the note-that stem. Machine-matchable stems for the mechanical matcher: 'is a [amount] account', 'is a [amount]/yr account'. Money is confirm-only through org_writer.set_org_money: never estimated, never auto. Behavior in the body's "Org money & facts" section.
 > Also answers the phrases of two retired skills with one sentence each (cr1#552, the owner's ruling 2026-11-06; body section "Retired phrases"): Balance: 'balance check', "how's my white space", 'my white space', 'am I making time for family', 'plan a date night', 'tune balance', 'show balance settings', 'reset balance to defaults'; the board pack: 'build the board pack', 'assemble the board pack', 'prep the board pack', 'board pack for', 'board package', 'build board deck', "generate this month's board update", 'tune board-pack-assembler', 'tune the board pack', 'show board-pack-assembler settings', 'reset board-pack-assembler to defaults', 'customize board-pack-assembler', 'customize board pack', 'show board-pack-assembler customizations', 'reset board-pack-assembler customizations'. DOES NOT fire on 'board update' (memo-writer), 'one-pager' (one-pager-composer) or 'prep me for the board meeting' (call-prep).
+> Also answers the phrases of two more retired skills with one sentence each (cr1#1102, the owner's ruling 2026-11-14; body section "Retired phrases"): the sidebar dashboards: 'level up command room', 'level up my command room', 'level me up', 'show me dashboards', 'what dashboards can I install', 'show me what I can enable', 'add more dashboards', 'install workspace map', 'enable workspace map', 're-install workspace map', 'rebuild workspace map', 'install orgs map', 'enable orgs map', 'rebuild orgs map', 'install quick commands', 'enable quick commands', 'rebuild quick commands', 'install my commitments', 'enable my commitments', 'rebuild my commitments dashboard', 'my commitments dashboard'; an old dashboard's click: 'log resolved:'. DOES NOT fire on 'install my dashboards' or 'update command room' (command-room-update-bridge), 'install command room' (command-room-onboarding) or 'triage my commitments' (commitment-triage).
 > Also owns the WORKSPACE PROFILE and the two coaching doors (SPEC_SURFACES2 PROFILE1, absorbing SPEC_LEARN2 — the primary stems are front-loaded in the description per STYLEROUTE1; the rest live here and the runtime router reaches them through the catch-all): 'my profile', 'what do you know about me', 'what have you learned about me', 'what do you know about how I work', "show what you've learned", 'how have you adapted to me', 'what have you changed on your own', 'export my profile', 'reset [section]' said about a section of the page, a learned line deleted by saying so ('forget that' / 'that one's wrong' said about a line on the page), 'turn on coaching', 'turn off coaching', and the assessment door ('here are my scores', 'load my assessment'). Machine-matchable stems for the mechanical matcher: 'my profile', 'what do you know about me', 'what have you learned about me', 'export my profile', 'turn on coaching', 'turn off coaching'. ABSORBS 'show my style' — the phrase stays live and now renders as the profile's How you like it section, so nothing a customer already says stops working. Every write goes to the settings store through `skill_config_writer` and the coaching object through `coaching_doors` — NEVER a CLAUDE.md edit; the profile lines inside the workspace instructions are REGENERATED by `render_claude_md` on the persona precedent, which is the whole point. DOES NOT fire on 'who is Sam' (people-crm). DOES NOT fire on 'tell me about Sam' (people-crm). DOES NOT fire on 'what did you change' (system-health). DOES NOT fire on the bare two-word coaching ask with no label after it (command-room-coach - the coaching conversation itself; this skill owns the doors that turn it on and off, and the `on a label` form of that ask, which IS the earned door's yes).
 ## Narration leak scan (LEAK2 — MANDATORY on every composed line)
 

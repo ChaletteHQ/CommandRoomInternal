@@ -19,7 +19,7 @@ Session 22 testing (2026-05-21 → 2026-05-22) surfaced TWO parallel bugs:
   Substrate-only scan flagged a dormant-looking client contact;
   meanwhile that contact had a
   calendar meeting 3 weeks ago that wasn't written to events.jsonl. Real
-  CEO-trust miss caught only by Cowork's diagnostic confirm-prompt.
+  CEO-trust miss caught only by a legacy Cowork diagnostic confirm-prompt.
 
 Both bugs collapsed into ONE shared architectural fix: every dormancy /
 cadence-flagging skill should overlay live Gmail+Calendar signals on

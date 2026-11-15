@@ -1,7 +1,7 @@
 ---
 name: cleanup
 surfaces: both
-description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean', 'tidy my folder', 'roll over my session notes' (Step 0b) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (opt-in add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
+description: "Weekly self-maintenance. Tidies the workspace without the CEO's attention — runs Sunday night, auto-fixes what's safe, repairs damaged records, leaves a short Monday note only if something needs eyes. Triggers on 'weekly cleanup', 'clean up my workspace', 'clean up the workspace', 'tidy up', 'deep clean', 'tidy my folder', 'roll over my session notes' (Step 0b) — and 'maintenance', 'run my maintenance', 'run maintenance now' (the background-maintenance manual fire — run what's due or report nothing due; Step 0, NOT a cleanup pass). (Bare 'clean up [a thing]' — an email, a doc, a list — is NOT this skill; only workspace-shaped cleanup fires it.) Also catches retired phrases 'weekly audit', 'system review', 'scan everything'. DOES NOT fire on 'weekly recap' / 'what happened this week' (that's weekly-recap), 'level up command room' (retired add-ons), or 'health check' / 'system health' / 'is everything running' (that's system-health — the scheduled-task watchdog)."
 ---
 
 # Cleanup
@@ -24,7 +24,7 @@ When a step below says AUTOMATIC, run it. The safety copy, the archive, and the 
 - **Use cleanup for:** the weekly (or on-demand) workspace maintenance pass — safe auto-fixes, substrate self-heal, and the short Monday note. Retired audit phrases ("weekly audit", "system review", "scan everything") redirect here.
 - **Use `weekly-recap` for:** "weekly recap" / "what happened this week" — the week-in-review narrative, not maintenance.
 - **Use `system-health` for:** "health check" / "system health" / "is everything running" — the scheduled-task watchdog (moved out of cleanup in Phase 3/W1).
-- **Use `level-up-command-room` for:** "level up command room" — it answers the one dashboards sentence (dashboards live in chat now; nothing installs into a sidebar).
+- **Use `workspace-manager` for:** "level up command room" — it answers the one dashboards sentence (dashboards live in chat now; nothing installs into a sidebar).
 - **Does NOT fire on** bare "clean up [a thing]" (an email, a doc, a list) — only workspace-shaped cleanup fires it.
 - **Maintenance-shaped phrases run Step 0 below, NOT a cleanup pass** — "run my maintenance", "run maintenance now", "run maintenance", bare "maintenance" (EW2+T, F-14).
 

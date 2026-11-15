@@ -7,7 +7,7 @@ THE MEMORY LEAK THIS CLOSES
 Command Room only remembers what a writing skill happened to capture. Anything
 the CEO does in an ad-hoc chat that never fires a capture skill is lost — a
 commitment made in passing, a decision reasoned out loud, a deliverable produced
-by hand. Cowork exposes full transcripts of every session (proven readable from
+by hand. The Claude app exposes full transcripts of every session (proven readable from
 inside a scheduled-task session, 2026-07-01), so a nightly pass can promote that
 episodic layer (L1) into the canonical event log (L2) after the fact.
 

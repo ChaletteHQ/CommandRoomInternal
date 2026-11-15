@@ -3438,7 +3438,7 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     WHY A JOB AND NOT A TASK, and this is the load-bearing part:
 
       * registration stays the writer of record. The `maintenance` task is
-        ALREADY registered and already past Cowork's one-time Run-Now
+        ALREADY registered and already past the legacy Cowork app's one-time Run-Now
         permission gate on every machine, so this adds ZERO scheduled tasks
         anywhere and needs no re-registration, no new prose registration
         block, and no client action.

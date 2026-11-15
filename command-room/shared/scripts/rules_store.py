@@ -404,15 +404,6 @@ def rebuild(workspace_root, *, now_iso: Optional[str] = None) -> dict:
             "n_rules": len(records), "n_live": body["n_live"]}
 
 
-def read_folder(workspace_root) -> Optional[dict]:
-    """The stored folder file, or None when it is missing or unreadable."""
-    try:
-        data = json.loads(folder_path(workspace_root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
 # ---------------------------------------------------------------------------
 # Writers
 # ---------------------------------------------------------------------------

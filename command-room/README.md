@@ -30,7 +30,7 @@ You also get a **Communication Profile** — a breakdown of how you write based 
 
 ## The Core Commands
 
-**"what's going on"** — Your daily briefing. Open Cowork, say this, and know where everything stands. Checks email, calendar, and Slack for updates since your last session.
+**"what's going on"** — Your daily briefing. Open the Claude app, say this, and know where everything stands. Checks email, calendar, and Slack for updates since your last session.
 
 **"go [project]"** — Jump into a specific project. Loads all context — session notes, project docs, tracker status — and checks connected sources for anything new related to that project.
 
@@ -40,58 +40,13 @@ You also get a **Communication Profile** — a breakdown of how you write based 
 
 **"meeting notes"** — Paste a transcript or let it pull from Granola. Decisions, action items, people, and commitments cascade into the right places automatically.
 
-**"audit"** — Quick health check. Scores your workspace, flags what's slipping, suggests fixes. Under 60 seconds.
-
 **"list projects"** — Full roster of what you're working on, with canonical names and aliases. The "wait, what did I call that?" lookup.
 
 **"prep call with [person]"** — Generates a meeting brief pulling from calendar, email, Slack, past notes, and commitments. Walk into any meeting prepared.
 
 ## Skills
 
-Grouped by role. Core skills are the daily drivers. Infrastructure skills run weekly or on demand. Output-layer skills produce polished deliverables on request. Writing skills draft short-form prose (email, Slack, memos) with Voice Calibration v3.0 baked in. The complete current roster lives under `skills/` — the tables below highlight the major skills by category.
-
-### Core (daily drivers)
-
-| Skill | What It Does | Key Triggers |
-|-------|-------------|-------------|
-| **Workspace Manager** | The brain. Briefings, project engagement, session saves, project lifecycle. | "what's going on", "lets work", "end session", "go [project]", "new project [name]" |
-| **Command Room Onboarding** | Guided first-time setup. Scans tools, interviews you, builds the workspace. | "set up my command room" |
-| **Morning Briefing** | Proactive daily digest. Calendar, emails, overdue items. | "morning briefing", "brief me" (or scheduled) |
-| **Meeting Notes** | Transcript → decisions, action items, commitments. Cascades into the data layer. | "process meeting", "meeting notes" |
-| **Call Prep** | Meeting briefs from every source in seconds. | "prep me for", "prep call with" |
-| **List Active** | Zero-interaction roster — full org tree with projects, aliases, last activity. | "list projects", "show projects", "roster" |
-
-### Infrastructure (weekly or on-demand)
-
-| Skill | What It Does | Key Triggers |
-|-------|-------------|-------------|
-| **Insight Generator** | Weekly pattern pass. Low-confidence classifications, project proposals (Pass 9), staleness signals. | "run insights", "review project proposals", "weekly insights" |
-| **Weekly Audit** | Full interactive health check. Scores workspace, surfaces fixes, generates dashboard. Subsumes quick-audit + executive summary. | "weekly audit", "audit", "quick audit", "weekly summary" |
-| **Decision Log** | Records decisions with rationale and alternatives. Searchable. | "log decision", "what did we decide about" |
-| **People CRM** | Relationship tracker with live enrichment. | "who is [person]", "who haven't I talked to" |
-| **Team Intelligence** | Person-first queries for leadership team. 1:1 prep, commitment tracking. | "prep me for my 1:1 with [name]", "team status" |
-| **Intel Intake** | Articles, videos, content → connected to your projects. | paste any URL, "intel review" |
-| **Automation Scanner** | Finds automatable processes in your workspace with ROI estimates. | "what can be automated", "automation scan" |
-| **Workspace Ingest** | Two-layer ingest (v2.14.20+): pulls context (people, projects, decisions, memories) into the data layer + copies actual deliverable documents (employee files, 1:1 notes, contracts, etc.) into project folders with preview-and-confirm. Folder-mode absorbed the legacy `context-ingestion` skill. Bootstrap-mode absorbs the legacy `migration-v2`. Sources: prior workspaces, ChatGPT exports, Downloads / Desktop folders, custom markdown notes. | "ingest folder [path]", "scan my desktop", "sort my downloads", "ingest my chatgpt export", "migrate from v1.x" |
-
-### CEO Output Layer (polished deliverables)
-
-| Skill | What It Does | Key Triggers |
-|-------|-------------|-------------|
-| **One-Pager Composer** | Any topic → polished 1-page .docx brief. | "one-pager on [topic]" |
-| **Follow-Up Ritual** | Transcript → summary + action items + per-attendee email drafts in 60 seconds. | "follow-up ritual", "follow up on the call" |
-| **Dormant Customer Scan** | Surfaces customers gone dark vs historical cadence. Ranked by revenue × dormancy. | "dormant customers", "who's gone quiet" |
-| **Pipeline Tracker** | Deal tracking on the workspace substrate — stages, next steps, rot flags, won/lost with reasons. Ranked report, one-tap moves. | "show my pipeline", "new deal", "mark [deal] won" |
-| **Inbox Triage** | Morning inbox pass. Five-bucket classification + top-5 surfacing + reply drafts. | "triage inbox", "inbox triage" |
-| **Speech Prep** | Audience analysis + 3-point outline + hooks + Q&A prep. | "speech prep", "help me prepare for [audience]" |
-| **Stress Test** | Munger-method inversion. Maps paths to failure, reverses into safeguards. | "stress test", "pre-mortem", "what could go wrong" |
-
-### Writing (short-form prose, Voice Calibration v3.0)
-
-| Skill | What It Does | Key Triggers |
-|-------|-------------|-------------|
-| **Email Writer** | Draft an email in your voice — subject, opener, body, close. Two-step draft-then-critique with baked-in Voice Block. | "draft an email to", "email to [name] about", "write an email" |
-| **Memo Writer** | 1–3 page structured memos: decision docs, scope docs, strategy memos, position papers, recurring board / investor updates. Thesis-first. | "memo on", "decision doc", "scope doc", "strategy memo", "position paper", "board update", "monthly CEO letter" |
+Every skill, what it does and what to say to start it: [SKILLS.md](../SKILLS.md). That list is generated from each skill's own description, so it cannot drift.
 
 ## Workspace Structure
 ```

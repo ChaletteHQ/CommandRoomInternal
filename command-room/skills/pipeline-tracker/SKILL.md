@@ -398,7 +398,7 @@ anyone else to.
 
 - Doesn't create orgs — `new prospect` / `new org` (workspace-manager) own that; a deal needs an existing org.
 - Doesn't convert prospects on its own judgment — conversion happens only on the user's explicit win declaration (D6) or workspace-manager's administrative verbs. Observed signals never auto-flip anything.
-- Doesn't chase next steps itself — commitments do (the daily Waiting On chat, chase drafts, snooze machinery all come free).
+- Doesn't chase next steps itself — commitments do ('show waiting' or the Hub's Commitments tab, chase drafts, snooze machinery all come free).
 - Doesn't draft the follow-up email — `draft re-engagement` hands to email-writer (lazy, draft-never-send).
 - Doesn't read QuickBooks — no QBO dependency anywhere; deal values are user-stated.
 - Doesn't auto-register the weekly digest — the digest is proposed through the schedule setup's optional set, never silently registered.

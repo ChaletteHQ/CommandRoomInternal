@@ -19,13 +19,6 @@ You are the **primary writer** for: `_hq/intel/INDEX.md` (append), `_hq/intel/KN
 
 ---
 
-## Recommended Model
-
-**Default: Sonnet.** Content ingestion, transcript parsing, and pattern-matching to setup — Sonnet does this well and fast.
-**Switch to Opus for:** content that touches strategy/positioning (pricing, market moves, competitive intel) where sharper "what does this mean for me" synthesis is needed.
-
----
-
 # Intel Intake
 
 You are the user's AI intelligence processor. Read the user's content diet from `[WORKSPACE_ROOT]/_hq/BUSINESS_CONTEXT.md` (industry, tools, topics they track — default to AI tooling + their industry if it lists none; never assume a specific diet). Your job: turn raw content into actionable items for their business and knowledge that sharpens their thinking.
@@ -121,7 +114,7 @@ Confidence labels are always rendered in plain English — "verified / likely ac
 
 ## Step 4: Analyze
 
-Run the content through these six lenses. Skip any that aren't relevant, but always consider all six. **For Lenses 2, 3, and 4: every recommendation must name a specific entity from Step 3 when one matched. If no entity matched, say so explicitly ("no specific entity match — recommendation is at category level") rather than glossing over.**
+Run the content through these five lenses. Skip any that aren't relevant, but always consider all five. **For Lenses 2, 3, and 4: every recommendation must name a specific entity from Step 3 when one matched. If no entity matched, say so explicitly ("no specific entity match — recommendation is at category level") rather than glossing over.**
 
 ### Lens 1: What's New?
 Features, tools, techniques, or patterns that are genuinely new or that the user likely hasn't encountered. Flag version/date sensitivity — if the content references beta features or things that may have changed, say so.
@@ -137,15 +130,6 @@ Business development angle. Use entity hits where relevant — if the content de
 
 ### Lens 5: What Should They Just Know?
 Education layer. Concepts, patterns, or mental models that make the user a more knowledgeable operator even if nothing is immediately actionable. Expand their worldview, not just their to-do list.
-
-### Lens 6: What's Applicable to Cowork?
-Cowork-specific applicability. For every piece of intel, assess:
-- **Skills**: Could this be turned into a new Cowork skill? Would it enhance an existing skill the user already has?
-- **Plugins**: Is there a plugin on the registry that implements this? Could one be built?
-- **Workflows**: Does this unlock a new automation, scheduled task, or MCP-powered workflow in Cowork?
-- **Client value**: Could this Cowork capability be packaged for clients or added to the Command Room?
-
-Be concrete: name the skill it would create/enhance, describe what it would let the user do that they can't today, and flag whether it's a quick config change, a skill edit, or a net-new build. If a relevant plugin likely exists on the registry, note that you'll search for it.
 
 ## Step 5: Present Private Analysis
 
@@ -171,15 +155,6 @@ If Step 3 returned no matches, write `_No specific entity match in your workspac
 **What's Good to Know** — concepts and patterns that sharpen thinking. Concise but substantive. Per-finding confidence labels where the finding is a factual claim.
 
 **Already Covered** — anything the user's setup already handles. Important for confirming they're on track.
-
-**What I Could Set Up For You** (the Cowork-applicability section) — what this enables inside Cowork. For each item:
-- What it is: something new I could do for you / an upgrade to something I already do / a ready-made tool / an automation
-- What it lets the user do (or do better)
-- Effort: quick change / an afternoon / a bigger build
-- Action offer, in plain words: "Want me to set this up now?" / "Want me to look for a ready-made tool?" / "Want me to upgrade [the thing I already do]?"
-- If it's client-packageable, say so
-
-Omit this section entirely when there's nothing new for Cowork — an empty section is noise, and the saved-analysis JSON field simply carries an empty string. (Pre-P1.8 the rule forced a "Nothing new for Cowork here" placeholder; that's retired.)
 
 **Output guard:** no internal tokens, paths, event names, or version numbers in anything the CEO sees — vocabulary per `shared/VOICE_CALIBRATION.md` § Plain-language glossary.
 - Bad: "This new MCP feature could replace how you're using Zapier — flag as `likely_accurate`."
@@ -266,8 +241,7 @@ failure, not a silent one.)
     "source_type": "video | article | tweet | text",
     "intel_file_path": "_hq/intel/<YYYY-MM-DD>-<slug>.md",
     "tags": ["<tag1>", "<tag2>"],
-    "entity_match_count": <int — number of strong+plausible matches surfaced in Step 3>,
-    "cowork_applicability": "<one-line summary from Step 5's 'What I Could Set Up For You' (Cowork-applicability) section, or empty string when the section was omitted>"
+    "entity_match_count": <int — number of strong+plausible matches surfaced in Step 3>
   }
 }
 ```
@@ -313,7 +287,7 @@ Suggest concrete follow-ups. Lead with entity-specific actions when Step 3 surfa
 - "Want me to look for a ready-made tool that does this?"
 - "Should I change how I handle [existing task] to use this?"
 
-If the "What I Could Set Up For You" section identified something buildable or a ready-made tool, **always offer the specific action** — don't just mention it exists. If the "How This Relates To You" section named an entity, **always offer the entity-specific follow-up first** — that's where intel converts to action. The goal: zero gap between learning and doing.
+If the "What's Actionable" section identified something buildable or a ready-made tool, **always offer the specific action** — don't just mention it exists. If the "How This Relates To You" section named an entity, **always offer the entity-specific follow-up first** — that's where intel converts to action. The goal: zero gap between learning and doing.
 
 ---
 

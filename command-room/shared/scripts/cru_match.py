@@ -13,7 +13,7 @@ fulfilled. Five paths:
 
 - **Path 2 (bulk Gmail/Outlook scan)** — same logic as Path 1 but run over the
   user's outbound mail since the last fire (default last 7 days). Catches sends
-  made directly from native mail clients OUTSIDE Cowork (Gmail on phone, Outlook
+  made directly from native mail clients OUTSIDE the Claude app (Gmail on phone, Outlook
   desktop, etc.). Implementation lives in `orchestrator-commitments.md` Phase
   2.5 — the daily Commitments scheduled task runs this pre-render scan via the
   same `match_send_to_commitments` helper as Path 1.
@@ -53,7 +53,7 @@ fulfilled. Five paths:
   was discarding as calendar-noise. Real-time leg runs in `calendar-writer`
   when CR creates the event; daily backstop runs in `orchestrator-commitments.md`
   Phase 2.7 over calendar events created/updated since the last fire (catches
-  invites M made directly in Google/Outlook calendar, outside Cowork). Both
+  invites M made directly in Google/Outlook calendar, outside the Claude app). Both
   legs call the same `match_calendar_to_commitments` helper.
 
 All paths conservative: HIGH-confidence auto-resolve only. Borderline goes to

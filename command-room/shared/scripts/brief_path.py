@@ -4,7 +4,7 @@ Centralized brief save path — single source of truth for where meeting briefs 
 
 Per shared/CONTRACT.md Rule 3: all meeting briefs save to `_hq/meetings/`. The
 prior `[Project]/meetings/` (v2.10.8 - v2.12.5) didn't always resolve in
-Cowork's sandbox; users hit "folder cannot be found" on click.
+the legacy Cowork sandbox; users hit "folder cannot be found" on click.
 
 Every orchestrator that produces a brief MUST import `get_brief_path` and use
 its return value. Do not hand-roll paths in orchestrator prompts.
@@ -63,7 +63,7 @@ def get_brief_path(workspace_root: str, brief_type: BriefType, slug: str, date_i
     """Absolute path for a brief file.
 
     `workspace_root` is the user's Command Room workspace folder — whatever
-    they mounted in Cowork, wherever it lives on their machine. Inside Cowork's
+    they connected in the Claude app, wherever it lives on their machine. Inside the legacy Cowork
     sandbox it's typically under `/sessions/<id>/mnt/<basename>/`. The
     orchestrator resolves this from environment / mount-point detection at
     fire time per `shared/CONTRACT.md` Rule 22 (find `_hq/` under `mnt/`).
@@ -72,7 +72,7 @@ def get_brief_path(workspace_root: str, brief_type: BriefType, slug: str, date_i
 
     Returns: forward-slash-normalized absolute path under
     `<workspace_root>/_hq/meetings/<filename>`. Always uses `/` separators for
-    consistency across Windows/macOS/Linux + Cowork's sandbox.
+    consistency across Windows/macOS/Linux + the legacy Cowork sandbox.
 
     >>> get_brief_path("/workspace", "past_meeting", "sam", "2026-04-30")
     '/workspace/_hq/meetings/Past_Meeting_sam_2026-04-30.docx'
@@ -100,7 +100,7 @@ def get_brief_artifact_url(absolute_path: str, workspace_root=None) -> str:
       - **Windows absolute paths** (drive letter like `C:`): emit the literal
         native form — `computer://C:\\Users\\Sample\\Desktop\\Claude\\Command
         Room\\...\\file.docx`. TWO slashes (not three), backslashes preserved,
-        spaces UNENCODED. This is the form Cowork's Windows resolver opens
+        spaces UNENCODED. This is the form the Claude app's Windows resolver opens
         reliably (verified by M's testing on 2026-05-20). The pre-v3.13.0
         emission (`computer:///C:/.../Command%20Room/...` — three slashes,
         forward slashes, `%20`) failed silently on every space-containing
@@ -119,13 +119,13 @@ def get_brief_artifact_url(absolute_path: str, workspace_root=None) -> str:
 
       - `_hq/CONVENTIONS_SOURCE_LINKS.md` documented `computer:///C%3A%5C...`
         (encoded backslashes + colon) as the workspace convention.
-      - Cowork's host examples documented `computer://C:\\...\\Command Room/
+      - The legacy Cowork app's host examples documented `computer://C:\\...\\Command Room/
         file.docx` (native, no encoding) as the desktop-app-accepted form.
       - This helper emitted `computer:///C:/.../%20.../file` (three slashes,
         forward slashes, encoded space) — a third format matching neither.
 
     M's 2026-05-20 live testing settled the format question: the native form
-    is what Cowork's Windows resolver actually opens. v3.13.0 aligns this
+    is what the Claude app's Windows resolver actually opens. v3.13.0 aligns this
     helper with that form. `_hq/CONVENTIONS_SOURCE_LINKS.md` was updated to
     match in the same release.
 
@@ -181,7 +181,7 @@ def get_brief_artifact_url(absolute_path: str, workspace_root=None) -> str:
         return get_brief_artifact_url(joined)
 
     if is_windows:
-        # v3.13.0+ native form. Cowork's Windows resolver opens this; URL-encoded
+        # v3.13.0+ native form. The Claude app's Windows resolver opens this; URL-encoded
         # variants (%20 for space, %3A for colon, %5C for backslash) do NOT.
         # Emit: computer://C:\path\to\file.ext (TWO slashes, backslashes, unencoded space)
         # Re-emit with backslashes regardless of the input's separator style.
@@ -199,7 +199,7 @@ def get_brief_artifact_url(absolute_path: str, workspace_root=None) -> str:
 
 
 def is_session_scoped_path(absolute_path: str) -> bool:
-    """True when the path lives inside Cowork's per-session sandbox
+    """True when the path lives inside the legacy Cowork per-session sandbox
     (`/sessions/<id>/...`) — a path that exists only while THAT session is
     alive and has no host-native equivalent the customer's machine can open.
 

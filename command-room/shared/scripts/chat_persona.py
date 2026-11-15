@@ -8,7 +8,7 @@ PERSONIFICATION.md gives every workspace the same global voice. STYLE1 adds a
 per-client layer: a small closed set of knobs (brevity, explanation depth,
 formality, ...) inferred from the client's own record, confirmed by the client,
 and rendered as a LIVE-STATE block into the CLAUDE.md hot cache — the one
-context surface the Cowork runtime provably loads every session. This module is
+context surface the Claude app runtime provably loads every session. This module is
 the READ path plus the deterministic renderer for that block. It never writes;
 writes go through skill_config_writer.save_skill_config(ws, "chat_persona", …)
 so every change is atomic, schema-validated, and evented.

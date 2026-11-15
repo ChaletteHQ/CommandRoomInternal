@@ -530,18 +530,6 @@ def get_person_emails(record: dict) -> list[str]:
     return out
 
 
-def get_person_phones(record: dict) -> list[str]:
-    """Return the list of phone numbers for a person record (v3.13.0+).
-
-    Person records carry `phones` (array) as the canonical field. No singular
-    equivalent. Empty/whitespace-only entries are filtered out.
-    """
-    phones = record.get("phones") or []
-    if not isinstance(phones, list):
-        return []
-    return [p.strip() for p in phones if isinstance(p, str) and p.strip()]
-
-
 def get_person_display_names(record: dict) -> list[str]:
     """Return the unified list of names to use for display/disambiguation:
     canonical_name first, then all aliases and nicknames (deduplicated).
@@ -953,7 +941,7 @@ def find_existing_person(
     raised `DuplicatePersonError` saying "X already exists." That's wrong when
     the caller's intent was "add a different X with the same first name" —
     silently routed to the existing record. Session-22 test caught the case
-    only because Cowork was running a diagnostic confirm prompt; in production
+    only because the legacy Cowork app was running a diagnostic confirm prompt; in production
     it would have corrupted the entity graph.
 
     Returns:

@@ -327,13 +327,13 @@ lines and `brain_proposals.rank_proposals(load_open_proposals(ws,
 Render, plain markdown, read-only:
 
 - **'what did you change'** → the feed lines verbatim (each already carries its plain-English count and, where one applies, its undo affordance). Every line is traceable to an audit event — the feed is a READER; enforcement stays on the artifacts. Empty → *"Nothing since [window start] — no closures, no sweeps, nothing waiting."*
-- **'what's waiting on me'** → the ranked open queue as numbered lines (each item's `render_line` or evidence, verbatim — never re-decide inclusion), ending with: *"Say `staff meeting` to work through these with one-tap actions."* Explicit asks see the full set of **adjudication** rows — deliberately exempt from the daily card's shown-marker dedup, which is why the projector call passes surface `system-health`.
+- **'what's waiting on me'** → the ranked open queue as numbered lines (each item's `render_line` or evidence, verbatim — never re-decide inclusion), ending with: *"Say `staff meeting` to work through these with one-tap actions."* (on demand; no scheduled chat) Explicit asks see the full set of **adjudication** rows — deliberately exempt from the daily card's shown-marker dedup, which is why the projector call passes surface `system-health`.
 
   **One class is NOT in that set (STAFFCUT §3.7, M ruling 2026-08-02): dormancy.** Whether a quiet relationship has gone dormant is a judgment the CEO makes when he asks, so those rows are on-demand and every named surface — this one included — skips them. Nothing is hidden: `brain_proposals.load_open_proposals(ws, "on-demand")` returns them in full, which is the read the dont-forget chat performs. If the user asks specifically about quiet or dormant relationships, that is the call to make; do not fold them back into this count, and do not describe this list as "everything open".
 
 No widget on this step, no shown-markers written, no resolution offered inline (the one-tap surface is the Staff Meeting). The Step 3 output guard applies verbatim.
 
-## Step 5 — The Staff Meeting surface ('staff meeting' / 'run our staff meeting'; the scheduled chat wraps this)
+## Step 5 — The Staff Meeting surface ('staff meeting' / 'run our staff meeting'; on demand only)
 
 The Living Brain's review, fired on demand by those triggers. The scheduled `staff-meeting` chat that used to fire it is retired (the owner's ruling 2026-10-23, cr1#176): its orchestrator, `references/orchestrator-staff-meeting.md` in the registration skill, is now a one-line retirement stub, and this step is the whole surface. One surface, never forked. It renders, in order:
 

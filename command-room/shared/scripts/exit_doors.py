@@ -1996,14 +1996,6 @@ class _SkipCalendarLeg(Exception):
     surfaced."""
 
 
-def _calendar_window_days() -> int:
-    try:
-        from calendar_close import CALENDAR_WINDOW_DAYS
-        return int(CALENDAR_WINDOW_DAYS)
-    except Exception:  # noqa: BLE001
-        return 45
-
-
 def fact_receipt_line(n_calendar: int, n_deal: int) -> str:
     """One CHANGED line, in plain words. No id, no score, no rail name."""
     bits = []

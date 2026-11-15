@@ -165,6 +165,39 @@ STALE_INBOX_LINE = "This inbox row is from an older inbox run; the inbox was che
 SEND_NEEDS_CONFIRM_LINE = "Send needs the second press on the page before a run sends anything."
 SEND_TOKEN_REUSED_LINE = "This send carries a token another choice already used, so it was not sent; press Send again on the page."
 NEWER_MESSAGE_LINE = "A newer message arrived on this thread after the draft, so it was not sent; check the thread."
+#: cr1#1251: a reply with others on it, on a mail service whose reply tool
+#: answers the sender alone (Microsoft 365) or one the run cannot name.
+GROUP_REPLY_LINE = ("This mail service's reply goes to the sender only, and this reply has others on it, "
+                    "so it was not sent. Reply from your mail app so nobody is left off.")
+GROUP_REPLY_DRAFT_LINE = ("This mail service's reply goes to the sender only, and this reply has others on it, "
+                          "so no draft was made. Reply from your mail app so nobody is left off.")
+GROUP_REPLY_UNKNOWN_LINE = ("The run cannot tell which mail service this reply would go through, so it cannot be sure "
+                            "it reaches everyone on it and it was not sent. Reply from your mail app so nobody is left off.")
+GROUP_REPLY_UNKNOWN_DRAFT_LINE = ("The run cannot tell which mail service this reply would go through, so it cannot be sure "
+                                  "it reaches everyone on it and no draft was made. Reply from your mail app so nobody is left off.")
+#: The mail services whose reply tool carries To and Cc itself (cr1#936).
+REPLY_ALL_PLATFORMS = frozenset({"superhuman", "gmail"})
+
+
+def _mail_platform(platform: Optional[str], workspace_root=None) -> str:
+    """The mail service a reply goes through, as one word: `superhuman`,
+    `gmail`, `outlook`, or "" when it cannot be named. Takes what the run
+    passed (a provider slug, or a connector label such as "Superhuman
+    Mail"); with nothing passed, the seat's declared email backend."""
+    raw = str(platform or "").strip().lower()
+    if not raw and workspace_root:
+        try:
+            import connector_config
+            row = connector_config.declared_backend("email", workspace_root) or {}
+            raw = str(row.get("provider") or "").strip().lower()
+        except Exception:  # noqa: BLE001 - an unreadable declaration names nothing
+            raw = ""
+    if "outlook" in raw or "microsoft" in raw or raw in ("m365", "ms365", "office365"):
+        return "outlook"
+    for name in REPLY_ALL_PLATFORMS:
+        if name in raw:
+            return name
+    return ""
 UNKNOWN_VERB_LINE = "The page sent a verb this surface does not take ({verb}); nothing was written."
 NO_ACTOR_LINE = "No owner is on record for this workspace, so nothing was written."
 GONE_LINE = "That item is no longer on the book; nothing was written."
@@ -5759,6 +5792,39 @@ def newer_message_arrived(workspace_root=None, message_ts: Optional[str] = None,
         if ts is not None and ts > base:
             n += 1
     return {"newer": n > 0, "n_newer": n, "line": NEWER_MESSAGE_LINE if n else ""}
+
+
+def reply_reaches_everyone(workspace_root=None, platform: Optional[str] = None,
+                           draft: Optional[Dict[str, Any]] = None, action: str = "send") -> Dict[str, Any]:
+    """The Apply run's reply-all gate (cr1#1251), decided in code:
+    `{refuse, reason, line, n_recipients}`. `platform` is the mail service
+    the run resolved (`mail_seams`' `declared_email.provider`; with none, the
+    seat's declared email backend is read here); `draft` is the press's draft
+    (`to`, `cc`). A reply to more than one person is refused unless the
+    service's reply tool carries To and Cc itself (Superhuman, Gmail): on
+    Microsoft 365 its reply tool answers the sender alone, and on a service
+    the run cannot name nothing vouches that everyone is reached. Leaving
+    the reply unsent is safer than sending it to fewer people than the owner
+    saw. A press with no draft is left to the run's own no-draft refusal.
+    Read only."""
+    from inbox_helpers import _addresses
+
+    if not isinstance(draft, dict):
+        return {"refuse": False, "reason": None, "line": "", "n_recipients": None}
+    seen: List[str] = []
+    for addr in _addresses(draft.get("to")) + _addresses(draft.get("cc")):
+        if addr not in seen:
+            seen.append(addr)
+    plat = _mail_platform(platform, workspace_root)
+    if plat not in REPLY_ALL_PLATFORMS and len(seen) > 1:
+        draft_act = str(action) == "draft"
+        if plat:
+            line = GROUP_REPLY_DRAFT_LINE if draft_act else GROUP_REPLY_LINE
+        else:
+            line = GROUP_REPLY_UNKNOWN_DRAFT_LINE if draft_act else GROUP_REPLY_UNKNOWN_LINE
+        return {"refuse": True, "reason": "group_reply_backend", "n_recipients": len(seen),
+                "platform": plat or None, "line": line}
+    return {"refuse": False, "reason": None, "line": "", "n_recipients": len(seen), "platform": plat or None}
 
 
 def _commitment_seqs(workspace_root) -> Dict[str, int]:
