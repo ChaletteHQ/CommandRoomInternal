@@ -95,10 +95,20 @@ STAGED_BRAIN_DIR = "mnt/user-data/uploads/cowork-folders"
 #: so it is spelled here rather than in the legacy shim.
 _MERGED_DEVICE_BASH = "mcp__remote-devices__device_bash"
 
-#: Fixture-only re-root for the CLI. The shipped preamble never sets it; the
-#: suites that EXECUTE the shipped preamble text do, so the snippet can run
-#: against a planted tree instead of the real `/`.
+#: Fixture-only re-root. The shipped preamble never sets it; the suites that
+#: EXECUTE the shipped preamble text do, so the snippet can run against a
+#: planted tree instead of the real `/`. `detect()` honours it too when no
+#: `root` is passed (cr1#1264). Shipped code never sets it.
 ROOT_ENV_VAR = "CR_ENV_ROOT"
+
+#: The battery's re-root (cr1#1264). `tests/run_all.py` sets it to an empty
+#: folder for every suite, so a suite never decides the host from the machine
+#: it happens to run on (a synced plugin bundle under `/root/.claude` read
+#: `merged_cloud` past a suite's pinned env). Its own name, not `CR_ENV_ROOT`:
+#: many suites strip every `CR_*` variable from a child's env, and a suite
+#: that plants a tree through `CR_ENV_ROOT` must still win. Shipped code never
+#: sets it.
+BATTERY_ROOT_ENV_VAR = "CR1_BATTERY_ENV_ROOT"
 
 _OVERRIDE_VAR = "CR_ENV"
 _SHELL_KEYS = (
@@ -401,12 +411,33 @@ def _resolve_plugin_root(env: Dict[str, str], root, signals: Dict[str, Any]) -> 
     return None
 
 
-def detect(*, env=None, root=Path("/"), tools=None) -> EnvReport:
-    """Read the environment and say which one it is. Never raises."""
+def _default_root() -> Path:
+    """The root `detect()` reads when the caller names none (cr1#1264):
+    `CR_ENV_ROOT` when set, else the battery's `CR1_BATTERY_ENV_ROOT`, else the
+    real `/`. Read from `os.environ`, never from a caller's pinned `env`, so a
+    suite that pins an env pair still gets the runner's re-root."""
+    for name in (ROOT_ENV_VAR, BATTERY_ROOT_ENV_VAR):
+        try:
+            value = str(os.environ.get(name, "") or "").strip()
+        except (TypeError, ValueError):
+            value = ""
+        if value:
+            return Path(value)
+    return Path("/")
+
+
+def detect(*, env=None, root=None, tools=None) -> EnvReport:
+    """Read the environment and say which one it is. Never raises.
+
+    `root` is where the filesystem signals (S6, S9) are read. Unnamed, it is
+    `_default_root()`: a re-root variable when one is set, the real `/`
+    otherwise."""
     try:
         environ = dict(os.environ) if env is None else dict(env)
     except (TypeError, ValueError):
         environ = {}
+    if root is None:
+        root = _default_root()
     names = _tool_names(tools)
     try:
         signals = _read_signals(environ, root, names)
@@ -605,9 +636,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "(no path, no value)")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    root = args.root or os.environ.get(ROOT_ENV_VAR) or "/"
+    root = Path(args.root) if args.root else _default_root()
     tools = [t.strip() for t in args.tools.split(",") if t.strip()]
-    report = detect(root=Path(root), tools=tools)
+    report = detect(root=root, tools=tools)
 
     if args.shell:
         print(shell_line(report))

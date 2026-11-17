@@ -67,7 +67,7 @@ from typing import List, Optional
 # Reminder event family — mirrored from reminders.REMINDER_TYPES (kept as a
 # literal so this module stays import-free / usable inside events_io without
 # a cycle; run_personal_firewall_test pins the two lists equal).
-_REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared")
+_REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared", "reminder_deleted")
 
 # The BAL1 personal-lane event family: the Sunday nudge
 # (balance.compute_balance) and the `book` confirm-path linkage
@@ -380,7 +380,8 @@ def is_personal(row, masks=None, personal_ids=None,
         explicit `data.personal: true`, or (for a bare `reminder`) the D3
         default: no business ref (`data.ref`) and no `primary_thread_id`.
         A person reference alone does NOT make it work (D3 — "call Mom").
-        Flag-less `reminder_updated` / `reminder_cleared` rows are personal
+        Flag-less `reminder_updated` / `reminder_cleared` /
+        `reminder_deleted` rows are personal
         too: they carry only the reminder id (unclassifiable without a
         join), an `edit` can carry a revised personal summary, and no org
         surface consumes lane-management rows — unknown fails closed;

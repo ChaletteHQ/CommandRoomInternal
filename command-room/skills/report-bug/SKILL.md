@@ -24,6 +24,45 @@ Half the bugs fixed in v3.x have been one-keypress user-side fixes (fully quit a
 
 ## Behavior
 
+### Step 0: the Hub's "Something wrong?" message (cr1#1315)
+
+When the message starts `Something's wrong on my Command Room Hub:`, the Hub's "Something wrong?" opened this chat (cr1#1288): the owner's words, then what the Hub was showing, then the page's own ask. Any other message starts at Step 1.
+
+1. **Plan.** One helper call reads the message:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "text": "<the whole message, as it came>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:miss_chat_plan"}'
+```
+
+Render it with `plan run_helper` and paste what it prints: the message carries apostrophes and line breaks. Its `route`:
+   - `bug` (a light that did not finish, an error): go to Step 1 with the owner's words (`said`) as `WHAT_HAPPENED` and "Using the Command Room Hub, which was showing `showing`" as `WHAT_TRYING`. Step 1's question is already answered; do not ask it.
+   - `ask`: say its `line` and wait. Plan again with `route` set to `miss` when the answer says something is missing, or `bug` when something did not work; when the answer names the item, `text` is `Something's wrong on my Command Room Hub: ` followed by the owner's words.
+   - `miss`: the steps below.
+
+2. **Personal sources, before the first connector read (cr1#1179).** Render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "connector_reads:chat_wall", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that, once, before any connector is read here, and follow `shared/CHAT_WALL.md`: call no tool on a server in `connectors`, show no message from a mailbox in `mailboxes` unless its sender is in that entry's `except_senders`, write nothing from either, and say nothing about what was left out.
+
+3. **Search.** For the one entry in the plan's `searches`, search with its `query`, at most `limit` results per source, from the last `days`, and only the kinds in the plan's `sources` (the wall leaves those open):
+   - **Mail:** the business mailbox only, with the declared mail backend's thread search (`tool_discovery.discover_mail_search_tool`, the declared backend first). Never a server in the wall's `connectors`; on a server that also carries a mailbox in the wall's `mailboxes`, search the business mailbox only. Each thread found is one hit `{"source": "mail", "server_id": ..., "mailbox": <the address it is in>, "thread_id": ..., "subject": ..., "sender": ..., "ts": ..., "url": ...}`: the subject and sender only, never the mail's text.
+   - **Meetings:** the meetings connector's search, unless that connector is in the wall's `connectors`. Each meeting found is one hit `{"source": "meeting", "server_id": ..., "meeting_id": ..., "title": ..., "ts": ..., "url": ..., "snippet": <at most one sentence>}`.
+   - A source not connected, one the wall names, or a search that fails is not listed in `searched`.
+   - **The Hub's Inbox feed:** `run_helper` `morning_message:hub_address` (`{"workspace_root": "<WS>"}`). When `found` is true, load the page's database tool as `cockpit-shared.md` shared step 0 does and `get` `feed/inbox` at that `url`. No Hub, no tool, or a failed read: `inbox` is null.
+
+4. **Answer, before anything is filed.** One helper call, with the plan's `choice` as it came:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"choice": <the plan's choice>, "inbox": <feed/inbox as read, or null>, "live": {"<the choice id>": {"hits": [<hits>], "searched": [<sources searched>]}}, "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:miss_chat_answer"}'
+```
+
+Say its `line`: it says where the item was found and why the Hub missed it, or that nothing was found (and, when the owner has personal sources, that they are never searched). Give `source` as a link when it is there (it is handed back only when it is a web address). When `would_file` is true, ask its `ask` and wait. Nothing else is said about what the search left out.
+
+5. **File only on the owner's yes.** A clear yes to that question, and only that, sends the same choice, `live` and `inbox` to the writer the Hub's Apply uses, `resolved_by` left empty:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the plan's choice>], "inbox": <feed/inbox as read, or null>, "live": {"<the choice id>": {"hits": [<hits>], "searched": [<sources searched>]}}, "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_hub_choices"}'
+```
+
+Render it with `plan run_writer` and paste what it prints. Say the result's `line`. Anything other than a clear yes writes nothing: say "Nothing was added." and stop. Never file without the yes, never file on a guess, and never write a `bug_reported` row on this route. When the owner also wants something that failed reported, go to Step 1.
+
 ### Step 1 — Acknowledge + one diagnostic question
 
 Open with one line, no preamble:
@@ -148,6 +187,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"r
 ## Rules
 
 1. **One question, never two.** The user already hit a frustrating bug — don't make them answer a quiz. One sentence each for trying / happened is the whole user-input surface.
+   - On the Hub's "Something wrong?" message (Step 0) the owner's words already answer it; that route's one question is whether to add the item.
 2. **Never invent fields.** If `plugin.json` isn't readable, write `(not detected)`. If `events.jsonl` is empty, write `(no events captured)`. Fabricated diagnoses are worse than honest gaps.
 3. **Pre-fill, don't pre-send.** The user reviews the draft in Gmail before it goes. The maintainer respects them; never auto-send.
 4. **Pattern file is the moat.** Every bug the maintainer fixes from real customer feedback should be added to `{SKILL_DIR}/references/known-issue-patterns.md` so the next customer hits a one-line self-fix instead of an email.
@@ -178,7 +218,7 @@ anyone else to.
 - Does not fire on praise, feature requests, or billing questions.
 - Does not send the email — only drafts.
 - Does not invoke other skills (no `meeting-notes`, no `workspace-manager`). Single-purpose surface.
-- Does not log to telemetry or external systems. The `bug_reported` event in events.jsonl is the only side effect outside the Gmail draft.
+- Does not log to telemetry or external systems. The `bug_reported` event in events.jsonl is the only side effect outside the Gmail draft. The one exception is Step 0's missing item, added to the list through `cockpit_helpers:apply_hub_choices` only on the owner's yes.
 - Does not run if no Gmail connector is mounted AND `_hq/data/events.jsonl` is empty (no useful diagnosis possible — tell the user to email the maintainer directly with a one-liner).
 
 ## Routing (full trigger corpus)

@@ -150,6 +150,17 @@ import time as _time
 from pathlib import Path
 from typing import Optional
 
+# cr1#1240: while a battery runs, an upward walk never binds a real book.
+try:
+    from battery_isolation import walk_may_bind as _walk_may_bind
+except Exception:  # pragma: no cover - loaded outside shared/scripts
+    try:
+        from .battery_isolation import walk_may_bind as _walk_may_bind  # type: ignore
+    except Exception:
+        def _walk_may_bind(root, env=None):  # fail closed only inside a battery
+            import os as _o
+            return not str(_o.environ.get("CR1_BATTERY_ISOLATED", "") or "").strip()
+
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
@@ -311,6 +322,8 @@ def _resolve_workspace_uncached(workspace_root=None) -> Optional[Path]:
         here = Path.cwd().resolve()
         for root in (here, *here.parents):
             if (root / _ENTITIES_REL).is_file():
+                if not _walk_may_bind(root):
+                    break  # cr1#1240: a battery never binds a real book
                 return _canonical(root)
     except Exception:
         pass
@@ -350,6 +363,8 @@ def workspace_root_for_path(path) -> Optional[Path]:
     try:
         for parent in Path(path).resolve().parents:
             if (parent / _ENTITIES_REL).is_file():
+                if not _walk_may_bind(parent):
+                    break  # cr1#1240
                 return _canonical(parent)
     except Exception:
         pass

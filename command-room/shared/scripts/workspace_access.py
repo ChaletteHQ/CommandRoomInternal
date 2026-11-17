@@ -55,6 +55,17 @@ import sys
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
+
+# cr1#1240: while a battery runs, an upward walk never binds a real book.
+try:
+    from battery_isolation import walk_may_bind as _walk_may_bind
+except Exception:  # pragma: no cover - loaded outside shared/scripts
+    try:
+        from .battery_isolation import walk_may_bind as _walk_may_bind  # type: ignore
+    except Exception:
+        def _walk_may_bind(root, env=None):  # fail closed only inside a battery
+            import os as _o
+            return not str(_o.environ.get("CR1_BATTERY_ISOLATED", "") or "").strip()
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -398,8 +409,11 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
     "cockpit_helpers:feed_mail_rules",  # cr1#1020 - the Inbox tab's mail rules and dropped threads, read only
+    "cockpit_helpers:feed_brief",  # cr1#1310 - the Brief tab: today's saved morning brief, as written, read only
     "morning_message:hub_address",  # cr1#1017 - the Hub page the morning message reads its Inbox feed from, read only
     "cockpit_helpers:miss_search_plan",  # cr1#1202 - what the apply run searches for each "Missed something?" press, computed not written
+    "cockpit_helpers:miss_chat_plan",  # cr1#1315 - what report-bug does with the "Something wrong?" chat's message: the route and the one search, computed not written
+    "cockpit_helpers:miss_chat_answer",  # cr1#1315 - where that chat's missing item was found and why the Hub missed it, before anything is filed; read only
     "cockpit_helpers:feed_people",  # cr1#1020 - the People tab and the starred people on Home, read only
     "cockpit_helpers:feed_board",  # cr1#1017 - the Week view's board on Today: due cards and priority lanes, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
@@ -435,6 +449,12 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "offer_gate:decision_log_duplicates_line",  # its sentence (pure)
     "surface_composers:decision_log_answer",  # decision-log's composed answer (reads)
     "chat_output_renderer:validate_chat_output",  # the leak scan on a reply (reads)
+    # DOORHELP7 (cr1#1005, part 4): the reads a merged seat was still refused.
+    # Each reads and writes nothing (pinned on a local and a merged seat).
+    "meeting_capture:count_meeting_writes",  # meeting-notes Step 9a3, the claim audit (reads the book)
+    "meeting_capture:meeting_binding_audit",  # Step 9a3's binding check (reads the book)
+    "task_watchdog:health_verdict",  # the Maintenance health step's verdict (reads receipts)
+    "integrity_check:run_checks",  # the Maintenance integrity step, detect only (reads)
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -1044,7 +1064,7 @@ def find_root_up(start: Optional[Path] = None) -> Optional[Path]:
     candidate = here if here.is_dir() else here.parent
     for d in (candidate, *candidate.parents):
         if _is_root(d):
-            return d
+            return d if _walk_may_bind(d) else None  # cr1#1240
     return None
 
 
@@ -1971,6 +1991,8 @@ CONTENT_KEY_SUFFIXES = ("_base64",)
 #: every other value of every record as before. The health check used to be
 #: refused here, and its chat stripped the folder to get through.
 LISTING_ARG_HELPERS = {"staff_meeting_helpers:health_report": "task_records",
+                       # cr1#1005 part 4: the verdict the report wraps, the same listing
+                       "task_watchdog:health_verdict": "task_records",
                        # cr1#967: compares each record's folder by digest, never opens it
                        "schedule_backend:plan_default_cron_moves": "registered"}
 LISTING_FOLDER_KEYS = ("folders",)
@@ -2740,6 +2762,11 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
                 reset_capture_once()
             except Exception:  # noqa: BLE001 - a missing reset never blocks an append
                 pass
+            try:
+                from atomic_write import reset_append_route  # type: ignore
+                reset_append_route()  # cr1#1005 part 4: this append's route only
+            except Exception:  # noqa: BLE001
+                pass
             stamped = append_event(target, rows, holder=holder)
             try:
                 from atomic_write import last_capture_once_refusal  # type: ignore
@@ -2769,7 +2796,33 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
     return _envelope("append_jsonl", ctx, started, ok=True, rel=rel,
                      n=len(stamped), stamped=stamped,
                      **({"capture_once": capture_once} if capture_once is not None else {}),
+                     **_landed_fields(target, Path(ctx["vm_path"])),
                      **_origin_fields(env))
+
+
+def _landed_fields(target: Path, vm_path: Path) -> Dict[str, Any]:
+    """`{landed_rel}` when the rows landed in this computer's own log rather
+    than the live one, else `{}` (cr1#1005 part 4).
+
+    On a seat that knows another computer and does not own the live log, the
+    single append path writes this computer's own file
+    (`_hq/data/computers/<mark>/events.jsonl`, cr1#1061), which the merged
+    reads include. The answer used to name only the live log, so a receipt
+    that landed looked lost. The append path records the route it took
+    (`atomic_write.last_append_route`); nothing is guessed from the rows."""
+    if target.name != "events.jsonl":
+        return {}
+    try:
+        from atomic_write import last_append_route  # type: ignore
+        landed = last_append_route()
+    except Exception:  # noqa: BLE001 - a missing record leaves the answer as it was
+        return {}
+    if not landed:
+        return {}
+    try:
+        return {"landed_rel": Path(landed).resolve().relative_to(vm_path.resolve()).as_posix()}
+    except (OSError, ValueError):
+        return {}
 
 
 # ---------------------------------------------------------------------------

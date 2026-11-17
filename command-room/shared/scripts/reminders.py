@@ -6,7 +6,8 @@ Reminders are the user's own pins: "remind me about X on Friday" → a row on
 the morning brief from that day, EVERY day, until the user clears or pushes
 it. They are NOT commitments — opposite lifecycle (pin-until-cleared: never
 auto-ranked, never auto-faded, never chased) — so they are their own event
-family (`reminder` / `reminder_updated` / `reminder_cleared`), never a
+family (`reminder` / `reminder_updated` / `reminder_cleared` /
+`reminder_deleted`), never a
 commitment kind. They never enter commitment buckets, counts, chase, or
 triage (the loaders ignore them structurally: different `type`).
 
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import calendar
 import datetime as _dt
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
@@ -55,7 +57,16 @@ except ImportError:  # direct-path import (tests, bash one-liners)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from event_gate import REMINDER_ORIGIN, append_event, new_reminder_id
 
-REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared")
+REMINDER_TYPES = ("reminder", "reminder_updated", "reminder_cleared", "reminder_deleted")
+
+# cr1#1221: "delete the reminder" is not "done with the reminder". A clear
+# re-arms a repeating reminder (below); a delete takes it off every surface
+# for good, and only the owner's `undo` (`restore_reminder`, through
+# `brain_undo`) brings it back. The delete carries its own undo handle: a
+# `brain_batch_id` and this change class, stamped together.
+DELETE_CHANGE_CLASS = "reminder_deleted"
+# The restore is a `reminder_updated` touch with this action.
+RESTORE_ACTION = "restore"
 
 # Escalation thresholds (M choice ②, 2026-07-08): a pinned reminder ignored
 # 3 days renders bold; 7 days moves to the top of the brief. "Ignored" means
@@ -67,7 +78,7 @@ ESCALATE_TOP_DAYS = 7
 # the lighter "Upcoming reminders" section — no daily ask yet.
 UPCOMING_WINDOW_DAYS = 3
 
-_ACTIONS = ("push", "keep", "edit")
+_ACTIONS = ("push", "keep", "edit", RESTORE_ACTION)
 
 
 class ReminderError(ValueError):
@@ -223,7 +234,9 @@ def build_reminder_updated_event(
 
     `push` REQUIRES `remind_from` (the new pin date; also re-arms a cleared
     one-shot). `keep` is an acknowledged touch — resets the escalation clock,
-    changes nothing else. `edit` revises summary/due only.
+    changes nothing else. `edit` revises summary/due only. `restore`
+    (cr1#1221) takes back a delete; `restore_reminder` writes it, on the
+    owner's undo only.
     """
     if origin != REMINDER_ORIGIN:
         raise ReminderError(
@@ -280,6 +293,113 @@ def build_reminder_cleared_event(
     return {"type": "reminder_cleared", "source_skill": source_skill, "data": data}
 
 
+# The undo handle's prefix (the `di_` / `swb_` precedent): readable, unique
+# per gesture.
+DELETE_BATCH_PREFIX = "rdl_"
+
+
+def _delete_batch_id() -> str:
+    import secrets
+
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{DELETE_BATCH_PREFIX}{stamp}-{secrets.token_hex(4)}"
+
+
+def build_reminder_deleted_event(
+    reminder_id: str,
+    *,
+    batch_id: Optional[str] = None,
+    origin: str = REMINDER_ORIGIN,
+    source_skill: str = "show-my-reminders",
+) -> dict:
+    """"delete the reminder" → one `reminder_deleted` (cr1#1221).
+
+    Unlike a clear, a delete never re-arms: the reader drops the id on every
+    surface, a repeating reminder included, until the owner's `undo` restores
+    it. Append-only like the rest of the lane; the reminder's own events stay
+    in history. The event carries its undo handle (`brain_batch_id` with
+    `brain_change_class`, always together: a batch id with no class is one
+    `brain_undo` silently skips), so a bare `undo`, even in a fresh chat, can
+    take it back. NEVER touches a referenced commitment.
+    """
+    if origin != REMINDER_ORIGIN:
+        raise ReminderError(
+            f"reminder_deleted is user-minted only: origin must be "
+            f"'{REMINDER_ORIGIN}', got {origin!r}"
+        )
+    if not reminder_id or not str(reminder_id).strip():
+        raise ReminderError("reminder_deleted needs the reminder's id")
+    bid = str(batch_id).strip() if batch_id and str(batch_id).strip() else _delete_batch_id()
+    data: dict = {
+        "reminder_id": str(reminder_id).strip(),
+        "origin": REMINDER_ORIGIN,
+        "brain_batch_id": bid,
+        "brain_change_class": DELETE_CHANGE_CLASS,
+    }
+    return {"type": "reminder_deleted", "source_skill": source_skill, "data": data}
+
+
+def is_deleted(events: Iterable[dict], reminder_id: str) -> bool:
+    """True when the owner's newest word on `reminder_id` is a delete (a
+    restore after it answers False). Pure; the same origin rule as the
+    reader: a row not minted by the user counts for nothing."""
+    rid = str(reminder_id or "").strip()
+    deleted = False
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") not in ("reminder_deleted", "reminder_updated"):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if data.get("origin") != REMINDER_ORIGIN or str(data.get("reminder_id") or "") != rid:
+            continue
+        if ev.get("type") == "reminder_deleted":
+            deleted = True
+        elif data.get("action") == RESTORE_ACTION:
+            deleted = False
+    return deleted
+
+
+def restore_reminder(
+    events_path,
+    reminder_id: str,
+    *,
+    events: Iterable[dict],
+    source_skill: str = "show-my-reminders",
+) -> dict:
+    """Take a delete back (the `brain_undo` reverser's writer, cr1#1221):
+    one `reminder_updated` with action `restore`, appended only when the
+    reminder is deleted now. `events` is the book as read (the caller's own
+    read, so this module opens no log). Answers `{status, reminder_id}`:
+    `restored`, or `already_restored` when nothing was deleted (the undo
+    reverses nothing and writes no marker)."""
+    rid = str(reminder_id or "").strip()
+    if not rid:
+        raise ReminderError("restore needs the reminder's id")
+    if not is_deleted(events, rid):
+        return {"status": "already_restored", "reminder_id": rid}
+    ev = build_reminder_updated_event(rid, action=RESTORE_ACTION, source_skill=source_skill)
+    written = append_event(events_path, ev, holder="reminders.restore_reminder")
+    if not written:
+        return {"status": "error", "reminder_id": rid, "error": "the restore did not land"}
+    return {"status": "restored", "reminder_id": rid, "seq": written[0].get("seq")}
+
+
+# The chat words that delete (cr1#1221), verb first: "delete the reminder",
+# "delete the [summary words] reminder", "get rid of that reminder for good".
+# The near misses stay what they were: "done with the reminder" and "clear
+# it" clear (a repeat re-arms), "push it" pushes. A summary that merely
+# contains the word ("done with the delete review reminder") is not a delete.
+_DELETE_RE = re.compile(
+    r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+|just\s+)?"
+    r"(?:delete|remove|erase|get\s+rid\s+of)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_delete(phrase: str) -> bool:
+    """True when the owner's words ask to delete a reminder, not clear it."""
+    return bool(_DELETE_RE.match(str(phrase or "")))
+
+
 def capture_reminder(events_path, summary: str, **kwargs) -> dict:
     """Build + append in one call (the writer helper the capture phrases
     route through). Returns the built event — data.id is the handle later
@@ -324,7 +444,8 @@ def active_reminders(
     personal reminders.
 
     Returns active reminders (cleared one-shots excluded; cleared repeats
-    re-armed to their next occurrence), each:
+    re-armed to their next occurrence; deleted ones excluded on every
+    surface, a repeat included, cr1#1221), each:
 
         {id, summary, due, personal, ref, repeat,
          remind_from,            # the EFFECTIVE current occurrence (ISO date)
@@ -383,6 +504,7 @@ def active_reminders(
                 "repeat": repeat,
                 "occurrence": occ,
                 "cleared": False,
+                "deleted": False,
                 "last_touch": None,
             }
             continue
@@ -392,7 +514,15 @@ def active_reminders(
         if rec is None:
             continue  # dangling mutation — tolerate on read
 
+        if etype == "reminder_deleted":
+            # cr1#1221: gone for good, a repeat included (never re-arms);
+            # only the owner's restore (`restore_reminder`) brings it back.
+            rec["deleted"] = True
+            continue
+
         if etype == "reminder_updated":
+            if data.get("action") == RESTORE_ACTION:
+                rec["deleted"] = False
             if data.get("remind_from"):
                 try:
                     rec["occurrence"] = _as_date(data["remind_from"], "remind_from")
@@ -430,7 +560,7 @@ def active_reminders(
 
     out: List[dict] = []
     for rec in state.values():
-        if rec["cleared"]:
+        if rec["cleared"] or rec["deleted"]:
             continue
         if rec["personal"] and surface != "m_facing":
             continue
@@ -519,6 +649,12 @@ __all__ = [
     "build_reminder_event",
     "build_reminder_updated_event",
     "build_reminder_cleared_event",
+    "build_reminder_deleted_event",
+    "is_deleted",
+    "restore_reminder",
+    "wants_delete",
+    "DELETE_CHANGE_CLASS",
+    "RESTORE_ACTION",
     "capture_reminder",
     "active_reminders",
     "load_active_reminders",

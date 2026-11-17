@@ -1961,6 +1961,8 @@ def build_commitment_triage_view(workspace_root, *, now_iso: str | None = None) 
     anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
+    # cr1#1292: a snoozed item is not on this view until its date.
+    opens = _drop_snoozed_opens(ws, opens, now_iso)
     try:
         user_id = resolve_primary_user(ws)
     except Exception:
@@ -3026,6 +3028,8 @@ def build_waiting_on_view(workspace_root, *, now_iso: str | None = None,
     anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
+    # cr1#1292: a snoozed item is not on this view until its date.
+    opens = _drop_snoozed_opens(ws, opens, now_iso)
     # BUG-8330 item 14 (fix round FX-3) — collapse suspected-duplicate
     # components BEFORE the counts are taken. A duplicate fold is an IDENTITY
     # operation, not a row filter: the folded rows are the SAME commitment, so
@@ -3224,6 +3228,8 @@ def build_my_plate_view(workspace_root, *, now_iso: str | None = None,
     anchor, _lnow_hoist = _hoisted_anchor_and_instant(ws, now_iso)
     events_path = _events_path(ws)
     opens = load_open_commitments(events_path)
+    # cr1#1292: a snoozed item is not on this view until its date.
+    opens = _drop_snoozed_opens(ws, opens, now_iso)
     # BUG-8330 item 14 (fix round FX-3) — same identity-before-counts fold as
     # Waiting On: duplicates collapse first, so the header counts one real
     # promise once.
@@ -3478,6 +3484,16 @@ def _component_clears_floor(ev, floor: float) -> bool:
     if isinstance(n, bool) or not isinstance(n, int) or n < 2:
         return False
     return m >= floor
+
+
+def _drop_snoozed_opens(ws, opens: list, now_iso: str) -> list:
+    """The open set with every snoozed item (and its steps) taken out
+    (cr1#1292, the owner's ruling of 2026-11-16: a snooze lives on the item
+    and every surface honours it). The same reading the plate and the open
+    list use (`mute_ledger.item_snoozes`), so the chat views agree with the
+    Hub about what is hidden. Dropped before counting, as the plate does."""
+    from mute_ledger import drop_snoozed, workspace_item_snoozes
+    return drop_snoozed(opens, workspace_item_snoozes(ws, now_iso))[0]
 
 
 def _fold_dups(surfaced: list) -> tuple[list, int]:

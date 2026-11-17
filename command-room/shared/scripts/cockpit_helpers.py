@@ -5,10 +5,11 @@ the page saved, and how a saved choice reaches the book.
 WHAT THE COCKPIT IS
 -------------------
 
-One private artifact page the owner opens each morning. Nine tabs, option D's
-List view (cr1#1013): Today, Week, Inbox, Commitments, Priorities, Work
-streams, People, Review, Settings (`HUB_TABS`; Overdue is a filter inside
-Commitments since cr1#946), one Start button, one light per leg. The page
+One private artifact page the owner opens each morning. Eight tabs, option D's
+List view (cr1#1013), in two rows since cr1#1285: Today, Week, Settings over
+Inbox, Commitments, Priorities, Work streams, People (`HUB_TABS`; Overdue and
+Review are the Late and To confirm filters inside Commitments since cr1#946
+and cr1#1286), one Go button, one light per leg. The page
 keeps its own small database on claude.ai: the feeds a run writes for it, the
 status line per leg, and the choices the owner presses. Nothing on the page
 writes the book. A run of the `cockpit-apply` task reads the choices back and
@@ -37,7 +38,7 @@ WHO WRITES WHAT
 ---------------
 
 Helpers (read or compute, on `RUN_HELPER_ALLOWLIST`): `feed_today`,
-`feed_inbox`, `plan_apply`, `status_doc`, `maintenance_status`,
+`feed_brief`, `feed_inbox`, `plan_apply`, `status_doc`, `maintenance_status`,
 `load_config`, `setup_check`, `render_page`, `capabilities`.
 
 Writers (on `RUN_WRITER_ALLOWLIST`): `feed_plate` (building the plate mints
@@ -103,7 +104,7 @@ RUNNING_TIMEOUT_BY_LEG = {"inbox": 30}
 #: The Refresh light the page sets to `waiting` while it waits for Apply;
 #: after this long nothing will fire it, so the light stops saying it waits.
 WAITING_TIMEOUT_MINUTES = 180
-STATUS_WAIT_DROPPED_LINE = "Not refreshed: Apply took too long. Press Refresh day."
+STATUS_WAIT_DROPPED_LINE = "Not refreshed: Apply took too long. Press Go."
 CHOICE_EXPIRY_DAYS = 7
 PREP_HOLD_MINUTES = 60
 UPCOMING_HOURS = 24
@@ -113,11 +114,35 @@ PLATE_ROW_CAP = 150
 #: them and the tab says so.
 OVERDUE_EXTRA_CAP = 150
 FOCUS_CAP = 8
+#: The top line's ranking (cr1#1290): each of the owner's own items scores on
+#: its link to a confirmed priority, on being owed to a key person (one
+#: starred on the People tab) and on being due inside the lead time its work
+#: needs. Overdue only breaks ties; an item with no score never leads.
+LEAD_CAP = 3
+LEAD_PRIORITY_POINTS = 3
+LEAD_PRIORITIES_COUNTED = 2
+LEAD_KEY_PERSON_POINTS = 3
+LEAD_WINDOW_POINTS = 2
+#: Days ahead of its date an item surfaces: a plain item the day before, a
+#: deliverable (an item with steps, or one whose title names a made thing)
+#: three days before plus a day for each step past the first, at most six.
+LEAD_PLAIN_DAYS = 1
+LEAD_DELIVERABLE_DAYS = 3
+LEAD_MAX_DAYS = 6
+LEAD_WORK_RE = re.compile(
+    r"(?i)\b(presentations?|decks?|slides|proposals?|reports?|plans?|drafts?|memos?|models?|agreements?|"
+    r"contracts?|pitch|budgets?|analysis|write[- ]?ups?|briefs?|reviews?)\b")
 CHASE_CAP = 6
 SCHEDULE_CAP = 4
+#: Lines from the owner's goals (cr1#1294, part b): the confirmed priorities
+#: with no live item behind them, at most this many on the top line; the
+#: count travels whole.
+GOAL_LINES_CAP = 3
 
 #: The page's verbs: a closed subset of the owning surface's own verbs.
-COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "reopen"})
+COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "reopen",
+                              # cr1#1289: the two presses on a "No home yet" row
+                              "assign", "notwork"})
 INBOX_VERBS = frozenset({"send", "draft", "snooze"})
 #: cr1#1020: the inbox presses the owner's mail rules take (`mail_rules`),
 #: applied in code by `apply_mail_choices`, never through a mail handler:
@@ -142,6 +167,15 @@ PRE_HUB_NAMES = {"cockpit-prep": "Cockpit Prep", "cockpit-inbox": "Cockpit Inbox
 DONE_EVIDENCE = "Marked done on the Command Room Hub"
 DROP_EVIDENCE = "Dropped on the Command Room Hub"
 DROP_PENDING_LINE = "That one is still waiting for your Confirm; it cannot be dropped from here."
+#: cr1#1289: "Not work" on a "No home yet" row, the same one closure path as
+#: Drop, recorded with its own reason.
+NOT_WORK_EVIDENCE = "Set aside as not work on the Command Room Hub"
+NOT_WORK_LINE = "Set aside: not work."
+ASSIGN_REASON = "Given a home on the Command Room Hub"
+ASSIGN_NO_STREAM_LINE = "That work stream is not on your book any more; nothing was written. Pick another."
+ASSIGN_HAS_HOME_LINE = "That one already has a home; nothing was written."
+ASSIGN_HEARD_LINE = "A line that was only heard is not tracked yet, so it cannot be given a home from here; track it in a chat first."
+NOT_WORK_FAILED_LINE = "That one could not be set aside; nothing was written."
 CONFIRM_EVIDENCE = "Confirmed and closed on the Command Room Hub"
 REOPEN_REASON = "Reopened from the Command Room Hub"
 SNOOZE_REASON = "pushed to a later date from the Command Room Hub"
@@ -1260,7 +1294,11 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
     date, its name ("Today" for the first), `away` (the title of an all-day
     event that says time away, else None), its meetings in start order, each
     marked `personal` and, on an away day, `clash` for a business meeting
-    with a time. Days are the owner's own, in the workspace's time zone."""
+    with a time. Days are the owner's own, in the workspace's time zone.
+    cr1#1299: a day's meetings are counted by the Today feed's rule
+    (cr1#1293, `_no_one_else`): a timed event with nobody else on it is
+    marked `solo`, stays on the day, is counted in `n_blocks` and not in
+    `n_meetings`, and is never a clash."""
     tzinfo = _workspace_tz(workspace_root)
     today = now.astimezone(tzinfo).date()
     dates = _week_dates(today)
@@ -1295,7 +1333,7 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
             for d in span:
                 by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                                   "start": None, "end": None, "all_day": True,
-                                  "personal": personal, "clash": False})
+                                  "personal": personal, "clash": False, "solo": False})
             continue
         start = _parse(m.get("start"))
         if start is None:
@@ -1321,16 +1359,18 @@ def _week_days(workspace_root, meetings, now: _dt.datetime) -> Dict[str, Any]:
         for d in span:
             by_day[d].append({"meeting_id": str(m.get("meeting_id") or "").strip(), "title": title,
                               "start": _iso(start), "end": _iso(end), "all_day": False,
-                              "personal": personal, "clash": False})
+                              "personal": personal, "clash": False, "solo": _no_one_else(m)})
     days = []
     for d in dates:
         ms = by_day[d]
         if d in away:
             for x in ms:
-                x["clash"] = bool(not x["all_day"] and not x["personal"])
+                x["clash"] = bool(not x["all_day"] and not x["personal"] and not x["solo"])
         ms.sort(key=lambda x: (not x["all_day"], x["start"] or ""))
         days.append({"date": d.isoformat(), "name": _day_name(d, today), "away": away.get(d),
-                     "meetings": ms[:WEEK_DAY_MEETINGS], "n_meetings": len(ms),
+                     "meetings": ms[:WEEK_DAY_MEETINGS],
+                     "n_meetings": sum(1 for x in ms if not x["solo"]),
+                     "n_blocks": sum(1 for x in ms if x["solo"]),
                      "n_clashes": sum(1 for x in ms if x["clash"])})
     return {"today": today.isoformat(), "days": days}
 
@@ -1455,11 +1495,23 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     return _with_words(workspace_root, out)
 
 
+def _no_one_else(m: Dict[str, Any]) -> bool:
+    """cr1#1293: the run's `others` (how many people besides the owner are on
+    the event) says nobody else is on it. Only a plain 0 does: an event the
+    read says nothing about, or a count that is not a whole number, stays a
+    meeting, so a real call is never hidden."""
+    n = m.get("others")
+    return isinstance(n, int) and not isinstance(n, bool) and n == 0
+
+
 def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
                *, now_iso=None, device_workspace: Optional[str] = None) -> Dict[str, Any]:
     """The Today feed: the next 24 hours of meetings as the run read them
-    from the calendars (`{meeting_id, title, start, end, calendar}` each,
-    `calendar` one of business or personal), each with its prep when a
+    from the calendars (`{meeting_id, title, start, end, calendar, others}`
+    each, `calendar` one of business or personal, `others` how many people
+    besides the owner are on it). A timed event with `others` 0 is a block of
+    the owner's own time (`solo`, cr1#1293): it stays on the list and is left
+    out of `n_meetings`. Each row comes with its prep when a
     `prep_brief` receipt names one, shown until an hour after the meeting
     ends. The calendar read is the run's; this only joins it to the book."""
     now = _now(now_iso)
@@ -1495,6 +1547,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
             "place": str(m.get("place") or m.get("location") or "").strip()[:200] or None,
             "prep": None, "prep_text": None, "prep_on_pc": None, "prep_at": None,
             "prep_shown_until": _iso(end + hold), "all_day": all_day,
+            "solo": not all_day and _no_one_else(m),
         })
     ids = [r["meeting_id"] for r in rows if r["meeting_id"]]
     if ids:
@@ -1533,7 +1586,7 @@ def feed_today(workspace_root, meetings: Optional[List[Dict[str, Any]]] = None,
     except Exception:  # noqa: BLE001 - the list never fails for the week's sake
         week = {"today": None, "days": [], "error": True}
     return _with_words(workspace_root, {"generated_at": _iso(now), "meetings": rows,
-            "n_meetings": len(rows), "n_prepped": sum(1 for r in rows if r["prep"]),
+            "n_meetings": sum(1 for r in rows if not r["solo"]), "n_prepped": sum(1 for r in rows if r["prep"]),
             "week": week, "about": _today_about(workspace_root, now)})
 
 
@@ -1768,7 +1821,8 @@ def _done_for_you(workspace_root, now: _dt.datetime, days: int = DONE_DAYS) -> D
                  is not done for them.
       filed      an item whose newest move took it from no thread to one;
                  a bulk move (a batch stamp), a split or an undo is not.
-      reminders  a reminder the owner set (`REMINDER_ORIGIN`), not cleared.
+      reminders  a reminder the owner set (`REMINDER_ORIGIN`), not cleared
+                 or deleted.
     (Closes use `DONE_COMPLETION_ROUTES`, the value receipt's routes.)
       filtered   the newest inbox read's own counts, never summed across
                  reads (each read sees the same mail again)."""
@@ -1791,6 +1845,7 @@ def _done_for_you(workspace_root, now: _dt.datetime, days: int = DONE_DAYS) -> D
     closes: Dict[str, Dict[str, Any]] = {}      # commitment id -> its standing close
     moves: Dict[Any, Dict[str, Any]] = {}       # item seq -> its newest move
     reminders: Dict[str, Dict[str, Any]] = {}   # reminder id -> the reminder
+    deleted_reminders: Dict[str, Dict[str, Any]] = {}   # cr1#1221: what a restore puts back
     inbox: Optional[Dict[str, Any]] = None
 
     def _when(ev):
@@ -1825,8 +1880,17 @@ def _done_for_you(workspace_root, now: _dt.datetime, days: int = DONE_DAYS) -> D
         elif kind == "reminder":
             if d.get("id") and d.get("origin", REMINDER_ORIGIN) == REMINDER_ORIGIN:
                 reminders[str(d["id"])] = ev
-        elif kind == "reminder_cleared":
-            reminders.pop(str(d.get("id") or d.get("reminder_id") or ""), None)
+        elif kind in ("reminder_cleared", "reminder_deleted"):
+            rid_done = str(d.get("id") or d.get("reminder_id") or "")
+            if kind == "reminder_deleted" and rid_done in reminders:
+                deleted_reminders[rid_done] = reminders[rid_done]
+            reminders.pop(rid_done, None)
+        elif (kind == "reminder_updated" and d.get("action") == "restore"
+              and d.get("origin") == REMINDER_ORIGIN):
+            # cr1#1221: the owner's undo of a delete puts the reminder back.
+            rid_back = str(d.get("reminder_id") or "")
+            if rid_back in deleted_reminders:
+                reminders[rid_back] = deleted_reminders.pop(rid_back)
         elif kind == "pack_run" and receipt_task_id(ev) == "inbox":
             at = _when(ev)
             got = {name: d.get(key) for key, name in DONE_FILTER_KEYS
@@ -1915,10 +1979,12 @@ PROJECTS_CAP = 200
 #: this list (HUBLIST1). Train 8's per-seat word list (`words.py`) replaces
 #: the labels here and nowhere else; the keys are wire names and never change
 #: (`projects` is the Work streams tab, whose feed is still `feed/projects`).
-HUB_TABS = (("today", "Today"), ("week", "Week"), ("inbox", "Inbox"),
-            ("plate", "Commitments"), ("priorities", "Priorities"),
-            ("projects", "Work streams"), ("people", "People"),
-            ("review", "Review"), ("settings", "Settings"))
+#: Since cr1#1285 (owner ruling 2026-11-16) the page shows them in two rows:
+#: the small row (Today, Brief, Week, Settings), then the work row. Brief
+#: (cr1#1310) sits after Today: the morning's own text, read only.
+HUB_TABS = (("today", "Today"), ("brief", "Brief"), ("week", "Week"), ("settings", "Settings"),
+            ("inbox", "Inbox"), ("plate", "Commitments"), ("priorities", "Priorities"),
+            ("projects", "Work streams"), ("people", "People"))
 #: The tabs whose label is a seat's word (cr1#1017 part 1b), by the key in
 #: `words.DEFAULTS`; every other tab keeps its label from `HUB_TABS`.
 HUB_TAB_WORDS = {"projects": "work_stream"}
@@ -2040,15 +2106,93 @@ def _thread_panel(c: Dict[str, Any], mine: List[dict], theirs: List[dict],
     return out
 
 
+def _priority_open(root: Path, now_iso: str, confirmed: List[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    """READ. cr1#1294: {priority id: how many live items stand behind it},
+    on its own thread, on every thread its objective links (live or not,
+    `objective_math._linked_ids`, the objective's own next-move read), and
+    on every thread under a linked one (a work stream's own threads). A
+    live item is any open row there that is not a heard line: snoozed rows
+    and rows waiting for the owner's yes count, so a priority with a step
+    already on record is never called empty. None when the open list or the
+    thread register cannot be read, and then no priority is called empty.
+    Never writes."""
+    import open_list as ol
+    import open_list_index as oli
+    from entities_io import entities_collection, read_entities_json
+    from objective_math import _linked_ids
+    try:
+        tzinfo = ol._workspace_tz(root)
+        now, _today = ol._clock(root, now_iso, tzinfo)
+        threads, list_doc, _from_log = oli._read(root, "threads", oli.BY_THREAD_FILE, now, tzinfo)
+        register = [t for t in entities_collection(read_entities_json(root / "_hq" / "data" / "entities.json"),
+                                                   "threads") if isinstance(t, dict)]
+    except Exception:  # noqa: BLE001 - an unread list never makes a priority look empty
+        return None
+    reg = {str(t.get("id")): t for t in register if t.get("id")}
+    kids: Dict[str, set] = {}
+    for t in register:
+        if t.get("parent_thread_id") and t.get("id"):
+            kids.setdefault(str(t["parent_thread_id"]), set()).add(str(t["id"]))
+    by_id = {str(r.get("id")): r for r in list_doc.get("rows") or [] if isinstance(r, dict)}
+    live: Dict[str, set] = {}
+    for tid, e in (threads or {}).items():
+        live[str(tid)] = {str(i) for k in ("you_owe", "owed_to_you", "unowned") for i in (e or {}).get(k) or []
+                          if str(i) in by_id and not by_id[str(i)].get("observed")}
+    out: Dict[str, int] = {}
+    for p in confirmed:
+        pid = str(p.get("id") or "")
+        obj = (reg.get(pid) or {}).get("objective")
+        linked = {pid} | {str(x) for x in p.get("built_from") or []} | {
+            str(x) for x in (_linked_ids(obj) if isinstance(obj, dict) else []) if x}
+        for t in list(linked):
+            linked |= kids.get(t) or set()
+        ids: set = set()
+        for t in linked:
+            ids |= live.get(t) or set()
+        out[pid] = len(ids)
+    return out
+
+
+def _goal_lines(workspace_root, now_iso: str) -> Dict[str, Any]:
+    """READ. cr1#1294, part b: lines from the owner's goals, for the top
+    line. Each confirmed priority with no live item behind it
+    (`_priority_open`) becomes a line that asks for its next step, in the
+    Priorities tab's own order, marked `personal` when it is on the
+    personal lane (`personal_leak.business_thread_ids`). `{"rows", "n"}`; nothing when the open list
+    cannot be read. Never writes."""
+    import thread_cards as tc
+    root = Path(str(workspace_root))
+    confirmed = tc.priorities_view(root, now_iso).get("confirmed") or []
+    counts = _priority_open(root, now_iso, confirmed)
+    if counts is None:
+        return {"rows": [], "n": 0}
+    from personal_leak import business_thread_ids
+    try:
+        business = business_thread_ids(root)
+    except Exception:  # noqa: BLE001 - an unread register fails closed: every line is personal
+        business = frozenset()
+    # `personal`: the priority sits on the personal lane, so the morning
+    # email holds its words back (the page is the owner's own and shows them)
+    rows = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
+             "due": p.get("due") or None, "overdue": bool(p.get("overdue")),
+             "personal": str(p.get("id") or "") not in business}
+            for p in confirmed if counts.get(str(p.get("id") or "")) == 0]
+    return {"rows": rows[:GOAL_LINES_CAP], "n": len(rows)}
+
+
 def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
     """The Priorities tab: the confirmed priorities and the suggested ones,
-    apart (ruling B2), from the priority cards. No money."""
+    apart (ruling B2), from the priority cards. No money. cr1#1294: each
+    confirmed priority says how many live items stand behind it (`n_open`),
+    left off when the open list cannot be read."""
     pv = tc.priorities_view(root, now_iso)
-    conf = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
-             "due": p.get("due") or None, "horizon": str(p.get("horizon") or "")[:80] or None,
-             "overdue": bool(p.get("overdue")),
-             "threads": list(p.get("built_from") or []), "says": str(p.get("says") or ""),
-             "still_a_priority": (p.get("still_a_priority") or {}).get("ask")}
+    counts = _priority_open(root, now_iso, pv.get("confirmed") or [])
+    conf = [dict({"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
+                  "due": p.get("due") or None, "horizon": str(p.get("horizon") or "")[:80] or None,
+                  "overdue": bool(p.get("overdue")),
+                  "threads": list(p.get("built_from") or []), "says": str(p.get("says") or ""),
+                  "still_a_priority": (p.get("still_a_priority") or {}).get("ask")},
+                 **({"n_open": counts.get(str(p.get("id") or ""), 0)} if counts is not None else {}))
             for p in pv.get("confirmed") or []]
     sugg = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
              "company_id": str(p.get("company_id") or ""), "why": str(p.get("why") or ""),
@@ -3135,6 +3279,167 @@ def _week_undone(events: List[Dict[str, Any]]) -> Dict[str, int]:
     return out
 
 
+#: The Week tab's month dashboard (cr1#1287, owner ruling 2026-11-16): what
+#: was done this calendar month, in the workspace's zone, counted by kind,
+#: then each item newest first. Read only. The kinds in the order the page
+#: shows them, each with its words.
+MONTH_KINDS = (
+    ("closed", "commitment closed", "commitments closed"),
+    ("sent", "reply sent", "replies sent"),
+    ("prep", "prep made", "preps made"),
+    ("decision", "decision recorded", "decisions recorded"),
+    ("applied", "choice applied", "choices applied"),
+)
+#: The closes that count as done this month: a fact, the owner's word, or
+#: the owner's own tap (`flow_measure.route_of`). A silence or lapse close is
+#: a letting go, not a thing done.
+MONTH_CLOSE_ROUTES = ("fact", "own_word", "tap")
+#: How many items travel on the page, newest first. Counts are never capped.
+MONTH_ITEMS_CAP = 150
+#: A prep slug's last part is the meeting's 8-hex hash (`prep_pipeline.prep_slug`).
+_PREP_SLUG_HASH = re.compile(r"(?:^|-)[0-9a-f]{8}$")
+
+
+def _month_start(workspace_root, now: _dt.datetime) -> _dt.datetime:
+    """The first instant of `now`'s calendar month in the workspace's zone."""
+    local = now.astimezone(_workspace_tz(workspace_root))
+    return local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _month_done(workspace_root, events: List[Dict[str, Any]], now: _dt.datetime) -> Dict[str, Any]:
+    """READ. What was done this calendar month, from the log only (cr1#1287):
+    `{since, month, kinds: [{key, one, many, n}], items, n_items, threads,
+    people}`. Each item is `{kind, ts, title, source, thread_id, thread,
+    people: [{id, name}]}`, newest first; `threads` and `people` are the
+    filter's options, from the items themselves. What counts:
+
+      closed    a commitment on file whose standing close (not reopened since)
+                fell this month by `MONTH_CLOSE_ROUTES`, once per commitment;
+      sent      each `email_sent`;
+      prep      each `prep_brief` that is not a refresh, once per meeting;
+      decision  each `decision` that is not a restamp of an earlier one;
+      applied   each answer an `apply_choices_applied` row records as ok,
+                listed one row per Apply.
+
+    No money, no pointer, no event id. Never writes."""
+    from flow_measure import route_of
+    from plate_view import row_title
+
+    start = _month_start(workspace_root, now)
+    owner = _owner_id(workspace_root)
+    names = _person_names(workspace_root)
+    threads = _thread_names(workspace_root)
+
+    def inside(ev):
+        at = _parse(ev.get("ts"))
+        return at if at is not None and start <= at <= now else None
+
+    def where(ev, d):
+        tid = str(ev.get("primary_thread_id") or d.get("primary_thread_id") or d.get("thread_id") or "")
+        ppl: List[Dict[str, str]] = []
+        att = d.get("attendee_person_ids")
+        for pid in (list(ev.get("person_ids") or []) + (list(att) if isinstance(att, list) else [])
+                    + [d.get("owner_id"), d.get("counterparty_id")]):
+            pid = str(pid or "")
+            if pid and pid != owner and pid in names and pid not in [p["id"] for p in ppl]:
+                ppl.append({"id": pid, "name": names[pid][:120]})
+        return {"thread_id": tid if tid in threads else "", "thread": threads.get(tid) or "", "people": ppl[:6]}
+
+    commitments: Dict[str, Dict[str, Any]] = {}
+    closes: Dict[str, Dict[str, Any]] = {}
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        kind = ev.get("type")
+        if kind == "commitment" and d.get("id"):
+            commitments[str(d["id"])] = ev
+        elif kind == "commitment_resolved":
+            cid = str(d.get("commitment_id") or d.get("id") or "")
+            if cid:
+                closes[cid] = ev   # the newest close stands
+        elif kind == "commitment_reopened":
+            closes.pop(str(d.get("commitment_id") or d.get("target_id") or ""), None)
+
+    items: List[Dict[str, Any]] = []
+    counts = {k: 0 for k, _one, _many in MONTH_KINDS}
+    for cid, ev in closes.items():
+        at = inside(ev)
+        c = commitments.get(cid)
+        if at is None or c is None or route_of(ev) not in MONTH_CLOSE_ROUTES:
+            continue
+        cd = c.get("data") if isinstance(c.get("data"), dict) else {}
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        # Where the promise came from, as the Today strip says it.
+        src = (_done_source({"type": "commitment"}, {}, cd.get("source_ref")) if cd.get("source_ref") else {}) \
+            or _done_source(ev, d)
+        counts["closed"] += 1
+        items.append(dict(where(c, cd), kind="closed", ts=_iso(at), source=src,
+                          title=row_title(cd.get("title"), cd.get("summary"))[:240] or "A commitment"))
+    preps = set()
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        kind = ev.get("type")
+        if kind not in ("email_sent", "prep_brief", "decision", "apply_choices_applied"):
+            continue
+        at = inside(ev)
+        if at is None:
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if kind == "email_sent":
+            counts["sent"] += 1
+            items.append(dict(where(ev, d), kind="sent", ts=_iso(at), source=_done_source(ev, d) or {"word": "Email"},
+                              title=str(d.get("subject") or d.get("topic") or "A reply")[:240]))
+        elif kind == "prep_brief":
+            # One meeting is its id and its start: a recurring series shares
+            # the id (`receipts.log_prep_receipt`).
+            mid = (str(d.get("meeting_id") or d.get("slug") or ev.get("seq") or ""), str(d.get("meeting_start") or ""))
+            if d.get("refreshed") or mid in preps:
+                continue
+            preps.add(mid)
+            slug = _PREP_SLUG_HASH.sub("", str(d.get("slug") or "")).replace("-", " ").replace("_", " ").strip()
+            counts["prep"] += 1
+            items.append(dict(where(ev, d), kind="prep", ts=_iso(at), source={"word": "Meeting"},
+                              title=str(d.get("title") or d.get("meeting_title") or slug or "A meeting prep")[:240]))
+        elif kind == "decision":
+            if ev.get("supersedes_seq") is not None or d.get("supersedes_seq") is not None:
+                continue
+            counts["decision"] += 1
+            items.append(dict(where(ev, d), kind="decision", ts=_iso(at), source=_done_source(ev, d) or {"word": "Chat"},
+                              title=str(d.get("title") or d.get("decision") or d.get("summary") or "A decision")[:240]))
+        else:
+            ok = [a for a in (d.get("actions") or []) if isinstance(a, dict) and a.get("outcome") == "ok"]
+            if not ok:
+                continue
+            counts["applied"] += len(ok)
+            verbs: List[str] = []
+            for a in ok:
+                v = str(a.get("action") or "").strip()
+                if v and v not in verbs:
+                    verbs.append(v)
+            hub = str(d.get("surface") or "").startswith("cockpit")
+            items.append({"kind": "applied", "ts": _iso(at), "source": {"word": "Hub" if hub else "Chat"},
+                          "title": (f"{len(ok)} choice applied" if len(ok) == 1 else f"{len(ok)} choices applied")
+                          + (": " + ", ".join(verbs[:4]) if verbs else ""),
+                          "thread_id": "", "thread": "", "people": []})
+    items.sort(key=lambda r: r["ts"], reverse=True)
+    n_items = len(items)
+    # cr1#1304: the filter offers only what the carried items name, so past
+    # the cap no choice leads to an empty list.
+    items = items[:MONTH_ITEMS_CAP]
+    opt_threads = sorted({(r["thread_id"], r["thread"]) for r in items if r["thread_id"]}, key=lambda t: t[1].lower())
+    opt_people: Dict[str, str] = {}
+    for r in items:
+        for p in r["people"]:
+            opt_people.setdefault(p["id"], p["name"])
+    return {"since": _iso(start), "month": start.strftime("%B %Y"),
+            "kinds": [{"key": k, "one": one, "many": many, "n": counts[k]} for k, one, many in MONTH_KINDS],
+            "items": items, "n_items": n_items,
+            "threads": [{"id": t, "name": n} for t, n in opt_threads],
+            "people": [{"id": p, "name": n} for p, n in sorted(opt_people.items(), key=lambda x: x[1].lower())]}
+
+
 def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_iso=None) -> Dict[str, Any]:
     """READ. The Week tab (cr1#780): every batch the system settled this week
     (`brain_undo.recent_auto_batches`), each named in its own words, with a way
@@ -3145,7 +3450,9 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
     that module renders documents and this one must not import it. Its
     `decided_for_you` narrates what no batch can carry. Never writes. `rules`
     is every learned rule still in force with its own Undo (cr1#821), whatever
-    its age; a batch shown there is not shown again under `decided`."""
+    its age; a batch shown there is not shown again under `decided`. `month`
+    is what was done this calendar month, counted by kind and listed newest
+    first (`_month_done`, cr1#1287); the page filters it and offers no press."""
     import brain_undo as bu
     import learning_pass as learn
     import lifecycle_pass as lp
@@ -3245,7 +3552,12 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
              "objectives": [str(x)[:200] for x in (sec.get("objective_rows") or [])][:12],
              "open_proposals": sec.get("open_proposals")}
     empty = not (decided or dormant or archived or recap["changes"] or recap["decided_lines"])
-    return _with_words(workspace_root, {"generated_at": iso_now, "decided": decided, "n_decided": n_decided, "dormant": dormant, "archived": archived,
+    month: Optional[Dict[str, Any]] = None
+    try:
+        month = _month_done(workspace_root, events, now)   # cr1#1287: the month's dashboard
+    except Exception:  # noqa: BLE001 - said on the page, never shown as an empty month
+        errors.append("month")
+    return _with_words(workspace_root, {"generated_at": iso_now, "month": month, "decided": decided, "n_decided": n_decided, "dormant": dormant, "archived": archived,
             "recap": recap, "rules": rules[:WEEK_DECIDED_CAP], "n_rules": len(rules),
             "line": (WEEK_RULES_LINE if rules else WEEK_EMPTY_LINE) if empty and not errors else "", "errors": errors})
 
@@ -3887,6 +4199,87 @@ def _overdue_facts(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[
     return late[:OVERDUE_EXTRA_CAP], max(0, len(late) - OVERDUE_EXTRA_CAP)
 
 
+def _due_day(due: Optional[_dt.date], today: _dt.date) -> str:
+    """The words for an item's day on the top line: "today", "tomorrow",
+    the weekday inside the week, else the month and day; "" when undated
+    or past its date."""
+    if due is None or due < today:
+        return ""
+    left = (due - today).days
+    if left == 0:
+        return "today"
+    if left == 1:
+        return "tomorrow"
+    if left < 7:
+        return due.strftime("%A")
+    return f"{due.strftime('%B')} {due.day}"
+
+
+def _lead_rows(workspace_root, rows: List[Dict[str, Any]], opens: List[Dict[str, Any]],
+               now: _dt.datetime) -> List[Dict[str, Any]]:
+    """READ. The top line's ranked items (cr1#1290), from the owner's own
+    rows (`rows`, the plate's do-it and confirm lanes). Each scores on how
+    many confirmed priorities its threads are built into (the Week board's
+    own test: the row's threads against each priority's `built_from`), on
+    being owed to a person starred on the People tab, and on being due
+    inside the lead time its work needs. Overdue only breaks ties. A row
+    with no score is left out, so the page falls back to its first thing to
+    move. Never writes."""
+    import thread_cards as tc
+    from commitment_parties import counterparty_ids
+    from cru_match import _commitment_field, _commitment_id, partition_subitems
+    from due_reanchor import parse_date
+    from people_view import load_stars, starred_ids
+
+    root = Path(str(workspace_root))
+    today = now.astimezone(_workspace_tz(workspace_root)).date()
+    owner = _owner_id(workspace_root)
+    by_id = {str(_commitment_id(ev)): ev for ev in opens}
+    steps: Dict[str, int] = {}
+    for sub in partition_subitems(opens)[1]:
+        pid = str((sub.get("data") or {}).get("parent_id") or "")
+        steps[pid] = steps.get(pid, 0) + 1
+    threads_of: Dict[str, set] = {}
+    try:
+        per_thread = tc._open_by_thread(root, _iso(now))[0]
+    except Exception:  # noqa: BLE001 - an unread open list leaves the threads to each row's own record
+        per_thread = {}
+    for tid, v in per_thread.items():
+        for key in ("you_owe", "owed_to_you", "unowned", "to_confirm"):
+            for r in v.get(key) or []:
+                if r.get("id"):
+                    threads_of.setdefault(str(r.get("id")), set()).add(str(tid))
+    priorities = [{str(t) for t in p.get("built_from") or []}
+                  for p in tc.priorities_view(root, _iso(now)).get("confirmed") or []]
+    stars = set(starred_ids(load_stars(root))) - {owner}
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        cid = str(r.get("id"))
+        ev = by_id.get(cid) or {}
+        ths = set(threads_of.get(cid) or set())
+        if ev.get("primary_thread_id"):
+            ths.add(str(ev["primary_thread_id"]))
+        n_prio = sum(1 for p in priorities if p & ths)
+        key = any(pid in stars for pid in counterparty_ids(ev)) if ev else False
+        due = parse_date(r.get("due") or (_commitment_field(ev, "due") if ev else None))
+        n_steps = steps.get(cid, 0)
+        work = n_steps > 0 or bool(LEAD_WORK_RE.search(str(r.get("title") or "")))
+        lead_days = min(LEAD_MAX_DAYS, LEAD_DELIVERABLE_DAYS + max(0, n_steps - 1)) if work else LEAD_PLAIN_DAYS
+        left = (due - today).days if due else None
+        window = left is not None and 0 <= left <= lead_days
+        score = (LEAD_PRIORITY_POINTS * min(n_prio, LEAD_PRIORITIES_COUNTED)
+                 + (LEAD_KEY_PERSON_POINTS if key else 0) + (LEAD_WINDOW_POINTS if window else 0))
+        if score <= 0:
+            continue
+        late = bool(r["counted"]) if "counted" in r else str(r.get("horizon") or "") == "overdue"
+        out.append({"id": r.get("id"), "n": r.get("n"), "title": r.get("title"), "project": r.get("project"),
+                    "due": due.isoformat() if due else "", "days_left": left, "due_day": _due_day(due, today),
+                    "priorities": n_prio, "key_person": key, "lead_days": lead_days, "late": late,
+                    "score": score, "order": r.get("order")})
+    out.sort(key=lambda x: (-x["score"], not x["late"], x["due"] or "9999-12-31", x["order"] or 0))
+    return out[:LEAD_CAP]
+
+
 def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """A WRITER (building the plate mints display numbers). The Commitments
     tab, the Overdue tab and the Today tab's Move these today: the plate's own
@@ -3936,6 +4329,16 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             return 0 if r["counted"] else 1 if r["horizon"] in ("overdue", "past_due", "this_week") else 2
         return {"overdue": 0, "this_week": 1}.get(str(r["horizon"]), 2)
     focus = sorted(do_it, key=lambda r: (_rank(r), r["order"]))[:FOCUS_CAP]
+    # cr1#1290: the top line's own ranking; "Move these today" keeps its order
+    try:
+        lead = _lead_rows(workspace_root, do_it, opens or [], now)
+    except Exception:  # noqa: BLE001 - no ranking leaves the top line on the first thing to move
+        lead = []
+    # cr1#1294: the confirmed priorities with nothing open, for the top line
+    try:
+        goals = _goal_lines(workspace_root, _iso(now))
+    except Exception:  # noqa: BLE001 - an unread priority list adds no line, never a guessed one
+        goals = {"rows": [], "n": 0}
     chase = [r for r in rows if r["lane"] == "chase"][:CHASE_CAP]
     schedule = [r for r in rows if r["lane"] == "schedule"][:SCHEDULE_CAP]
     counts = dict(dv.get("plate_counts") or {})
@@ -3955,7 +4358,8 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         "quick_read": str(dv.get("quick_read") or ""),
         "counts": counts,
         "block_totals": dict(dv.get("block_totals") or {}),
-        "focus": focus, "chase": chase, "schedule": schedule,
+        "focus": focus, "lead": lead, "chase": chase, "schedule": schedule,
+        "goals": goals["rows"], "n_goals": goals["n"],
         "rows": rows[:PLATE_ROW_CAP], "n_rows": len(rows),
         "n_hidden": max(0, len(rows) - PLATE_ROW_CAP),
         "late_rows": late_rows, "n_late_hidden": n_late_hidden, "overdue_ok": overdue_ok,
@@ -3978,7 +4382,7 @@ def feed_plate(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     import plate_view as _pv
     # Every list the rows travel in, the capped ones included: a row past
     # PLATE_ROW_CAP can still ride `focus` or `chase` (cr1#1017 part 1b).
-    for r in rows + list(feed.get("late_rows") or []) + list(focus) + list(chase):
+    for r in rows + list(feed.get("late_rows") or []) + list(focus) + list(lead) + list(chase):
         if isinstance(r, dict) and r.get("project") == _pv.NO_PROJECT_LABEL:
             r["project"] = "No " + _seat_word(seat, "thread")
     for r in feed["rows"] + feed.get("late_rows", []):
@@ -4902,16 +5306,140 @@ def feed_mail_rules(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     return _with_words(workspace_root, mail_rules.feed(workspace_root, now_iso=_iso(_now(now_iso))))
 
 
+#: The Brief tab (cr1#1310): today's morning brief as the Morning Brief run
+#: saved it (`morning-briefing/SKILL.md`, the snapshot of what it posted).
+BRIEF_DIR = Path("_hq") / "briefings"
+BRIEF_TEXT_CAP = 16000
+BRIEF_NONE_LINE = "No morning brief has run today."
+BRIEF_CUT_LINE = "(The brief continues in the Morning Brief chat.)"
+_BRIEF_FILE_RE = re.compile(r"^morning-(\d{4}-\d{2}-\d{2})\.md$")
+_BRIEF_HEAD_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+_BRIEF_BOLD_HEAD_RE = re.compile(r"^(?:\*\*([^*]+)\*\*|__([^_]+)__):?\s*$")
+_BRIEF_ITEM_RE = re.compile(r"^[-*•]\s+(.*\S)\s*$")
+_BRIEF_NUM_RE = re.compile(r"^(\d{1,3})[.)]\s+(.*\S)\s*$")
+_BRIEF_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def _brief_plain(text: str) -> str:
+    """One line of the brief without its markdown marks: links keep their
+    words, bold and code lose their marks. Nothing else changes."""
+    t = _BRIEF_LINK_RE.sub(r"\1", text)
+    t = t.replace("**", "").replace("__", "").replace("`", "")
+    return " ".join(t.split())
+
+
+def _brief_sections(lines: List[str], cap: int) -> Tuple[Optional[str], List[Dict[str, Any]], bool]:
+    """`(title, sections, truncated)`: the brief's first `# ` heading as its
+    title, then one section per heading in the brief's order (the lines
+    before the first heading are a section with no heading), each line a
+    list item, a numbered line or text. Rules (`---`) and blank lines go.
+    The saved brief opens with "Morning briefing - <date>" and no `#`
+    (morning-briefing/SKILL.md), so a first line that names the brief is
+    the title too. Headings and lines kept, with the cut line, stay within
+    `cap` characters."""
+    title: Optional[str] = None
+    sections: List[Dict[str, Any]] = [{"heading": None, "lines": []}]
+    room, size, cut, seen = cap - len(BRIEF_CUT_LINE), 0, False, False
+    for raw in lines:
+        line = raw.strip()
+        if not line or (len(line) >= 3 and set(line) <= set("-*_=")):
+            continue
+        first, seen = not seen, True
+        if first and title is None and _brief_plain(line).lower().startswith("morning brief"):
+            title = _brief_plain(line.lstrip("#").strip())
+            continue
+        head = _BRIEF_HEAD_RE.match(line) or _BRIEF_BOLD_HEAD_RE.match(line)
+        if head:
+            text = _brief_plain(head.group(head.lastindex)).rstrip(":").strip()
+            if not text:
+                continue
+            if title is None and line.startswith("# "):
+                title = text
+                continue
+            if size + len(text) > room:
+                cut = True
+                break
+            size += len(text)
+            sections.append({"heading": text, "lines": []})
+            continue
+        m_item, m_num = _BRIEF_ITEM_RE.match(line), _BRIEF_NUM_RE.match(line)
+        if m_item:
+            row = {"kind": "item", "text": _brief_plain(m_item.group(1))}
+        elif m_num:
+            row = {"kind": "num", "n": int(m_num.group(1)), "text": _brief_plain(m_num.group(2))}
+        else:
+            row = {"kind": "text", "text": _brief_plain(line)}
+        if not row["text"]:
+            continue
+        if size + len(row["text"]) > room:
+            cut = True
+            break
+        size += len(row["text"])
+        sections[-1]["lines"].append(row)
+    if cut:
+        sections.append({"heading": None, "lines": [{"kind": "text", "text": BRIEF_CUT_LINE}]})
+    sections = [s for s in sections if s["lines"] or s["heading"]]
+    return title, sections, cut
+
+
+def feed_brief(workspace_root, *, now_iso=None) -> Dict[str, Any]:
+    """READ (cr1#1310). The Brief tab's feed: today's morning brief as the
+    Morning Brief run saved it to `_hq/briefings/morning-<date>.md`, the
+    same text it posted, so the tab shows nothing the brief did not (its
+    account-scope rules were applied when it was written). `brief` is
+    `{for_date, path, made_at, title, sections, truncated}`, or None when no
+    brief has run today; `last_for_date` names the newest saved one; `today`
+    and `tz` are the workspace's own date and zone, so the page tells a stale
+    feed by the workspace's day, not the browser's. Reads
+    that one file and the folder's file names, nothing else. Never raises."""
+    now = _now(now_iso)
+    out: Dict[str, Any] = {"generated_at": _iso(now), "today": None, "tz": None, "brief": None,
+                           "last_for_date": None, "empty_line": BRIEF_NONE_LINE}
+    if not workspace_root:
+        return out
+    root = Path(str(workspace_root))
+    try:
+        from day_intent import workspace_today
+
+        today = workspace_today(root, now=now)
+    except Exception:  # noqa: BLE001 - no zone set: the clock's own date
+        today = now.astimezone(_workspace_tz(root)).date()
+    out["today"] = today.isoformat()
+    out["tz"] = _zone_name(root)
+    folder = root / BRIEF_DIR
+    try:
+        dates = sorted(m.group(1) for p in folder.iterdir()
+                       for m in [_BRIEF_FILE_RE.match(p.name)] if m and p.is_file())
+    except OSError:
+        dates = []
+    if dates:
+        out["last_for_date"] = dates[-1]
+    if out["today"] not in dates:
+        return _with_words(workspace_root, out)
+    path = folder / f"morning-{out['today']}.md"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        made = _dt.datetime.fromtimestamp(path.stat().st_mtime, tz=_dt.timezone.utc)
+    except (OSError, ValueError):
+        return _with_words(workspace_root, out)
+    title, sections, cut = _brief_sections(text.splitlines(), BRIEF_TEXT_CAP)
+    out["brief"] = {"for_date": out["today"], "path": (BRIEF_DIR / path.name).as_posix(),
+                    "made_at": _iso(made), "title": title, "sections": sections, "truncated": cut}
+    return _with_words(workspace_root, out)
+
+
 #: The Today page's own lists (cr1#662): reminders the owner adds, clears or
 #: pushes, and priority to-dos the owner adds. Each is a choice the page saves
 #: and the apply task writes, like every other press.
-REMINDER_VERBS = frozenset({"add", "done", "push"})
+REMINDER_VERBS = frozenset({"add", "done", "push", "delete"})  # delete: cr1#1221
 TODO_VERBS = frozenset({"add"})
 TODO_SOURCE = "hub_todo"
 TODO_REF_SCHEME = "user:hub_todo"
 PRIORITY_NAMES = {1: "High", 2: "Medium", 3: "Low"}
 MINE_CAP = 60
 REMINDER_NEEDS_TEXT_LINE = "A reminder needs a few words."
+#: cr1#1221: a Delete press, applied. The undo is the owner's own word.
+REMINDER_DELETED_LINE = "Deleted. Say undo in a chat to bring it back."
 REMINDER_NEEDS_DATE_LINE = "A reminder needs a day: a date, or a number of days from today."
 TODO_NEEDS_TEXT_LINE = "A to-do needs a few words."
 #: "Missed something?" (cr1#1017, train 8 behaviour 6): the header entry on
@@ -4932,7 +5460,7 @@ MISS_FILLER = frozenset({"missed", "miss", "missing", "forgot", "forgotten", "sh
 #: what was found, then why, then what was filed.
 MISS_WHY = {
     "listed": "It is on your list{where}, so the Hub had it; it may have sat below what you looked at.",
-    "waiting": "It was waiting for your yes on Review, so it was not on your list yet.",
+    "waiting": "It was waiting for your yes under To confirm in Commitments, so it was not on your list yet.",
     "snoozed": "You snoozed it until {until}, so it was out of view.",
     "closed": "It was closed on {day}, so it left your list.",
     "heard": "It was heard on {day}{source} but held back as not certain enough to track.",
@@ -5171,7 +5699,8 @@ def _hub_writes_in_book(root) -> Dict[str, Dict[str, Any]]:
     except Exception:  # noqa: BLE001 - no log means nothing was written yet
         return out
     for ev in events:
-        if isinstance(ev, dict) and ev.get("type") in ("reminder", "reminder_updated", "reminder_cleared"):
+        if isinstance(ev, dict) and ev.get("type") in ("reminder", "reminder_updated", "reminder_cleared",
+                                                        "reminder_deleted"):
             d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
             if d.get("hub_choice"):
                 out[str(d["hub_choice"])] = ev
@@ -5186,6 +5715,8 @@ def _replayed(ev: Dict[str, Any], verb: str) -> Dict[str, Any]:
                 "replayed": True}
     if verb == "push":
         return {"outcome": "applied", "line": f"Moved to {when}.", "replayed": True}
+    if verb == "delete":
+        return {"outcome": "applied", "line": REMINDER_DELETED_LINE, "replayed": True}
     return {"outcome": "applied", "line": "Cleared.", "replayed": True}
 
 
@@ -5350,7 +5881,7 @@ def _miss_find(root: Path, text: str, now: _dt.datetime, *, skip_ref: str = "") 
     return out
 
 
-def _miss_line(found: Dict[str, Any], filed: bool) -> str:
+def _miss_line(found: Dict[str, Any], filed: bool, *, tail: Optional[str] = None) -> str:
     why = found["why"]
     src = found.get("source") or ""
     words = {"where": (" under " + found["thread"]) if found.get("thread") else "",
@@ -5364,7 +5895,8 @@ def _miss_line(found: Dict[str, Any], filed: bool) -> str:
         body = MISS_WHY["not_found"].replace(", so it", f", nor does anything in {searched}, so it")
     if why == "not_found" and found.get("personal"):
         body += " " + MISS_PERSONAL_LINE
-    tail = " Added to your list." if filed else " Nothing new was added."
+    if tail is None:
+        tail = " Added to your list." if filed else " Nothing new was added."
     return (head + body + tail).strip()
 
 
@@ -5393,6 +5925,180 @@ def miss_search_plan(workspace_root=None, choices: Optional[List[Dict[str, Any]]
         seen.add(cid)
         out.append({"id": cid, "query": " ".join(terms), "terms": terms})
     return {"searches": out, "limit": MISS_SEARCH_LIMIT, "days": MISS_SEARCH_DAYS}
+
+
+#: cr1#1315: the chat "Something wrong?" opens (cr1#1288). The page writes
+#: the owner's words after this prefix, then what it was showing after
+#: `PROBLEM_SHOWING`, then its ask line (cockpit.html `problemText`).
+PROBLEM_PREFIX = "Something's wrong on my Command Room Hub:"
+PROBLEM_SHOWING = "The Hub was showing "
+#: Words in the owner's sentence that say an item is missing, and words that
+#: say something did not work. Single words, and word pairs read in order
+#: (apostrophes dropped, so "didn't" is "didnt"). A strong miss word ("missed")
+#: decides on its own unless a negation sits just before it ("nothing is
+#: missing"); a weak one ("where", "lost", "not on") is everyday speech, so
+#: any failure word, a failed light on screen, or a word naming a part of the
+#: page outweighs it (review of cr1#1315).
+PROBLEM_MISS_STRONG = frozenset({"missed", "miss", "misses", "missing", "forgot", "forgotten", "disappeared",
+                                 "vanished"})
+PROBLEM_MISS_WEAK = frozenset({"lost", "gone", "dropped", "where", "nowhere"})
+PROBLEM_MISS_PAIRS = frozenset({("not", "on"), ("not", "there"), ("isnt", "there"), ("isnt", "on"),
+                                ("wasnt", "there"), ("wasnt", "on"), ("didnt", "show"), ("doesnt", "show"),
+                                ("dont", "see"), ("cant", "find"), ("never", "showed"), ("never", "shows"),
+                                ("not", "showing"), ("isnt", "showing"), ("not", "listed")})
+PROBLEM_NEGATIONS = frozenset({"nothing", "not", "no", "isnt", "wasnt", "nothings"})
+PROBLEM_PAGE_WORDS = frozenset({"light", "lights", "button", "buttons", "page", "screen", "banner", "link"})
+PROBLEM_BUG_WORDS = frozenset({"error", "errors", "failed", "fails", "fail", "failing", "failure", "broken",
+                               "broke", "crash", "crashed", "crashes", "crashing", "stuck", "frozen", "froze",
+                               "freezes", "blank", "bug", "spinning"})
+PROBLEM_BUG_PAIRS = frozenset({("wont", "load"), ("didnt", "load"), ("doesnt", "load"), ("not", "load"),
+                               ("didnt", "finish"), ("not", "finish"), ("not", "working"), ("isnt", "working"),
+                               ("doesnt", "work"), ("didnt", "work"), ("wont", "open"), ("not", "loading")})
+#: What the Hub showed when a light failed or an error banner was up
+#: (cockpit.html `hubShowing`).
+PROBLEM_FAILED_SHOWN = (" did not finish (", "the message \"")
+PROBLEM_ASK_ROUTE_LINE = "Is something missing from the Hub, or did something not work?"
+PROBLEM_ASK_WHAT_LINE = "What was missed? Say the item in a few words."
+#: The one question before anything is filed from the chat.
+MISS_CHAT_ASK_LINE = "Add it to your list? Nothing is added until you say yes."
+
+
+def _problem_route(said: str, showing: str) -> str:
+    words = re.findall(r"[a-z]+", said.lower().replace("'", "").replace("’", ""))
+    pairs = set(zip(words, words[1:]))
+    strong = any(w in PROBLEM_MISS_STRONG and not (set(words[max(0, i - 2):i]) & PROBLEM_NEGATIONS)
+                 for i, w in enumerate(words))
+    if strong:
+        return "miss"
+    failed = any(m in showing for m in PROBLEM_FAILED_SHOWN)
+    if set(words) & PROBLEM_BUG_WORDS or pairs & PROBLEM_BUG_PAIRS or failed:
+        return "bug"
+    if set(words) & PROBLEM_MISS_WEAK or pairs & PROBLEM_MISS_PAIRS:
+        return "ask" if set(words) & PROBLEM_PAGE_WORDS else "miss"
+    return "ask"
+
+
+def miss_chat_plan(workspace_root=None, text: str = "", *, route: Optional[str] = None,
+                   now_iso=None) -> Dict[str, Any]:
+    """READ/COMPUTE (cr1#1315). What report-bug does with the message the
+    Hub's "Something wrong?" opens a chat with:
+    `{hub, route, said, showing, line?, choice?, searches?, limit?, days?}`.
+
+    `hub` is False for any other message (report-bug's own flow then runs).
+    `said` is the owner's words (the first line, after the prefix) and
+    `showing` what the Hub was showing. `route`:
+      * `miss`: an item is missing. `choice` is the apply run's own miss
+        shape (`{id, kind: miss, action: tell, input: {text}}`), its id the
+        same for the same words on the same day, so a yes said twice files
+        once; `searches`, `limit` and `days` are `miss_search_plan`'s for it.
+      * `bug`: something did not work (a failed light, an error): report-bug
+        files it as a bug.
+      * `ask`: the words say neither, or name a miss with nothing to look
+        for; `line` is the one question. The owner's answer is passed back
+        as `route` (`miss` or `bug`).
+    A missing item wins over a failure named in the same words: the search
+    writes nothing, and the owner can still report the failure. Writes
+    nothing."""
+    raw = str(text or "").replace("’", "'")
+    head, _, rest = raw.strip().partition(PROBLEM_PREFIX)
+    if head.strip() or not _:
+        return {"hub": False}
+    lines = rest.split("\n")
+    said = " ".join(lines[0].split())[:MISS_TEXT_CAP]
+    showing = ""
+    for ln in lines[1:]:
+        ln = " ".join(ln.split())
+        if ln.startswith(PROBLEM_SHOWING):
+            showing = ln[len(PROBLEM_SHOWING):].rstrip(".")[:MISS_TEXT_CAP]
+    out: Dict[str, Any] = {"hub": True, "said": said, "showing": showing}
+    want = str(route or "").strip().lower()
+    out["route"] = want if want in ("miss", "bug") else _problem_route(said, showing)
+    if out["route"] == "ask":
+        out["line"] = PROBLEM_ASK_ROUTE_LINE
+        return out
+    if out["route"] != "miss":
+        return out
+    if not said or not _miss_terms(said):
+        out.update(route="ask", line=PROBLEM_ASK_WHAT_LINE)
+        return out
+    now = _now(now_iso)
+    try:
+        import open_list as ol
+        day = now.astimezone(ol._workspace_tz(Path(str(workspace_root)))).date().isoformat()
+    except Exception:  # noqa: BLE001 - no workspace zone: the UTC day
+        day = now.date().isoformat()
+    key = " ".join(said.lower().split()) + "|" + day
+    choice = {"id": "chat_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12], "kind": "miss",
+              "action": "tell", "input": {"text": said}}
+    out["choice"] = choice
+    out.update(miss_search_plan(workspace_root, [choice], now_iso=now_iso))
+    out["sources"] = _miss_open_sources(workspace_root)
+    return out
+
+
+def _miss_open_sources(workspace_root) -> List[str]:
+    """The kinds the chat may search, by the personal-source wall: `mail`
+    unless the mail connector is personal (a walled mailbox on a business
+    server still leaves the business mailbox open), `meetings` unless the
+    meetings connector is personal. An unread wall leaves both listed; the
+    skill still follows the wall it read, and every hit is held to it."""
+    try:
+        import connector_reads as _cr
+        wall = _cr.chat_wall(Path(str(workspace_root)))
+    except Exception:  # noqa: BLE001
+        return ["mail", "meetings"]
+    shut = {str(c.get("category") or "") for c in wall.get("connectors") or [] if isinstance(c, dict)}
+    return [k for k, cat in (("mail", "email"), ("meetings", "meetings")) if cat not in shut]
+
+
+def miss_chat_answer(workspace_root=None, choice: Optional[Dict[str, Any]] = None,
+                     live: Optional[Dict[str, Any]] = None, inbox: Optional[Dict[str, Any]] = None,
+                     *, now_iso=None) -> Dict[str, Any]:
+    """READ ONLY (cr1#1315). The "Something wrong?" chat's answer for a
+    missing item, before anything is filed: `{ok, why, line, would_file,
+    ask?, already?, found_where?, title?, source?, day?, searched?}`.
+
+    The same judgement the apply run's writer makes (`_miss_find` over the
+    book, then `_miss_live` over what the chat's search of the business
+    mailbox and meetings found, every hit held to the personal-source wall
+    read here from the book), so the answer says where the item was found
+    and why the Hub missed it. `would_file` is True when the writer would
+    add it to the list; then `ask` is the one question, and only the
+    owner's yes sends the same `choice`, `live` and `inbox` to
+    `apply_hub_choices`. A choice already filed answers `already: True` and
+    asks nothing. Writes nothing; `source` for a walled hit is never
+    handed back, because a walled hit is never used."""
+    c = choice if isinstance(choice, dict) else {}
+    inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+    text = " ".join(str(inp.get("text") or "").split())[:MISS_TEXT_CAP]
+    cid = str(c.get("id") or "").strip()
+    if not text or not cid or str(c.get("kind") or "") != "miss":
+        return {"ok": False, "why": None, "would_file": False, "line": MISS_NEEDS_TEXT_LINE}
+    root = Path(str(workspace_root))
+    done = _miss_written(root).get(cid)
+    if done:
+        return {"ok": True, "already": True, "would_file": False, "why": done.get("why"),
+                "line": str(done.get("line") or "").strip()}
+    now = _now(now_iso)
+    ref = f"{MISS_REF_SCHEME}:{cid}"
+    found = _miss_find(root, text, now, skip_ref=ref)
+    entry = (live or {}).get(cid) if isinstance(live, dict) else None
+    if isinstance(entry, dict):
+        found = _miss_live(root, found, entry, inbox)
+    # A to-do a yes filed whose record did not land is reused by the writer
+    # (`_apply_miss`), which then says it was added: so this answer asks too.
+    would = found["why"] in MISS_FILES or found["why"] in MISS_LIVE_FILES
+    out: Dict[str, Any] = {"ok": True, "why": found["why"], "would_file": bool(would),
+                           "line": _miss_line(found, False, tail="" if would else None)}
+    if would:
+        out["ask"] = MISS_CHAT_ASK_LINE
+    for k in ("found_where", "title", "day", "searched"):
+        if found.get(k) not in (None, "", []) and (k != "title" or found["why"] != "not_found"):
+            out[k] = found[k]
+    # a link only: a stored pointer from the book is not one to open
+    if str(found.get("source") or "").startswith(("https://", "http://")):
+        out["source"] = found["source"]
+    return out
 
 
 def _miss_walled(wall: Dict[str, Any], hit: Dict[str, Any]) -> bool:
@@ -5449,6 +6155,15 @@ def _miss_live(root: Path, found: Dict[str, Any], entry: Dict[str, Any],
         out["searched"] = searched
     wall = _cr.chat_wall(root)
     personal = bool(wall.get("connectors") or wall.get("mailboxes"))
+    # cr1#1315 review: a kind whose connector is personal was never searched,
+    # whatever the run listed, so the answer never says it was.
+    shut = {str(c.get("category") or "") for c in wall.get("connectors") or [] if isinstance(c, dict)}
+    if out.get("searched"):
+        kept = [k for k in out["searched"] if {"mail": "email", "meetings": "meetings"}[k] not in shut]
+        if kept:
+            out["searched"] = kept
+        else:
+            out.pop("searched")
     terms = found.get("terms") or []
     if not terms or not wall.get("readable"):
         # an unread wall cannot say what is personal: no hit is used
@@ -5605,6 +6320,9 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
         the day they picked (`parse_later_when`: a date, or days from today);
       * reminder `done`: one `reminder_cleared` (a repeating one re-arms);
       * reminder `push`: one `reminder_updated` with the new day;
+      * reminder `delete` (cr1#1221): one `reminder_deleted`, gone from
+        every surface for good (a repeating one never re-arms), carrying
+        its undo handle for the owner's `undo`;
       * todo `add`: `commitment_state.create_personal_task` with the priority
         and `source = TODO_SOURCE`, owned by the owner, its pointer unique to
         the choice so the same words added twice are two items;
@@ -5676,14 +6394,20 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                     append_event(events_path, ev, holder="cockpit_helpers")
                     r.update(outcome="applied", line=f"Reminder set for {when}.",
                              reminder_id=ev["data"]["id"])
-            elif kind == "reminder" and verb in ("done", "push"):
+            elif kind == "reminder" and verb in ("done", "push", "delete"):
                 rid_ = str(c.get("n") or "").strip()
                 if active is None:
                     # The owner's day, the one `feed_mine` built the list on (cr1#688).
                     today = cs._now_calendar_day(_iso(now), workspace_path=str(root)) or now.date()
                     active = {a.get("id") for a in rm.load_active_reminders(root, today, surface="m_facing")}
                 if not rid_ or rid_ not in active:
-                    r.update(outcome="already" if verb == "done" else "error", line=REMINDER_GONE_LINE)
+                    r.update(outcome="already" if verb in ("done", "delete") else "error", line=REMINDER_GONE_LINE)
+                elif verb == "delete":
+                    ev = rm.build_reminder_deleted_event(rid_, source_skill=SOURCE_SKILL)
+                    ev.setdefault("data", {})["hub_choice"] = choice_id
+                    append_event(events_path, ev, holder="cockpit_helpers")
+                    active.discard(rid_)  # a later press on it in this run finds it gone
+                    r.update(outcome="applied", line=REMINDER_DELETED_LINE)
                 elif verb == "done":
                     # The occurrence the page showed: a repeating reminder cleared
                     # twice clears that one day, never the next one too (cr1#675).
@@ -5846,7 +6570,9 @@ def _open_rows(workspace_root, now_iso) -> Optional[Dict[str, Dict[str, Any]]]:
     resolved, an unreadable book): a refusal is never read as "all closed"."""
     from plate_view import build_plate
 
-    view = build_plate(str(workspace_root), now_iso=now_iso)
+    # cr1#1292: snoozed rows included, so a press on a row the page still
+    # shows is answered on that row's own shape.
+    view = build_plate(str(workspace_root), now_iso=now_iso, include_snoozed=True)
     if not isinstance(view, dict) or view.get("ok") is False or view.get("error"):
         return None
     out: Dict[str, Dict[str, Any]] = {}
@@ -5854,6 +6580,92 @@ def _open_rows(workspace_root, now_iso) -> Optional[Dict[str, Dict[str, Any]]]:
         if isinstance(r, dict) and r.get("id"):
             out[str(r["id"])] = r
     return out
+
+
+def _not_work_queued(workspace_root, cid: str, actor: str) -> tuple:
+    """cr1#1289: "Not work" on a row still waiting for a yes, or on a line
+    only heard: the queue's own drop (`needs_review_queue.drop_items`), which
+    closes through `close_commitment` and promotes a heard line first.
+    Answers `(handler, outcome, line)`."""
+    from needs_review_queue import drop_items
+
+    res = drop_items(str(workspace_root), [cid], resolved_by=actor,
+                     evidence=NOT_WORK_EVIDENCE, source_skill=COMMITMENT_SRC)
+    one = ((res or {}).get("results") or [{}])[0]
+    st = one.get("status")
+    if st == "closed":
+        return one, "applied", NOT_WORK_LINE
+    if st == "already_resolved":
+        return one, "already", ALREADY_CLOSED_LINE
+    if st == "confirmed_open":
+        return one, "error", NOT_WORK_FAILED_LINE
+    if st == "has_subitems":
+        return one, "error", SUBITEMS_LINE
+    return {"status": st or "error", **one}, "error", NOT_WORK_FAILED_LINE
+
+
+def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
+                 label: str, choice_id: str) -> tuple:
+    """cr1#1289: "Assign to" on a "No home yet" row. The book picks the
+    target: it must be a live work stream on the thread cards, never only
+    the page's word. The promise must be open and on no thread (the open
+    list's own row). One `reclassification` of its capture row, marked
+    `open_list.HOME_ORIGIN`; a press already written answers from it.
+    Answers `(handler, outcome, line)`."""
+    import open_list as ol
+    import thread_cards as tc
+    from event_gate import append_event
+
+    root = Path(str(workspace_root))
+    if cid not in ledger_open:
+        return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
+    cards, _from_log = tc.read_cards(root)
+    streams = cards.get("work_streams") or {}
+    if not target or target not in streams:
+        return {"status": "refused", "error": "not_a_work_stream"}, "refused", ASSIGN_NO_STREAM_LINE
+    events_path = root / "_hq" / "data" / "events.jsonl"
+    from events_io import load_events_owner_scoped
+
+    events = load_events_owner_scoped(str(root))[0]
+    for ev in events:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if (ev.get("type") == "reclassification" and d.get("origin") == ol.HOME_ORIGIN
+                and choice_id and d.get("hub_choice") == choice_id):
+            return {"status": "already_written", "seq": ev.get("seq")}, "already", "Already given that home."
+    doc, _counted = ol.read_list(root, now)
+    row = next((x for x in doc.get("rows") or [] if str(x.get("id")) == cid), None)
+    if row is None:
+        return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
+    if str(row.get("thread_id") or "").strip():
+        return {"status": "has_home", "thread_id": row.get("thread_id")}, "already", ASSIGN_HAS_HOME_LINE
+    seq = (row.get("source") or {}).get("seq")
+    src = next((e for e in events if isinstance(e, dict) and e.get("seq") == seq), None) if seq is not None else None
+    if src is None:
+        return {"status": "error", "error": "no_capture_row"}, "error", GONE_LINE
+    old_related = list(src.get("related_thread_ids") or [])
+    new_related = [t for t in old_related if t != target]
+    data = {"origin": ol.HOME_ORIGIN, "commitment_id": cid, "target_thread_id": target,
+            "old_primary_thread_id": src.get("primary_thread_id"), "new_primary_thread_id": target,
+            "old_related_thread_ids": old_related, "new_related_thread_ids": new_related,
+            "reason": ASSIGN_REASON, "cockpit_batch": label}
+    if choice_id:
+        data["hub_choice"] = choice_id
+    landed = append_event(events_path, {
+        "type": "reclassification", "source_skill": COMMITMENT_SRC, "supersedes_seq": seq,
+        "primary_thread_id": target, "related_thread_ids": new_related,
+        "classification_confidence": 1.0, "data": data}, holder="cockpit_helpers")
+    name = str((streams.get(target) or {}).get("name") or "").strip()
+    out_seq = (landed[0] if isinstance(landed, list) and landed else {}).get("seq")
+    return ({"status": "assigned", "thread_id": target, "seq": out_seq}, "applied",
+            f"Moved to {name}." if name else "Given a home.")
+
+
+def _wait_typed(workspace_root, cid, c, actor, now) -> Optional[Dict[str, Any]]:
+    """cr1#1291: the Snooze box's words when they set or clear a wait on an
+    event rather than give a date (`commitment_wait.apply_wait_text`)."""
+    from commitment_wait import apply_wait_text
+    return apply_wait_text(str(workspace_root), cid, str(c.get("input") or "")[:200],
+                           actor_id=actor, source_skill=COMMITMENT_SRC, now_iso=_iso(now))
 
 
 def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
@@ -5874,7 +6686,18 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
       * `snooze`: `parse_later_when` then `apply_later`, the writer that
         routes by ownership (the owner's item moves its date; one owed to
         them is hidden until then);
-      * `reopen`: `reopen_commitment`, the page's answer to undo.
+      * `reopen`: `reopen_commitment`, the page's answer to undo;
+      * `assign` (cr1#1289): "Assign to" on a "No home yet" row. The input
+        names a work stream; the book's own cards must hold it as a live
+        work stream, and the promise must be open and on no thread. One
+        `reclassification` of the promise's capture row, marked
+        `open_list.HOME_ORIGIN`, which the open list honours; the capture
+        row is never edited;
+      * `notwork` (cr1#1289): "Not work" on a "No home yet" row. A
+        confirmed promise closes as dropped through `close_commitment`; one
+        still waiting for a yes, or a line only heard, through
+        `needs_review_queue.drop_items`, the queue's own drop. Reopen
+        undoes either.
 
     Context lands before Done on the same row, so a note and a close pressed
     together both land. A refusal of one row never stops the rest. Answers
@@ -5924,6 +6747,13 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 r.update(outcome="error", line=UNKNOWN_VERB_LINE.format(verb=verb or "none"))
                 # cr1#1171: an empty handler result is audited ok
                 handler = {"status": "error", "error": "unknown_verb", "verb": verb}
+            elif verb == "notwork" and cid not in seqs and cid.startswith("obs_"):
+                # cr1#1289: a heard line has no capture row of its own.
+                handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
+                r.update(outcome=outcome, line=line)
+            elif verb == "assign" and cid not in seqs and cid.startswith("obs_"):
+                r.update(outcome="refused", line=ASSIGN_HEARD_LINE)
+                handler = {"status": "refused", "error": "heard_line"}
             elif cid not in seqs:
                 r.update(outcome="error", line=GONE_LINE)
                 # cr1#1171: an error naming the id the book does not hold
@@ -5993,6 +6823,37 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                                  seq=((handler or {}).get("event") or {}).get("seq"))
                         open_rows.pop(cid, None)
                         ledger_open.discard(cid)
+            elif verb == "notwork":
+                row = open_rows.get(cid)
+                if row is None and cid in ledger_open:
+                    row = {"id": cid}
+                if row is None:
+                    r.update(outcome="already", line=ALREADY_CLOSED_LINE)
+                    handler = {"status": "already_resolved"}
+                elif row.get("pending"):
+                    handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
+                    r.update(outcome=outcome, line=line)
+                else:
+                    handler = cs.close_commitment(
+                        str(workspace_root), cid, resolved_by=actor,
+                        evidence=NOT_WORK_EVIDENCE, source_skill=COMMITMENT_SRC,
+                        resolution="dropped", user_confirmed=True,
+                        resolved_by_match="id", extra_data={"cockpit_batch": label})
+                    st = (handler or {}).get("status")
+                    if st in ("not_open", "already_resolved"):
+                        r.update(outcome="already", line=ALREADY_CLOSED_LINE)
+                    else:
+                        r.update(outcome="applied", line=NOT_WORK_LINE,
+                                 seq=((handler or {}).get("event") or {}).get("seq"))
+                if r.get("outcome") == "applied":
+                    open_rows.pop(cid, None)
+                    ledger_open.discard(cid)
+            elif verb == "assign":
+                handler, outcome, line = _assign_home(workspace_root, cid, str(c.get("input") or "").strip(),
+                                                      ledger_open, now, label, str(c.get("id") or ""))
+                r.update(outcome=outcome, line=line)
+                if handler.get("seq") is not None:
+                    r["seq"] = handler["seq"]
             elif verb == "context":
                 text = str(c.get("input") or "").strip()[:NOTE_CAP]
                 if not text:
@@ -6015,8 +6876,18 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
             elif verb == "snooze":
                 when = cs.parse_later_when(str(c.get("input") or "")[:80], _iso(now),
                                            workspace_path=str(workspace_root))
-                if not when:
-                    r.update(outcome="error", line=SNOOZE_NEEDS_DATE_LINE)
+                # cr1#1291: "waiting on <event>" holds it with no date.
+                waited = None if when else _wait_typed(workspace_root, cid, c, actor, now)
+                if waited:
+                    handler = waited
+                    r.update(outcome="applied" if waited.get("status") in ("updated", "cleared")
+                             else "already" if waited.get("status") == "unchanged" else "error",
+                             line=str(waited.get("ack") or ""))
+                elif not when:
+                    # cr1#1292: a date typed but unreadable is asked about.
+                    typed = str(c.get("input") or "").strip()
+                    r.update(outcome="error",
+                             line=cs.later_unreadable_ask(typed) if typed else SNOOZE_NEEDS_DATE_LINE)
                     handler = {"status": "missing_when"}
                 else:
                     # Owner ruling 2 of 2026-11-12 (cr1#1012), scope (b): a
@@ -6472,6 +7343,7 @@ __all__ = [
     "plan_prune_choices",
     "add_chat_priority",
     "feed_week", "apply_week_choices", "WEEK_EMPTY_LINE",
+    "feed_brief", "BRIEF_NONE_LINE", "BRIEF_TEXT_CAP",
     "ORIGIN_LINE_CAP",
     "feed_review", "apply_review_choices", "REVIEW_EMPTY_LINE",
     "land_registration", "LANDING_ID",

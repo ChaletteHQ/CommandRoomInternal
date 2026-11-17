@@ -766,6 +766,34 @@ def _reverse_day_intent(workspace_root, change, *, undone_by, source_skill):
                               undone_by=undone_by, source_skill=source_skill)
 
 
+def _reverse_reminder_deleted(workspace_root, change, *, undone_by,
+                              source_skill):
+    # cr1#1221 - put back a reminder the owner deleted. ADDITIVE like every
+    # reverser here: the delete stays in history, and one `reminder_updated`
+    # with action `restore` lands after it (`reminders.restore_reminder`).
+    #
+    # THE OWNER'S WORD ONLY. A reminder exists because the owner said so, and
+    # no skill, sweep or scheduled task may mint or move one (the lane's hard
+    # rule, event_gate rule 5). A restore is a reminder coming back, so a
+    # reversal the machine makes on its own judgment is refused here, and the
+    # reminder stays deleted. NEVER ADD THIS CLASS TO
+    # `brain_proposals.AUTO_ALLOWED`.
+    from reminders import restore_reminder
+
+    if not _undo_actor_is_person(undone_by):
+        raise BrainUndoError(
+            "a deleted reminder comes back on the owner's own undo only; "
+            "nothing may restore a reminder on its own")
+    rid = change.get("reminder_id")
+    if not rid:
+        raise BrainUndoError(
+            "reminder_deleted reversal needs the reminder_id the delete "
+            "named (reminders.build_reminder_deleted_event stamps it)")
+    return restore_reminder(_events_path(workspace_root), rid,
+                            events=_load_events(workspace_root),
+                            source_skill=source_skill)
+
+
 def _reverse_craft_scope(workspace_root, change, *, undone_by, source_skill):
     # CRAFT1 (cr1#396) - take back a kind of work the owner added to the
     # craft scope list. ADDITIVE: `craft_contract.reverse_scope_added`
@@ -1903,6 +1931,16 @@ REVERSERS: dict[str, dict] = {
                        "otherwise the day goes quiet again; the original "
                        "stays in history",
     },
+    # cr1#1221: "delete the reminder" (chat or a Hub Delete press). The
+    # owner's own gesture; the reverser refuses the machine. Never auto.
+    "reminder_deleted": {
+        "reverse": _reverse_reminder_deleted,
+        "reverses_via": "reminder_updated (action restore, after the "
+                        "reminder_deleted, which stays in history)",
+        "description": "bring back a reminder you deleted - it shows again "
+                       "on your brief, your reminders and the Hub, and a "
+                       "repeating one keeps repeating",
+    },
     # CRAFT1 (cr1#396): an owner-added craft scope. Owner-only, never auto.
     "craft_scope": {
         "reverse": _reverse_craft_scope,
@@ -2662,6 +2700,10 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
                     # existing key can carry them and the put-back has
                     # nothing to write without these two.
                     "previous_name", "previous_aliases",
+                    # cr1#1221 - the reminder_deleted reverser's anchor:
+                    # WHICH reminder to restore. A reminder is keyed by its
+                    # own id, and no existing key carries it.
+                    "reminder_id",
                     "brain_batch_id"):
             if data.get(key) is not None:
                 change[key] = data[key]
@@ -3678,6 +3720,8 @@ _CLASS_PHRASES = {
     "day_intent": "set what the day is about",
     # CRAFT1 (cr1#396) - the owner's own gesture, never an auto detector's.
     "craft_scope": "added a kind of work to your craft list",
+    # cr1#1221 - the owner's own delete, never an auto detector's.
+    "reminder_deleted": "deleted a reminder",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",

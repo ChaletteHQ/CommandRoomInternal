@@ -355,6 +355,8 @@ print('phase 3a snapshot:', len(snap), 'findings')
 "
 ```
 
+**On a merged seat, the check runs through the read door (cr1#1005).** Nothing is imported into a shell there: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"workspace_root": "<WS>"}, "name": "integrity_check:run_checks"}'`, paste what it prints and run that. Its `result` is the findings, one `{check, severity, subject, message}` each; hold that list as the Phase 3a snapshot in this session's own scratch, and ask the same form again in Phase 3z.
+
 ### 3a-bis. Lint skill settings (read-only DETECT — settings-layer C4)
 
 ```
@@ -1280,6 +1282,8 @@ print(json.dumps({'vantage': verdict['vantage'], 'lines': verdict['lines'],
                   'on_schedule': verdict['on_schedule']}))
 "
 ```
+
+**On a merged seat, the verdict runs through the read door (cr1#1005).** Nothing is imported into a shell there: `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"backend": "<the backend id, or null>", "task_records": <the normalised records, or null>, "workspace_root": "<WS>"}, "name": "task_watchdog:health_verdict"}'`, paste what it prints and run that. Its `result` is the verdict the block above prints from.
 
 `task_records` gives the watchdog the scheduler's `lastRunAt` per task, which is what detects the R5 class — a task that silently skipped >=2 expected fires (`late`), a task registered but never authorized (`never_authorized`), the fired-but-wrote-nothing case (`receipt_gap`: fresh `lastRunAt`, stale substrate receipt — the render-without-write class), and the case where the scheduler's own run record says the PLATFORM declined the fire (`platform_declined`, R-M1-6: a cap or quota, not a broken computer — its line names the limit and the phrase, and asks for nothing). Fold every returned `lines` entry into the Monday note's "worth a glance" tier verbatim. With `records = None` the pass runs receipts-only — degraded but never skipped, and never silently: the vantage rule below is what says so.
 

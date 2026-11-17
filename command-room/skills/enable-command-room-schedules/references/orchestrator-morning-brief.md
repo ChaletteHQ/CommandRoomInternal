@@ -390,8 +390,10 @@ The Hub does not wait to be remembered: each morning the owner gets ONE short em
 2. **Plan and claim it** (sends nothing; a second plan the same day answers `already_sent`):
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"inbox": <feed/inbox as read, or null>, "meetings": [<today's calendar events as the gather read them, each {meeting_id, title, start, end, calendar}>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "morning_message:plan_send"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"inbox": <feed/inbox as read, or null>, "meetings": [<today's calendar events as the gather read them, each {meeting_id, title, start, end, calendar, others}, solo blocks included>], "now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "morning_message:plan_send"}'
 ```
+
+`others` is how many people besides the owner are on the event: `0` for a block with nobody else on it, left out when the calendar does not say. A timed `0` reads as hours blocked, never as a meeting (cr1#1293). Pass the solo blocks Step A's prep filter skips as well, so the email shows the hours blocked as the Hub does.
 
 3. **`send: false`:** record it and go on to Phase 6: `run_writer` `morning_message:record` with `{"plan": <the plan>, "sent": false, "workspace_root": "<WS>"}`.
 4. **`send: true`:** resolve the mail tools as the inbox task's Phase 2 does (`inbox_helpers:connector_discovery_step`, then `inbox_helpers:mail_seams`), passing `"self_send": <the plan, verbatim>` in `mail_seams`' args. Send resolves ONLY when the answer carries `send_self_only`. Without it, send nothing and record `{"plan": <the plan>, "sent": false, "reason": <the answer's self_send_refused, or "no_send_tool">, "workspace_root": "<WS>"}`.

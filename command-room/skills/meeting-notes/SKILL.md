@@ -1144,6 +1144,15 @@ counts = count_meeting_writes("<WORKSPACE>", "granola:<meeting_id>")
 # counts = {"meeting": 1, "meeting_processed": 1, "decision": 3, "commitment": 6, "person_proposal": 2, ...}
 ```
 
+**On a merged seat, the two reads of this step run through the read door (cr1#1005).** Nothing is imported into a shell here:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"source_ref": "granola:<meeting_id>", "workspace_root": "<WS>"}, "name": "meeting_capture:count_meeting_writes"}'
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"source_ref": "granola:<meeting_id>", "workspace_root": "<WS>"}, "name": "meeting_capture:meeting_binding_audit"}'
+```
+
+Each answer's `result` is the dict described here. On a re-run, a refused or failed read here does not cancel the receipt: Step 9a2's re-run receipt is landed first, and this step only counts.
+
 **Binding audit (BUG-8244):** in the same pass, call `meeting_capture.meeting_binding_audit("<WORKSPACE>", "granola:<meeting_id>")`. `found` False → the Step 9a1 write failed (say so, same as any failed write). `bound` False → the meeting saved with NO person binding: say plainly *"Heads up — I couldn't attach any attendees to this meeting record, so it won't count toward relationship cadence until it's repaired"* and re-check Step 9a1's inputs. Never silently ship an unbound meeting.
 
 Every number in the ack line, the DECISIONS LOGGED section, and the "Logged N commitments" line comes from `counts` — never from extraction intent. If a count is lower than what you attempted to write, a write FAILED: say so plainly ("I captured 3 decisions but only 2 saved — say 'process meeting' again and I'll retry the missing one"), and never render the failed item as logged. The dogfood caught both failure directions: 3 decisions claimed / 0 written (F-46) and 7 claimed / 6 written (F-50) — neither may recur silently.

@@ -149,7 +149,14 @@
 // for a paste (REVIEW_WIDGETSEND1 RE-VERIFY N2).
 const crSf0='This card could not reach the chat. Copy the line below and paste it.';
 const crSf1='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+const crSf2=' Why: the chat did not connect to this card within 15 seconds.';
+const crSf3='Waiting for the chat to be ready for your choices.';
+const crSwMs=15000;
+const crSq=new Map();
 function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
+function crSApply(x){const b=document.getElementById('cr-apply');if(b)b.disabled=x;}
+function crSHeld(){return crSq.size>0;}
+function crSWait(){const d=document;crSEl(d.querySelector('.cr-footer')||d.body,'cr-sf','div').textContent=crSf3;crSApply(true);}
 function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
 const l=crSEl(h,'cr-sf','div');l.textContent=c;
 const w=crSEl(h,'cr-sw','textarea');w.readOnly=true;w.value=t;
@@ -158,9 +165,11 @@ const m=()=>{l.textContent=c+' Copied.';};
 try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
 try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
 function crSendPrompt(t,p){let c=crSf0;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+const q=crSq.get(t),s=q?q.s:Date.now();if(q){clearTimeout(q.h);crSq.delete(t);crSApply(false);}
 for(const g of[()=>window,()=>window.parent]){
 let o;try{o=g();}catch(e){continue;}
 if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=crSf1;break;}}}
+if(c===crSf0){if(Date.now()-s<crSwMs){crSq.set(t,{s:s,h:setTimeout(()=>crSendPrompt(t,p),250)});crSWait();return;}c+=crSf2;}
 crSendFailed(p,c);}
 
     const labels = { 1: 'Your role', 2: 'Timezone', 3: 'AI name' };

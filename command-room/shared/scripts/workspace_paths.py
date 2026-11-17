@@ -109,6 +109,9 @@ POINTER_FIELDS: tuple = (
     # it, and an unswept-but-correct writer is one edit away from an unswept
     # incorrect one.
     "quarantine_file",
+    # cr1#1240 - `fixture_rows_set_aside.data.backup_file`, workspace-relative
+    # at its writer like `quarantine_file` beside it.
+    "backup_file",
     # MIGRATE2 (2026-09-02). The update-bridge's apply_workspace_migration
     # runner records where its receipt landed (`_hq/data/migrate1/...`) on
     # the plugin_update_remediation row it writes — declared here the day it

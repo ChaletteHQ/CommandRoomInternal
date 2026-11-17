@@ -1608,6 +1608,9 @@ PREP_RECEIPT_TYPE = "prep_brief"
 #: comfortably.
 PREP_RECEIPT_DEDUP_WINDOW = _dt.timedelta(minutes=10)
 
+#: cr1#1304: at most this many attendee ids travel on one prep receipt.
+PREP_RECEIPT_ATTENDEE_CAP = 25
+
 
 def _recent_prep_receipt(workspace_root, *, meeting_id: str,
                          meeting_start: str, artifact: str, generator: str,
@@ -1689,7 +1692,12 @@ def log_prep_receipt(
     Omitting `attendee_person_ids` still lets the MEETING'S OWN prior
     binding resolve (evidence order step 1 needs only `meeting_id`, which
     this function always has) — the attendee fallback is the one extra
-    resolution the caller's evidence unlocks.
+    resolution the caller's evidence unlocks. Since cr1#1304 the ids are also
+    KEPT on the receipt as `data.attendee_person_ids` (unique, blanks
+    dropped, capped), so the Hub's month dashboard can file the prep under
+    its people. Omitted or empty, the field is not written. The ten-minute
+    duplicate check does not compare attendees: a second call for the same
+    brief returns the first receipt as it was (one prep, one receipt).
 
     IDENT1 I-0: the writer is named FIRST (`require_writer_identity`). The
     2026-09-22 prep receipt went into history as a session token because a
@@ -1724,10 +1732,21 @@ def log_prep_receipt(
     }
     if isinstance(meeting_start, str) and meeting_start.strip():
         data["meeting_start"] = meeting_start.strip()
+    # cr1#1304: the attendees stay on the receipt, so the Hub's month
+    # dashboard can file a prep under its people. Additive: a receipt
+    # written before this, or with no attendees given, carries no field.
+    people: List[str] = []
+    for pid in attendee_person_ids or []:
+        pid = pid.strip() if isinstance(pid, str) else ""
+        if pid and pid not in people:
+            people.append(pid)
+    if people:
+        data["attendee_person_ids"] = people[:PREP_RECEIPT_ATTENDEE_CAP]
     data.update(machine_fields())
     if extra_data:
         for k, v in extra_data.items():
-            if k not in data:
+            # cr1#1304: the attendees come only from the checked argument.
+            if k not in data and k != "attendee_person_ids":
                 data[k] = v
 
     # SPEC THREADBIND1 §0 ruling 3 — "prep_brief binds going forward". Only
@@ -1755,7 +1774,7 @@ def log_prep_receipt(
             )
 
             evidence = {"meeting_id": data["meeting_id"],
-                       "attendee_person_ids": list(attendee_person_ids or [])}
+                       "attendee_person_ids": list(people)}
             result = resolve_thread_binding(evidence, workspace_root=workspace_root)
             if result["thread_id"] and result["confidence"] >= BIND_CONFIDENCE_FLOOR:
                 data["thread_id"] = result["thread_id"]

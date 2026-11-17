@@ -136,7 +136,7 @@ expected until its phase lands.
 | `prep_feedback` | orchestrator-past-meetings grades the prep brief against the transcript after meeting-notes runs (Phase 6, Loop 3) — `{meeting_id, meeting_type, sections_hit, sections_rendered, sections_missed, unpredicted_topics}` via `prep_grading.build_prep_feedback_event` | the `learning` job's prep leg (`learning_pass.run_prep_leg` — section weights), value-receipt |
 | `meeting_summary` | `meeting_substance.record_meeting_substance` ONLY (cr1#1014, train 4), through the write door (`meeting_substance:record_meeting_substance`) from meeting-notes Step 5j, which the Maintenance capture fire also runs: one row per processed meeting, and one more per teammate's note on it. `data: {source_ref, title, summary (what was said, at most 400 words), topics: [{topic, said}], notes_from: transcript\|owner_notes\|teammate_notes, notes_author?, meeting_ts?, clipped?, display_only: true}`; `primary_thread_id` and `person_ids` on the row. For display only (ruling C3): an ask that needs the exact words goes back to the transcript by `source_ref`. A second row for the same meeting from the same notes is never written. Not a substance family in `substance_events` (it restates the meeting, so it must not count twice in the binding gauge). | `meeting_substance.meeting_summaries` (workspace-manager's what-was-said asks, through the read door) |
 | `feedback_captured` | `meeting_substance.record_meeting_substance` ONLY (cr1#1014, train 4), beside the meeting's `meeting_summary`: one row per piece of feedback someone gave in the meeting. `data: {source_ref, said (their words, at most 80), about, kind: request\|complaint\|praise\|other, from_person_id?, from_name?, title, meeting_ts?, clipped?}`. The same words from the same meeting are never written twice. | `meeting_substance.feedback_entries` and `meeting_substance.meeting_summaries` (workspace-manager, through the read door) |
-| `prep_brief` | BOTH prep paths — the morning-brief fire's prep leg (SPEC BRIEFMERGE Phase 2.95, `generated_by="morning-brief"`; before that, the retired upcoming-meetings chat) AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed}`. NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), the prep leg's / call-prep's refresh-in-place check, value-receipt |
+| `prep_brief` | BOTH prep paths — the morning-brief fire's prep leg (SPEC BRIEFMERGE Phase 2.95, `generated_by="morning-brief"`; before that, the retired upcoming-meetings chat) AND call-prep on-demand 'prep me' — one per Call_Prep brief saved, via `receipts.log_prep_receipt` ONLY (v4.5.2 S1; F-29/F-29b) — `{meeting_id, slug, artifact, generated_by, fired_via, refreshed, meeting_start?, attendee_person_ids?}` (`attendee_person_ids`, cr1#1304: the attendees' resolved ids, so the Hub's month dashboard files the prep under its people). NOT a task-run receipt: five briefs in one fire are five prep_brief events and ONE pack_run | morning-briefing no-prep detection (`receipts.prep_exists_for_meeting` — the "no prep" flag may only render when NO receipt exists for that meeting id), the prep leg's / call-prep's refresh-in-place check, value-receipt |
 | `prep_weight_proposal` | **the RETIRED interactive Pass 15** (Phase 6, Loop 3) — one per user decision on a proposed call-prep section-weight change. Nothing writes this any more: the `learning` job applies the weight itself and writes `prep_weights_updated`. Rows already on disk still read; the weight they recorded landed in the call-prep skill config (`_hq/data/skill_config/call-prep.json`), which is where the `learning` job writes it too. | call-prep (reads section weights before rendering), usage-report |
 | `extraction_hint_proposal` | insight-generator Loop 5 pass (Phase 6, Round 3) — one per user decision on a proposed extraction hint; the applied hint appends to `_hq/data/extraction-hints.md` | meeting-notes (extraction prompt), cru_match (resolution language), usage-report |
 | `exemplar_update_proposal` | **the RETIRED interactive Pass 16** (SPEC OUT8) — one per user decision on a proposed workspace-exemplar update (`{user_action, fingerprint, kind}`). Nothing writes this any more: the `learning` job promotes automatically and writes `exemplar_promoted`. Rows already on disk still read. | every STANDARD_KINDS composer (reads the exemplar at render time via `exemplars.get_exemplar`), usage-report |
@@ -187,6 +187,7 @@ and update-bridge write only as declared delegates through the
 |---|---|---|
 | `reminder` | `shared/scripts/reminders.py` builders, routed from the user's "remind me about X on [day]" (show-my-reminders owns the phrase family), appended via `event_gate.append_event` | morning-briefing (Pinned + Upcoming reminders sections), show-my-reminders, `reminders.active_reminders` |
 | `reminder_updated` | `reminders.build_reminder_updated_event` — "push it to Friday" (push), "keep" (acknowledged touch, resets the escalation clock), wording fixes (edit) | morning-briefing, show-my-reminders (the reader folds pushes into the effective pin date) |
+| `reminder_deleted` | `reminders.build_reminder_deleted_event`: "delete the reminder", or a Hub Delete press (`cockpit_helpers.apply_hub_choices`, cr1#1221). Carries its undo handle (`brain_batch_id` + `brain_change_class`); the owner's `undo` appends a `reminder_updated` with action `restore` (`reminders.restore_reminder`, via `brain_undo`) | morning-briefing, show-my-reminders, the Hub Today feed (`reminders.active_reminders` drops the id on every surface; a repeat never re-arms) |
 | `reminder_cleared` | `reminders.build_reminder_cleared_event` — "done with the reminder" | morning-briefing, show-my-reminders (one-shots deactivate; repeating reminders re-arm to the next occurrence — derive-next-on-read, NO scheduler) |
 
 Hard rules (gate-enforced in `event_gate.py`, unconditional — both entries,
@@ -197,7 +198,8 @@ strict or legacy):
   origin, the gate rejects it again at append, and the reader ignores any
   reminder-family event without it (a gate bypass never renders).
 - `reminder` gets `data.id` minted `rem_<ulid>` when absent;
-  `reminder_updated` / `reminder_cleared` without `data.reminder_id` reject
+  `reminder_updated` / `reminder_cleared` / `reminder_deleted` without
+  `data.reminder_id` reject
   (dead letters).
 - **Reminders are NOT commitments.** Never a commitment kind, never in
   buckets/counts/chase/triage — separate types keep them out structurally.
@@ -1242,6 +1244,20 @@ as written — history is never rewritten. Post-A1 the appender allocates seq
 inside the writer lock, so a NEW marker indicates a real writer bug worth
 eyes, which is exactly what the Monday note surfaces.
 
+### `fixture_rows_set_aside` (cr1#1240, 2026-11-14)
+
+| type | writer | readers |
+|------|--------|---------|
+| `fixture_rows_set_aside` | `set_aside_fixture_rows.apply(write=True)`, the ONLY writer, run by hand with the book owner's word | `seq_health.scan_gaps` (a recorded repair: `data.quarantined_seqs` names every seq taken, so each gap it leaves is `repair`, not `removed`); `set_aside_fixture_rows` itself (refuses a second receipt for the same seqs) |
+
+One receipt per pass that sets aside well-formed rows a battery wrote into a
+real book (the nested-checkout bug). Rows are named by seq and must all match
+`data.selector` (`type`, `source_skill`); the pass refuses on any mismatch,
+missing seq or count different from `--expect`. Fields: `quarantined_seqs`,
+`quarantined_count`, `quarantine_file` (the rows taken), `backup_file` (the
+whole log before the pass), `selector`, `reason`, `tool_version`. Malformed
+lines are not this receipt's job: that is `corruption_recovery`.
+
 ### `seq_gap_marked` (LEDGERFENCE1, 2026-09-07)
 
 | type | writer | readers |
@@ -1675,15 +1691,19 @@ the corrections the learning job attaches to a rule.
 
 ## Missed-something lane (cr1#1017, train 8 behaviour 6, 2026-11-13)
 
-The Hub's header carries "Missed something?" on every tab. The owner says in
-a sentence what the Hub failed to show; the apply run searches the book for
-it, answers what it found and why it was missed, files it as a to-do when the
-book held no live row for it, and records the miss here. The record is the
-lesson (what was missed and why) and what the week's measure counts.
+The Hub's header carries "Something wrong?" on every tab (cr1#1288; it was
+"Missed something?"). Its press saves no choice: it opens a chat with the
+owner's words, and report-bug's Step 0 (cr1#1315) looks for a missing item
+there, answers where it was found and why it was missed, and files it as a
+to-do and records the miss here only on the owner's yes, through the same
+writer. A "Missed something?" press saved before the change is still answered
+by the apply run. The record is the lesson (what was missed and why) and what
+the week's wrap counts; the Week tab's "problems reported" counts every press
+on the page itself.
 
 | Type | Writer | Named consumers |
 |---|---|---|
-| `hub_miss_reported` | `cockpit_helpers.apply_hub_choices` ONLY (the `miss` / `tell` press, through `_apply_miss` and `event_gate.append_event`). `data: {hub_choice, text, why, line, found_seq?, found_id?, found_source?, filed_id?, terms?, found_where?, filter?, rule?, searched?}`; `why` is one of `listed`, `waiting`, `snoozed`, `closed`, `heard`, `mentioned`, `not_found`, and for an item found only by the live search (cr1#1202) `filtered`, `closed_thread`, `never_fetched`, `inbox`, `meeting_unprocessed`, `meeting_no_promise`; `found_where` is `mail` or `meeting`, `filter` the Inbox feed's Filtered group, `rule` the mail rule in plain words, `searched` what the run searched | `flow_measure.wrap_line` (the week's "you told me I missed N"), `cockpit_helpers._miss_written` (a press applied twice answers from its first write) |
+| `hub_miss_reported` | `cockpit_helpers.apply_hub_choices` ONLY (the `miss` / `tell` choice: a saved press, or the "Something wrong?" chat's on the owner's yes, cr1#1315; through `_apply_miss` and `event_gate.append_event`). `data: {hub_choice, text, why, line, found_seq?, found_id?, found_source?, filed_id?, terms?, found_where?, filter?, rule?, searched?}`; `why` is one of `listed`, `waiting`, `snoozed`, `closed`, `heard`, `mentioned`, `not_found`, and for an item found only by the live search (cr1#1202) `filtered`, `closed_thread`, `never_fetched`, `inbox`, `meeting_unprocessed`, `meeting_no_promise`; `found_where` is `mail` or `meeting`, `filter` the Inbox feed's Filtered group, `rule` the mail rule in plain words, `searched` what the run searched | `flow_measure.wrap_line` (the week's "you told me I missed N"), `cockpit_helpers._miss_written` (a press applied twice answers from its first write) |
 | `morning_message_claimed` | `morning_message.plan_send` ONLY, under its lock, before anything is sent (cr1#1017 behaviour 1). `data: {day, digest}`: the seal on the exact plan | `morning_message.check_self_send` (the seam sends only the claimed plan), `morning_message.record` (a send is recorded only for it), `morning_message.sent_on` (a claimed day is not planned again) |
 | `morning_message_sent` | `morning_message.record` ONLY, after the morning run sent the morning message through `inbox_helpers.mail_seams(self_send=...)` (cr1#1017 behaviour 1, the one named exception to IDENT1 I-12). `data: {day, to, via, subject?, n_need?}`; `to` is always the owner's own business-primary address | `morning_message.sent_on` (one send a workspace day: `plan_send` and `check_self_send` refuse a second) |
 | `morning_message_skipped` | `morning_message.record` ONLY: a morning that sent nothing. `data: {day, reason}`, `reason` one of `already_sent`, `no_hub`, `no_owner_address`, `unverified_binding`, `walled`, `read_only`, `no_send_tool`, `send_failed`, `unreadable`; never an address | history only (the health check and the weekly report read why a morning was quiet) |

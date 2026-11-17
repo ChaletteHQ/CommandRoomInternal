@@ -49,6 +49,17 @@ import re
 from pathlib import Path
 from typing import Dict, Optional
 
+# cr1#1240: while a battery runs, an upward walk never binds a real book.
+try:
+    from battery_isolation import walk_may_bind as _walk_may_bind
+except Exception:  # pragma: no cover - loaded outside shared/scripts
+    try:
+        from .battery_isolation import walk_may_bind as _walk_may_bind  # type: ignore
+    except Exception:
+        def _walk_may_bind(root, env=None):  # fail closed only inside a battery
+            import os as _o
+            return not str(_o.environ.get("CR1_BATTERY_ISOLATED", "") or "").strip()
+
 # Where the answer is kept. `_hq/.system/` is already plugin collateral inside
 # the workspace (writer_lock.py:59-64, workspace_paths.py:79-82), so this adds
 # a file to an established home rather than a new convention.
@@ -176,6 +187,8 @@ def _resolve_root(workspace_root, env: Dict[str, str]) -> Optional[Path]:
         here = Path.cwd().resolve()
         for d in (here, *here.parents):
             if (d / "_hq" / "data" / "entities.json").is_file():
+                if not _walk_may_bind(d):
+                    break  # cr1#1240: a battery never binds a real book
                 return d
     except OSError:
         pass

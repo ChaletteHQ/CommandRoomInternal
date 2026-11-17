@@ -19,8 +19,8 @@ from typing import Any, Dict, List
 
 WAYS: List[Dict[str, Any]] = [
     {"way": "The Hub",
-     "habit": "Open it once in the morning and press Start. Go through the tabs from left to right, "
-              "then press Apply so your choices reach your records.",
+     "habit": "Open it once in the morning and press Go; a later press refreshes the day. Work through the tabs "
+              "from left to right, then press Apply so your choices reach your records.",
      "phrases": [("where is my hub", "cockpit-setup"), ("show my settings", "cockpit-setup")]},
     {"way": "Morning Brief",
      "habit": "Read it before your first meeting. The Hub's Today tab holds the same morning, with up to three questions you can answer there.",

@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.2.0 (2026-11-17)
+
+The Hub, reworked from your team's review: calendar and meeting prep at the top of Today, one Go button to start and refresh the day, a Brief tab with today's morning brief, Commitments filters in place of the Review tab, a Done this month view, Something wrong? to report a miss, and Assign to or Not work on items with no home.
+
 ## v6.1.0 (2026-11-15)
 
 A tidier Command Room: it no longer points you to chats and skills that were retired, and a group reply the Hub cannot send to everyone on the thread is refused rather than sent to one person.

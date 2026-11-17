@@ -131,9 +131,9 @@
     "properties": {"source": "string", "doc_id": "string", "doc_ref": "string", "rel": "string", "kind": "string", "title": "string", "format": "string", "refreshed": "boolean", "bytes": "integer", "sha256": "string", "machine": "string"}
   },
   "prep_brief": {
-    "description": "Per-brief prep receipt (v4.5.2 S1). One per Call_Prep brief written, carrying the meeting id — THE signal the morning brief's no-prep detection reads (F-29). Written only by receipts.log_prep_receipt; not a task-run receipt (five briefs in one fire are five prep_brief events and ONE pack_run).",
+    "description": "Per-brief prep receipt (v4.5.2 S1). One per Call_Prep brief written, carrying the meeting id — THE signal the morning brief's no-prep detection reads (F-29). Written only by receipts.log_prep_receipt; not a task-run receipt (five briefs in one fire are five prep_brief events and ONE pack_run). attendee_person_ids (cr1#1304, additive, optional) is the attendees' resolved person ids, so the Hub's month dashboard files a prep under its people; older receipts carry none.",
     "required": [["meeting_id"], ["slug"], ["artifact"]],
-    "properties": {"meeting_id": "string", "slug": "string", "artifact": "string", "generated_by": "string", "fired_via": "string", "refreshed": "boolean", "machine": "string"}
+    "properties": {"meeting_id": "string", "slug": "string", "artifact": "string", "generated_by": "string", "fired_via": "string", "refreshed": "boolean", "meeting_start": "string", "attendee_person_ids": "array", "thread_id": "string", "thread_basis": "string", "machine": "string"}
   },
   "reminder": {
     "description": "A user-created pin-until-cleared reminder (v4.6.0 W4a). NOT a commitment kind — never enters buckets, counts, chase, or triage. data.origin MUST be 'user_explicit' (gate-enforced; no skill, sweep, or scheduled task may mint one). id minted rem_<ulid> at build/gate time. repeat is 'weekly' | 'monthly' | {\"every_days\": N} — recurrence lives on reminders, not commitments (M decision 2026-07-09). personal defaults true when the reminder references no tracked business entity; personal reminders render ONLY in M-facing surfaces. ref (optional) points at a commitment/event id for context only — clearing the reminder never touches the referenced item.",
@@ -141,7 +141,7 @@
     "properties": {"id": "string", "summary": "string", "remind_from": "string", "due": "string", "personal": "boolean", "ref": "string", "origin": "string"}
   },
   "reminder_updated": {
-    "description": "Push / keep / edit on an existing reminder. reminder_id REQUIRED (gate-rejected without it — an id-less update is a dead letter). action 'push' carries new remind_from (also re-arms a cleared one-shot); 'keep' is an acknowledged touch that resets the escalation clock; 'edit' revises summary/due. origin MUST be 'user_explicit'.",
+    "description": "Push / keep / edit / restore on an existing reminder. reminder_id REQUIRED (gate-rejected without it — an id-less update is a dead letter). action 'push' carries new remind_from (also re-arms a cleared one-shot); 'keep' is an acknowledged touch that resets the escalation clock; 'edit' revises summary/due; 'restore' takes back a reminder_deleted (the owner's undo, cr1#1221). origin MUST be 'user_explicit'.",
     "required": [["reminder_id"], ["origin"]],
     "properties": {"reminder_id": "string", "action": "string", "remind_from": "string", "due": "string", "summary": "string", "origin": "string"}
   },
@@ -247,6 +247,11 @@
     "description": "Clears a reminder. reminder_id REQUIRED. For repeating reminders the reader re-arms to the next occurrence after data.occurrence (defaults to the occurrence active at clear time) — derive-next-on-read, no scheduler. Clearing a reminder with ref NEVER closes the referenced commitment. origin MUST be 'user_explicit'.",
     "required": [["reminder_id"], ["origin"]],
     "properties": {"reminder_id": "string", "occurrence": "string", "note": "string", "origin": "string"}
+  },
+  "reminder_deleted": {
+    "description": "Deletes a reminder for good (cr1#1221): the reader drops the id on every surface, and a repeating reminder never re-arms. reminder_id REQUIRED. WRITTEN ONLY via reminders.build_reminder_deleted_event, from the owner's own 'delete the reminder' or a Hub Delete press. Carries its undo handle (brain_batch_id with brain_change_class 'reminder_deleted'); the owner's undo appends a reminder_updated with action 'restore' through brain_undo, never an edit. Deleting a reminder with ref NEVER closes the referenced commitment. origin MUST be 'user_explicit'.",
+    "required": [["reminder_id"], ["origin"]],
+    "properties": {"reminder_id": "string", "origin": "string", "brain_batch_id": "string", "brain_change_class": "string", "hub_choice": "string"}
   },
   "person_role_changed": {
     "description": "Lineage: a person's role/title changed (SPEC HIST1 D2). WRITTEN ONLY by people_writer.update_person at the before/after diff site — auto-emitted alongside person_updated when `role` changed with BOTH sides non-empty (a backfill filling an empty role emits nothing; migration sets pass suppress_lineage=True). The head field still updates; this event preserves the prior title as history. source_ref is REQUIRED and never null — when no connector ref is in hand the writer synthesizes 'update:<source_skill>:<seq of the person_updated event>' (D10 change-feed contract). summary is the human-readable change line the future change feed renders.",

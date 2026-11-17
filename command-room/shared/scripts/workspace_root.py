@@ -19,6 +19,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# cr1#1240: while a battery runs, an upward walk never binds a real book.
+try:
+    from battery_isolation import walk_may_bind as _walk_may_bind
+except Exception:  # pragma: no cover - loaded outside shared/scripts
+    try:
+        from .battery_isolation import walk_may_bind as _walk_may_bind  # type: ignore
+    except Exception:
+        def _walk_may_bind(root, env=None):  # fail closed only inside a battery
+            import os as _o
+            return not str(_o.environ.get("CR1_BATTERY_ISOLATED", "") or "").strip()
+
 # The substrate anchor. A directory IS the workspace root iff this file exists
 # directly beneath it.
 _ANCHOR = Path("_hq") / "data" / "entities.json"
@@ -45,6 +56,8 @@ def find_workspace_root(start: Path | str | None = None) -> Path:
     candidate = here if here.is_dir() else here.parent
     for d in (candidate, *candidate.parents):
         if is_workspace_root(d):
+            if not _walk_may_bind(d):
+                break  # cr1#1240: a battery never binds a real book
             return d
     raise FileNotFoundError(
         f"No workspace root at or above {here} "

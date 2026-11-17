@@ -416,6 +416,7 @@ lanes when they share a brief widget.
 | `reminder done` | Done | Clear the reminder (`reminder_cleared`). It leaves the Pinned block; a referenced commitment is NOT touched — closing that is its own action. |
 | `reminder push [date]` | Later… | Move the pin date (`reminder_updated`, action `push`). Date REQUIRED — empty holds Apply with the reason (F-17 contract). Re-arms a cleared one-shot. |
 | `reminder keep` | Keep | Acknowledge without clearing (`reminder_updated`, action `keep`) — resets the escalation clock, stays pinned. |
+| `reminder delete` | Delete | Delete the reminder for good (`reminder_deleted`, cr1#1221): it leaves every surface and a repeating one never re-arms. The owner's `undo` brings it back (`brain_undo`, action `restore`). A referenced commitment is NOT touched. |
 
 ### Balance — the Sunday reconnect card: FOSSIL (the skill is RETIRED, cr1#552; a persisted card's verbs ack the retired line and write nothing; SPEC BAL1, `surface: "m_facing"` only)
 

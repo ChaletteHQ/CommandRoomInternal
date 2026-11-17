@@ -423,6 +423,18 @@ VERB_TAXONOMY = (
          ("morning-brief", "show-my-reminders"), family="reminder",
          notes="Dispatch: reminders.build_reminder_updated_event("
                "action='keep')."),
+    _row("reminder delete", "Delete", "reminder_deleted",
+         "Delete the reminder for good: it leaves every surface, and a "
+         "repeating one never comes back. Undo brings it back. Never touches "
+         "a referenced commitment.",
+         ("morning-brief", "show-my-reminders"), family="reminder",
+         notes="cr1#1221. Done clears (a repeat re-arms); Delete is the way "
+               "out for good. Chat words: 'delete the reminder', 'get rid of "
+               "that reminder for good' (reminders.wants_delete). Dispatch: "
+               "reminders.build_reminder_deleted_event(<id>); the Hub's "
+               "Delete press goes through cockpit_helpers.apply_hub_choices. "
+               "The owner's undo: brain_undo.undo_batch with the event's "
+               "brain_batch_id."),
 
     # --- Email-shaped --------------------------------------------------------
     _row("send", "Send", None,

@@ -3454,7 +3454,10 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     NEVER TOUCHES THE CONFIRMED TIER. It goes through `apply_review_expiry`,
     whose `_review_decisions` membership fence derives the live
     `pending_review` id set from the substrate and DROPS anything else. This
-    function adds no second write path and no second derivation.
+    function adds no second write path and no second derivation. The one
+    exception is the test-meeting leg (cr1#1295, owner ruling 2026-11-16):
+    `meeting_test_marks` retires what a TEST meeting left open, confirmed
+    rows included, in its own undoable batch.
 
     `apply=False` is the dry run (plan + receipt-shaped return, no receipt
     written, nothing closed). The registered prompt passes `--apply`, exactly
@@ -3534,6 +3537,10 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
             "n_apply_planned": int(chip_plan.get("n_apply_planned") or 0),
             "n_retract_planned": int(chip_plan.get("n_retract_planned") or 0),
             "n_chip_applied": 0, "n_retracted": 0, "n_chip_withheld": 0,
+            "n_test_meeting_planned": int(
+                _test_meeting_leg(workspace_root, apply=False,
+                                  now_iso=now_iso).get("n_planned") or 0),
+            "n_test_meeting_retired": 0,
         }
 
     # POLICY1-A DD-4 (M rulings 1 and 5) — THE CHIP LEG RUNS FIRST, and the
@@ -3544,6 +3551,12 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     # a bare title match, a schedule shift, a new ask — RETRACTS itself.
     # Neither outcome ever waits for an answer.
     chips = _chip_leg(workspace_root, now_iso=now_iso, apply=True)
+    # cr1#1295 (owner ruling 2026-11-16) — THE TEST-MEETING LEG. What a test
+    # meeting left open (either tier) is retired here, in its own undoable
+    # batch, before the lapse leg reads the pile. This is the one leg of this
+    # job that reaches the confirmed tier, and it reaches only rows whose
+    # source pointer names a meeting `meeting_test_marks` calls a test.
+    tests = _test_meeting_leg(workspace_root, apply=True, now_iso=now_iso)
     # The lapse leg then runs over what is LEFT (it re-derives the pile from
     # the substrate, so a row the chip just closed is already gone from it).
     plan = review_expiry_plan(workspace_root, user_person_id=uid,
@@ -3568,6 +3581,9 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     out["n_chip_withheld"] = int(chips.get("n_apply_withheld") or 0)
     out["closes_enabled"] = chips.get("closes_enabled")
     out["retract_batch_id"] = chips.get("batch_id")
+    out["n_test_meeting_planned"] = int(tests.get("n_planned") or 0)
+    out["n_test_meeting_retired"] = int(tests.get("n_retired") or 0)
+    out["test_meeting_batch_id"] = tests.get("batch_id")
     out["receipt_line"] = _review_expiry_receipt_line(out)
     _log_review_expiry_receipt(workspace_root, out, fired_via=fired_via)
     return out
@@ -3590,6 +3606,20 @@ def _lapsed_with_completion(workspace_root, plan) -> int:
         print(f"[backlog-sweep] completion-evidence count FAILED: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
+
+
+def _test_meeting_leg(workspace_root, *, now_iso, apply: bool) -> dict:
+    """cr1#1295 — `meeting_test_marks.retire_test_meeting_captures`, which
+    never raises; this wrapper only keeps an import failure from taking the
+    job down."""
+    try:
+        from meeting_test_marks import retire_test_meeting_captures
+        return retire_test_meeting_captures(workspace_root, apply=apply,
+                                            now_iso=now_iso)
+    except Exception as exc:  # loud, never fatal
+        print(f"[backlog-sweep] test-meeting leg FAILED: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return {}
 
 
 def _chip_leg(workspace_root, *, now_iso, apply: bool) -> dict:
@@ -3643,7 +3673,9 @@ def _review_expiry_receipt_line(out) -> str:
     n_retracted = int((out or {}).get("n_retracted") or 0)
     n_chip_closed = int((out or {}).get("n_chip_applied") or 0)
     n_chip_withheld = int((out or {}).get("n_chip_withheld") or 0)
-    if not n and not nd and not n_retracted and not n_chip_closed and not n_chip_withheld:
+    n_test = int((out or {}).get("n_test_meeting_retired") or 0)
+    if (not n and not nd and not n_retracted and not n_chip_closed
+            and not n_chip_withheld and not n_test):
         return ""
     days = (out or {}).get("threshold_days")
     line = ""
@@ -3699,6 +3731,19 @@ def _review_expiry_receipt_line(out) -> str:
                  + f"{n_retracted} unanswered "
                  + ("question" if n_retracted == 1 else "questions")
                  + " retracted quietly (nothing was changed).")
+    if n_test:
+        # cr1#1295 — its own batch, so its own `undo` (the F-6 rule above).
+        line += ((" " if line else "")
+                 + f"{n_test} "
+                 + ("item" if n_test == 1 else "items")
+                 + " from test meetings "
+                 + ("was" if n_test == 1 else "were")
+                 + " retired"
+                 + (" (a separate `undo` lists "
+                    + ("it)." if n_test == 1 else "them).")
+                    if line else
+                    " — say `undo` to put "
+                    + ("it back." if n_test == 1 else "them back.")))
     return line
 
 
@@ -3753,6 +3798,14 @@ def _log_review_expiry_receipt(workspace_root, out, *, fired_via) -> None:
                 "n_chip_withheld": int((out or {}).get("n_chip_withheld") or 0),
                 "closes_enabled": (out or {}).get("closes_enabled"),
                 "retract_batch_id": (out or {}).get("retract_batch_id"),
+                # cr1#1295 — what the test-meeting leg retired, written only
+                # when it retired something, so a fire with no test meeting
+                # leaves the receipt it always wrote.
+                **({"n_test_meeting_retired":
+                        int((out or {}).get("n_test_meeting_retired") or 0),
+                    "test_meeting_batch_id":
+                        (out or {}).get("test_meeting_batch_id")}
+                   if (out or {}).get("n_test_meeting_retired") else {}),
             },
         )
     except Exception as exc:  # loud, never fatal — the closes already landed

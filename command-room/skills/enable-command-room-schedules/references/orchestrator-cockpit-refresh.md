@@ -74,6 +74,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 `set` the answer on `feed/people` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
+**Then the Brief tab (cr1#1310).** Today's morning brief as the Morning Brief run saved it, one read beside the data. It reads that one saved file and nothing else, so the tab shows exactly what the brief posted:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_brief"}'
+```
+
+`set` the answer on `feed/brief` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
+
 **Then the Review tab (cr1#779).** The open questions and proposed closes, one read beside the data:
 
 ```bash

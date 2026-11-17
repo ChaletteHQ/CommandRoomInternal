@@ -29,6 +29,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -134,9 +135,33 @@ def _same_meeting(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
                 or (a.get("title") == b.get("title") and a.get("start") == b.get("start")))
 
 
+def _is_block(m: Dict[str, Any]) -> bool:
+    """cr1#1293: a timed event with nobody else on it (the today feed's
+    `solo`) is the owner's own time, never a meeting. The page's `isBlock`."""
+    return m.get("solo") is True and not m.get("all_day")
+
+
+def _block_words(blocks: List[Dict[str, Any]]) -> str:
+    """The page's `blockWords`: "3 hours blocked for <title>" for one block,
+    "... for your own work" for several; under an hour in minutes, else hours
+    to the half hour."""
+    mins = 0.0
+    for m in blocks:
+        s, e = _parse(m.get("start")), _parse(m.get("end"))
+        d = (e - s).total_seconds() / 60 if s and e else 0
+        mins += d if d > 0 else 0
+    mins = math.floor(mins + 0.5)
+    if mins < 60:
+        span = f"{mins} minute" + ("" if mins == 1 else "s")
+    else:
+        h = math.floor(mins / 30 + 0.5) / 2
+        span = (str(int(h)) if h == int(h) else str(h)) + (" hour" if h == 1 else " hours")
+    return span + " blocked for " + (_cap(blocks[0].get("title")) if len(blocks) == 1 else "your own work")
+
+
 def _day_clash(today, plate, day: str, now: _dt.datetime, tz) -> Optional[Dict[str, Any]]:
     ms = [m for m in ((today or {}).get("meetings") or []) if isinstance(m, dict)
-          and not m.get("all_day") and m.get("start") and m.get("end") and _local_day(m.get("start"), tz) == day]
+          and not m.get("all_day") and not _is_block(m) and m.get("start") and m.get("end") and _local_day(m.get("start"), tz) == day]
     ms.sort(key=lambda m: _parse(m["start"]) or now)
     ahead = [m for m in ms if (_parse(m["end"]) or now) > now]
     for i in range(len(ahead)):
@@ -158,11 +183,25 @@ def _words(items: List[Any]) -> str:
     return " and ".join(w) if len(w) < 3 else ", ".join(w[:-1]) + ", and " + w[-1]
 
 
+def _lead_words(lead: List[Dict[str, Any]]) -> str:
+    """cr1#1290, the page's `leadWords`: the top ranked item due later this
+    week is what the week is about, and the next ones are what today moves;
+    a top item due today, past its date or undated is today's."""
+    top = lead[0] or {}
+    rest = [_cap((r or {}).get("title")) for r in lead[1:]]
+    left = top.get("days_left")
+    if isinstance(left, int) and not isinstance(left, bool) and left > 0:
+        return ("This week is about " + _cap(top.get("title"))
+                + (", due " + str(top["due_day"]) if top.get("due_day") else "")
+                + (", and today moves " + _words(rest) if rest else ""))
+    return "Today is about " + _words([_cap(top.get("title"))] + rest)
+
+
 def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, Any]],
                    review: Optional[Dict[str, Any]], inbox: Optional[Dict[str, Any]], *,
                    day: str, now: _dt.datetime, tz) -> List[Dict[str, str]]:
-    """The day as the Hub writes it: `[{part, text}]` for `about`, `need`
-    and `clash`, in that order, the first capitalised. The page's
+    """The day as the Hub writes it: `[{part, text}]` for `about`, `need`,
+    `clash` and `goal` (cr1#1294), in that order, the first capitalised. The page's
     `sentText(sentModel(S))` on a fresh morning (nothing pressed yet)."""
     if not today and not plate:
         return []
@@ -175,24 +214,38 @@ def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, An
         focus = (plate.get("focus") or []) if isinstance(plate, dict) and plate.get("today") == day else []
         ms = [m for m in ((today or {}).get("meetings") or []) if isinstance(m, dict)
               and not m.get("all_day") and _local_day(m.get("start"), tz) == day]
-        if focus:
+        bs = [m for m in ms if _is_block(m)]
+        ms = [m for m in ms if not _is_block(m)]
+        lead = (plate.get("lead") or []) if isinstance(plate, dict) and plate.get("today") == day else []
+        if lead:
+            about = {"said": False, "lead": lead[:3]}
+        elif focus:
             about = {"said": False, "focus": focus[:3]}
-        elif ms:
-            about = {"said": False, "meetings": ms}
+        elif ms or bs:
+            about = {"said": False, "meetings": ms, "blocks": bs}
     need = None
     if isinstance(plate, dict) and plate.get("today") and plate.get("today") == day:
         need = len(needs_you(plate, review, inbox, day=day))
     clash = _day_clash(today, plate, day, now, tz)
+    # cr1#1294: the confirmed priorities with nothing open, the page's `goal`
+    goals = [g for g in ((plate.get("goals") or []) if isinstance(plate, dict) and plate.get("today") == day else [])
+             if isinstance(g, dict)]
     out: List[Dict[str, str]] = []
     if about:
-        if about["said"]:
-            a = _words(about["items"])
-        elif about.get("focus"):
-            a = _cap((about["focus"][0] or {}).get("title"))
+        if about.get("lead"):
+            out.append({"part": "about", "text": _lead_words(about["lead"])})
         else:
-            n = len(about["meetings"])
-            a = f"{n} meeting" + ("" if n == 1 else "s")
-        out.append({"part": "about", "text": "Today is about " + a})
+            if about["said"]:
+                a = _words(about["items"])
+            elif about.get("focus"):
+                a = _cap((about["focus"][0] or {}).get("title"))
+            else:
+                n = len(about["meetings"])
+                w = [f"{n} meeting" + ("" if n == 1 else "s")] if n else []
+                if about.get("blocks"):
+                    w.append(_block_words(about["blocks"]))
+                a = " and ".join(w)
+            out.append({"part": "about", "text": "Today is about " + a})
     if need is not None:
         out.append({"part": "need", "text": (f"{need} thing needs you" if need == 1 else f"{need} things need you")
                     if need else "nothing needs you"})
@@ -203,6 +256,11 @@ def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, An
         else:
             t = _cap(clash["row"].get("title")) + " is due on a day of " + str(len(clash["meetings"])) + " meetings"
         out.append({"part": "clash", "text": t})
+    if goals:
+        n = plate.get("n_goals")
+        n = n if isinstance(n, int) and not isinstance(n, bool) and n >= len(goals) else len(goals)
+        out.append({"part": "goal", "text": _cap(goals[0].get("statement")) + " has nothing open"
+                    if n == 1 else f"{n} priorities have nothing open"})
     if out:
         out[0]["text"] = _cap(out[0]["text"])
     return out
@@ -393,6 +451,15 @@ def _hide_personal(plate: Any, personal: Optional[set]) -> Any:
     out["rows"] = rows
     out["focus"] = [dict(f, title=PERSONAL_ITEM.lower()) if isinstance(f, dict)
                     and (personal is None or f.get("title") in hidden) else f for f in plate.get("focus") or []]
+    # cr1#1290: the ranked top line reads the same way
+    out["lead"] = [dict(f, title=PERSONAL_ITEM.lower()) if isinstance(f, dict)
+                   and (personal is None or str(f.get("id")) in personal or f.get("title") in hidden) else f
+                   for f in plate.get("lead") or []]
+    # cr1#1294: a priority on the personal lane (the feed marks it), or any
+    # priority while the personal lane is unknown, reads as a personal item
+    out["goals"] = [dict(g, statement=PERSONAL_ITEM.lower()) if isinstance(g, dict)
+                    and (personal is None or g.get("personal") is not False) else g
+                    for g in plate.get("goals") or []]
     return out
 
 

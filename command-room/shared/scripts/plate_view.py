@@ -122,7 +122,8 @@ OPEN_BY_DEFAULT = frozenset({BLOCK_DO_IT, BLOCK_CHASE, BLOCK_CONFIRM,
 
 HORIZON_OVERDUE = "overdue"
 #: cr1#1043: past its date, but not what the overdue number counts (the
-#: owner's ruling of 2026-11-11: a row waiting for a yes, or snoozed). It
+#: owner's ruling of 2026-11-11: a row waiting for a yes; a snoozed row is
+#: off the plate until its date since cr1#1292, ruling of 2026-11-16). It
 #: sorts, keeps off Parked and groups exactly where an overdue row does;
 #: only its words differ, so a row never calls itself overdue beside an
 #: overdue count that leaves it out.
@@ -1528,10 +1529,15 @@ def fold_proposals_and_hints(events: list, *, now_iso: str) -> tuple[dict, dict]
         if ev.get("type") != "commitment_updated":
             continue
         d = ev.get("data") or {}
-        if not d.get("status_hint"):
-            continue
         cid = d.get("commitment_id") or d.get("target_id") or ev.get("commitment_id")
         if not cid:
+            continue
+        if not d.get("status_hint"):
+            # cr1#1291: an explicit null is an un-park and ENDS the hint, as
+            # the loader's fold reads it; an update without the key leaves
+            # it alone.
+            if "status_hint" in d:
+                hints.pop(str(cid), None)
             continue
         hints[str(cid)] = {"status_hint": str(d.get("status_hint")),
                            "ts": ev.get("ts") or "",
@@ -1575,8 +1581,14 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
                 preset: str = "default",
                 since_iso: Optional[str] = None,
                 include_movement: bool = False,
-                local_instant: Optional[_dt.datetime] = None) -> dict:
+                local_instant: Optional[_dt.datetime] = None,
+                include_snoozed: bool = False) -> dict:
     """The plate model: blocks -> projects -> horizons -> rows (DD-1).
+
+    `include_snoozed=True` (cr1#1292) keeps snoozed items as rows. Only a
+    writer that must answer a press on any open row passes it (the Hub's
+    Apply, which acts on what the page still shows); no surface does, so a
+    snoozed item is on none of them until its date.
 
     `user_person_id=None` resolves via `primary_user.resolve_primary_user`;
     an unresolvable user REFUSES: `{"error": <one plain line>, "blocks": {}}`
@@ -1669,11 +1681,31 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
     all_events = events_io.load_all(ws)
     opens = load_open_commitments(events_path, events=all_events,
                                   workspace_root=str(ws))
+    # cr1#1289: a home the owner gave a promise on the Hub ("Assign to"),
+    # the same fold the open list makes, so both name one thread.
+    from open_list import homes_given
+    homes = homes_given(all_events)
     # D5 — the observed tier is never a row on any plate surface, and the
     # header counts are `count_commitments` over the SAME input the rows come
     # from (F-56): drop the tier before counting, not after.
     opens = [ev for ev in opens
              if (ev.get("data") or {}).get("tier") != TIER_OBSERVED]
+    # cr1#1292 (the owner's ruling of 2026-11-16): a snooze lives on the
+    # item and every surface honours it. A snoozed item, and its steps, is
+    # no row on any plate surface (the Hub's tabs, the brief, End of Day)
+    # until its date, and like the observed tier it is dropped before
+    # counting, so the header and the rows stand over one set. Nothing is
+    # lost: `view["snoozed"]` names each one with the day it comes back.
+    from mute_ledger import drop_snoozed, item_snoozes
+    _snoozes = {} if include_snoozed else item_snoozes(all_events, now_iso)
+    opens, _hidden = drop_snoozed(opens, _snoozes)
+    snoozed_rows = []
+    for ev in _hidden:
+        _d = ev.get("data") or {}
+        _sid = str(_cid(ev))
+        snoozed_rows.append({"id": _sid,
+                             "title": row_title(_d.get("title"), _d.get("summary"))[:240],
+                             "until": _snoozes.get(_sid, "")})
     movement = derive_commitment_movement(events_path)
     # F-12 (REVIEW_DATE1 round 2) — `count_commitments` uses `now_iso` for TWO
     # different kinds of arithmetic: `is_overdue`/`overdue_days` slice it to a
@@ -1746,6 +1778,9 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
     blocked_ids = {r["commitment_id"] for r in cls["blocked"]}
     stuck_ids = {r["commitment_id"] for r in cls["stuck"]}
     proposals, hints = fold_proposals_and_hints(all_events, now_iso=now_iso)
+    # cr1#1291: the items that wait on an event, by the one reading.
+    from commitment_wait import item_waits, wait_reason
+    waits = item_waits(all_events, now_iso)
 
     now_dt = _dt.datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
     if now_dt.tzinfo is None:
@@ -1845,6 +1880,12 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
             if when:
                 asked += f" on {when}"
             return BLOCK_PARKED, f"{asked} — whose is it?", badges, False
+        # cr1#1291 (the owner's ruling of 2026-11-16): an item that waits on
+        # an event rests under Parked, whatever its date or bucket, so it is
+        # never overdue and never leads; after 14 days its line asks whether
+        # it still waits. The event is the owner's own words.
+        if cid in waits:
+            return BLOCK_PARKED, plain_words(wait_reason(waits[cid])), badges, True
         if bucket == BUCKET_UNCONFIRMED or question or bucket == BUCKET_UNOWNED:
             if overdue:
                 badges.append("overdue")
@@ -1925,12 +1966,13 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
             subitems = {"open": len(kids) if kids else (n_open_k or 0),
                         "done": n_done_k}
         project_key, project_label = project_group(
-            ev.get("primary_thread_id") or NO_PROJECT_KEY, threads)
+            homes.get(cid) or ev.get("primary_thread_id") or NO_PROJECT_KEY, threads)
         rows.append({
             "id": cid,
             "title": row_title(d.get("title"), d.get("summary")),
             "block": block,
-            "horizon": _hz(due, ev),
+            # cr1#1291: an item waiting on an event has no date to be late on.
+            "horizon": HORIZON_NO_DATE if cid in waits else _hz(due, ev),
             "project_key": project_key,
             "project_label": project_label,
             "due": due,
@@ -2142,6 +2184,7 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
         "blocks": blocks,
         "rows": rows,
         "n_folded": n_folded,
+        "snoozed": snoozed_rows,
     }
     # REVIEW_ONEPLATE1 F-4 — every row the widget's page holds back carries
     # its marker and, where the CAP is what held it, its own why. Stamped

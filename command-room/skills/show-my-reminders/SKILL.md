@@ -1,7 +1,7 @@
 ---
 name: show-my-reminders
 surfaces: both
-description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Also the mute ledger: 'show muted' / 'show snoozed' list every live mute with an Unmute. 'show my list' / 'my list' hear one line: that list is retired. Does NOT fire on 'remind me to revisit' (decision-log — its revisit mode) or 'remind me what' retrieval (decision-log)."
+description: "The user's own pin-until-cleared reminders. Capture: 'remind me about' [X] on/next [day] / 'remind me to' [X] on [day] / 'set a reminder' (every-week/month = repeating). Review: 'show my reminders' / 'my reminders' / 'list my reminders'. Clear: 'done with the reminder' / 'clear the reminder'. Delete: 'delete the reminder' / 'delete [summary words] reminder' / 'get rid of that reminder for good' (gone for good, a repeat too; undo brings it back). Move: 'push the reminder' to [day] ('push it to' follows in context). Pins to the morning brief from its date, daily, until cleared. Also the mute ledger: 'show muted' / 'show snoozed' list every live mute with an Unmute. 'show my list' / 'my list' hear one line: that list is retired. Does NOT fire on 'remind me to revisit' (decision-log — its revisit mode) or 'remind me what' retrieval (decision-log)."
 ---
 
 # show-my-reminders
@@ -10,10 +10,10 @@ Reminders v1 (v4.6.0 W4a). A reminder is the user saying "remind me about X
 on [day]" — from that day it renders on the morning brief **every day until
 manually cleared or pushed**, like a personal task the brief asks about.
 This skill owns the whole lane: capture, the full-list review surface,
-clear, push, keep, and repeat.
+clear, push, keep, delete, and repeat.
 
 **Reminders are NOT commitments.** Own event family (`reminder` /
-`reminder_updated` / `reminder_cleared` — see `shared/EVENT_TYPES.md`
+`reminder_updated` / `reminder_cleared` / `reminder_deleted`, see `shared/EVENT_TYPES.md`
 § Reminder lane), own lifecycle (pin-until-cleared: never auto-ranked, never
 auto-faded, never chased), and they never appear in commitment buckets,
 counts, chase, or triage. Recurrence lives here, not on commitments.
@@ -174,7 +174,8 @@ Scheduled ([N])
   special marking — never label a row "personal".
 - Close with the verbs, once, in plain English: *"Say 'done with the
   reminder', 'defer it to [day]' ('push it to Friday' works too), or 'keep'
-  on any of these."* Done / Later… / Keep are the taxonomy words — the same
+  on any of these, or 'delete it' to remove one for good."* Done / Later… /
+  Keep / Delete are the taxonomy words, the same
   labels any reminder widget renders, so prose and buttons never diverge
   (F-13 P2a).
 - Empty state: *"No reminders right now. Say 'remind me about [thing] on
@@ -182,12 +183,13 @@ Scheduled ([N])
 
 This surface is a **pure read** in v1 — no widget, so no fire-marker either
 (done/push/keep arrive as chat phrases). The widget verbs ARE registered
-(v4.5.2 S2): `reminder done` / `reminder push [date]` / `reminder keep` in
-`shared/scripts/verb_taxonomy.py`, displaying **Done / Later… / Keep**, with
+(v4.5.2 S2): `reminder done` / `reminder push [date]` / `reminder keep` /
+`reminder delete` (cr1#1221) in `shared/scripts/verb_taxonomy.py`,
+displaying **Done / Later… / Keep / Delete**, with
 dispatch spec'd in apply-choices § `show-my-reminders` — any future widget
 render uses those rows, never ad-hoc verbs.
 
-### Clear / push / keep
+### Clear / push / keep / delete
 
 Resolve which reminder the user means (the one just rendered, the only
 pinned one, or match by summary words — ask when genuinely ambiguous), then:
@@ -204,12 +206,34 @@ append_event(events_path, build_reminder_updated_event(rem_id, action="push", re
 
 # "keep" / "keep it" (acknowledged — resets the escalation clock, stays pinned)
 append_event(events_path, build_reminder_updated_event(rem_id, action="keep"), holder="show-my-reminders")
+
+# "delete the reminder" / "get rid of that reminder for good" (cr1#1221)
+from reminders import build_reminder_deleted_event, wants_delete
+if wants_delete("<the owner's words>"):
+    written = append_event(events_path, build_reminder_deleted_event(rem_id), holder="show-my-reminders")
+    batch_ref = {"kind": "brain_batch", "batch_id": written[0]["data"]["brain_batch_id"]}
 ```
 
 - Clearing a **repeating** reminder re-arms it: the reader derives the next
   occurrence from the clear + the repeat rule at render time (there is no
   scheduler and none may be added — derive-next-on-read is the design). Ack
   plainly: *"Cleared — it'll be back Monday."*
+- **Delete is not clear (cr1#1221).** "delete the reminder", "delete the
+  [summary words] reminder", "get rid of that reminder for good": the
+  reminder leaves every surface for good (the morning brief, this list, the
+  Hub), and a repeating one never re-arms. `wants_delete` hears the delete
+  verb first; the near misses keep their meaning: "done with the reminder"
+  and "clear it" clear (a repeat re-arms), "push it" pushes. Count the
+  delete only when `append_event` returned the row. Ack plainly: *"Deleted.
+  Say undo to bring it back."* A delete with `ref` never touches the
+  commitment.
+- **Undo a delete.** On the owner's `undo` right after, reverse exactly the
+  `batch_ref` above: `brain_undo.undo_batch(<workspace root>, batch_ref,
+  undone_by=<the owner's id>, source_skill="show-my-reminders",
+  user_confirmed=True)`. It appends one restore (`reminder_updated`, action
+  `restore`); the delete stays in history. In a fresh chat a bare `undo`
+  lists it ("deleted a reminder") like any other batch. Nothing restores a
+  reminder on its own: the machine's undo is refused.
 - Clearing a reminder with `ref` clears ONLY the reminder. If the user's
   phrasing says the underlying item is also done ("done with the Rio
   chase, clear the reminder too"), close the commitment through

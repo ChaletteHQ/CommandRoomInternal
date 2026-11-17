@@ -335,7 +335,11 @@ GAP_CLASSES = (GAP_REMOVED, GAP_REPAIR, GAP_RENUMBERED)
 # the boundary. Three in a row separates a re-based counter from a hole that
 # happens to sit next to one out-of-order row.
 _RESTART_RUN = 3
-_REPAIR_TYPES = ("corruption_recovery", "seq_repaired", "shard_rotated")
+# `fixture_rows_set_aside` (cr1#1240): well-formed test rows a battery wrote
+# into a real book, set aside by `set_aside_fixture_rows.py`, which names every
+# seq it took in `data.quarantined_seqs` (so only rule 2 below can clear them).
+_REPAIR_TYPES = ("corruption_recovery", "seq_repaired", "shard_rotated",
+                 "fixture_rows_set_aside")
 
 # FIX ROUND 3 (review finding F-18). A deletion right AT a restart boundary
 # destroys the boundary's own evidence, and it does so asymmetrically: take

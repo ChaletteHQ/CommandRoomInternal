@@ -26,6 +26,7 @@ migration). WARN/INFO findings do not fail the run.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sys
@@ -65,14 +66,17 @@ def _norm(s: Any) -> str:
     return (s or "").strip().lower()
 
 
+@dataclasses.dataclass(eq=False, repr=False)
 class Finding:
-    __slots__ = ("check", "severity", "message", "subject")
+    """One finding. A dataclass (cr1#1005 part 4) so that `run_checks`,
+    asked through the workspace door on a merged seat, comes back as the
+    same four fields `as_dict` names instead of an object's repr. Identity
+    equality and the object repr are kept as they were."""
 
-    def __init__(self, check: str, severity: str, message: str, subject: str = ""):
-        self.check = check
-        self.severity = severity
-        self.message = message
-        self.subject = subject
+    check: str
+    severity: str
+    message: str
+    subject: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -332,7 +336,16 @@ def scan_project_structure(workspace_root: str | Path) -> list[Finding]:
     return _folder_structure_findings(root, threads)
 
 
-def run_checks(root: Path) -> list[Finding]:
+def run_checks(root: Path | str | None = None, *,
+               workspace_root: Path | str | None = None) -> list[Finding]:
+    """Every check, read only. `root` may be text, and `workspace_root` is
+    the same folder under the name the workspace door fills (cr1#1005 part
+    4: a merged seat asks this through the read door)."""
+    if root is None:
+        root = workspace_root
+    if root is None:
+        raise TypeError("run_checks needs the workspace root")
+    root = Path(root)
     ent = load_entities(root)
     events, skipped = load_events(root)
     aliases = load_aliases(root)

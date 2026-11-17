@@ -377,8 +377,13 @@ POLICY_RETRACT_REASON = "policy_retracted"
 # cr1#117: the one-time close-out of pre-rule rows. A bulk close nobody
 # adjudicated, so no learner may read it as the owner dropping them.
 PRE_RULE_CLOSEOUT_REASON = "pre_rule_closeout"
+# cr1#1295: a commitment captured from a test meeting, retired by the
+# maintenance pass in `meeting_test_marks`. Nobody judged the row, so no
+# learner may read it as the owner dropping that counterparty.
+TEST_MEETING_REASON = "test_meeting_retired"
 NON_DISMISSAL_RESOLUTION_REASONS: FrozenSet[str] = frozenset({
     PRE_RULE_CLOSEOUT_REASON,
+    TEST_MEETING_REASON,
     REVIEW_EXPIRY_REASON,
     INGEST_KILL_REASON,
     DANGLING_TARGET_REASON,
@@ -971,6 +976,7 @@ __all__ = [
     "RESOLUTION_REASON_KEY",
     "REVIEW_EXPIRY_REASON",
     "INGEST_KILL_REASON",
+    "TEST_MEETING_REASON",
     "DANGLING_TARGET_REASON",
     "COMMITMENT_REFERENCE_TYPES",
     "NON_DISMISSAL_RESOLUTION_REASONS",

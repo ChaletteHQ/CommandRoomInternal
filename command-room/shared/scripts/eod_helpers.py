@@ -224,9 +224,11 @@ def dedup_meetings(workspace_root: str,
     """Phase 3.5 — `dedup_meetings(<the raw records>, processed=
     processed_index(ws, include_bare_meetings=False))`, projected to the
     seven fields the fire routes on. `include_bare_meetings=False` is
-    load-bearing: a record is not a receipt."""
+    load-bearing: a record is not a receipt. cr1#1295: test meetings come
+    back `action: skip_test`, judged against the owner's own addresses."""
     from meeting_discovery import dedup_meetings as _dedup
     from meeting_discovery import processed_index
+    from meeting_test_marks import user_emails_of
 
     if records_rel:  # FIX ROUND 2: the day's records, staged beside the data
         # cr1#993: `fire` names whose folder; the End of Day by default.
@@ -236,7 +238,10 @@ def dedup_meetings(workspace_root: str,
     keys = ("source_ref", "classification", "classification_reason",
             "certain", "action", "duplicate_of", "note_owner")
     return _jsonable([{k: d[k] for k in keys}
-                      for d in _dedup(list(records or []), processed=prior)])
+                      for d in _dedup(list(records or []), processed=prior,
+                                      skip_tests=True,
+                                      user_emails=user_emails_of(
+                                          workspace_root))])
 
 
 # ---------------------------------------------------------------------------
@@ -1028,10 +1033,21 @@ def close_from_eod(workspace_root: str, *, n: Any = 0, action: str = "",
             day = (cs.parse_later_when(when, stamp,
                                        workspace_path=workspace_root)
                    if isinstance(when, str) else None)
+            if not day and isinstance(when, str):
+                # cr1#1291: "waiting on <event>" holds it with no date.
+                from commitment_wait import LANDED, apply_wait_text
+                waited = apply_wait_text(workspace_root, cid, when[:200], actor_id=resolved_by,
+                                         source_skill="apply-choices", now_iso=stamp)
+                if waited:
+                    return {"ok": waited.get("status") in LANDED, "status": waited.get("status"),
+                            "commitment_id": cid, "n": n, "ack": waited.get("ack")}
             if not day:
+                # cr1#1292: a date typed but unreadable is asked about.
+                typed = when.strip() if isinstance(when, str) else ""
                 return {"ok": False, "status": cs.LATER_MISSING_STATUS,
                         "commitment_id": cid, "n": n,
-                        "ack": EOD_TAP_NEEDS_DATE_LINE}
+                        "ack": (cs.later_unreadable_ask(typed) if typed
+                                else EOD_TAP_NEEDS_DATE_LINE)}
             # cr1#1012 ruling (b): a push covers the counted copies folded
             # under the line, through the one shared writer.
             res = cs.apply_later_covering_folded(

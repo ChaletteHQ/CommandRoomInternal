@@ -394,7 +394,65 @@ def parse_later_when(text, now_iso: str, workspace_path=None):
     d = _parse_date(text.strip())
     if d is not None:
         return d.isoformat()
+    md = _month_day(s, today)
+    if md is not None:
+        return md.isoformat()
     return None
+
+
+# cr1#1292: a date typed as a month and a day ("Dec 1", "December 1st",
+# "1 Dec", "Dec 1, 2027"). The Hub's Snooze box takes free text and has no
+# natural-language layer behind it, so this is the whole reading there.
+# Anything else (a weekday, "next week", a slashed date whose order is
+# ambiguous) still hands off as None.
+_MONTHS = {m: i for i, names in enumerate(
+    (("jan", "january"), ("feb", "february"), ("mar", "march"),
+     ("apr", "april"), ("may",), ("jun", "june"), ("jul", "july"),
+     ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
+     ("nov", "november"), ("dec", "december")), start=1) for m in names}
+_MONTH_RE = "(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?"
+_DAY_RE = r"(\d{1,2})(?:st|nd|rd|th)?"
+_YEAR_RE = r"(?:,?\s+(\d{4}))?"
+_MONTH_DAY_RES = (
+    (re.compile(rf"{_MONTH_RE}\s+{_DAY_RE}{_YEAR_RE}"), (1, 2, 3)),
+    (re.compile(rf"{_DAY_RE}\s+(?:of\s+)?{_MONTH_RE}{_YEAR_RE}"), (2, 1, 3)),
+)
+
+
+def _month_day(s: str, today):
+    """The day `s` names as a month and a day, or None. With no year it is
+    the next such day on or after `today`; an impossible day is None."""
+    for rx, (mi, di, yi) in _MONTH_DAY_RES:
+        m = rx.fullmatch(s)
+        if not m:
+            continue
+        month, day = _MONTHS[m.group(mi)], int(m.group(di))
+        year = int(m.group(yi)) if m.group(yi) else today.year
+        try:
+            got = datetime.date(year, month, day)
+        except ValueError:
+            return None
+        if not m.group(yi) and got < today:
+            try:
+                got = datetime.date(year + 1, month, day)
+            except ValueError:
+                return None
+        return got
+    return None
+
+
+#: cr1#1292: a date that was typed but cannot be read is refused with a
+#: question, never dropped. `{text}` is what was typed.
+LATER_UNREADABLE_ASK = (
+    'Which day should it come back? I could not read "{text}" as a date. '
+    "Type a date like Dec 1 or a number of days. Nothing moved.")
+
+
+def later_unreadable_ask(text) -> str:
+    """The question a surface relays when `parse_later_when` could not read
+    what was typed (cr1#1292). The typed text is quoted back, shortened."""
+    shown = " ".join(str(text or "").split())[:60]
+    return LATER_UNREADABLE_ASK.format(text=shown)
 
 
 LATER_SNOOZE_VIA = "later"
@@ -469,28 +527,27 @@ def _live_hold_until(events_path, target_id: str, now_iso: str):
     as a UTC datetime, or None when nothing live hides it. Read through the
     ledger's own liveness rule (`mute_ledger.live_mutes`: unexpired and
     uncleared), so this writer and every surface that hides the row agree on
-    what is live."""
+    what is live. The mute is matched to the item through
+    `mute_ledger.item_snoozes` (cr1#1292), the reading every surface shares,
+    so a mute that names the item by its seq counts as a live hold here as
+    it hides the row there."""
     from cru_match import load_events_defensively
-    from mute_ledger import live_mutes
+    from mute_ledger import item_snoozes
     from pathlib import Path as _Path
     p = _Path(events_path)
     if not p.exists():
         return None
     events, _skipped = load_events_defensively(p)
-    latest = None
-    for row in live_mutes(events, now_iso):
-        if str(row.get("target_id") or "") != str(target_id):
-            continue
-        try:
-            exp = datetime.datetime.fromisoformat(
-                str(row.get("expires") or "").replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=datetime.timezone.utc)
-        if latest is None or exp > latest:
-            latest = exp
-    return latest
+    until = item_snoozes(events, now_iso).get(str(target_id))
+    if not until:
+        return None
+    try:
+        exp = datetime.datetime.fromisoformat(str(until).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=datetime.timezone.utc)
+    return exp
 
 
 def apply_later(
@@ -684,8 +741,14 @@ def apply_later(
                 "primary_thread_id": "",
                 "data": data,
             }
+        # cr1#1291: a date given to an item that waits on an event replaces
+        # the wait, in the same append, so the item is back in its own lane.
+        from commitment_wait import end_wait_event
+        ending = end_wait_event(events_path, target, cid, actor_id=actor_id,
+                                source_skill=source_skill, reason="given a date",
+                                now_iso=now_iso or _now_iso())
         from event_gate import append_event
-        append_event(events_path, [ev], holder=source_skill)
+        append_event(events_path, [ev] + ([ending] if ending else []), holder=source_skill)
     out = {"status": "deferred" if route == "defer" else "snoozed",
            "commitment_id": cid, "route": route,
            "when": calendar_day if route == "defer" else utc_stamp,
@@ -700,6 +763,15 @@ def apply_later(
     # composer `due_reanchor.render_moved_phrase` in the workspace timezone.
     from due_reanchor import render_moved_phrase
     out["moved_phrase"] = render_moved_phrase(calendar_day, workspace_root)
+    # cr1#1292: the product reads the snooze back, naming the item and the
+    # day: "<title>, back <day>." on the snooze leg (hidden until then),
+    # "<title>, now due <day>." on the defer leg (its date moved). A
+    # surface relays `ack` as given.
+    title = " ".join(str(_commitment_field(target, "title")
+                         or (target.get("data") or {}).get("summary") or "").split())[:80]
+    day = out["moved_phrase"] or calendar_day
+    said = (f"now due {day}." if route == "defer" else f"back {day}.")
+    out["ack"] = f"{title}, {said}" if title else said[:1].upper() + said[1:]
     return out
 
 
@@ -2228,6 +2300,19 @@ def compute_brief_state(
         # calendar matcher (which could otherwise auto-resolve a guess).
         and not _is_pending_review(ev)
     ]
+    # cr1#1291: an item that waits on an event never leads the brief or the
+    # day-close: it is off the numbered list (it stays in the counts, as on
+    # the plate). Read here, so every caller of this function agrees.
+    if workspace_root is not None:
+        try:
+            from commitment_wait import item_waits
+            from events_io import load_events_owner_scoped
+            _waits = item_waits(load_events_owner_scoped(str(workspace_root))[0], now_iso)
+        except Exception:  # noqa: BLE001 - no ledger read: nothing is known waiting
+            _waits = {}
+        if _waits:
+            you_owe_commitments = [ev for ev in you_owe_commitments
+                                   if str(_commitment_id(ev)) not in _waits]
 
     # Calendar-action drops: one batch call over all you-owe commitments.
     calendar_resolved_ids: set[str] = set()
@@ -2581,6 +2666,13 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     # the brief/commitments fires rather than sitting behind a parameter nothing
     # fills. `setdefault`, so an explicit caller value still wins.
     kwargs.setdefault("workspace_root", workspace_root)
+    # cr1#1292: a snoozed item (any surface's snooze or hold on it) is not
+    # on the brief until its date, the same set the plate leaves out.
+    if kwargs.get("open_commitments") and kwargs.get("now_iso"):
+        from mute_ledger import drop_snoozed, workspace_item_snoozes
+        kwargs["open_commitments"] = drop_snoozed(
+            kwargs["open_commitments"],
+            workspace_item_snoozes(workspace_root, kwargs["now_iso"]))[0]
     state = compute_brief_state(**kwargs)
     # cr1#1012 (train 2): the brief's overdue number is the open list's, the
     # same number the Hub's Today strip and Commitments badge show (the

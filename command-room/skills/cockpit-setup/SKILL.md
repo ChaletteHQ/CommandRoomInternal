@@ -1,7 +1,7 @@
 ---
 name: cockpit-setup
 surfaces: both
-description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings tab: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Start button that switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
+description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings tab: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
 ---
 
 # cockpit-setup
@@ -142,7 +142,7 @@ earlier build, and the four tasks under their names before the Hub rename
 (`Cockpit Prep`, `Cockpit Inbox`, `Cockpit Apply`, `Cockpit Refresh`), when
 the listing still carries them: **delete each** with its `delete` call, exactly
 as planned, and say so in one clause (cr1#676: a task only switched off was
-switched back on by the page's Start, so every leg ran twice). An entry with
+switched back on by the page's Go, so every leg ran twice). An entry with
 no `delete` (a backend that cannot delete), or a delete that is refused, is
 switched off with its `switch_off` call instead, and the clause says it is
 off and can be deleted from the Scheduled list. Nothing else ever
@@ -305,7 +305,7 @@ check.
 
 One line: the page address, what Step 2 and Step 2b created, refreshed and
 left alone (six triggers), and "Open it on claude.ai, allow the Claude Code Remote
-connector when the page asks, and press Start." When the answer from Step 3
+connector when the page asks, and press Go." When the answer from Step 3
 carried `mail_direct`, the line also says the page asks once to use the mail
 connector the first time Send is pressed. On a first set-up, also fire
 `cockpit-refresh` once now (the scheduler's fire call on its trigger id and
@@ -371,8 +371,10 @@ summary of what was registered.
   read. A seat whose admin has not switched writing on sees one plain line
   naming the admin step.
 - **It never republishes itself.** A task writes feeds; only this skill
-  republishes the page. Start fires prep, inbox and apply at once and
-  refresh once apply is done, so the four lights fill side by side.
+  republishes the page. Go's first press each day fires prep, inbox and
+  apply at once and refresh once apply is done, so the four lights fill side
+  by side; a later press fires prep and a refresh, the refresh waiting on
+  Apply while it runs.
 - **Its data lives on claude.ai**, readable by the owner alone under the
   page's rules: ids, titles, drafts, status lines and times, and the short
   source line of a commitment (capped, from its own record, cr1#725), never

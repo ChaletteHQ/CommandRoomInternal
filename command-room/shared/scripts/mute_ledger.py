@@ -43,6 +43,7 @@ doctrine). stdlib only.
 from __future__ import annotations
 
 import datetime as _dt
+import re as _re
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -219,6 +220,107 @@ def active_dismissal_target_ids(events: Iterable[dict], now_iso: str) -> set:
         row["target_id"] for row in live_mutes(events, now_iso)
         if row.get("target_id") not in (None, "")
     }
+
+
+# cr1#1292: the spellings a mute's target has used for a commitment: its
+# canonical id, or its `commitment` event's seq, bare or prefixed (the set
+# `commitment_state.normalize_commitment_id` accepts).
+_SEQ_SPELLING = _re.compile(r"^(?:commitment_seq_|event_|seq_)?0*(\d+)$")
+
+
+def item_snoozes(events: Iterable[dict], now_iso: str) -> dict:
+    """{commitment id: when its live snooze ends, ISO in UTC} (cr1#1292).
+    Pure.
+
+    THE answer to "is this item snoozed, and until when" for every surface:
+    the open list, the plate (the Hub, the brief, End of Day), the brief's
+    numbered list and the chat views. A snooze lives on the item: any live
+    mute (`live_mutes`: unexpired, uncleared), from any surface and for any
+    reason (a Snooze, a Later on a row owed to the owner, a hold), hides the
+    commitment it names. The target is read in every spelling a writer has
+    used: the id exactly as written, or the seq of the `commitment` event,
+    bare or with a `seq_`, `event_` or `commitment_seq_` prefix. A seq is
+    resolved only when the event at that seq is a commitment, so a mute on
+    another kind of row (a proposal, a person, a message) names no
+    commitment; its own id stays a key that matches no commitment row.
+    Several live mutes on one item: the latest end wins."""
+    events = list(events)
+    try:
+        from cru_match import _commitment_id
+    except ImportError:  # pragma: no cover - direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cru_match import _commitment_id
+    ids: set = set()
+    by_seq: dict = {}
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != "commitment":
+            continue
+        cid = str(_commitment_id(ev))
+        ids.add(cid)
+        seq = ev.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            by_seq[seq] = cid
+    out: dict = {}
+    for m in live_mutes(events, now_iso):
+        raw = m.get("target_id")
+        if raw in (None, "") or isinstance(raw, bool):
+            continue
+        key = str(raw).strip()
+        # An exact target is kept as written, as every reader did before
+        # (an observed line, a step, any row keyed by its own id); a seq
+        # spelling is resolved to the commitment at that seq.
+        cid = key
+        if key not in ids:
+            hit = _SEQ_SPELLING.match(key)
+            if hit and int(hit.group(1)) in by_seq:
+                cid = by_seq[int(hit.group(1))]
+        end = _parse_dt(m.get("expires"))
+        if cid is None or end is None:
+            continue
+        prior = _parse_dt(out.get(cid))
+        if prior is None or end > prior:
+            out[cid] = end.astimezone(_dt.timezone.utc).isoformat()
+    return out
+
+
+def drop_snoozed(opens: Iterable[dict], snoozed) -> tuple:
+    """`(kept, hidden)` (cr1#1292). Pure. The open commitments with every
+    snoozed item taken out, and the ones taken out. `snoozed` is
+    `item_snoozes`' answer, or any collection of commitment ids. A step of a
+    snoozed item goes with it, so it never stands alone as a top-level row
+    while its parent is hidden."""
+    opens = list(opens or [])
+    hidden = {str(k) for k in (snoozed or ())}
+    if not hidden or not opens:
+        return opens, []
+    from cru_match import _commitment_id
+    parent_of = {}
+    for ev in opens:
+        pid = (ev.get("data") or {}).get("parent_id")
+        if isinstance(pid, str) and pid.strip():
+            parent_of[str(_commitment_id(ev))] = pid.strip()
+    changed = True
+    while changed:
+        changed = False
+        for cid, pid in parent_of.items():
+            if cid not in hidden and pid in hidden:
+                hidden.add(cid)
+                changed = True
+    kept = [ev for ev in opens if str(_commitment_id(ev)) not in hidden]
+    gone = [ev for ev in opens if str(_commitment_id(ev)) in hidden]
+    return kept, gone
+
+
+def workspace_item_snoozes(workspace_root, now_iso: str) -> dict:
+    """`item_snoozes` over the owner's own ledger (the owner-scoped read
+    every owner surface uses). Read only; {} when the ledger cannot be
+    read, so a surface never fails for want of it."""
+    try:
+        from events_io import load_events_owner_scoped
+        return item_snoozes(load_events_owner_scoped(str(workspace_root))[0], now_iso)
+    except Exception:  # noqa: BLE001 - no ledger read: nothing is known snoozed
+        return {}
 
 
 class DismissalNotFoundError(ValueError):

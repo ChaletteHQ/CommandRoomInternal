@@ -259,6 +259,9 @@ BASIS_FUZZY_NO_PARTICIPANTS = "title + start within tolerance (no participant me
 ACTION_PROCESS = "process"
 ACTION_SKIP_DUPLICATE = "skip_duplicate"
 ACTION_SKIP_PROCESSED = "skip_processed"
+# cr1#1295: a test meeting (`meeting_test_marks.meeting_test_verdict`) goes
+# to neither Phase 4 nor the non-attendee lane. Only when the caller asks.
+ACTION_SKIP_TEST = "skip_test"
 
 
 def _parse_instant(value) -> Optional[_dt.datetime]:
@@ -744,7 +747,9 @@ def unprocessed_backlog(workspace_root, *, now=None, events_path=None,
 
 
 def dedup_meetings(meetings, *, processed=(),
-                   tolerance_minutes: int = DEDUP_TOLERANCE_MIN) -> List[dict]:
+                   tolerance_minutes: int = DEDUP_TOLERANCE_MIN,
+                   skip_tests: bool = False,
+                   user_emails=()) -> List[dict]:
     """One decision per input meeting, in input order.
 
     `{"meeting", "action", "duplicate_of", "basis", "classification",
@@ -754,7 +759,14 @@ def dedup_meetings(meetings, *, processed=(),
     the one that carries the work). Within a batch the ATTENDED document wins,
     so a teammate's shared note of a meeting the user attended is the duplicate
     and the user's own note stays primary; ties break on the earlier start and
-    then the document id, so the verdict is stable across runs."""
+    then the document id, so the verdict is stable across runs.
+
+    cr1#1295: with `skip_tests=True` (the workspace door,
+    `eod_helpers.dedup_meetings`, passes it with the owner's addresses in
+    `user_emails`) a meeting marked as a test, or whose only other attendees
+    are on reserved test domains, gets `action: skip_test` and `basis` names
+    why. It is never accepted, so it cannot be anyone's primary. Off by
+    default so the pure function keeps its old answer for every other caller."""
     normalized = [normalize_meeting(m) for m in meetings or []]
     verdicts = {id(m): classify_attendance(m) for m in normalized}
     prior = [normalize_meeting(p) for p in processed or []]
@@ -783,6 +795,15 @@ def dedup_meetings(meetings, *, processed=(),
             "duplicate_of": "",
             "basis": "",
         }
+        if skip_tests:
+            from meeting_test_marks import meeting_test_verdict
+            tv = meeting_test_verdict(m.get("title"), m.get("participants"),
+                                      user_emails=user_emails)
+            if tv["test"]:
+                base["action"] = ACTION_SKIP_TEST
+                base["basis"] = tv["reason"]
+                decisions[i] = base
+                continue
         hit = None
         for p in prior:
             r = same_meeting(m, p, tolerance_minutes=tolerance_minutes)
@@ -1429,6 +1450,7 @@ __all__ = [
     "LEDGER_SHAPE_UNKNOWN",
     "processed_index",
     "dedup_meetings",
+    "ACTION_SKIP_TEST",
     # §A3 — the receipt-based catch-up sweep (EODFIX1)
     "PROCESSED_RECEIPT_TYPES",
     "RECORD_TYPE",

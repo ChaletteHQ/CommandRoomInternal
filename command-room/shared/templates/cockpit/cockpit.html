@@ -56,7 +56,6 @@
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   @keyframes shimmer { 0% { opacity: .35; } 50% { opacity: .7; } 100% { opacity: .35; } }
   @keyframes rise { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: translateY(0); } }
-  @keyframes caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
   header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0 18px; flex-wrap: wrap; }
   .brand { display: flex; align-items: center; gap: 14px; }
@@ -67,11 +66,12 @@
   .topright { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
   button.ghost { background: transparent; border: 1px solid var(--band-rule); border-radius: var(--radius); color: var(--band-soft); font: 500 12px var(--font-sans); padding: 5px 10px; cursor: pointer; }
   button.ghost:hover { color: var(--band-ink); }
-  /* cr1#1017: "Missed something?", in the header on every tab. */
+  /* cr1#1288: "Something wrong?" (was "Missed something?", cr1#1017), in the header on every tab. */
   .missbox { border: 1px solid var(--rule); background: var(--sheet); padding: 12px 16px; margin: 8px 0; }
   .missbox textarea { width: 100%; min-height: 54px; font: 14px var(--font-sans); box-sizing: border-box; }
   .missbox .missacts { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
   .missbox .missrow { margin-top: 8px; }
+  .missbox a.act.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
   .start { display: flex; align-items: center; gap: 36px; padding: 6px 0 22px; flex-wrap: wrap; }
   .readout { flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
@@ -101,15 +101,22 @@
   .light.waiting .dot { background: transparent; border: 2px solid var(--band-soft); }
   .light.error .dot, .light.no_answer .dot { background: transparent; border: 2px solid var(--band-ink); }
   .light .line { color: var(--band-ink); font-size: 14px; font-weight: 600; }
-  .band { background: var(--olive); color: var(--on-olive); border-radius: var(--radius); padding: 14px 18px; font-size: 17px; font-weight: 600; margin: 0 0 18px; animation: rise .5s ease; display: none; }
-  .band.on { display: block; }
-  .dayline { font-size: 32px; line-height: 1.12; font-weight: 650; font-stretch: 92%; letter-spacing: -.03em; max-width: 980px; min-height: 36px; }
-  .dayline .caret { display: inline-block; width: 3px; height: 28px; background: var(--band-olive); margin-left: 4px; vertical-align: -4px; animation: caret .8s steps(1) infinite; }
+  /* cr1#1285 item 3: the run's status in one line; the lights and any
+     maintenance note fold under Run details. */
+  .dayline { font-size: 18px; line-height: 1.3; font-weight: 600; max-width: 980px; min-height: 24px; }
+  .rundetails { margin-top: 8px; }
+  .rundetails > summary { cursor: pointer; font-size: 13px; color: var(--band-soft); }
+  .rundetails[open] > summary { margin-bottom: 10px; }
   .quiet { color: var(--ink-soft); font-size: 13px; padding: 10px 0; }
   .banner { background: var(--sheet); border-left: 3px solid var(--pen); padding: 8px 12px; margin: 0 0 12px; font-size: 13px; }
   .banner.err { border-left-color: var(--red); }
 
   nav.tabs { display: flex; gap: 4px; align-items: flex-end; flex-wrap: wrap; }
+  /* cr1#1285 items 4 and 5: a small row (Today, Week, Settings) over the work row. */
+  nav.tabs .tabrow { display: flex; gap: 4px; align-items: flex-end; flex-wrap: wrap; }
+  nav.tabs .tabrow.small { flex-basis: 100%; margin-bottom: 8px; }
+  nav.tabs .tabrow.small button[data-tab] { border-radius: 4px; padding: 6px 14px; font-size: 13px; }
+  nav.tabs .count.info { display: none; }
   nav.tabs button[data-tab] { background: var(--band-2); border: none; border-radius: 4px 4px 0 0; padding: 12px 20px; font: 650 15px var(--font-sans); color: var(--band-soft); cursor: pointer; }
   nav.tabs button[data-tab][aria-selected="true"] { background: var(--paper); color: var(--ink); }
   nav.tabs .count { margin-left: 6px; font-size: 13px; font-weight: 600; color: inherit; }
@@ -135,8 +142,6 @@
   .filters .search { flex: 1; min-width: 200px; }
   details.more { margin-top: 4px; }
   /* cr1#1017 behaviour 8: a first-time note, shown until its tab is opened. */
-  .explain:empty { display: none; }
-  .explain { border-left: 2px solid var(--rule); padding: 2px 0 2px 10px; margin: 6px 0 10px; }
   details.more summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
   details.more .sub { margin-top: 3px; }
   /* cr1#1013 part 4: the thread and work-stream panel, under its row. */
@@ -206,20 +211,24 @@
   /* cr1#946: Today's summary line, its first action, the late count on
      Commitments and the Apply count. */
   /* cr1#1017 behaviour 3: the fixed morning, above Today's counts. */
+  /* cr1#1310: the Brief tab, today's morning brief as written. */
+  .briefdoc { max-width: 760px; line-height: 1.5; }
+  .briefdoc h3 { font-size: 15px; margin: 18px 0 6px; }
+  .briefdoc p { margin: 6px 0; }
+  .briefdoc ul, .briefdoc ol { margin: 6px 0; padding-left: 22px; }
   .morning { font-size: 18px; color: var(--ink); margin: 4px 0 6px; }
   .morning b { font-weight: 600; }
   .morning .mquiet, .morning details { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
   .morning .mquiet .act { font-size: 13px; }
-  .todaysum { font-size: 16px; color: var(--ink-soft); margin: 4px 0 14px; }
   /* cr1#1017 behaviour 2: the day as one sentence, each part opening its detail. */
-  .daysent { font-size: 20px; line-height: 1.45; color: var(--ink); margin: 2px 0 8px; }
+  .daysent { font-size: 24px; line-height: 1.35; font-weight: 600; color: var(--ink); margin: 2px 0 8px; }
   .daysent button.sentpart { font: inherit; color: inherit; background: none; border: 0; padding: 0; border-bottom: 1px solid var(--rule); cursor: pointer; text-align: left; }
   .daysent button.sentpart[aria-expanded="true"] { border-bottom-color: var(--ink); }
   .sentdetail { border-left: 2px solid var(--rule); padding: 2px 0 2px 12px; margin: 0 0 12px; }
-  .todaysum b { color: var(--ink); font-weight: 600; }
   .firstcard { border: 1px solid var(--olive); border-left: 4px solid var(--olive); border-radius: 0 var(--radius) var(--radius) 0; padding: 12px 16px; margin-bottom: 6px; }
   .firstcard .k { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--olive); }
   .firstcard .t { font-size: 17px; font-weight: 600; margin-top: 2px; }
+  .firstcard .why { font-size: 13px; color: var(--ink-soft); margin-top: 2px; }
   .lanehint { color: var(--ink-soft); font-size: 13px; margin: -4px 0 4px; }
   nav.tabs .count.late { color: #f0b4a8; }
   nav.tabs .count:empty { display: none; }
@@ -308,14 +317,14 @@
   <div class="topright">
     <span class="meta" id="metaline">{{WORKSPACE_BASENAME}}</span>
     <span class="clock" id="clock"></span>
-    <button class="ghost" id="missBtn" type="button" aria-expanded="false" aria-controls="missbox" title="Tell the Hub what it did not show you">Missed something?</button>
+    <button class="ghost" id="missBtn" type="button" aria-expanded="false" aria-controls="missbox" title="Say what is wrong, and open a chat about it">Something wrong?</button>
     <button class="ghost" id="themeBtn" type="button" title="Switch between the white and ink looks">Ink</button>
   </div>
 </header>
 <div class="missbox" id="missbox" hidden>
-  <label for="missText">What did the Hub miss? Say it in a sentence.</label>
-  <textarea id="missText" maxlength="600" placeholder="For example: the sample deck I promised Rio on Friday"></textarea>
-  <div class="missacts"><button class="act primary" id="missSave" type="button">Tell the Hub</button><span class="quiet">It looks for it, says why it was missed, and adds it to your list. Press Apply to send.</span></div>
+  <label for="missText">What is wrong? Say it in a sentence.</label>
+  <textarea id="missText" maxlength="600" placeholder="For example: the sample deck I promised Rio on Friday is not on my list"></textarea>
+  <div class="missacts"><a class="act primary" id="missSave" href="#" target="_blank" rel="noopener">Open a chat with this</a><span class="quiet">A new chat opens with your words and what the Hub is showing typed in. Nothing is sent until you press send there.</span></div>
   <div id="missrows"></div>
 </div>
 
@@ -328,54 +337,59 @@
       <circle class="seg" data-seg="apply" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="0 246 110 134" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
       <circle class="seg" data-seg="refresh" cx="88" cy="88" r="78" fill="none" stroke-width="9" stroke-dasharray="0 369 110 11" stroke-dashoffset="-6" transform="rotate(-90,88,88)"></circle>
     </svg>
-    <button class="ring" id="startBtn" disabled title="Switch every task on and run the morning">Start</button>
+    <button class="ring" id="startBtn" disabled title="Start the day: switch every task on and run the morning">Go</button>
   </div>
   <div class="readout">
-    <div class="dayline" id="dayline">Loading the day.</div>
-    <div class="lights" id="lights" aria-live="polite"></div>
+    <div class="dayline" id="dayline" aria-live="polite">Loading the day.</div>
+    <details class="rundetails" id="rundetails"><summary>Run details</summary>
+    <div class="lights" id="lights"></div>
     <div class="maintnote" id="maintnote" hidden></div>
     <div class="maintnote" id="holdernote" hidden></div>
+    </details>
   </div>
 </div>
 
 <nav class="tabs" role="tablist">
+  <div class="tabrow small" role="none">
   <button role="tab" aria-selected="true" aria-controls="tab-today" data-tab="today">Today</button>
+  <button role="tab" aria-selected="false" aria-controls="tab-brief" tabindex="-1" data-tab="brief">Brief</button>
   <button role="tab" aria-selected="false" aria-controls="tab-week" tabindex="-1" data-tab="week">Week</button>
-  <button role="tab" aria-selected="false" aria-controls="tab-inbox" tabindex="-1" data-tab="inbox">Inbox<span class="count" id="inboxCount">0</span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count" id="plateCount">0</span><span class="count late" id="lateCount"></span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-priorities" tabindex="-1" data-tab="priorities">Priorities<span class="count" id="priorityCount">0</span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-projects" tabindex="-1" data-tab="projects">Work streams<span class="count" id="projectCount">0</span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-people" tabindex="-1" data-tab="people">People<span class="count" id="peopleCount">0</span></button>
-  <button role="tab" aria-selected="false" aria-controls="tab-review" tabindex="-1" data-tab="review">Review<span class="count" id="reviewCount">0</span></button>
   <button role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="settings">Settings</button>
+  </div>
+  <div class="tabrow work" role="none">
+  <button role="tab" aria-selected="false" aria-controls="tab-inbox" tabindex="-1" data-tab="inbox">Inbox<span class="count" id="inboxCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-plate" tabindex="-1" data-tab="plate">Commitments<span class="count info" id="plateCount">0</span><span class="count late" id="lateCount"></span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-priorities" tabindex="-1" data-tab="priorities">Priorities<span class="count info" id="priorityCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-projects" tabindex="-1" data-tab="projects">Work streams<span class="count info" id="projectCount">0</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-people" tabindex="-1" data-tab="people">People<span class="count info" id="peopleCount">0</span></button>
+  </div>
   <span class="tabside"><span class="waiting none" id="waiting" aria-live="polite"></span><button class="act primary" data-part="confirm" disabled title="Send your choices to your book, then refresh the day">Apply<span class="applyn" id="applyN"></span></button></span>
 </nav>
 </div></section>
 
 <div class="page">
-<div class="band" id="band"></div>
 <div id="banners" role="status" aria-live="polite"></div>
 
 <section class="tab on" id="tab-today" role="tabpanel">
   <div class="daysent" id="daysentence" hidden></div>
   <div class="sentdetail" id="sentdetail" hidden></div>
-  <div class="parts">
-    <button class="act" data-part="prep" disabled>Prep next 4 meetings</button>
-    <button class="act" data-part="refresh" disabled>Refresh day</button>
-  </div>
-  <div class="explain" id="explain-today"></div>
   <div class="viewtoggle" role="group" aria-label="Show Today as a list or as a week"><button type="button" data-view="list" aria-pressed="true" title="Today as a list (press W to switch)">List</button><button type="button" data-view="week" aria-pressed="false" title="Today as a week (press W to switch)">Week</button></div>
   <div id="todayWeek" hidden><div class="board" id="board"></div><div class="quiet" id="boardnote"></div><div class="lanes" id="boardLanes"></div></div>
   <div id="todayList">
+  <div class="cols cal">
+    <div class="col">
+      <h2>Calendar</h2>
+      <div id="meetings"></div>
+    </div>
+  </div>
   <div class="donestrip" id="donestrip" hidden></div>
   <div class="morning" id="morning" role="status" aria-live="polite"></div>
-  <div class="todaysum" id="todaysum"></div>
   <div id="brieffirst"></div>
   <div id="changed" class="changed" role="status" aria-live="polite"></div>
   <div id="starred"></div>
   <div class="cols mine">
     <div class="col">
-      <h2>Priorities</h2>
+      <h2>My to-dos</h2>
       <div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><label class="prio-label" for="todoPrio">Importance</label><select class="prio" id="todoPrio" title="How much this matters; it sets no date"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div>
       <div id="todos"></div>
     </div>
@@ -397,13 +411,11 @@
       <div id="followup"></div>
     </div>
   </div>
-  <div class="cols">
-    <div class="col">
-      <h2>Upcoming</h2>
-      <div id="meetings"></div>
-    </div>
   </div>
-  </div>
+</section>
+
+<section class="tab" id="tab-brief" role="tabpanel">
+  <div id="briefbody" class="briefdoc"></div>
 </section>
 
 <section class="tab" id="tab-inbox" role="tabpanel">
@@ -411,7 +423,6 @@
     <button class="act" data-part="inbox" disabled>Check inbox</button>
     <button class="act primary" data-part="apply" disabled>Apply</button>
   </div>
-  <div class="explain" id="explain-inbox"></div>
   <div class="quiet" id="inboxhead"></div>
   <div id="inboxrows" class="col"></div>
   <div id="filtered" class="col"></div>
@@ -428,7 +439,6 @@
     <input class="search" id="psearch" placeholder="Search work streams and threads" aria-label="Search work streams and threads">
     <select class="prio" id="pcompany" aria-label="Show one company's threads"><option value="">Every company</option></select>
   </div>
-  <div class="explain" id="explain-projects"></div>
   <div id="projecthead" class="quiet"></div>
   <div id="projectrows" class="col"></div>
 </section>
@@ -439,20 +449,11 @@
   <div id="peoplerows" class="col"></div>
 </section>
 
-<section class="tab" id="tab-review" role="tabpanel">
-  <div class="parts">
-    <button class="act primary" data-part="apply" disabled title="Send your answers to your book">Apply</button>
-  </div>
-  <div class="explain" id="explain-review"></div>
-  <div id="reviewhead" class="quiet"></div>
-  <div id="reviewrows" class="col"></div>
-</section>
-
 <section class="tab" id="tab-week" role="tabpanel">
   <div class="parts">
     <button class="act primary" data-part="apply" disabled title="Send your choices to your book">Apply</button>
   </div>
-  <div class="explain" id="explain-week"></div>
+  <div id="weekmonth"></div>
   <div id="weekmeasure" class="quiet"></div>
   <div id="weekhead" class="quiet"></div>
   <div id="weekrows" class="col"></div>
@@ -462,13 +463,14 @@
   <div class="parts">
     <button class="act primary" data-part="apply" disabled title="Send your changes to your book">Apply</button>
   </div>
-  <div class="explain" id="explain-settings"></div>
   <div id="settingshead" class="quiet"></div>
   <div id="settingsrows" class="col"></div>
+  <div id="settingsguide" class="col"></div>
 </section>
 
 <section class="tab" id="tab-plate" role="tabpanel">
-  <div class="overdueswitch"><button class="act on" id="showAll" type="button">All open</button><button class="act" id="showOverdue" type="button">Overdue <span id="overdueCount">0</span></button></div>
+  <!-- cr1#1286: Overdue and Review are filters here, in the owner's order. Only a filter that needs the owner carries a count. -->
+  <div class="overdueswitch" role="group" aria-label="Show part of your commitments"><button class="act" id="showOverdue" type="button">Late <span id="overdueCount">0</span></button><button class="act" id="showConfirm" type="button">To confirm <span id="reviewCount">0</span></button><button class="act" id="showWaiting" type="button">Waiting on</button><button class="act on" id="showAll" type="button">All open</button></div>
   <div id="platewrap">
   <input class="search" id="search" placeholder="Search the list" aria-label="Search the list">
   <button class="act" id="allProjects" type="button" hidden>All projects</button>
@@ -478,6 +480,18 @@
   <div id="overduewrap" hidden>
   <div id="overduehead" class="quiet"></div>
   <div id="overduerows" class="col"></div>
+  </div>
+  <div id="confirmwrap" hidden>
+  <div class="parts">
+    <button class="act primary" data-part="apply" disabled title="Send your answers to your book">Apply</button>
+  </div>
+  <div id="reviewhead" class="quiet"></div>
+  <div id="reviewrows" class="col"></div>
+  <div id="confirmplate" class="col"></div>
+  </div>
+  <div id="waitwrap" hidden>
+  <div id="waithead" class="quiet"></div>
+  <div id="waitrows" class="col"></div>
   </div>
 </section>
 
@@ -497,7 +511,7 @@
     // (cr1#723); null shows no calendar answers.
     calendar: {{CALENDAR_DIRECT_JSON}}
   };
-  var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh day"]];
+  var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh"]];
   var TASKS = { prep: "Hub Prep", inbox: "Hub Inbox", apply: "Hub Apply", refresh: "Hub Refresh" };
   // The same four under their names before the rename (cr1#670): a seat that has
   // not run set-up since still finds its tasks.
@@ -532,9 +546,12 @@
     // cr1#1020 slice 3: the People tab's records, its search, and which open lists are expanded.
     people: null, peoplequery: "", personOpen: {}, listOpen: {}, listText: {}, ruleForm: { mode: "hide", match: "sender", value: "", note: "" } };
   // The Start sequence's own memory: when this page pressed Start, which lights
-  // have risen since, what the day line last said, what the band already said.
-  var SEQ = { startedAt: null, risen: {}, dayText: "", typing: null, counted: {}, bandShown: null, settled: false, confirmRestart: false, starting: false, full: false };
+  // have risen since, and the "Morning ready" line once a Start run finished.
+  var SEQ = { startedAt: null, risen: {}, counted: {}, bandShown: null, readyLine: "", settled: false, confirmRestart: false, starting: false, full: false };
   var db = null, mcp = null, server = null, triggers = [], wired = false, dbReady = false, dbMissing = false;
+  // cr1#1284: Go decides morning or refresh from the lights and the day's
+  // record, so it waits until both have answered (or the data cannot answer).
+  var statusReady = false, measureReady = false;
   // A row rises the first time this page shows it, never on a re-render: every
   // data update re-renders the lists, and replaying the fade made them flicker.
   var SEEN = {};
@@ -597,7 +614,9 @@
     var box = $("missbox"), open = box.hidden; box.hidden = !open; this.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) { renderMiss(); var t = $("missText"); if (t) t.focus(); }
   });
-  $("missSave").addEventListener("click", saveMiss);
+  // a middle click opens the link too, so it takes the same address (review)
+  $("missSave").addEventListener("click", problemChat);
+  $("missSave").addEventListener("auxclick", problemChat);
   $("themeBtn").addEventListener("click", function () { setTheme(document.documentElement.getAttribute("data-theme") === "ink" ? "paper" : "ink"); });
 
   // ---- status lights -------------------------------------------------------
@@ -606,7 +625,7 @@
     if (d.state === "running") {
       var at = new Date(d.at || 0);
       if (d.by_page && !isNaN(at) && (Date.now() - at.getTime()) >= NO_START_MS) {
-        return { state: "no_answer", line: "The task did not start. Is this computer on with the folder allowed? Press Start to try again.", at: d.at };
+        return { state: "no_answer", line: "The task did not start. Is this computer on with the folder allowed? Press Go to try again.", at: d.at };
       }
       var limit = RUNNING_TIMEOUT_BY_LEG[leg] || RUNNING_TIMEOUT_MS;
       if (isNaN(at) || (Date.now() - at.getTime()) >= limit) {
@@ -625,13 +644,13 @@
   function ringView() {
     // What the ring and the Start button show (cr1#687): a Start press fills
     // the ring a quarter per light that turned green since; a single leg
-    // press (Prep, Check inbox, Refresh day, Apply) leaves the ring alone and
+    // press (a later Go, Check inbox, Apply) leaves the ring alone and
     // the button reads Running, never a percentage.
     var anyRunning = LEGS.some(function (l) { return isRunning(l[0]); });
     var full = !!(SEQ.startedAt && SEQ.full), done = full ? runProgress() : 0, allDone = full && done === LEGS.length;
     var phase = allDone ? "done" : (anyRunning ? "running" : (SEQ.starting ? "starting" : "idle"));
     var fill = full ? done / LEGS.length : (anyRunning ? 0 : 1);
-    var label = SEQ.starting ? "Starting" : (SEQ.confirmRestart ? "Start over?" : (allDone && !SEQ.settled ? "Done" : (anyRunning ? (full ? Math.round(100 * done / LEGS.length) + "%" : "Running") : "Start")));
+    var label = SEQ.starting ? "Starting" : (SEQ.confirmRestart ? "Start over?" : (allDone && !SEQ.settled ? "Done" : (anyRunning ? (full ? Math.round(100 * done / LEGS.length) + "%" : "Running") : "Go")));
     return { anyRunning: anyRunning, allDone: allDone, phase: phase, fill: fill, label: label };
   }
   function maintLine(mt) {
@@ -675,26 +694,52 @@
     LEGS.forEach(function (l) { var seg = document.querySelector('[data-seg="' + l[0] + '"]'), run = SEQ.startedAt && SEQ.full ? thisRun(l[0]) : null, st = run ? run.state : ""; if (seg) seg.setAttribute("class", "seg" + (st === "done" || st === "running" || st === "waiting" ? " " + st : "")); });
     // cr1#675: the button stays off until Start's own calls settle, so a second
     // press can never fire every task twice.
-    sb.disabled = !wired || SEQ.starting;
+    sb.disabled = !wired || SEQ.starting || !(dbMissing || (statusReady && measureReady));
     sb.className = "ring" + (anyRunning || allDone ? " live" : "");
     sb.textContent = view.label;
-    sb.title = anyRunning ? "Running. Press twice to start over." : "Switch every task on and run the morning";
+    // cr1#1284: the day's first press is the morning; every later one refreshes.
+    var later = dayStarted();
+    sb.title = later ? "Refresh the day and prep your next meetings" : (anyRunning ? "Running. Press twice to start over." : "Start the day: switch every task on and run the morning");
     var parts = document.querySelectorAll("button[data-part]");
     for (var k = 0; k < parts.length; k++) {
       var p = parts[k].getAttribute("data-part");
       parts[k].disabled = !wired || SEQ.starting || (BLOCKS[p] || PARTS[p]).some(isRunning);
     }
-    if (allDone) showBand();
+    if (allDone) morningReady();
+    $("dayline").textContent = statusLine(view, said);
   }
-  function showBand() {
+  // cr1#1285 item 1: the olive band is gone; what it said once a Start run
+  // finished becomes the status line, and the ring settles after 9 seconds.
+  function morningReady() {
     if (SEQ.bandShown === SEQ.startedAt) return;
     SEQ.bandShown = SEQ.startedAt;
     var bits = [];
     ["prep", "inbox", "apply"].forEach(function (leg) { var line = legState(leg).line; if (line && line !== "Not run yet.") bits.push(line.replace(/\.$/, "")); });
     var c = changesSince();
     if (c && c.closed) bits.push(c.closed + " closed since " + (c.marked ? "you last looked" : "the start of today"));
-    var el = $("band"); el.textContent = "Morning ready" + (bits.length ? " · " + bits.join(" · ") : ""); el.className = "band on";
-    setTimeout(function () { el.className = "band"; SEQ.settled = true; renderLights(); }, 9000);
+    SEQ.readyLine = "Morning ready" + (bits.length ? " · " + bits.join(" · ") : "") + ".";
+    setTimeout(function () { SEQ.settled = true; renderLights(); }, 9000);
+  }
+  // cr1#1285 item 3: the run's status in one line. The lights and any
+  // maintenance note sit under Run details; this line says when to open it.
+  function statusLine(view, maint) {
+    var legs = LEGS.map(function (l) { return { name: l[1], st: legState(l[0]) }; });
+    var pick = function (fn) { return legs.filter(fn).map(function (x) { return x.name; }); };
+    var run = pick(function (x) { return x.st.state === "running"; });
+    var bad = pick(function (x) { return x.st.state === "error" || x.st.state === "no_answer"; });
+    var line;
+    if (SEQ.starting) line = "Starting the morning.";
+    else if (run.length) line = "Running: " + run.join(", ") + ".";
+    else if (view.allDone && SEQ.readyLine && !SEQ.settled) line = SEQ.readyLine;
+    else {
+      var last = "";
+      legs.forEach(function (x) { if (x.st.state !== "idle" && x.st.at && (!last || after(x.st.at, last))) last = x.st.at; });
+      line = last ? "Last run " + (fmtWhen(last) || last) + "." : "Not run yet. Press Go to run the morning.";
+    }
+    if (bad.length) line += " " + bad.join(", ") + (bad.length === 1 ? " needs" : " need") + " a look.";
+    if (maint) line += " Maintenance needs a look.";
+    if (bad.length || maint) line += " Open Run details.";
+    return line;
   }
 
   // ---- choices -------------------------------------------------------------
@@ -715,7 +760,7 @@
     $("applyN").textContent = w.length ? " (" + w.length + ")" : "";
     if (!w.length) { el.textContent = dbMissing ? "This view cannot reach the page's data." : (dbReady ? "Nothing waiting." : "Connecting to the page's data."); el.className = "waiting none"; return; }
     var oldest = w.map(function (c) { return c.created_at || ""; }).sort()[0];
-    el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". Apply or Start sends them to your book.";
+    el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". Apply sends them to your book.";
     el.className = "waiting";
   }
   function undoChoice(id) {
@@ -733,7 +778,8 @@
     // The latest applied close of this row from this page, if no reopen followed it.
     var res = latestResult("commitment", cid);
     if (!res || !res.result || res.result.outcome !== "applied") return null;
-    if (res.action !== "done" && res.action !== "confirm" && res.action !== "drop") return null;
+    var notWork = res.action === "notwork" && res.from !== "heard";  // cr1#1289: Not work closes as dropped
+    if (!notWork && res.action !== "done" && res.action !== "confirm" && res.action !== "drop") return null;
     return reopenedAfter(cid, res) ? null : res;
   }
   function reopenedAfter(cid, res) {
@@ -749,7 +795,7 @@
     // leaves. `shown(cid)` says whether the lanes already list the item.
     var out = [];
     S.choices.forEach(function (c) {
-      if (c.kind !== "commitment" || !c.applied || !c.result || c.result.outcome !== "applied" || (c.action !== "done" && c.action !== "confirm" && c.action !== "drop")) return;
+      if (c.kind !== "commitment" || !c.applied || !c.result || c.result.outcome !== "applied" || (c.action !== "done" && c.action !== "confirm" && c.action !== "drop" && !(c.action === "notwork" && c.from !== "heard"))) return;
       if (shown(String(c.n))) return;
       var mark = c.created_at || c.applied_at || "", waiting = null, reopened = false;
       S.choices.forEach(function (r) {
@@ -772,22 +818,6 @@
     }, function (e) { banner("That press was not saved; try again.", true, errText(e)); return null; });
   }
 
-  // ---- the day line, typed in when a run brings a new one ------------------
-  function setDayline(text) {
-    var el = $("dayline");
-    if (text === SEQ.dayText) return;
-    var fresh = SEQ.startedAt && S.plate && after(S.plate.generated_at, SEQ.startedAt);
-    SEQ.dayText = text;
-    if (SEQ.typing) { clearInterval(SEQ.typing); SEQ.typing = null; }
-    if (!fresh) { el.textContent = text; return; }
-    var i = 0;
-    el.innerHTML = '<span class="caret"></span>';
-    SEQ.typing = setInterval(function () {
-      i += 2;
-      el.innerHTML = esc(text.slice(0, i)) + (i < text.length ? '<span class="caret"></span>' : "");
-      if (i >= text.length) { clearInterval(SEQ.typing); SEQ.typing = null; }
-    }, 24);
-  }
   // ---- today tab -----------------------------------------------------------
   function prepHtml(text) {
     // The brief's lines: `## ` a heading, `- ` a list item, the rest a paragraph.
@@ -800,6 +830,20 @@
     });
     return h + (inList ? "</ul>" : "");
   }
+  // cr1#1283: who is in a meeting, when the feed names its attendees (a name,
+  // else the address): the first two, then how many more. Without names, the
+  // calendar read's count of people besides the owner (cr1#1293's `others`).
+  function meetingWith(m) {
+    var who = (m && Array.isArray(m.attendees) ? m.attendees : []).map(function (a) {
+      return String(a && typeof a === "object" ? (a.name || a.email || "") : (a || "")).trim();
+    }).filter(Boolean);
+    if (!who.length) {
+      var n = m && typeof m.others === "number" && m.others > 0 && !isBlock(m) ? Math.floor(m.others) : 0;
+      return n ? " · with " + n + (n === 1 ? " other" : " others") : "";
+    }
+    var shown = who.length > 2 ? who.slice(0, 2).join(", ") + " and " + (who.length - 2) + " more" : who.join(" and ");
+    return " · with " + esc(shown);
+  }
   function skeletons(n) { var h = ""; for (var i = 0; i < n; i++) h += '<div class="skeleton"></div>'; return h; }
   function dayLine(t, p) {
     // The page's own sentence from the two feeds (cr1#633: the first build
@@ -810,15 +854,17 @@
       var names = focus.slice(0, 2).map(function (r) { return cap(r.title); }).filter(Boolean);
       bits.push(focus.length + " to move today" + (names.length ? ": " + names.join(", ") + (focus.length > 2 ? " and more" : "") : ""));
     }
-    var ms = t && t.meetings ? t.meetings : [];
+    var ms = t && t.meetings ? t.meetings.filter(function (m) { return !isBlock(m); }) : [];
+    var bs = t && t.meetings ? t.meetings.filter(isBlock) : [];
     if (ms.length) {
       var prepped = ms.filter(function (m) { return m.prep; }).length;
       bits.push(ms.length + (ms.length === 1 ? " meeting" : " meetings") + " ahead" + (prepped ? ", " + (prepped === ms.length ? "all" : prepped) + " prepped" : ""));
     }
+    if (bs.length) bits.push(blockWords(bs));
     if (bits.length) return bits.join(". ") + ".";
     if (p) return "Nothing to move today.";
     if (t) return "Your day, as of " + fmtWhen(t.generated_at) + ".";
-    return isRunning("refresh") || isRunning("prep") ? "Filling the day." : "Press Start to fill the day.";
+    return isRunning("refresh") || isRunning("prep") ? "Filling the day." : "Press Go to fill the day.";
   }
   // The one call that just ended (A1): the newest whose end has passed, inside
   // the hour its prep stays shown. Rows are in start order.
@@ -1043,13 +1089,13 @@
     if (!m) { el.innerHTML = ""; return; }
     if (m.waiting) { el.innerHTML = "<div class=\"mquiet\">Your morning starts with today’s first refresh.</div>"; return; }
     if (!m.n && m.total) markFinished();
-    var head = m.n ? "<b>" + m.n + "</b> " + (m.n === 1 ? "needs" : "need") + " you this morning"
-      : (m.total ? "Done for today." : "Nothing needs you this morning.");
-    var h = '<div class="mhead">' + head + "</div>";
+    // cr1#1285 item 1: one number owns "needs you today", and it is the day
+    // sentence's; this block keeps only what is new and what is older.
+    var h = "";
     if (m.fresh.length) h += '<details class="mfresh"><summary>' + m.fresh.length + " new since you opened</summary>"
       + m.fresh.map(function (x) { return '<div class="sub">' + esc(cap(x.title || "")) + "</div>"; }).join("") + "</details>";
     if (m.backlog) h += '<div class="mquiet"><button class="act" data-goto="plate" data-goview="showOverdue" title="The older ones never count toward the morning">'
-      + m.backlog + " older " + (m.backlog === 1 ? "item waits" : "items wait") + " in Commitments, Overdue</button></div>";
+      + m.backlog + " older " + (m.backlog === 1 ? "item waits" : "items wait") + " in Commitments, Late</button></div>";
     el.innerHTML = h;
   }
   // ---- end fixed morning -------------------------------------------------------
@@ -1064,6 +1110,19 @@
   // (`morningModel`), the same number as the line under it.
   var SENT_FULL_DAY = 4;          // this many timed meetings make a day full
   function sentDay(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  // cr1#1293: only an event with another attendee is a meeting. A timed event
+  // the calendar read says has nobody else on it (the feed's `solo`) is the
+  // owner's own time: shown as hours blocked, never counted as a meeting.
+  function isBlock(m) { return !!(m && m.solo === true && !m.all_day); }
+  function nMeetings(t) { return t ? (t.meetings || []).filter(function (m) { return !isBlock(m); }).length : 0; }
+  function blockWords(bs) {
+    // "3 hours blocked for <title>", or "for your own work" for several;
+    // under an hour in minutes, else hours to the half hour
+    var mins = Math.round(bs.reduce(function (n, m) { var d = (new Date(m.end) - new Date(m.start)) / 60000; return n + (d > 0 ? d : 0); }, 0));
+    var h = Math.round(mins / 30) / 2;
+    var span = mins < 60 ? mins + (mins === 1 ? " minute" : " minutes") : h + (h === 1 ? " hour" : " hours");
+    return span + " blocked for " + (bs.length === 1 ? cap(bs[0].title) : "your own work");
+  }
   // The one clash to know about, decided here and only here (default until
   // the owner rules): two meetings today that overlap, else something due
   // today on a day full of meetings. Returns null when there is none.
@@ -1073,7 +1132,7 @@
   }
   function dayClash(t, p, day, nowMs) {
     var now = nowMs == null ? Date.now() : nowMs;
-    var ms = (t && t.meetings ? t.meetings : []).filter(function (m) { return !m.all_day && m.start && m.end && sentDay(m.start) === day; })
+    var ms = (t && t.meetings ? t.meetings : []).filter(function (m) { return !m.all_day && !isBlock(m) && m.start && m.end && sentDay(m.start) === day; })
       .slice().sort(function (a, b) { return new Date(a.start) - new Date(b.start); });
     // a clash already over is not one to know about
     var ahead = ms.filter(function (m) { return new Date(m.end).getTime() > now; });
@@ -1102,30 +1161,55 @@
       // a plate from another day never names today's first thing to move
       var focus = p && p.focus && p.today === day ? p.focus : [];
       var ms = t && t.meetings ? t.meetings.filter(function (m) { return !m.all_day && sentDay(m.start) === day; }) : [];
-      if (focus.length) about = { said: false, focus: focus.slice(0, 3) };
-      else if (ms.length) about = { said: false, meetings: ms };
+      var bs = ms.filter(isBlock); ms = ms.filter(function (m) { return !isBlock(m); });
+      // cr1#1290: the ranked lead (priority, key person, lead time) first
+      var lead = p && p.lead && p.today === day ? p.lead : [];
+      if (lead.length) about = { said: false, lead: lead.slice(0, 3) };
+      else if (focus.length) about = { said: false, focus: focus.slice(0, 3) };
+      else if (ms.length || bs.length) about = { said: false, meetings: ms, blocks: bs };
     }
     var m = morningModel(S);
-    return { about: about, need: m && !m.waiting ? m : null, clash: dayClash(t, p, day) };
+    // cr1#1294: the confirmed priorities with nothing open behind them
+    var goals = p && p.goals && p.today === day ? p.goals : [];
+    var goal = goals.length ? { rows: goals, n: typeof p.n_goals === "number" && p.n_goals >= goals.length ? p.n_goals : goals.length } : null;
+    return { about: about, need: m && !m.waiting ? m : null, clash: dayClash(t, p, day), goal: goal };
   }
   function sentWords(items) {
     // the owner's own words, joined as a sentence: "a", "a and b", "a, b, and c"
     var w = items.map(function (x) { return String(x || "").replace(/[\s.!?;:,]+$/, ""); }).filter(Boolean);
     return w.length < 3 ? w.join(" and ") : w.slice(0, -1).join(", ") + ", and " + w[w.length - 1];
   }
+  function leadWords(ls) {
+    // cr1#1290: the top item due later this week is what the week is about,
+    // the next ones what today moves; one due today, late or undated is today's
+    var a = ls[0] || {}, rest = ls.slice(1).map(function (r) { return cap(r.title); });
+    if (typeof a.days_left === "number" && a.days_left > 0)
+      return "This week is about " + cap(a.title) + (a.due_day ? ", due " + a.due_day : "") + (rest.length ? ", and today moves " + sentWords(rest) : "");
+    return "Today is about " + sentWords([cap(a.title)].concat(rest));
+  }
+  function leadWhy(r) {
+    var w = [];
+    if (r.due_day) w.push("due " + r.due_day);
+    if (r.priorities) w.push(r.priorities === 1 ? "on a priority" : "on " + r.priorities + " priorities");
+    if (r.key_person) w.push("owed to a starred person");
+    return w.join(", ");
+  }
   function sentText(s) {
     // the plain words of each part, in order; the page wraps each in its button
     var out = [];
-    if (s.about) {
+    if (s.about && s.about.lead) out.push({ part: "about", text: leadWords(s.about.lead) });
+    else if (s.about) {
       var a = s.about.said ? sentWords(s.about.items)
         : s.about.focus ? cap(s.about.focus[0].title)
-        : s.about.meetings.length + (s.about.meetings.length === 1 ? " meeting" : " meetings");
+        : [s.about.meetings.length ? s.about.meetings.length + (s.about.meetings.length === 1 ? " meeting" : " meetings") : "",
+           (s.about.blocks || []).length ? blockWords(s.about.blocks) : ""].filter(Boolean).join(" and ");
       out.push({ part: "about", text: "Today is about " + a });
     }
     if (s.need) out.push({ part: "need", text: s.need.n ? s.need.n + (s.need.n === 1 ? " thing needs you" : " things need you") : "nothing needs you" });
     if (s.clash) out.push({ part: "clash", text: s.clash.kind === "overlap"
       ? cap(s.clash.a.title) + " overlaps " + cap(s.clash.b.title) + " at " + fmtTime(s.clash.b.start)
       : cap(s.clash.row.title) + " is due on a day of " + s.clash.meetings.length + " meetings" });
+    if (s.goal) out.push({ part: "goal", text: s.goal.n === 1 ? cap(s.goal.rows[0].statement) + " has nothing open" : s.goal.n + " priorities have nothing open" });
     if (out.length) out[0].text = cap(out[0].text);
     return out;
   }
@@ -1133,8 +1217,11 @@
     var line = function (x) { return '<div class="sub">' + x + "</div>"; };
     if (part === "about" && s.about) {
       if (s.about.said) return s.about.items.map(function (x) { return line(esc(cap(x))); }).join("") + line("In your words.");
+      if (s.about.lead) return s.about.lead.map(function (r) { var w = leadWhy(r); return line(esc(cap(r.title)) + (w ? " · " + esc(w) : "")); }).join("")
+        + line("You have not said what today is about; ranked by your priorities, starred people and how soon each is due.");
       if (s.about.focus) return s.about.focus.map(function (r) { return line(esc(cap(r.title))); }).join("") + line("You have not said what today is about; this is the first thing to move.");
-      return s.about.meetings.map(function (m) { return line(esc(m.all_day ? "All day" : fmtTime(m.start)) + " · " + esc(cap(m.title))); }).join("");
+      return s.about.meetings.concat(s.about.blocks || []).sort(function (a, b) { return new Date(a.start) - new Date(b.start); })
+        .map(function (m) { return line(esc(m.all_day ? "All day" : fmtTime(m.start)) + " · " + esc(cap(m.title)) + (isBlock(m) ? " (blocked)" : "")); }).join("");
     }
     if (part === "need" && s.need) {
       if (!s.need.n) return line(s.need.total ? "Everything this morning is handled." : "Nothing came in for you this morning.");
@@ -1145,12 +1232,20 @@
       return line("Due today: " + esc(cap(s.clash.row.title)) + (s.clash.more ? " and " + s.clash.more + " more" : ""))
         + s.clash.meetings.map(function (m) { return line(esc(fmtTime(m.start)) + " · " + esc(cap(m.title))); }).join("");
     }
+    if (part === "goal" && s.goal) {
+      var more = s.goal.n - s.goal.rows.length;
+      return s.goal.rows.map(function (g) { return line(esc(cap(g.statement)) + " · nothing open behind it"); }).join("")
+        + (more > 0 ? line("and " + more + " more on the Priorities tab") : "")
+        + line(s.goal.n === 1 ? "Name its next step in a chat and it goes on your list." : "Name each one's next step in a chat and it goes on your list.");
+    }
     return "";
   }
   function renderSentence() {
     var el = $("daysentence"), dt = $("sentdetail"); if (!el || !dt) return;
     var s = sentModel(S), parts = s ? sentText(s) : [];
-    if (!parts.length) { el.hidden = true; dt.hidden = true; el.innerHTML = ""; dt.innerHTML = ""; return; }
+    // cr1#1285 item 1: the day sentence is the page's only headline; before
+    // the feeds can make one, it says where the day stands in plain words.
+    if (!parts.length) { el.textContent = dayLine(S.today, S.plate); el.hidden = false; dt.hidden = true; dt.innerHTML = ""; return; }
     if (S.sentOpen && !parts.some(function (x) { return x.part === S.sentOpen; })) S.sentOpen = "";
     var html = parts.map(function (x, i) {
       var open = S.sentOpen === x.part;
@@ -1173,7 +1268,6 @@
   // ---- end one sentence on top --------------------------------------------------
   function renderToday() {
     var t = S.today, p = S.plate;
-    setDayline(dayLine(t, p));
     var h = "";
     if (t && t.meetings && t.meetings.length) {
       var endedAt = SEQ.endedAt = justEnded(t.meetings, Date.now());
@@ -1182,10 +1276,12 @@
         var pk = (m.start || "") + "|" + (m.title || ""), open = !!S.prepOpen[pk];
         // cr1#655: the brief opens in place; a page cannot open a file on the computer.
         // cr1#679: an open brief stays open when the page redraws.
-        var prep = (m.prep && held) ? (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Prep") + "</button>" : '<span class="tag ok">Prep ready</span>') : '<span class="tag">No prep</span>';
+        // cr1#1283: the prep state reads in words on every row, before any press.
+        // A block of the owner's own time (cr1#1293's `solo`) is time, not a meeting: no prep state.
+        var prep = isBlock(m) ? '<span class="tag">Time blocked</span>' : (m.prep && held) ? '<span class="tag ok">Prep ready</span>' + (m.prep_text ? '<button class="act" data-prep="' + i + '" data-prepkey="' + esc(pk) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide prep" : "Open prep") + "</button>" : "") : '<span class="tag">No prep yet</span>';
         var when = m.all_day ? "All day" : fmtWhen(m.start);
         var ended = i === endedAt;
-        h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + "</div></div><div class=\"acts\">" + prep + calendarActs(m, ended) + "</div></div>"
+        h += '<div class="row' + (ended ? " ended" : "") + riseClass("m" + (m.start || "") + m.title) + '" style="animation-delay:' + (i * 90) + 'ms"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + '</span><div class="main"><div class="title">' + (ended ? "Just ended: " : "") + esc(m.title) + (m.calendar === "personal" ? '<span class="tag">personal</span>' : "") + calendarTag(m) + '</div><div class="sub">' + esc(when) + (m.place ? " · " + esc(m.place) : "") + meetingWith(m) + "</div></div><div class=\"acts\">" + prep + calendarActs(m, ended) + "</div></div>"
           + (m.prep_text && held ? '<div class="prepbox' + (open ? " on" : "") + '" id="prep-' + i + '">' + prepHtml(m.prep_text) + "</div>" : "");
       });
     } else if (!t && isRunning("prep")) h = skeletons(3);
@@ -1199,7 +1295,7 @@
 
   // ---- the morning brief, folded into the Hub (cr1#782) ----------------------
   // Owner ruling D2 of 2026-11-04: the brief's view is a section of the Hub,
-  // built from the feeds the page already holds: the calendar (Upcoming), the
+  // built from the feeds the page already holds: the calendar (Calendar), the
   // important mail (the inbox feed), the overdue commitments (the plate) and
   // one first action. Since cr1#946 the questions are answered in Review
   // only; Today counts them. The Morning Brief chat
@@ -1242,23 +1338,65 @@
     if (rows.length > PEOPLE_N) h += '<div class="parts"><button class="act" data-goto="plate">See all ' + rows.length + " in Commitments</button></div>";
     $(el).innerHTML = h || '<div class="quiet">' + empty + "</div>";
   }
+  // cr1#1285 item 9: Do this first says why, from the row's own record:
+  // late when the open list counts it late, then where it came from
+  // ("Late. From your Nov 11 meeting."). Nothing is guessed.
+  function shortDay(iso) { if (!iso) return ""; var d = new Date(String(iso).slice(0, 10) + "T12:00:00"); return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }); }
+  function firstWhy(first) {
+    if (first.kind !== "commitment") return "";
+    var r = plateRowOf(first.id); if (!r) return "";
+    var late = "counted" in r ? r.counted : r.horizon === "overdue", o = r.origin || {}, d = shortDay(o.date), from = "";
+    if (o.source === "Meeting") from = d ? "From your " + d + " meeting." : "From a meeting.";
+    else if (o.source === "Email" || o.source === "Chat" || o.source === "Slack") from = "From " + (o.source === "Email" ? "an email" : "a " + o.source.toLowerCase()) + (d ? ", " + d : "") + ".";
+    else if (o.source === "Added by you" || o.source === "Added on the Hub") from = "You added it" + (d ? " " + d : "") + ".";
+    else if (d) from = "Noted " + d + ".";
+    return [late ? "Late." : "", from].filter(Boolean).join(" ");
+  }
   function renderBrief() {
     var t = S.today, p = S.plate, ib = S.inbox, rv = S.review, b = briefModel(t, p, ib, rv);
     var wait = laneRows(p, "wait"), chase = laneRows(p, "chase");
-    var nq = rv && rv.rows ? rv.rows.length : 0;
-    var bits = [];
-    if (p) bits.push("<b>" + b.n_overdue + "</b> overdue", "<b>" + wait.length + "</b> waiting on a reply", "<b>" + chase.length + "</b> to follow up");
-    if (t) bits.push("<b>" + (t.meetings || []).length + "</b> " + ((t.meetings || []).length === 1 ? "meeting" : "meetings") + " ahead");
-    if (ib) bits.push("<b>" + b.n_mail + "</b> in Inbox");
-    if (rv) bits.push("<b>" + nq + "</b> " + (nq === 1 ? "question" : "questions") + " in Review");
+    // cr1#1285 item 1: the count line under the sentence is gone.
     renderMorning();
     renderSentence();
-    $("todaysum").innerHTML = bits.length ? bits.join(" · ") : esc(isRunning("refresh") || isRunning("prep") ? "Filling the morning." : "Press Start to fill the morning.");
-    $("brieffirst").innerHTML = b.first ? '<div class="firstcard"><div class="k">Do this first</div><div class="t">' + esc(b.first.line) + "</div></div>" : "";
+    var why = b.first ? firstWhy(b.first) : "";
+    $("brieffirst").innerHTML = b.first ? '<div class="firstcard"><div class="k">Do this first</div><div class="t">' + esc(b.first.line) + "</div>" + (why ? '<div class="why">' + esc(why) + "</div>" : "") + "</div>" : "";
     var none = p ? "" : (isRunning("refresh") ? "Reading your commitments." : "Shows after the next refresh.");
     renderLane("waitingon", wait, none || "Nobody owes you a reply.");
     renderLane("followup", chase, none || "Nobody to follow up with.");
   }
+
+  // ---- the Brief tab (cr1#1310) ---------------------------------------------
+  // Today's morning brief as the Morning Brief run saved it, carried by the
+  // refresh run in `feed/brief` (the page cannot open a file, cr1#655). Read
+  // only: its sections in the brief's order, the time it was made, or one
+  // plain line when no brief has run today. A feed from another day is never
+  // shown as today's. The Today section's own brief card stays as it is.
+  function briefTabHtml(f, today) {
+    var b = f && f.brief && f.brief.for_date === today ? f.brief : null;
+    if (!b) {
+      if (!f) return '<div class="quiet">The brief shows here after the next refresh.</div>';
+      var last = f.last_for_date && f.last_for_date !== today ? " The last one was for " + esc(fmtDate(f.last_for_date)) + "." : "";
+      return '<div class="quiet">' + esc(f.empty_line || "No morning brief has run today.") + last + "</div>";
+    }
+    var h = "<h2>" + esc(b.title || "Morning brief") + "</h2>";
+    h += '<div class="quiet">Made ' + esc(fmtDate(b.for_date)) + (b.made_at ? " at " + esc(fmtTime(b.made_at)) : "") + "</div>";
+    (b.sections || []).forEach(function (s) {
+      if (s.heading) h += "<h3>" + esc(s.heading) + "</h3>";
+      var open = "";
+      (s.lines || []).forEach(function (l) {
+        var want = l.kind === "item" ? "ul" : l.kind === "num" ? "ol" : "";
+        if (open && want !== open) { h += "</" + open + ">"; open = ""; }
+        if (want && !open) { h += want === "ol" ? '<ol start="' + (Math.floor(Number(l.n)) || 1) + '">' : "<ul>"; open = want; }
+        h += want ? "<li>" + esc(l.text) + "</li>" : "<p>" + esc(l.text) + "</p>";
+      });
+      if (open) h += "</" + open + ">";
+    });
+    return h;
+  }
+  // "Today" is the workspace's day (the feed's zone), as the Week board reads it;
+  // the browser's own day only when the feed names no zone.
+  function renderBriefTab() { var el = $("briefbody"); if (el) el.innerHTML = briefTabHtml(S.brief, S.brief && S.brief.tz ? boardToday(S.brief.tz) : measureDay(new Date())); }
+  // ---- end of the Brief tab ---------------------------------------------------
 
   // ---- priorities and reminders on Today (cr1#662) --------------------------
   // Both are the owner's own lists in the book. An add, a Done or a Push is a
@@ -1298,7 +1436,7 @@
     landedAdds("todo", ids).forEach(function (c) { h += waitRow(c, "added · shows after the next refresh", "ok"); });
     var errs = (m && m.errors) || [];
     if (errs.indexOf("todos") >= 0) h += '<div class="quiet">Your priorities could not be read just now; the next refresh tries again.</div>';
-    $("todos").innerHTML = h || '<div class="quiet">' + (m ? "No priorities yet. Add one above." : "Your priorities show after the next refresh.") + "</div>";
+    $("todos").innerHTML = h || '<div class="quiet">' + (m ? "No to-dos yet. Add one above." : "Your to-dos show after the next refresh.") + "</div>";
     h = ""; ids = {};
     pendingAdds("reminder").forEach(function (c) { var iw = (c.input || {}).when; h += waitRow(c, (iw ? fmtDate(iw) : "no date") + addState(c)); });
     (m && m.reminders ? m.reminders : []).forEach(function (r, i) {
@@ -1306,9 +1444,10 @@
       var w = choiceFor("reminder", r.id), res = latestResult("reminder", r.id);
       var when = r.status === "pinned" ? (r.days_pinned > 1 ? "on your list " + r.days_pinned + " days" : "today") : "from " + fmtDate(r.remind_from);
       if (r.undated) when = "no date" + (r.days_pinned > 1 ? " · on your list " + r.days_pinned + " days" : "");
-      var tag = w ? waitTag(w, w.action === "push" ? "push to " + fmtDate((w.input || {}).when) + " waiting" : "done waiting") : resultTag(res);
+      var tag = w ? waitTag(w, w.action === "push" ? "push to " + fmtDate((w.input || {}).when) + " waiting" : w.action === "delete" ? "delete waiting" : "done waiting") : resultTag(res);
+      // cr1#1221: Delete is for good (a repeat never comes back); Done clears.
       var acts = w ? undoBtn(w)
-        : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button><button class="act" data-ract="push" data-rid="' + esc(r.id) + '">Push</button>';
+        : '<button class="act primary" data-ract="done" data-rid="' + esc(r.id) + '" data-rfrom="' + esc(r.remind_from || "") + '">Done</button><button class="act" data-ract="push" data-rid="' + esc(r.id) + '">Push</button><button class="act" data-ract="delete" data-rid="' + esc(r.id) + '" title="Delete for good; a repeating reminder stops too">Delete</button>';
       h += '<div class="row' + riseClass("r" + r.id) + (r.status === "pinned" ? " pinned" : "") + '" style="animation-delay:' + (i * 50) + 'ms"><div class="main"><div class="title">' + esc(r.summary) + (r.repeat ? '<span class="tag">repeats</span>' : "") + tag + '</div><div class="sub">' + esc(when) + '</div><div class="slot">' + (PUSH.rid === r.id && !w ? pushSlot(r.id) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
     });
     landedAdds("reminder", ids).forEach(function (c) { h += waitRow(c, "set · shows after the next refresh", "ok"); });
@@ -1357,6 +1496,7 @@
     // The day the page showed travels with Done, so a repeating reminder
     // cleared twice clears that one day only (cr1#675).
     if (ra === "done") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "done", input: { occurrence: b.getAttribute("data-rfrom") || "" }, title: reminderTitle(rid) }); return; }
+    if (ra === "delete") { saveChoice({ kind: "reminder", src: "hub", n: rid, action: "delete", input: {}, title: reminderTitle(rid) }); return; }
     if (ra === "push") {
       var tm = new Date(); tm.setDate(tm.getDate() + 1);
       PUSH.rid = rid; PUSH.day = tm.getFullYear() + "-" + ("0" + (tm.getMonth() + 1)).slice(-2) + "-" + ("0" + tm.getDate()).slice(-2);
@@ -1391,12 +1531,40 @@
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
     else if (shut) acts += '<button class="act undo" data-cact="reopen" data-cid="' + esc(cid) + '" title="Open this commitment again">Undo</button>';
     if (!w && !shut) {
-      acts += '<button class="act primary" data-cact="' + (r.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (r.pending ? "Confirm" : "Done") + "</button>";
+      acts += looksDoneBtn(cid) + '<button class="act primary" data-cact="' + (r.pending ? "confirm" : "done") + '" data-cid="' + esc(cid) + '">' + (r.pending ? "Confirm" : "Done") + "</button>";
       if (!compact) acts += '<button class="act" data-cact="context" data-cid="' + esc(cid) + '">Add context</button><button class="act" data-cact="snooze" data-cid="' + esc(cid) + '">Snooze</button>'
         + '<button class="act" data-cact="remind" data-cid="' + esc(cid) + '" title="Put this on your reminders, with a day or without">Remind</button>'
         + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>');
     }
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + (r.n ? '<span class="num">' + esc(r.n) + "</span>" : "") + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc([r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon].filter(Boolean).join(" · ")) + "</div>" + (compact ? "" : originBox(r)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc(plainSub([r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon])) + "</div>" + (compact ? "" : originBox(r)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+  }
+  // cr1#1285 item 7: plain rows. One short line under the title: no row
+  // number, no machine date ("captured Nov 16", "2026-11-16"), each word
+  // once ("Overdue" and "late" say the same), at most three parts.
+  function plainSub(parts) {
+    var seen = {}, out = [];
+    parts.forEach(function (x) {
+      String(x || "").split(" · ").forEach(function (b) {
+        b = b.trim();
+        if (!b || /^captured\b/i.test(b) || /\d{4}-\d{2}-\d{2}/.test(b)) return;
+        var k = b.toLowerCase(); if (k === "overdue") k = "late";
+        if (seen[k]) return; seen[k] = true; out.push(b);
+      });
+    });
+    return out.slice(0, 3).join(" · ");
+  }
+  // cr1#1285 item 8: the commitment's own row carries the same "Looks done?"
+  // as its proposed close in Review (replySuggests and yesVerb sit by reviewRow).
+  function looksDone(cid) {
+    var rv = S.review, rows = rv && rv.rows ? rv.rows : [];
+    for (var i = 0; i < rows.length; i++) if (String(rows[i].commitment_id) === String(cid) && replySuggests(rows[i]) && yesVerb(rows[i])) return rows[i];
+    return null;
+  }
+  function looksDoneBtn(cid) {
+    var r = looksDone(cid); if (!r) return "";
+    var w = choiceFor("review", r.id); if (w) return waitTag(w, "close waiting") + undoBtn(w, "Take this back before it reaches your book");
+    var res = latestResult("review", r.id); if (res && res.result && res.result.outcome === "applied") return "";
+    return '<button class="act" data-review="' + esc(r.id) + '" data-verb="' + esc(yesVerb(r)) + '" title="Their reply looks like what you were waiting for">Looks done?</button>';
   }
   // cr1#725: where the promise came from, from the row's own record.
   function originBox(r) {
@@ -1415,7 +1583,7 @@
     renderPlate();
   }
   function renderPlate() {
-    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Start or Refresh day."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; renderOverdue(); return; }
+    var p = S.plate; if (!p) { $("platehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("platerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; renderOverdue(); renderWaitingOn(); renderConfirmPlate(); return; }
     var q = S.query.toLowerCase();
     var rows = (p.rows || []).filter(function (r) { return !q || (r.title + " " + r.project + " " + r.context).toLowerCase().indexOf(q) >= 0; });
     var total = num(p.n_rows) || ((p.rows || []).length + num(p.n_hidden));
@@ -1437,7 +1605,41 @@
     });
     if (reopen) $("platerows").innerHTML += "<h2>Closed from this page</h2>" + reopen;
     renderOverdue();
+    renderWaitingOn();
+    renderConfirmPlate();
   }
+  // ---- Waiting on and To confirm (cr1#1286) ---------------------------------
+  // Waiting on: the plate's Wait lane, the rows someone owes you, drawn by the
+  // plate's own row so a press is the same choice. It needs nothing from the
+  // owner, so its filter carries no count. Not `renderWaiting`, which is the
+  // Apply count's (review).
+  function renderWaitingOn() {
+    var p = S.plate;
+    if (!p) { $("waithead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("waitrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    var seen = {}, rows = (p.rows || []).concat(p.late_rows || []).filter(function (r) { var k = String(r.id); if (r.lane !== "wait" || seen[k]) return false; seen[k] = true; return true; });
+    $("waithead").innerHTML = '<div class="summary"><b>' + rows.length + "</b> waiting on a reply" + (p.n_hidden ? " · from the first " + (p.rows || []).length + " open" : "") + "</div>";
+    var h = ""; rows.forEach(function (r, i) { h += plateRow(r, false, i); });
+    $("waitrows").innerHTML = h || '<div class="quiet">Nobody owes you a reply.</div>';
+  }
+  // To confirm: every question Review held (renderReview draws them into this
+  // view), then the commitments waiting for your yes (the plate's Confirm lane).
+  // Its count is both, since each needs the owner.
+  // The Confirm lane, read here rather than through `laneRows`, so the
+  // Commitments harnesses that load this part of the page alone still run it.
+  // The late rows too, once each; a commitment a question already asks about
+  // is that question's, so it is neither drawn nor counted twice (review).
+  function confirmRows() {
+    var p = S.plate, rv = S.review, asked = {}, seen = {};
+    (rv && rv.rows ? rv.rows : []).forEach(function (q) { if (q.commitment_id) asked[String(q.commitment_id)] = true; });
+    return (p ? (p.rows || []).concat(p.late_rows || []) : []).filter(function (r) { var k = String(r.id); if (r.lane !== "confirm" || seen[k] || asked[k]) return false; seen[k] = true; return true; });
+  }
+  function renderConfirmPlate() {
+    var rows = confirmRows(), h = "";
+    rows.forEach(function (r, i) { h += plateRow(r, false, i); });
+    $("confirmplate").innerHTML = h ? "<h2>Commitments waiting for your yes (" + rows.length + ")</h2>" + h : "";
+    renderConfirmCount();
+  }
+  function renderConfirmCount() { var rv = S.review; $("reviewCount").textContent = (rv ? num(rv.n_open) : 0) + confirmRows().length; }
   function plateRowOf(cid) { var p = S.plate, all = p ? (p.rows || []).concat(p.late_rows || []) : []; for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(cid)) return all[i]; return null; }
   // ---- overdue (cr1#877) ---------------------------------------------------
   // The same feed as Commitments, cut to what is past its date, oldest first.
@@ -1465,10 +1667,10 @@
     var total = !(p && p.overdue_ok) ? 0 : olc ? num(olc.overdue) : rows.length + hidden;
     $("overdueCount").textContent = total;
     $("lateCount").textContent = total ? total + " late" : "";
-    if (!p) { $("overduehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Start or Refresh day."; $("overduerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    if (!p) { $("overduehead").textContent = isRunning("refresh") ? "Reading your commitments." : "Nothing read yet. Press Go."; $("overduerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
     // A feed written before this tab, or a book the run could not read: the
     // rows carry no direction, so the tab says that rather than sort them.
-    if (!p.overdue_ok) { $("overduehead").textContent = "This list could not be read on the last run. Press Refresh day."; $("overduerows").innerHTML = ""; return; }
+    if (!p.overdue_ok) { $("overduehead").textContent = "This list could not be read on the last run. Press Go."; $("overduerows").innerHTML = ""; return; }
     var parts = [["you_owe", "You owe"], ["owed_to_you", "Owed to you"], ["", "Needs your call"]];
     var of = function (k) { return rows.filter(function (r) { return k ? r.bucket === k : r.bucket !== "you_owe" && r.bucket !== "owed_to_you"; }); };
     var dir = olc && olc.overdue_by_direction ? olc.overdue_by_direction : null;
@@ -1496,7 +1698,7 @@
     if (o.kind === "context") return '<textarea class="note" data-slot="' + esc(cid) + '" aria-label="Note for your book" placeholder="What should the book know about this?">' + esc(o.value) + '</textarea><div class="parts"><button class="act primary" data-save="context" data-scid="' + esc(cid) + '">Save note</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
     // cr1#1020: a reminder from this commitment, with a day or with none.
     if (o.kind === "remind") return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Remind me on" placeholder="A date (2026-12-01), days from today, or leave empty for no date" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="remind" data-scid="' + esc(cid) + '">' + (String(o.value || "").trim() ? "Add reminder" : "Add reminder with no date") + '</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
-    return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Snooze until" placeholder="Days from today, or a date (2026-12-01)" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="snooze" data-scid="' + esc(cid) + '">Snooze</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
+    return '<input class="when" data-slot="' + esc(cid) + '" aria-label="Snooze until" placeholder="Days from today, a date (2026-12-01), or waiting on an event" value="' + esc(o.value) + '"><div class="parts"><button class="act primary" data-save="snooze" data-scid="' + esc(cid) + '">Snooze</button><button class="act" data-save="cancel" data-scid="' + esc(cid) + '">Cancel</button></div>';
   }
   function onSlotSave(b) {
     var kind = b.getAttribute("data-save"), cid = b.getAttribute("data-scid"), o = S.open[cid];
@@ -1611,7 +1813,7 @@
       // the original draft on a redraw.
       var draft = (boxOpen && !w) ? fill + '<div class="sub">To: ' + esc(it.draft && it.draft.to) + (it.draft && it.draft.cc ? " · Cc: " + esc(it.draft.cc) : "") + "</div><textarea class=\"draft\" aria-label=\"Reply draft\" data-n=\"" + esc(it.n) + '" data-ikey="' + esc(k) + '"' + (it.draft && it.draft.body ? "" : ' placeholder="Write your reply"') + ">" + esc(text) + "</textarea>" : "";
       var teach = (!w && !sent) ? teachBox(it) : "";
-      h += '<div class="row' + riseClass("i" + it.n + "-" + (it.fire_stamp || "")) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title"><span class="num">' + esc(it.n) + "</span>" + esc(it.name) + (it.subject ? " · " + esc(it.subject) : "") + tag + '</div><div class="sub">' + esc(it.why) + "</div>" + threadBox(it) + draft + teach + '</div><div class="acts">' + acts + "</div></div>";
+      h += '<div class="row' + riseClass("i" + it.n + "-" + (it.fire_stamp || "")) + '" style="animation-delay:' + (i * 60) + 'ms"><div class="main"><div class="title">' + esc(it.name) + (it.subject ? " · " + esc(it.subject) : "") + tag + '</div><div class="sub">' + esc(it.why) + "</div>" + threadBox(it) + draft + teach + '</div><div class="acts">' + acts + "</div></div>";
     });
     $("inboxCount").textContent = shown;
     $("inboxrows").innerHTML = h || '<div class="quiet">Nothing needs you.</div>';
@@ -2360,6 +2562,41 @@
   // company filter never narrows it (an item with no thread has no company).
   var NO_HOME_WAY = { you_owe: "You owe", owed_to_you: "Owed to you" };
   var NO_HOME_UNREAD = "Items with no thread could not be read on the last run; the next refresh tries again.";
+  // cr1#1289: every row gets Assign to (each work stream, plus New work
+  // stream) and Not work. Both are choices that wait for Apply, like every
+  // press; the book checks the work stream before anything is written.
+  // "Not work" closes an open promise as dropped, so Undo reopens
+  // it; a line only heard has no promise of its own to reopen.
+  function reopenableNotWork(c) { return !!c && c.action === "notwork" && c.from !== "heard"; }
+  var NEW_STREAM = "__new";
+  var NEW_STREAM_LINE = "A new work stream is set up in a chat: ask for it there, then assign this row to it.";
+  function noHomeStreams() { return ((S.projects && S.projects.work_streams) || []).filter(function (w) { return w && w.id; }); }
+  function noHomeActs(r) {
+    var w = choiceFor("commitment", r.id), res = latestResult("commitment", r.id);
+    if (w) return { tag: waitTag(w, w.action === "assign" ? "move waiting" : "not work waiting"), acts: undoBtn(w, "Take this back before it reaches your book") };
+    var tag = res && (res.action === "assign" || res.action === "notwork") ? resultTag(res) : "";
+    if (res && res.result && res.result.outcome === "applied" && (res.action === "assign" || res.action === "notwork")) {
+      return { tag: tag, acts: reopenableNotWork(res) && !reopenedAfter(r.id, res) ? '<button class="act undo" data-cact="reopen" data-cid="' + esc(r.id) + '" title="Put it back on your list">Undo</button>' : "" };
+    }
+    var opts = r.from === "heard" ? "" : noHomeStreams().map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name || s.id) + "</option>"; }).join("");
+    var pick = r.from === "heard" ? "" : '<select class="act" data-nhassign="' + esc(r.id) + '" aria-label="Assign to a ' + esc(word("work_stream")) + '" title="Give this a home"><option value="">Assign to</option>' + opts + '<option value="' + NEW_STREAM + '">New ' + esc(word("work_stream")) + "</option></select>";
+    return { tag: tag, acts: pick + '<button class="act" data-nhact="notwork" data-nhid="' + esc(r.id) + '" data-nhfrom="' + esc(r.from || "") + '" title="Not a work item: take it off the list">Not work</button>' };
+  }
+  function noHomeChoice(r, action, value) {
+    // The doc a press saves; null when there is nothing to save.
+    if (!r || !r.id) return null;
+    if (action === "notwork") return { kind: "commitment", src: "commitment-triage", n: r.id, action: "notwork", from: r.from === "heard" ? "heard" : "open", title: r.title || "" };
+    if (action === "assign" && value && value !== NEW_STREAM && r.from !== "heard") return { kind: "commitment", src: "commitment-triage", n: r.id, action: "assign", input: value, title: r.title || "" };
+    return null;
+  }
+  function noHomeRowOf(id) { var rows = ((S.projects && S.projects.no_home) || {}).rows || []; for (var i = 0; i < rows.length; i++) if (String(rows[i].id) === String(id)) return rows[i]; return null; }
+  function onNoHomePress(el) {
+    var id = el.getAttribute("data-nhassign") || el.getAttribute("data-nhid"), r = noHomeRowOf(id);
+    var action = el.hasAttribute("data-nhassign") ? "assign" : el.getAttribute("data-nhact");
+    if (action === "assign" && el.value === NEW_STREAM) { el.value = ""; banner(NEW_STREAM_LINE.replace("work stream", word("work_stream"))); return; }
+    var doc = noHomeChoice(r, action, el.value);
+    if (doc) saveChoice(doc);
+  }
   function noHomeRow(r, i) {
     var way = r.from === "heard" ? "Heard, never tracked" : (NO_HOME_WAY[r.direction] || "Open");
     var quiet = [way + (r.with ? (r.direction === "owed_to_you" ? " by " : r.direction === "you_owe" ? " to " : " with ") + esc(r.with) : ""),
@@ -2372,8 +2609,9 @@
     // Where it came from, in a word, like the thread panel (C3): never a
     // pointer or a log row on the page.
     var src = r.source || {}, from = src.word ? fromWords(src.word) : "";
-    return '<div class="row' + riseClass("nh" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + '</div><div class="sub">' + quiet + "</div>"
-      + moreFold([r.waiting_for_yes ? "Waiting for your yes" : "", "No " + esc(word("thread")) + " yet: file it from a chat, or it stays here", onPlate ? "" : "To find it, ask for your loose ends in a chat", from]) + '</div><div class="acts">' + btn + "</div></div>";
+    var nh = noHomeActs(r);
+    return '<div class="row' + riseClass("nh" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + nh.tag + '</div><div class="sub">' + quiet + "</div>"
+      + moreFold([r.waiting_for_yes ? "Waiting for your yes" : "", "No " + esc(word("thread")) + " yet: assign it to a " + esc(word("work_stream")) + ", or it stays here", onPlate ? "" : "To find it, ask for your loose ends in a chat", from]) + '</div><div class="acts">' + btn + nh.acts + "</div></div>";
   }
   function noHomeSection(pj, q) {
     var nh = (pj && pj.no_home) || { rows: [], n: 0 };
@@ -2388,7 +2626,7 @@
     var pj = S.projects;
     $("projectCount").textContent = pj && pj.rows ? pj.rows.length : 0;
     fillCompanies(pj);
-    if (!pj) { $("projecthead").textContent = isRunning("refresh") ? "Reading your " + word("work_stream", true) + "." : "No " + word("work_stream", true) + " read yet. Press Refresh day."; $("projectrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    if (!pj) { $("projecthead").textContent = isRunning("refresh") ? "Reading your " + word("work_stream", true) + "." : "No " + word("work_stream", true) + " read yet. Press Go."; $("projectrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
     var q = S.pquery.toLowerCase();
     var rows = companyRows(pj.rows || []).filter(function (r) { return !q || (r.name + " " + r.org).toLowerCase().indexOf(q) >= 0; });
     var openTotal = 0; (pj.rows || []).forEach(function (r) { openTotal += num(r.open); });
@@ -2415,7 +2653,7 @@
   function renderPriorities() {
     var pj = S.projects, pr = pj && pj.priorities;
     $("priorityCount").textContent = pr ? (pr.confirmed || []).length : 0;
-    if (!pr) { $("priorityhead").textContent = isRunning("refresh") ? "Reading your priorities." : "No priorities read yet. Press Refresh day."; $("priorityrows").innerHTML = ""; return; }
+    if (!pr) { $("priorityhead").textContent = isRunning("refresh") ? "Reading your priorities." : "No priorities read yet. Press Go."; $("priorityrows").innerHTML = ""; return; }
     var names = {}; (pj.rows || []).forEach(function (r) { names[r.id] = r.name; });
     var h = "";
     (pr.confirmed || []).forEach(function (p, i) {
@@ -2423,7 +2661,8 @@
       // it; an undated priority is never late) and, after 14 quiet days,
       // the question whether it is still a priority. The rest under More.
       var when = p.due ? "by " + esc(fmtDate(p.due) || p.due) + (p.overdue ? ' · <span class="late">late</span>' : "") : p.horizon ? "by " + esc(p.horizon) : "no date";
-      var quiet = [when, esc(p.still_a_priority || "")].filter(Boolean).join(" · ");
+      // cr1#1294: a priority with nothing open behind it asks for its next step
+      var quiet = [when, p.n_open === 0 ? "nothing open behind it; name its next step in a chat" : "", esc(p.still_a_priority || "")].filter(Boolean).join(" · ");
       var ts = (p.threads || []).map(function (t) { return esc(names[t] || t); });
       h += '<div class="row' + riseClass("pr" + p.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(p.statement) + '</div><div class="sub">' + quiet + "</div>" + moreFold([esc(p.says)].concat(ts.length ? [esc(capW(word("thread", true))) + ": " + ts.join(", ")] : [])) + '</div><div class="acts"></div></div>';
     });
@@ -2467,29 +2706,39 @@
     var ps = $("psearch"); if (ps) { ps.placeholder = ph; if (ps.setAttribute) ps.setAttribute("aria-label", ph); }
     var co = $("pcompany"); if (co && co.setAttribute) co.setAttribute("aria-label", "Show one company's " + word("thread", true));
   }
-  var EXPLAIN_STORE = "hub.explained";
-  //: Which notes each tab carries, in the order they show.
-  var EXPLAIN_TABS = { today: ["prep", "refresh"], projects: ["work_stream"], review: ["review", "apply"], settings: ["apply"], inbox: ["apply"], week: ["apply"] };
-  // Read once, when the page opens: a note marked read during this visit
-  // stays up until the next one.
-  var explainSeen = (function () { try { return JSON.parse(localStorage.getItem(EXPLAIN_STORE) || "{}") || {}; } catch (e) { return {}; } })();
+  // cr1#1285 item 10 (owner ruling 2026-11-16): the explainers leave the
+  // page. Each is the hover text of what it explains and a line in the
+  // Settings guide; no paragraph sits above the work any more. Go's own
+  // hover words are set by the ring as it runs, so its note is in the guide.
+  var EXPLAIN_KEYS = ["go", "apply", "work_stream", "review"];
   function explainText(key) {
     if (key === "work_stream") return capW(aWord(word("work_stream"))) + " is one piece of ongoing work, such as a client or a deal. The " + word("thread", true) + " under it are its smaller pieces, each gathering its own meetings, emails and promises.";
-    if (key === "review") return "Review holds what the system noticed and wants your yes or no on, such as a new person to put on file. Nothing changes until you answer.";
-    if (key === "prep") return "Prep next 4 meetings writes a short brief for each of your next four meetings, from your calendar, your email, past meetings and what is open with the people coming. Open one with its Prep button.";
-    if (key === "refresh") return "Refresh day reads your book again, so this page shows what changed. It does not send your choices: Apply does that, then refreshes the day for you.";
+    if (key === "review") return "To confirm holds what the system noticed and wants your yes or no on, such as a new person to put on file. Nothing changes until you answer.";
+    if (key === "go") return "Go starts your day: the first press each day runs the whole morning, your meeting briefs, your inbox, Apply and a refresh. Every later press reads your book again, so this page shows what changed, and writes a short brief for each of your next four meetings; it does not send your choices. Apply does that, then refreshes the day for you. Open a brief with Open prep on its row in Calendar.";
     if (key === "apply") return "What you press here is saved as a choice. Apply sends your choices to your book, the record of your work; until then nothing changes.";
     return "";
   }
-  function renderExplain() {
-    Object.keys(EXPLAIN_TABS).forEach(function (tab) {
-      var box = $("explain-" + tab); if (!box) return;
-      box.innerHTML = EXPLAIN_TABS[tab].filter(function (k) { return !explainSeen[k]; }).map(function (k) { return '<div class="sub">' + esc(explainText(k)) + "</div>"; }).join("");
-    });
+  function explainTarget(key) {
+    if (key === "apply") return document.querySelectorAll('button[data-part="apply"]');
+    if (key === "work_stream") return document.querySelectorAll('nav.tabs button[data-tab="projects"]');
+    // since cr1#1286 Review is the To confirm filter on Commitments
+    if (key === "review") { var c = $("showConfirm"); return c ? [c] : []; }
+    return [];
   }
-  function markExplained(tab) {
-    var keys = EXPLAIN_TABS[tab] || []; if (!keys.length) return;
-    try { var st = JSON.parse(localStorage.getItem(EXPLAIN_STORE) || "{}") || {}; keys.forEach(function (k) { st[k] = 1; }); localStorage.setItem(EXPLAIN_STORE, JSON.stringify(st)); } catch (e) {}
+  function renderExplain() {
+    var guide = "";
+    EXPLAIN_KEYS.forEach(function (k) {
+      var text = explainText(k), els = explainTarget(k);
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i]; if (!el.setAttribute) continue;
+        // a button's own hover words stay first (Review's Apply sends answers, Settings' changes)
+        var base = el.getAttribute ? el.getAttribute("data-basetitle") : null;
+        if (base === null || base === undefined) { base = (el.getAttribute && el.getAttribute("title")) || ""; el.setAttribute("data-basetitle", base); }
+        el.setAttribute("title", base ? base + ". " + text : text);
+      }
+      guide += '<div class="row"><div class="main"><div class="sub">' + esc(text) + "</div></div></div>";
+    });
+    var box = $("settingsguide"); if (box) box.innerHTML = "<h2>What the buttons do</h2>" + guide;
   }
   // ---- end of the seat's words ------------------------------------------
   // ---- people (cr1#1020) -----------------------------------------------------
@@ -2538,7 +2787,7 @@
     var pp = S.people;
     $("peopleCount").textContent = pp && pp.people ? pp.people.length : 0;
     renderStarred();
-    if (!pp) { $("peoplehead").textContent = isRunning("refresh") ? "Reading your people." : "No people read yet. Press Refresh day."; $("peoplerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    if (!pp) { $("peoplehead").textContent = isRunning("refresh") ? "Reading your people." : "No people read yet. Press Go."; $("peoplerows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
     var q = String(S.peoplequery || "").toLowerCase();
     var rows = (pp.people || []).filter(function (p) { return !q || (p.name + " " + p.company + " " + p.role + " " + p.email).toLowerCase().indexOf(q) >= 0; });
     var nStar = (pp.people || []).filter(isStarred).length;
@@ -2660,19 +2909,28 @@
     if (!lines.length) return "";
     return "<h2>Craft files</h2>" + lines.map(function (x) { return '<div class="row"><div class="main"><div class="sub">' + esc(x.line || "") + "</div></div></div>"; }).join("");
   }
+  // cr1#1285 item 8: a reply that looks like what the owner was waiting for
+  // is a button, "Looks done?", never a sentence to read. It is the same
+  // answer as the proposed close's yes in Review, saved as the same choice.
+  var REPLY_LEDE = /^(their reply looks like the thing you were waiting for|they replied on this thread with what you were waiting for)\s*/i;
+  function replySuggests(r) { return !!(r && r.group === "close" && (REPLY_LEDE.test(r.line || "") || REPLY_LEDE.test(r.evidence || ""))); }
+  function yesVerb(r) { var v = (r.verbs || []).filter(function (x) { return x.action === "confirm proposal"; })[0]; return v ? v.action : ""; }
   function reviewRow(r, i) {
     var w = choiceFor("review", r.id), res = latestResult("review", r.id);
     var tag = w ? waitTag(w, "answer waiting") : resultTag(res);
     var acts = "";
     if (w) acts += undoBtn(w, "Take this back before it reaches your book");
-    else if (!res || !res.result || res.result.outcome !== "applied") (r.verbs || []).forEach(function (v, k) { acts += '<button class="act' + (k === 0 ? " primary" : "") + '" data-review="' + esc(r.id) + '" data-verb="' + esc(v.action) + '">' + esc(v.label) + "</button>"; });
+    else if (!res || !res.result || res.result.outcome !== "applied") (r.verbs || []).forEach(function (v, k) { acts += '<button class="act' + (k === 0 ? " primary" : "") + '" data-review="' + esc(r.id) + '" data-verb="' + esc(v.action) + '">' + esc(replySuggests(r) && v.action === "confirm proposal" ? "Looks done?" : v.label) + "</button>"; });
+    // the reply's subject and day stay; the sentence that suggested it is the button now
+    var own = r.line || r.evidence || "", said = String(own).replace(REPLY_LEDE, "");
+    var lineText = replySuggests(r) && said !== own ? (said ? "Their reply: " + said : "") : own;
     var want = !w && acts && reviewAsk(r);
     var ask = want ? '<input class="when" data-rtext="' + esc(r.id) + '" aria-label="' + esc(want.ask) + '" placeholder="' + esc(want.ask) + '" value="' + esc((S.reviewText || {})[r.id] || "") + '">' : "";
     // cr1#775: where the question came from, so a project question reads beside the people from the same read.
     var sub = [r.reason, r.group === "close" ? "proposed close" : "", r.board ? "from " + String(r.board).replace(/-/g, " ") : ""].filter(Boolean).join(" · ");
     var ends = r.expires_on ? "If you do nothing by " + fmtDate(r.expires_on) + ", " + r.default_line + "." : "This one waits for your answer.";
     return '<div class="row' + riseClass("v" + r.id) + '" style="animation-delay:' + ((i || 0) * 50) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + "</div>"
-      + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + reviewDiff(r) + (r.line ? '<div class="sub">' + esc(r.line) + "</div>" : (r.evidence ? '<div class="sub">' + esc(r.evidence) + "</div>" : "")) + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
+      + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + reviewDiff(r) + (lineText ? '<div class="sub">' + esc(lineText) + "</div>" : "") + '<div class="sub">' + esc(ends) + "</div>" + (r.chat_line ? '<div class="sub">' + esc(r.chat_line) + "</div>" : "") + ask + '</div><div class="acts">' + acts + "</div></div>";
   }
   function reviewClosed(shown) {
     // A proposed close the owner accepted, once it has left the feed: the row
@@ -2694,8 +2952,8 @@
   }
   function renderReview() {
     var rv = S.review;
-    $("reviewCount").textContent = rv ? num(rv.n_open) : 0;
-    if (!rv) { $("reviewhead").textContent = isRunning("refresh") ? "Reading what needs your answer." : "No review read yet. Press Refresh day."; $("reviewrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
+    renderConfirmPlate();
+    if (!rv) { $("reviewhead").textContent = isRunning("refresh") ? "Reading what needs your answer." : "No review read yet. Press Go."; $("reviewrows").innerHTML = isRunning("refresh") ? skeletons(3) : ""; return; }
     if (rv.errors && rv.errors.length) { $("reviewhead").textContent = "Your open questions could not be read just now; the next refresh tries again."; $("reviewrows").innerHTML = ""; return; }
     var rows = rv.rows || [], shown = {};
     rows.forEach(function (r) { shown[String(r.id)] = true; });
@@ -2734,7 +2992,8 @@
   function renderWeek() {
     renderMeasure();
     var wk = S.week;
-    if (!wk) { $("weekhead").textContent = isRunning("refresh") ? "Reading your week." : "No week read yet. Press Refresh day."; $("weekrows").innerHTML = ""; return; }
+    renderMonth();
+    if (!wk) { $("weekhead").textContent = isRunning("refresh") ? "Reading your week." : "No week read yet. Press Go."; $("weekrows").innerHTML = ""; return; }
     $("weekhead").textContent = wk.errors && wk.errors.length ? "Part of your week could not be read just now; the next refresh tries again." : (wk.line || "");
     var h = "";
     if ((wk.decided || []).length) {
@@ -2784,6 +3043,61 @@
     var n = b.getAttribute("data-wn"), it = weekItem(n); if (!it) return;
     saveChoice({ kind: "week", src: "hub", n: n, action: b.getAttribute("data-wact"), title: it.label || it.name || "", payload: it.batch_ref ? { batch_ref: it.batch_ref, n: it.n } : {} });
   }
+
+  // ---- the month (cr1#1287) --------------------------------------------------
+  // What was done this calendar month: counts by kind, a filter (kind, work
+  // stream, person), then each item newest first with its date and where it
+  // came from. Read only: nothing here saves, sends, closes or deletes.
+  S.monthFilter = S.monthFilter || { kind: "", thread: "", person: "" };
+  function monthDay(iso) { var d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }); }
+  function monthRows(m, f) {
+    return (m.items || []).filter(function (it) {
+      if (f.kind && it.kind !== f.kind) return false;
+      if (f.thread && it.thread_id !== f.thread) return false;
+      if (f.person && !(it.people || []).some(function (p) { return p.id === f.person; })) return false;
+      return true;
+    });
+  }
+  function monthSelect(key, label, all, opts, cur) {
+    var h = '<select class="prio" data-mfilter="' + esc(key) + '" aria-label="' + esc(label) + '"><option value="">' + esc(all) + "</option>";
+    opts.forEach(function (o) { h += '<option value="' + esc(o.id) + '"' + (String(o.id) === cur ? " selected" : "") + ">" + esc(o.name) + "</option>"; });
+    return h + "</select>";
+  }
+  function renderMonth() {
+    var el = $("weekmonth"); if (!el) return;
+    var m = S.week && S.week.month;
+    if (!m) { el.innerHTML = ""; return; }
+    var f = S.monthFilter = S.monthFilter || { kind: "", thread: "", person: "" }, kinds = m.kinds || [], byKey = {};
+    kinds.forEach(function (k) { byKey[k.key] = k; });
+    // A choice the new month no longer offers falls back to all.
+    if (f.kind && !byKey[f.kind]) f.kind = "";
+    if (f.thread && !(m.threads || []).some(function (t) { return String(t.id) === f.thread; })) f.thread = "";
+    if (f.person && !(m.people || []).some(function (p) { return String(p.id) === f.person; })) f.person = "";
+    var h = "<h2>Done in " + esc(m.month || "this month") + '</h2><div class="donestrip"><div class="donekinds">';
+    kinds.forEach(function (k) { var n = num(k.n); h += "<div><b>" + n + "</b> " + esc(n === 1 ? k.one : k.many) + "</div>"; });
+    h += "</div></div>";
+    h += '<div class="filters monthfilter">' + monthSelect("kind", "Kind", "Every kind", kinds.map(function (k) { return { id: k.key, name: cap(k.many) }; }), f.kind)
+      + monthSelect("thread", "Work stream", "Every work stream", m.threads || [], f.thread)
+      + monthSelect("person", "Person", "Everyone", m.people || [], f.person) + "</div>";
+    var rows = monthRows(m, f), capped = num(m.n_items) > (m.items || []).length;
+    if (!(m.items || []).length) h += '<div class="quiet">Nothing done yet this month.</div>';
+    else if (!rows.length) h += '<div class="quiet">Nothing this month matches that filter.</div>';
+    else if (capped) h += '<div class="quiet">The newest ' + (m.items || []).length + " of " + num(m.n_items) + " items; the counts above are the whole month.</div>";
+    rows.forEach(function (it) {
+      var k = byKey[it.kind] || {}, src = it.source || {};
+      var who = (it.people || []).map(function (p) { return p.name; }).filter(Boolean).join(", ");
+      var sub = [esc(cap(k.one || it.kind)), esc(monthDay(it.ts)), src.word ? fromWords(src.word) : "",
+                 it.thread ? esc(it.thread) : "", who ? "with " + esc(who) : ""].filter(Boolean).join(" · ");
+      h += '<div class="row"><div class="main"><div class="title">' + esc(cap(it.title)) + '</div><div class="sub">' + sub + "</div></div></div>";
+    });
+    el.innerHTML = h;
+  }
+  $("tab-week").addEventListener("change", function (ev) {
+    var key = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-mfilter");
+    if (!key || !S.monthFilter || !(key in S.monthFilter)) return;
+    S.monthFilter[key] = String(ev.target.value || "");
+    renderMonth();
+  });
 
   // ---- measures itself (cr1#1017, train 8 behaviour 7) -----------------------
   // The owner's definition: the page records, in its own data and visible to
@@ -2882,8 +3196,8 @@
     });
   }
   if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hub:morning-finished", function (e) { var d = e && e.detail; if (d && d.at) measureMorningFinished(d.at, d.day); });
-  // Behaviour 6's hook ("Missed something"): the entry that files a miss calls
-  // this once per miss reported, and the Week tab counts it.
+  // Behaviour 6's hook ("Missed something", "Something wrong?" since cr1#1288):
+  // the header entry calls this once per report, and the Week tab counts it.
   // `at` is when the miss was reported (the choice's own time), so a press
   // just before midnight counts on its own day.
   function recordMiss(id, at) {
@@ -2905,11 +3219,13 @@
     if (mins.length) { mins.sort(function (a, b) { return a - b; }); out.typical_minutes = mins[Math.floor((mins.length - 1) / 2)]; }
     return out;
   }
+  // cr1#1315: every "Something wrong?" press counts here, a miss or not, so
+  // the line says "problems reported" (the key stays `misses`).
   function measureLine(w) {
-    if (!w.opens && !w.mornings && !w.handled && !w.misses) return "The Hub keeps its own count each week: times opened, mornings, items handled and misses reported.";
+    if (!w.opens && !w.mornings && !w.handled && !w.misses) return "The Hub keeps its own count each week: times opened, mornings, items handled and problems reported.";
     var pl = function (k, one, many) { return k + " " + (k === 1 ? one : many); };
     var morn = pl(w.mornings, "morning started", "mornings started") + (w.typical_minutes != null ? ", the typical one took about " + pl(w.typical_minutes, "minute", "minutes") : "");
-    return "In the last 7 days: opened " + pl(w.opens, "time", "times") + " · " + morn + " · " + pl(w.handled, "item handled", "items handled") + " · " + pl(w.misses, "miss reported", "misses reported") + ".";
+    return "In the last 7 days: opened " + pl(w.opens, "time", "times") + " · " + morn + " · " + pl(w.handled, "item handled", "items handled") + " · " + pl(w.misses, "problem reported", "problems reported") + ".";
   }
   function renderMeasure() {
     var el = $("weekmeasure");
@@ -2955,7 +3271,7 @@
   }
   function renderSettings() {
     var st = S.settings;
-    if (!st) { $("settingshead").textContent = isRunning("refresh") ? "Reading your settings." : "No settings read yet. Press Refresh day."; $("settingsrows").innerHTML = ""; return; }
+    if (!st) { $("settingshead").textContent = isRunning("refresh") ? "Reading your settings." : "No settings read yet. Press Go."; $("settingsrows").innerHTML = ""; return; }
     var errs = st.errors || [];
     $("settingshead").textContent = (errs.length ? "Part of this could not be read just now; the next refresh tries again. " : "") + "Read " + fmtWhen(st.generated_at) + ".";
     var h = "<h2>Rules it learned" + (num(st.n_rules) > (st.rules || []).length ? " (first " + st.rules.length + " of " + num(st.n_rules) + ")" : "") + "</h2>";
@@ -2964,7 +3280,7 @@
     h += "<h2>Questions</h2>";
     if (st.budget && st.budget.n != null) h += budgetRow(st.budget);
     var c = st.caps || {};
-    if (c.questions_a_day) h += settingsRow("At most " + num(c.questions_a_day.n) + " questions a day on the Review tab", "", c.questions_a_day.source);
+    if (c.questions_a_day) h += settingsRow("At most " + num(c.questions_a_day.n) + " questions a day under To confirm in Commitments", "", c.questions_a_day.source);
     if (c.connector_questions_a_day) h += settingsRow("At most " + num(c.connector_questions_a_day.n) + " new people and project questions a day from the connectors", "", c.connector_questions_a_day.source);
     if (c.people_added_a_run) h += settingsRow("At most " + num(c.people_added_a_run.n) + " people added on their own per run, " + num((c.merges_proposed_a_run || {}).n) + " merges proposed", "", c.people_added_a_run.source);
     h += "<h2>Connectors</h2>";
@@ -3013,10 +3329,15 @@
   }
 
   // ---- missed something (cr1#1017) -----------------------------------------
-  // One place on every tab to say what the Hub failed to show. The sentence
-  // is saved as a choice; the apply run searches the book, answers what it
-  // found and why it was missed, files it, and logs the miss for the week's
-  // measure. The latest few show here with their answers.
+  // cr1#1288 (owner's ruling 4, 2026-11-16): "Something wrong?", the one
+  // catch-all on every tab, replaces "Missed something?". The owner says what
+  // is wrong; the page puts those words and what it was showing into a
+  // message for a new Command Room chat, copies it and shows it to select.
+  // The page never sends it and saves no choice: the chat it is pasted into
+  // does the looking, live mail and meetings included (cr1#1202). The press
+  // still counts as a report in the week's measure. A "Missed something?"
+  // press saved before this change shows here with its answer, a waiting one
+  // can still be taken back, and Apply still answers it.
   var MISS_SHOWN = 5;
   function missRows() {
     return (S.choices || []).filter(function (c) { return c.kind === "miss"; })
@@ -3024,7 +3345,8 @@
   }
   function renderMiss() {
     var el = $("missrows"); if (!el) return;
-    el.innerHTML = missRows().map(function (c) {
+    var rows = missRows();
+    el.innerHTML = (rows.length ? '<div class="quiet missrow">Reported before this button opened a chat:</div>' : "") + rows.map(function (c) {
       var said = esc(cap(((c.input || {}).text) || c.title || ""));
       var ans = c.applied && c.result ? esc(c.result.line || "") : "Waiting for Apply.";
       // cr1#1202: a miss not yet applied can be taken back; Undo deletes the
@@ -3033,23 +3355,91 @@
       return '<div class="missrow"><div class="title">' + said + '</div><div class="sub">' + ans + (undo ? " " + undo : "") + "</div></div>";
     }).join("");
   }
-  function saveMiss() {
-    var t = $("missText"), said = String((t && t.value) || "").replace(/\s+/g, " ").trim();
-    if (!said) { banner("Say in a few words what was missed.", true); return; }
-    // the miss counts in the week's measure once it is saved, under the
-    // choice's own id (the id the apply run's record carries as hub_choice)
-    saveChoice({ kind: "miss", src: "hub", n: "new", action: "tell", input: { text: said.slice(0, 600) }, title: said.slice(0, 200) })
-      .then(function (row) {
-        if (!row) return;
-        if (t) t.value = "";
-        // A count lost to a dropped connection between the two writes is not
-        // retried (measureWrite keeps its errors quiet, as for every measure):
-        // the choice is saved, and the apply run still logs the miss.
-        if (typeof recordMiss === "function") recordMiss(row.id, row.created_at);
-      });
+  // The chat opens through the Claude app's own link, claude://claude.ai/new
+  // with the text as `q`: a new chat with it typed in and not sent (the
+  // owner's click test on cr1#1216, 2026-11-15). Copy-and-paste was ruled
+  // out there. The link is the one fixed prefix plus the encoded text.
+  var PROBLEM_HREF = "claude://claude.ai/new?q=";
+  var PROBLEM_CAP = 600, PROBLEM_PART_CAP = 240, PROBLEM_URL_MAX = 12000;
+  // The message asks for no search of its own: a search of mail or meetings
+  // is a skill's, behind its personal-source wall (CHAT_WALL.md), never a
+  // sentence in a prompt (review).
+  var PROBLEM_ASK = "Look into it, and ask me before you change, file or send anything.";
+  // A half character (a lone surrogate) makes encodeURIComponent throw, and
+  // page text can carry one: each becomes U+FFFD first.
+  function wellFormed(t) {
+    var s = String(t == null ? "" : t), out = "";
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        var d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+        if (d >= 0xDC00 && d <= 0xDFFF) { out += s.charAt(i) + s.charAt(i + 1); i += 1; } else out += "\uFFFD";
+      } else if (c >= 0xDC00 && c <= 0xDFFF) out += "\uFFFD";
+      else out += s.charAt(i);
+    }
+    return out;
+  }
+  function clip(t, n) { t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1).trim() + "\u2026" : t; }
+  // What the Hub was showing at the press: the open tab, the top line, any
+  // light that did not finish and the last error shown. Only what is on
+  // the screen, so the chat starts from what the owner saw.
+  function hubShowing() {
+    var out = [], d = typeof document !== "undefined" ? document : null;
+    var tab = d && d.querySelector ? d.querySelector('nav.tabs button[data-tab][aria-selected="true"]') : null;
+    var name = tab && tab.firstChild && tab.firstChild.nodeValue ? clip(tab.firstChild.nodeValue, 40) : "";
+    if (name) out.push("the " + name + " tab");
+    var meta = $("metaline"), mt = meta ? clip(meta.textContent, PROBLEM_PART_CAP) : "";
+    if (mt) out.push("the top line \"" + mt + "\"");
+    (typeof LEGS !== "undefined" ? LEGS : []).forEach(function (l) {
+      var st = legState(l[0]) || {};
+      if (st.state === "error" || st.state === "no_answer") out.push(l[1] + " did not finish (\"" + clip(st.line, PROBLEM_PART_CAP) + "\")");
+    });
+    var errs = d && d.querySelectorAll ? d.querySelectorAll("#banners .banner.err") : [];
+    if (errs && errs.length) out.push("the message \"" + clip(errs[errs.length - 1].textContent, PROBLEM_PART_CAP) + "\"");
+    return out.join("; ");
+  }
+  function problemText(said, bare) {
+    var lines = ["Something's wrong on my Command Room Hub: " + said];
+    var showing = bare ? "" : hubShowing(); if (showing) lines.push("The Hub was showing " + showing + ".");
+    lines.push(PROBLEM_ASK);
+    return wellFormed(lines.join("\n"));
+  }
+  // The link for that text, or "" when none can be built. Past the ceiling
+  // the owner's words are shortened, never the encoding.
+  function problemHref(said) {
+    try {
+      var n = said.length, href = "";
+      // the words are halved first; last, what the Hub showed is left out
+      for (var k = 0; k < 7; k++) {
+        href = PROBLEM_HREF + encodeURIComponent(problemText(n < said.length ? said.slice(0, n).trim() + "\u2026" : said, k === 6));
+        if (href.length <= PROBLEM_URL_MAX) return href;
+        if (k < 5) n = Math.floor(n / 2);
+      }
+    } catch (e) {}
+    return "";
+  }
+  // The press is the link's own click: its address is set from the words in
+  // the box and what the Hub shows at that moment, and the app opens the
+  // chat. Nothing is saved as a choice, nothing is fired, nothing is sent.
+  function problemChat(e) {
+    var t = $("missText"), a = $("missSave");
+    var said = clip(wellFormed((t && t.value) || ""), PROBLEM_CAP);
+    var href = said ? problemHref(said) : "";
+    if (!href) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (a) a.href = "#";
+      banner(said ? "That could not be opened as a chat; shorten it and try again." : "Say in a few words what is wrong.", true);
+      return;
+    }
+    if (a) a.href = href;
+    // the report counts in the week's measure, under its own id
+    if (typeof recordMiss === "function") recordMiss("problem_" + rid(), nowIso());
+    // The words stay in the box: where the app does not take the link (a
+    // browser with no Claude app), nothing is lost (review).
+    setTimeout(function () { if (a) a.href = "#"; }, 0);
   }
   // ---- end missed something ---------------------------------------------------
-  function renderAll() { renderWords(); renderExplain(); renderLights(); renderWaiting(); renderToday(); renderDone(); renderInbox(); renderPlate(); renderPriorities(); renderProjects(); renderPeople(); renderReview(); renderWeek(); renderSettings(); renderBoard(); renderMiss(); }
+  function renderAll() { renderWords(); renderExplain(); renderLights(); renderWaiting(); renderToday(); renderBriefTab(); renderDone(); renderInbox(); renderPlate(); renderPriorities(); renderProjects(); renderPeople(); renderReview(); renderWeek(); renderSettings(); renderBoard(); renderMiss(); }
 
   // ---- the Week view on Today (cr1#1017, option D) --------------------------
   // Today reads as a list or as a week: a two-button group, W switches, the
@@ -3074,7 +3464,7 @@
     var days = b && b.days && b.days.length ? b.days : wk;
     return days.map(function (d) {
       var m = meet[d.date] || {};
-      return { date: d.date, name: d.name, away: m.away || null, meetings: m.meetings || [], n_meetings: num(m.n_meetings),
+      return { date: d.date, name: d.name, away: m.away || null, meetings: m.meetings || [], n_meetings: num(m.n_meetings), n_blocks: num(m.n_blocks),
                read: !!meet[d.date], due: d.due || [], n_more: num(d.n_more) };
     });
   }
@@ -3166,7 +3556,7 @@
     var el = $("board"); if (!el || S.todayView !== "week") return;
     var days = boardDays();
     if (!days.length) {
-      el.innerHTML = '<div class="quiet">' + (isRunning("refresh") || isRunning("prep") ? "Reading the week." : "No week read yet. Press Refresh day.") + "</div>";
+      el.innerHTML = '<div class="quiet">' + (isRunning("refresh") || isRunning("prep") ? "Reading the week." : "No week read yet. Press Go.") + "</div>";
       S.boardMenu = null;
       $("boardnote").textContent = ""; $("boardLanes").innerHTML = ""; return;
     }
@@ -3177,9 +3567,17 @@
       if (d.away) x += '<div class="away">Away, ' + esc(d.away) + "</div>";
       d.meetings.forEach(function (m) {
         x += '<div class="mt"><span class="tm">' + esc(m.all_day ? "All day" : fmtTime(m.start)) + "</span>" + esc(m.title) + (m.personal ? '<span class="tag">personal</span>' : "")
+          + (isBlock(m) ? '<span class="tag">Time blocked</span>' : "")
           + (m.clash ? '<span class="clash">Clashes with your time away</span>' : "") + "</div>";
       });
-      if (d.n_meetings > d.meetings.length) x += '<div class="more">and ' + (d.n_meetings - d.meetings.length) + " more meetings</div>";
+      // cr1#1299: a solo block is on the day but not a meeting (cr1#1293), so
+      // the rows left off are named apart: the meetings and the blocks, each
+      // less those shown.
+      var shownB = d.meetings.filter(isBlock).length, left = [];
+      var hm = d.n_meetings - (d.meetings.length - shownB), hb = d.n_blocks - shownB;
+      if (hm > 0) left.push(hm + (hm === 1 ? " more meeting" : " more meetings"));
+      if (hb > 0) left.push(hb + (hb === 1 ? " more time block" : " more time blocks"));
+      if (left.length) x += '<div class="more">and ' + left.join(" and ") + "</div>";
       d.due.forEach(function (c) { x += boardCard(c, d.date, days); });
       if (d.n_more) x += '<div class="more">' + d.n_more + " more due</div>";
       if (!d.meetings.length && !d.due.length) x += '<div class="clear">' + (d.away ? "Nothing booked" : "Clear") + "</div>";
@@ -3198,7 +3596,7 @@
     }
     var local = boardToday(S.board && S.board.tz);
     var stale = S.board && S.board.today && S.board.today < local;
-    $("boardnote").textContent = (stale ? "This board was read " + fmtDate(S.board.today) + ": press Refresh day for today's. " : "")
+    $("boardnote").textContent = (stale ? "This board was read " + fmtDate(S.board.today) + ": press Go for today's. " : "")
       + (unread ? "Meetings show once the calendar has been read for the week: press Prep." : "");
     var lanes = S.board && S.board.priorities ? S.board.priorities : [], l = "";
     if (lanes.length) {
@@ -3243,19 +3641,18 @@
     var tabs = document.querySelectorAll("nav.tabs button[data-tab]"); for (var i = 0; i < tabs.length; i++) { tabs[i].setAttribute("aria-selected", tabs[i] === b ? "true" : "false"); tabs[i].setAttribute("tabindex", tabs[i] === b ? "0" : "-1"); }
     var secs = document.querySelectorAll("section.tab"); for (var j = 0; j < secs.length; j++) secs[j].className = "tab" + (secs[j].id === "tab-" + b.getAttribute("data-tab") ? " on" : "");
     try { localStorage.setItem("cockpit.tab", b.getAttribute("data-tab")); } catch (e) {}
-    markExplained(b.getAttribute("data-tab"));
   });
-  try { var saved = localStorage.getItem("cockpit.tab"); if (saved) { var tb = document.querySelector('nav.tabs button[data-tab="' + saved + '"]'); if (tb) tb.click(); } } catch (e) {}
+  try { var saved = localStorage.getItem("cockpit.tab"), wasReview = saved === "review"; if (wasReview) saved = "plate"; if (saved) { var tb = document.querySelector('nav.tabs button[data-tab="' + saved + '"]'); if (tb) tb.click(); } if (wasReview) showPlateView("confirm"); } catch (e) {}
   if (S.todayView === "week") { var tt = document.querySelector('nav.tabs button[data-tab="today"]'); if (tt) tt.click(); }
   setTodayView(S.todayView, true);
   // cr1#1017 behaviour 8: Today opens without a click, so the visit it is shown counts as opening it.
-  if (document.getElementById("tab-today").className.indexOf(" on") >= 0) markExplained("today");
   document.body.addEventListener("click", function (ev) {
     var pb = ev.target.closest("button[data-prep]");
-    if (pb) { var box = document.getElementById("prep-" + pb.getAttribute("data-prep")); if (box) { var on = box.className.indexOf(" on") < 0; box.className = "prepbox" + (on ? " on" : ""); pb.setAttribute("aria-expanded", on ? "true" : "false"); pb.textContent = on ? "Hide prep" : "Prep"; var pk = pb.getAttribute("data-prepkey"); if (pk) { if (on) S.prepOpen[pk] = true; else delete S.prepOpen[pk]; } } return; }
+    if (pb) { var box = document.getElementById("prep-" + pb.getAttribute("data-prep")); if (box) { var on = box.className.indexOf(" on") < 0; box.className = "prepbox" + (on ? " on" : ""); pb.setAttribute("aria-expanded", on ? "true" : "false"); pb.textContent = on ? "Hide prep" : "Open prep"; var pk = pb.getAttribute("data-prepkey"); if (pk) { if (on) S.prepOpen[pk] = true; else delete S.prepOpen[pk]; } } return; }
     var sv = ev.target.closest("button[data-save]"); if (sv) { onSlotSave(sv); return; }
     var u = ev.target.closest("button[data-undo]"); if (u) { undoChoice(u.getAttribute("data-undo")); return; }
     var c = ev.target.closest("button[data-cact]"); if (c) { onPlateAct(c); return; }
+    var nb = ev.target.closest("button[data-nhact]"); if (nb) { onNoHomePress(nb); return; }
     var bp = ev.target.closest("#board button[data-bmore], #board button[data-bmove], #board button[data-bact]"); if (bp) { onBoardPress(bp); return; }
     var ch = ev.target.closest("button[data-chase]"); if (ch) { var cr = plateRowOf(ch.getAttribute("data-chase")); if (cr) chaseDirect(cr); return; }
     var og = ev.target.closest("button[data-origin]"); if (og) { var oid = og.getAttribute("data-origin"); if (S.originOpen[oid]) delete S.originOpen[oid]; else S.originOpen[oid] = true; renderPlate(); return; }
@@ -3293,17 +3690,20 @@
       if (o && o.kind === "remind") { var sb = t.parentNode && t.parentNode.querySelector ? t.parentNode.querySelector('button[data-save="remind"]') : null; if (sb) sb.textContent = String(t.value).trim() ? "Add reminder" : "Add reminder with no date"; }
     }
   });
-  // A review row's typed value, on the Review tab or in the morning section (cr1#782).
+  // A review row's typed value, under To confirm or in the morning section (cr1#782).
   document.body.addEventListener("input", function (ev) { var lk = ev.target.getAttribute && ev.target.getAttribute("data-listkey"); if (lk) S.listText[lk] = ev.target.value; });
   document.body.addEventListener("input", function (ev) { var id = ev.target.getAttribute && ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
   $("settingsrows").addEventListener("input", function (ev) { var id = ev.target.getAttribute("data-stext"); if (id) { S.settingsText = S.settingsText || {}; S.settingsText[id] = ev.target.value; } });
   $("reviewrows").addEventListener("toggle", function (ev) { if (ev.target.id === "reviewmore") S.reviewMore = ev.target.open; }, true);
-  function showOverdue(on) {
-    $("overduewrap").hidden = !on; $("platewrap").hidden = !!on;
-    $("showOverdue").classList.toggle("on", !!on); $("showAll").classList.toggle("on", !on);
+  // cr1#1286: one view at a time; `showOverdue(false)` is All open, as before.
+  // A function, not a var, so the remembered-tab restore above can call it.
+  function plateViews() { return { late: ["overduewrap", "showOverdue"], confirm: ["confirmwrap", "showConfirm"], wait: ["waitwrap", "showWaiting"], all: ["platewrap", "showAll"] }; }
+  function showPlateView(name) {
+    var pv = plateViews(); if (!pv[name]) name = "all";
+    Object.keys(pv).forEach(function (k) { $(pv[k][0]).hidden = k !== name; $(pv[k][1]).classList.toggle("on", k === name); });
   }
-  $("showAll").addEventListener("click", function () { showOverdue(false); });
-  $("showOverdue").addEventListener("click", function () { showOverdue(true); });
+  function showOverdue(on) { showPlateView(on ? "late" : "all"); }
+  Object.keys(plateViews()).forEach(function (k) { $(plateViews()[k][1]).addEventListener("click", function () { showPlateView(k); }); });
   $("search").addEventListener("input", function () { S.query = this.value; S.projectFilter = null; $("allProjects").hidden = true; renderPlate(); });
   $("allProjects").addEventListener("click", function () { setProjectFilter(null); });
   $("psearch").addEventListener("input", function () { S.pquery = this.value; renderProjects(); });
@@ -3314,6 +3714,7 @@
     var f = $("filtered"); if (f && f.scrollIntoView) f.scrollIntoView({ block: "start" });
   });
   $("pcompany").addEventListener("change", function () { S.pcompany = this.value; renderProjects(); renderPriorities(); });
+  $("tab-projects").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-nhassign]"); if (sel) onNoHomePress(sel); });
   $("peoplesearch").addEventListener("input", function () { S.peoplequery = this.value; renderPeople(); });
   $("tab-projects").addEventListener("click", function (ev) {
     // cr1#1013 part 4: a title opens its thread's card, a heading its work
@@ -3334,7 +3735,7 @@
     var t = ev.target.closest("[data-panel], [data-wpanel], [data-cfind], [data-panel-close]"); if (!t) return;
     ev.preventDefault(); t.click();
   });
-  $("startBtn").addEventListener("click", function () { start(); });
+  $("startBtn").addEventListener("click", function () { goPress(); });
 
   // ---- triggers through the viewer's connector -----------------------------
   function payloadRows(res) {
@@ -3446,7 +3847,7 @@
     if (db) db.doc("status/" + leg).set(S.status[leg]).then(null, function () {});
     // Apply that never started never turns green, so the refresh waiting on it
     // is dropped now rather than after three hours.
-    if (leg === "apply" && refreshArmed) dropArm("Not refreshed: Apply did not start. Press Refresh day when it is sorted.");
+    if (leg === "apply" && refreshArmed) dropArm("Not refreshed: Apply did not start. Press Go when it is sorted.");
     renderLights();
   }
   // Refresh follows Apply only when Apply turns green on THIS run: the arm remembers
@@ -3484,7 +3885,7 @@
   function maybeFireRefresh() {
     if (!refreshArmed || firingRefresh) return;
     var on = new Date(refreshArmedOn || 0);
-    if (isNaN(on) || (Date.now() - on.getTime()) > ARM_MAX_MS) { dropArm("Not refreshed: Apply took too long. Press Refresh day."); return; }
+    if (isNaN(on) || (Date.now() - on.getTime()) > ARM_MAX_MS) { dropArm("Not refreshed: Apply took too long. Press Go."); return; }
     var a = legState("apply") || {};
     if (!a.at || a.at === refreshArmedAt) return;
     if (a.state === "done") {
@@ -3501,10 +3902,10 @@
     }
     else if (a.state === "error" || a.state === "no_answer") {
       disarm();
-      var line = "Not refreshed: Apply did not finish. Press Refresh day when it is sorted.";
+      var line = "Not refreshed: Apply did not finish. Press Go when it is sorted.";
       S.status.refresh = { leg: "refresh", state: "error", line: line, at: nowIso() };
       if (db) db.doc("status/refresh").set(S.status.refresh).then(null, function () {});
-      renderLights(); banner("Apply did not finish, so the day was not refreshed. Press Refresh day when it is sorted.", true);
+      renderLights(); banner("Apply did not finish, so the day was not refreshed. Press Go when it is sorted.", true);
     }
   }
   function beginRun(stamp, full) {
@@ -3517,6 +3918,40 @@
     var legs = PARTS[part], stamp = nowIso();
     if (part === "confirm") { armRefreshAfterApply(); legs = ["apply"]; }
     if (!SEQ.startedAt || !SEQ.full || runProgress() === LEGS.length) beginRun(stamp, false);
+    legs.forEach(function (leg, i) { setTimeout(function () { fireLeg(leg, stamp).then(function () { banner("Started " + leg + "."); }, function (e) { failLeg(leg, e); banner(errLine(e, "Could not start " + leg), true, errText(e)); }); }, i * 250); });
+  }
+  // cr1#1284 (owner's ruling): Go is the one round button. The day's first
+  // press is the morning (`start`); every later press refreshes the day and
+  // runs prep. The day counts as started once its record holds the morning's
+  // start (any tab, any device) or this page started a full run today.
+  function dayStarted() {
+    var d = measureDay(new Date()), m = S.measure && S.measure[d];
+    var at = SEQ.full && SEQ.startedAt ? new Date(SEQ.startedAt) : null;
+    var recorded = !!(m && m.morning && m.morning.started_at) || !!(at && !isNaN(at) && measureDay(at) === d);
+    // A morning whose inbox and Apply both failed or never started is not a
+    // started day: the next Go runs the morning again (review).
+    return recorded && ["inbox", "apply"].some(function (leg) {
+      var st = legState(leg), t = new Date(st.at || "");
+      return (st.state === "done" || st.state === "running" || st.state === "waiting") && !isNaN(t) && measureDay(t) === d;
+    });
+  }
+  function goPress() {
+    if (!wired || SEQ.starting) return;
+    if (!dayStarted()) { start(); return; }
+    refreshDay();
+  }
+  function refreshDay() {
+    // The refresh never reads the book while Apply writes it (cr1#679): with
+    // Apply running it waits on Apply, the same arm Apply's own press sets.
+    var legs = [], stamp = nowIso();
+    if (!isRunning("prep")) legs.push("prep");
+    // A live arm already owns the next refresh: firing one here too would
+    // run it twice, or ahead of an Apply that has not lit yet (review).
+    var applying = isRunning("apply"), waits = applying && !refreshArmed;
+    if (!applying && !refreshArmed && !isRunning("refresh")) legs.push("refresh");
+    if (!legs.length && !waits) { banner("Already refreshing. The lights say when it is done."); return; }
+    if (!SEQ.startedAt || !SEQ.full || runProgress() === LEGS.length) beginRun(stamp, false);
+    if (waits) armRefreshAfterApply();
     legs.forEach(function (leg, i) { setTimeout(function () { fireLeg(leg, stamp).then(function () { banner("Started " + leg + "."); }, function (e) { failLeg(leg, e); banner(errLine(e, "Could not start " + leg), true, errText(e)); }); }, i * 250); });
   }
   // Every Start runs the two chats that survive the Hub (owner ruling,
@@ -3562,8 +3997,8 @@
     }).then(function () {
       finish(); topline();
       if (started) { banner("Started. The lights fill in as each part finishes; the day refreshes once Apply is done."); }
-      else banner("Nothing started. The lights say why; press Start to try again.", true);
-    }, function (e) { finish(); banner(errLine(e, "Start did not go through"), true, errText(e)); });
+      else banner("Nothing started. The lights say why; press Go to try again.", true);
+    }, function (e) { finish(); banner(errLine(e, "Go did not go through"), true, errText(e)); });
   }
 
   // ---- boot ----------------------------------------------------------------
@@ -3574,10 +4009,11 @@
       db = d; if (!db) { dbMissing = true; clearTimeout(loadTimer); renderWaiting(); banner("This view cannot reach the page's data, so choices cannot be saved here.", true); return; }
       // One banner when the data stream ends, however many lists were listening.
       var errShown = false;
-      var onErr = function (e) { if (errShown) return; errShown = true; banner("The page's data stream ended. Reload to reconnect.", true, errText(e)); };
+      var onErr = function (e) { statusReady = measureReady = true; if (errShown) return; errShown = true; banner("The page's data stream ended. Reload to reconnect.", true, errText(e)); };
       ["today", "plate", "inbox", "projects"].forEach(function (k) { db.doc("feed/" + k).onSnapshot(function (snap) { S[k] = snap.exists ? snap.data() : null; if (!snap.metadata.fromCache) { dbReady = true; clearTimeout(loadTimer); } renderAll(); }, onErr); });
-      db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); S.status = st; renderLights(); maybeFireRefresh(); }, onErr);
+      db.collection("status").onSnapshot(function (snap) { var st = {}; snap.docs.forEach(function (d) { st[d.id] = d.data(); }); S.status = st; statusReady = true; renderLights(); maybeFireRefresh(); }, onErr);
       db.collection("choices").onSnapshot(function (snap) { S.choices = snap.docs.map(function (d) { return d.data(); }).filter(withinWindow); renderAll(); }, onErr);
+      db.doc("feed/brief").onSnapshot(function (snap) { S.brief = snap.exists ? snap.data() : null; renderBriefTab(); }, onErr);
       db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
       db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
       db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); }, onErr);
@@ -3588,7 +4024,7 @@
       db.doc("config/refresh_arm").onSnapshot(function (snap) { setArm(snap.exists ? snap.data() : null); maybeFireRefresh(); }, onErr);
       // cr1#1017: the page's own measure, the last seven days of it; this load is one open.
       var since = new Date(); since.setDate(since.getDate() - MEASURE_DAYS);
-      db.collection("measure").where("day", ">=", measureDay(since)).onSnapshot(function (snap) { var m = {}; snap.docs.forEach(function (d) { var x = d.data(); m[x.day || d.id] = x; }); S.measure = m; renderMeasure(); }, onErr);
+      db.collection("measure").where("day", ">=", measureDay(since)).onSnapshot(function (snap) { var m = {}; snap.docs.forEach(function (d) { var x = d.data(); m[x.day || d.id] = x; }); S.measure = m; measureReady = true; renderMeasure(); renderLights(); }, onErr);
       measureOpen();
     });
     window.claude.use("mcp").then(function (m) {

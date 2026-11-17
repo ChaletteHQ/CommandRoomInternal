@@ -762,6 +762,23 @@ def _note_capture_once(holder: str, split: dict) -> None:
     })
 
 
+#: cr1#1005 part 4: where the last append in this process really landed, when
+#: it was routed to this computer's own log (cr1#1061), else None. Read by the
+#: append door so its answer names the file the rows are in.
+_LAST_APPEND_ROUTE: dict[str, Any] = {"target": None}
+
+
+def reset_append_route() -> None:
+    """Clear the last append's route record (the append door calls it first)."""
+    _LAST_APPEND_ROUTE["target"] = None
+
+
+def last_append_route() -> Any:
+    """The file the last append in this process was routed to, or None when
+    it wrote the file it was handed."""
+    return _LAST_APPEND_ROUTE.get("target")
+
+
 def reset_capture_once() -> None:
     """Clear the last append's refusal record (cr1#1005). The append door
     calls it before an append, so the record it then reads back is that
@@ -1221,6 +1238,7 @@ def atomic_append_jsonl(
             own_route = _cl.route(path)
             if own_route is not None:
                 path = Path(own_route["target"])
+                _LAST_APPEND_ROUTE["target"] = str(path)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 own_floor = _cl.merged_seq_floor(Path(own_route["live"]), path)
             else:

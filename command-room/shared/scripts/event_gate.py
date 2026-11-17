@@ -31,11 +31,12 @@ this module adds the identity + validation layer on top:
      readable id field is REJECTED (EventGateError). This exact silent
      failure produced 291 dead-letter closures in the live substrate.
   5. Reminder-lane hard rules (v4.6.0 W4a) — `reminder` / `reminder_updated` /
-     `reminder_cleared` events REQUIRE `data.origin == "user_explicit"`
+     `reminder_cleared` / `reminder_deleted` (cr1#1221) events REQUIRE `data.origin == "user_explicit"`
      (unconditional reject on anything else: no skill, sweep, or scheduled
      task may ever mint a reminder — reminders exist because the USER said
      "remind me"). `reminder` gets `data.id` minted as `rem_<ULID>` when the
-     caller didn't set one; `reminder_updated` / `reminder_cleared` without a
+     caller didn't set one; `reminder_updated` / `reminder_cleared` /
+     `reminder_deleted` without a
      readable `data.reminder_id` are dead letters and reject. Builders live in
      shared/scripts/reminders.py.
   6. Schema-enum validation for ALL event families — the type must be
@@ -114,7 +115,8 @@ _KIND_DEFAULT = "promise"
 # create one. The gate enforces both identities unconditionally (like the
 # id-less-closure rule): origin must be the literal below, and mutation events
 # must reference the reminder they touch.
-REMINDER_TYPES = frozenset({"reminder", "reminder_updated", "reminder_cleared"})
+REMINDER_TYPES = frozenset({"reminder", "reminder_updated", "reminder_cleared",
+                            "reminder_deleted"})  # cr1#1221
 REMINDER_ORIGIN = "user_explicit"
 
 # Crockford base32 (no I, L, O, U) — standard ULID alphabet.

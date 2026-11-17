@@ -5381,7 +5381,9 @@ function crUpdateCounter() {
     return;
   }
   if (reasonEl) { reasonEl.textContent = ''; reasonEl.style.display = 'none'; }
-  applyBtn.disabled = (picks.length === 0) && !orphan;
+  // cr1#1282: a press still waiting for the chat holds Apply, so a row
+  // ticked meanwhile cannot open a second, overlapping send.
+  applyBtn.disabled = ((picks.length === 0) && !orphan) || crSHeld();
 }
 
 // WIDGETSEND1 — THE SHARED DISPATCHER. LOOK THE STAGE UP, THEN CALL IT ONCE.
@@ -5414,6 +5416,17 @@ function crUpdateCounter() {
 // (`crSendOk`), so a card that failed once and then worked stops telling a
 // customer to paste something that already ran.
 //
+// A CHAT THAT IS NOT CONNECTED YET IS WAITED FOR (cr1#1282). Apply sometimes
+// ran at once and sometimes handed over the paste line, and a later click ran
+// it: the ladder looked for `sendPrompt` once, at the instant of the click.
+// Now, when no stage has it, the card says it is waiting (`crSf3`), holds
+// Apply, and looks again every quarter second for `crSwMs`. The first stage
+// that appears is called once, as above. Only the LOOKUP repeats, never a
+// call, and one wire has one timer at most (`crSq`), so a second press while
+// it waits cannot send twice. When the window passes with nothing to call,
+// the paste line shows with the reason (`crSf2`). A chat that is connected at
+// the press is still called inside the click itself.
+//
 // The block from the failure-message constant through the closing brace of
 // crSendPrompt is carried BYTE-FOR-BYTE by skills/command-room-onboarding/
 // references/
@@ -5423,7 +5436,14 @@ function crUpdateCounter() {
 // for out of the widget-diet budget, which is why the two node ids are short.
 const crSf0='This card could not reach the chat. Copy the line below and paste it.';
 const crSf1='Sent. If nothing shows up in the chat in a moment, paste the line below.';
+const crSf2=' Why: the chat did not connect to this card within 15 seconds.';
+const crSf3='Waiting for the chat to be ready for your choices.';
+const crSwMs=15000;
+const crSq=new Map();
 function crSEl(h,i,g){let e=document.getElementById(i);if(!e){e=document.createElement(g);e.id=i;h.appendChild(e);}return e;}
+function crSApply(x){const b=document.getElementById('cr-apply');if(b)b.disabled=x;}
+function crSHeld(){return crSq.size>0;}
+function crSWait(){const d=document;crSEl(d.querySelector('.cr-footer')||d.body,'cr-sf','div').textContent=crSf3;crSApply(true);}
 function crSendFailed(t,c){const d=document,h=d.querySelector('.cr-footer')||d.body;
 const l=crSEl(h,'cr-sf','div');l.textContent=c;
 const w=crSEl(h,'cr-sw','textarea');w.readOnly=true;w.value=t;
@@ -5432,9 +5452,11 @@ const m=()=>{l.textContent=c+' Copied.';};
 try{w.select();if(d.execCommand('copy'))return m();}catch(e){}
 try{navigator.clipboard.writeText(t).then(m,()=>{});}catch(e){}}
 function crSendPrompt(t,p){let c=crSf0;document.querySelectorAll('#cr-sf,#cr-sw').forEach(e=>e.remove());
+const q=crSq.get(t),s=q?q.s:Date.now();if(q){clearTimeout(q.h);crSq.delete(t);crSApply(false);}
 for(const g of[()=>window,()=>window.parent]){
 let o;try{o=g();}catch(e){continue;}
 if(o&&typeof o.sendPrompt==='function'){try{o.sendPrompt(t);return;}catch(e){c=crSf1;break;}}}
+if(c===crSf0){if(Date.now()-s<crSwMs){crSq.set(t,{s:s,h:setTimeout(()=>crSendPrompt(t,p),250)});crSWait();return;}c+=crSf2;}
 crSendFailed(p,c);}
 
 // WIDGETSEND1 F2 — THE LINE THE CARD HANDS YOU TO PASTE (REVIEW_WIDGETSEND1

@@ -153,11 +153,17 @@ _OK_STATUSES = frozenset({
     #                 tab's No on a craft rule: the file rewritten and the
     #                 proposal resolved (review of cr1#1171)
     "edited", "deleted", "saved", "linked", "not_relevant", "kept",
+    #   assigned      cockpit_helpers._assign_home, a Hub "Assign to" press:
+    #                 one reclassification giving the promise a home (cr1#1289)
+    "assigned",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
     "already_resolved", "already_closed", "already_inactive", "duplicate_open",
     "suppressed_cooldown", "already_merged", "noop",
+    # cr1#1289: a Hub "Assign to" press already written, or a promise that
+    # already has a home; nothing written either way.
+    "already_written", "has_home",
     # WATCHGATE: the row was already parked, so this answer wrote nothing.
     # An honest no-op, not a failure and not a second park.
     "already_watching",

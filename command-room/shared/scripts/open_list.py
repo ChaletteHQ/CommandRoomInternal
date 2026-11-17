@@ -124,7 +124,8 @@ IGNORED_TYPES = frozenset(IGNORED_TYPES) | {"brief_state"}
 
 #: The overdue number, in words. Kept beside `in_headline_overdue`, the one
 #: function that applies it.
-HEADLINE_RULE = ("open, confirmed, not observed only, not snoozed, due "
+HEADLINE_RULE = ("open, confirmed, not observed only, not snoozed, not "
+                 "waiting on an event, due "
                  "before today in the workspace's timezone, whichever way "
                  "it is owed; a step of a promise counts on its parent")
 SORTS = ("due", "age", "opened")
@@ -301,19 +302,24 @@ def _direction(ev: dict, owner: str) -> tuple[str, bool, str]:
 # ---------------------------------------------------------------------------
 
 def _snoozes(ws: Path, now: datetime) -> dict:
-    """{target id: when its live snooze ends}, the latest end per row."""
+    """{commitment id: when its live snooze ends}, the latest end per row:
+    `mute_ledger.item_snoozes`, the one reading every surface shares, so a
+    mute that names the item by its seq hides it here too (cr1#1292)."""
     from events_io import load_events_owner_scoped
-    from mute_ledger import live_mutes
-    out: dict = {}
+    from mute_ledger import item_snoozes
     events = load_events_owner_scoped(str(ws))[0]
-    for m in live_mutes(events, now.isoformat()):
-        tgt = m.get("target_id")
-        if tgt in (None, ""):
-            continue
-        end = str(m.get("expires") or "")
-        if end > out.get(str(tgt), ""):
-            out[str(tgt)] = end
-    return out
+    return item_snoozes(events, now.isoformat())
+
+
+def _waits(ws: Path, now: datetime, events=None) -> dict:
+    """{commitment id: the event it waits on}: `commitment_wait.item_waits`,
+    the one reading the plate and the Later writer share (cr1#1291).
+    `events` is the owner's ledger when the caller already holds it."""
+    from commitment_wait import item_waits
+    if events is None:
+        from events_io import load_events_owner_scoped
+        events = load_events_owner_scoped(str(ws))[0]
+    return {cid: w["wait_on"] for cid, w in item_waits(events, now.isoformat()).items()}
 
 
 def _unresolved_names(d: dict) -> dict:
@@ -328,6 +334,30 @@ def _unresolved_names(d: dict) -> dict:
         if names:
             out[field] = names
     return out
+
+
+#: cr1#1289: the mark on a `reclassification` the Hub's "Assign to" writes
+#: (`cockpit_helpers.apply_commitment_choices`, verb `assign`). The list
+#: honours only these when it places a promise on a thread, so no older
+#: correction moves a row it never moved before.
+HOME_ORIGIN = "hub_assign"
+
+
+def homes_given(events) -> dict:
+    """{promise id: thread id} from the Hub's own "Assign to" presses
+    (`HOME_ORIGIN` reclassifications), the newest per promise. Pure."""
+    out: dict = {}
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("type") != "reclassification":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        cid = str(d.get("commitment_id") or "")
+        if d.get("origin") != HOME_ORIGIN or not cid:
+            continue
+        seq = ev.get("seq") if isinstance(ev.get("seq"), int) else -1
+        if seq >= out.get(cid, ("", -2))[1]:
+            out[cid] = (str(ev.get("primary_thread_id") or ""), seq)
+    return {cid: tid for cid, (tid, _s) in out.items()}
 
 
 def build_rows(ws: Path, now: Optional[datetime] = None,
@@ -350,6 +380,10 @@ def build_rows(ws: Path, now: Optional[datetime] = None,
         n_steps[pid] = n_steps.get(pid, 0) + 1
     owner = _owner_id(ws)
     snoozed = _snoozes(ws, now)
+    from events_io import load_events_owner_scoped
+    _owner_events = load_events_owner_scoped(str(ws))[0]
+    homes = homes_given(_owner_events)
+    waiting = _waits(ws, now, _owner_events)
     rows = []
     for ev in top:
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
@@ -364,6 +398,8 @@ def build_rows(ws: Path, now: Optional[datetime] = None,
         opened = at.astimezone(tzinfo).date() if at else None
         thread = ev.get("primary_thread_id") or d.get("primary_thread_id") \
             or d.get("thread_id") or ""
+        # A home the owner gave it on the Hub (cr1#1289) wins.
+        thread = homes.get(cid) or thread
         rows.append({
             "id": cid,
             "title": row_title(d.get("title"), d.get("summary"))[:240],
@@ -380,6 +416,8 @@ def build_rows(ws: Path, now: Optional[datetime] = None,
             "due": due.isoformat() if due else "",
             "opened": opened.isoformat() if isinstance(opened, date) else "",
             "snooze_until": snoozed.get(cid, ""),
+            # cr1#1291: the event it waits on; never counted late meanwhile.
+            "waiting_on": waiting.get(cid, ""),
             "steps": n_steps.get(cid, 0),
             # The pointer and the step that wrote it ride along, so a page
             # can name the source in a word without reading the log again
@@ -509,7 +547,8 @@ def in_headline_overdue(row: dict, today: date, now: datetime) -> bool:
     """THE overdue rule (`HEADLINE_RULE`). Every surface's overdue number is
     the count of rows this returns True for."""
     return (bool(row.get("confirmed")) and not row.get("observed")
-            and not is_snoozed(row, now) and is_late(row, today))
+            and not is_snoozed(row, now) and not row.get("waiting_on")
+            and is_late(row, today))
 
 
 def verdict(ws, now_iso=None, *, tzinfo=None) -> dict:
