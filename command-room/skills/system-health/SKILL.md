@@ -146,7 +146,9 @@ The verdict is computed where the data is, and the answer is one JSON object:
 `task_watchdog.health_verdict(ws, task_records=records, backend=backend)` — plus
 `stale_prompts` (`schedule_refresh.prompt_body_drift(records,
 plugin_version=<the installed version>)` — task ids with a BODY drift; this is
-the list that earns the one line), `stale_stamps`
+the list that earns the one line), `unchecked_prompts`
+(`schedule_refresh.unchecked_prompts(records)` — registered tasks whose listing
+gave the prompt as a file that could not be read; never counted current), `stale_stamps`
 (`task_watchdog.check_prompt_versions(records, installed)`, the diagnostic stamp
 read — informational, never earns a line) and `dark_surfaces`.
 
@@ -158,6 +160,8 @@ computer's copies of the same chats never decide a task's last-run time or any
 count (the switched-off ones are named once, in `info_lines`). On a cloud seat
 each counted entry of `reports` also carries `stamp_line`: the app's own
 last-run time for that task and its next run, or that the app holds it switched off (Step 3 renders them).
+
+cr1#1502: the ONE exception to the next rule: a record that carries a `path` and no `prompt` (the old desktop app's scheduled-tasks listing gives a `path` to the task's SKILL.md, never the text) — Read the file at that `path`, set the record's `prompt` to its text, and drop `path` before the call; the door refuses a path argument, and without the text the prompt compare skips the task and calls it current. Note any task whose file could not be read.
 
 cr1#931: never take a field out of a record, `folders` least of all. The door
 lets this helper's `task_records` carry each record's computer folder
@@ -261,6 +265,8 @@ When any `late` problem line renders, you may add the generic self-serve list be
 > *"I can't tell from here which applies, but the most common reasons a task stops running: (1) the computer was asleep or the lid closed when it was due — it runs at the next chance; (2) your Claude usage limit was reached — it resets on its own, check the usage meter; (3) access to one of your tools — email, calendar, Slack — needs to be re-approved: open the chat once and approve any prompt; (4) after a plugin update, the Claude app sometimes needs a full quit-and-reopen."*
 
 If `stale_prompts` is non-empty — that list is `schedule_refresh.prompt_body_drift`, the task ids whose registered bootloader BODY differs from the one this plugin composes today once the diagnostic stamp is normalized out — add ONE line total — `schedule_refresh.stale_prompt_notice(drift)`, verbatim (CUT-PLATE, 2026-09-06; the same sentence the Monday cleanup note says, and the update bridge's until cr1#970): *"Your scheduled chats are still running the setup from an older Command Room. Type `set up command room schedules` once and they'll be brought current — nothing else changes."* (The old wording sent the customer to `update command room`, which is the step that had already failed to reach the chats on the v5.28.0 attended test; the exact phrase that refreshes a registered prompt in place is `set up command room schedules`.) `stale_stamps` never earns this line: a stamp-only difference is not drift (fix round 1, REVIEW F-1 — Step 1.C leaves the stamp alone, so a stamp-keyed line would repeat on every check of every release whose bootloader body did not change, and the phrase could never clear it).
+
+If `stale_prompts` is empty but a task's prompt file could not be read (noted above, or named in `unchecked_prompts`), say that same one line once: that prompt cannot be called current, and `set up command room schedules` reads it in and refreshes it. Never report it as current.
 
 ### Step 3b — full self-report scope (LB1, MANDATORY on a health check — FS-09)
 

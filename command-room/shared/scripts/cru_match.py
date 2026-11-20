@@ -3062,6 +3062,57 @@ def _sender_tokens_from_workspace(workspace_root, sender_person_id) -> set:
         return set()
 
 
+def _file_is_item(open_commitments, body, attachment_names, sender_person_id,
+                  recipient_set, recipient_name_tokens, workspace_root=None):
+    """cr1#980 — the id of the one open row a sent message's FILE delivers,
+    else None. Pure, never raises.
+
+    Graded by `delivery_evidence.delivery_strength` over the message's own
+    words and its file names (the inbound rule of cr1#764; the subject is
+    left out there because a reply echoes it, and is left out here for the
+    same reason). Only rows the sender owes these recipients compete, by the
+    same three tests the matcher's candidacy gate uses. The best grade wins
+    only when it is above zero and above every other row's: no names, no fit,
+    or a tie (two rows the file fits equally, or names that differ by one
+    letter, which the grader does not tell apart) all answer None, so the
+    title path proposes instead of closing (owner ruling 2026-11-19)."""
+    names = [str(n) for n in (attachment_names or ()) if str(n or "").strip()]
+    if not names:
+        return None
+    try:
+        from commitment_parties import (counterparty_ids as _cp_ids,
+                                        counterparty_names as _cp_names)
+        from delivery_evidence import asks_for_delivery, delivery_strength
+        grades: dict = {}
+        for ev in cru_eligible(open_commitments):
+            if _commitment_field(ev, "owner_id") != sender_person_id:
+                continue
+            d = ev.get("data") or {}
+            pids = set(ev.get("person_ids") or []) | set(d.get("person_ids") or [])
+            pids.update(_cp_ids(d))
+            title = _commitment_field(ev, "title") or ""
+            # RAW on purpose (F-28 sanctioned): the same spelling the Path 1
+            # candidacy gate reads, so every row the matcher can score also
+            # competes for the file. Widening only adds rivals, which can only
+            # turn a close into a proposal (review of cr1#980).
+            cp_names = list(_cp_names(d))
+            if not (recipient_set & pids
+                    or recipient_name_tokens & set(_tokenize(title))
+                    or recipient_name_tokens & set(_tokenize(" ".join(cp_names)))):
+                continue
+            parties = cp_names + sorted(recipient_name_tokens)
+            grade = (delivery_strength(str(body or ""), names, title, parties)
+                     if asks_for_delivery(title, parties) else 0)
+            cid = _commitment_id(ev)
+            grades[cid] = max(grade, grades.get(cid, 0))
+        if not grades:
+            return None
+        best = max(grades.values())
+        winners = [cid for cid, g in grades.items() if g == best]
+        return winners[0] if best > 0 and len(winners) == 1 else None
+    except Exception:  # noqa: BLE001 - what cannot be graded proves nothing
+        return None
+
 
 def match_send_to_commitments(
     *,
@@ -3080,6 +3131,7 @@ def match_send_to_commitments(
     send_thread_ref: Optional[str] = None,
     send_ts=None,
     diagnostics: Optional[dict] = None,
+    attachment_names: Optional[Iterable[str]] = None,
 ) -> list[dict]:
     """Path 1 — score an outbound send against open commitments.
 
@@ -3147,6 +3199,14 @@ def match_send_to_commitments(
     signal A dead. Combined with a counterparty receipt and completion
     language, it promotes a `no_action` candidate straight to auto_resolve:
     the send IS the fulfillment on this path, and the deliverable rode along.
+
+    `attachment_names` (cr1#980) — the file names the connector reported for
+    THIS message. On the title path a file proves a close only when it IS the
+    item: `delivery_evidence` grades it above zero for this row and above
+    every other open row owed to the same recipients (the inbound rule of
+    cr1#764). No names, or a tie, proves nothing, so the row is a proposal.
+    Each result carries the finding as `attachment_is_item`, which the
+    caller's moderate promotion reads as well (owner ruling 2026-11-19).
 
     `send_thread_ref` (signal B) — the ref of the CONVERSATION this message
     sits in (`gmail:<thread_id>`, canonicalized by the caller, exactly like
@@ -3240,6 +3300,13 @@ def match_send_to_commitments(
     # fire but AFTER the message sails past it. `None` → inert.
     evidence_at = _normalize_fire_start(send_ts, "send_ts")
     _promise_tz = promise_tz(workspace_root)  # cr1#744: once per pass
+    # cr1#980 — which open row, if any, the FILE is. Graded once per message,
+    # over every open row owed to these recipients (fenced rows included: a
+    # row the fences drop still competes for the file, the cautious side).
+    file_is = _file_is_item(open_commitments, body, attachment_names,
+                            sender_person_id, recipient_set,
+                            recipient_name_tokens, workspace_root,
+                            ) if has_attachment else None
 
     for ev in cru_eligible(open_commitments):  # Stage D: tasks never enter CRU
         # Layer 1 — a send can never corroborate a conclusion about an item
@@ -3400,10 +3467,14 @@ def match_send_to_commitments(
         # mail whose subject happens to echo a row, and no ruling has been
         # made about that door. Widening this bar to cover it would move a
         # number nobody agreed to move; it is written into the record instead.
+        # cr1#980 (owner ruling 2026-11-19): the attachment half of the proof
+        # is "the file is THIS item", never "a file rode along" — a shared
+        # word plus any file closed the wrong row.
+        attachment_is_item = bool(file_is) and file_is == _commitment_id(ev)
         if rec == "auto_resolve" and not basis and (
                 question_shaped
                 or (require_title_proof
-                    and not (has_completion or bool(has_attachment)))):
+                    and not (has_completion or attachment_is_item))):
             rec = "pending_review"
             if isinstance(diagnostics, dict):
                 key = ("title_question_downgraded" if question_shaped
@@ -3479,6 +3550,7 @@ def match_send_to_commitments(
             "matched_counterparty_ids": matched_cp_ids,
             "matched_counterparty_names": matched_cp_names,
             "close_basis": basis,
+            "attachment_is_item": attachment_is_item,
         })
 
     # SENTMATCH — ONE send, ONE delivery. A single attachment cannot be the
@@ -4818,7 +4890,6 @@ def load_open_review_proposals(
     ).isoformat() + "Z"
 
     review_proposed: list[dict] = []
-    closed_commitment_ids: set[str] = set()
     review_closed_for_commitment: set[str] = set()
 
     # EVGUARD — the hand-rolled loop that used to live here caught only
@@ -4827,53 +4898,61 @@ def load_open_review_proposals(
     # staff-meeting surface down with it (Sub-bug #14b, second half). The
     # canonical loader handles BOTH shapes. `since_ts=None` = full history.
     events, _skipped = load_events_defensively(path, since_ts=None)
-    for ev in events:
+    # cr1#1478 — closes are read IN ORDER, the way the open-commitment loader
+    # reads them (`closure_index`): a close is the reason a proposal is moot
+    # only when it landed after the proposal, or when the item is closed now.
+    # The order-blind set this replaced kept every item ever closed, so a
+    # proposal on an item the owner had reopened never read as open, and each
+    # new piece of evidence wrote another one.
+    from closure_index import build_closure_index
+    closure = build_closure_index(events)
+    proposal_at: dict = {}  # id(proposal event) -> its file index
+    for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
         d = ev.get("data") or {}
         if et == "commitment_review_proposed":
             if event_time(ev) >= cutoff_iso:
                 review_proposed.append(ev)
-        elif et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
-            cid = (
-                d.get("commitment_id")
-                or d.get("thread_id")
-                or d.get("id")
-                or ev.get("commitment_id")
-                or ev.get("id")
-            )
-            if cid:
-                closed_commitment_ids.add(cid)
+                proposal_at[id(ev)] = idx
         elif et == "commitment_review_dismissed":
             cid = d.get("commitment_id") or ev.get("commitment_id")
             if cid:
                 review_closed_for_commitment.add(cid)
 
     # POLICY1-A D4/D15 — a proposal a later RE-SCORE superseded
-    # (`supersedes_seq`) or a seq-addressed RETRACT dismissed is closed too.
-    # Read through the policy ledger (order-aware), so this reader and the
-    # plate's P7 fold cannot fork on what "open" means. A seq-addressed
-    # dismissal closes ONE proposal; only a legacy (seq-less) dismissal keeps
-    # closing every proposal on the commitment (the set above).
+    # (`supersedes_seq`), a seq-addressed dismissal named, or a legacy
+    # (seq-less) dismissal written AFTER it is closed. Read through the
+    # policy ledger (order-aware), so this reader and the plate's P7 fold
+    # cannot fork on what "open" means. cr1#1499: this reader used to close
+    # every proposal on an item with a legacy dismissal, before or after it,
+    # so no later question on that item ever read as open and every dedup
+    # wrote another. The order-blind set now speaks only for a proposal the
+    # ledger cannot see (one with no seq of its own).
     _closed_seqs = _policy.closed_proposal_seqs(events)
-    _seq_addressed_dismissals = {
-        (ev.get("data") or {}).get("commitment_id")
-        for ev in events
-        if (ev.get("type") or ev.get("event") or "") == "commitment_review_dismissed"
-        and isinstance((ev.get("data") or {}).get("proposal_seq"), int)
-    }
 
     out: list[dict] = []
     for ev in review_proposed:
         cid = (ev.get("data") or {}).get("commitment_id")
         if not cid:
             continue
-        if cid in closed_commitment_ids:
-            # Underlying commitment already resolved by another path — review is moot
+        cseq = (ev.get("data") or {}).get("commitment_seq")
+        at = proposal_at.get(id(ev), -1)
+        if (closure.is_closed(cid, cseq)
+                or closure.last_close_at(cid, cseq) > at
+                or closure.last_reopen_at(cid, cseq) > at):
+            # The item is closed now, a close landed after this proposal, or
+            # the proposal belongs to a closed spell the owner has since
+            # reopened: the question is moot. Only a proposal written after
+            # the latest reopen asks about the item as it is now (cr1#1478).
             continue
-        if ev.get("seq") in _closed_seqs:
+        # cr1#1499 review: the seq as the ledger reads it (a seq written as
+        # text is the same proposal).
+        pseq = _policy._seq_of(ev)
+        if pseq in _closed_seqs:
             continue
-        if cid in review_closed_for_commitment and cid not in _seq_addressed_dismissals:
-            # User already skipped this review (legacy, seq-less dismissal)
+        if pseq is None and cid in review_closed_for_commitment:
+            # A proposal with no seq is not on the ledger: the old reading
+            # (the owner skipped this item's question) still answers it.
             continue
         out.append(ev)
 

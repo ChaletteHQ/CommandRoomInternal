@@ -1960,8 +1960,19 @@ def plan_fact_closes(workspace_root, *, now_iso=None, events=None,
             cap = policy._parse_ts(event_time(row))
             if cap is None:
                 continue
-            parties = {p for p in policy._row_party_ids(row) if p and p != uid}
+            # cr1#1488: the other side, read as calendar close reads it
+            # (cr1#1486), not every id on the row: a meeting capture lists
+            # the attendees, so a win for another attendee's company, or a
+            # delegated owner's, closed an item owed to someone else.
+            ids, named = policy._row_calendar_parties(row, uid)
+            parties = {p for p in ids if p and p != uid}
             if not parties:
+                continue
+            if not named and len(parties) > 1:
+                # Decided under the owner's word of 2026-11-19 (cr1#1488): no
+                # other side named and several people on file, so any one of
+                # them is a guess. A deal closes nothing here and asks nothing:
+                # the deal leg stays ask-free (owner ruling 2026-11-07, #756).
                 continue
             orgs = {orgs_by_person.get(p) for p in parties if orgs_by_person.get(p)}
             for ev in deals:

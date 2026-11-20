@@ -1465,8 +1465,9 @@ def fold_proposals_and_hints(events: list, *, now_iso: str) -> tuple[dict, dict]
                   is POLICY1-A's `newest_open_proposals`): not superseded by
                   a later re-score of the same (item, source); not closed by
                   a `commitment_review_dismissed` NAMING its seq (a legacy,
-                  seq-less dismissal still closes every proposal on that
-                  commitment); and its target still open. A proposal with no
+                  seq-less dismissal closes the proposals on that
+                  commitment written before it, cr1#1499); and its target
+                  still open. A proposal with no
                   readable `seq` is skipped by this fold (the gate stamps
                   seq, so only a hand-built fixture can hit that).
 

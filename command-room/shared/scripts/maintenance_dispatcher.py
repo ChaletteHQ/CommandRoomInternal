@@ -4264,7 +4264,11 @@ def _sweep_steps(pair: str) -> str:
         "(`no session-transcript tool in this run`): the receipt lands "
         "skipped, nothing failed. With a tool that errored, the same, but "
         "`fetch_blocked` says why instead: the receipt lands blocked. Either "
-        "way the same window is read next time (cr1#740). "
+        "way the same window is read next time (cr1#740). A run that read "
+        "with the tool names it in `transcript_tool`, even when no session "
+        "was active: an empty read that names no tool lands skipped "
+        "(cr1#1489: a cloud run has no such tool, and its empty read used to "
+        "move the window past chats it never opened). "
         "WRITE (the items in a JSON file in this session's own scratch):\n"
         + _m_line(pair, "run_writer",
                   '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
@@ -4273,7 +4277,8 @@ def _sweep_steps(pair: str) -> str:
         "      the file holds {\"fetch_blocked\": <null, or why the session "
         "read errored>, \"items\": [...], \"maintenance_window\": "
         "<the plan's>, \"sessions_scanned\": <n>, \"skip_reason\": <null, or "
-        "why this run has no session tool>, \"window_desc\": <the "
+        "why this run has no session tool>, \"transcript_tool\": <the name of "
+        "the session tool this run read with, or null>, \"window_desc\": <the "
         "plan's>}. Score it with score_door_job (SCORE below).\n"
     )
 

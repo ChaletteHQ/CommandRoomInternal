@@ -268,7 +268,7 @@ by months, repeatedly, so it is checked rather than assumed.
 Build the two lists exactly as the daily passes do:
 
 - `sent_messages`: `{message_id, ts, thread_id, has_attachment,
-  recipient_person_ids, recipient_names, subject, body}`
+  attachment_names, recipient_person_ids, recipient_names, subject, body}`
 - `inbound_messages`: `{message_id, ts, sender_person_id, subject, body,
   thread_id, has_attachment}`
 

@@ -892,12 +892,19 @@ def fold_proposals(events: Iterable[dict]) -> dict:
 
 
 def closed_proposal_seqs(events: Iterable[dict]) -> set:
-    """Seqs of proposals that a supersession or a seq-addressed dismissal
-    closed — the two D4/D15 closes legacy readers cannot see. Order-aware."""
+    """Seqs of proposals that a supersession or a dismissal closed (a
+    seq-addressed one, or a legacy one written after the proposal).
+    Order-aware. A close of the item itself is not counted here: readers
+    read that through the closure index.
+
+    cr1#1499: read off `open` rather than `dismissed_by`, so a legacy
+    dismissal row with no seq of its own (older rows on disk) still closes
+    the proposals before it: it leaves `dismissed_by` None."""
     ledger = fold_proposals(events)
     return {s for s, r in ledger["by_seq"].items()
             if r["superseded_by"] is not None
-            or (r["dismissed_by"] is not None)}
+            or r["dismissed_by"] is not None
+            or (not r["open"] and not r["target_closed"])}
 
 
 def proposal_state(ledger: dict, commitment_id, source_ref) -> Optional[dict]:
@@ -1162,9 +1169,11 @@ def _row_calendar_parties(row: dict, user_id="") -> tuple:
     include to finish the row are its other side, not everyone the row
     lists: a meeting capture lists the meeting's attendees, so any of them
     sitting in a later meeting closed it. The other side is
-    `counterparty_id(s)`; the owner only when no counterparty is named or
-    the counterparty is the user (the other side owes it), so a delegated
-    owner is never read as the other side. A row that names no other side
+    `counterparty_id(s)`; the owner only when the row has no counterparty at
+    all, not even a name, or the counterparty is the user (the other side
+    owes it), so a delegated owner is never read as the other side. A row
+    whose counterparty is on file only by name reads the ids on file less a
+    delegated owner (`named` False). A row that names no other side
     keeps every id on file (`named` False): its caller proposes, not closes,
     when that is more than one person."""
     d = (row or {}).get("data") or {}
@@ -1176,14 +1185,25 @@ def _row_calendar_parties(row: dict, user_id="") -> tuple:
     v = d.get("counterparty_id")
     if isinstance(v, str) and v.strip():
         cps.add(v.strip())
+    had_ids = bool(cps)
     cps.discard(uid)
-    if not cps:
-        v = d.get("owner_id")
-        if isinstance(v, str) and v.strip() and v.strip() != uid:
-            cps.add(v.strip())
+    v = d.get("owner_id")
+    owner = v.strip() if isinstance(v, str) and v.strip() else ""
+    # cr1#1488 review: a counterparty on file only by name (or an external
+    # owner) is still the other side. The owner is not, unless the user is
+    # the counterparty (the other side owes it); and a delegated owner is
+    # left out of the ids on file the caller then reads.
+    named_only = not had_ids and bool(
+        d.get("counterparty_name") or d.get("counterparty_names")
+        or str(d.get("owner_external") or "").strip())
+    if not cps and owner and owner != uid and not named_only:
+        cps.add(owner)
     if cps:
         return cps, True
-    return _row_party_ids(row), False
+    ids = set(_row_party_ids(row))
+    if named_only and owner and owner != uid:
+        ids.discard(owner)
+    return ids, False
 
 
 def _meeting_ref_keys(ref) -> set:

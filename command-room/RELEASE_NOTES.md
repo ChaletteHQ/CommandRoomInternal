@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.3.1 (2026-11-20)
+
+Fixes to closing and to Maintenance. A won deal closes an item only when the deal is with the person the item is about, and a sent file closes an item only when the file is that item. A reopened item is asked about once, not again with every new clue. An out-of-date Maintenance task is now noticed and brought up to date, your settings file is never overwritten when it cannot be read, and the health check says why a step was left unfinished instead of asking you to run it again. When a scheduled run cannot read your past chats, the Hub says so. Items from the old discuss-later list become tasks only when they read as tasks; the rest are kept as notes. Where an earlier update already turned such items into tasks, a one-time repair can be run by hand to turn them back into notes.
+
 ## v6.3.0 (2026-11-19)
 
 Change the Hub from the Hub: add context, edit a commitment's wording, set a person's role, email and company, and add or correct work streams, people and priorities, each with an Undo. Each priority and to-do says its last action and its day, every tab says what it is for, and Ask for a change sits below every tab. Items close less often on the wrong evidence, and the Hub Inbox page no longer breaks on a reply to several people.

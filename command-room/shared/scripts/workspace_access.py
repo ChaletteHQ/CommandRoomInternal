@@ -710,6 +710,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "schedule_backend:record_trigger_row",  # SCHEDREG1 - registration's trigger row, landed where the folder is
     "schedule_backend:record_registration",  # SCHEDFAST1 (#101) - the trigger row AND the schedule_created receipt, one door call per created chat
     "schedule_backend:record_removals",  # SHELVE1 (cr1#618) - after the bridge's reinstall deletes: the trigger rows dropped and one config record
+    "schedule_backend:record_workspace_registration",  # cr1#1504 - schedule setup's own config record, merged, never written over an unreadable file
     "schedule_config:write_schedule_skipped",  # SCHEDREG1 - the one refusal row a seat that cannot register writes
     "inbox_helpers:run_inbox_surface",  # INBOXDRIVE1
     "inbox_helpers:stamp_last_triage",  # LASTTRIAGE1 (cr1#454) - the typed triage's LAST_TRIAGE.txt, stamped from the clock; it takes no time

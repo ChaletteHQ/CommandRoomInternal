@@ -127,7 +127,11 @@ run_writer` and sent as it came, in ONE call. A create's names
 `cockpit_helpers:land_registration` and its `trigger_id` is the one value you
 fill in, with the id the call returned; it refuses an unfilled one, and that
 refusal is `result.ok: false` inside an envelope that says `ok: true`, so read
-the result and land it again with the id. An
+the result and land it again with the id. A result with `row_written: false`
+and `reason: config_unreadable` means the task was set up but the folder's
+schedule record could not be read, so its row was not written over it
+(cr1#1504): say its `line` once in the summary, verbatim, and never drop it.
+Its receipt landed only when the result says `event_written: true`. An
 update's names
 `schedule_refresh:log_schedule_refreshed`, one receipt per refreshed task, and
 needs nothing filled in. Keep each trigger id. The four are

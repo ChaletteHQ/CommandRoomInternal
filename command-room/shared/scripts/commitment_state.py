@@ -6695,8 +6695,10 @@ def promote_task_to_commitment(
 
 def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
                          source_event_seq=None, source_skill="apply-choices",
-                         now_iso=None, priority=None, source=None) -> dict:
+                         now_iso=None, priority=None, source=None, due=None) -> dict:
     """CTS1FIX 'Add to My Plate' — mint a fresh owner-me task commitment.
+    `due` (an ISO day) dates the task; without it the task carries `no_due`
+    (cr1#973: a discuss-later item that names a day still ahead keeps it).
     Writes a `commitment` event with kind=task, owner_id=<me>, status open, which
     surface_split's `personal` partition renders on My Plate. Provenance links back
     to the originating row. Atomic append via the event gate; no in-place mutation.
@@ -6745,6 +6747,9 @@ def create_personal_task(workspace_root, *, title, owner_id, source_ref=None,
     # 3 low); a plain My Plate task carries none.
     if priority is not None:
         data["priority"] = int(priority)
+    if due:
+        data.pop("no_due", None)
+        data["due"] = str(due)[:10]
     data["source_ref"] = user_initiated_source_ref(source_ref)
     if source_event_seq is not None:
         data["source_event_seq"] = source_event_seq

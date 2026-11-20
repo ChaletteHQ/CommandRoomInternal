@@ -720,7 +720,8 @@
     mt = mt || {};
     var apply = String(mt.apply_line || "");
     var isApply = function (f) { return !!apply && !!f && f.job_id === "cockpit-apply"; };
-    var own = (mt.failing || []).filter(function (f) { return !isApply(f); }).length || (mt.unread || []).length;
+    var own = (mt.failing || []).filter(function (f) { return !isApply(f); }).length || (mt.unread || []).length
+      || (mt.chats && mt.chats.line ? 1 : 0);  // cr1#1489: chats not being read
     return { own: own, apply: apply, inbox: String(mt.inbox_line || "") };
   }
   function renderLights() {

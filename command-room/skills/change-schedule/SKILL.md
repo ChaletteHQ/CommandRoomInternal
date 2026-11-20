@@ -293,7 +293,7 @@ Recognize these patterns. Match case-insensitively. The user can stack multiple 
 - `resume <task>` / `enable <task>` / `turn on <task>` → `enabled: true`
 
 **Add an available task (Phase 3 / R1 — routes through the EXISTING add path):**
-- `add <task>` on a task rendered under "Available, not added" → invoke `enable-command-room-schedules`'s Phase 6 `add` flow for that taskId (it composes the bootloader, registers with the config-merged cron, and updates `workspace_config.json`). This skill does not build a second registration mechanism — the add path stays owned by the registration skill.
+- `add <task>` on a task rendered under "Available, not added" → invoke `enable-command-room-schedules`'s Phase 6 `add` flow for that taskId (it composes the bootloader, registers with the config-merged cron, and records the added id through its one writer, `schedule_backend:record_workspace_registration`, never a hand write of `workspace_config.json`; cr1#1504). This skill does not build a second registration mechanism — the add path stays owned by the registration skill.
 
 **Retired tasks (SPEC LIFECYCLE1, extended by SPEC BRIEFMERGE) — never offered, never added, always answerable:**
 

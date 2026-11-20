@@ -2050,8 +2050,8 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
         lines.append(
             f"Your Maintenance task is running, but its {name} pass hasn't "
             f"recorded any work{since_phrase} — "
-            f"{typed_action('maintenance')} once, and check the result looks "
-            f"right. {job_reason_sentence(reason)}"
+            f"{maintenance_action(workspace_root, f['job'], reason)}. "
+            f"{job_reason_sentence(reason)}"
         )
         problems.append(dict(f, reason=reason))
     # cr1#931: a pass the fires themselves file as FAILED (`jobs_failed`, the
@@ -2078,8 +2078,9 @@ def _maintenance_job_problems(workspace_root, reports, *, now=None):
         reason = job_receipt_reason(workspace_root, job)
         lines.append(
             f"Your Maintenance task is running, but its {name} pass failed on "
-            f"{runs}{since_phrase} — {typed_action('maintenance')} once, and "
-            f"check the result looks right. {job_reason_sentence(reason)}"
+            f"{runs}{since_phrase} — "
+            f"{maintenance_action(workspace_root, job, reason)}. "
+            f"{job_reason_sentence(reason)}"
         )
         problems.append({"job": job, "display_name": name, "status": "failed",
                          "fires": n, "since": row.get("since"), "reason": reason})
@@ -2224,7 +2225,7 @@ def job_receipt_reason(workspace_root, job_id: str) -> dict:
                              "read of one of its connectors"),
                     "quoted": False, "source": "connectors_left_unread", "at": at}
         listed = {}
-        for key in ("jobs_completed", "jobs_failed", "jobs_due"):
+        for key in ("jobs_completed", "jobs_failed", "jobs_due", LEFT_UNREAD_KEY):
             listed[key] = set()
             for item in data.get(key) or []:
                 jid = item.get("job_id") if isinstance(item, dict) else item
@@ -2233,7 +2234,12 @@ def job_receipt_reason(workspace_root, job_id: str) -> dict:
         if job_id in listed["jobs_failed"]:
             return {"text": _RUN_WORD_REASON["failed"], "quoted": False,
                     "source": "jobs_failed", "at": at}
-        if job_id in listed["jobs_due"] and job_id not in listed["jobs_completed"]:
+        left_unread = job_id in listed[LEFT_UNREAD_KEY]
+        if left_unread or (job_id in listed["jobs_due"]
+                           and job_id not in listed["jobs_completed"]):
+            said = _left_due_reason(workspace_root, job_id, data, left_unread)
+            if said:
+                return dict(said, quoted=False, at=at)
             return {"text": "its last run had it due and did not finish it",
                     "quoted": False, "source": "jobs_due", "at": at}
         if job_id in listed["jobs_completed"]:
@@ -2242,6 +2248,158 @@ def job_receipt_reason(workspace_root, job_id: str) -> dict:
         return {"text": NO_RUN_LISTED_REASON, "quoted": False,
                 "source": "no_run_listed", "at": None}
     return out
+
+
+#: cr1#603: the `maintenance_run` field naming the due passes a fire left
+#: with no record of their own (`maintenance_dispatcher.LEFT_UNREAD_FIELD`,
+#: cr1#979). Spelled here so the health check reads it without importing the
+#: dispatcher; a test pins the two together.
+LEFT_UNREAD_KEY = "jobs_left_unread"
+
+#: cr1#603: how far back a typed run that left the pass unfinished still
+#: says "running it again will not fix it". An old one says nothing about a
+#: run today (a connection may have been fixed since).
+TYPED_RUN_RECENT_DAYS = 7
+
+#: cr1#603: the one action once a run the owner typed has also left the pass
+#: unfinished. "Run it once" already failed, so it is never said again; the
+#: report path diagnoses and drafts the support note (`report-bug`).
+REPORT_ACTION = "say `report a bug`"
+
+
+def _left_due_reason(workspace_root, job_id: str, data: dict,
+                     left_unread: bool) -> dict:
+    """Why a run left the pass `job_id` due, from that run's own record
+    (cr1#603), `{"text", "source"}`, or {} when the record says nothing more
+    than that it was due.
+
+    Read in this order:
+    - A run nobody typed, on a cloud seat (`connector_scope` `container`),
+      that names in `connectors_unreachable` every connection the pass reads
+      and finds each declared on the owner's computer only: that is the stop
+      (`desktop_only`). A typed run is in the desktop app, which reaches
+      them, so it never says this.
+    - A pass the run lists in `jobs_left_unread`: no record of reading its
+      connections. The dispatcher also lists those connections as unreachable
+      (unsure, `_fire_unread`), so this comes before "could not reach", and it
+      never says a read failed (cr1#743).
+    - Otherwise a connection of the pass named unreachable: "could not
+      reach" it.
+    Labels only; a category code is never said. Never raises."""
+    try:
+        import connector_config as _cc
+        import connector_reads as _cr
+
+        cats = list(_cr.job_connectors(workspace_root, job_id))
+        gone = {str(c) for c in (data.get("connectors_unreachable") or [])
+                if isinstance(c, str)}
+
+        def plain(names) -> str:
+            said = [n for n in _cr._labels(workspace_root, names)
+                    if n and not _CODE_TOKEN_RE.search(n)]
+            return _cr._joined(said) if said else ""
+
+        cut = [c for c in cats if c in gone]
+        typed = str(data.get("fired_via") or "").strip().lower() == "manual"
+        if cut and not typed and data.get("connector_scope") == "container":
+            desktop = {str(r.get("category")) for r in
+                       _cc.declared_connector_settings(workspace_root)
+                       if r.get("scope") == _cc.SCOPE_DESKTOP_ONLY}
+            names = plain(cut)
+            if names and set(cut) <= desktop:
+                what = ("a connection" if len(cut) == 1 else "connections")
+                return {"text": f"its last run ran in the cloud, which cannot "
+                                f"reach {names}, {what} on your own computer "
+                                "only", "source": "desktop_only"}
+        if left_unread:
+            names = plain(cats)
+            return {"text": (f"its last run left it due with no record of "
+                             f"reading {names}" if names else "its last run "
+                             "left it due with no record of reading its "
+                             "connector"), "source": LEFT_UNREAD_KEY}
+        if cut:
+            names = plain(cut)
+            return {"text": (f"its last run could not reach {names}" if names
+                             else "its last run could not reach one of its "
+                             "connectors"), "source": "connectors_unreachable"}
+    except Exception:  # noqa: BLE001 - a health read never breaks a surface
+        return {}
+    return {}
+
+
+def unfinished_runs(workspace_root, job_id: str, *, now=None) -> dict:
+    """How many Maintenance runs in a row, newest first, left the pass
+    `job_id` unfinished, and how many of those a person typed in the last
+    `TYPED_RUN_RECENT_DAYS` (cr1#603): `{"runs": n, "typed": n}`.
+
+    A run unfinished it when it filed it in `jobs_failed` or
+    `jobs_left_unread`, or in `jobs_due` and not `jobs_completed`. A run that
+    completed it ends the count; a run that does not name it, or that stood
+    down behind another (cr1#772), is read past. Typed is `fired_via`
+    `manual` (a press of Run records `scheduled`, cr1#977). A malformed list
+    counts as empty. Never raises."""
+    out = {"runs": 0, "typed": 0}
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.astimezone()
+    recent = now - _dt.timedelta(days=TYPED_RUN_RECENT_DAYS)
+    try:
+        from maintenance_dispatcher import RECEIPT_EVENT_TYPE as _run_type
+        from receipts import iter_receipts as _iter_receipts
+
+        rows = _iter_receipts(workspace_root, task_ids=["maintenance"])
+    except Exception:  # noqa: BLE001
+        return out
+    for r in reversed(rows or []):
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        if raw.get("type") != _run_type:
+            continue
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        if data.get("in_flight") is True:
+            continue
+
+        def ids(key) -> set:
+            got = set()
+            value = data.get(key)
+            for item in value if isinstance(value, (list, tuple)) else []:
+                jid = item.get("job_id") if isinstance(item, dict) else item
+                if isinstance(jid, str):
+                    got.add(jid)
+            return got
+
+        failed = job_id in ids("jobs_failed")
+        done = job_id in ids("jobs_completed")
+        if done and not failed:
+            break
+        if (failed or job_id in ids(LEFT_UNREAD_KEY)
+                or (job_id in ids("jobs_due") and not done)):
+            out["runs"] += 1
+            when = r.get("dt")
+            try:
+                fresh = when is not None and when >= recent
+            except TypeError:  # a naive stamp: read it as local time
+                fresh = when.astimezone() >= recent
+            if (fresh and str(data.get("fired_via") or "").strip().lower()
+                    == "manual"):
+                out["typed"] += 1
+    return out
+
+
+def maintenance_action(workspace_root, job_id: str, reason=None) -> str:
+    """The one action a failing pass's line gives (cr1#603), lower case, no
+    full stop. "Run it once" until a run the owner typed in the last
+    `TYPED_RUN_RECENT_DAYS` has left the pass unfinished, then the report
+    path (`REPORT_ACTION`): the advice is never one the book shows already
+    failed. A pass a cloud run could not reach because its connection is on
+    the owner's own computer only is run from the desktop app there, until a
+    typed run there has failed it too."""
+    if unfinished_runs(workspace_root, job_id)["typed"]:
+        return ("a run you typed has already left it unfinished, so running "
+                f"it again will not fix it: {REPORT_ACTION}")
+    if isinstance(reason, dict) and reason.get("source") == "desktop_only":
+        return (f"{typed_action('maintenance')} in the desktop app on your "
+                "own computer, and check the result looks right")
+    return f"{typed_action('maintenance')} once, and check the result looks right"
 
 
 def job_reason_sentence(reason) -> str:

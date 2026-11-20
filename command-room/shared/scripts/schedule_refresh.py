@@ -143,9 +143,19 @@ def prompts_equivalent(composed: str, registered: str) -> bool:
     the actually-changed release was empty for the pinned bootloader
     template; the seven rewrites traced entirely to the stamp).
     """
+    from schedule_backend import listing_prompt_text
     from task_watchdog import normalize_prompt_stamp
 
-    return normalize_prompt_stamp(composed or "") == normalize_prompt_stamp(registered or "")
+    # Leading/trailing whitespace is never content: a prompt read back from a
+    # scheduled-tasks SKILL.md may carry a newline the composer did not.
+    # Neither is that file's YAML front matter (cr1#1502): where this process
+    # cannot see the listing's `path`, the skills have the model Read the file
+    # into `prompt` whole, and without this a current Maintenance read in that
+    # way compared stale on every run and was rewritten every time.
+    def _body(text: str) -> str:
+        return normalize_prompt_stamp(listing_prompt_text(text or "")).strip()
+
+    return _body(composed) == _body(registered)
 
 
 def prompt_fingerprint(text: str) -> str:
@@ -1103,9 +1113,13 @@ def prompt_body_drift(task_records, *, plugin_version: str,
     still not drift on either side.
     """
     import schedule_config as _sc
+    from schedule_backend import fill_listing_prompts
 
     drift: list[str] = []
-    for rec in task_records or []:
+    # A listing that gives a `path` instead of the prompt is read in first;
+    # unread, every such record fell into the `None` branch below and the
+    # Maintenance task was never reported stale (see `unchecked_prompts`).
+    for rec in fill_listing_prompts(task_records):
         if not isinstance(rec, dict):
             continue
         tid = rec.get("taskId")
@@ -1464,7 +1478,25 @@ def announce_lines(workspace_root, *, cap: int = ANNOUNCE_CAP,
     return lines
 
 
+def unchecked_prompts(task_records) -> list[str]:
+    """Task ids whose listing gave the prompt as a `path` that could not be
+    read. `prompt_body_drift` counts them as not drift (BOOT3: unknown is
+    never stale), so a caller that says "every prompt is current" must also
+    check this list is empty: an unread prompt is not a current one. A record
+    with no prompt and no path (a listing that omits the text) is not listed:
+    that is BOOT3's unknown, unchanged."""
+    from schedule_backend import fill_listing_prompts
+
+    out: list[str] = []
+    for rec in fill_listing_prompts(task_records):
+        if (isinstance(rec, dict) and rec.get("taskId")
+                and rec.get("prompt") is None and rec.get("path")):
+            out.append(str(rec["taskId"]))
+    return out
+
+
 __all__ = [
+    "unchecked_prompts",
     "SCHEDULE_REFRESHED",
     "ANNOUNCE_LEDGER_RELPATH",
     "DECISION_NOOP",

@@ -674,7 +674,15 @@ def repair(
 
     old_root = reg.get("workspace_root")
     new_cfg_path = _config_path(new_root)
-    live_cfg = read_workspace_config(new_root)
+    from workspace_config_io import ConfigUnreadable, read_for_update
+
+    try:
+        # Never `read_workspace_config` here: its `{}` on a failed read would
+        # be written back below as a config holding only the repaired fields.
+        live_cfg = read_for_update(new_cfg_path)
+    except ConfigUnreadable:
+        return {"ok": False, "class": "config_unreadable",
+                "candidates": [str(new_root)]}
     pre_repair_config = {k: live_cfg.get(k) for k in REPAIRED_FIELDS}
 
     new_fp = reg.get("root_fingerprint") or compute_fingerprint(new_root)
@@ -810,12 +818,13 @@ def undo(root, *, event: Optional[dict] = None, now: Optional[_dt.datetime] = No
                                         "not an undoable repair record"}
 
     cfg_path = _config_path(root)
+    from workspace_config_io import ConfigUnreadable, read_for_update
+
     try:
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        if not isinstance(cfg, dict):
-            cfg = {}
-    except (OSError, json.JSONDecodeError):
-        cfg = {}
+        cfg = read_for_update(cfg_path)
+    except ConfigUnreadable:
+        return {"ok": False, "reason": "workspace_config.json could not be read; "
+                                        "nothing was written over it"}
     for field in REPAIRED_FIELDS:
         prior = pre.get(field)
         if prior is None:
@@ -912,7 +921,14 @@ def ensure_fingerprint(root) -> Optional[str]:
     rename has evidence to repair against. Returns the fingerprint (existing
     or newly written), or None on any failure (never blocks a fire — the
     cheap-check path this rides inside must stay cheap and safe)."""
-    cfg = read_workspace_config(root)
+    from workspace_config_io import ConfigUnreadable, read_for_update
+
+    try:
+        # This runs on every maintenance fire, so a `{}` fallback here was the
+        # likeliest way to erase the config: one fire during a cloud sync.
+        cfg = read_for_update(_config_path(root))
+    except ConfigUnreadable:
+        return None
     existing = cfg.get("root_fingerprint")
     if isinstance(existing, str) and existing.strip():
         return existing

@@ -99,6 +99,23 @@ _DELIVERABLE_ALIAS = "note"
 RECEIPT_SWEEP = "session_sweep_run"
 RECEIPT_BACKFILL = "session_backfill_run"
 
+# cr1#1489: the chats are the desktop app's own sessions, and the one tool
+# that reads them runs only inside the desktop app; a cloud fire never has it.
+# A sweep that read nothing and does not name the tool it read with lands
+# skipped with this reason, the same words the steps ask a tool-less run for.
+NO_TOOL_REASON = "no session-transcript tool in this run"
+#: cr1#1489: an empty read on a cloud fire (cr1#979's fire-place check).
+CLOUD_REASON = "a cloud run cannot reach the chats on the computer"
+#: The receipt field naming the session tool a sweep read with.
+TRANSCRIPT_TOOL_FIELD = "transcript_tool"
+#: cr1#1489: how many empty `complete` sweeps in a row, with no tool named
+#: (the shape a cloud fire wrote before this fix), make the span since the
+#: last read that happened a gap rather than quiet nights. The silent-source
+#: count (`maintenance_dispatcher.SOURCE_SILENT_RUNS`) is the same number.
+GAP_EMPTY_RUNS = 5
+#: How far back the typed catch-up (`session-backfill`) reads, in days.
+BACKFILL_DAYS = 60
+
 # Top-level (non-`data`) reference fields the skill may set on an item; lifted
 # onto the event so the dual-layer reader (event_refs) links threads/people.
 _TOPLEVEL_REF_FIELDS = (
@@ -587,6 +604,24 @@ def plan_sweep(workspace_root, now=None) -> dict:
     }
 
 
+def _cloud_fire(fired_via=None, triggered_by=None) -> bool:
+    """cr1#1489: this run is a scheduled fire on a merged seat, the cloud
+    run, through cr1#979's own two answers (`maintenance_dispatcher.
+    merged_seat`, `eod_incremental.typed_run`). A person's typed run is in
+    the desktop app, and says so either in the door's environment or in the
+    writer's own arguments (`fired_via="manual"`, a `triggered_by` surface,
+    as the skill and the brief pass them). An unreadable answer is not a
+    cloud fire."""
+    if str(fired_via or "").strip().lower() == "manual" or str(triggered_by or "").strip():
+        return False
+    try:
+        from eod_incremental import typed_run
+        from maintenance_dispatcher import merged_seat
+        return bool(merged_seat()) and not typed_run()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def sweep_and_receipt(
     workspace_root,
     items: Iterable[dict],
@@ -603,9 +638,20 @@ def sweep_and_receipt(
     skip_reason: Optional[str] = None,
     craft_candidates: Optional[Iterable[dict]] = None,
     craft_sessions: Optional[Iterable[str]] = None,
+    transcript_tool: Optional[str] = None,
 ) -> dict:
     """Nightly sweep (R1): dedup + write the extracted items, append one
     `session_sweep_run` receipt.
+
+    cr1#1489: `transcript_tool` names the session tool this run listed and
+    read the sessions with, stamped on the receipt. A run that read nothing
+    (no item, no session scanned, no session handed in) and names no tool
+    has shown no read at all, so it lands SKIPPED with `NO_TOOL_REASON` and
+    the window holds, as if it had said so: a cloud fire, which never has the
+    tool, wrote `complete` here and moved the window past chats it never
+    opened. A quiet night read with the tool names it and stays complete,
+    except on a cloud fire (cr1#979's fire-place check, `_cloud_fire`), where
+    an empty read is a skip whatever tool it names (`CLOUD_REASON`).
 
     cr1#400: `craft_candidates` are the method signal the model found in the
     window (`craft_sweep.propose_craft_rules` names the shape). Each becomes
@@ -676,6 +722,21 @@ def sweep_and_receipt(
         pass
     blocked = str(fetch_blocked or "").strip()
     skipped = str(skip_reason or "").strip()
+    tool = str(transcript_tool or "").strip()
+    items = list(items or [])
+    if sessions is not None:
+        sessions = list(sessions)
+    if craft_sessions is not None:
+        craft_sessions = list(craft_sessions)
+    empty = (not items and not int(sessions_scanned or 0) and not sessions
+             and not craft_sessions)
+    if not blocked and not skipped and empty and (not tool or _cloud_fire(fired_via, triggered_by)):
+        # cr1#979's fire-place check: a scheduled fire on a merged seat runs
+        # in the cloud, where the chats on the computer cannot be reached; an
+        # empty read there is a skip even if a tool was named.
+        skipped = CLOUD_REASON if tool else NO_TOOL_REASON
+    if tool:
+        extra_receipt[TRANSCRIPT_TOOL_FIELD] = tool
     if blocked or skipped:
         return _unread_sweep(
             workspace_root, status="blocked" if blocked else "skipped",
@@ -744,6 +805,135 @@ def _receipt_ts(ev: dict) -> str:
     except Exception:
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         return ev.get("ts") or d.get("ts") or ""
+
+
+def _sweep_receipts(workspace_root, receipt_type: str) -> list:
+    """`[(local date, data)]` of one receipt type, oldest first."""
+    from event_time import parse_ts
+
+    out = []
+    for ev in _load_events(workspace_root):
+        if not isinstance(ev, dict) or ev.get("type") != receipt_type:
+            continue
+        when = parse_ts(_receipt_ts(ev))
+        if when is None:
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        out.append((when, data))
+    out.sort(key=lambda t: t[0])
+    return [(when.astimezone(), data) for when, data in out]
+
+
+def _read_happened(data: dict) -> bool:
+    """A sweep receipt that shows a read: complete, and it read a session,
+    recovered an item or names the tool it read with."""
+    return (data.get("status", "complete") == "complete"
+            and bool(int(data.get("sessions_scanned") or 0)
+                     or int(data.get("events_recovered") or 0)
+                     or str(data.get(TRANSCRIPT_TOOL_FIELD) or "").strip()))
+
+
+def _old_empty(data: dict) -> bool:
+    """The receipt a cloud fire wrote before cr1#1489: complete, nothing read,
+    no tool named and no skip."""
+    return data.get("status", "complete") == "complete" and not _read_happened(data)
+
+
+def chats_unread(workspace_root) -> dict:
+    """cr1#1489, READ ONLY, for the Hub's maintenance note: `{}` when the
+    chat capture is reading, else `{line, unread_since, gap}`.
+
+      * the newest sweep is skipped or blocked: chats are not being read, and
+        the line says what to type on the computer (`unread_since` is the day
+        of the last read that happened, or None);
+      * a gap: `GAP_EMPTY_RUNS` or more empty `complete` sweeps in a row with
+        no tool named (the cloud shape before this fix), by machines that never
+        read a session on this book, moved the window past chats nobody
+        opened. `gap` is `{from, to, last_day}`, ISO dates: the read before
+        them, the newest of them, and the day the typed catch-up's
+        `BACKFILL_DAYS` stop reaching its start. A catch-up that read and
+        whose reach covers the start answers it; past that day, any that read
+        after it does; a span wholly past the reach is dropped. Never raises.
+
+    The gap rule is a heuristic for old receipts: a desktop seat whose
+    every run carried a new machine name and had five quiet nights reads as
+    a gap. The cost is one typed catch-up, which previews before it writes."""
+    try:
+        rows = _sweep_receipts(workspace_root, RECEIPT_SWEEP)
+        backfills = _sweep_receipts(workspace_root, RECEIPT_BACKFILL)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not rows:
+        return {}
+    import datetime as _dtm
+
+    now = _dtm.datetime.now().astimezone()
+    last_read = None
+    read_machines = set()
+    for i, (when, data) in enumerate(rows):
+        if _read_happened(data):
+            last_read = i
+            if data.get("machine"):
+                read_machines.add(str(data["machine"]))
+    newest = rows[-1][1]
+    status = newest.get("status")
+    unread = status in ("skipped", "blocked")
+    # The newest long run of empty receipts, wherever it sits: a typed sweep
+    # that reads afterwards does not read the span they moved past. A skip or
+    # a blocked read in the middle moved nothing (cr1#740) and does not split
+    # the run. A run written by a machine that has read sessions on this book
+    # is that machine's quiet nights, not a run that could not read.
+    reach = _dtm.timedelta(days=BACKFILL_DAYS)
+    gap = None
+    prev_read, streak, runs = None, [], []
+    for when, data in rows + [(None, {"status": "end"})]:
+        if when is not None and _old_empty(data):
+            streak.append((when, str(data.get("machine") or "")))
+            continue
+        if when is not None and data.get("status") in ("skipped", "blocked"):
+            continue
+        if (len(streak) >= GAP_EMPTY_RUNS
+                and not any(m and m in read_machines for _w, m in streak)):
+            runs.append((prev_read or streak[0][0], streak[-1][0]))
+        streak = []
+        if when is not None and _read_happened(data):
+            prev_read = when
+    # A catch-up counts only when it read; one run after the span's start left
+    # its reach answers what is still within reach of it.
+    caught = [w for w, d in backfills if _read_happened(d)]
+    for start, end in reversed(runs):
+        if now > end + reach:
+            continue  # wholly past the catch-up's reach: nothing left to do
+        if any(b >= end and (b - reach <= start or now > start + reach) for b in caught):
+            continue
+        gap = {"from": start.date().isoformat(), "to": end.date().isoformat(),
+               "last_day": (start + reach).date().isoformat()}
+        break
+    if not unread and not gap:
+        return {}
+    bits = []
+    since = rows[last_read][0].date().isoformat() if last_read is not None else None
+    if status == "blocked":
+        bits.append(("Chats are not being read" + (f" since {since}" if since else "")
+                     + ": the last run could not open them ("
+                     + str(newest.get("blocked_reason") or "the read failed")
+                     + "). Type `sweep my chats` in the desktop app on your computer."))
+    elif unread:
+        bits.append(("Chats are not being read" + (f" since {since}" if since else "")
+                     + ": the last run could not open them, and a cloud run cannot "
+                     "reach the chats on your computer. Type `sweep my chats` in the "
+                     "desktop app on your computer."))
+    if gap:
+        if gap["last_day"] >= now.date().isoformat():
+            bits.append((f"Chats from {gap['from']} to {gap['to']} were never read. Type "
+                         "`catch up my chat history` in the desktop app on your computer "
+                         f"by {gap['last_day']} to recover them."))
+        else:
+            bits.append((f"Chats from {gap['from']} to {gap['to']} were never read. Type "
+                         "`catch up my chat history` in the desktop app on your computer "
+                         f"to recover the ones from the last {BACKFILL_DAYS} days; older "
+                         "ones are past its reach."))
+    return {"line": " ".join(bits), "unread_since": since if unread else None, "gap": gap}
 
 
 def last_sweep(workspace_root, *, receipt_type: str = RECEIPT_SWEEP) -> Optional[dict]:
@@ -939,6 +1129,12 @@ __all__ = [
     "SWEEPABLE_TYPES",
     "RECEIPT_SWEEP",
     "RECEIPT_BACKFILL",
+    "NO_TOOL_REASON",
+    "CLOUD_REASON",
+    "TRANSCRIPT_TOOL_FIELD",
+    "GAP_EMPTY_RUNS",
+    "BACKFILL_DAYS",
+    "chats_unread",
     "SweepItemError",
     "session_source_ref",
     "content_hash",

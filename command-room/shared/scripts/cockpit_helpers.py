@@ -1141,9 +1141,11 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
     read" and "not confirmed as read", so the words claim only the second.
     `left_unread` (cr1#979) is the due connector jobs the newest run left
     unread; `silent` (cr1#1007) the sources that usually bring items in and
-    have read nothing on their last runs. Answers `{failing, unread,
-    left_unread, silent, line}`; `line` is empty when there is nothing to
-    say, and an unreadable read says nothing."""
+    have read nothing on their last runs; `chats` (cr1#1489) the chat
+    capture that is not reading, or a span it never read
+    (`session_sweep.chats_unread`). Answers `{failing, unread, left_unread,
+    silent, chats, line}`; `line` is empty when there is nothing to say, and
+    an unreadable read says nothing."""
     import connector_reads as cr
     import maintenance_dispatcher as md
     from schedule_config import task_display_name
@@ -1183,8 +1185,18 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
         silent = []
     if silent:
         bits.append(md.silent_sources_line(silent))
+    try:
+        # cr1#1489: the nightly chat capture cannot read the chats from a
+        # cloud run; say so, with what to type on the computer, and name a
+        # span the old empty receipts moved past with the catch-up's last day.
+        from session_sweep import chats_unread
+        chats = chats_unread(workspace_root)
+    except Exception:  # noqa: BLE001
+        chats = {}
+    if chats.get("line"):
+        bits.append(chats["line"])
     return {"failing": failing, "unread": unread, "left_unread": left,
-            "silent": silent, "line": " ".join(b for b in bits if b)}
+            "silent": silent, "chats": chats, "line": " ".join(b for b in bits if b)}
 
 
 #: cr1#1378: how far back the Hub looks for an Apply that failed. A failure
@@ -1333,7 +1345,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     (`maintenance_dispatcher.maintenance_staleness`, from the newest receipt,
     as of `now_iso`), `behind_hours`, the hours past which it counts as
     behind, and `failing` and `unread` (cr1#822), `left_unread` (cr1#979) and
-    `silent` (cr1#1007), which the line names too. A Hub Apply that failed
+    `silent` (cr1#1007) and `chats` (cr1#1489), which the line names too. A Hub Apply that failed
     (cr1#1378) is a `failing` entry too, but never in the line: it is
     `apply_line`, its own sentence, and `apply_at`, its own run's time
     (cr1#1385), empty when none failed. It
@@ -1345,7 +1357,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     doc = status_doc(workspace_root, "maintenance", "idle", MAINTENANCE_NONE_LINE, now_iso=now)
     doc.update({"finished_at": None, "last_completed": {}, "hours_behind": None,
                 "behind_hours": START_MAINTENANCE_BEHIND_HOURS, "failing": [], "unread": [],
-                "left_unread": [], "silent": [], "apply_line": "", "apply_at": None,
+                "left_unread": [], "silent": [], "chats": {}, "apply_line": "", "apply_at": None,
                 "inbox_line": "", "inbox_at": None})
     if not workspace_root or not (Path(str(workspace_root)) / "_hq" / "data").is_dir():
         return doc
@@ -1395,6 +1407,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         "line": " ".join(x for x in (MAINTENANCE_DONE_LINE, trouble["line"]) if x),
         "failing": trouble["failing"], "unread": trouble["unread"],
         "left_unread": trouble["left_unread"], "silent": trouble["silent"],
+        "chats": trouble.get("chats") or {},
         "fired_via": fired_via, "fired_at": fired_at,
         "apply_line": apply_line, "apply_at": apply_at,
         "finished_at": _iso(finished or newest),
@@ -2763,6 +2776,25 @@ def _review_weight(item: Dict[str, Any], *, reason: Optional[str] = None) -> int
     return 3
 
 
+def _newest_open_proposal_seq(workspace_root, commitment_id) -> Optional[int]:
+    """cr1#1499: the seq of the item's ONE open close question, so "not
+    relevant" on a row with no seq names the question it answers. With
+    several open (or none, or an unreadable book) it answers None, and the
+    dismissal is written with no seq: read in order, that closes every
+    question on the item written before it, which is what a press on the
+    item means. Naming only the newest would leave the rest asking."""
+    try:
+        import commitment_policy as _policy
+        ledger = _policy.fold_proposals(_review_events(workspace_root))
+        open_seqs = [s for s in ledger["open"]
+                     if ledger["by_seq"][s]["commitment_id"] == str(commitment_id)]
+        if len(open_seqs) != 1:
+            return None
+        return int(open_seqs[0])
+    except Exception:  # noqa: BLE001 - the dismissal still lands
+        return None
+
+
 def _review_events(workspace_root) -> List[Dict[str, Any]]:
     from events_io import load_events_org_scoped
 
@@ -3660,10 +3692,10 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
                 from cru_match import build_commitment_review_dismissed_event
 
                 cid = str(c.get("commitment_id") or n.split(":", 1)[-1])
+                pseq = int(c["seq"]) if c.get("seq") is not None else _newest_open_proposal_seq(workspace_root, cid)
                 ev = build_commitment_review_dismissed_event(
                     commitment_id=cid, primary_thread_id=str(c.get("thread_id") or ""),
-                    source_skill=COMMITMENT_SRC, next_seq=None,
-                    proposal_seq=int(c["seq"]) if c.get("seq") is not None else None)
+                    source_skill=COMMITMENT_SRC, next_seq=None, proposal_seq=pseq)
                 append_event(events_path, ev, holder="cockpit_helpers")
                 handler = {"status": "dismissed"}
                 r.update(outcome="applied", line="Left open.")
@@ -8551,6 +8583,9 @@ def _plan_surviving_chats(workspace_root, *, tools, abs_path, plugin_version,
 
     basename = str(abs_path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     rows, placed = _chat_rows_placed(workspace_root, registered, basename)
+    # cr1#1502: a listing row that gives its prompt as a `path` is read in here
+    # too, so the update's `old_prompt` is the real text, not None.
+    rows = sb.fill_listing_prompts(rows)
     try:
         ans = sb.plan_registration(
             tools, workspace_root=workspace_root, abs_path=abs_path,
@@ -8580,10 +8615,15 @@ def _plan_surviving_chats(workspace_root, *, tools, abs_path, plugin_version,
     # A row with no prompt is unknown and never rewritten, so the schedules
     # planner skips it. The chat is there, so it is `current`, not compared,
     # and never a second task (cr1#733).
+    # cr1#1502: one whose listing `path` could not be read is also marked
+    # `unchecked`, so nothing downstream mistakes it for a compared one.
     gone = {str(r.get("task_id")) for r in refused} | set(ans.get("foreign") or [])
+    unread = set(ans.get("unchecked") or [])
     for tid, trigger_id in placed.items():
         if tid not in by_id and tid not in gone:
             by_id[tid] = dict(base, task_id=tid, trigger_id=trigger_id, current=True, not_compared=True)
+            if tid in unread:
+                by_id[tid]["unchecked"] = True
     plans = [by_id[t] for t in SURVIVING_CHATS if t in by_id]
     return plans, refused
 

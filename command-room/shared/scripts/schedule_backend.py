@@ -749,8 +749,13 @@ class LegacyBackend:
         workspace_basename: str = "",
         tz_name: str = "",
     ) -> list:
-        """Identity. The legacy records ARE the reader shape."""
-        return list(raw_records)
+        """The legacy records ARE the reader shape, with one gap filled: the
+        listing gives each task's prompt as a `path` to its SKILL.md, never
+        the text, so the prompt is read in here (`fill_listing_prompts`).
+        Without it every reader saw `prompt: None`, treated the task as
+        unknown and never refreshed it - the Maintenance task kept running an
+        old procedure after updates."""
+        return fill_listing_prompts(raw_records)
 
     def registration_gate(self) -> dict:
         return registration_gate("legacy")
@@ -1086,17 +1091,18 @@ def record_trigger_map(workspace_root, task_id: str, row: dict,
     which is what a cron change and the daylight-saving re-projection want: they
     move two or three values and must not drop the folders or the trigger id a
     registration wrote.
+
+    Raises `workspace_config_io.ConfigUnreadable` (an `OSError`) and writes
+    nothing when the file exists but cannot be read as a JSON object.
     """
     from atomic_write import atomic_write_json  # lazy: keeps VM import cost down
+    from workspace_config_io import read_for_update
 
     path = Path(workspace_root) / "_hq" / "workspace_config.json"
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            config = json.load(fh)
-        if not isinstance(config, dict):
-            config = {}
-    except (OSError, ValueError):
-        config = {}
+    # A file that exists but cannot be read raises `ConfigUnreadable` here and
+    # nothing is written: falling back to `{}` used to write back a file
+    # holding only `triggers`, erasing every other key.
+    config = read_for_update(path)
     triggers = config.get("triggers")
     if not isinstance(triggers, dict):
         triggers = {}
@@ -1202,7 +1208,10 @@ def record_registration(workspace_root, task_id: str, row: dict,
     the same shape the skill used to paste through `append_jsonl`:
     `{type: schedule_created, source_skill, data: <event>}`, seq and ts
     stamped by the writer. An `event` of None appends nothing (a cron change
-    carries a row and no receipt). Returns `{row, event, event_written}`;
+    carries a row and no receipt). Returns `{row, row_written, event,
+    event_written}` (`row_written: False`, with `reason: config_unreadable`
+    and the one `line` to say, when the config exists but could not be read,
+    so the row was not written over it);
     a failed append never undoes the row - the registration happened, and
     `event_written: False` is the honest answer (RELIABILITY.md)."""
     row = dict(row or {})
@@ -1211,8 +1220,20 @@ def record_registration(workspace_root, task_id: str, row: dict,
         # it landed, so the health check's `task_registered_at` has the row's
         # own time to read. A row handed its own stamp keeps it.
         row["registered_at"] = registration_stamp()
-    written = record_trigger_row(workspace_root, task_id, row, merge=merge)
-    out = {"row": written, "event": None, "event_written": False}
+    from workspace_config_io import ConfigUnreadable, refused
+
+    try:
+        written = record_trigger_row(workspace_root, task_id, row, merge=merge)
+    except ConfigUnreadable:
+        # The config could not be read, so the row is not written (writing it
+        # would erase the rest of the file). The registration still happened:
+        # its receipt is appended below, and `row_written: False` says so,
+        # with the reason and the one line a caller says (cr1#1504).
+        out = {"row": None, "row_written": False, "event": None,
+               "event_written": False, **refused()}
+    else:
+        out = {"row": written, "row_written": True, "event": None,
+               "event_written": False}
     if not isinstance(event, dict) or not event:
         return out
     data = dict(event)
@@ -2033,6 +2054,50 @@ def place_listing_rows(registered, *, basename: str, task_ids=None,
     return out
 
 
+_FRONTMATTER_RE = _re.compile(r"\A---[ \t]*\r?\n.*?\r?\n---[ \t]*\r?\n", _re.S)
+
+
+def listing_prompt_text(text: str) -> str:
+    """The registered prompt inside a scheduled-tasks SKILL.md: the file is
+    YAML front matter (name, description) and then the prompt. Front matter
+    is never part of the prompt, so it is dropped with the blank lines after
+    it; a file with no front matter is the prompt as it stands."""
+    text = text or ""
+    m = _FRONTMATTER_RE.match(text)
+    return text[m.end():].lstrip("\r\n") if m else text
+
+
+def fill_listing_prompts(records) -> list:
+    """Records with the prompt read in where the listing gave only a `path`.
+
+    The old desktop app's scheduled-tasks listing returns a `path` to each
+    task's SKILL.md and no `prompt`. Every currency reader
+    (`plan_registration`, `schedule_refresh.prompt_body_drift`) reads a
+    missing prompt as unknown and skips the task, so on that app a stale
+    Maintenance prompt was never refreshed and every check said it was
+    current. The skills told the model to Read the file, but only after the
+    plan was made, so it depended on the model doing it in time.
+
+    A record with a `prompt` already, or with no `path`, is returned as it is
+    (the same object). A readable file sets `prompt` to its text without the
+    front matter and drops `path` (the door refuses a path argument). An
+    unreadable one is left untouched: still unknown, never guessed."""
+    out = []
+    for rec in records or []:
+        path = rec.get("path") if isinstance(rec, dict) else None
+        if (isinstance(rec, dict) and rec.get("prompt") is None
+                and isinstance(path, str) and path.strip()):
+            try:
+                text = Path(path.strip()).expanduser().read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError, ValueError):
+                out.append(rec)
+                continue
+            rec = {k: v for k, v in rec.items() if k != "path"}
+            rec["prompt"] = listing_prompt_text(text)
+        out.append(rec)
+    return out
+
+
 def duplicate_tasks(records, *, basename: str = "") -> dict:
     """`{task_id: [trigger_id, ...]}` for every task running more than once
     among `records` (cr1#923): each copy fires, so the task runs twice.
@@ -2108,9 +2173,11 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     """Plan the whole registration for THIS seat (MUST 4). Pure: no call.
 
     Returns `{"ok", "reason", "line", "backend", "pair", "creates",
-    "updates", "current", "refused", "duplicates"}` (`duplicates`: each task
-    this folder has registered more than once, `{task_id: [trigger_id]}`,
-    cr1#923). A raw listing row is placed by its exact name or stored trigger
+    "updates", "current", "refused", "duplicates", "unchecked"}`
+    (`duplicates`: each task this folder has registered more than once,
+    `{task_id: [trigger_id]}`, cr1#923; `unchecked`: each registered task
+    whose listing gave a `path` that could not be read here, so it was neither
+    compared nor counted current). A raw listing row is placed by its exact name or stored trigger
     id first (`place_listing_rows`), so an unnormalised listing never plans a
     second copy of a task it already carries:
       * the availability guard refuses (no scheduler, a shut gate, or - on
@@ -2119,7 +2186,9 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
       * otherwise per task: a shelved id with no registered record -> refused
         with its `shelved_line` (cr1#847: no path registers one); no registered
         record -> a `plan_create`; a record
-        whose prompt is None -> skipped (unknown, never rewritten); a record
+        whose prompt is None, after a listing `path` is read in
+        (`fill_listing_prompts`) -> skipped (unknown, never rewritten; listed
+        in `unchecked` when it still carries an unreadable `path`); a record
         for ANOTHER workspace folder -> refused with its sentence; a record
         whose body `prompts_equivalent` the composed one -> `current` (no
         call); else -> a `plan_update(prompt=...)` carrying the trigger id
@@ -2171,7 +2240,7 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     out = {"ok": False, "reason": avail.get("reason"),
            "line": avail.get("line") or "", "backend": None, "pair": None,
            "creates": [], "updates": [], "current": [], "refused": [],
-           "duplicates": {}}
+           "duplicates": {}, "unchecked": []}
     if not avail.get("available"):
         return out
     backend, _found = select_backend(sc._tool_names(tools))
@@ -2197,7 +2266,8 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
     # cr1#923: a raw listing row has no `taskId` until it is placed. Unplaced,
     # it read as no chat, and `set up command room schedules` after the Hub
     # set-up created Maintenance a second time.
-    registered = place_listing_rows(registered, basename=basename,
+    registered = place_listing_rows(fill_listing_prompts(registered),
+                                    basename=basename,
                                     task_ids=task_ids, trigger_map=stored)
     seat = seat_records(registered, abs_path=path,
                         declaration=(declaration if declaration is not None
@@ -2247,7 +2317,14 @@ def plan_registration(tools=None, *, workspace_root, abs_path: Optional[str] = N
             continue
         registered_prompt = _rec_get(rec, "prompt")
         if registered_prompt is None:
-            continue  # the listing carried no text: unknown, never rewritten
+            # Unknown, never rewritten. A record that still carries its listing
+            # `path` had a file nobody could read here: it is `unchecked`, so
+            # the skill reads it and never calls it current. A record with no
+            # prompt and no path (BOOT3: a listing that omits the text) stays
+            # silent, as before.
+            if _rec_get(rec, "path"):
+                out["unchecked"].append(task_id)
+            continue
         if workspace_root:
             guard = _sr.refresh_workspace_guard(task_id, registered_prompt,
                                                 workspace_root,
@@ -2940,22 +3017,27 @@ def record_removals(workspace_root, task_ids, *, source_skill: str = "command-ro
     """A WRITER (SHELVE1). After the bridge's deletes landed: drop each id's
     row from the stored trigger map and write ONE `schedule_config_changed`
     record naming every id switched off, through the one config-event writer,
-    so the lateness ledger stops scoring their slots. `{forgotten, event}`."""
+    so the lateness ledger stops scoring their slots. `{forgotten, event}`;
+    when the config exists but cannot be read, nothing is written over it and
+    the answer adds `reason: config_unreadable` and the one `line` to say
+    (cr1#1504). The config record still lands: the deletes happened."""
     from atomic_write import atomic_write_json
+    from workspace_config_io import ConfigUnreadable, read_for_update, refused
 
     sc = _schedule_config()
     ids = [str(t).strip() for t in (task_ids or []) if str(t or "").strip()]
     path = Path(workspace_root) / "_hq" / "workspace_config.json"
+    unreadable = False
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            config = json.load(fh)
-        if not isinstance(config, dict):
-            config = {}
-    except (OSError, ValueError):
-        config = {}
+        config = read_for_update(path)
+    except ConfigUnreadable:
+        # Never `{}` here: a file that cannot be read is left exactly as it
+        # is (the rows it still holds go stale, which a reader survives; an
+        # erased file it does not).
+        config, unreadable = {}, True
     triggers = config.get("triggers")
     forgotten = []
-    if isinstance(triggers, dict):
+    if isinstance(triggers, dict) and not unreadable:
         for tid in ids:
             if tid in triggers:
                 triggers.pop(tid, None)
@@ -2970,7 +3052,66 @@ def record_removals(workspace_root, task_ids, *, source_skill: str = "command-ro
         event = sc.log_schedule_config_change(
             workspace_root, [{"task_id": tid, "cron": None, "enabled": False} for tid in ids],
             source_skill=source_skill, extra_data={"reinstall": True})
-    return {"forgotten": forgotten, "event": event}
+    out = {"forgotten": forgotten, "event": event}
+    if unreadable:
+        out.update(refused())
+    return out
+
+
+#: cr1#1504: the door form schedule setup's Step 0.C renders once per run.
+SETUP_RECORD_WRITER = "schedule_backend:record_workspace_registration"
+
+
+def record_workspace_registration(workspace_root, *, workspace_basename: str = "",
+                                  registered_task_ids=None,
+                                  now: Optional[_dt.datetime] = None) -> dict:
+    """A WRITER (cr1#1504). Schedule setup's own record in
+    `_hq/workspace_config.json`, as a MERGE: the model used to write the file
+    by hand from a five-key template, which dropped every other key
+    (`triggers`, `root_fingerprint` and the rest) on a re-run, and wrote over
+    a file it could not read.
+
+    Sets `workspace_basename` and this run's `registered_at`; adds the ids
+    given to `registered_taskIds` (existing ids first, none dropped: a
+    removal is `record_removals`'s); sets `first_install` and
+    `workspace_root` only when absent (`workspace_root` is this seat's
+    forwarded folder when there is one, else the folder this ran on, the
+    value `path_repair.ensure_fingerprint` defaults to; after that
+    `path_repair` owns it). Every other key is kept. A bare string for
+    `registered_task_ids` is one id.
+
+    `{ok, written, registered_taskIds}`; a file that exists but cannot be
+    read is left byte-identical and answers `ok: false, written: false` with
+    `reason: config_unreadable` and the one `line` to say."""
+    from atomic_write import atomic_write_json
+    from workspace_config_io import ConfigUnreadable, read_for_update, refused
+
+    path = Path(workspace_root) / "_hq" / "workspace_config.json"
+    try:
+        config = read_for_update(path)
+    except ConfigUnreadable:
+        return {"ok": False, "written": False, **refused()}
+    stored = config.get("registered_taskIds")
+    ids = [str(t) for t in stored] if isinstance(stored, list) else []
+    given = registered_task_ids
+    if isinstance(given, str):
+        given = [given]  # one id, never a run of letters
+    for tid in (given or []):
+        tid = str(tid or "").strip()
+        if tid and tid not in ids:
+            ids.append(tid)
+    config["registered_taskIds"] = ids
+    basename = str(workspace_basename or "").strip()
+    if basename:
+        config["workspace_basename"] = basename
+    config["registered_at"] = registration_stamp(now)
+    config.setdefault("first_install", True)
+    if not str(config.get("workspace_root") or "").strip():
+        device = str(os.environ.get(DEVICE_WORKSPACE_ENV, "")).strip()
+        config["workspace_root"] = device or str(workspace_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, config)
+    return {"ok": True, "written": True, "registered_taskIds": ids}
 
 
 #: cr1#967: the writer a moved time's receipt lands through (the door form).
@@ -3883,6 +4024,8 @@ __all__ = [
     "trigger_row_payload",
     "TRIGGER_ROW_WRITER",
     "record_registration",
+    "record_workspace_registration",
+    "SETUP_RECORD_WRITER",
     "registration_stamp",
     "registration_payload",
     "REGISTRATION_WRITER",

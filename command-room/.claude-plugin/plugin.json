@@ -1,6 +1,6 @@
 {
   "name": "command-room",
-  "version": "6.3.0",
+  "version": "6.3.1",
   "description": "Claude as your chief of staff. Turns a folder of notes, transcripts, and emails into an executive workspace. The Hub: one private page that preps your next meetings, drafts your inbox and shows your plate. Morning Brief each weekday, and a silent Maintenance task that keeps the workspace tidy. Writing: emails, memos, one-pagers, board updates \u2014 voice-calibrated to you. Memory layer: decision log, people, pipeline and insights.",
   "author": {
     "name": "Chalette Holdings"

@@ -140,7 +140,7 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
    ```
    The floor is `plan["after"]`: the one maintenance window rule (cr1#663, `catchup.maintenance_window`), since the last sweep receipt with no day cap, the last 30 days on a first run or after a gap longer than 30 days. Never narrow it by hand; the dedup makes an over-wide window safe. Hold `plan["window_desc"]` and `plan["maintenance_window"]` for the receipt in Step 4.
 
-2. **Resolve the session-transcript MCP at runtime and list active sessions.** The session-info server id is per-install (like the Granola and Calendar servers) — resolve it at runtime by tool-name, never hard-code it. List the sessions whose last activity is at/after the Step-1 floor. Read each session's transcript. (No sessions in the window → skip to Step 4 with an empty item list; the receipt still lands. No session-transcript MCP at all → Step 4 with an empty list and `skip_reason="no session-transcript tool in this run"`, skip-not-fail per `shared/RELIABILITY.md`. A tool that errored → Step 4 with an empty list and `fetch_blocked` saying why. Either way the window stays where it was and the same span is read next time (cr1#740): never hand a read that did not happen to Step 4 as an empty window.)
+2. **Resolve the session-transcript MCP at runtime and list active sessions.** The session-info server id is per-install (like the Granola and Calendar servers) — resolve it at runtime by tool-name, never hard-code it. List the sessions whose last activity is at/after the Step-1 floor. Read each session's transcript. (No sessions in the window → skip to Step 4 with an empty item list and the tool's name in `transcript_tool`; the receipt still lands, complete. An empty list with no tool named lands skipped (cr1#1489): name the tool whenever you listed sessions with it. No session-transcript MCP at all → Step 4 with an empty list and `skip_reason="no session-transcript tool in this run"`, skip-not-fail per `shared/RELIABILITY.md`. A tool that errored → Step 4 with an empty list and `fetch_blocked` saying why. Either way the window stays where it was and the same span is read next time (cr1#740): never hand a read that did not happen to Step 4 as an empty window.)
 
 3. **Extract only what never became an event.** For each transcript, identify the concrete commitments, decisions, interactions, and deliverables. Then cross-reference the recent `events.jsonl` window and DROP anything already logged (past-meetings, reconcile-sent, or a writing skill already captured it) — this pass recovers only the misses.
 
@@ -241,6 +241,10 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
                                                                   # receipt names the window read
                                skip_reason=None,     # cr1#740: Step 2's words when no session
                                fetch_blocked=None,   # tool exists / when the tool errored
+                               transcript_tool="<the session tool's name>",  # cr1#1489: the tool
+                               # Step 2 listed sessions with, even when none was active. An
+                               # empty read that names no tool lands skipped (a cloud run has
+                               # no such tool), and the window holds.
                                # fired_via: omit on the nightly fire or a catch-up (the
                                # seat decides); pass "manual" on a 'run session sweep'
                                # chat phrase or Run Now (v4.5.2 receipt contract)
@@ -271,7 +275,7 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
    - Nothing recovered and nothing composed → no output. Silence is correct; the receipt is the proof it ran.
 
 ## Self-guard
-An empty window (no active sessions, or a fresh workspace) is a clean silent no-op: `sweep_and_receipt` with an empty item list still lands a zero-recovered receipt (no session-transcript MCP is Step 2's `skip_reason`: just as silent, and the window stays), so the watchdog sees the task fired without any noise reaching the CEO. Same posture for the narrative leg — an empty/omitted `sessions` list still lands `n_narratives_composed: 0` on the very same receipt.
+An empty window (no active sessions, or a fresh workspace) is a clean silent no-op: `sweep_and_receipt` with an empty item list and the tool named in `transcript_tool` still lands a zero-recovered complete receipt (no session-transcript MCP is Step 2's `skip_reason`: just as silent, and the window stays), so the watchdog sees the task fired without any noise reaching the CEO. Same posture for the narrative leg — an empty/omitted `sessions` list still lands `n_narratives_composed: 0` on the very same receipt.
 
 ## What it does NOT do
 - It does not render a brief or a commitments list — the brief and the list read what this pass wrote.

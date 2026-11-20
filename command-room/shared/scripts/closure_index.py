@@ -160,6 +160,18 @@ class ClosureIndex:
         after the LATEST reopen (Stage D undo). Never closed → False."""
         return self._last_close(cid, seq) > self._last_reopen(cid, seq)
 
+    def last_close_at(self, cid: str, seq=None) -> int:
+        """The file index of the LATEST closure of (cid, seq), -1 when it was
+        never closed (cr1#1478: a reader that asks "did a close land after
+        this row?")."""
+        return self._last_close(cid, seq)
+
+    def last_reopen_at(self, cid: str, seq=None) -> int:
+        """The file index of the LATEST reopen of (cid, seq), -1 when it was
+        never reopened (cr1#1478: a row written before the reopen belongs to
+        the item's closed spell, not to the item now)."""
+        return self._last_reopen(cid, seq)
+
     def closing_event(self, cid: str, seq=None):
         """The event that EFFECTIVELY closed (cid, seq), or None if the item
         is not currently closed. This is the latest standing closure — after

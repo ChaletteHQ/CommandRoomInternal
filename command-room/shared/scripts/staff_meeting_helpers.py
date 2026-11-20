@@ -187,6 +187,9 @@ def health_report(workspace_root: str, *,
         # already in `lines`.
         "duplicates": verdict.get("duplicates") or {},
         "stale_prompts": drift,
+        # Registered tasks whose prompt could not be read: never current.
+        "unchecked_prompts": [t for t in sr.unchecked_prompts(own)
+                              if not _sc.is_shelved(t)],
         "stale_stamps": [f for f in stamps if f.get("stale")],
         "dark_surfaces": dark,
     })

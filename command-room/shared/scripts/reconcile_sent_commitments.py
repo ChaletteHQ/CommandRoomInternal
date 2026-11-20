@@ -29,6 +29,7 @@ INPUT SHAPE (sent_messages)
     "subject": str|None, "body": str|None,
     "recipient_names": [str, ...],          # Bug #103 recall fallback
     "has_attachment": bool,                 # SENTMATCH signal A
+    "attachment_names": [str, ...],         # cr1#980: is the file the item?
     "thread_id": str|None}, ...]            # SENTMATCH signal B
 Every field past `body` is optional and absent → the behavior that field
 enables simply does not fire (never a guess).
@@ -510,6 +511,9 @@ def reconcile_sent(
             # attachment COUNT or a list still reads correctly, and an absent
             # key stays False: no evidence is not weak evidence.
             has_attachment=bool(msg.get("has_attachment")),
+            # cr1#980 — the file names, so a file proves a close only when it
+            # is the item (none on the fetch: the file proves nothing).
+            attachment_names=_sent_attachment_names(msg),
             # SENTMATCH signal B — inert when the fetch carried no thread id.
             send_thread_ref=own_thread_key,
             # EVORDER layer 3 — when this message was actually sent. A send
@@ -620,6 +624,9 @@ def reconcile_sent(
                 "has_completion_signal": _msg_completion,
                 "question_shaped": _msg_question,
                 "has_attachment": bool(msg.get("has_attachment")),
+                # cr1#980 — the matcher's finding that the file IS this item,
+                # which the promotion below reads in place of the bare flag.
+                "attachment_is_item": bool(r.get("attachment_is_item")),
                 # CLOSETRUTH1 fix round 1 (review F-4) — the same "is this
                 # caller mail?" fact the matcher is handed as
                 # `require_title_proof`, carried onto the proposal so the
@@ -736,10 +743,14 @@ def reconcile_sent(
         # would be a second bar for the one door that already has the
         # person's say-so. Absent key = mail, so every existing caller is
         # unchanged.
+        # cr1#980 (owner ruling 2026-11-19): a file proves the promotion only
+        # when it IS this item (`attachment_is_item`, graded in the matcher).
+        # Any file at all used to pass, so a shared word plus an unrelated
+        # file closed rows as "probably handled".
         return (not p.get("from_mail", True)
                 or bool(p.get("close_basis"))
                 or p.get("has_completion_signal") is True
-                or bool(p.get("has_attachment")))
+                or bool(p.get("attachment_is_item")))
 
     pending = []
     for p in pending_all:
@@ -1403,11 +1414,24 @@ def _asked_by(explicit=None):
 #: hands them to the fire's connector step so the rows it builds are the rows
 #: this module scores. The last four are every spelling `_message_labels`
 #: reads: a staged message keeps what the lists match on, and nothing but
-#: `_drop_excluded` reads them (cr1#770).
+#: `_drop_excluded` reads them (cr1#770). `attachment_names` (cr1#980) is the
+#: file names, which decide whether a file is the item.
 SENT_MESSAGE_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
+                       "attachment_names",
                        "recipient_person_ids", "recipient_names",
                        "recipient_emails", "subject", "body",
                        "labels", "folder", "folders", "label")
+
+
+def _sent_attachment_names(msg) -> list:
+    """cr1#980 — a Sent message's file names, read the way the inbound rail
+    reads them (`attachment_names`, else `attachments` as names or dicts).
+    [] when the fetch carried none, and then a file proves nothing."""
+    try:
+        from reconcile_inbound_commitments import attachment_names
+        return attachment_names(msg)
+    except Exception:  # noqa: BLE001 - unreadable names are no names
+        return []
 
 #: How far back a first run (no `sent_reconcile` audit yet) reads, and the
 #: overlap a normal run keeps behind its cursor (Step 1, Bug #101). cr1#663:

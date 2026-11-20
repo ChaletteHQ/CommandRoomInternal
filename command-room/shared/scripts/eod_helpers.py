@@ -1197,6 +1197,7 @@ CALENDAR_KEEP_FIELDS = ("id", "meeting_id", "title", "summary", "start",
 #: (`reconcile_sent_commitments.SENT_MESSAGE_FIELDS`, pinned equal). The last
 #: four are the fields the include and exclude lists match on (cr1#770).
 SENT_KEEP_FIELDS = ("message_id", "ts", "thread_id", "has_attachment",
+                    "attachment_names",
                     "recipient_person_ids", "recipient_names",
                     "recipient_emails", "subject", "body",
                     "labels", "folder", "folders", "label")
