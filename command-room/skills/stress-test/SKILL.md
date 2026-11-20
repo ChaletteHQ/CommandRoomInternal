@@ -210,6 +210,22 @@ Have opinions. Some failure modes are much more likely than others. Rank them. D
 - Does not require the plan to be written down formally — works from a rough description or a linked doc.
 - Does not replace judgment — the CEO still decides which safeguards are worth the cost.
 
+## Craft: how you decide (cr1#1391)
+
+A craft file is how you, or your firm, decide, as numbered rules. On EVERY run, load yours through the read door, one call, with `"subject_ids": []` (add the project or business id the decision is about when the resolver returned one):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": [], "task": "stress-test", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply the rules in `result.files` in the order given (yours first, then your firm's). Cite every rule the output used: pass their `cite_id`s to the helper and paste each of `result.lines` as one bullet of the `Sources:` section.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+No file loaded, or no rule used: the turn says nothing about craft.
+
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 
 This skill touches `_hq/data`. **The activity log is never rewritten by hand.**

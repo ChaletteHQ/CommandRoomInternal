@@ -252,7 +252,8 @@ def _file_current(ws, f, list_doc: dict, today: date) -> bool:
             and open_list.stamps_current(ws, f))
 
 
-def loose_ends_view(ws, now_iso=None, *, kind: Optional[str] = None) -> dict:
+def loose_ends_view(ws, now_iso=None, *, kind: Optional[str] = None,
+                    keep_ids=None) -> dict:
     """The loose-ends list now: `rows` (each with its `kinds` and `source`,
     and `age_days` worked out now), `by_kind` (how many rows of each kind)
     and `kinds` (the label and job of each kind present). A row snoozed now
@@ -273,9 +274,12 @@ def loose_ends_view(ws, now_iso=None, *, kind: Optional[str] = None) -> dict:
         rows = f["rows"]
     else:
         rows, from_log = _compute(ws, list_doc, now, today, tzinfo), True
+    _keep = {str(k) for k in (keep_ids or ())}
     out = []
     for r in rows:
-        if open_list.is_snoozed(r, now):
+        # cr1#1292: `keep_ids` keeps snoozed rows a caller places by date
+        # (the Week board keeps an item a Later moved, on its new day).
+        if open_list.is_snoozed(r, now) and str(r.get("id")) not in _keep:
             continue
         if kind is not None and kind not in (r.get("kinds") or []):
             continue

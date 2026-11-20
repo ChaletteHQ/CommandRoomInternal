@@ -17,14 +17,18 @@ WHAT LOADS (SPEC CRAFT1 section 4, owner rulings 2026-10-24)
     convention AND its header names that subject's id.
   - `confirmed` files load. `proposed` files load only when the subject is
     the owner (the primary user). `superseded` files never load.
-  - The task picks the scopes (`TASK_SCOPES`): a draft or a memo reads write
-    and decide, a contract review reads review, call prep and apply read
-    every scope.
+  - The task picks the scopes (`TASK_SCOPES`, `task_scopes`): every scope
+    declares the skills that read it (`craft_contract.CORE_DECLARATIONS`,
+    cr1#1391), so a draft or a memo reads write and decide, a decision skill
+    reads decide, a contract review reads review, call prep and apply read
+    every scope; a scope the owner added loads in the skills it names.
+  - A scope with a parent loads on top of it, never instead of it.
   - A file that fails the step 1 shape is skipped and named in `skipped`; it
     is never half-read.
   - A contract review reads the owner's review method first, then the
-    firm's, then the client business's; never the counterparty's
-    (`TASK_LEADS`, `counterparty_ids`; ruling on cr1#397 review finding 4).
+    client business's; never the firm's advisory review (cr1#1391 gap 3)
+    and never the counterparty's (`TASK_LEADS`, `counterparty_ids`; ruling
+    on cr1#397 review finding 4).
   - A subject with no craft file reads nothing, and the answer says nothing,
     except a contract review, which says no stored method was found
     (`NO_METHOD_LINES`).
@@ -46,8 +50,10 @@ PUBLIC API
 ----------
   TASK_SCOPES, TASK_LEADS, NO_METHOD_LINES
   subject_folders(workspace_root, subject_id, *, entities=None) -> list[Path]
+  task_scopes(workspace_root, task) -> tuple | None
+  lead_scopes(workspace_root, task, *, context=None) -> tuple
   craft_for_task(workspace_root, subject_ids, task, *, scope=None,
-                 counterparty_ids=None, entities=None)
+                 counterparty_ids=None, entities=None, context=None)
       -> {"files", "skipped"[, "empty_line"]} | {"error"}
   cite_rules(workspace_root, cite_ids, *, now_iso=None, entities=None)
       -> {"lines", "refused"}
@@ -75,14 +81,27 @@ if str(_HERE) not in sys.path:
 
 import craft_contract as cc  # noqa: E402
 
-#: The scopes each task reads. None means every scope on the workspace's
-#: list (the fixed five plus the ones the owner added).
+#: Tasks that read every scope of the subjects they name: call prep reads
+#: every scope of each attendee and business, and `apply` is the owner's
+#: own "apply [name]'s method to this".
+EVERY_SCOPE_TASKS = ("call-prep", "apply")
+
+
+def _core_scopes_for(reader: str) -> tuple:
+    return tuple(s for s in cc.CORE_SLUGS
+                 if reader in cc.CORE_DECLARATIONS[s]["readers"])
+
+
+#: The core scopes each task reads for the subjects it names, from where each
+#: core scope says it applies (`craft_contract.CORE_DECLARATIONS`, cr1#1391).
+#: None means every scope on the workspace's list. A task is a reader skill's
+#: folder name, `draft` (email-writer) or `memo` (memo-writer), or `apply`.
+#: The scopes the owner added join at run time, by their own declaration
+#: (`task_scopes`).
 TASK_SCOPES: dict = {
-    "draft": ("write", "decide"),
-    "memo": ("write", "decide"),
-    "contract-review": ("review",),
-    "call-prep": None,
-    "apply": None,
+    **{r: _core_scopes_for(r) for r in cc.READERS},
+    **{alias: _core_scopes_for(r) for alias, r in cc.TASK_ALIASES.items()},
+    **{t: None for t in EVERY_SCOPE_TASKS},
 }
 
 #: How a scope reads after "per how <name>", third person then second.
@@ -91,31 +110,61 @@ _SCOPE_VERBS = {
     "decide": ("decides", "decide"),
     "write": ("writes", "write"),
     "run-a-meeting": ("runs a meeting", "run a meeting"),
-    "sell": ("sells", "sell"),
+    "win-business": ("wins business", "win business"),
+    "follow-up": ("follows up", "follow up"),
+    "prioritize": ("prioritizes", "prioritize"),
+    "delegate": ("delegates", "delegate"),
 }
 
 #: Subjects a task reads first, before the ones the caller names (ruling on
-#: cr1#397 review finding 4): a contract review applies the owner's own
-#: review method, then the firm's, then the client's; a draft and a memo
-#: apply the owner's write method, then the firm's, then the recipient's,
-#: project's or business's (ruling on cr1#399 open question 1). "owner" is
-#: the primary user, "firm" the owner's own company.
+#: cr1#397 review finding 4): a draft and a memo apply the owner's write
+#: method, then the firm's, then the recipient's, project's or business's
+#: (ruling on cr1#399 open question 1). "owner" is the primary user, "firm"
+#: the owner's own company.
+#:
+#: A contract review reads the owner's review method, then the client's,
+#: and NOT the firm's review file (cr1#1391 gap 3, decided reversibly on
+#: 2026-11-18, `FIRM_SCOPES_KEPT_OUT`): that file holds the firm's advisory
+#: review of a client's business, which is not how a contract is read. A
+#: firm scope the owner added for contract review still loads.
+#:
+#: Every other reader skill reads the owner's file, then the firm's: call
+#: prep reads the owner's own file for the owner's calls (cr1#1391 gap 1),
+#: and the five decision skills read the owner's and the firm's decide
+#: method.
 TASK_LEADS: dict = {
-    "contract-review": ("owner", "firm"),
-    "draft": ("owner", "firm"),
-    "memo": ("owner", "firm"),
+    **{t: ("owner", "firm") for t in tuple(cc.READERS)
+       + tuple(cc.TASK_ALIASES)},
 }
 
-#: The scopes a lead subject is read for, when narrower than the task's.
-#: A draft or a memo reads the owner's and the firm's WRITE method on every
-#: draft, never their other scopes (ruling on cr1#399 open question 1, the
-#: coordinator's reading of cr1#381 and SPEC CRAFT1 section 6). Precedence:
-#: the owner's method sets how he writes, so it loads first; a recipient's
-#: or business's file, loaded after it, adds what that relationship needs.
+#: The scopes a lead subject is always read for, when narrower than the
+#: task's. A draft or a memo reads the owner's and the firm's WRITE method on
+#: every draft, never their other scopes (ruling on cr1#399 open question 1,
+#: the coordinator's reading of cr1#381 and SPEC CRAFT1 section 6).
+#: Precedence: the owner's method sets how he writes, so it loads first; a
+#: recipient's or business's file, loaded after it, adds what that
+#: relationship needs. Call prep always reads the owner's run-a-meeting
+#: method; the owner's win-business method joins when the call is a sales
+#: call (its trigger words are in the `context` the skill passes). A core
+#: scope narrowed out here joins whenever its trigger words are in the
+#: context; a scope the owner added for this reader always joins.
 LEAD_SCOPES: dict = {
     "draft": ("write",),
     "memo": ("write",),
+    "email-writer": ("write",),
+    "memo-writer": ("write",),
+    "call-prep": ("run-a-meeting",),
+    "contract-review": ("review",),
+    **{s: ("decide",) for s in cc.DECISION_SKILLS},
 }
+
+#: The firm's scopes a task never reads, as a lead or a named subject
+#: (cr1#1391 gap 3): contract review never reads the firm's core review
+#: file, its advisory review of a client's business. To undo, empty it.
+FIRM_SCOPES_KEPT_OUT: dict = {"contract-review": ("review",)}
+#: Tasks whose lead subjects (the owner, the firm) are read only as leads:
+#: naming them as attendees does not widen what of theirs loads.
+LEADS_ONLY_TASKS = frozenset({"call-prep"})
 
 #: The one sentence a task says when no method loaded. Only contract review
 #: says anything; every other task stays silent.
@@ -344,7 +393,8 @@ def _file_view(root: Path, path: Path, parsed: dict, idx: _Index) -> dict:
         "id": rel,
         "subject_id": subject,
         "subject_name": idx.name(subject),
-        "scope": header.get("scope"),
+        # a file filed under a renamed scope (sell) reads as its new one
+        "scope": cc.canonical_scope(header.get("scope")),
         "scope_label": cc.scope_label(header.get("scope"), root),
         "status": header.get("status"),
         "confidence": header.get("confidence"),
@@ -365,21 +415,94 @@ def _scope_order(root: Path) -> dict:
             enumerate(cc.known_scopes(root))}
 
 
+def _scope_rows(root: Path) -> dict:
+    return {row["slug"]: row for row in cc.known_scopes(root)}
+
+
+def _sort_key(scope, rows: dict, order: dict) -> tuple:
+    """A scope sorts right after its parent, so a child loads on top of the
+    parent (cr1#1391 build item 4)."""
+    n = len(order)
+    parent = (rows.get(scope) or {}).get("parent")
+    if parent:
+        return (order.get(parent, n), 1, order.get(scope, n))
+    return (order.get(scope, n), 0, 0)
+
+
+def _words_in(text: str, phrase: str) -> bool:
+    return re.search(r"(?<![a-z])" + re.escape(phrase.lower()) + r"(?![a-z])",
+                     text) is not None
+
+
+def task_scopes(workspace_root, task) -> Optional[tuple]:
+    """The scopes `task` reads for the subjects it names: every scope that
+    declares the task's reader, the owner's added ones included (cr1#1391
+    gap 2), or None for a task that reads every scope. Never raises."""
+    if task in EVERY_SCOPE_TASKS:
+        return None
+    reader = cc.reader_of(task)
+    return tuple(row["slug"] for row in cc.known_scopes(workspace_root)
+                 if reader in (row.get("readers") or ()))
+
+
+def lead_scopes(workspace_root, task, *, context=None) -> tuple:
+    """The scopes the owner's and the firm's files are read for in `task`:
+    `LEAD_SCOPES` always; a core scope that declares the task joins when one
+    of its trigger words is in `context` (call prep passes the meeting's
+    title and purpose, so a sales call reads the owner's win-business
+    method); a scope the owner added for this reader always joins. Never
+    raises."""
+    reader = cc.reader_of(task)
+    declared = [row for row in cc.known_scopes(workspace_root)
+                if reader in (row.get("readers") or ())]
+    always = LEAD_SCOPES.get(task)
+    if always is None:
+        return tuple(row["slug"] for row in declared)
+    text = " ".join(str(context or "").lower().split())
+    out = list(always)
+    for row in declared:
+        if row["slug"] in out:
+            continue
+        if not row.get("fixed") or (text and any(
+                _words_in(text, t) for t in row.get("triggers") or ())):
+            out.append(row["slug"])
+    return tuple(out)
+
+
+def _with_parents(wanted, rows: dict):
+    """A wanted set with every wanted child's parent added: a scope with a
+    parent loads on top of it, never instead of it (cr1#1391 item 4)."""
+    if wanted is None:
+        return None
+    out = list(wanted)
+    for slug in wanted:
+        parent = (rows.get(slug) or {}).get("parent")
+        if parent and parent not in out:
+            out.append(parent)
+    return tuple(out)
+
+
 # ---------------------------------------------------------------------------
 # Loading for a task
 # ---------------------------------------------------------------------------
 
 def craft_for_task(workspace_root, subject_ids, task, *, scope=None,
                    counterparty_ids=None, entities=None,
-                   leads=True) -> dict:
+                   leads=True, context=None) -> dict:
     """The craft files `task` reads for `subject_ids`, in the order the
-    subjects were named and, within a subject, in scope-list order.
+    subjects were named and, within a subject, in scope-list order, a
+    child scope right after its parent (a child never loads without it).
 
     A task in `TASK_LEADS` reads its lead subjects first: a contract review
-    reads the owner's review method, then the firm's, then the client
-    businesses named in `subject_ids`; a draft and a memo read the owner's
-    write method, then the firm's (`LEAD_SCOPES`), then the recipients',
-    project's and business's write and decide. `leads=False` reads only the
+    reads the owner's review method, then the client businesses named in
+    `subject_ids` (never the firm's review file, cr1#1391 gap 3); a draft and a memo
+    read the owner's write method, then the firm's (`LEAD_SCOPES`), then the
+    recipients', project's and business's write and decide; call prep reads
+    the owner's run-a-meeting method, and win-business too when `context`
+    (the meeting's title and purpose) says it is a sales call; a decision
+    skill reads the owner's and the firm's decide method (`lead_scopes`).
+    Every task also reads the scopes the owner added for it, by their
+    declaration (`task_scopes`). `leads=False` reads only the
     subjects named: the thread loader passes it, because the skill's own
     call already carries the leads and a thread payload must not repeat
     them. `counterparty_ids` are never read for
@@ -405,6 +528,7 @@ def craft_for_task(workspace_root, subject_ids, task, *, scope=None,
     idx = _index(root, entities)
     ents, owner = idx.ents, idx.owner
     never = {c for c in (counterparty_ids or []) if isinstance(c, str)}
+    kept_out = FIRM_SCOPES_KEPT_OUT.get(task, ())
     lead_ids = []
     for lead in (TASK_LEADS.get(task, ()) if leads else ()):
         if lead == "owner" and owner:
@@ -412,16 +536,27 @@ def craft_for_task(workspace_root, subject_ids, task, *, scope=None,
         elif lead == "firm":
             lead_ids.extend(sorted(o for o in idx.own_orgs
                                    if idx.record(o)))
-    wanted = TASK_SCOPES[task]
+    rows = _scope_rows(root)
+    wanted = task_scopes(root, task)
+    lead_wanted = lead_scopes(root, task, context=context)
     if scope:
+        scope = cc.canonical_scope(scope)
         wanted = (scope,) if wanted is None or scope in wanted else ()
-    lead_wanted = wanted
-    if task in LEAD_SCOPES:
-        narrow = LEAD_SCOPES[task]
-        lead_wanted = tuple(s for s in narrow
-                            if wanted is None or s in wanted)
+        lead_wanted = (scope,) if scope in lead_wanted else ()
+    wanted = _with_parents(wanted, rows)
+    # The owner's and the firm's files: a child scope loads only when its
+    # parent loads here too, so it never comes instead of it, and a parent
+    # the ruling on cr1#399 keeps out (the owner's decide file in a draft)
+    # is never pulled in by a child.
+    lead_wanted = tuple(s for s in lead_wanted
+                        if not (rows.get(s) or {}).get("parent")
+                        or rows[s]["parent"] in lead_wanted)
     plan = [(s, lead_wanted) for s in lead_ids if s not in never]
-    plan += [(s, wanted) for s in subject_ids or [] if s not in never]
+    # Call prep reads the owner's own file only as a lead, by the call's
+    # context, never every scope of it because the owner attends.
+    skip_named = set(lead_ids) if task in LEADS_ONLY_TASKS else set()
+    plan += [(s, wanted) for s in subject_ids or []
+             if s not in never and s not in skip_named]
     order = _scope_order(root)
 
     files: list = []
@@ -441,7 +576,12 @@ def craft_for_task(workspace_root, subject_ids, task, *, scope=None,
                 head = cc.parse_craft(_safe_read(path))["header"]
                 if head.get("subject") != sid:
                     continue
-                if wanted is not None and head.get("scope") not in wanted:
+                if wanted is not None and cc.canonical_scope(
+                        head.get("scope")) not in wanted:
+                    continue
+                if sid in idx.own_orgs and cc.canonical_scope(
+                        head.get("scope")) in kept_out:
+                    # not even when the client named is the firm itself
                     continue
                 if not _may_load(head.get("status"), sid, owner):
                     continue
@@ -458,7 +598,7 @@ def craft_for_task(workspace_root, subject_ids, task, *, scope=None,
                                               "folder it sits in"})
                     continue
                 mine.append(_file_view(root, path, got["parsed"], idx))
-        mine.sort(key=lambda f: (order.get(f["scope"], len(order)),
+        mine.sort(key=lambda f: (_sort_key(f["scope"], rows, order),
                                  f["id"]))
         files.extend(mine)
     out = {"files": files, "skipped": skipped}
@@ -583,7 +723,7 @@ def cite_rules(workspace_root, cite_ids, *, now_iso=None,
         when = _when(stamp or header.get("last_updated"), today)
         owner_subject = bool(owner) and subject == owner
         name = idx.name(subject)
-        how = _how(header.get("scope"),
+        how = _how(cc.canonical_scope(header.get("scope")),
                    cc.scope_label(header.get("scope"), root), owner_subject)
         text = (rule.get("body") or "").strip().rstrip(".")
         tag = f"{number}, {status}" + (f" {when}" if when else "")
@@ -617,7 +757,7 @@ def craft_inventory(workspace_root, subject_id, *, entities=None) -> dict:
             tested, verdict = head.get("tested"), head.get("verdict")
             rows.append({
                 "id": _rel(root, path),
-                "scope": head.get("scope"),
+                "scope": cc.canonical_scope(head.get("scope")),
                 "scope_label": cc.scope_label(head.get("scope"), root),
                 "status": head.get("status"),
                 "confidence": head.get("confidence"),
@@ -731,6 +871,8 @@ def match_craft_verb(text, *, workspace_root=None) -> dict:
 
 
 __all__ = [
-    "TASK_SCOPES", "TASK_LEADS", "NO_METHOD_LINES", "subject_folders", "craft_for_task", "cite_rules",
+    "TASK_SCOPES", "TASK_LEADS", "LEAD_SCOPES", "EVERY_SCOPE_TASKS",
+    "NO_METHOD_LINES", "task_scopes", "lead_scopes",
+    "subject_folders", "craft_for_task", "cite_rules",
     "craft_inventory", "match_craft_verb", "craft_signature",
 ]

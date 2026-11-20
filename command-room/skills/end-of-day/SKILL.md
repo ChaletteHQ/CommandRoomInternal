@@ -988,7 +988,7 @@ surfaces that DO number rows (the plate, the held queue); read it there.
 | Verb | Block | What it does |
 |---|---|---|
 | `mark done [n]` | slipped, confirm | Closes through `commitment_state.close_commitment` WITH `source_ref` |
-| `push to [date]` | slipped | `commitment_state.apply_later_covering_folded` (through `eod_helpers:close_from_eod`; the counted copies folded under the line move with it, cr1#1012 ruling (b)) — moves the due date on the owner's own item (`commitment_updated` carrying `new_due`), or dates a mute when the item is owed to them |
+| `push to [date]` | slipped | `commitment_state.apply_later_covering_folded` (through `eod_helpers:close_from_eod`; the counted copies folded under the line move with it, cr1#1012 ruling (b)); it moves the due date on the owner's own item (`commitment_updated` carrying `new_due` and `hidden_until`, so it is off every list until then, cr1#1292), or dates a mute when the item is owed to them |
 | `draft [n]` | slipped | Hands off to `email-writer` per the EW1 delegation rules |
 | `drop [n]` | slipped, confirm | The existing drop path, unchanged |
 | `confirm [n]` | confirm | The existing confirm path, unchanged |

@@ -281,6 +281,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # chats run, or why there is no scheduler). Computes one sentence from its
     # arguments; reads nothing and writes nothing.
     "schedule_backend:opening_lines",
+    # cr1#1278 - the scheduler listing call by the backend the loaded tool
+    # names select (the name the health check reads the scheduler by). Reads
+    # nothing and writes nothing.
+    "schedule_backend:plan_list",
     # ORCH2C (Night M3 lane 6) — the Waiting On chain
     # (`orchestrator-commitments.md`). Every one reads or computes: the CRU
     # passes are PLANNED here (the closes they would make come back as
@@ -404,7 +408,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_inbox",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:feed_projects",  # cr1#660 - the cockpit page's Projects tab, read only
     "cockpit_helpers:feed_review",  # cr1#779 - the Review tab's rows
-    "cockpit_helpers:feed_week",  # cr1#780 - the Week tab's rows
+    "cockpit_helpers:feed_week",  # cr1#780 - the Done tab's rows
     "cockpit_helpers:feed_settings",  # cr1#781 - the Settings tab: what was learned and every setting, read only
     "usage_guide:guide",  # cr1#187 - the habits and phrases: the Settings section and the typed "how do I use this", read only
     "cockpit_helpers:feed_mine",  # cr1#662 - the Today page's priorities and reminders, read only
@@ -449,12 +453,86 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "offer_gate:decision_log_duplicates_line",  # its sentence (pure)
     "surface_composers:decision_log_answer",  # decision-log's composed answer (reads)
     "chat_output_renderer:validate_chat_output",  # the leak scan on a reply (reads)
+    "chat_output_renderer:output_check",  # cr1#1357: the same scan, answering its receipt (reads)
+    "surface_composers:undo_receipt_text",  # cr1#1414: the gated receipt for an undo that already ran (reads)
     # DOORHELP7 (cr1#1005, part 4): the reads a merged seat was still refused.
     # Each reads and writes nothing (pinned on a local and a merged seat).
     "meeting_capture:count_meeting_writes",  # meeting-notes Step 9a3, the claim audit (reads the book)
     "meeting_capture:meeting_binding_audit",  # Step 9a3's binding check (reads the book)
     "task_watchdog:health_verdict",  # the Maintenance health step's verdict (reads receipts)
     "integrity_check:run_checks",  # the Maintenance integrity step, detect only (reads)
+    # cr1#1297 part 2 (batch 1): read-only helpers skills already import
+    # in-shell, on the read door so a merged seat runs them instead of
+    # refusing them. Each reads a file or computes on its arguments and
+    # writes nothing (ORCH1's seven-frame scan and its byte census cover
+    # every name here). Not here yet: the pure helpers that take a whole
+    # ledger or register as an argument, which the door's argument walk
+    # cannot carry at real size; they stay in the census baseline.
+    "brief_path:get_brief_path",  # a brief's path, computed (pure)
+    "brief_path:get_brief_artifact_url",  # a saved file's link, computed (pure)
+    "brief_path:get_brief_opener_url",  # the link a chat opens, computed (pure)
+    "brief_path:saved_to_meetings_footer",  # the "saved to" line under a brief (pure)
+    "chase_policy:load_chase_policy",  # the chase-window settings (reads its file)
+    "chase_policy:get_chase_window",  # one relationship's window (pure)
+    "change_feed:changes_since",  # what changed since a time (reads the log)
+    "change_feed:plumbing_lines",  # the feed's plumbing lines (pure)
+    "closure_index:pointer_coverage_line",  # its sentence (pure)
+    "deal_health:zombie_threshold_days",  # the zombie threshold from closed deals (pure)
+    "deal_state:list_open_deals",  # the open deals (reads entities.json)
+    "objective_state:list_open_objectives",  # the open objectives (reads entities.json)
+    "objective_math:forum_objectives",  # the objectives a meeting touches (pure)
+    "pipeline_math:rank_deals",  # deals in health order (pure)
+    "pipeline_math:value_by_org",  # open value per org (pure)
+    "receipts:normalize_task_id",  # a task id in its one spelling (pure)
+    "schedule_config:cron_to_english",  # a cron line in words (pure)
+    "schedule_config:task_display_name",  # a task's display name (pure)
+    "release_remediation_selector:version_lt",  # version order (pure)
+    "surface_preferences:load_surface_preferences",  # the surface dismissals (reads its file)
+    "surface_preferences:is_suppressed",  # is an item dismissed (pure)
+    "surface_preferences:dismissal_fingerprint",  # a dismissal's key (pure)
+    "skill_config_writer:get_config",  # a skill's settings over its defaults (reads)
+    "skill_config_writer:is_configured",  # has a skill been set up (reads)
+    "extraction_hints:load_extraction_hints",  # the extraction hints (reads its file)
+    "session_sweep:last_sweep",  # the last sweep receipt (reads the log)
+    "session_sweep:last_backfill",  # the last backfill receipt (reads the log)
+    # cr1#1297 part 2 (batch 2): 25 more read-only in-shell helpers, by
+    # batch 1's method. Each computes on small arguments of its own, or
+    # reads a file under the workspace, and writes nothing at any depth. Not
+    # here: names whose reads reach the stale-read or read-alarm sidecar,
+    # names that take a whole ledger, register or day pack, names whose
+    # answer depends on in-process state the door's child would not share
+    # (the composers' gate-passed register, the prep leg's sequence),
+    # names whose argument is always a `computer:` link (the door refuses
+    # that by design, cr1#1058), names that hand back a dataclass whose
+    # callers read a property the door's plain copy drops, any raw
+    # `people_writer` name (D-W2-5: only its `door_` wrappers go on a
+    # list), the missing-entries sentence composer (LEDGERFENCE1 keeps
+    # its name inside seq_health alone), and every writer.
+    "extraction_hints:is_resolution_miss",  # does a reply say it was done (pure)
+    "reminders:wants_delete",  # do the words ask to delete a reminder (pure)
+    "render_router_misses:chat_route",  # is this the router-miss question (pure)
+    "scaffold_automation:slugify",  # a title as a slug (pure)
+    "schedule_config:parse_cron",  # a cron line's five fields (pure)
+    "schedule_config:readiness_retirement_summary",  # its one line (pure)
+    "schedule_config:unavailable_schedule_lines",  # the not-running lines (pure)
+    "offer_gate:deliverable_findings_line",  # the deliverable check's line (pure)
+    "offer_gate:schedule_card_line",  # the scheduling card's line (pure)
+    "onboarding_profile:parse_setup_sentence",  # the setup card's answers (pure)
+    "prep_grading:section_weight",  # a prep section's learned weight (pure)
+    "prep_pipeline:build_prep_tiles",  # the prep stat tiles (pure)
+    "prep_pipeline:build_relationship_timeline",  # the timeline strip (pure)
+    "prep_pipeline:assemble_prep_sections",  # the prep's section list (pure)
+    "prep_pipeline:build_owed_table",  # the owed table (pure)
+    "seq_health:gap_standing_line",  # the standing missing-entries line (pure)
+    "draft_constraints:apply_draft_constraints",  # a draft's learned limits (pure)
+    "voice_corrections:diff_and_classify",  # what an edit changed (pure)
+    "person_candidates:ack_line",  # the add-a-person reply line (pure)
+    "deliverable_sweep:scan_chat_text",  # a draft's leak and voice scan (pure)
+    "deliverable_sweep:summarize_for_user",  # the sweep's summary line (pure)
+    "cleanup_actions:check_aliases_staleness",  # is ALIASES.md behind (reads)
+    "cleanup_actions:check_analytical_view_staleness",  # stale views (reads)
+    "skill_config_writer:lint_skill_configs",  # the settings lint (reads)
+    "brain_undo:undo_listing_lines",  # the bare-undo listing (pure)
     # KEEP THIS NAME LAST, directly above the closing brace.
     # `run_access1_test`'s B-1 removal proof anchors on the exact two-line
     # string `"workspace_root:find_workspace_root",` + `})` and puts the
@@ -696,6 +774,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "eod_helpers:clear_fire_staging",  # EODHARD3 - the fire's staged files removed
     "eod_helpers:close_from_eod",  # EODTAP2 - a tapped mark done, drop or push on the End of Day's row list (MIGRATE3-EOD N-8)
     "commitments_helpers:apply_row_action",  # WOTAP1 - a typed or clicked mine, theirs to [name] or drop on a Waiting On row (cr1#513)
+    "commitment_wait:wait_from_chat",  # WAITCHAT1 - a typed wait on an event, set or cleared by the row's number (cr1#1323)
+    "due_set:due_from_chat",  # DUESET1 - a due date set by the row's number, never hidden (cr1#1383, option B)
     "friday_wrap_helpers:record_offer",  # MIGRATE3-FW - the earned door closed after the post
     "friday_wrap_helpers:plate_cut",  # MIGRATE3-FW - the wrap's plate cut (mints plate numbers)
     "friday_wrap_helpers:measure_line",  # MIGRATE3-FW - the one measure line (its plate count mints)
@@ -796,6 +876,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "schedule_handoff:log_schedule_changes_applied",  # cr1#970 - see the writer table row
     "craft_capture:write_craft",  # cr1#398 - see the writer table row
     "craft_contract:add_scope",  # cr1#398 - see the writer table row
+    "craft_capture:move_renamed_scope_files",  # cr1#1391 - see the writer table row
     "deliverables:land",
 })
 
@@ -909,6 +990,12 @@ R_SUBSTRATE_REGRESSED = "substrate_regressed"
 #: a path outside the folder and `refused_path`'s "Not saved" line would be
 #: wrong about it.
 R_REFUSED_COMPUTER_LINK = "refused_computer_link"
+#: cr1#1376: an activity-log append (`events.jsonl` or a year shard) named a
+#: folder other than the data folder, the workspace root's top above all. The
+#: Hub and Maintenance read a root-level log instead of the real one, so the
+#: door never lands one. `atomic_write.LedgerAtWorkspaceRoot` refuses with the
+#: same word at the one append path below the door.
+R_LEDGER_OUTSIDE_DATA = "ledger_outside_data"
 
 #: WSPLACE1 (cr1#546): the placeholder skill text carries for the anchored
 #: workspace. The run doors put the anchored workspace in for it before
@@ -1800,6 +1887,10 @@ def _helper_child_env(ctx: Dict[str, Any],
     base.pop("CR_DATA_ROOT", None)
     base["CR_WORKSPACE"] = str(ctx.get("vm_path") or "")
     base["PYTHONDONTWRITEBYTECODE"] = "1"
+    # cr1#1413: the child writes its streams in UTF-8, the encoding the door
+    # reads them with; left to each side's default, a Windows child wrote its
+    # error text in the code page and a refusal came back with none of it.
+    base["PYTHONIOENCODING"] = "utf-8"
     # THE DOOR SAYS SO (MF-M2-13). `run_helper` promises it writes nothing at
     # all, and the allow-list is read/compute only — but a listed READ can
     # still reach a best-effort diagnostic writer two frames down
@@ -2188,6 +2279,11 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
             input=payload,
             capture_output=True,
             text=True,
+            # cr1#1413: both sides name the encoding (the child is told
+            # PYTHONIOENCODING), so a refusal's words are never lost to a
+            # decode error on a Windows host.
+            encoding="utf-8",
+            errors="replace",
             cwd=str(ctx["vm_path"]),
             env=_helper_child_env(ctx, env),
             timeout=timeout_s,
@@ -2232,7 +2328,19 @@ def run_helper(name: str, args: Optional[Dict[str, Any]] = None, *,
                        stderr_tail=stderr_tail, sidecars=sidecars)
     return _envelope("run_helper", ctx, started, ok=True, name=name,
                      result=result, stderr_tail=stderr_tail,
-                     sidecars=sidecars, **_origin_fields(env))
+                     sidecars=sidecars, receipt=_door_receipt(name),
+                     **_origin_fields(env))
+
+
+def _door_receipt(name: str) -> str:
+    """The receipt an ok door call carries (cr1#1413): a merged seat's
+    closing counts a doored step only on it. "" when it cannot be made."""
+    try:
+        _ensure_scripts_on_path()
+        import turn_receipts  # type: ignore
+        return turn_receipts.issue_door(name)
+    except Exception:  # noqa: BLE001 - a receipt never blocks an answer
+        return ""
 
 
 def _child_refusal(stdout: str) -> Optional[Dict[str, Any]]:
@@ -2419,6 +2527,7 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
         proc = subprocess.run(
             [sys.executable, "-c", _HELPER_RUNNER],
             input=payload, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",  # cr1#1413, as run_helper
             cwd=str(ctx["vm_path"]), env=child_env, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return _refuse("run_writer", ctx, started, R_TIMEOUT, name=name,
@@ -2476,6 +2585,7 @@ def run_writer(name: str, args: Optional[Dict[str, Any]] = None, *,
         except Exception:  # noqa: BLE001 - a sentence never blocks a landing
             pass
     extra.update(_origin_fields(env))
+    extra.setdefault("receipt", _door_receipt(name))  # cr1#1413
     return _envelope("run_writer", ctx, started, ok=True, name=name,
                      result=shaped, stderr_tail=_relativize(stderr_tail, vm_path),
                      **extra)
@@ -2498,6 +2608,37 @@ def _device_relative(answer: str, device_path: Any) -> str:
 
 def _is_append_only(target_name: str) -> bool:
     return target_name == "events.jsonl" or bool(_EVENTS_SHARD_RE.match(target_name))
+
+
+def _inside_data_dir(vm_path: Path, target: Path) -> bool:
+    """cr1#1376: True when the fenced `target` sits inside the workspace's data
+    folder (`_hq/data`, through `data_root.resolve`, or its per-computer
+    `computers/<writer>/` folders below it). The default `_hq/data` always
+    counts, so an override never strands a caller that names it."""
+    homes = [Path(vm_path).resolve() / "_hq" / "data"]
+    try:
+        homes.append(Path(_data_dir(Path(vm_path).resolve())).resolve())
+    except Exception:  # noqa: BLE001 - the default alone decides then
+        pass
+    for home in homes:
+        try:
+            target.relative_to(home)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+#: cr1#1376: the door's sentence for `R_LEDGER_OUTSIDE_DATA`. It names no
+#: file, path or mechanism (preamble rule 6).
+LEDGER_OUTSIDE_DATA_LINE = ("Not saved: that entry named a folder other than the "
+                            "one that holds your activity log, so nothing was "
+                            "written and nothing changed.")
+
+
+def _ledger_outside_line() -> str:
+    """The plain sentence for `R_LEDGER_OUTSIDE_DATA` on the door."""
+    return LEDGER_OUTSIDE_DATA_LINE
 
 
 def _writer_owner(root: Path, target: Path) -> Optional[str]:
@@ -2745,6 +2886,14 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
                        **_placeholder_line("append_jsonl", rel))
     if not (target.name in REGISTERED_JSONL or _EVENTS_SHARD_RE.match(target.name)):
         return _refuse("append_jsonl", ctx, started, R_NOT_REGISTERED, rel=rel)
+    if (_is_append_only(target.name) and target.parent.is_dir()
+            and not _inside_data_dir(Path(ctx["vm_path"]), target)):
+        # A folder that does not exist keeps LEDGERPLACE1's `missing_parent`
+        # answer from the one append path below.
+        # cr1#1376: `rel: "events.jsonl"` used to land a second log at the
+        # workspace root, and every reader handed the root read it instead.
+        return _refuse("append_jsonl", ctx, started, R_LEDGER_OUTSIDE_DATA, rel=rel,
+                       line=_ledger_outside_line())
     rows = list(rows or [])
     if not all(isinstance(r, dict) for r in rows):
         return _refuse("append_jsonl", ctx, started, R_BAD_ARGS, rel=rel,
@@ -2787,7 +2936,8 @@ def append_jsonl(rel: str, rows: Iterable[Dict[str, Any]], *,
             # cr1#385: a ledger older than its own high-water mark refuses
             # with its plain sentence too (`substrate_regressed`).
             extra = ({"line": str(getattr(exc, "line", ""))}
-                     if str(typed) in (R_MISSING_PARENT, R_SUBSTRATE_REGRESSED) else {})
+                     if str(typed) in (R_MISSING_PARENT, R_SUBSTRATE_REGRESSED,
+                                       R_LEDGER_OUTSIDE_DATA) else {})
             return _refuse("append_jsonl", ctx, started, str(typed), rel=rel,
                            detail=str(getattr(exc, "line", "") or f"{type(exc).__name__}: {exc}"),
                            **extra)
@@ -3232,13 +3382,27 @@ def verify_command(ctx: Dict[str, Any], version: Optional[str] = None,
     into the existing version directory printed "cannot delete old ...
     Operation not permitted" for every file on a mount that cannot unlink,
     and the chat hand-copied 31 files instead. So the unzip goes into a
-    FRESH directory: the bare `<version>` when it holds no runtime yet, else
-    `<version>-<manifest sha[:8]>`; `-n` never replaces a file (a re-run of
-    the same stage skips what is there and `verify` re-checks every sha).
-    `verify --stage` writes `current.json` naming the directory it verified,
-    and every reader follows the pointer. Where this process can see the
-    cache the directory is decided here; where it cannot (the container)
-    the line decides in the shell."""
+    FRESH directory, and fresh means one that does not exist at all
+    (cr1#1464 P4 follow-up): `stage_dir_names` lists the names in order, the
+    bare `<version>` first, then `<version>-<manifest sha[:8]>`, then
+    `<version>-<8 hex of the digest and a count>`, and the first free one
+    is taken. A folder an unzip left cut short is never reused: `-n` would
+    skip its truncated file and `verify` would fail on it until the build
+    changed. `-n` stays (it never replaces a file).
+
+    ONE EXCEPTION, so a re-run never copies the runtime again: when
+    `current.json` already names a verified folder of THIS build (its
+    `manifest_sha` is this digest and the folder holds its manifest), the
+    line re-verifies that folder; `-n` skips every file already there.
+
+    A cut-short folder has no manifest (the zip writes it last), and the
+    weekly tidy moves only folders with one, so those stay until a later
+    tidy change retires them. Every name keeps the `<version>-<8 hex>`
+    shape that tidy reads. `verify --stage` writes `current.json` naming
+    the directory it verified, and every reader follows the pointer. Where
+    this process can see the cache the directory is decided here; where it
+    cannot (the container) the line decides in the shell, the same way.
+    With every name taken the line stops and says so."""
     version = version or plugin_version() or "unknown"
     zip_name = zip_name or f"cr-runtime-{version}.zip"
     if not manifest_sha:
@@ -3246,19 +3410,71 @@ def verify_command(ctx: Dict[str, Any], version: Optional[str] = None,
             manifest_sha = expect().get("manifest_sha")
         except Exception:  # noqa: BLE001 - a missing digest names no suffix
             manifest_sha = None
-    suffixed = f"{version}-{str(manifest_sha or 'stage')[:8]}"
+    names = stage_dir_names(version, manifest_sha)
     ws = ctx.get("vm_path")
     tail = ('unzip -n -q "{zip}" -d "{d}" && '
             'python3 "{d}/shared/scripts/workspace_access.py" verify --stage "{d}"')
     if ws and Path(str(ws)).is_dir():
         cache_dir = Path(str(ws)) / RUNTIME_CACHE_REL
-        d = suffixed if (cache_dir / version / MANIFEST_NAME).exists() else version
-        return (f'cd "{ws}/{RUNTIME_CACHE_REL}" && '
-                + tail.format(zip=zip_name, d=d))
+        d = _verified_stage_of(cache_dir, version, manifest_sha) or next(
+            (n for n in names if not (cache_dir / n).exists()), None)
+        if d is not None:
+            return (f'cd "{ws}/{RUNTIME_CACHE_REL}" && '
+                    + tail.format(zip=zip_name, d=d))
     ws = ws or '$HOME/mnt/<workspace basename>'
     cache = f'"{ws}/{RUNTIME_CACHE_REL}"'
-    return (f'cd {cache} && {{ d="{version}"; [ -e "$d/{MANIFEST_NAME}" ] && '
-            f'd="{suffixed}"; ' + tail.format(zip=zip_name, d="$d") + "; }")
+    listed = " ".join(f'"{n}"' for n in names)
+    # The pointer `verify --stage` writes is `json.dumps` of
+    # {version, manifest_sha[, dir]}, so its two fields read with grep and sed.
+    reuse = ""
+    if manifest_sha and re.fullmatch(r"[0-9a-f]+", str(manifest_sha)):
+        reuse = (f'if grep -q \'"manifest_sha": "{manifest_sha}"\' {CURRENT_POINTER} 2>/dev/null; then '
+                 f'r=$(sed -n \'s/.*"dir": "\\([^"]*\\)".*/\\1/p\' {CURRENT_POINTER}); '
+                 f'[ -n "$r" ] || r="{version}"; [ -e "$r/{MANIFEST_NAME}" ] || r=""; fi; ')
+    return (f'cd {cache} && {{ r=""; {reuse}if [ -n "$r" ]; then d="$r"; else '
+            f'for d in {listed}; do [ -e "$d" ] || break; done; '
+            f'if [ -e "$d" ]; then echo "{STAGE_NAMES_TAKEN_LINE}" >&2; false; fi; fi && '
+            + tail.format(zip=zip_name, d="$d") + "; }")
+
+
+def _verified_stage_of(cache_dir: Path, version: str, manifest_sha: Optional[str]) -> Optional[str]:
+    """The folder `current.json` names when it is a verified copy of THIS
+    build (same `manifest_sha`, the folder holds its manifest), else None:
+    a re-run re-verifies it instead of copying the runtime again."""
+    if not manifest_sha:
+        return None
+    try:
+        pointer = json.loads((cache_dir / CURRENT_POINTER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(pointer, dict) or pointer.get("manifest_sha") != manifest_sha:
+        return None
+    folder = pointer.get("dir") or version
+    if (not isinstance(folder, str) or not folder or Path(folder).name != folder
+            or not (cache_dir / folder / MANIFEST_NAME).exists()):
+        return None
+    return folder
+
+
+#: cr1#1464 P4 follow-up: how many names `verify_command` may try for one
+#: build before it stops. Each taken name is a folder an earlier unzip of the
+#: same build left cut short (a re-run of a verified build reuses its folder).
+STAGE_DIR_TRIES = 12
+STAGE_NAMES_TAKEN_LINE = ("Every folder name for this build is taken by an unzip that did not "
+                          "finish, so it cannot be installed again here. Say report a bug.")
+
+
+def stage_dir_names(version: str, manifest_sha: Optional[str]) -> List[str]:
+    """The folder names one build may unzip into, in order: the bare
+    `<version>`, `<version>-<sha[:8]>`, then `<version>-<8 hex>` from the
+    digest and a count. Every name after the first matches the weekly
+    tidy's stage pattern, so the tidy reads its version from the name when
+    the folder has no manifest. Pure."""
+    seed = str(manifest_sha or "stage")
+    out = [version, f"{version}-{seed[:8]}"]
+    for n in range(1, STAGE_DIR_TRIES - 1):
+        out.append(f"{version}-{hashlib.sha256(f'{seed}:{n}'.encode('utf-8')).hexdigest()[:8]}")
+    return out
 
 
 #: A forwarded value may be pasted unquoted when it is made of these. Anything

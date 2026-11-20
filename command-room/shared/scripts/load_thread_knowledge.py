@@ -1015,6 +1015,11 @@ def load_thread_knowledge(
         opens_all = cru_match.load_open_commitments(
             events_path, workspace_root=root)
 
+    # cr1#1463: a note taken back off a commitment is no longer current
+    # activity on its thread (history keeps it; this view does not).
+    from commitment_state import without_retracted_notes
+    events = without_retracted_notes(events)
+
     # ---- membership (§0.2 — threads_of, PINNED) ----------------------------
     bound = [ev for ev in events if thread_id in event_refs.threads_of(ev)]
     max_seq = _max_human_seq(bound)

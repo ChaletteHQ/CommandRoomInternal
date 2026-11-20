@@ -372,7 +372,7 @@ If `result.stop` is true: write the Step 1.35 stop record (`migration_gate`), th
 
 **This prompt is not evidence of the run mode.** One body is registered per chat and replayed for the scheduled fire AND for any hand-started re-run, so "scheduled chat `<TASK_ID>`" above names WHICH chat you are running, never HOW this fire started. Decide once, here, and carry the answer into the orchestrator's Phase 2.9 `fired_via`:
 
-- **`manual`** — a human-authored message exists anywhere in this session, or a human asked for a re-run, **or you cannot tell**. A re-run started by hand carries the text `Command Room manual re-run — <timestamp>`; that text is proof of `manual`.
+- **`manual`** — a human-authored message exists anywhere in this session, or a human asked for a re-run, **or you cannot tell**.
 - **`scheduled`** — the scheduler started this session with no human message initiating the turn, and you are sure.
 
 **When uncertain, it is `manual`** (`shared/RECEIPT_CONTRACT.md` § Run-mode detection). A mis-labeled manual costs one missing lateness note; a mis-labeled scheduled refuses a surface a human asked for. Pass the literal word `scheduled` or `manual` — never the placeholder `<scheduled|manual>`, never a description. Say the word.

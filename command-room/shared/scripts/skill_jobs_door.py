@@ -80,6 +80,12 @@ CLEANUP_DOOR_PASSES = (
     "folder_tidy",          # Rule 15 (T10, cr1#1019)
     "view_staleness",       # 3.5e
     "aliases_staleness",    # 3.5c's D7 flag
+    # cr1#1277: four passes that are code, run here instead of being left to
+    # a session (a typed run called each by hand and the door refused them).
+    "session_notes_rollover",    # Phase 2 item 4 (Rule 1)
+    "thread_kind_repair",        # 3.5a-ter (THREADBIND1)
+    "thread_subject_detection",  # 3.5a-quater (THREADANN1)
+    "tmp_write_sweep",           # TMPSWEEP1 (cr1#137)
 )
 
 #: The folder tidy inside the weekly cleanup door job (T10, cr1#1019). The
@@ -95,9 +101,8 @@ FOLDER_TIDY_MIN_S = 10.0
 #: The cleanup passes that need a session reading the workspace, or a person:
 #: not run through the door, and named on the receipt.
 CLEANUP_NOT_ON_DOOR = (
-    "monday_note", "silent_scan", "auto_fix_sweep", "thread_kind_heal",
-    "thread_subject_detection", "watchdog_sweep", "deliverable_sweep",
-    "event_log_rotation", "session_notes_rollover",
+    "monday_note", "silent_scan", "auto_fix_sweep", "watchdog_sweep",
+    "deliverable_sweep", "event_log_rotation",
 )
 
 #: The insight-generator passes not run through the door.
@@ -305,6 +310,24 @@ def cleanup_and_receipt(workspace_root, *, maintenance_window=None,
         ran.append(name)
         return out
 
+    # cr1#1277: the counts of the four passes moved onto the door, written
+    # zero on every run and never omitted, as the skill asks; a pass that
+    # raises or is not reached keeps its zeros and is named failed.
+    detail["session_notes_rollover"] = {"n_rolled_over": 0, "n_aborted": 0}
+    detail["thread_kind_repair"] = {"n_migrated": 0, "migrated": []}
+    detail["threadann1_scan"] = {"n_threads_scanned": 0, "n_annotated": 0,
+                                 "n_split_proposals": 0}
+    detail["tmp_write_sweep"] = {"n_moved": 0}
+
+    def timed(name, fn):
+        """cr1#1277 review: a pass that walks the folder runs only while the
+        job's budget holds; one not reached is named failed (`no_time_left`)
+        and reached next week, so the job's receipt still lands."""
+        if time.monotonic() - job_started > CLEANUP_DOOR_JOB_BUDGET_S - FOLDER_TIDY_MIN_S:
+            failed[name] = "no_time_left"
+            return None
+        return run(name, fn)
+
     rec = run("recover_corruption", lambda: __import__("recover_corruption")
               .run_recovery_if_needed(ws, source_skill="cleanup", recurring=True))
     if isinstance(rec, dict) and rec.get("ran") and rec.get("quarantined_line_count"):
@@ -321,6 +344,28 @@ def cleanup_and_receipt(workspace_root, *, maintenance_window=None,
                 pass
         if dualkey["n_merged"] or dualkey["n_quarantined"]:
             actions.append("merged a duplicate project list")
+
+    # cr1#1277: 3.5a-ter and 3.5a-quater, in the skill's order (after the
+    # dual-key repair, before the Live State re-render), so this week's
+    # status pages show their result.
+    kinds = timed("thread_kind_repair", lambda: __import__("thread_writer")
+                  .repair_thread_kind_drift(ws, source_skill="cleanup"))
+    if isinstance(kinds, dict):
+        migrated = [m for m in (kinds.get("migrated") or [])
+                    if isinstance(m, dict)]
+        detail["thread_kind_repair"] = {
+            "n_migrated": int(kinds.get("n_migrated") or 0),
+            "migrated": migrated}
+        if migrated:
+            actions.append(f"corrected the kind on {len(migrated)} threads")
+    subjects = timed("thread_subject_detection", lambda: __import__(
+        "thread_subjects").scan_workspace(ws, source_skill="cleanup"))
+    if isinstance(subjects, dict):
+        scan = {k: int(subjects.get(k) or 0) for k in (
+            "n_threads_scanned", "n_annotated", "n_split_proposals")}
+        detail["threadann1_scan"] = scan
+        if scan["n_annotated"] or scan["n_split_proposals"]:
+            actions.append("noted the subjects inside mixed threads")
 
     def _integrity():
         import integrity_check as ic
@@ -367,6 +412,26 @@ def cleanup_and_receipt(workspace_root, *, maintenance_window=None,
     aliases = run("aliases_staleness", lambda: ca.check_aliases_staleness(ws))
     if aliases:
         flagged.append("the name shortcuts list looks out of date")
+
+    # cr1#1277: the session-notes rollover (Phase 2 item 4) and the temp
+    # file sweep (TMPSWEEP1), each on its own, under the job's budget.
+    notes = timed("session_notes_rollover",
+                  lambda: ca.rollover_session_notes(ws))
+    if isinstance(notes, list):
+        rolled = sum(1 for r in notes if r.get("status") == "rolled_over")
+        aborted = sum(1 for r in notes if r.get("status") == "aborted")
+        detail["session_notes_rollover"] = {"n_rolled_over": rolled,
+                                            "n_aborted": aborted}
+        if rolled:
+            actions.append(f"rolled over {rolled} long session notes files")
+        if aborted:
+            flagged.append(f"{aborted} session notes files need their "
+                           "headings looked at before they can roll over")
+    swept = timed("tmp_write_sweep", lambda: ca.sweep_tmp_write_files(ws))
+    if isinstance(swept, list):
+        detail["tmp_write_sweep"] = {"n_moved": len(swept)}
+        if swept:
+            actions.append(f"moved aside {len(swept)} leftover temporary files")
 
     # T10 (cr1#1019): the folder tidy, archive first into one dated folder
     # with a manifest; the live data files are never moved. A short time

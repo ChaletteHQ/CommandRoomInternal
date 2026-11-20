@@ -27,6 +27,13 @@ USAGE (apply-choices Step 5):
   - an Exception instance or its string (→ "error"),
   - None ONLY for pure no-write actions (skip/snooze acks) → "ok".
 
+`said` per action is OPTIONAL (cr1#1378): the outcome word the surface itself
+answered for the row (`applied` / `already` / `refused` / `error`). It can
+only DOWNGRADE: a row the surface answered as `error` or `refused` is never
+recorded "ok", whatever the handler result reads; `said` never turns an error
+into ok. Each error row carries a short `reason`; the event counts
+`n_applied` beside `n_errors`.
+
 stdlib only.
 """
 from __future__ import annotations
@@ -156,6 +163,10 @@ _OK_STATUSES = frozenset({
     #   assigned      cockpit_helpers._assign_home, a Hub "Assign to" press:
     #                 one reclassification giving the promise a home (cr1#1289)
     "assigned",
+    #   unassigned    cockpit_helpers._undo_home, a Hub Undo after Apply of
+    #                 Assign to / New work stream: one reclassification back
+    #                 to no home (cr1#1341)
+    "unassigned",
 })
 # statuses that mean "nothing needed writing" — honest no-ops, counted apart.
 _NOOP_STATUSES = frozenset({
@@ -164,6 +175,9 @@ _NOOP_STATUSES = frozenset({
     # cr1#1289: a Hub "Assign to" press already written, or a promise that
     # already has a home; nothing written either way.
     "already_written", "has_home",
+    # cr1#1341: an Undo after Apply whose item has moved again since; the
+    # later move is the newer truth, nothing written.
+    "moved_since",
     # WATCHGATE: the row was already parked, so this answer wrote nothing.
     # An honest no-op, not a failure and not a second park.
     "already_watching",
@@ -249,6 +263,8 @@ _NOOP_STATUSES = frozenset({
     # item`): the same person already owes the same thing on an open item,
     # so a second send of the typed line writes nothing.
     "already_listed",
+    # cr1#1383 (option B): `due_set.set_due` set the date.
+    "set",
 })
 # statuses that mean the handler REFUSED or could not complete the write.
 _REFUSED_STATUSES = frozenset({
@@ -270,9 +286,10 @@ _REFUSED_STATUSES = frozenset({
     # showing it.
     "missing_when",
     # cr1#166 (owner ruling, 2026-10-26): a `push to [date]` whose date is
-    # EARLIER than the live hold on an item owed to the user. The ledger keeps
-    # every unexpired mute live, so an earlier mute would bring nothing back
-    # sooner; `commitment_state.apply_later` refuses it and writes nothing.
+    # EARLIER than a live hold on the item. The ledger keeps every unexpired
+    # mute live, so a nearer date would bring nothing back sooner;
+    # `commitment_state.apply_later` refuses it on both legs (the owner's own
+    # item too since cr1#1292, 2026-11-17) and writes nothing.
     # The item did not move the way the user asked, so it is an error outcome,
     # never ok.
     "not_sooner",
@@ -280,6 +297,10 @@ _REFUSED_STATUSES = frozenset({
     # `commitment_state.apply_later` refuses it on both legs and writes
     # nothing; the item did not move, so it is an error outcome, never ok.
     "in_the_past",
+    # cr1#1383 (option B): `due_set` refusals, each with nothing written: a
+    # waiting item holds no date, a number no row carries, a date it cannot
+    # read, a list with no numbers.
+    "waiting", "no_such_row", "bad_date", "bad_surface",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the
@@ -325,6 +346,18 @@ _REFUSED_STATUSES = frozenset({
     #     purpose, and defaulting an unrecognised word to either `yes` or `no`
     #     would put a guess on the record wearing the customer's decision.
     "unknown_answer",
+    # cr1#1344: `commitment_state.restore_due` (and the cr1#1322 wait undo)
+    # would not put the item back exactly, because it has a newer date or
+    # the move is not on record. Nothing is written; the undo did not happen,
+    # so it is an error outcome, never ok.
+    "undo_refused",
+    # cr1#1364: `mute_ledger.clear_dismissal(..., as_undo=True)` would not
+    # lift a hide, because a newer hide holds the same row and the clear
+    # would take it out too. Nothing is written; the undo did not happen.
+    "newer_hide",
+    # cr1#1366: the same door, when the item's date or wait has changed since
+    # the hide, so lifting it would not put the item back as it was.
+    "newer_change",
     # --- APPLYAUDIT1: the refusals the census found unclassified -------------
     # "error" was already the outcome for each of these, but by FALL-THROUGH,
     # and the whole lesson of this defect is that a fall-through hides an
@@ -403,28 +436,78 @@ def derive_outcome(handler_result: Any) -> str:
     return "error"
 
 
+def _error_reason(handler_result: Any, present: bool, said: str) -> str:
+    """cr1#1378: one short word for why a row is an error, for the audit row.
+    The handler's own `error` word first, then a refusal status, then the
+    raised error's type, then the surface's word when it was the surface
+    that said error over a result that read as landed."""
+    if not present:
+        return "no_result"
+    if isinstance(handler_result, BaseException):
+        return type(handler_result).__name__[:_REASON_CAP]
+    if isinstance(handler_result, str):
+        return handler_result.strip()[:_REASON_CAP] or "error"
+    if isinstance(handler_result, dict):
+        for key in ("error", "reason"):
+            word = handler_result.get(key)
+            if isinstance(word, str) and word.strip():
+                return word.strip()[:_REASON_CAP]
+        status = str(handler_result.get("status") or "").strip().lower()
+        if status and status not in _OK_STATUSES and status not in _NOOP_STATUSES:
+            return status[:_REASON_CAP]
+    if said in _SAID_FAILED:
+        return f"said_{said}"
+    return "no_result" if handler_result is None else "unknown"
+
+
+#: cr1#1378: the surface words that say a row did NOT land. A row the surface
+#: answered with one of these is never audited "ok".
+_SAID_FAILED = frozenset({"error", "refused"})
+#: cr1#1378: how long one error reason may be on the audit row.
+_REASON_CAP = 120
+
+
 def build_apply_choices_applied_event(*, source: str, actions: List[dict]) -> dict:
     """Build the ONE `apply_choices_applied` audit event for a batch. Each
     entry in `actions` is {n, action, handler_result} (+ optional
-    `note`). Outcomes derive from handler_result via derive_outcome — the
-    caller cannot pass an outcome directly (that's the FS-18a hole).
+    `note`, + optional `said`). Outcomes derive from handler_result via
+    derive_outcome — the caller cannot pass an outcome directly (that's the
+    FS-18a hole). `said` (cr1#1378) is the surface's own answer for the row
+    and only ever downgrades: an `error` or `refused` row is never "ok".
+
+    Each error row carries a `reason`; the event counts `n_applied` (rows
+    recorded "ok") and `n_errors`.
 
     Returns the event dict WITHOUT seq/ts (the append gate auto-stamps).
     """
     rows = []
     n_errors = 0
+    n_applied = 0
     for a in actions:
+        said = str(a.get("said") or "").strip().lower()
         # Review F-1: an entry that OMITS handler_result entirely is a
         # reporter bug — the caller never captured what the handler did, so
         # the outcome cannot be claimed "ok". Only an EXPLICIT None (a pure
         # no-write ack) maps to "ok"; the absent key maps to "error".
-        if "handler_result" not in a:
+        present = "handler_result" in a
+        if not present:
             outcome = "error"
         else:
             outcome = derive_outcome(a.get("handler_result"))
+        # cr1#1378: the surface answered this row as not landed, so the audit
+        # cannot say it landed (a missing result once read "ok" here while
+        # every row of a batch had failed).
+        if said in _SAID_FAILED and outcome != "error":
+            outcome = "error"
         if outcome == "error":
             n_errors += 1
+        elif outcome == "ok":
+            n_applied += 1
         row = {"n": a.get("n"), "action": a.get("action"), "outcome": outcome}
+        if said:
+            row["said"] = said[:20]
+        if outcome == "error":
+            row["reason"] = _error_reason(a.get("handler_result"), present, said)
         if a.get("note"):
             row["note"] = str(a["note"])[:200]
         rows.append(row)
@@ -435,6 +518,7 @@ def build_apply_choices_applied_event(*, source: str, actions: List[dict]) -> di
             "source": source,
             "n_choices": len(actions),
             "actions": rows,
+            "n_applied": n_applied,
             "n_errors": n_errors,
         },
     }

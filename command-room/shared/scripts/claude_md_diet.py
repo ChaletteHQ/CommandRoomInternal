@@ -385,7 +385,8 @@ def plan(workspace_root, *, today: Optional[str] = None) -> dict:
         out.update(ok=False, reason="rulings_not_on_list", waiting=waiting[:10],
                    line="Not cut yet: the brief holds rulings the decision list "
                         "does not hold yet. Say \"pull in my past rulings\" and "
-                        "confirm or dismiss each on the Review tab first, so "
+                        "answer each under To confirm on the Hub's "
+                        "Commitments tab first, so "
                         "none is lost.")
         return out
     after_words = out["after"]["brief_words"]

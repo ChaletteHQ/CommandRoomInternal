@@ -35,10 +35,10 @@ Every result below is written on its choice as `result`, with `applied: true` an
 **`commitment`**: one writer call. `resolved_by` may be left empty: the writer acts as the workspace's owner (cr1#678: no step gave this run the owner's id, so an empty actor wrote nothing and the light still said done).
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the commitment list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_commitment_choices"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the commitment list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "run_id": "<this session id>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_commitment_choices"}'
 ```
 
-Its `results` carry one `{id, outcome, line}` per choice. An answer with `ok: false` wrote nothing for the rows it lists: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`.
+Its `results` carry one `{id, outcome, line}` per choice. A result with `outcome` `waiting` (cr1#1377: another Apply run holds that press) is the one exception to the write-back above: write nothing on that choice, so it stays waiting and that run or the next one applies it. An answer with `ok: false` wrote nothing for the rows it lists: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`.
 
 **`inbox`**: first load the mail tools, the same step the inbox task's Phase 2 runs (`inbox_helpers:connector_discovery_step`, then `inbox_helpers:mail_seams`); this run starts with its connectors deferred, exactly like the inbox task (cr1#678). Call `mail_seams` with `"pressed_send": true` in its args: this run is scheduled, and a scheduled run resolves no send tool unless it says its sends are the owner's own confirmed presses (cr1#707); without it every Send fails as if mail were not connected. No send tool resolved: every `send` choice gets `{"outcome": "error", "line": "Mail is not connected on this computer, so nothing was sent."}` and nothing is sent.
 
@@ -92,21 +92,41 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"c
 
 Write each result as that choice's `result` (the whole result object, so the page can match a new item to its row; an `error` field in it stays there for the receipt). A press already in the book answers from its first write (`replayed: true`), so a retried run never writes a reminder twice. Then refresh the Today lists so the page shows them at once: `run_helper` with `cockpit_helpers:feed_mine` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/mine`. A reminder the owner added is still the owner's own: the page carries their words and their day, and this run only writes them.
 
-**`review`** (cr1#779): the Review tab's answers. One writer call, `resolved_by` again left empty:
+When a press from the Hub's add and edit landed (cr1#1431: a result with outcome `applied` whose choice's kind is `stream_edit`, `priority_edit` or `person_edit`), refresh the tab it changed too, so the edit shows now and not at the next refresh. For a `stream_edit` or `priority_edit`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_projects"}'
+```
+
+and `set` the answer on `feed/projects`, then the Week board, which shows each work stream's name and a lane per priority:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_board"}'
+```
+
+and `set` the answer on `feed/board`; for a `person_edit`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_people"}'
+```
+
+and `set` the answer on `feed/people`. Each read runs once however many presses called for it, with the same `file_path` rule for a large answer as the refresh step. A read that fails leaves the old feed in place and changes no result: the next refresh brings the tab up to date.
+
+**`review`** (cr1#779): the answers under To confirm on Commitments (the Review tab until cr1#1286). One writer call, `resolved_by` again left empty:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the review list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_review_choices"}'
 ```
 
-Write each result as that choice's `result`. A result with outcome `refused` wrote nothing: a close the fence held, or a row whose answer needs a chat or a typed value. Its `line` says so, and it counts as refused. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab: `run_helper` with `cockpit_helpers:feed_review` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/review`. When one of the answers has `review_kind` `learned_rule`, also refresh the Week tab, where the new rule's Undo sits: run the step headed **Then the Week tab** in `orchestrator-cockpit-refresh.md`, both calls with their arguments as written there, and `set` the answer on `feed/week`.
+Write each result as that choice's `result`. A result with outcome `refused` wrote nothing: a close the fence held, or a row whose answer needs a chat or a typed value. Its `line` says so, and it counts as refused. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab: `run_helper` with `cockpit_helpers:feed_review` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/review`. When one of the answers has `review_kind` `learned_rule`, also refresh the Done tab, where the new rule's Undo sits: run the step headed **Then the Done tab** in `orchestrator-cockpit-refresh.md`, both calls with their arguments as written there, and `set` the answer on `feed/week`.
 
-**`week`** (cr1#780): the Week tab's presses. One writer call, `resolved_by` again left empty:
+**`week`** (cr1#780): the Done tab's presses. One writer call, `resolved_by` again left empty:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the week list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_week_choices"}'
 ```
 
-Write each result as that choice's `result`. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. The next refresh brings the Week tab up to date.
+Write each result as that choice's `result`. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. The next refresh brings the Done tab up to date.
 
 **`settings`** (cr1#781): the Settings tab's edits, a learned rule reworded, switched off or deleted, or the question budget changed. One writer call, `resolved_by` again left empty:
 
@@ -114,7 +134,7 @@ Write each result as that choice's `result`. An answer with `ok: false` wrote no
 python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the settings list, as it came back>], "now_iso": "<now ISO>", "resolved_by": "", "workspace_root": "<WS>"}, "name": "cockpit_helpers:apply_settings_choices"}'
 ```
 
-Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_settings` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/settings`; a reworded or switched-off rule also moves the Week tab, so run the step headed **Then the Week tab** in `orchestrator-cockpit-refresh.md` and `set` its answer on `feed/week`.
+Write each result as that choice's `result`. A result with outcome `refused` or `already` wrote nothing, and its `line` says why. An answer with `ok: false` wrote nothing: each of its choices gets `{"outcome": "error", "line": <the answer's line>}`. Then refresh the tab so the page shows the change at once: `run_helper` with `cockpit_helpers:feed_settings` (`{"now_iso": "<now ISO>", "workspace_root": "<WS>"}`) and `set` the answer on `feed/settings`; a reworded or switched-off rule also moves the Done tab, so run the step headed **Then the Done tab** in `orchestrator-cockpit-refresh.md` and `set` its answer on `feed/week`.
 
 **`mail`** (cr1#1020): the Inbox tab's presses on the owner's mail rules, a thread dropped, a rule taught from one email's note, a rule added by hand or removed, a dropped thread brought back. Nothing here sends or reads mail. One writer call, `resolved_by` again left empty:
 

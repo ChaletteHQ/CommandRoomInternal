@@ -2,7 +2,7 @@
 name: command-room-update-bridge
 surfaces: cowork
 slack_fallback: "Updates apply from a chat with your Command Room folder attached — run the update there; Slack picks up the new version automatically."
-description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions), 'set up what's new', 'walk my connectors', 'confirm my settings' (the one-time setup an existing workspace missed). Release notes and pending workspace-file migrations, additively, archive-never-delete. Idempotent; announces changes in plain English. Touches no scheduled chat. Does NOT fire on 'restart onboarding' (command-room-onboarding)."
+description: "Applies product updates to this workspace. Fires on: 'what's new in command room', 'whats new', 'update command room', 'check for updates', 'install the latest', 'show my Claude instructions', 'my Claude instructions', 'show me my Claude instructions' (the block to paste into the account's Claude instructions), 'set up what's new', 'walk my connectors', 'confirm my settings' (the one-time setup an existing workspace missed), 'finish update' (the Hub's Finish update link: this update, then the Hub's rebuild). Release notes and pending workspace-file migrations, additively, archive-never-delete. Idempotent; announces changes in plain English. Touches no scheduled chat. Does NOT fire on 'restart onboarding' (command-room-onboarding)."
 ---
 
 # Command Room Update Bridge — v3.13.0+ (Option B canonical-edit-surface migrations added)
@@ -11,7 +11,7 @@ description: "Applies product updates to this workspace. Fires on: 'what's new i
 
 ## What this skill does
 
-This skill is the **update ritual**: it brings a workspace current after the plugin updates — release notes, workspace-file migrations, release-manifest remediations and the runtime cache. **It touches no scheduled chat** (cr1#970, the owner's ruling 2026-11-09): scheduled chats belong to `enable-command-room-schedules` and `cockpit-setup`, and Phase 4.7 says at most one line naming them. **It installs no dashboards.** The pinned sidebar dashboards are retired on every seat (Night M3, RETIRE1 — ruling R-M3-4): Phase 4 says the one dashboards sentence, and nothing in this skill installs, lists, refreshes or verifies a sidebar artifact. It serves two user populations with one flow:
+This skill is the **update ritual**: it brings a workspace current after the plugin updates — release notes, workspace-file migrations, release-manifest remediations and the runtime cache. **It touches no scheduled chat** (cr1#970, the owner's ruling 2026-11-09): scheduled chats belong to `enable-command-room-schedules` and `cockpit-setup`, and Phase 4.7 says at most one line naming them. The bridge itself touches no scheduled chat; on `finish update` the chat hands on to `rebuild my hub`, which the owner approved on cr1#1389. **It installs no dashboards.** The pinned sidebar dashboards are retired on every seat (Night M3, RETIRE1 — ruling R-M3-4): Phase 4 says the one dashboards sentence, and nothing in this skill installs, lists, refreshes or verifies a sidebar artifact. It serves two user populations with one flow:
 
 1. **Fresh post-onboarding users.** Onboarding installs nothing into a sidebar — the Workspace Map is `list active projects`, in chat. This skill brings a new workspace current like any other.
 2. **Upgrade users.** Their `command-room-onboarding` checkpoint is `status: "complete"` from a prior version, so the existing-workspace guard at Phase 0a stops onboarding from re-running. This skill surfaces what changed in the version diff and applies what is pending. Users coming from older versions may still have dashboards pinned — those are no longer refreshed, and Phase 4 adds one sentence saying they can unpin them.
@@ -537,7 +537,7 @@ If `pending_workspace_migrations` is empty AND `pending_release_remediations` (P
 
 > *"You're all set. Your workspace is current, and there's nothing pending. Nothing to update."*
 
-Stop here, after ONE exception: Phase 5.5 (the account instructions block) still runs on this exit, because a seat that is already current needs the block once; its own gate (a prior showing of the same block) is what keeps a second up-to-date run silent. (Per v2.10.5+: this skill ALWAYS RE-CHECKS state and surfaces what's pending — there's no "already ran today" gate. If the user re-fires `update command room` after a successful update, they get the "you're up to date" message because the state check returns clean, NOT because of a prior-run idempotency gate. Per v3.4.5+: the release-manifest layer is also checked; if a per-version manifest in `shared/releases/v*.json` declares a remediation whose detector matches the user's workspace state, it surfaces alongside migrations.)
+Stop here, after ONE exception: Phase 5.5 (the account instructions block) still runs on this exit, because a seat that is already current needs the block once; its own gate (a prior showing of the same block) is what keeps a second up-to-date run silent. (Per v2.10.5+: this skill ALWAYS RE-CHECKS state and surfaces what's pending — there's no "already ran today" gate. If the user re-fires `update command room` after a successful update, they get the "you're up to date" message because the state check returns clean, NOT because of a prior-run idempotency gate. Per v3.4.5+: the release-manifest layer is also checked; if a per-version manifest in `shared/releases/v*.json` declares a remediation whose detector matches the user's workspace state, it surfaces alongside migrations.) On `finish update` (cr1#1389) this exit is not a stop and its sentence is not said: run Phase 5.5 as above, then go straight on to step 2 of the Finish update section, so a seat whose update already ran elsewhere still gets its Hub rebuilt.
 
 Otherwise deliver the change summary.
 
@@ -1296,7 +1296,7 @@ python3 "${CLAUDE_PLUGIN_ROOT:?}/shared/scripts/workspace_access.py" install --o
 That builds ONE zip (every shared script, the data schemas, the plugin documents those scripts open, `plugin.json`, and a `manifest.json` carrying a sha256 per file) and prints the commit plan. Skill files are never shipped.
 
 1. Commit the zip with `mcp__remote-devices__device_commit_files`, using the `stagedPath` and `devicePath` the plan printed.
-2. Run what `workspace_access.py verify` prints, in the device shell. It unzips into `<version>/`, recomputes every sha in the manifest, and writes the `current.json` pointer **only on a full match**.
+2. Run what `workspace_access.py verify` prints, in the device shell. It unzips into a folder no earlier unzip has used (`<version>/` the first time; a re-run of the build already verified re-checks that folder), recomputes every sha in the manifest, and writes the `current.json` pointer **only on a full match**.
 
 **No approval card.** The folder grant the customer already gave is the permission; a second card per version is friction without a boundary gain. The install writes plugin code and nothing else into one directory, and the manifest is what proves it.
 
@@ -1316,7 +1316,7 @@ Either way, carry the outcome on the `plugin_update` event this update already w
 
 ## Phase 4.7: Scheduled chats, one line and nothing touched (cr1#970)
 
-**The owner's ruling, 2026-11-09 (cr1#970): the update touches no scheduled chat.** Scheduled chats are created, changed, switched off and removed by exactly two skills: `enable-command-room-schedules` (*set up command room schedules*) and `cockpit-setup` (*set up my hub* / *rebuild my hub*). This skill makes no scheduler call of any kind, reads no list of scheduled tasks, declares no scheduled writer, and runs neither of those skills, silently or otherwise. Why: an update and a Hub rebuild started a minute apart both rewrote the same Hub tasks, two writers on one task set, which is how a task is lost, doubled or switched off under the other chat's feet.
+**The owner's ruling, 2026-11-09 (cr1#970): the update touches no scheduled chat.** Scheduled chats are created, changed, switched off and removed by exactly two skills: `enable-command-room-schedules` (*set up command room schedules*) and `cockpit-setup` (*set up my hub* / *rebuild my hub*). This skill makes no scheduler call of any kind, reads no list of scheduled tasks, declares no scheduled writer, and runs neither of those skills, silently or otherwise. The one sequence on top (cr1#1389, the owner's request of 2026-11-18): on `finish update`, once this skill has finished, the chat goes on to `rebuild my hub` as if the owner had said it next (the Finish update section below); nothing in this skill's own steps changes. Why: an update and a Hub rebuild started a minute apart both rewrote the same Hub tasks, two writers on one task set, which is how a task is lost, doubled or switched off under the other chat's feet.
 
 The schedule work an update ships with (the previous version's chats removed, the retirement offers, the readiness retirement, the fold, the pauses a release item asks for) lives in `enable-command-room-schedules/references/schedule-changes.md`, and both owners run it every time they run. A scheduled chat registered as a stub composes its instructions from the installed plugin at every fire (cr1#638), so an update reaches it with no prompt rewritten; Maintenance is not a stub until cr1#972, so its prompt is refreshed by `set up command room schedules` or `rebuild my hub`.
 
@@ -1328,6 +1328,7 @@ Determine intent from the trigger phrase that fired this skill:
 |---|---|---|
 | `update my command room`, `update command room`, `what's new`, `whats new`, `whats new in command room`, `check for updates`, `install latest`, `install the latest` | **full-update** | Say the one line below, when it is not empty. Touch nothing. |
 | `set up command room schedules`, `set up my daily chats`, `enable schedules` | **schedule-only** | This skill is NOT invoked: those phrases belong to `enable-command-room-schedules`. |
+| `finish update` | **full-update, then the Hub** | Say the one line below, when it is not empty. Touch nothing. The rebuild runs after this skill has finished (the Finish update section). |
 | `set up my hub`, `rebuild my hub`, `update my hub` | **Hub** | This skill is NOT invoked: those phrases belong to `cockpit-setup`. |
 | `configure my schedules`, `change my schedule`, `show my scheduled chats`, `list my schedules` | **schedule change / read** | This skill is NOT invoked: those phrases belong to `change-schedule` (the corpus row in `tests/triggers.yaml` agrees). `show my schedule` is the calendar's and no skill answers it. |
 
@@ -2009,6 +2010,22 @@ Nothing else is offered — the add-ons menu retired with the sidebar path.
 
 ---
 
+## Finish update (cr1#1389)
+
+**Trigger phrase:** `finish update`. The Hub shows the line "Command Room updated to vX. Press Finish update." with a Finish update link when the installed plugin is newer than the version its page was built from, and the Morning Brief carries the same line (`cockpit_helpers.update_notice`). The link opens a new chat with `finish update` typed in and not sent, so this runs only when the owner sends it; nothing runs from the page, the brief or a scheduled fire.
+
+`level_up_lines.bridge_intent("finish update")` is the full-update intent. In order:
+
+1. **The update.** Phase 1 to Phase 5.5 exactly as for `update command room`: the runtime cache, the workspace-file migrations, the release-manifest remediations and the release notes, Phase 4.7's read still runs (FS-01), but on a seat with a Hub its line is not said, because step 2 applies the schedule changes it would point at; on a seat with no Hub it is said as usual. **The up-to-date exit is not a stop here** (Phase 2 says so): nothing pending means the update part is done, and the chat goes straight to step 2. This skill's own steps still make no scheduler call (cr1#970). Skip Phase 6's closing line; step 3 is the close.
+2. **The Hub.** Read `cockpit_helpers:hub_pointer` once through the door. When `found` is false this seat has no Hub, so there is nothing to rebuild; go to step 3. Otherwise the chat goes on to `rebuild my hub`, which `cockpit-setup` owns, exactly as that skill says, as if the owner had said it next. That rebuild republishes the page with the installed version (so the Hub's Finish update bar clears) and applies the release's schedule changes through `enable-command-room-schedules/references/schedule-changes.md`, the existing path.
+3. **One line saying what was done**, and nothing else:
+   - both steps done: *"Update finished: Command Room is on vX, and your Hub is rebuilt."*
+   - no Hub on this seat: *"Update finished: Command Room is on vX."*
+   - the update stopped on an error (a refused step, not the up-to-date exit): the update's own stop sentence, and the Hub is not rebuilt.
+   - the rebuild fails partway: *"Update finished: Command Room is on vX, but your Hub was not rebuilt: <cockpit-setup's own sentence>."* The page keeps its old version, so the Hub's bar stays up and the owner can press Finish update again; a second run finds the update part up to date, so it goes straight to the rebuild, and repeats only what is still owed, because both steps are idempotent.
+
+---
+
 ## Show my Claude instructions (any chat with the folder attached; FILECARD1, cr1#611)
 
 **Trigger phrases:** `show my Claude instructions`, `my Claude instructions`, `show me my Claude instructions` (the show-instructions intent of the dispatch in Phase 1). Near misses: `my profile` stays with workspace-manager's profile page, and `pull up my Claude instructions` is not a phrase here, because workspace-manager owns `pull up [name]`.
@@ -2026,7 +2043,7 @@ The dispatch answers `run_phases` `["5.5"]`: run Phase 5.5's steps 1, 3, 4, 5 an
 - Does not re-run onboarding. If the user wants a full reset, they say `restart onboarding` (different skill).
 - Does not re-prompt for migrations the user explicitly declined. If they said "No" to prompt restructuring on first run, subsequent runs respect that choice unless they say `redo workspace migrations`.
 - Does not run on every session start. Only fires on explicit user trigger.
-- Does not create, change, switch off or remove a scheduled chat, read the list of scheduled tasks or declare the scheduled writer (cr1#970, the owner's ruling 2026-11-09): those belong to `enable-command-room-schedules` and `cockpit-setup` alone, and this skill starts neither. Phase 4.7 says at most one line naming `set up command room schedules` and `rebuild my hub`.
+- Does not create, change, switch off or remove a scheduled chat, read the list of scheduled tasks or declare the scheduled writer (cr1#970, the owner's ruling 2026-11-09): those belong to `enable-command-room-schedules` and `cockpit-setup` alone, and this skill starts neither; on `finish update` the chat says `rebuild my hub` only after this skill has finished (cr1#1389). Phase 4.7 says at most one line naming `set up command room schedules` and `rebuild my hub`.
 
 ---
 

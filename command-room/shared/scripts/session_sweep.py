@@ -611,7 +611,12 @@ def sweep_and_receipt(
     window (`craft_sweep.propose_craft_rules` names the shape). Each becomes
     an always-ask `craft_rule` proposal, or an amend proposal when it
     contradicts a confirmed rule, for the Hub's Review tab; no craft file is
-    written here. A chat counts as evidence only when this run read it: a
+    written here. A candidate with `new_kind` is a kind of work that recurs
+    (cr1#1391 part B): an always-ask `craft_kind` proposal, nothing added
+    until the owner's yes. Every run also offers the least used kind for
+    retirement when a subject is over the cap (`craft_sweep.
+    offer_retirements`), asked first; the receipt counts an offer under
+    `craft_cap`. A chat counts as evidence only when this run read it: a
     session of `items`, of `sessions`, or of `craft_sessions` (the ids of
     every session read, passed when a session yielded nothing else). The
     receipt counts them under `craft`. `items` is the skill's extraction; every write
@@ -693,9 +698,21 @@ def sweep_and_receipt(
                                                   known_sessions=read)
             extra_receipt["craft"] = {"proposed": got.get("proposed", 0),
                                       "amends": got.get("amends", 0),
+                                      "kinds": got.get("kinds", 0),
                                       "skipped": len(got.get("skipped") or [])}
         except Exception as exc:  # noqa: BLE001 - the facts still land
             extra_receipt["craft"] = {"error": type(exc).__name__}
+    # cr1#1391 part B: over the cap of active kinds, the least used one is
+    # offered for retirement on the Review tab, asked first; nothing retires
+    # here. The receipt names an offer only when one was made.
+    try:
+        import craft_sweep
+
+        cap = craft_sweep.offer_retirements(workspace_root)
+        if cap.get("offered"):
+            extra_receipt["craft_cap"] = {"offered": cap["offered"]}
+    except Exception:  # noqa: BLE001 - the facts still land
+        pass
     return _sweep(
         workspace_root,
         items,

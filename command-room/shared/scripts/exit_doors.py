@@ -824,7 +824,8 @@ def meeting_could_close(ev, *, evidence_at, source_ref, tz=None) -> bool:
         ref = str(source_ref or "").strip()
         if ref and commitment_matches_source_ref(ev, ref):
             return False
-        at = _parse_ts(promise_time_raw(ev, tz))
+        # cr1#1224: the transcript rail's fence, so never the meeting's start.
+        at = _parse_ts(promise_time_raw(ev, tz, meeting_start=False))
         return at is not None and at <= evidence_at
     except Exception:  # noqa: BLE001
         return False

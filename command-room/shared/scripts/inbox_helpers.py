@@ -1894,6 +1894,13 @@ SIBLING_REPLY_REASON = "counterparty_reply_in_sibling_thread"
 PAGE_NOT_LANDED_LINE = ("Your inbox list could not be saved to your Command "
                         "Room folder this time, so nothing was recorded.")
 
+#: cr1#1464: the one sentence when the page itself could not be built. One
+#: `fire_stopped` row is written (`PAGE_NOT_BUILT_CODE`), so the Hub's note
+#: and the Morning Brief can say it; nothing else is.
+PAGE_NOT_BUILT_LINE = ("Your inbox page could not be built this time, so the "
+                       "Inbox tab still shows the last one. Nothing was sent.")
+PAGE_NOT_BUILT_CODE = "inbox_page_not_built"
+
 #: The one sentence when the rows could not be appended after the page landed.
 #: REWORDED (INBOXDRIVE1 review F-1): the page lands FIRST, by design, so by
 #: the time the one append can refuse, the list IS saved - the old sentence
@@ -2211,6 +2218,41 @@ def _tracked_items(selection: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+#: cr1#1464: the plain words on an inbox row whose reply cannot be sent from
+#: the page, because the renderer cannot read every address it goes to. The
+#: row stays on the page, with its draft, without Send or Draft.
+NO_SEND_LINE = ("No Send on this one: Command Room could not read every "
+                "address this reply goes to. Reply from your mail app.")
+
+
+def _sendable_or_marked(row: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1464: one row the renderer's Bug #44 gate would refuse never drops
+    the whole page. The same per-item check the gate runs
+    (`chat_output_renderer.send_class_to_issue`) is asked here first; a row it
+    refuses keeps its place, its draft and its other actions, loses Send and
+    Draft, and says why in plain words. Every other row is unchanged."""
+    from chat_output_renderer import send_class_to_issue
+
+    if not send_class_to_issue(row):
+        return row
+    from chat_output_renderer import (_SEND_CLASS_ACTIONS,
+                                      _strip_n_prefix_for_validation)
+
+    out = dict(row)
+    n = row.get("n", "")
+    out["actions"] = [a for a in row.get("actions") or []
+                      if _strip_n_prefix_for_validation(a, n) not in _SEND_CLASS_ACTIONS]
+    # The To it cannot read leaves with Send: a row with a To and a Subject
+    # is an email card, which the renderer requires to offer Send (FB-17).
+    out["metadata"] = [m for m in row.get("metadata") or []
+                       if str((m or [""])[0]).lower() not in ("to", "cc")]
+    if not out["metadata"]:
+        out.pop("metadata", None)
+    why =str(row.get("context_tag") or "").strip()
+    out["context_tag"] = f"{why} · {NO_SEND_LINE}" if why else NO_SEND_LINE
+    return out
+
+
 def build_inbox_view(workspace_root: str, selection: Dict[str, Any], *,
                      n_fetched: int, header_date_text: Optional[str] = None,
                      fetch_blocked: Optional[str] = None) -> Dict[str, Any]:
@@ -2248,7 +2290,8 @@ def build_inbox_view(workspace_root: str, selection: Dict[str, Any], *,
         }
         return view
     own = own_addresses(workspace_root)
-    rows = [_view_item(i + 1, item, own) for i, item in enumerate(top)]
+    rows = [_sendable_or_marked(_view_item(i + 1, item, own))
+            for i, item in enumerate(top)]
     n_drafts = sum(1 for r in rows if r.get("body_lines"))
     word = "thread" if len(rows) == 1 else "threads"
     header = f"Inbox · {day} · {len(rows)} priority {word}."
@@ -2392,6 +2435,29 @@ def _refusal(reason: str, lines: List[str]) -> Dict[str, Any]:
         out["push"] = push_line("stopped", line=lines[0]) if lines else None
     except ValueError:
         out["push"] = None
+    return out
+
+
+def _page_not_built(root: str, task_id: str, fired_via: Optional[str],
+                    detail: str) -> Dict[str, Any]:
+    """cr1#1464: the answer when the inbox page could not be built. The one
+    stop record (`receipts.log_fire_stopped`, the bootloader's own writer) is
+    written first, best effort, so a run that leaves no page still leaves
+    its reason on the book; then the refusal, whose `lines` are the whole
+    final response. `detail` names the cause in plain words and never carries
+    mail text. A stop record that could not be written changes nothing else:
+    the refusal still stands and `stopped` says so."""
+    out = _refusal("page_not_built", [_validated(PAGE_NOT_BUILT_LINE)])
+    try:
+        import receipts as _rc
+
+        row = _rc.log_fire_stopped(root, task_id or TASK_ID, PAGE_NOT_BUILT_CODE,
+                                   fired_via=fired_via, detail=detail)
+        out["stopped"] = {"ok": True, "deduped": bool(row.get("deduped"))}
+        if not row.get("deduped"):
+            out["rows_written"] = [row]
+    except Exception as exc:  # noqa: BLE001 - the refusal stands either way
+        out["stopped"] = {"ok": False, "reason": type(exc).__name__}
     return out
 
 
@@ -2567,7 +2633,14 @@ def run_inbox_surface(workspace_root: str, *,
         # owner vs user, so a clean zero here would be a lie.
         errors.append({"phase": "5.4_inbound_capture",
                        "reason": "primary_user_unresolved"})
-    page = render_inbox_page(root, view, wrapper="fragment", name_hint=TASK_ID)
+    try:
+        page = render_inbox_page(root, view, wrapper="fragment", name_hint=TASK_ID)
+    except Exception as exc:  # noqa: BLE001 - recorded and refused, never hidden
+        # cr1#1464: a page the renderer refuses is a stop the owner sees: one
+        # `fire_stopped` row (the Hub's note and the brief read it), then the
+        # refusal. Nothing else is written: no page, no capture, no receipt.
+        return _page_not_built(root, task_id, via,
+                               f"the page renderer refused it ({type(exc).__name__})")
     # R-3 is about BYTES ON DISK: the render's `bytes_len` counts characters,
     # and a page carrying the row icons is longer in UTF-8 than in characters.
     # The driver measures what `write` must land, and checks exactly that.

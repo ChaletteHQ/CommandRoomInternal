@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -974,6 +975,62 @@ def _refuse_missing_ledger_folder(path: Path) -> None:
         raise LedgerFolderMissing(resolved)
 
 
+#: cr1#1376 - the one sentence an append refused because it named the top of
+#: the Command Room folder instead of its data folder carries to the door.
+LEDGER_AT_WORKSPACE_ROOT_LINE = ("Not saved: that entry was headed for the top of "
+                                 "your Command Room folder instead of its activity "
+                                 "log, so nothing was written and nothing changed.")
+
+
+class LedgerAtWorkspaceRoot(ValueError):
+    """cr1#1376: an `events.jsonl` (or year shard) append aimed at a WORKSPACE
+    ROOT's top (a folder holding `_hq/data/`) instead of `_hq/data` itself.
+
+    Every reader that is handed the workspace root used to read such a stray
+    file instead of the real log (`events_io._data_dir`), so one misdirected
+    append replaced the whole book for the Hub and Maintenance. Nothing is
+    read, locked or created. Carries `cr_refusal_reason` and `line`, so a door
+    answers `ok:false` with the plain sentence."""
+
+    cr_refusal_reason = "ledger_outside_data"
+    line = LEDGER_AT_WORKSPACE_ROOT_LINE
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(
+            f"refused to append: {path.name} sits at the top of a workspace "
+            f"({path.parent}); the activity log lives in its _hq/data folder. "
+            f"Nothing was written.")
+
+
+_LEDGER_SHARD_RE = re.compile(r"^events-\d{4}\.jsonl$")
+
+
+def _refuse_ledger_at_workspace_root(path: Path) -> None:
+    """cr1#1376: raise `LedgerAtWorkspaceRoot` when `path` is the activity log
+    (or a year shard) directly inside a workspace root whose `_hq/data` holds
+    the real log (the live file or a shard). That is the same rule the readers
+    use (`events_io._data_dir`), so a write is refused exactly where a read
+    would never look. A root whose `_hq/data` holds no log is left alone, for
+    reads and writes alike (owner's ruling pending: the log at the top may be
+    the only one). Asked before anything touches the disk."""
+    name = path.name.lower()
+    if name != "events.jsonl" and not _LEDGER_SHARD_RE.match(name):
+        return
+    try:
+        parent = path.resolve().parent
+    except (OSError, ValueError):
+        parent = path.absolute().parent
+    data = parent / "_hq" / "data"
+    try:
+        holds = (data / "events.jsonl").is_file() or any(
+            _LEDGER_SHARD_RE.match(p.name) for p in data.glob("events-*.jsonl"))
+    except OSError:
+        holds = False
+    if holds:
+        raise LedgerAtWorkspaceRoot(parent / path.name)
+
+
 def atomic_append_jsonl(
     path: str | Path,
     events: list[dict[str, Any]] | dict[str, Any],
@@ -1067,6 +1124,8 @@ def atomic_append_jsonl(
     # lock file and no ledger.
     if not create_ledger:
         _refuse_missing_ledger_folder(Path(path))
+    # cr1#1376 - never a ledger at a workspace root's top, even a new one.
+    _refuse_ledger_at_workspace_root(Path(path))
     # BRIEFDOOR1 MUST 5 -- the writer is named before anything is read or
     # locked (see `_require_named_writer`).
     _require_named_writer()
@@ -2638,6 +2697,7 @@ __all__ = [
     "SubstrateRegressionError",
     "SeqHighWaterError",
     "AppendVerificationError",
+    "LedgerAtWorkspaceRoot",
     "check_substrate_regression",
     "events_freshness",
     "read_rev_sidecar",

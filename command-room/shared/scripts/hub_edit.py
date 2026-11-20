@@ -1,0 +1,1050 @@
+#!/usr/bin/env python3
+"""hub_edit.py: add and edit work streams, people and priorities from the
+Hub, each with an Undo (cr1#1383 part 2), edit a commitment's wording
+(cr1#1383 slice 4), and add context to a thread or a person (cr1#1383, Add
+context), with Take back.
+
+WHY THIS EXISTS
+The Hub could add a to-do, a reminder, a mail rule and a work stream from a
+No home yet line, and nothing else. A work stream's name, a person and a
+priority could only be corrected in a chat. This module is the Hub's side of
+those edits. It owns no record: every write goes through the writer that
+already owns the record.
+
+  * a work stream, added:        `cockpit_helpers._create_stream` (the one
+    thread writer, the same path No home yet's New work stream takes);
+  * a work stream or a thread,
+    renamed:                     `thread_writer.update_thread(display_name=)`;
+  * a person, added:             `people_writer.create_person`;
+  * a person, renamed:           `people_writer.rename_person`;
+  * a person's role, email or
+    company, set (cr1#1433):     `people_writer.set_person_field`, whose
+    `person_field_set` row carries the value it replaced;
+  * a priority, added:           `objective_state.create_objective` (bound
+    to the owner's own word, `self`, the binding that needs no meeting or
+    linked thread);
+  * a priority's wording, edited: `objective_state.update_objective`;
+  * a commitment's wording,
+    edited (slice 4):            `commitment_state.edit_commitment_wording`
+    (its `new_title`, the field the row shows). Its due date is not edited
+    here: `apply_later` also hides the owner's own item until that day, and
+    on an item owed to the owner it moves no date at all, so no writer sets
+    a due date as the Edit form would ask (named on cr1#1383).
+  * context on a thread (Add context): `thread_writer.update_thread(notes=)`,
+    the thread's free-text notes, the new note kept after any already there;
+  * context on a person (Add context): `people_writer.record_person_fact`,
+    one fact in the owner's own word, sourced to the press. Its Take back is
+    the registered retraction (`brain_undo.REVERSERS["entity_fact_structured"]`,
+    which appends `entity_fact_retracted`; the person card and history leave
+    a retracted fact out).
+  Work streams, priorities and commitments take no context here: a work
+  stream and a priority have no note writer the Hub may use, and a
+  commitment's note (`orphan_note.reroute_orphan_note`) has no writer that
+  takes it back (named on cr1#1383).
+
+Each press that lands appends ONE `hub_edit` row through the event gate:
+what was pressed, the record it reached, and the value it replaced. That row
+is what an Undo is judged against. It names its record as `target_id`, never
+as a thread key, so it is not activity on any thread.
+
+THE UNDO CONTRACT (cr1#1364, as the Hub's other undos keep it)
+  * The verdict comes before any write, and it is judged by seq: the press's
+    own `hub_edit` row, any newer `hub_edit` on the same record and field,
+    and the record as it stands now.
+  * A refusal writes nothing and names the item.
+  * The undo goes back through the same writer: the old name or wording
+    written back; an added work stream or priority archived through its one
+    archive path; an added person archived the way the registered person
+    reverser does (`brain_undo._reverse_person_org_creation`); a person's
+    rename, or a role, email or company it set, put back through
+    `brain_undo.undo_batch`, the change's own registered reverser, which
+    also refuses when the field has changed again since.
+  * An undo is not a touch: the writer rows an undo makes are named on its
+    own `hub_edit` row (`wrote_seqs`), and the thread cards' day-count skips
+    them (`thread_cards._fold`), so a work stream or a priority is not "moved
+    today" by an undo.
+
+Nothing here sends anything. stdlib only.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+EVENT = "hub_edit"
+KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
+VERBS = frozenset({"add", "rename", "set", "undo", "context"})
+#: Add context (cr1#1383): the kinds that take a free note, a thread's
+#: (`stream_edit` on a thread that is not a work stream) and a person's.
+CONTEXT_KINDS = ("stream_edit", "person_edit")
+#: cr1#1433: the person fields a Hub `set` press edits, as the press names
+#: them, with the record field each writes and the word its line uses.
+PERSON_FIELDS = {"role": ("role", "role"), "email": ("email", "email"),
+                 "company": ("primary_org_id", "company")}
+VALUE_CAP = 200
+NAME_CAP = 80
+STATEMENT_CAP = 240
+SOURCE_SKILL = "cockpit"
+UNDO_SOURCE = "commitment-triage"
+RENAME_REASON = "Renamed on the Command Room Hub"
+ARCHIVE_REASON = "Added on the Command Room Hub, then taken back there"
+
+#: The record each kind reaches, in a word, for the lines.
+WHAT = {"stream_edit": "work stream", "person_edit": "person", "priority_edit": "priority",
+        "commitment_edit": "commitment"}
+#: cr1#1383 slice 4: a commitment's wording, as `edit_commitment_wording`
+#: caps a title.
+COMMIT_CAP = 300
+COMMIT_REASON = "Wording changed on the Command Room Hub"
+COMMIT_UNDO_REASON = "Wording put back on the Command Room Hub"
+
+NEEDS_NAME_LINE = "Type a name; nothing was written."
+NEEDS_FULL_NAME_LINE = "A person needs a first and a last name; nothing was written."
+NEEDS_WORDS_LINE = "Type the priority in a few words; nothing was written."
+GONE_LINE = "{name} is not on your book any more; nothing was written."
+NO_TARGET_LINE = "That press names nothing on your book; nothing was written."
+SAME_LINE = "{name} is already called that; nothing was written."
+STREAM_EXISTS_LINE = "You already have the work stream {name}; nothing was written."
+NAME_TAKEN_LINE = "{name} is already the name of something else on your book; nothing was written. Pick another name."
+PERSON_EXISTS_LINE = "{name} is already on file; nothing was written."
+PRIORITY_EXISTS_LINE = "{name} is already one of your priorities; nothing was written."
+PRIORITY_CLOSED_LINE = "{name} is closed, so it was not changed; nothing was written."
+NEEDS_COMMIT_WORDS_LINE = "Type the commitment in a few words; nothing was written."
+COMMIT_LONG_LINE = ("{name} is longer than Edit can put back exactly, so it was left as it is; "
+                    "nothing was written. Fix its wording in a chat.")
+COMMIT_CLOSED_LINE = "{name} is closed, so it was not changed; nothing was written."
+COMMIT_DATE_LINE = ("{name}: a date is not changed from Edit; use Snooze on the row for that. "
+                    "Nothing was written.")
+FAILED_LINE = "{name} could not be written; nothing changed. Try again, or say it in a chat."
+NEEDS_VALUE_LINE = "Type the {what}; nothing was written. To clear it, say so in a chat."
+NO_FIELD_LINE = "That is not something the Hub edits on a person; nothing was written."
+NO_COMPANY_LINE = "{value} is not a company on file; nothing was written. Add it in a chat first."
+EMAIL_TAKEN_LINE = "{value} is on file for someone else; nothing was written."
+BAD_VALUE_LINE = "{value} is not a {what} the book can keep; nothing was written."
+SAME_VALUE_LINE = "{name}'s {what} is already that; nothing was written."
+#: cr1#1431: the apply step refreshes the Work and People feeds right after
+#: an edit lands, so the line no longer sends the owner to the next refresh.
+REFRESH = ""
+
+UNDO_NO_PRESS_LINE = "That change is not on your book; nothing was written."
+UNDO_ALREADY_LINE = "That was already put back; nothing was written."
+UNDO_NEWER_LINE = "{name} was changed again on the Hub after this, so this was left as it is; nothing was written."
+UNDO_CHANGED_LINE = "{name} has changed since, so it was left as it is; nothing was written."
+UNDO_IN_USE_LINE = "{name} has other work on it now, so it stays; nothing was written."
+UNDO_FAILED_LINE = "{name} could not be put back; nothing was written. Try again, or say undo in a chat."
+
+#: Add context (cr1#1383). The note as kept, and the lines.
+CONTEXT_CAP = 200
+CONTEXT_REF = "user:hub_context"
+CONTEXT_CATEGORY = "other"
+CONTEXT_UNDO_REASON = "Note taken back on the Command Room Hub"
+CONTEXT_LINE = "You told it: {note}"
+CONTEXT_TAKEN_LINE = "Took back your note on {name}."
+NEEDS_NOTE_LINE = "Type the note; nothing was written."
+CONTEXT_SAME_LINE = "{name} already has that note; nothing was written."
+CONTEXT_STREAM_LINE = ("{name} is a work stream, so a note goes on one of its threads, or say it in a chat. "
+                       "Nothing was written.")
+CONTEXT_NO_TARGET_LINE = "A note goes on a thread or a person; nothing was written."
+
+
+# ---------------------------------------------------------------------------
+# Reading the book
+# ---------------------------------------------------------------------------
+
+def _events(root: Path) -> List[dict]:
+    from events_io import load_events_owner_scoped
+
+    return [e for e in load_events_owner_scoped(str(root))[0] if isinstance(e, dict)]
+
+
+def _seq(ev: dict) -> int:
+    s = ev.get("seq")
+    return s if isinstance(s, int) else -1
+
+
+def _max_seq(evs: List[dict]) -> int:
+    return max((_seq(e) for e in evs), default=-1)
+
+
+def _edits(evs: List[dict]) -> List[dict]:
+    return [e for e in evs if e.get("type") == EVENT and isinstance(e.get("data"), dict)]
+
+
+def _written(evs: List[dict], choice_id: str) -> Optional[dict]:
+    """The `hub_edit` row this press already wrote, so Apply twice writes once."""
+    if not choice_id:
+        return None
+    return next((e for e in _edits(evs) if e["data"].get("hub_choice") == choice_id), None)
+
+
+def _clean(value: Any, cap: int) -> str:
+    """The typed words, spaces tidied, control characters out, capped."""
+    text = "".join(ch_ if ch_.isprintable() else " " for ch_ in str(value or ""))
+    return " ".join(text.split())[:cap].strip()
+
+
+def _norm(text: Any) -> str:
+    import thread_writer as tw
+
+    return tw._norm(text)
+
+
+def _thread_recs(root: Path) -> List[dict]:
+    import thread_writer as tw
+
+    return [t for t in tw._threads(tw._load_entities(root)) if isinstance(t, dict)]
+
+
+def _thread(root: Path, tid: str) -> Optional[dict]:
+    return next((t for t in _thread_recs(root) if str(t.get("id") or "") == tid), None)
+
+
+def _thread_name(t: dict) -> str:
+    return str(t.get("display_name") or t.get("canonical_name") or t.get("id") or "")
+
+
+def _person(root: Path, pid: str) -> Optional[dict]:
+    import people_writer as pw
+    from entities_io import entities_collection
+
+    data = pw._load_entities(root)
+    return next((p for p in entities_collection(data, "people")
+                 if isinstance(p, dict) and str(p.get("id") or "") == pid), None)
+
+
+def _live(rec: Optional[dict]) -> bool:
+    return isinstance(rec, dict) and str(rec.get("status") or "active").strip().lower() not in (
+        "archived", "resolved", "completed", "retired", "closed")
+
+
+def _objective_open(t: Optional[dict]) -> bool:
+    obj = (t or {}).get("objective") if isinstance((t or {}).get("objective"), dict) else None
+    return (isinstance(t, dict) and t.get("kind") == "objective" and obj is not None
+            and not obj.get("outcome") and _live(t))
+
+
+def _record(root: Path, before: int, data: Dict[str, Any], ids: Optional[set] = None) -> dict:
+    """The press's one `hub_edit` row, naming the writer rows the press made:
+    every row newer than `before` (the newest seq read before it wrote) that
+    names one of its records (`ids`, the target by default). A later undo
+    tells the Hub's own writes from other work by them, and a row another
+    writer landed meanwhile on something else is never claimed."""
+    import json
+
+    from event_gate import append_event
+
+    quoted = [json.dumps(i) for i in (ids or {str(data.get("target_id") or "")}) if i]
+    data = dict(data, wrote_seqs=sorted(
+        _seq(e) for e in _events(root) if _seq(e) > before
+        and any(q in json.dumps(e, ensure_ascii=False, default=str) for q in quoted)))
+    landed = append_event(root / "_hq" / "data" / "events.jsonl",
+                          {"type": EVENT, "source_skill": SOURCE_SKILL, "data": data},
+                          holder="cockpit_helpers")
+    return (landed[0] if isinstance(landed, list) and landed else {}) or {}
+
+
+def _ok(line: str, **extra) -> Dict[str, Any]:
+    return dict({"outcome": "applied", "line": line}, **extra)
+
+
+def _no(line: str, outcome: str = "refused", **extra) -> Dict[str, Any]:
+    return dict({"outcome": outcome, "line": line}, **extra)
+
+
+# ---------------------------------------------------------------------------
+# The presses
+# ---------------------------------------------------------------------------
+
+def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
+    """WRITE. One add, rename or undo press, `c` as `plan_apply` planned it
+    (`kind`, `action`, `n`, `input`, `id`). Answers `{outcome, line, ...}`;
+    `outcome` is `applied`, `already`, `refused` or `error`. A refusal
+    writes nothing."""
+    root = Path(str(workspace_root))
+    kind = str(c.get("kind") or "").strip().lower()
+    verb = str(c.get("action") or "").strip().lower()
+    choice_id = str(c.get("id") or "").strip()
+    inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+    target = str(c.get("n") or "").strip()[:80]
+    evs = _events(root)
+    done = _written(evs, choice_id)
+    if done is not None:
+        d = done["data"]
+        return _ok(str(d.get("line") or "Already applied."), replayed=True, target_id=d.get("target_id"),
+                   seq=done.get("seq"))
+    before = _max_seq(evs)
+    if verb == "context":
+        if kind == "stream_edit":
+            return _thread_context(root, target, inp, choice_id, before)
+        if kind == "person_edit":
+            return _person_context(root, target, inp, choice_id, before)
+        return _no(CONTEXT_NO_TARGET_LINE)
+    if kind == "commitment_edit":
+        if verb == "undo":
+            return _commit_undo(root, str(inp.get("press") or "").strip(), choice_id, actor, evs)
+        if verb == "rename":
+            return _commit_rename(root, target, inp, choice_id, actor, before)
+        return _no(NO_TARGET_LINE)
+    if verb == "undo":
+        return _undo(root, kind, str(inp.get("press") or "").strip(), choice_id, actor, evs)
+    if kind == "stream_edit":
+        return _stream_add(root, inp, choice_id, evs, before) if verb == "add" else \
+            _stream_rename(root, target, inp, choice_id, before)
+    if kind == "person_edit":
+        if verb == "set":
+            return _person_set(root, target, inp, choice_id, before)
+        return _person_add(root, inp, choice_id, before) if verb == "add" else \
+            _person_rename(root, target, inp, choice_id, before)
+    return _priority_add(root, inp, choice_id, before) if verb == "add" else \
+        _priority_edit(root, target, inp, choice_id, before)
+
+
+def _stream_add(root: Path, inp: dict, choice_id: str, evs: List[dict], before: int) -> Dict[str, Any]:
+    import cockpit_helpers as ch
+
+    name = _clean(inp.get("name"), NAME_CAP)
+    if not name:
+        return _no(NEEDS_NAME_LINE)
+    how, found = ch._stream_for_name(root, name, evs)
+    if how == "existing":
+        held = _thread_name(_thread(root, str(found)) or {}) or name
+        return _no(STREAM_EXISTS_LINE.format(name=held), "already", target_id=found)
+    if how in ("taken", "archived", "closed"):
+        rec = found or {}
+        held = str(rec.get("display_name") or rec.get("canonical_name") or name)
+        line = (ch.NEW_STREAM_TAKEN_LINE if how == "taken" else ch.NEW_STREAM_ARCHIVED_LINE
+                if how == "archived" else ch.NEW_STREAM_CLOSED_LINE).format(name=held, what="a thread")
+        return _no(line)
+    try:
+        sid = ch._create_stream(root, name, found if how == "resume" else None)
+    except ValueError:
+        return _no(ch.NEW_STREAM_FAILED_LINE, "error")
+    except ch._HalfMadeStream:
+        return _no(ch.NEW_STREAM_HALF_LINE.format(name=name), "error")
+    except ch._StreamUnsure:
+        return _no(ch.NEW_STREAM_UNSURE_LINE.format(name=name), "error")
+    line = f"Started the work stream {name}." + REFRESH
+    kids = {str(t.get("id")) for t in _thread_recs(root) if str(t.get("parent_thread_id") or "") == sid}
+    rec = _record(root, before, {"hub_choice": choice_id, "kind": "stream_edit", "action": "add",
+                                 "target_id": sid, "new": name, "line": line}, ids={sid} | kids)
+    return _ok(line, target_id=sid, seq=rec.get("seq"))
+
+
+def _stream_rename(root: Path, tid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    import thread_writer as tw
+
+    rec = _thread(root, tid) if tid else None
+    if rec is None or rec.get("kind") == "objective":
+        return _no(NO_TARGET_LINE)
+    old = _thread_name(rec)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=old))
+    name = _clean(inp.get("name"), NAME_CAP)
+    if not name:
+        return _no(NEEDS_NAME_LINE)
+    if name == old:
+        return _no(SAME_LINE.format(name=old), "already")
+    key = _norm(name)
+    clash = [t for t in _thread_recs(root) if str(t.get("id") or "") != tid
+             and key in (_norm(t.get("display_name")), _norm(t.get("canonical_name")))]
+    if clash:
+        return _no(NAME_TAKEN_LINE.format(name=name))
+    try:
+        tw.update_thread(root, tid, source_skill=SOURCE_SKILL, display_name=name)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=old), "error")
+    line = f"Renamed {old} to {name}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "stream_edit", "action": "rename",
+                        "target_id": tid, "field": "display_name", "old": old,
+                        "new": name, "line": line})
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _person_add(root: Path, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    import people_writer as pw
+
+    name = _clean(inp.get("name"), NAME_CAP)
+    if not name:
+        return _no(NEEDS_NAME_LINE)
+    try:
+        rec = pw.create_person(root, canonical_name=name, source_skill=SOURCE_SKILL)
+    except pw.DuplicatePersonError:
+        return _no(PERSON_EXISTS_LINE.format(name=name), "already")
+    except pw.SingleWordNameRefused:
+        return _no(NEEDS_FULL_NAME_LINE)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=name), "error")
+    pid = str(rec.get("id") or "")
+    line = f"Added {name} to your people." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "person_edit", "action": "add",
+                        "target_id": pid, "new": name, "line": line})
+    return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def _person_rename(root: Path, pid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    import people_writer as pw
+
+    rec = _person(root, pid) if pid else None
+    if rec is None:
+        return _no(NO_TARGET_LINE)
+    old = str(rec.get("canonical_name") or pid)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=old))
+    name = _clean(inp.get("name"), NAME_CAP)
+    if not name:
+        return _no(NEEDS_NAME_LINE)
+    try:
+        pw.refuse_single_word_name(name)
+    except ValueError:
+        return _no(NEEDS_FULL_NAME_LINE)
+    try:
+        out = pw.rename_person(root, pid, canonical_name=name, reason=RENAME_REASON, source_skill=SOURCE_SKILL)
+    except pw.PersonNameCollisionError:
+        return _no(NAME_TAKEN_LINE.format(name=name))
+    except pw.PersonRecordNeedsRepairError as exc:
+        # cr1#1430: the record holds a value that does not read; the
+        # writer's line says why and what to do next.
+        return _no(exc.line)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=old), "error")
+    if out.get("status") == "unchanged":
+        return _no(SAME_LINE.format(name=old), "already")
+    line = f"Renamed {old} to {name}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "person_edit", "action": "rename",
+                        "target_id": pid, "field": "canonical_name", "old": old, "new": name,
+                        "batch_id": out.get("batch_id"), "line": line})
+    return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def _org_by_name(root: Path, name: str) -> Optional[dict]:
+    """The one live company on file whose name or an alias is `name`."""
+    import people_writer as pw
+    from entities_io import entities_collection
+
+    want = _norm(name)
+    hits = [o for o in entities_collection(pw._load_entities(root), "orgs")
+            if isinstance(o, dict) and _live(o)
+            and str(o.get("status") or "").lower() not in ("merged", "deleted")
+            and want in ({_norm(o.get("canonical_name"))}
+                         | {_norm(a) for a in (o.get("aliases") or []) if isinstance(a, str)})]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _org_name(root: Path, org_id: str) -> str:
+    import people_writer as pw
+    from entities_io import entities_collection
+
+    org = next((o for o in entities_collection(pw._load_entities(root), "orgs")
+                if isinstance(o, dict) and o.get("id") == org_id), None)
+    return str((org or {}).get("canonical_name") or org_id)
+
+
+def _shown(root: Path, field: str, raw: str) -> str:
+    """A field's stored value as the line says it."""
+    if not raw:
+        return "none"
+    return _org_name(root, raw) if field == "primary_org_id" else raw
+
+
+def _shown_before(root: Path, field: str, rec: dict) -> str:
+    """What the page showed for the field before the press: the stored value,
+    else what the person card falls back to (an older company field, the
+    first of the address list)."""
+    raw = str(rec.get(field) or "")
+    if raw:
+        return _shown(root, field, raw)
+    try:
+        if field == "primary_org_id":
+            from people_view import company_of
+            return company_of(rec, {}) or (_org_name(root, str(rec.get("org_id") or ""))
+                                           if rec.get("org_id") else "") or "none"
+        if field == "email":
+            from person_cards import _email_of
+            return _email_of(rec) or "none"
+    except Exception:  # noqa: BLE001 - a line, never a refusal
+        pass
+    return "none"
+
+
+def _person_set(root: Path, pid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    """cr1#1433: a person's role, email or company, set through
+    `people_writer.set_person_field`; the row it writes is what the Undo puts
+    back through `brain_undo.undo_batch`."""
+    import people_writer as pw
+
+    named = str(inp.get("field") or "").strip().lower()
+    if named not in PERSON_FIELDS:
+        return _no(NO_FIELD_LINE)
+    field, what = PERSON_FIELDS[named]
+    rec = _person(root, pid) if pid else None
+    if rec is None:
+        return _no(NO_TARGET_LINE)
+    who = str(rec.get("canonical_name") or pid)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=who))
+    typed = " ".join(str(inp.get("value") or "").split())
+    if not typed:
+        return _no(NEEDS_VALUE_LINE.format(what=what))
+    if len(typed) > VALUE_CAP:
+        # Refused, never cut: a shortened address can be someone else's.
+        return _no(BAD_VALUE_LINE.format(value=typed[:40] + "...", what=what))
+    value = typed
+    if field == "primary_org_id":
+        org = _org_by_name(root, typed)
+        if org is None:
+            return _no(NO_COMPANY_LINE.format(value=typed))
+        value = str(org.get("id") or "")
+    old_raw = str(rec.get(field) or "")
+    try:
+        out = pw.set_person_field(root, pid, field=field, value=value, source_skill=SOURCE_SKILL)
+    except pw.PersonFieldRefused as exc:
+        if exc.reason == "email_taken":
+            return _no(EMAIL_TAKEN_LINE.format(value=typed))
+        if exc.reason == "unknown_org":
+            return _no(NO_COMPANY_LINE.format(value=typed))
+        return _no(BAD_VALUE_LINE.format(value=typed, what=what))
+    except (KeyError, ValueError):
+        return _no(FAILED_LINE.format(name=who), "error")
+    if out.get("status") == "unchanged":
+        return _no(SAME_VALUE_LINE.format(name=who, what=what), "already")
+    new_raw = str(out.get("value") or "")
+    new_shown = _shown(root, field, new_raw)
+    line = f"Set {who}'s {what} to {new_shown}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "person_edit", "action": "set",
+                                "target_id": pid, "field": field, "old": _shown_before(root, field, rec),
+                                "new": new_shown, "old_value": old_raw, "new_value": new_raw,
+                                "batch_id": out.get("batch_id"), "line": line})
+    return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def _priority_add(root: Path, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    import objective_state as obs
+
+    text = _clean(inp.get("name"), STATEMENT_CAP)
+    if not text:
+        return _no(NEEDS_WORDS_LINE)
+    key = _norm(text)
+    for t in _thread_recs(root):
+        if _objective_open(t) and _norm((t.get("objective") or {}).get("statement")) == key:
+            return _no(PRIORITY_EXISTS_LINE.format(name=text), "already", target_id=t.get("id"))
+    if any(key in (_norm(t.get("display_name")), _norm(t.get("canonical_name"))) for t in _thread_recs(root)):
+        return _no(NAME_TAKEN_LINE.format(name=text))
+    try:
+        rec = obs.create_objective(root, statement=text, binding=dict(type="self"), source_skill=SOURCE_SKILL)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=text), "error")
+    tid = str(rec.get("id") or "")
+    line = f"Added the priority {text}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "add",
+                        "target_id": tid, "new": text, "line": line})
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _priority_edit(root: Path, tid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    import objective_state as obs
+
+    rec = _thread(root, tid) if tid else None
+    if rec is None or rec.get("kind") != "objective":
+        return _no(NO_TARGET_LINE)
+    old = str((rec.get("objective") or {}).get("statement") or _thread_name(rec))
+    if not _objective_open(rec):
+        return _no(PRIORITY_CLOSED_LINE.format(name=old))
+    text = _clean(inp.get("name"), STATEMENT_CAP)
+    if not text:
+        return _no(NEEDS_WORDS_LINE)
+    if text == old:
+        return _no(SAME_LINE.format(name=old), "already")
+    try:
+        obs.update_objective(root, tid, statement=text, source_skill=SOURCE_SKILL)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=old), "error")
+    line = f"Changed the priority to {text}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "rename",
+                        "target_id": tid, "field": "statement", "old": old, "new": text, "line": line})
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+# ---------------------------------------------------------------------------
+# Undo
+# ---------------------------------------------------------------------------
+
+def _current(root: Path, kind: str, tid: str, field: str = "") -> Tuple[Optional[dict], str]:
+    """The record a press reached and the value its field holds now (for a
+    person's `set`, the field the press named, as stored)."""
+    if kind == "person_edit":
+        rec = _person(root, tid)
+        return rec, str((rec or {}).get(field or "canonical_name") or "")
+    rec = _thread(root, tid)
+    if kind == "priority_edit":
+        return rec, str(((rec or {}).get("objective") or {}).get("statement") or "")
+    return rec, _thread_name(rec or {})
+
+
+def _named_since(root: Path, ids: set, after_seq: int, evs: List[dict]) -> bool:
+    """Whether anything on the book names one of `ids` besides the press's own
+    writes: a log row newer than the press (other than the Hub's own
+    `hub_edit` rows and receipts; the writer rows the press made come before
+    its `hub_edit` row), or another record on the book. Every doubt answers yes, so nothing is archived on a guess."""
+    import copy
+    import json
+
+    from entities_io import entities_collection, read_entities_json
+
+    quoted = [json.dumps(i) for i in ids]
+    # The Hub's own later presses on these records, and their undos, are not
+    # other work: the rows they wrote are named on their `hub_edit` rows.
+    # A note added on the Hub (Add context, cr1#1383) is content, not
+    # bookkeeping: it counts as work, as the same note from a chat would.
+    hub_wrote = {s for e in _edits(evs) if str(e["data"].get("target_id") or "") in ids
+                 and e["data"].get("action") != "context"
+                 for s in e["data"].get("wrote_seqs") or [] if isinstance(s, int)}
+    for ev in evs:
+        if _seq(ev) <= after_seq or ev.get("type") == EVENT or _seq(ev) in hub_wrote:
+            continue
+        if ev.get("type") == "apply_choices_applied":
+            continue  # the Hub's own receipts: never work
+        blob = json.dumps(ev, ensure_ascii=False, default=str)
+        if any(q in blob for q in quoted):
+            return True
+    data = copy.deepcopy(read_entities_json(root / "_hq" / "data" / "entities.json"))
+    for coll in ("people", "threads", "orgs"):
+        try:
+            rows = entities_collection(data, coll)
+        except Exception:  # noqa: BLE001 - a collection the book does not carry
+            continue
+        rows[:] = [r for r in rows if not (isinstance(r, dict) and str(r.get("id") or "") in ids)]
+    rest = json.dumps(data, ensure_ascii=False, default=str)
+    return any(q in rest for q in quoted)
+
+
+def _undo(root: Path, kind: str, press_id: str, undo_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:
+    """The verdict first, by seq, then the one writer. See the module's
+    contract."""
+    edits = _edits(evs)
+    press = next((e for e in edits if press_id and e["data"].get("hub_choice") == press_id
+                  and e["data"].get("action") != "undo"), None)
+    if press is None or press["data"].get("kind") != kind:
+        return _no(UNDO_NO_PRESS_LINE)
+    pd = press["data"]
+    tid = str(pd.get("target_id") or "")
+    if any(e["data"].get("undoes_choice") == press_id for e in edits):
+        return _no(UNDO_ALREADY_LINE, "already")
+    if pd.get("action") == "context":
+        return _context_undo(root, kind, press, undo_id, actor, evs)
+    is_set = pd.get("action") == "set"
+    rec, now_value = _current(root, kind, tid, str(pd.get("field") or "") if is_set else "")
+    name = str(pd.get("new") or tid)
+    if is_set:
+        # The line names the person, not the value (cr1#1433).
+        name = str((rec or {}).get("canonical_name") or tid)
+    ids = {tid}
+    if kind == "stream_edit":
+        ids |= {str(t.get("id")) for t in _thread_recs(root) if str(t.get("parent_thread_id") or "") == tid}
+    if rec is None:
+        return _no(GONE_LINE.format(name=name), "already" if pd.get("action") == "add" else "refused")
+    if is_set:
+        # Judged on the one field the press set: a newer Hub edit of it, or
+        # the field as it stands not being what the press wrote, refuses.
+        newer = [e for e in edits if _seq(e) > _seq(press) and e["data"].get("target_id") == tid
+                 and e["data"].get("action") == "set" and e["data"].get("field") == pd.get("field")]
+        if newer:
+            return _no(UNDO_NEWER_LINE.format(name=name))
+        if now_value != str(pd.get("new_value") or ""):
+            return _no(UNDO_CHANGED_LINE.format(name=name))
+        if not _live(rec):
+            return _no(UNDO_CHANGED_LINE.format(name=name))
+    elif pd.get("action") == "rename":
+        # A role, email or company set (cr1#1433) is another field: it does
+        # not stand in the way of putting a name back.
+        # Add context (cr1#1383) writes a note, not the name, so a note
+        # added since does not stand in the way either.
+        newer = [e for e in edits if _seq(e) > _seq(press) and e["data"].get("target_id") == tid
+                 and e["data"].get("action") not in ("undo", "set", "context")]
+        if newer:
+            return _no(UNDO_NEWER_LINE.format(name=now_value or name))
+        if now_value != pd.get("new"):
+            return _no(UNDO_CHANGED_LINE.format(name=now_value or name))
+        if not _live(rec) or (kind == "priority_edit" and not _objective_open(rec)):
+            return _no(UNDO_CHANGED_LINE.format(name=now_value or name))
+    else:
+        if not _live(rec) or (kind == "priority_edit" and not _objective_open(rec)):
+            return _no(UNDO_ALREADY_LINE, "already")
+        # The whole log is read, not only the rows after the press: a work
+        # stream an earlier Apply left half made and this press finished
+        # (`resume`) is older than the press, and what named it then counts.
+        if _named_since(root, ids, -1, evs) \
+                or (kind == "stream_edit" and len(ids) > 2):
+            return _no(UNDO_IN_USE_LINE.format(name=now_value or name))
+    before = _max_seq(evs)
+    try:
+        line = _put_back(root, kind, pd, tid, rec, actor)
+    except Exception:  # noqa: BLE001 - nothing claimed; the item stays as it is, and says so
+        return _no(UNDO_FAILED_LINE.format(name=now_value or name), "error")
+    if line is None:
+        return _no(UNDO_FAILED_LINE.format(name=now_value or name), "error")
+    ev = _record(root, before, {"hub_choice": undo_id, "kind": kind, "action": "undo", "target_id": tid,
+                                "undoes_choice": press_id, "line": line}, ids=ids)
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _put_back(root: Path, kind: str, pd: dict, tid: str, rec: dict, actor: str) -> Optional[str]:
+    """The undo's one write, through the record's own writer. Answers the
+    line, or None when the writer put nothing back."""
+    old = str(pd.get("old") or "")
+    if kind == "stream_edit" and pd.get("action") == "rename":
+        import thread_writer as tw
+
+        # The schema keeps a name a string: a thread that had no display name
+        # gets its old name written as one, so it reads exactly as before.
+        tw.update_thread(root, tid, source_skill=SOURCE_SKILL, display_name=old)
+        return f"Put back the name {old}."
+    if kind == "stream_edit":
+        import thread_archive as ta
+
+        kids = [str(t.get("id")) for t in _thread_recs(root) if str(t.get("parent_thread_id") or "") == tid]
+        ta.archive_thread(str(root), tid, reason=ARCHIVE_REASON, source_skill=SOURCE_SKILL)
+        for k in kids:
+            ta.archive_thread(str(root), k, reason=ARCHIVE_REASON, source_skill=SOURCE_SKILL,
+                              regenerate_view=False)
+        return f"Took back the work stream {pd.get('new')}; it is archived."
+    if kind == "person_edit" and pd.get("action") == "set":
+        import brain_undo as bu
+
+        out = bu.undo_batch(str(root), {"kind": "brain_batch", "batch_id": str(pd.get("batch_id") or "")},
+                            undone_by=actor, source_skill=UNDO_SOURCE, user_confirmed=True) or {}
+        if not int(out.get("n_undone") or 0) or int(out.get("n_errors") or 0):
+            return None
+        what = next((w for f, w in PERSON_FIELDS.values() if f == pd.get("field")), "detail")
+        who = str(rec.get("canonical_name") or tid)
+        if not pd.get("old_value"):
+            return f"Took back {who}'s {what} set on the Hub."
+        return f"Put back {who}'s {what} as {pd.get('old')}."
+    if kind == "person_edit" and pd.get("action") == "rename":
+        import brain_undo as bu
+
+        out = bu.undo_batch(str(root), {"kind": "brain_batch", "batch_id": str(pd.get("batch_id") or "")},
+                            undone_by=actor, source_skill=UNDO_SOURCE, user_confirmed=True) or {}
+        if not int(out.get("n_undone") or 0) or int(out.get("n_errors") or 0):
+            return None
+        return f"Put back the name {old}."
+    if kind == "person_edit":
+        # The registered reverser for a person the system added: archive,
+        # never delete (`brain_undo._reverse_person_org_creation`).
+        import people_writer as pw
+
+        pw.update_person(root, tid, source_skill=SOURCE_SKILL, status="archived")
+        return f"Took back {pd.get('new')}; the record is archived."
+    import objective_state as obs
+
+    if pd.get("action") == "rename":
+        obs.update_objective(root, tid, statement=old, source_skill=SOURCE_SKILL)
+        return f"Put back the priority as {old}."
+    obs.archive_objective(root, tid, outcome_note=ARCHIVE_REASON, source_skill=SOURCE_SKILL)
+    return f"Took back the priority {pd.get('new')}; it is archived."
+
+
+# ---------------------------------------------------------------------------
+# A commitment's wording (cr1#1383 slice 4)
+# ---------------------------------------------------------------------------
+
+def _events_path(root: Path) -> Path:
+    return root / "_hq" / "data" / "events.jsonl"
+
+
+def _commit_resolve(root: Path, raw: str) -> Tuple[Optional[str], Optional[dict]]:
+    """The commitment's canonical id and its capture row, or (None, None)
+    when the book holds no such commitment."""
+    import commitment_state as cs
+
+    if not raw:
+        return None, None
+    index = cs._scan_commitment_index(_events_path(root))
+    try:
+        cid = cs.normalize_commitment_id(raw, index)
+    except cs.CommitmentIdError:
+        return None, None
+    return cid, index["by_id"].get(cid)
+
+
+def _commit_open(root: Path, cid: str) -> Optional[dict]:
+    """The commitment as the open set projects it now (its wording folded,
+    newest wins), or None when it is closed."""
+    from cru_match import _commitment_id, load_open_commitments
+
+    p = _events_path(root)
+    if not p.exists():
+        return None
+    return next((r for r in load_open_commitments(p) if _commitment_id(r) == cid), None)
+
+
+def _commit_words(row: Optional[dict]) -> str:
+    """The words the row shows: its title, else its summary (`row_title`)."""
+    d = (row or {}).get("data") if isinstance((row or {}).get("data"), dict) else {}
+    return " ".join(str(d.get("title") or d.get("summary") or "").split())
+
+
+def _commit_rename(root: Path, raw: str, inp: dict, choice_id: str, actor: str, before: int) -> Dict[str, Any]:
+    import commitment_state as cs
+
+    cid, capture = _commit_resolve(root, raw)
+    if cid is None:
+        return _no(NO_TARGET_LINE)
+    row = _commit_open(root, cid)
+    old = _commit_words(row) or _commit_words(capture) or cid
+    if str(inp.get("due") or inp.get("when") or "").strip():
+        # The due half is not built (no writer sets a due date as asked):
+        # a press that carries a date is refused whole, never half applied.
+        return _no(COMMIT_DATE_LINE.format(name=old))
+    if row is None:
+        return _no(COMMIT_CLOSED_LINE.format(name=old))
+    if len(old) > COMMIT_CAP:
+        # Review round 1: the writer caps a title, so the Undo could not put
+        # longer words back as they were; such a row is left to a chat.
+        return _no(COMMIT_LONG_LINE.format(name=old[:80].rstrip() + "..."))
+    text = _clean(inp.get("name"), COMMIT_CAP)
+    if not text:
+        return _no(NEEDS_COMMIT_WORDS_LINE)
+    if text == old:
+        return _no(SAME_LINE.format(name=old), "already")
+    try:
+        cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
+                                   new_title=text, reason=COMMIT_REASON)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=old), "error")
+    line = f"Changed {old} to {text}." + REFRESH
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "commitment_edit", "action": "rename",
+                                "target_id": cid, "field": "title", "old": old, "new": text, "line": line})
+    return _ok(line, target_id=cid, seq=ev.get("seq"))
+
+
+def _touches(ev: dict, cid: str, capture_seq) -> bool:
+    """Whether a log row is a hand on commitment `cid`: it names the item by
+    id or by its capture seq through the chains the movement derivation
+    reads, and it is not a pure bookkeeping mark (a park, a watch, an
+    overdue ask), which `commitment_activity` rules is not a touch."""
+    import commitment_activity as ca
+
+    ids, seqs = ca.event_commitment_refs(ev)
+    if cid not in ids and not (isinstance(capture_seq, int) and capture_seq in seqs):
+        return False
+    return not ca._is_bookkeeping_update(ev)
+
+
+def _commit_undo(root: Path, press_id: str, undo_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:
+    """The verdict first, by seq, then the one writer (the cr1#1364 contract).
+
+    Refused, writing nothing and naming the item, when a newer Hub press
+    reached the item, when any other row newer than the press's own writer
+    row is a hand on it (a chat's wording fix, a close, a date, a note), or
+    when the words it shows are no longer the ones the press wrote: an undo
+    never erases a newer edit. The Hub's own `hub_edit` rows and the Apply
+    receipts are not other work."""
+    import commitment_state as cs
+
+    edits = _edits(evs)
+    press = next((e for e in edits if press_id and e["data"].get("hub_choice") == press_id
+                  and e["data"].get("action") != "undo"), None)
+    if press is None or press["data"].get("kind") != "commitment_edit":
+        return _no(UNDO_NO_PRESS_LINE)
+    pd = press["data"]
+    if any(e["data"].get("undoes_choice") == press_id for e in edits):
+        return _no(UNDO_ALREADY_LINE, "already")
+    cid, capture = _commit_resolve(root, str(pd.get("target_id") or ""))
+    name = str(pd.get("new") or pd.get("target_id") or "")
+    if cid is None:
+        return _no(GONE_LINE.format(name=name))
+    row = _commit_open(root, cid)
+    now_value = _commit_words(row) or name
+    if any(_seq(e) > _seq(press) and e["data"].get("target_id") == cid
+           and e["data"].get("action") != "undo" for e in edits):
+        return _no(UNDO_NEWER_LINE.format(name=now_value))
+    own = {s for s in pd.get("wrote_seqs") or [] if isinstance(s, int)}
+    since = min(own) if own else _seq(press)
+    cap_seq = (capture or {}).get("seq")
+    for ev in evs:
+        if _seq(ev) <= since or _seq(ev) in own or ev.get("type") in (EVENT, "apply_choices_applied"):
+            continue
+        if _touches(ev, cid, cap_seq):
+            return _no(UNDO_CHANGED_LINE.format(name=now_value))
+    old = str(pd.get("old") or "").strip()
+    if row is None or _commit_words(row) != pd.get("new"):
+        return _no(UNDO_CHANGED_LINE.format(name=now_value))
+    if not old:
+        return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
+    before = _max_seq(evs)
+    try:
+        # The same writer puts the old words back as the title; a row that
+        # showed its summary reads exactly as before.
+        cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
+                                   new_title=old, reason=COMMIT_UNDO_REASON)
+    except ValueError:
+        return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
+    line = f"Put back the wording {old}."
+    ev = _record(root, before, {"hub_choice": undo_id, "kind": "commitment_edit", "action": "undo",
+                                "target_id": cid, "undoes_choice": press_id, "line": line})
+    return _ok(line, target_id=cid, seq=ev.get("seq"))
+
+
+# ---------------------------------------------------------------------------
+# Add context (cr1#1383)
+# ---------------------------------------------------------------------------
+
+def _is_stream(root: Path, tid: str) -> bool:
+    """Whether another thread names `tid` as its parent: a work stream."""
+    return any(str(t.get("parent_thread_id") or "") == tid for t in _thread_recs(root))
+
+
+def _thread_context(root: Path, tid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    """A note on a thread, kept in its `notes` through `update_thread`, after
+    any notes already there; the row records the notes it replaced."""
+    import thread_writer as tw
+
+    rec = _thread(root, tid) if tid else None
+    if rec is None or rec.get("kind") == "objective":
+        return _no(NO_TARGET_LINE)
+    name = _thread_name(rec)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=name))
+    if _is_stream(root, tid):
+        return _no(CONTEXT_STREAM_LINE.format(name=name))
+    note = _clean(inp.get("text"), CONTEXT_CAP)
+    if not note:
+        return _no(NEEDS_NOTE_LINE)
+    old = rec.get("notes") if isinstance(rec.get("notes"), str) else ""
+    if note in [ln.strip() for ln in old.splitlines()]:
+        return _no(CONTEXT_SAME_LINE.format(name=name), "already")
+    new = (old.rstrip() + "\n" + note) if old.strip() else note
+    try:
+        tw.update_thread(root, tid, source_skill=SOURCE_SKILL, notes=new)
+    except ValueError:
+        return _no(FAILED_LINE.format(name=name), "error")
+    line = CONTEXT_LINE.format(note=note)
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "stream_edit", "action": "context",
+                                "target_id": tid, "field": "notes", "old": name, "new": note,
+                                "old_value": old, "new_value": new, "line": line})
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def _person_context(root: Path, pid: str, inp: dict, choice_id: str, before: int) -> Dict[str, Any]:
+    """A note on a person: one fact in the owner's own word, sourced to the
+    press, never stamped as a change the system made on its own."""
+    import people_writer as pw
+
+    rec = _person(root, pid) if pid else None
+    if rec is None:
+        return _no(NO_TARGET_LINE)
+    name = str(rec.get("canonical_name") or pid)
+    if not _live(rec):
+        return _no(GONE_LINE.format(name=name))
+    note = _clean(inp.get("text"), CONTEXT_CAP)
+    if not note:
+        return _no(NEEDS_NOTE_LINE)
+    try:
+        pw.record_person_fact(root, pid, note, f"{CONTEXT_REF}:{choice_id}", category=CONTEXT_CATEGORY,
+                              confidence="high", source_skill=SOURCE_SKILL)
+    except (KeyError, ValueError):
+        return _no(FAILED_LINE.format(name=name), "error")
+    line = CONTEXT_LINE.format(note=note)
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "person_edit", "action": "context",
+                                "target_id": pid, "field": "fact", "old": name, "new": note, "line": line})
+    return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def _record_write(ev: dict, kind: str, quoted: str) -> bool:
+    """Whether a log row is a write to the record a note sits on: a thread
+    writer's row (`thread_...`) naming the thread, or a person writer's row
+    (`person_...`, a fact or its retraction) naming the person. Activity on
+    the record (a mail, a meeting) is not a write to it."""
+    import json
+
+    t = str(ev.get("type") or "")
+    family = ("thread_",) if kind == "stream_edit" else ("person_", "entity_fact_")
+    return t.startswith(family) and quoted in json.dumps(ev, ensure_ascii=False, default=str)
+
+
+def _context_undo(root: Path, kind: str, press: dict, undo_id: str, actor: str,
+                  evs: List[dict]) -> Dict[str, Any]:
+    """Take back a note (the cr1#1364 contract). The verdict first, by seq:
+    refused, writing nothing and naming the item, when a newer Hub press
+    reached the record, when any newer write to the record landed (other
+    than the press's own and the rows a Hub undo wrote: an undo is not a
+    touch), or when the note is no longer as the press left it. Then the
+    one writer: the thread's notes put back as they were, or the person's
+    fact retracted through its registered reverser."""
+    import json
+
+    pd = press["data"]
+    tid = str(pd.get("target_id") or "")
+    edits = _edits(evs)
+    if kind == "stream_edit":
+        rec = _thread(root, tid)
+        name = _thread_name(rec or {}) or str(pd.get("old") or tid)
+    else:
+        rec = _person(root, tid)
+        name = str((rec or {}).get("canonical_name") or pd.get("old") or tid)
+    if rec is None:
+        return _no(GONE_LINE.format(name=name))
+    if any(_seq(e) > _seq(press) and e["data"].get("target_id") == tid
+           and e["data"].get("action") != "undo" for e in edits):
+        return _no(UNDO_NEWER_LINE.format(name=name))
+    fact = None
+    if kind == "person_edit":
+        # The press's own fact row, named on its `hub_edit` row (`wrote_seqs`).
+        wrote = {s for s in pd.get("wrote_seqs") or [] if isinstance(s, int)}
+        fact = next((e for e in evs if _seq(e) in wrote and e.get("type") == "person_fact_observed"
+                     and isinstance(e.get("data"), dict) and e["data"].get("person_id") == tid), None)
+        if fact is None:
+            return _no(UNDO_NO_PRESS_LINE)
+        if any(e.get("type") == "entity_fact_retracted" and isinstance(e.get("data"), dict)
+               and e["data"].get("retracts_seq") == _seq(fact) for e in evs):
+            return _no(UNDO_ALREADY_LINE, "already")
+    own = {s for s in pd.get("wrote_seqs") or [] if isinstance(s, int)}
+    since = min(own) if own else _seq(press)
+    hub_undid = undo_seqs(evs)
+    quoted = json.dumps(tid)
+    for ev in evs:
+        if _seq(ev) <= since or _seq(ev) in own or _seq(ev) in hub_undid:
+            continue
+        if ev.get("type") in (EVENT, "apply_choices_applied"):
+            continue
+        if _record_write(ev, kind, quoted):
+            return _no(UNDO_CHANGED_LINE.format(name=name))
+    if not _live(rec):
+        return _no(UNDO_CHANGED_LINE.format(name=name))
+    if kind == "stream_edit" and str(rec.get("notes") or "") != str(pd.get("new_value") or ""):
+        return _no(UNDO_CHANGED_LINE.format(name=name))
+    before = _max_seq(evs)
+    try:
+        if kind == "stream_edit":
+            import thread_writer as tw
+
+            # The notes as they were; a thread that had none gets none back.
+            tw.update_thread(root, tid, source_skill=SOURCE_SKILL, notes=str(pd.get("old_value") or "") or None)
+        else:
+            import brain_undo as bu
+
+            bu.REVERSERS["entity_fact_structured"]["reverse"](
+                str(root), {"person_id": tid, "change_ref": f"seq:{_seq(fact)}", "reason": CONTEXT_UNDO_REASON},
+                undone_by=actor, source_skill=SOURCE_SKILL)
+    except Exception:  # noqa: BLE001 - nothing claimed; the note stays, and says so
+        return _no(UNDO_FAILED_LINE.format(name=name), "error")
+    line = CONTEXT_TAKEN_LINE.format(name=name)
+    ev = _record(root, before, {"hub_choice": undo_id, "kind": kind, "action": "undo", "target_id": tid,
+                                "undoes_choice": str(pd.get("hub_choice") or ""), "line": line})
+    return _ok(line, target_id=tid, seq=ev.get("seq"))
+
+
+def undo_seqs(events: List[dict]) -> set:
+    """READ. The writer rows a Hub undo made (`wrote_seqs` on its `hub_edit`
+    row), so a day-count can skip them: an undo is not a touch."""
+    out = set()
+    for e in events or []:
+        d = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
+        if e.get("type") == EVENT and d.get("action") == "undo":
+            out.update(s for s in d.get("wrote_seqs") or [] if isinstance(s, int))
+    return out

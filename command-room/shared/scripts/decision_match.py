@@ -56,12 +56,15 @@ except ImportError:  # pragma: no cover — direct-path fallback
     from text_clip import clip  # noqa: E402
 
 import datetime
+import math
+import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 # Reuse the scoring + tokenizer infrastructure from cru_match — same engine,
 # different domain.
 from cru_match import load_events_defensively, score_match
+from cru_match import _content_tokens, fold_plural  # noqa: E402  cr1#1280
 
 # WALKFIX1 Item A — the same-fire fence reads a fence timestamp exactly the way
 # the commitment rail does; two copies of that normalization is how two rails
@@ -330,6 +333,116 @@ def detect_reversal_signal(text: Optional[str]) -> bool:
         return False
     lo = text.lower()
     return any(phrase in lo for phrase in _phrases("reversal_phrases", DECISION_REVERSAL_PHRASES))
+
+
+# =============================================================================
+# SUPERSEDE-TOPICAL1 (cr1#1280): a supersede needs a LINE about its target.
+# =============================================================================
+#
+# One ordinary external meeting wrote six supersede proposals against past
+# decisions it never discussed. The whole-transcript score and the
+# whole-transcript reversal boolean above are each true of almost any long
+# call, and nothing tied them to one place. So before a reversal match may
+# become a supersede (proposed or written), ONE line of the transcript has to
+# carry both: a reversal phrase, and the decision's own words. That line goes
+# on the row as its evidence. No line, no supersede. Deterministic, no model.
+#
+# "The decision's own words" means the title's content words (stopwords and
+# contractions set aside by the shared tokenizer, plurals folded), minus the
+# filler below, which every transcript says about everything. The line must
+# share at least half of them (never fewer than two, unless the title has only
+# one), and at least one shared word must not be a capitalised name in the
+# title, so a line that merely names the same person cannot qualify.
+#
+# A line is one transcript line. A long line (a speaker turn with several
+# sentences) is read as overlapping two-sentence windows, so the words and
+# the reversal phrase must be within two sentences of each other.
+
+#: Words a meeting says about everything; never evidence of a topic.
+SUPERSEDE_FILLER_WORDS = frozenset({
+    "use", "using", "used", "make", "making", "made", "send", "sending",
+    "get", "getting", "got", "keep", "keeping", "kept", "take", "taking",
+    "took", "have", "having", "had", "need", "want", "think", "let", "say",
+    "said", "see", "come", "put", "set", "move", "moving", "start", "try",
+    "going", "go", "went", "run", "work", "decision", "decide", "decided",
+    "plan", "thing", "way", "time", "also", "can", "will", "one", "new",
+    "like", "really", "actually", "well", "there", "here", "yes", "yeah",
+    "okay", "ok", "talk", "call", "meeting",
+})
+
+#: Never fewer shared title words than this on the evidence line.
+SUPERSEDE_LINE_MIN_SHARED = 2
+
+_SUPERSEDE_EVIDENCE_MAX = 300
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+# A name-shaped speaker label only (one to four capitalised words, or the
+# Me / Them fallbacks), so "Decision on the separate app: ..." keeps its words.
+_SPEAKER_PREFIX_RE = re.compile(
+    r"^\s*(?:Me|Them|[A-Z][\w'’-]*(?: [A-Z][\w'’-]*){0,3}):\s+")
+
+
+def _topic_words(text: Optional[str]) -> set:
+    return {fold_plural(w) for w in _content_tokens(text)} - SUPERSEDE_FILLER_WORDS
+
+
+def _title_name_words(title: str) -> set:
+    """Person names in a title: runs of two or more capitalised words
+    ("Rio Sample", "Mira Stone"). A lone capitalised word ("Slack",
+    "Northwind") is a topic, not a name."""
+    words = re.findall(r"[A-Za-z][\w'’-]*", str(title or ""))
+    names: list = []
+    run: list = []
+    for w in words + [""]:
+        if w[:1].isupper():
+            run.append(w)
+            continue
+        if len(run) >= 2:
+            names.extend(run)
+        run = []
+    return _topic_words(" ".join(names))
+
+
+def locate_reversal_line(transcript_text: Optional[str],
+                         title: Optional[str]) -> Optional[dict]:
+    """The first transcript line (or two-sentence window of one) that carries
+    a reversal phrase AND touches the decision titled `title`.
+
+    Returns {"line", "line_no", "shared_words"} or None. `line` is the
+    transcript's own words, clipped; `line_no` is 1-based. Pure.
+    """
+    if not transcript_text or not title:
+        return None
+    title_words = _topic_words(title)
+    if not title_words:
+        return None
+    need = max(min(SUPERSEDE_LINE_MIN_SHARED, len(title_words)),
+               math.ceil(len(title_words) / 2))
+    common = title_words - _title_name_words(title)
+    phrases = _phrases("reversal_phrases", DECISION_REVERSAL_PHRASES)
+    for line_no, line in enumerate(str(transcript_text).splitlines(), start=1):
+        body = line.strip()
+        if not body:
+            continue
+        bounds = ([0] + [m.end() for m in _SENTENCE_END_RE.finditer(body)]
+                  + [len(body)])
+        n = len(bounds) - 1
+        spans = ([(0, len(body))] if n < 2 else
+                 [(bounds[i], bounds[i + 2]) for i in range(n - 1)])
+        for start, end in spans:
+            window = body[start:end].strip()
+            lo = window.lower()
+            if not any(p in lo for p in phrases):
+                continue
+            shared = _topic_words(_SPEAKER_PREFIX_RE.sub("", window, count=1)
+                                  if start == 0 else window) & title_words
+            if len(shared) < need:
+                continue
+            if common and not (shared & common):
+                continue
+            return {"line": window[:_SUPERSEDE_EVIDENCE_MAX],
+                    "line_no": line_no,
+                    "shared_words": sorted(shared)}
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -704,6 +817,15 @@ def match_transcript_to_decisions(
         if attendee_unverified and recommendation != "no_action":
             recommendation = "no_action"
 
+        # SUPERSEDE-TOPICAL1 (cr1#1280): a reversal match needs one line that
+        # carries both the reversal phrase and this decision's words. Ahead of
+        # the seam, so it holds for a proposal and for a written supersede.
+        evidence_at = None
+        if recommendation == RECOMMEND_SUPERSEDED:
+            evidence_at = locate_reversal_line(transcript_text, title)
+            if evidence_at is None:
+                recommendation = "no_action"
+
         # ================= THE RECOMMEND-ONLY SEAM (WALKFIX1 FR-2) ==========
         # M-STRIKEABLE. See RECOMMEND_ONLY_SUPERSEDES for the argument and the
         # complete strike set. Scoring above is UNTOUCHED; this changes only
@@ -712,7 +834,7 @@ def match_transcript_to_decisions(
             recommendation = RECOMMEND_SUPERSEDE_PROPOSED
         # ===================================================================
 
-        results.append({
+        row = {
             "decision_id": _decision_id(ev),
             "score": score,
             "recommendation": recommendation,
@@ -721,7 +843,11 @@ def match_transcript_to_decisions(
             "has_completion_signal": has_completion,
             "has_reversal_signal": has_reversal,
             "attendee_unverified": attendee_unverified,
-        })
+        }
+        if evidence_at is not None:
+            row["evidence_line"] = evidence_at["line"]
+            row["evidence_line_no"] = evidence_at["line_no"]
+        results.append(row)
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
@@ -805,8 +931,14 @@ def build_decision_supersede_proposal_event(
     score: Optional[float] = None,
     title: str = "",
     source_ref: str = "",
+    evidence_line: str = "",
+    evidence_line_no: Optional[int] = None,
 ) -> dict:
     """Build a `decision_supersede_proposed` event — WALKFIX1 FR-2.
+
+    SUPERSEDE-TOPICAL1 (cr1#1280): `evidence_line` is the transcript line the
+    proposal rests on (`match_transcript_to_decisions` answers it), with its
+    1-based `evidence_line_no`; both are written on the row when given.
 
     A PROPOSAL, not a closure. It changes no decision's status: the decision
     stays exactly where its owner left it, and the decision log renders the
@@ -839,6 +971,10 @@ def build_decision_supersede_proposal_event(
         data["score"] = round(float(score), 4)
     if title:
         data["title"] = title[:200]
+    if evidence_line:
+        data["evidence_line"] = str(evidence_line)[:_SUPERSEDE_EVIDENCE_MAX]
+        if evidence_line_no is not None:
+            data["evidence_line_no"] = int(evidence_line_no)
     return {
         "seq": next_seq,
         "ts": _now_iso(),
@@ -858,6 +994,8 @@ __all__ = [
     "RECOMMEND_SUPERSEDE_PROPOSED",
     "detect_completion_signal",
     "detect_reversal_signal",
+    "locate_reversal_line",
+    "SUPERSEDE_FILLER_WORDS",
     "load_open_decisions",
     "match_transcript_to_decisions",
     "build_decision_resolved_event",

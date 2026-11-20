@@ -136,6 +136,22 @@ tap away (expand, read-only, display numbers kept). What to know:
 - There is no setting for this and none should be invented: M's ruling is
   that it is baked in for everybody.
 
+## Craft: how you decide (cr1#1391)
+
+A craft file is how you, or your firm, decide, as numbered rules. On EVERY run, load yours through the read door, one call, with `"subject_ids": []` (add the project or business id the decision is about when the resolver returned one):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": [], "task": "needs-your-call", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply the rules in `result.files` in the order given (yours first, then your firm's). Cite every rule the output used: pass their `cite_id`s to the helper and paste each of `result.lines` as one bullet of the `Sources:` section.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+No file loaded, or no rule used: the turn says nothing about craft.
+
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 
 This skill touches `_hq/data`. **The activity log is never rewritten by hand.**

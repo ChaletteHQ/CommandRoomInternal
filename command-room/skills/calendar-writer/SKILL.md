@@ -225,6 +225,10 @@ On dispatch:
            "calendar_event_id": calendar_event_id,
        }],
    )
+   # cr1#756 (owner ruling 2026-11-19): this close is exempt from the
+   # connector close dial. The owner just created this invite through the
+   # product, so the owner's own act is the evidence, as with the typed-deal
+   # ruling of 2026-11-07. Nothing here reads close_mode, on purpose.
    # Stage B (F2): auto_resolve → close_commitment(workspace_root, r["commitment_id"],
    #   resolved_by=<user>, evidence=r["evidence"], source_skill="calendar-writer",
    #   source_ref=f"gcal:{calendar_event_id}")

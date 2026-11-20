@@ -1156,6 +1156,9 @@ def wrap_sections(workspace_root, since_iso: str, now_iso: Optional[str] = None,
                 continue
             b = dict(b)
             b["classes"] = _batch_classes(workspace_root, b.get("batch_ref") or {}, evs)
+            if not b["classes"] and _batch_classes(workspace_root, b.get("batch_ref") or {},
+                                                   evs, keep_later_hides=True):
+                continue   # cr1#1366: only a Later's own hides, as before
             batches.append(b)
     except Exception:
         batches = []
@@ -1254,16 +1257,29 @@ def wrap_sections(workspace_root, since_iso: str, now_iso: Optional[str] = None,
                               "n_deferred": n_deferred}}
 
 
-def _batch_classes(workspace_root, batch_ref: dict, events: Iterable[dict]) -> set:
+def _batch_classes(workspace_root, batch_ref: dict, events: Iterable[dict], *,
+                   keep_later_hides: bool = False) -> set:
     """The change classes one listed batch carries (the listing drops them)."""
     if batch_ref.get("kind") == "sent_reconcile":
         return {"commitment_close"}
     bid = batch_ref.get("batch_id")
+    rows = [(ev, _data(ev)) for ev in events or []]
+    rows = [(ev, d) for ev, d in rows if bid and d.get("brain_batch_id") == bid
+            and d.get("brain_change_class")]
+    # cr1#1366: a Later's hide on an item owed to the owner carries the
+    # batch now so every undo door can take it back. It is the owner's own
+    # act, not one the feed narrates, so it neither adds a line here nor
+    # hides the run's other changes; a hide that ended a wait shares that
+    # wait end's batch and counts as before (cr1#1322).
+    ended = {str(d.get("commitment_id") or d.get("target_id") or "") for _ev, d in rows
+             if d.get("brain_change_class") == "commitment_wait_end"}
     out: set = set()
-    for ev in events or []:
-        d = _data(ev)
-        if bid and d.get("brain_batch_id") == bid and d.get("brain_change_class"):
-            out.add(str(d["brain_change_class"]))
+    for ev, d in rows:
+        if (not keep_later_hides and d.get("brain_change_class") == "chat_dismissal"
+                and d.get("via") == "later"
+                and str(d.get("target_id") or "") not in ended):
+            continue
+        out.add(str(d["brain_change_class"]))
     return out
 
 

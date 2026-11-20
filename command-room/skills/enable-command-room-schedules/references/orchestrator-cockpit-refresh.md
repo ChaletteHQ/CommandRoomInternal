@@ -82,7 +82,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 `set` the answer on `feed/brief` (the same `file_path` rule for a large answer; pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
-**Then the Review tab (cr1#779).** The open questions and proposed closes, one read beside the data:
+**Then To confirm (cr1#779; the Review tab until cr1#1286).** The open questions and proposed closes, one read beside the data:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:feed_review"}'
@@ -90,7 +90,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"n
 
 `set` the answer on `feed/review` (pinned by the version rule in `cockpit-shared.md`). Like the projects, it never changes the light.
 
-**Then the Week tab (cr1#780).** The recap's sections first, one read beside the data:
+**Then the Done tab (cr1#780).** The recap's sections first, one read beside the data:
 
 ```bash
 python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"now_iso": "<now ISO>", "since_iso": "<seven days before now, ISO>", "workspace_root": "<WS>"}, "name": "friday_wrap_helpers:week_sections"}'

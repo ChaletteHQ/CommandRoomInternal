@@ -1899,7 +1899,9 @@ def reconcile_and_receipt(
         # matched close joins the confirm list with its reason. A per-person
         # receipt is not a close and is written as it always is below: the
         # whole item is asked about only once its roster is complete, and the
-        # roster close never runs under this mode (`inbound_mail_leg`).
+        # roster close closes nothing under this mode: `inbound_mail_leg` does
+        # not call it, and `apply_roster_complete_closes` reads this same dial
+        # for the skill's step 4d.
         close_mode = str(((read_close or {}).get("dials") or {}).get("close_mode")
                          or "").strip().lower() or None
         n_close_mode_proposed = 0
@@ -2688,8 +2690,14 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
     plus the projection stamp), and the pending_review floor.
 
     LB2 auto lifecycle (FB-20): propose(tier="auto") + close + resolve in one
-    iteration; no auto proposal ever rests open. Returns
-    {"closed": [...], "skipped": [...], "errors": [...]}."""
+    iteration; no auto proposal ever rests open.
+
+    cr1#756: the mail connector's `close_mode` is read here, so every caller
+    honours it. Under `propose` nothing closes; each item that would have is
+    listed under `skipped` with the dial's reason, and one never asked about
+    gets one proposal (`n_proposed`). Returns
+    {"closed": [...], "skipped": [...], "errors": [...], "batch_id": ...,
+    "close_mode": "close" | "propose" | None, "n_proposed" (under propose)}."""
     from brain_proposals import propose, resolve_proposal
     from commitment_parties import (all_counterparties_received,
                                     receipts_are_id_level)
@@ -2725,6 +2733,26 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
     out["batch_id"] = batch_id
     events, _skipped = load_events_defensively(events_path)
 
+    # cr1#756 - the mail connector's close mode. Under `propose` this step
+    # closes nothing; each item that would have closed is named under
+    # `skipped` with the dial's reason. The owner is asked once per item:
+    # usually the sent rail already asked, on the send that completed the
+    # roster (`reconcile_and_receipt`, the roster block under
+    # `_propose_reason`); an item it never asked about (its roster completed
+    # before the dial was set, or its last receipt came from another rail)
+    # gets one proposal here, through `close_mode_dial.propose_closes`.
+    # No mail connector declared, or `close`: unchanged.
+    hold_reason = None
+    held: list = []
+    try:
+        from close_mode_dial import PROPOSE_REASON, close_mode_for, is_propose
+        dial = close_mode_for(ws, "email")
+        out["close_mode"] = dial.get("mode")
+        if is_propose(dial):
+            hold_reason = PROPOSE_REASON
+    except Exception:  # noqa: BLE001 - an unreadable dial reads as undeclared
+        out["close_mode"] = None
+
     # F-28 post-review (F-2): the workspace goes to the LOADER too, not only to
     # the predicate below. Otherwise this function's own gate and the projection
     # stamp the chase surface reads disagree — the closer would close an item
@@ -2758,6 +2786,14 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
                 "commitment_id": cid,
                 "why": f"{n} receipt(s), not all id-level — renders the "
                        "confirm row unchanged"})
+            continue
+        if hold_reason:
+            out["skipped"].append({"commitment_id": cid, "why": hold_reason})
+            held.append({"commitment_id": cid, "title": d.get("title") or "",
+                         "primary_thread_id": c.get("primary_thread_id") or "",
+                         "score": 1.0,
+                         "evidence": "everyone on this item has received it",
+                         "source_ref": f"roster:{cid}"})
             continue
         predicate = f"roster_complete:{n}_receipts"
         try:
@@ -2798,6 +2834,26 @@ def apply_roster_complete_closes(workspace_root, *, source_skill: str,
                                   "n_receipts": n, "predicate": predicate})
         except Exception as exc:  # loud per-item, contained per-run
             out["errors"].append({"commitment_id": cid,
+                                  "error": f"{type(exc).__name__}: {exc}"})
+    if held:
+        # cr1#756 - one ask per item. An item already asked about with a
+        # pointer (the sent rail's roster proposal, open or answered) is not
+        # asked again; `propose_closes` also skips an item with any proposal
+        # still open and a (item, `roster:` pointer) pair asked before.
+        out["n_proposed"] = 0
+        try:
+            from close_mode_dial import asked_evidence, propose_closes
+            asked_ids = {k[0] for k in asked_evidence(ws)}
+            rows = [r for r in held if r["commitment_id"] not in asked_ids]
+            if rows:
+                res = propose_closes(ws, rows, source_skill=source_skill,
+                                     reason=hold_reason)
+                out["n_proposed"] = int(res.get("n_proposed") or 0)
+                for r in res.get("refused") or []:
+                    out["errors"].append({"commitment_id": r.get("commitment_id"),
+                                          "error": r.get("error")})
+        except Exception as exc:  # noqa: BLE001 - a refused ask never closes
+            out["errors"].append({"commitment_id": None,
                                   "error": f"{type(exc).__name__}: {exc}"})
     return out
 

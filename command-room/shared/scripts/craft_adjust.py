@@ -343,7 +343,7 @@ def propose_amend(workspace_root, rel, rule_id, new_text, evidence, *,
     seq = written[0].get("seq") if written else None
     if seq is None:
         return _refuse("not_recorded", "The contradiction could not be "
-                       "recorded, so nothing changed on the Review tab.")
+                       "recorded, so nothing was added under To confirm on the Hub's Commitments tab.")
     state = rule_state(root, rel, rule_id)
     n = state["contradictions"]
 
@@ -374,13 +374,13 @@ def propose_amend(workspace_root, rel, rule_id, new_text, evidence, *,
                "craft_evidence": refs, "contradiction_seq": seq})
     if res.get("status") != "proposed":
         return {"ok": False, "refused": res.get("status"),
-                "line": "The contradiction is recorded; the Review tab "
-                        "already holds a question for it.",
+                "line": "The contradiction is recorded; a question for it "
+                        "is already under To confirm on the Hub's Commitments tab.",
                 "contradictions": n}
     return {"ok": True, "proposal_id": res["proposal_id"],
             "contradictions": n, "confidence": state["confidence"],
             "pending_supersede": state["pending_supersede"],
-            "line": f"{title} is on the Review tab with the old and the new "
+            "line": f"{title} is under To confirm on the Hub's Commitments tab, with the old and the new "
                     "text side by side. The file is unchanged until you "
                     "answer."}
 
@@ -513,7 +513,7 @@ def answer_amend(workspace_root, proposal_id, *, accept: bool, resolved_by,
                     "section": rule["section"], "evidence": refs,
                     "confidence": conf}
         lines = cap._item_lines(new_rule, rule_id, today)
-        history = (f"{today} {rule_id} amended on the Review tab after "
+        history = (f"{today} {rule_id} amended under To confirm on the Hub's Commitments tab after "
                    f"{n} contradiction(s), from {_ptr(refs)}; its superseded "
                    f"text: {_plain(rule.get('body'))}")
         out = _rewrite(text, rule_id, header, today, replace=lines,
@@ -529,7 +529,7 @@ def answer_amend(workspace_root, proposal_id, *, accept: bool, resolved_by,
                 ln = _CONFIRMED_IN_LINE.sub(f"Confirmed by owner {today}", ln)
                 done.append(ln)
             return done
-        history = (f"{today} {rule_id} kept by the owner on the Review tab "
+        history = (f"{today} {rule_id} kept by the owner under To confirm on the Hub's Commitments tab "
                    f"against new material ({n} contradiction(s)); "
                    f"confidence now {_fmt(conf)}")
         out = _rewrite(text, rule_id, header, today, touch=touch,

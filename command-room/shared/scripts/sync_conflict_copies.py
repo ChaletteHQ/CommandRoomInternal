@@ -560,17 +560,56 @@ def merge_text(live_path, copy_path, *, apply: bool, today: Optional[str] = None
 # Archive
 # ---------------------------------------------------------------------------
 
-def archive_dir(workspace_root, today: Optional[str] = None) -> Path:
+#: The archive sub-folder each kind of set-aside file goes to.
+CONFLICT_ARCHIVE_SUBDIR = "sync-conflict-copies"
+STRAY_ARCHIVE_SUBDIR = "stray-root-log"
+
+_MANIFEST_HEADS = {
+    CONFLICT_ARCHIVE_SUBDIR: (
+        "# Sync conflict copies\n\nCopies a sync service kept beside the "
+        "live files, merged back by `sync_conflict_copies.py` and moved "
+        "here. Nothing was deleted.\n\n| When | From | Archived as | Done |\n"
+        "|---|---|---|---|\n"),
+    STRAY_ARCHIVE_SUBDIR: (
+        "# Stray activity log\n\nAn activity log written at the top of the "
+        "Command Room folder instead of its data folder (cr1#1376), moved "
+        "here by `sync_conflict_copies.py` with its sidecars. The real log "
+        "was not touched. Nothing was deleted.\n\n| When | From | Archived as "
+        "| Done |\n|---|---|---|---|\n"),
+}
+
+
+def archive_dir(workspace_root, today: Optional[str] = None,
+                subdir: str = CONFLICT_ARCHIVE_SUBDIR) -> Path:
     stamp = today or _dt.date.today().isoformat()
-    return Path(workspace_root) / "_archive" / f"cleanup-{stamp}" / "sync-conflict-copies"
+    return Path(workspace_root) / "_archive" / f"cleanup-{stamp}" / subdir
 
 
-def archive_copy(workspace_root, copy_path, note: str, *, today: Optional[str] = None) -> Dict[str, Any]:
+def _free_name(dest: Path) -> Path:
+    """`dest`, or `dest` with `-2`, `-3`, ... before its name's first dot when
+    something is already archived under it: an archive is never written over
+    (cr1#1376, a second stray on the same day)."""
+    if not dest.exists():
+        return dest
+    head, dot, tail = dest.name.partition(".")
+    n = 2
+    while True:
+        cand = dest.with_name(f"{head}-{n}{dot}{tail}")
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def archive_copy(workspace_root, copy_path, note: str, *, today: Optional[str] = None,
+                 subdir: str = CONFLICT_ARCHIVE_SUBDIR,
+                 aside_ok: bool = True) -> Dict[str, Any]:
     """Move one copy into the dated archive and add a manifest line. Never
-    deletes: a mount that refuses the move gets the mv-aside idiom."""
+    deletes: a mount that refuses the move gets the mv-aside idiom (unless
+    `aside_ok` is False, when the file stays where it is), and an earlier
+    archive under the same name is never written over."""
     root = Path(workspace_root)
     copy = Path(copy_path)
-    dest_dir = archive_dir(root, today)
+    dest_dir = archive_dir(root, today, subdir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     try:
         rel = copy.relative_to(root)
@@ -578,13 +617,15 @@ def archive_copy(workspace_root, copy_path, note: str, *, today: Optional[str] =
     except ValueError:
         rel = copy
         archived_name = copy.name
-    dest = dest_dir / archived_name
+    dest = _free_name(dest_dir / archived_name)
     moved_to = None
     try:
         shutil.move(str(copy), str(dest))
         moved_to = str(dest)
     except OSError:
         try:
+            if not aside_ok:
+                raise OSError("no move aside for this kind")
             aside = copy.with_name(copy.name + f".archived.{int(_dt.datetime.now().timestamp())}")
             copy.rename(aside)
             moved_to = str(aside)
@@ -596,16 +637,169 @@ def archive_copy(workspace_root, copy_path, note: str, *, today: Optional[str] =
             f"| `{Path(moved_to).name if moved_to else 'left in place'}` | {note} |\n")
     try:
         if not manifest.exists():
-            manifest.write_text(
-                "# Sync conflict copies\n\nCopies a sync service kept beside the "
-                "live files, merged back by `sync_conflict_copies.py` and moved "
-                "here. Nothing was deleted.\n\n| When | From | Archived as | Done |\n"
-                "|---|---|---|---|\n", encoding="utf-8")
+            manifest.write_text(_MANIFEST_HEADS.get(subdir, _MANIFEST_HEADS[CONFLICT_ARCHIVE_SUBDIR]),
+                                encoding="utf-8", newline="\n")
         with manifest.open("a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
         pass
     return {"copy": str(copy), "moved_to": moved_to, "manifest": str(manifest)}
+
+
+# ---------------------------------------------------------------------------
+# A stray activity log at the workspace root (cr1#1376)
+# ---------------------------------------------------------------------------
+#
+# THE FAULT. A maintenance fire on a cloud seat landed its receipt and
+# heartbeat at the TOP of the Command Room folder (`<ws>/events.jsonl` plus its
+# `.seqhw`), not in `_hq/data`. Every reader handed the workspace root then
+# read that two-row file instead of the book: the Hub answered "no longer on
+# the book" to every press and the next Maintenance failed 19 jobs. The
+# readers and the append path now refuse it (`events_io._data_dir`,
+# `atomic_write.LedgerAtWorkspaceRoot`); this is the cleanup for a seat that
+# already has one. It MOVES the stray and its sidecars into
+# `_archive/cleanup-<date>/stray-root-log/` with a manifest line each. It
+# never deletes, never merges a row into the real log, and never moves a
+# stray when the data folder holds no log: then it may be the only log, and
+# it is reported instead.
+
+#: Held: the data folder holds no activity log, so the stray may be the only one.
+STRAY_HELD_ONLY_LOG = "only_log"
+
+#: The lock files a stray append can leave beside it. Reported, never moved: a
+#: lock is not data, and a held one must not be pulled from under its holder.
+_STRAY_LOCK_NAMES = (".writer.lock", ".writer.lock.info", ".writer.lock.sentinel")
+
+
+def _stray_sidecars(root: Path) -> List[Path]:
+    """The stray log's own sidecars at the root: every `events.jsonl.<x>`
+    (`.seqhw`, `.seqhw.rescan.json`, `.seqregression.json`, read alarms,
+    quarantines), sorted by name. Only a workspace root has any."""
+    try:
+        if not (root / "_hq").is_dir():
+            return []
+        # A file an older sweep already set aside in place (`.archived.<ts>`)
+        # is never picked up again (review finding 1: it renamed forever).
+        return sorted(p for p in root.glob("events.jsonl.*")
+                      if p.is_file() and ".archived." not in p.name)
+    except OSError:
+        return []
+
+
+def _real_data_dir(root: Path) -> Path:
+    try:
+        from data_root import resolve as _resolve_data_root
+        return Path(_resolve_data_root(root))
+    except Exception:  # noqa: BLE001
+        return root / "_hq" / "data"
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
+def _real_holds_log(data_dir: Path) -> bool:
+    """The same rule the readers use (`events_io._holds_log`): the live file
+    or a year shard."""
+    try:
+        from events_io import _holds_log
+        return bool(_holds_log(data_dir))
+    except Exception:  # noqa: BLE001
+        return (data_dir / "events.jsonl").is_file()
+
+
+def stray_root_scan(workspace_root) -> Dict[str, Any]:
+    """Read-only: `{found, log, sidecars, locks, n_rows, real_log, held}` for a
+    stray `events.jsonl` at the workspace root. `found` is False on every
+    healthy seat. `held` is `STRAY_HELD_ONLY_LOG` when the data folder holds no
+    activity log, so nothing may be moved."""
+    root = Path(workspace_root)
+    out: Dict[str, Any] = {"found": False, "log": None, "sidecars": [],
+                           "locks": [], "n_rows": 0, "real_log": False,
+                           "held": None}
+    try:
+        from events_io import stray_root_log
+        stray = stray_root_log(root)
+    except Exception:  # noqa: BLE001
+        stray = None
+    real_dir = _real_data_dir(root)
+    if _same_dir(real_dir, root):
+        # Review finding 3: a data root relocated onto the workspace root
+        # itself makes the top-level log the REAL one. Never a stray.
+        return out
+    sidecars = _stray_sidecars(root)
+    if stray is None and not sidecars:
+        return out
+    out["found"] = True
+    out["log"] = stray.name if stray is not None else None
+    out["sidecars"] = [p.name for p in sidecars]
+    out["locks"] = [n for n in _STRAY_LOCK_NAMES if (root / n).is_file()]
+    if stray is not None:
+        out["n_rows"] = len(_parse_jsonl(stray))
+    out["real_log"] = _real_holds_log(real_dir)
+    if not out["real_log"]:
+        out["held"] = STRAY_HELD_ONLY_LOG
+    return out
+
+
+def stray_root_line(result: Dict[str, Any]) -> str:
+    """The one sentence the run and the health check say about a stray root
+    log, or '' when there is none. It always says nothing was deleted."""
+    if not result or not result.get("found"):
+        return ""
+    if result.get("held") == STRAY_HELD_ONLY_LOG:
+        return ("There is an activity log at the top of your Command Room folder "
+                "and none in its data folder, so it may be the only one. Nothing "
+                "was moved or deleted; tell me whether it is your real log.")
+    n = int(result.get("n_rows") or 0)
+    rows = f"{n} entr{'y' if n == 1 else 'ies'}"
+    if result.get("moved"):
+        where = result.get("archived_into") or STRAY_ARCHIVE_SUBDIR
+        return (f"Moved a stray activity log ({rows}) from the top of your Command "
+                f"Room folder into {where}. Nothing was deleted, and your real "
+                f"activity log was not touched.")
+    if result.get("left"):
+        return (f"A stray activity log ({rows}) sits at the top of your Command "
+                f"Room folder and could not be moved; nothing was deleted. Your "
+                f"real activity log is the one in use.")
+    return (f"A stray activity log ({rows}) sits at the top of your Command Room "
+            f"folder. Your real activity log is the one in use; Maintenance moves "
+            f"the stray aside on its next run, and deletes nothing.")
+
+
+def archive_stray_root_log(workspace_root, *, apply: bool = True,
+                           today: Optional[str] = None) -> Dict[str, Any]:
+    """Find a stray root `events.jsonl` (and its sidecars) and, with `apply`,
+    move them into `_archive/cleanup-<date>/stray-root-log/`. Never deletes.
+    Never moves anything when the data folder holds no activity log
+    (`STRAY_HELD_ONLY_LOG`): that is reported. Lock files are named, never
+    moved. Answers the scan plus `{moved: [names], left: [names], line}`."""
+    root = Path(workspace_root)
+    result = stray_root_scan(root)
+    result["moved"], result["left"] = [], []
+    if not result["found"]:
+        result["line"] = ""
+        return result
+    if apply and result["held"] is None:
+        names = ([result["log"]] if result["log"] else []) + list(result["sidecars"])
+        n = int(result.get("n_rows") or 0)
+        for name in names:
+            note = (f"stray activity log, {n} entr{'y' if n == 1 else 'ies'}, not merged"
+                    if name == "events.jsonl" else "sidecar of the stray activity log")
+            a = archive_copy(root, root / name, note, today=today,
+                             subdir=STRAY_ARCHIVE_SUBDIR, aside_ok=False)
+            if a.get("moved_to") and not (root / name).exists():
+                result["moved"].append(Path(a["moved_to"]).name)
+            else:
+                result["left"].append(name)
+        if result["moved"]:
+            stamp = today or _dt.date.today().isoformat()
+            result["archived_into"] = f"_archive/cleanup-{stamp}/{STRAY_ARCHIVE_SUBDIR}"
+    result["line"] = stray_root_line(result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -681,9 +875,12 @@ def run(workspace_root, *, apply: bool = True, fired_via: Optional[str] = None,
             note = f"{r.get('n_lines', 0)} lines appended" if r.get("appended") else "nothing new"
         if apply:
             result["archived"].append(archive_copy(root, copy, note, today=today))
-    result["line"] = brief_line(result)
+    # cr1#1376: a stray activity log at the workspace root goes aside too.
+    stray = archive_stray_root_log(root, apply=apply, today=today)
+    result["stray_root"] = stray
+    result["line"] = " ".join(x for x in (brief_line(result), stray.get("line")) if x)
     result["status"] = ("held" if result["held"] else "complete")
-    if apply and (found["n"] or result["held"]):
+    if apply and (found["n"] or result["held"] or stray.get("found")):
         _receipt(root, result, fired_via=fired_via, triggered_by=triggered_by)
     return result
 
@@ -697,6 +894,11 @@ def _receipt(root: Path, result: Dict[str, Any], *, fired_via, triggered_by) -> 
                                     "n_text_lines", "line", "held", "refused",
                                     "n_receipts_skipped", "reference_drift")}
     extra["archived"] = [Path(a["moved_to"]).name for a in result["archived"] if a.get("moved_to")]
+    stray = result.get("stray_root") or {}
+    if stray.get("found"):
+        # cr1#1376: names only, never a machine path.
+        extra["stray_root"] = {k: stray.get(k) for k in
+                               ("n_rows", "moved", "left", "held", "locks", "real_log")}
     try:
         via = effective_fired_via(fired_via)
     except Exception:  # noqa: BLE001
@@ -732,7 +934,9 @@ def main(argv=None) -> int:
 __all__ = ["JOB_ID", "RECEIPT_TYPE", "HELD_LIVE_STALE", "copy_tag",
            "conflict_copies_of", "scan", "plan_events", "merge_events",
            "plan_entities", "merge_entities", "plan_text", "merge_text",
-           "archive_copy", "brief_line", "run"]
+           "archive_copy", "brief_line", "run",
+           "STRAY_HELD_ONLY_LOG", "STRAY_ARCHIVE_SUBDIR", "stray_root_scan",
+           "stray_root_line", "archive_stray_root_log"]
 
 
 if __name__ == "__main__":

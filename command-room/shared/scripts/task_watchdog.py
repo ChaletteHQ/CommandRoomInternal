@@ -1460,7 +1460,16 @@ def place_seat_records(workspace_root, task_records, device_path=None):
     for rec in rows:
         if (isinstance(rec, dict) and rec.get("taskId") and "lastRunAt" not in rec
                 and rec.get("last_run") is not None):
-            rec = dict(rec, lastRunAt=rec.get("last_run"))
+            # cr1#1278: the cloud listing's `last_run` is an object
+            # (`{status, fired_at, ...}`); read its time, as `normalize` does.
+            last = rec.get("last_run")
+            if isinstance(last, dict):
+                try:
+                    import schedule_backend as _sbl
+                    last = _sbl._iso_or_none(last)
+                except Exception:  # noqa: BLE001 - a health read never raises
+                    last = None
+            rec = dict(rec, lastRunAt=last)
         out.append(rec)
     return out
 

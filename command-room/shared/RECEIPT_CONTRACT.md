@@ -328,6 +328,18 @@ to both `check_lateness(fired_via=...)` and the closing `log_receipt`:
   mis-labeled manual costs one missing lateness note; a mis-labeled
   scheduled fabricates lateness history (F-47 P1a wrote three false
   late_fire receipts in one afternoon).
+- **On a merged seat, a press of the Maintenance task's Run button, or
+  the Hub's Start, cannot be told from its scheduled fire (cr1#977, owner
+  ruling 2026-11-19).** The press sends no message (a fire that carries
+  text starts without the device tools, cr1#651), so the session is the
+  same either way. That task's merged branch does not guess: with no
+  person's message in the session its run records `scheduled`, which there
+  means "this task's own fire, by the scheduler or a press" (the "Run Now
+  click" above does not apply to it), and the receipt's `fired_at_slot` and
+  `slot_delta_minutes` (measured when the receipt lands) say where it
+  landed against its slot. A fire more than 20 minutes after its slot is
+  never that slot's twin, so a press then runs. The legacy steps (step 0.5)
+  are unchanged.
 - **`catchup`** — never self-declared by detection. It is DERIVED:
   `check_lateness` returns `receipt_fired_via: "catchup"` when a
   scheduled-context fire is serving a genuinely missed slot (note/degrade

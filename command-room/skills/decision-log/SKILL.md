@@ -277,7 +277,7 @@ The log lives at `[WORKSPACE_ROOT]/_hq/views/DECISION_LOG.md` (v3.13.0+ canonica
 "Show me all decisions on [project] in [timeframe]"
 ```
 
-**Pulling in past rulings (cr1#1015).** On `pull in my past rulings` (or `import my rulings`), run the one-time pull. It reads the rulings files (the workspace brief, any file whose name says ruling or decision, and any file the owner names) and puts each dated ruling on the Review tab as a decision to confirm, naming the older ruling it would replace. Nothing counts as a decision until the owner confirms it there or in `staff meeting`. Run it once without `apply` and say how many it found, then with `apply: true` when the owner says go:
+**Pulling in past rulings (cr1#1015).** On `pull in my past rulings` (or `import my rulings`), run the one-time pull. It reads the rulings files (the workspace brief, any file whose name says ruling or decision, and any file the owner names) and puts each dated ruling under To confirm on the Hub's Commitments tab as a proposed decision, naming the older ruling it would replace. Nothing counts as a decision until the owner confirms it there or in `staff meeting`. Run it once without `apply` and say how many it found, then with `apply: true` when the owner says go:
 
 ```bash
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "past_rulings:pull_past_rulings", "args": {"workspace_root": "<WS>", "apply": false}}'
@@ -381,6 +381,22 @@ Each decision in the log follows this structure:
 - **entities.json + events.jsonl** — the substrate this skill cross-references project status against (MASTER_TRACKER is a regenerated Tier-2 view — never read it as authoritative or write to it)
 - **BUSINESS_CONTEXT** — Provides context for decision rationale
 - **Session Notes** — Pulls decisions from ongoing work sessions
+
+## Craft: how you decide (cr1#1391)
+
+A craft file is how you, or your firm, decide, as numbered rules. On EVERY run, load yours through the read door, one call, with `"subject_ids": []` (add the project or business id the decision is about when the resolver returned one):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": [], "task": "decision-log", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply the rules in `result.files` in the order given (yours first, then your firm's). Cite every rule the output used: pass their `cite_id`s to the helper and paste each of `result.lines` as one bullet of the `Sources:` section.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+No file loaded, or no rule used: the turn says nothing about craft.
 
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 

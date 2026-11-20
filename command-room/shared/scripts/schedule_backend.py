@@ -1102,7 +1102,10 @@ def record_trigger_map(workspace_root, task_id: str, row: dict,
         triggers = {}
     if merge and isinstance(triggers.get(task_id), dict):
         merged = dict(triggers[task_id])
-        merged.update(row)
+        # cr1#1381: a merge moves the values it is given; an empty
+        # `registered_at` is "not known here", never "erase the stamp".
+        merged.update({k: v for k, v in row.items()
+                       if not (k == "registered_at" and v in (None, ""))})
         triggers[task_id] = merged
     else:
         triggers[task_id] = dict(row)
@@ -1175,6 +1178,16 @@ SCHEDULE_CREATED_EVENT = "schedule_created"
 REGISTRATION_WRITER = "schedule_backend:record_registration"
 
 
+def registration_stamp(now: Optional[_dt.datetime] = None) -> str:
+    """The `registered_at` a create's trigger row carries (cr1#1381): UTC,
+    to the second, `Z`-suffixed, the shape every reader's `parse_ts` takes."""
+    moment = now or _dt.datetime.now(_dt.timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_dt.timezone.utc)
+    moment = moment.astimezone(_dt.timezone.utc).replace(microsecond=0)
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def record_registration(workspace_root, task_id: str, row: dict,
                         event: Optional[dict] = None, *,
                         merge: bool = False,
@@ -1183,13 +1196,21 @@ def record_registration(workspace_root, task_id: str, row: dict,
 
     The row lands first, through `record_trigger_row` unchanged (the folder
     comes from this seat's forwarded `CR_DEVICE_WORKSPACE`, never an
-    argument). The event is then appended through the canonical gate with
+    argument). A create's row (one with a receipt) that carries no
+    `registered_at` is stamped with the time it landed (cr1#1381). The event
+    is then appended through the canonical gate with
     the same shape the skill used to paste through `append_jsonl`:
     `{type: schedule_created, source_skill, data: <event>}`, seq and ts
     stamped by the writer. An `event` of None appends nothing (a cron change
     carries a row and no receipt). Returns `{row, event, event_written}`;
     a failed append never undoes the row - the registration happened, and
     `event_written: False` is the honest answer (RELIABILITY.md)."""
+    row = dict(row or {})
+    if isinstance(event, dict) and event and not row.get("registered_at"):
+        # cr1#1381: a create (it carries its receipt) is stamped with the time
+        # it landed, so the health check's `task_registered_at` has the row's
+        # own time to read. A row handed its own stamp keeps it.
+        row["registered_at"] = registration_stamp()
     written = record_trigger_row(workspace_root, task_id, row, merge=merge)
     out = {"row": written, "event": None, "event_written": False}
     if not isinstance(event, dict) or not event:
@@ -1579,22 +1600,19 @@ class CloudTriggersBackend:
         reason: str = "",
         now_iso: Optional[str] = None,
     ) -> Planned:
-        """Fire an existing trigger by hand.
+        """Fire an existing trigger by hand, with NO text (cr1#977).
 
-        The `text` is the first run-mode discriminator Command Room has ever
-        had: the old runtime could not tell a hand-pressed run from a scheduled
-        one, so "when uncertain → manual" was the only safe posture. A fire
-        that carries this sentence is provably manual.
+        A fire that carries text starts its run without the computer's device
+        tools, so it never reaches the folder (cr1#651; the Hub's own fire
+        carries none for that reason). The run therefore cannot tell this
+        fire from the scheduler's, and claims nothing about it: see
+        `maintenance_dispatcher.PRESS_UNTOLD`. `now_iso` is kept for callers
+        and no longer used.
         """
-        stamp = now_iso or _dt.datetime.now(_dt.timezone.utc).isoformat().replace(
-            "+00:00", "Z"
-        )
+        del now_iso
         return CallPlan(
             tool=CLOUD_TOOL_MAP["fire"],
-            args={
-                "trigger_id": trigger_id,
-                "text": f"Command Room manual re-run — {stamp}",
-            },
+            args={"trigger_id": trigger_id},
             task_id=task_id,
             note=reason or "manual re-run",
         )
@@ -3406,6 +3424,27 @@ def _tool_ids(tools: Iterable[Any]) -> list:
     return ids
 
 
+def plan_list(tools: Iterable[Any] = (), workspace_root=None) -> dict:
+    """The scheduler listing call, by the backend the loaded tool names
+    select (cr1#1278) - READ ONLY, on `workspace_access.RUN_HELPER_ALLOWLIST`.
+
+    The skills named `schedule_backend.plan_list` as if it were a module
+    function; it was only a method of the selected backend, so a chat on a
+    merged seat raised AttributeError and the health check went blind. This
+    is that name: `{"backend": "cloud" | "legacy" | None, "tool": <the host
+    tool to call> | None, "args": {...}, "line": <why there is none, or
+    "">}`. The chat calls `tool` with `args` and hands the rows on whole.
+    `workspace_root` is accepted for the door's shape and not read. Reads
+    nothing, writes nothing."""
+    backend, found = select_backend(tools or ())
+    if backend is None:
+        return {"backend": None, "tool": None, "args": {},
+                "line": found.reason or NO_SCHEDULER_LINE}
+    call = backend.plan_list()
+    return {"backend": backend.id, "tool": call.tool, "args": dict(call.args),
+            "line": ""}
+
+
 def select_backend(tools: Iterable[Any]) -> Tuple[Optional[ScheduleBackend], BackendDiscovery]:
     """Pick the backend from what the model can SEE, never from an env marker.
 
@@ -3844,6 +3883,7 @@ __all__ = [
     "trigger_row_payload",
     "TRIGGER_ROW_WRITER",
     "record_registration",
+    "registration_stamp",
     "registration_payload",
     "REGISTRATION_WRITER",
     "SCHEDULE_CREATED_EVENT",

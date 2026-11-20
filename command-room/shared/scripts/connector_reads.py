@@ -390,6 +390,8 @@ def chat_wall(workspace_root) -> Dict[str, Any]:
         from this one is never shown unless its sender is one the owner opted
         into surfacing (ACCOUNT_SCOPE's per-sender opt-in), and nothing from
         it is ever written.
+      * `receipt` - on a readable book only: the receipt the chat hands its
+        closing to show the wall was checked this turn (cr1#1357).
     An empty map reads everything (R4). An unreadable book answers an empty
     wall with `readable: False`: a chat cannot know what to hide, so it says
     nothing it read came from a checked wall. READ ONLY; never raises."""
@@ -434,6 +436,13 @@ def chat_wall(workspace_root) -> Dict[str, Any]:
                     "except_senders": sorted(set(kept))})
     except Exception:  # noqa: BLE001 - a reader never raises
         return {"readable": False, "connectors": [], "mailboxes": []}
+    # cr1#1357: the wall was really checked, so it hands back the receipt a
+    # chat's closing counts it by. An unreadable book checked nothing: none.
+    try:
+        import turn_receipts  # type: ignore
+        out["receipt"] = turn_receipts.issue("chat_wall")
+    except Exception:  # noqa: BLE001 - no receipt, never a raise
+        pass
     return out
 
 

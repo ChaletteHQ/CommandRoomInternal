@@ -8,9 +8,12 @@ maintenance JOB (`calendar-close`, daily, after `review-expiry`).
 THE PREDICATE (pure — `commitment_policy.calendar_matches`): an open,
 CONFIRMED `kind: scheduling` row closes `done` when a `meeting` event
 exists whose time (`data.start_ts`, else `ts`) lies inside
-(capture ts, capture ts + CALENDAR_WINDOW_DAYS], at least one non-user
-person id on the row (`person_ids` / `counterparty_id(s)`) appears in the
-meeting's `person_ids`, and the meeting is about the item (cr1#765). Never
+(capture ts, capture ts + CALENDAR_WINDOW_DAYS], at least one party on the
+row's other side (`counterparty_id(s)`, or the owner when the other side
+owes it; every id on file only when the row names neither) appears in the
+meeting's `person_ids`, and the meeting is about the item (cr1#765). The
+meeting the row was captured from never counts, and the window opens no
+earlier than its start (cr1#765 UAT fail). Never
 `data.status` (set on 3 of 428 meetings on the operator's book). Evidence
 names the meeting by date, party count and seq — no names in evidence.
 Pending rows never close here.
@@ -272,7 +275,7 @@ def _spent_proposals(events, candidates: list) -> list:
 
 
 def _propose_row(workspace_root, c: dict) -> None:
-    """Ask the owner about a task-captured row on the Review tab."""
+    """Ask the owner about a task-captured row under To confirm on Commitments."""
     import commitment_policy as policy
     from cru_match import build_pending_review_event
     from event_gate import append_event
@@ -475,7 +478,7 @@ def proposal_line(n: int) -> str:
     if not n:
         return ""
     return (f"{n} task{'' if n == 1 else 's'} may be done: a meeting looks related, but I "
-            f"am not sure, so {'it is' if n == 1 else 'they are'} on your Review tab.")
+            f"am not sure, so {'it is' if n == 1 else 'they are'} under To confirm on the Hub's Commitments tab.")
 
 
 def propose_line(n: int) -> str:

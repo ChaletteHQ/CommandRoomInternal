@@ -60,6 +60,13 @@ except ImportError:  # direct-path import (tests, bash one-liners)
 # event time (the pre-v3.5.0 contract every orchestrator's filter documents).
 DEFAULT_TTL_HOURS = 24
 
+#: cr1#1364: what `clear_dismissal(..., as_undo=True)` answers when
+#: a newer hide holds the same row; nothing is written.
+STATUS_NEWER_HIDE = "newer_hide"
+#: cr1#1366: ...and when the item's date or wait has changed since the hide
+#: (`hide_undo.changed_since_hide`); nothing is written.
+STATUS_NEWER_CHANGE = "newer_change"
+
 
 def _clock_now(workspace_root=None):
     """CLOCK1 - the corroborated UTC instant this module stamps from.
@@ -117,7 +124,8 @@ def dismissal_expiry(ev: dict) -> Optional[_dt.datetime]:
 def _clear_index(events: Iterable[dict]) -> dict:
     """One pass over events → what has been cleared:
       seqs:        {dismissal_seq, ...} exact-seq clears
-      by_target:   target_id -> last clear position (file order)
+      by_target:   target_id -> last clear position (file order); a clear
+                   marked `seq_only` (an undo's, cr1#1364) is not indexed here
       by_fp:       fingerprint -> last clear position
     Positions let identity clears apply only to dismissals written BEFORE
     the clear (a re-mute after an unmute stays live)."""
@@ -133,6 +141,10 @@ def _clear_index(events: Iterable[dict]) -> dict:
             ds = int(ds.strip())
         if isinstance(ds, int) and not isinstance(ds, bool):
             seqs.add(ds)
+        # cr1#1364: an undo's clear names its own dismissal only; its target
+        # and fingerprint are kept for the readers that attribute it.
+        if d.get("seq_only") is True and isinstance(ds, int) and not isinstance(ds, bool):
+            continue
         if d.get("target_id") not in (None, ""):
             by_target[str(d["target_id"])] = idx
         if d.get("fingerprint") not in (None, ""):
@@ -228,7 +240,8 @@ def active_dismissal_target_ids(events: Iterable[dict], now_iso: str) -> set:
 _SEQ_SPELLING = _re.compile(r"^(?:commitment_seq_|event_|seq_)?0*(\d+)$")
 
 
-def item_snoozes(events: Iterable[dict], now_iso: str) -> dict:
+def item_snoozes(events: Iterable[dict], now_iso: str, *,
+                 include_due_moves: bool = True) -> dict:
     """{commitment id: when its live snooze ends, ISO in UTC} (cr1#1292).
     Pure.
 
@@ -243,7 +256,15 @@ def item_snoozes(events: Iterable[dict], now_iso: str) -> dict:
     resolved only when the event at that seq is a commitment, so a mute on
     another kind of row (a proposal, a person, a message) names no
     commitment; its own id stays a key that matches no commitment row.
-    Several live mutes on one item: the latest end wins."""
+    Several live mutes on one item: the latest end wins.
+
+    The owner's own item (owner ruling of 2026-11-17 on cr1#1292): a Later
+    on it moves its due date (`commitment_state.apply_later`'s defer leg)
+    and hides it until that date. The hide is the `hidden_until` stamp on
+    that date change, read only while that change is the item's NEWEST due
+    change, so any later date change (a new Later, the undo through
+    `restore_due`) ends it or replaces it. `include_due_moves=False` reads
+    the mute ledger alone."""
     events = list(events)
     try:
         from cru_match import _commitment_id
@@ -281,6 +302,29 @@ def item_snoozes(events: Iterable[dict], now_iso: str) -> dict:
         prior = _parse_dt(out.get(cid))
         if prior is None or end > prior:
             out[cid] = end.astimezone(_dt.timezone.utc).isoformat()
+    if include_due_moves:
+        now = _parse_dt(now_iso)
+        newest: dict = {}
+        for ev in events:
+            if (ev.get("type") or ev.get("event")) != "commitment_updated":
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            target = d.get("commitment_id") or d.get("target_id") or ev.get("commitment_id")
+            # A due change, read as the loader folds one (cru_match): a new
+            # due in any of its spellings, or the sanctioned clear.
+            if not target or not (d.get("new_due") or d.get("due") or d.get("due_date")
+                                  or d.get("due_cleared") is True):
+                continue
+            # Keyed exactly as the loader keys a due change (`str(target)`),
+            # so the hide and the due date it belongs to always agree.
+            newest[str(target)] = d.get("hidden_until")
+        for cid, until in newest.items():
+            end = _parse_dt(until)
+            if end is None or now is None or end <= now:
+                continue
+            prior = _parse_dt(out.get(cid))
+            if prior is None or end > prior:
+                out[cid] = end.astimezone(_dt.timezone.utc).isoformat()
     return out
 
 
@@ -312,15 +356,32 @@ def drop_snoozed(opens: Iterable[dict], snoozed) -> tuple:
     return kept, gone
 
 
-def workspace_item_snoozes(workspace_root, now_iso: str) -> dict:
+def workspace_item_snoozes(workspace_root, now_iso: str, *,
+                           include_due_moves: bool = True) -> dict:
     """`item_snoozes` over the owner's own ledger (the owner-scoped read
     every owner surface uses). Read only; {} when the ledger cannot be
     read, so a surface never fails for want of it."""
     try:
         from events_io import load_events_owner_scoped
-        return item_snoozes(load_events_owner_scoped(str(workspace_root))[0], now_iso)
+        return item_snoozes(load_events_owner_scoped(str(workspace_root))[0], now_iso,
+                            include_due_moves=include_due_moves)
     except Exception:  # noqa: BLE001 - no ledger read: nothing is known snoozed
         return {}
+
+
+def workspace_moved_ids(workspace_root, now_iso: str) -> set:
+    """The commitments hidden now ONLY because a Later moved their date
+    (cr1#1292): hidden from the lists until that date, but placed on its
+    day by a calendar of days (the Hub's Week board). An item also under a
+    live mute stays hidden. Read only; empty when the ledger cannot be read."""
+    try:
+        from events_io import load_events_owner_scoped
+        events = load_events_owner_scoped(str(workspace_root))[0]
+    except Exception:  # noqa: BLE001 - no ledger read: nothing is known moved
+        return set()
+    every = item_snoozes(events, now_iso)
+    muted = item_snoozes(events, now_iso, include_due_moves=False)
+    return {str(k) for k in every if k not in muted}
 
 
 class DismissalNotFoundError(ValueError):
@@ -428,6 +489,71 @@ def hold_item(
             "hold_expires": data["snooze_until"], "event": ev}
 
 
+def _item_keys(events: list, raw) -> set:
+    """Every spelling that names the same row as the target `raw`: the value
+    itself and, when it names a commitment, its id and its seq spellings
+    (the set `item_snoozes` reads). Pure."""
+    key = str(raw).strip()
+    keys = {key}
+    try:
+        from cru_match import _commitment_id
+    except ImportError:  # pragma: no cover - direct-path import
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from cru_match import _commitment_id
+    hit = _SEQ_SPELLING.match(key)
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != "commitment":
+            continue
+        seq = ev.get("seq")
+        cid = str(_commitment_id(ev))
+        if cid == key or (hit and isinstance(seq, int) and seq == int(hit.group(1))):
+            keys.add(cid)
+            if isinstance(seq, int) and not isinstance(seq, bool):
+                keys.update({str(seq), f"seq_{seq}", f"event_{seq}", f"commitment_seq_{seq}"})
+            break
+    return keys
+
+
+def newer_hide_seq(events: Iterable[dict], dismissal_seq) -> Optional[int]:
+    """cr1#1364: the seq of a NEWER hide on the row the `chat_dismissal` at
+    `dismissal_seq` hides, or None. Pure.
+
+    A newer hide is a later `chat_dismissal` (a Snooze, a Later on a row owed
+    to the owner, a hold) on the same row, in any spelling of its target or
+    by the same fingerprint, that no clear has taken out. Expired or not, it
+    is a newer word, judged by seq the way cr1#1344 judges a newer date. An
+    undo of the older hide must not run under it: the clear it writes is
+    keyed by target as well as by seq (`_is_cleared`), so it would take the
+    newer hide out too."""
+    events = list(events)
+    try:
+        want = int(dismissal_seq)
+    except (TypeError, ValueError):
+        return None
+    own = next((ev for ev in events if ev.get("type") == "chat_dismissal"
+                and ev.get("seq") == want), None)
+    if own is None:
+        return None
+    d = own.get("data") or {}
+    keys = _item_keys(events, d.get("target_id")) if d.get("target_id") not in (None, "") else set()
+    fp = d.get("fingerprint")
+    cleared = _clear_index(events)
+    newest = None
+    for idx, ev in enumerate(events):
+        if ev.get("type") != "chat_dismissal":
+            continue
+        sq = ev.get("seq")
+        if not isinstance(sq, int) or isinstance(sq, bool) or sq <= want:
+            continue
+        x = ev.get("data") or {}
+        same = (x.get("target_id") not in (None, "") and str(x["target_id"]).strip() in keys) or (
+            fp not in (None, "") and x.get("fingerprint") == fp)
+        if same and not _is_cleared(ev, idx, cleared):
+            newest = sq
+    return newest
+
+
 def _load_events(events_jsonl_path) -> list:
     try:
         from cru_match import load_events_defensively
@@ -450,6 +576,7 @@ def clear_dismissal(
     source_skill: str,
     reason: str = "unmuted",
     via: str = "unmute",
+    as_undo: bool = False,
 ) -> dict:
     """THE unmute writer. Appends a `chat_dismissal_cleared` referencing the
     dismissal by exact seq (plus its target_id/fingerprint when the dismissal
@@ -458,6 +585,17 @@ def clear_dismissal(
     {"status": "already_inactive"} and writes NOTHING. Loud
     DismissalNotFoundError when the seq matches no chat_dismissal. The
     scan→append sequence runs inside the events writer lock (R1c).
+
+    `as_undo=True` is an undo's door (cr1#1364), and it changes two things.
+    When a newer hide holds the same row (`newer_hide_seq`), it answers
+    {"status": STATUS_NEWER_HIDE} and writes NOTHING. And the clear it writes
+    is marked `seq_only`, so it takes out this one dismissal and no other:
+    an identity clear (by target or fingerprint) would also lift an OLDER
+    hide on the row, and undoing the newest of two Laters would bring the
+    row back early. The Unmute verb leaves it off. On that door a hide on
+    an item whose date or wait has changed since (cr1#1366,
+    `hide_undo.changed_since_hide`) answers {"status": STATUS_NEWER_CHANGE}
+    and writes NOTHING too: the undo would not put the item back as it was.
     """
     if isinstance(dismissal_seq, str) and dismissal_seq.strip().isdigit():
         dismissal_seq = int(dismissal_seq.strip())
@@ -482,6 +620,11 @@ def clear_dismissal(
                 "refusing to write an unanchored clear. Re-run `show muted` "
                 "for the current ledger."
             )
+        if as_undo:
+            newer = newer_hide_seq(events, dismissal_seq)
+            if newer is not None:
+                return {"status": STATUS_NEWER_HIDE, "dismissal_seq": dismissal_seq,
+                        "newer_seq": newer, "target_id": (target.get("data") or {}).get("target_id")}
         now = _clock_now(workspace_root)
         expires = dismissal_expiry(target)
         if expires is None or expires <= now:
@@ -490,6 +633,14 @@ def clear_dismissal(
         if _is_cleared(target, position, _clear_index(events)):
             return {"status": "already_inactive", "dismissal_seq": dismissal_seq,
                     "detail": "cleared"}
+        if as_undo:
+            # cr1#1366: the undo promises the item reads as before the hide;
+            # a newer date or wait on it since means it would not.
+            from hide_undo import changed_since_hide
+            if changed_since_hide(events, dismissal_seq,
+                                  now.isoformat().replace("+00:00", "Z")):
+                return {"status": STATUS_NEWER_CHANGE, "dismissal_seq": dismissal_seq,
+                        "target_id": (target.get("data") or {}).get("target_id")}
         d = target.get("data") or {}
         data: dict = {
             "dismissal_seq": dismissal_seq,
@@ -501,6 +652,8 @@ def clear_dismissal(
             data["target_id"] = d["target_id"]
         if d.get("fingerprint") not in (None, ""):
             data["fingerprint"] = d["fingerprint"]
+        if as_undo:
+            data["seq_only"] = True   # cr1#1364: this dismissal and no other
         ev = {
             "type": "chat_dismissal_cleared",
             "source_skill": source_skill,
@@ -520,6 +673,7 @@ def clear_dismissals(
     source_skill: str,
     reason: str = "batch undo",
     via: str = "batch_undo",
+    as_undo: bool = False,
 ) -> List[dict]:
     """Batch unmute — the triage batch-undo's mute reversal (F-20 P3a: undo
     now also clears the batch's chat_dismissals). Same contract as
@@ -531,7 +685,7 @@ def clear_dismissals(
             results.append(clear_dismissal(
                 workspace_root, seq,
                 cleared_by=cleared_by, source_skill=source_skill,
-                reason=reason, via=via,
+                reason=reason, via=via, as_undo=as_undo,
             ))
         except DismissalNotFoundError as e:
             results.append({
@@ -548,6 +702,10 @@ __all__ = [
     "live_mutes",
     "remaining_ttl_label",
     "active_dismissal_target_ids",
+    "workspace_moved_ids",
     "clear_dismissal",
     "clear_dismissals",
+    "newer_hide_seq",
+    "STATUS_NEWER_HIDE",
+    "STATUS_NEWER_CHANGE",
 ]

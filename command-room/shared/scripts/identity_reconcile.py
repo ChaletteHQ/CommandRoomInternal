@@ -1469,6 +1469,20 @@ def classify_cluster(workspace_root, cluster: dict) -> dict:
                            "match"}
         except Exception:
             matched = None
+        if matched is not None and _new_name_beside_address(
+                cluster, pointing, matched):
+            # cr1#769 owner ruling 1 (2026-11-19): the text names someone at
+            # this address and the proposed name is not the record's. "Same
+            # as the address owner?" is the wrong question, and a yes loses
+            # the new person, so it is the plain new-person question, with
+            # no address and no record on offer.
+            return {"tier": "confirm", "email": None,
+                    "matched_person": None, "silent_link_ok": False,
+                    "why": f"{pointing} is "
+                           f"{(matched.get('canonical_name') or matched.get('id'))!r}'s"
+                           " address and the text names someone beside it: "
+                           f"{name!r} is asked about as a new person, with no "
+                           "address (cr1#769)"}
         if matched is not None:
             return {"tier": "merge_propose", "email": pointing,
                     "matched_person": matched, "silent_link_ok": False,
@@ -1915,6 +1929,104 @@ def _name_related(name: str, matched_name: str) -> bool:
     return a <= b or b <= a
 
 
+def _form_words(s) -> list:
+    """The name's words folded (case, accents, punctuation), without a title
+    of address or a suffix: `person_backlog_sweep._name_words`, the one
+    implementation."""
+    from person_backlog_sweep import _name_words
+
+    return [w for w in _name_words(s) if w]
+
+
+def _given_names_fit(a: str, b: str) -> bool:
+    """One given name written two ways: the same, an initial or a clipping
+    of the other (`attendee_evidence._abbreviation_of`), or an ordinary
+    nickname pair (`attendee_evidence.diminutive_of`). The two predicates
+    are imported, never copied, so this and the shared-address split rule
+    agree on who a nickname is. A spelling slip is not a fit: a different
+    given name is a different person (`surname_variant`)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        from attendee_evidence import _abbreviation_of, diminutive_of
+    except Exception:
+        return ((len(a) == 1 and b.startswith(a))
+                or (len(b) == 1 and a.startswith(b)))
+    return _abbreviation_of(a, b) or diminutive_of(a, b)
+
+
+def _is_short_form(words: list, full: list) -> bool:
+    """Is `words` the name `full`, or a form of it that keeps its first name:
+    the first name alone, written as an initial, a clipping or a nickname, a
+    later word as an initial, a middle name left out, or a middle initial
+    the record does not hold? A surname alone is not a form: a family
+    shares it."""
+    if not words or not full:
+        return False
+    if words == full:
+        return True
+    if not _given_names_fit(words[0], full[0]):
+        return False
+    i = 1
+    for w in words[1:]:
+        j = i
+        while j < len(full) and not (
+                w == full[j] or (len(w) == 1 and full[j].startswith(w))):
+            j += 1
+        if j < len(full):
+            i = j + 1
+        elif len(w) != 1:
+            return False
+    return True
+
+
+def name_is_form_of(name: str, record: dict) -> bool:
+    """cr1#769 owner ruling 3 (2026-11-19): is `name` a first-name, initial or
+    nickname form of the record's name? The record's own name and any saved
+    alias or nickname count, and so does a one-word nickname followed by the
+    record's surname. Either way round: a record held as a first name alone
+    is a form of the full name in the mention. Anything else, a different
+    first name above all, is another person as far as an address alone can
+    tell."""
+    from people_writer import get_person_display_names
+
+    words = _form_words(name)
+    if not words or not record:
+        return False
+    canon = _form_words(record.get("canonical_name"))
+    for surface in get_person_display_names(record):
+        full = _form_words(surface)
+        candidates = [full]
+        if len(full) == 1 and canon[1:]:
+            candidates.append(full + canon[1:])
+        for c in candidates:
+            if _is_short_form(words, c) or _is_short_form(c, words):
+                return True
+    return False
+
+
+def _new_name_beside_address(cluster: dict, address: str,
+                             matched: dict) -> bool:
+    """cr1#769 owner ruling 1: the cluster's name is neither a form nor a
+    surname spelling of the record that owns `address`, and some row's text
+    names someone beside that address. Such a row is the plain new-person
+    question, never a question about the address owner."""
+    from person_backlog_sweep import address_beside_a_name
+
+    name = (cluster.get("name") or "").strip()
+    if not name or not address or not matched:
+        return False
+    if name_is_form_of(name, matched) or \
+            surname_variant(name, matched.get("canonical_name") or ""):
+        return False
+    for row in cluster.get("add_rows") or cluster.get("rows") or []:
+        if address_beside_a_name(dict(row, name=name), address):
+            return True
+    return False
+
+
 def auto_create_enabled(workspace_root) -> bool:
     """SPEC_FLOW1 `identity.auto_create` — may this workspace put a person
     on file on its own? Default ON, off by word, fail-to-default."""
@@ -2155,7 +2267,12 @@ _CONTRADICTION_MARKERS = (
     "contradicts the",             # the mention's org against the record's
     "IDM1 class",                  # two candidates — there is no likeliest
     "duplicate-suspect set",       # the record itself is under question
+    "not a form of the record's name",  # cr1#769: someone else's address
 )
+# cr1#769 owner ruling 2 (2026-11-19): a name that is not a form of the
+# record's, joined to it only by the record's address, is let go when it
+# ages out and never linked. The gate's refusal carries this phrase.
+_NOT_A_FORM = "not a form of the record's name"
 # Refusals that mean the check could not RUN. Never a default: a file that
 # would not open is not a customer's answer.
 _UNAVAILABLE_MARKER = "unavailable"
@@ -2503,6 +2620,19 @@ def auto_link_eligible(workspace_root, cluster: dict, matched: dict,
             if sole is not None and sole.get("id") == matched.get("id"):
                 id_level_email = addr.strip().lower()
                 break
+    if id_level_email and not name_is_form_of(name, matched):
+        # cr1#769 owner ruling 3 (2026-11-19): an address alone links only a
+        # first-name, initial or nickname form of the record's name.
+        # Bar (b) below cannot stand in for this: its candidate set is
+        # token-level, so a different person sharing a surname or a first
+        # name with the record passes it. A surname spelling keeps IDENT1
+        # rule 2's own path (the corroboration clause), unchanged.
+        if not surname_variant(name, matched_name):
+            return False, (f"{id_level_email} is {matched_name!r}'s address "
+                           f"and {name!r} is {_NOT_A_FORM}: an address "
+                           "alone links only a first name, initial or "
+                           "nickname, so the person is asked (cr1#769)")
+        id_level_email = None
     corroboration = None
     if not exact_name and not id_level_email:
         # The third clause, and the ONLY one M's 2026-08-02 ruling added: a

@@ -248,7 +248,7 @@ def _name_span(seen: list, words: list) -> int:
 
 
 def _who_is_named(head: str, words: list, *, joined: bool = False,
-                  after: bool = False) -> str | None:
+                  after: bool = False, loose: bool = False) -> str | None:
     """Who the words at the end of `head` are: "own" (the proposed person),
     "part" (a bare piece of their name), "other" (somebody else) or None.
 
@@ -276,6 +276,8 @@ def _who_is_named(head: str, words: list, *, joined: bool = False,
     if not seen:
         return None
     span = _name_span(seen, words)
+    if span and loose:
+        return "own"  # cr1#769: asked who is named, not who is tied
     if span:
         pre = line[:found[len(seen) - span].start()]
         possessive = found[len(seen) - 1].group(0).rstrip(".,;:").lower() \
@@ -296,7 +298,7 @@ def _who_is_named(head: str, words: list, *, joined: bool = False,
 
 
 def _beside_address(text: str, start: int, end: int,
-                    words: list) -> str | None:
+                    words: list, *, loose: bool = False) -> str | None:
     """Who the text puts beside the address at text[start:end]: "own" (the
     proposed person, in a bracket), "joined" (the proposed person, by a join
     word, with the address ending the clause), "part", "other" or None.
@@ -308,26 +310,29 @@ def _beside_address(text: str, start: int, end: int,
     label = None if opening else _BRACKET_LABEL_RE.search(before)
     join = None if opening or label else _JOIN_RE.search(before)
     if opening:
-        found.add(_who_is_named(before[:opening.start()], words))
+        found.add(_who_is_named(before[:opening.start()], words,
+                                loose=loose))
     elif label:
         inner = {_fold(w) for w in _WORD_RE.findall(label.group(1))}
-        found.add(_who_is_named(before[:label.start()], words)
+        found.add(_who_is_named(before[:label.start()], words, loose=loose)
                   if inner <= _HARMLESS_IN_BRACKET else "other")
     elif join:
-        who = _who_is_named(before[:join.start()], words, joined=True)
-        if who == "own":
+        who = _who_is_named(before[:join.start()], words, joined=True,
+                            loose=loose)
+        if who == "own" and not loose:
             who = "joined" if _CLAUSE_END_RE.search(after) else None
         found.add(who)
     closing = _BRACKET_AFTER_RE.search(after)
     if closing:
-        found.add(_who_is_named(closing.group(1), words, after=True))
+        found.add(_who_is_named(closing.group(1), words, after=True,
+                                loose=loose))
     for kind in ("other", "own", "joined", "part"):
         if kind in found:
             return kind
     return None
 
 
-def _address_sightings(p: dict, words: list) -> dict:
+def _address_sightings(p: dict, words: list, *, loose: bool = False) -> dict:
     """{lowercased address: {"address", "beside"}} across the proposal's
     evidence and source_ref. The two fields are read apart, so the end of one
     can never sit beside the start of the other."""
@@ -337,7 +342,8 @@ def _address_sightings(p: dict, words: list) -> dict:
         for m in _EMAIL_RE.finditer(text):
             row = out.setdefault(m.group(0).lower(),
                                  {"address": m.group(0), "beside": set()})
-            row["beside"].add(_beside_address(text, m.start(), m.end(), words))
+            row["beside"].add(_beside_address(text, m.start(), m.end(), words,
+                                              loose=loose))
     return out
 
 
@@ -427,6 +433,19 @@ def _attributed_email(p: dict) -> str | None:
             (spells == "short" or _writes_the_name(evidence, words, beside)):
         return addr
     return None
+
+
+def address_beside_a_name(p: dict, address: str) -> bool:
+    """cr1#769 owner ruling 1 (2026-11-19): does the text put a name beside
+    `address`, whoever that name is? The proposed person, a piece of their
+    name, or somebody else all count. Only an address with nobody beside it
+    ("wrote from a@b") is False. Never attribution: it says only that the
+    text names someone at the address."""
+    words = _name_words(p.get("name"))
+    if not words or not address:
+        return False
+    row = _address_sightings(p, words, loose=True).get(str(address).lower())
+    return bool(row) and any(kind for kind in row["beside"])
 
 
 def _age_days(ts: str, now_iso: str) -> int | None:

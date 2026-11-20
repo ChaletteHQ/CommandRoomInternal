@@ -128,6 +128,22 @@ A final pass over all verdicts builds the **conflict map**: each disagreement, t
 
 Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
+## Craft: how you decide (cr1#1391)
+
+A craft file is how you, or your firm, decide, as numbered rules. On EVERY run, load yours through the read door, one call, with `"subject_ids": []` (add the project or business id the decision is about when the resolver returned one):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": [], "task": "boardroom", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply the rules in `result.files` in the order given (yours first, then your firm's). Cite every rule the output used: pass their `cite_id`s to the helper and paste each of `result.lines` as one bullet of the `Sources:` section.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+No file loaded, or no rule used: the turn says nothing about craft.
+
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 
 This skill touches `_hq/data`. **The activity log is never rewritten by hand.**

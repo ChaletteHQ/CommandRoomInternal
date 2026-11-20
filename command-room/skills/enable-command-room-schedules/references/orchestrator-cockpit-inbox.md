@@ -282,7 +282,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"f
 
 When the inbound read could not happen at all — no mail connector resolved, or every account was out of scope — pass `"items": []` and `"fetch_blocked": "<what was missing, in plain language>"`: the call records a blocked read rather than a clean zero (TRAINFIX F-4), and the surface is the quiet form.
 
-The answer's `result` is `{ok, text, page_rel, page_pc_path, bytes_len, push, calls, rows_written, receipt, counts, n_accounts, branch}` — `rows_written` is every row the call landed, the receipt last, so this run's log shows them. `ok: false` with `refused` and `lines` (the writer could not be named, the folder has not finished syncing, the page could not be saved, the read row did not land) means NOTHING after the refusal point was written: `lines` is the whole final response. If the door itself answers `writer_identity_required`, its `line` is the whole final response.
+The answer's `result` is `{ok, text, page_rel, page_pc_path, bytes_len, push, calls, rows_written, receipt, counts, n_accounts, branch}` — `rows_written` is every row the call landed, the receipt last, so this run's log shows them. `ok: false` with `refused` and `lines` (the writer could not be named, the folder has not finished syncing, the page could not be saved, the read row did not land) means NOTHING after the refusal point was written (the one exception, cr1#1464: `page_not_built`, a page the renderer refused, leaves one stop record so the Hub's note and the Morning Brief can say it): `lines` is the whole final response. If the door itself answers `writer_identity_required`, its `line` is the whole final response.
 
 
 # Phase 6 — The feed, then STOP

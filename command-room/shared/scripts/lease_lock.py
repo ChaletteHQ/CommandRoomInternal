@@ -80,6 +80,18 @@ DEFAULT_TIMEOUT_S = DEFAULT_TTL_S + TAKEOVER_MARGIN_S
 DEFAULT_RETRIES = 200
 DEFAULT_BACKOFF_S = 0.02
 RELEASE_REMOVE_RETRIES = 5
+#: cr1#1382: after a release, the folders EARLIER releases of this ledger left
+#: (a removal the mount refused) are removed too, so they never pile up. Only
+#: ones released at least this long ago, by BOTH the stamp in the name and
+#: the folder's mtime: a takeover or a put-back holds its aside folder for
+#: milliseconds, so a fresh one is never touched mid-flight.
+RELEASE_REAP_MIN_AGE_S = 300.0
+#: ...at most this many per release, one try each, and the pass stops at the
+#: first one the mount refuses (a mount that refuses one refuses the rest).
+RELEASE_REAP_MAX = 25
+#: ...and at most once per this many seconds per lease in one process, so a
+#: busy writer does not list the data folder on every append.
+RELEASE_REAP_INTERVAL_S = 60.0
 HOLDER_REREADS = 3
 
 #: The one sentence a write refused for a lost lease carries to the door
@@ -104,6 +116,7 @@ __all__ = [
     "configured_backend", "check_held", "last_release", "last_acquire_stats",
     "record_hold_lost", "hold_lost_marker_path", "note_appended", "HOLD_LOST_RELPATH", "DEFAULT_BACKEND", "BACKENDS",
     "LEASE_LOST_LINE", "DEFAULT_TTL_S", "DEFAULT_TIMEOUT_S",
+    "RELEASE_REAP_MIN_AGE_S",
 ]
 
 
@@ -405,29 +418,97 @@ def _take_over(lease: Path, judged: dict[str, Any] | None) -> dict[str, Any] | N
 
 
 def _remove_released(aside: Path, remove_retries: int = RELEASE_REMOVE_RETRIES) -> bool:
-    """Remove a released lease dir. Bounded retries on PermissionError (a
-    mount that still holds the directory open); on exhaustion the sidecar is
-    LEFT for `reap_released` and False is returned. Never raises."""
+    """Remove a released lease dir. Bounded retries on a refused removal (a
+    mount that still holds the directory open: PermissionError, or on Windows
+    a delete still pending inside it, "directory is not empty"; cr1#1382
+    widened the retry from PermissionError alone to every OSError); on
+    exhaustion the sidecar is LEFT for `reap_released` and the next
+    release's `_reap_old_released`, and False is returned. Never raises."""
     for i in range(int(remove_retries) + 1):
         try:
             shutil.rmtree(aside)
             return True
         except FileNotFoundError:
             return True
-        except PermissionError:
+        except OSError:
             if i >= int(remove_retries):
                 return False
             time.sleep(0.01 * (i + 1))
-        except OSError:
-            return False
     return False
+
+
+#: cr1#1382: when each lease last ran `_reap_old_released` in this process
+#: (monotonic seconds), for the RELEASE_REAP_INTERVAL_S throttle.
+_REAP_LAST: dict[str, float] = {}
+
+
+def _released_age(entry: Path, now: float) -> float | None:
+    """A released folder's age: the YOUNGER of the release time stamped in
+    its name (`_released_name`: epoch microseconds) and its mtime. None when
+    either cannot be read, which keeps the folder."""
+    stamp = entry.name.rsplit(RELEASED_INFIX, 1)[-1].split("-", 1)[0]
+    if not stamp.isdigit() or len(stamp) < 10:
+        return None
+    try:
+        mtime = entry.stat().st_mtime
+    except OSError:
+        return None
+    return now - max(int(stamp) / 1e6, mtime)
+
+
+def _reap_old_released(lease: Path, now: float | None = None) -> list[str]:
+    """cr1#1382. Remove the released folders of THIS lease's ledger that were
+    released at least RELEASE_REAP_MIN_AGE_S ago (`_released_age`). Only
+    directories directly beside the lease whose name starts with
+    `<ledger>.lease.released.`: the live lease (`<ledger>.lease`), every live
+    file and any other ledger's folders never match. Never a symlink or a
+    junction. At most RELEASE_REAP_MAX, one try each; the pass stops at the
+    first refused removal. Returns the names removed. Never raises."""
+    removed: list[str] = []
+    try:
+        lease = Path(lease)
+        prefix = lease.name.replace(LEASE_SUFFIX, RELEASED_INFIX, 1)
+        if prefix == lease.name or not lease.name.endswith(LEASE_SUFFIX):
+            return removed
+        when = _now() if now is None else float(now)
+        is_junction = getattr(os.path, "isjunction", None)
+        for entry in sorted(lease.parent.iterdir(), key=lambda p: p.name):
+            if len(removed) >= RELEASE_REAP_MAX:
+                break
+            if not entry.name.startswith(prefix):
+                continue
+            if entry.is_symlink() or (is_junction and is_junction(entry)):
+                continue
+            if not entry.is_dir():
+                continue
+            age = _released_age(entry, when)
+            if age is None or age < RELEASE_REAP_MIN_AGE_S:
+                continue
+            if not _remove_released(entry, remove_retries=0):
+                break
+            removed.append(entry.name)
+    except Exception:  # noqa: BLE001 - a tidy-up never fails a release
+        return removed
+    return removed
+
+
+def _reap_after_release(lease: Path) -> list[str]:
+    """The throttled call `release` makes (RELEASE_REAP_INTERVAL_S)."""
+    key = str(lease)
+    tick = time.monotonic()
+    last = _REAP_LAST.get(key)
+    if last is not None and tick - last < RELEASE_REAP_INTERVAL_S:
+        return []
+    _REAP_LAST[key] = tick
+    return _reap_old_released(lease)
 
 
 def release(lock_dir: str | Path, info: dict[str, Any] | None = None) -> dict[str, Any]:
     """Release the lease: rename the dir aside (atomic), then remove it.
 
     Returns `{"released": bool, "removed": bool, "sidecar": str|None,
-    "reason": str|None}`. A lease that is no longer ours (taken over after
+    "reason": str|None, "reaped": [names]}`; `reaped` names the folders
+    earlier releases left that this one removed (cr1#1382). A lease that is no longer ours (taken over after
     our TTL passed) is NOT renamed — the current holder keeps it; `released`
     is False with reason `not_ours`, and the caller learns from the return
     value that its hold was lost. Never raises from the release path.
@@ -442,7 +523,8 @@ def release(lock_dir: str | Path, info: dict[str, Any] | None = None) -> dict[st
     and our rename, and the lease is put back (the same N-2 rule as acquire).
     """
     lease = Path(lock_dir)
-    out: dict[str, Any] = {"released": False, "removed": False, "sidecar": None, "reason": None}
+    out: dict[str, Any] = {"released": False, "removed": False, "sidecar": None,
+                           "reason": None, "reaped": []}
     if info is not None:
         current = read_holder(lease)
         for i in range(HOLDER_REREADS):
@@ -490,6 +572,8 @@ def release(lock_dir: str | Path, info: dict[str, Any] | None = None) -> dict[st
         out["removed"] = True
     else:
         out["sidecar"] = str(aside)
+    # cr1#1382: the release cleans up after itself, earlier releases included.
+    out["reaped"] = _reap_after_release(lease)
     return out
 
 

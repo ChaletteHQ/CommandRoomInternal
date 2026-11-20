@@ -1124,10 +1124,21 @@ Check `meeting_capture.rerun_status(workspace_root, source_ref)` BEFORE processi
 import sys, json; sys.path.insert(0, "shared/scripts")
 from brain_undo import undo_after_reprocess
 out = undo_after_reprocess("<WORKSPACE>", "granola:<meeting_id>",
+                           receipt_seq=<the receipt's seq>,
                            undone_by="<user person_id>",
                            source_skill="meeting-notes")
 print(json.dumps(out))   # relay out["line"] verbatim
 ```
+
+**On a merged seat (cr1#1417)** `brain_undo` is on neither door list, so the block above cannot run there. Run the same undo as one writer form instead and print its `result.text` as the entire reply; it reverses the run whose receipt you showed and nothing else, or says there is nothing to reverse:
+
+```bash
+cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "surface_composers:compose_and_post", "args": {"workspace_root": "<WORKSPACE>", "surface": "undo-reprocess", "composer_args": {"meeting": "granola:<meeting_id>", "receipt": <the receipt's seq>, "undone_by": "<user person_id>"}, "after": ""}}'
+```
+
+If the door itself refuses the form (`ok` is false), say nothing of why: run `surface_composers:refused_line` with `{"surface": "undo-reprocess"}` through `plan run_helper` and print its `result` alone.
+
+**The undo is pinned to the receipt the owner saw (cr1#1457).** `<the receipt's seq>` is the `seq` of the `meeting_processed` row this run appended: the row `append_event` returned for the receipt, or on a merged seat the row in the append door's `stamped`. Keep it with the receipt you narrate, and hand it to the undo as a number. If that meeting was processed again after this receipt, the undo refuses with its own line and writes nothing, so a later run is never the one put back. Without a receipt seq it refuses too; never look the newest run up to fill it in.
 
 Two answers exist and there is no third. Either the run changed something and `undo_after_reprocess` puts it back through the registered reversers — additive, receipted, itself undoable — or it says *"Nothing to reverse — that re-run didn't change anything."* A re-run of an already-processed meeting usually changes nothing at all, and that is the honest answer, not a failure to be worked around.
 
@@ -1326,6 +1337,9 @@ closing = recap_closing(
     coverage=coverage,    # the coverage sentences (what was and was not read), or None
     skipped=skipped,      # MNSTEPS1: the keys of the steps that did not run (Step coverage, below), or []
     ran=ran,              # cr1#550: the keys of the table's steps that DID run (Step coverage, below)
+    receipts=receipts,    # cr1#1357: the receipts the two guards handed back this turn (Step coverage, below)
+    door_receipts=door_receipts,  # cr1#1413: merged seat only, every door envelope's receipt; None on a local seat
+    not_needed=not_needed,  # cr1#1413: doored steps left out because there was nothing for them
 )
 # Output the closing verbatim; its last line is the H2 link, which stays the LAST line of
 # the chat turn (after the widget, after Sources, after everything else)
@@ -1350,6 +1364,10 @@ print(closing)
 | `expiry_line` | the card's expiry line under the card |
 
 Keep a second list, `ran`: add a key from the table above the moment its step answers `ok` true (in a shell whose files are local: the moment its call returns without raising). A step that ran and found nothing to do, such as no deal change or no question to ask, still ran; so does a step this skill tells you to leave out because there is nothing for it (no decisions to log, no counterparty organisation for Step 5h, the follow-up drafts' recursion guard): add its key too. Add the card per Step 9c. Pass both to `recap_closing(..., skipped=skipped, ran=ran)` in Step 9d. Every key in the table that is not in `ran` is named as not run, so a step you did not confirm is said even when it never reached `skipped` (cr1#550: the card went unnamed in 3 of 3 runs). The composer prints one fixed plain sentence per key above, above the coverage lines, naming what did not happen and what that leaves undone, with no file, script or mechanism in it; any other label prints one general sentence saying part of the processing could not run and the result is partial (once, however many such labels), and the label itself is never printed. It leaves out a coverage line that calls the result complete beside a skipped step, and still prints the Sources line and the brief link. Do not restate those sentences anywhere else in the reply, and never add your own account of the skip: the composer's sentence is the whole of it. With `skipped` empty and every key of the table in `ran`, nothing extra prints, exactly as before.
+
+**The two guards count only on their receipts (cr1#1357).** The personal-sources wall (`chat_wall`) and the output check on your own prose (`output_check`) are never put in `ran` or `skipped`: the closing reads them from a third list, `receipts`, and names each one that has no receipt from this turn, whatever the other lists say. Start `receipts` empty. When the personal-sources wall answers, add its `receipt` field (on a merged seat it is `result.receipt`, not the envelope's own `receipt`, which is the door's; a wall that could not read the book has none, and then it did not run). Before posting the prose you composed, run the output check over it: on a merged seat render the read door's `plan run_helper` form exactly as for the wall, with `"name": "chat_output_renderer:output_check"` and `"args": {"text_or_html": "<the prose>"}`, paste what it prints and run that, and add the `result` it answers; on a seat whose files are local call `output_check("<the prose>")` from `chat_output_renderer.py` and add what it returns. A leak is refused exactly as `validate_chat_output` refuses it, with no receipt: rewrite the prose and check it again. Never type, copy or reuse a receipt from an earlier run: a receipt is good for its own turn only, and a typed one counts for nothing, so the guard is named as not run.
+
+**On a merged seat a doored step counts only on the door's receipt (cr1#1413).** Every door call that answers `ok` true carries a `receipt` field on its envelope, beside `result`. Keep a fourth list, `door_receipts`, start it empty, and add each envelope's `receipt` the moment the call answers. Pass it as `door_receipts=door_receipts` in Step 9d. The steps the door runs (closing settled promises, the entity and deal signal scans, the tracker and decision log views, the card's questions and the expiry line) then count as run only on their receipts: the same key in `ran` with no receipt is named as not run, and deal signals need both the detection's and the proposal's receipt. A step this skill leaves out because there is nothing for it (no decisions to log, no counterparty organisation, detection found nothing to propose, no question on the card) goes in a fifth list, `not_needed`, passed as `not_needed=not_needed`, and counts as run. The card, the follow-up drafts and the objective review have no door call of their own and still count on `ran`. On a seat whose files are local nothing runs through the door, so pass `door_receipts=None` and `ran` stays the record. Never type or reuse a receipt.
 
 **Follow-up drafts do NOT appear in the chat output.** Per Step 9b, drafts are staged silently via `follow-up-ritual` and surface in the next Inbox / Commitments fire. The processed-meeting card is for recap + decisions + brief link + open items only. M's reasoning (Apr 29 feedback): the brief is shareable and the chat output should match — internal-only content lives elsewhere.
 
@@ -1408,7 +1426,7 @@ The full 12-step cascade. Use when the user says "process deep", "full analysis"
 
 ## Narration leak scan (CUT-C item 8 — MANDATORY on every composed line)
 
-Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `validate_chat_output(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`). It raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
+Widget bodies are scanned inside `widget_transport.render_and_persist`; the PROSE this skill composes around them is not, unless this step runs. Before posting any sentence you composed — an ack, a header, a summary, a pointer, a "why" line — run `output_check(<the text>)` from `chat_output_renderer.py` (`shared/scripts/`; on a merged seat through the read door, as Step coverage says) and add what it answers to the closing's `receipts` (cr1#1357). It is the same scan as `validate_chat_output` and raises `LeakDetectedError` on a raw id (`person_NNN`, `project_NNN`, `org_NNN`, a `cmt_` / `bp_` / `pcand:` wire id), an event or field name, a file name or path, or a score. ABORT the post and rewrite the sentence with the entity's name (`narration_names.humanize(text, narration_names.name_index(<WORKSPACE>))` is the one substitution). NEVER catch the error and post anyway. Text relayed byte-exact from a driver or the transport is already scanned and is not re-composed.
 
 ## Routing (full trigger corpus)
 

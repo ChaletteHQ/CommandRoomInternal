@@ -2231,6 +2231,30 @@ _THIRD_PERSON_RE = re.compile(
                              s\s+(?:going\s+to|gonna)|re\s+(?:going\s+to|gonna))\b
     """
 )
+# cr1#1279 - a REQUEST with no subject pronoun: "send over some times, if
+# you don't mind" / "do you mind sending..." / "send me a few times". None
+# of the pairs above bind to it (there is no "you" before the verb), so the
+# marker had nothing to agree with and the extractor's guess stood, which
+# on the issue's book row was the user. Read ONLY when no subject-verb pair
+# matched at all, and never when a first-person word is anywhere in the
+# words ("can I send over...", "our team will send over..." are the
+# speaker's own offers).
+#
+# The imperative counts only at the HEAD of the words, after nothing but
+# fillers: transcripts drop the subject on offers all the time ("will send
+# over the deck", "happy to send over the deck", "gonna send over some
+# times"), and a bare "send over" anywhere in the words would hand those
+# offers to the listener (fresh review, round 1). "if you don't mind" on
+# its own is not a request either ("if you don't mind, happy to send...").
+_REQUEST_TO_OTHER_RE = re.compile(
+    r"""(?ix)
+      ^(?:(?:great|ok|okay|so|yeah|yes|and|just|please|maybe|cool|perfect|
+            alright|well|then|um|uh|thanks|hey)\s+)*
+        (?:send|shoot|forward)\s+(?:over|me|us)\b
+    | \b(?:do|would)\s+you\s+mind\b
+    """
+)
+_FIRST_PERSON_SUBJECT_RE = re.compile(r"(?i)\b(?:i|we|my|our|let\s+us)\b")
 
 PERSON_FIRST = "first"
 PERSON_SECOND = "second"
@@ -2257,7 +2281,23 @@ def grammatical_person(text) -> Optional[str]:
         m = rx.search(norm)
         if m and (best is None or m.start() < best[0]):
             best = (m.start(), label)
+    if best is None and _REQUEST_TO_OTHER_RE.search(norm) \
+            and not _FIRST_PERSON_SUBJECT_RE.search(norm):
+        return PERSON_SECOND
     return best[1] if best else None
+
+
+def _is_request_to_other(text) -> bool:
+    """cr1#1279 - do the words ASK the listener to do something: the
+    request speech act ("can you send...", "send me...") or the subject-less
+    request above. Advice and statements in the second person are not."""
+    norm = _normalize_for_fusion(text)
+    if not norm:
+        return False
+    if _REQUEST_RE.search(norm):
+        return True
+    return bool(_REQUEST_TO_OTHER_RE.search(norm)
+                and not _FIRST_PERSON_SUBJECT_RE.search(norm))
 
 
 # The vocative at the HEAD of a turn: "Bo, I'll send you…" / "thanks Bo, …".
@@ -2630,7 +2670,7 @@ def attribute_item(item: dict, *, tclass, hay_spans, turns, transcript_text,
     ladder must ask.
 
     Returns `{"attribution", "owner_id", "counterparty_id", "self_ref",
-    "owner_changed"}`. Pure."""
+    "asks_other", "owner_changed"}`. Pure."""
     base = derive_attribution(item, tclass=tclass, hay_spans=hay_spans,
                               turns=turns)
     span = base.get("span")
@@ -2652,9 +2692,33 @@ def attribute_item(item: dict, *, tclass, hay_spans, turns, transcript_text,
         parties=parties, prev_label=prev_label)
     body = turn_body_text(transcript_text, turns, idx) if idx is not None else ""
     voc = vocative_at_head(body)
+    # cr1#1279 - the USER asking someone else ("Mira, send over some times,
+    # if you don't mind"). The person asked owns it: on a two-party call
+    # `attribute_owner` already names them; on a bigger call the vocative at
+    # the head of the user's turn does, when it spells exactly one other
+    # party. `asks_other` tells the route the user is the one ASKING, so an
+    # extracted owner that is the user is a misreading, never an answer.
+    # Only a REQUEST shape counts: second person also covers advice ("you
+    # should install it. I think I can give you...") where the user's own
+    # offer follows, and that row is the floor's to judge, not this one's.
+    user_id = parties.get("user_id")
+    label_low = str(turn_label or "").strip().lower()
+    asks_other = bool(user_id) and person == PERSON_SECOND and (
+        label_low == "me" or _resolve_label(turn_label, parties) == user_id
+    ) and _is_request_to_other(words or (item or {}).get("evidence") or "")
+    if asks_other and not owner and voc:
+        asked = _first_name_match(voc, parties)
+        if asked and asked != user_id:
+            owner, owner_basis = asked, BASIS_VOCATIVE
     cp, cp_basis, question, self_ref = attribute_counterparty(
         item, owner_id=owner, parties=parties, vocative=voc,
         prev_label=prev_label, meeting_person_ids=meeting_person_ids)
+    # cr1#1279 - and the user, who asked, is who it is owed to. Without this
+    # a `scheduling` / `task` row (no counterparty slot on the ladder) owned
+    # by the person asked reads as "between other people" and is kept
+    # observed-only, so the waiting-on the issue lost is tracked nowhere.
+    if asks_other and owner and owner != user_id and not cp:
+        cp, cp_basis = user_id, BASIS_SPEAKER
     extracted_owner = str((item or {}).get("owner_id") or "").strip()
     attribution = dict(base)
     attribution["owner_basis"] = owner_basis
@@ -2666,6 +2730,7 @@ def attribute_item(item: dict, *, tclass, hay_spans, turns, transcript_text,
         "owner_id": owner,
         "counterparty_id": cp,
         "self_ref": self_ref,
+        "asks_other": asks_other,
         "owner_changed": bool(owner) and bool(extracted_owner)
         and owner != extracted_owner,
     }
@@ -5020,6 +5085,18 @@ def route_meeting_captures(
                 and got["owner_id"] != str(item.get("owner_id") or "").strip():
             patched["owner_id"] = got["owner_id"]
             patched.pop("owner_external", None)
+        # cr1#1279 - the one other id this pass removes, beside the
+        # self-counterparty strip below: when the user's own turn ASKS
+        # someone else to do it and no rung could say who, an extracted
+        # owner that is the user is the misreading the issue booked. It is
+        # cleared, so the row asks who owns it (owner basis `unknown`)
+        # instead of sitting on the user's plate. A dictation is exempt:
+        # nobody else is in the room, so the user's own words are theirs.
+        if (got.get("asks_other") and not got["owner_id"]
+                and tclass.get("class") != TRANSCRIPT_CLASS_DICTATION
+                and str(patched.get("owner_id") or "").strip()
+                == (parties or {}).get("user_id")):
+            patched["owner_id"] = ""
         if got["self_ref"]:
             own = got["owner_id"] or str(patched.get("owner_id") or "")
             if patched.get("counterparty_id") == own:

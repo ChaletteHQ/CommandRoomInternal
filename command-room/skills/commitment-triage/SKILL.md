@@ -174,6 +174,12 @@ apply-choices — see its commitment-triage entry for the exact calls):
   original closes with a "split into …" note. Needs at least two parts.
   A parent with open sub-items refuses to split (its parts belong to ONE
   deliverable) — the writer's error says so; surface it verbatim.
+- **Add context** (cr1#1463) — "add context to #N: <note>". Call
+  `commitment_state.add_commitment_note(ws, <id>, <note>, noted_by=<owner id>,
+  source_skill="commitment-triage")` and say its `line`; a refusal wrote
+  nothing. "Take that back" or a bare `undo`: `brain_undo.undo_batch` with the
+  answer's `batch_ref` (`user_confirmed=True`), then say
+  `brain_undo.undo_receipt_lines`; a newer write on the item refuses it.
 
 Prose around these uses the SAME words as the verb rows — fix wording,
 reassign, split (F-13 P2a).
@@ -238,7 +244,10 @@ doors — `work my plate` and `show parked`. There is no paging on the board:
 never offer "show more", never ask for a page number.
 
 **Every other verb is TYPED, by the row's number** — "later 12 to friday",
-"drop 7", "not mine 19", "nudge 4", "follow-up call 22". The numbers are the
+"drop 7", "not mine 19", "nudge 4", "follow-up call 22". A wait on an event is
+typed the same way: "12 is waiting on the contract signing" holds row 12 with
+no date until "12 is not waiting" (apply-choices Step 2c, one call through
+`commitment_wait:wait_from_chat`, cr1#1323). The numbers are the
 row's own and are the same on the board, on the working page and in the text
 form, so a number a reader took off the board still means that row after any
 re-render.
@@ -445,8 +454,9 @@ Handled by `apply-choices` § `commitment-triage` (all writes through
   DONE1 twin — that writer accepts only the dispatcher's own name); every
   other CONFIRM row (no owner on record, a system question) is a real item
   and closes through `close_commitment` like any row.
-- **Later…** → `apply_later_covering_folded` (your own item moves its date;
-  someone else's leaves the view until then; the late copies folded under the
+- **Later…** → `apply_later_covering_folded` (your own item moves its date
+  and leaves the view until then, cr1#1292; someone else's leaves the view
+  until then; the late copies folded under the
   line move with it, cr1#1012 ruling (b)).
 - **Drop** → `close_commitment(..., resolution="dropped")`.
 - **Not mine** → `commitment_state.disown_commitment` — the owner is

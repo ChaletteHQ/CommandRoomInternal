@@ -582,6 +582,106 @@ def check_conflict_copies(workspace_root) -> list[str]:
     return out
 
 
+def _names(names: list) -> str:
+    """`a`, `a and b`, `a, b and c`: file names joined in plain words."""
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _root_year_files(root: Path) -> list[str]:
+    """cr1#1400: year files of the activity log (`events-YYYY.jsonl`) at the
+    top of a workspace root, sorted. Read-only; [] on any error."""
+    try:
+        from events_io import _SHARD_RE, is_workspace_root
+        if not is_workspace_root(root):
+            return []
+        return sorted(p.name for p in root.glob("events-*.jsonl")
+                      if p.is_file() and _SHARD_RE.match(p.name))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def stray_root_health_line(workspace_root) -> str:
+    """cr1#1400 (owner ruling 2026-11-18 on #1376): the one plain line the
+    health check says about an activity log at the top of the Command Room
+    folder, naming the files, or '' when there is none.
+
+    (a) The data folder holds the real log: the top-level one is a stray that
+        nothing reads, and Maintenance's sync sweep sets it aside.
+    (b) The data folder holds none: the seat is running on the top-level log,
+        which is kept as it is (the ruling); the line says so.
+    A year file of the log at the top is named as well: in (b) it is part of
+    the log in use, otherwise nothing reads or moves it.
+
+    Read-only. It moves, refuses and merges nothing. Never raises."""
+    try:
+        import sync_conflict_copies as scc
+        root = Path(workspace_root)
+        scan = scc.stray_root_scan(root)
+        years = _root_year_files(root)
+        if not scan.get("found") and not years:
+            return ""
+        if scan.get("found") is False:
+            # A relocated data root on the workspace root itself makes the
+            # top-level files the real ones (the scan says nothing): so do we.
+            real_dir = scc._real_data_dir(root)
+            if scc._same_dir(real_dir, root):
+                return ""
+        log = scan.get("log")
+        helpers = list(scan.get("sidecars") or [])
+        n = int(scan.get("n_rows") or 0)
+        entries = f"{n} entr{'y' if n == 1 else 'ies'}"
+        held = scan.get("held") == scc.STRAY_HELD_ONLY_LOG
+        if log and held:
+            files = _names([log] + years + helpers)
+            return ("⚠ Your activity log sits at the top of your Command Room "
+                    f"folder ({files}, {entries}) and its data folder, _hq/data, "
+                    "holds none, so Command Room is reading and writing this one "
+                    "as your activity log. Nothing was moved, refused or deleted; "
+                    "if your log belongs in _hq/data, tell me.")
+        parts = []
+        if log or helpers:
+            files = _names(([log] if log else []) + helpers)
+            what = (f"A stray activity log ({files}, {entries})" if log
+                    else f"Leftover activity log files ({files})")
+            if held:
+                parts.append(
+                    f"{what} sit at the top of your Command Room folder and "
+                    "_hq/data holds no activity log. Command Room does not read "
+                    "them. Nothing was moved or deleted.")
+            else:
+                verb, it = ("sits", "it") if log else ("sit", "them")
+                parts.append(
+                    f"{what} {verb} at the top of your Command Room folder, outside "
+                    f"its data folder. Command Room does not read {it}; your real "
+                    "activity log in _hq/data is the one in use. Maintenance "
+                    f"moves {it} aside into _archive on its next run and deletes "
+                    "nothing; say \"run maintenance\" to do it now.")
+        if years:
+            one = len(years) == 1
+            parts.append(
+                f"{'A year file' if one else 'Year files'} of your activity log "
+                f"({_names(years)}) {'sits' if one else 'sit'} at the top of "
+                "your Command Room folder, outside _hq/data. Command Room does "
+                f"not read {'it' if one else 'them'}. Nothing was moved or "
+                "deleted; tell me if that year is missing from your log.")
+        return "⚠ " + " ".join(parts) if parts else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def check_stray_root_log(workspace_root) -> list[str]:
+    """cr1#1376 / cr1#1400: one plain line when an activity log sits at the top
+    of the Command Room folder instead of its data folder. Empty when there is
+    none. Read-only; never raises. Maintenance moves a stray aside (never
+    deletes it), except when the data folder holds no log, when it is only
+    reported."""
+    line = stray_root_health_line(workspace_root)
+    return [line] if line else []
+
+
 def substrate_alarm_lines(workspace_root) -> list[str]:
     """The LOUD, plain-English alarm lines for the health check / brief. Empty
     list = substrate is healthy (surface nothing). Ordered most-severe first."""
@@ -627,6 +727,8 @@ def substrate_alarm_lines(workspace_root) -> list[str]:
     # run. Held: the copy holds everything this log holds and more, so this
     # computer's log may be the stale one, and only the owner can say.
     lines.extend(check_conflict_copies(workspace_root))
+    # cr1#1376 - a stray activity log at the top of the folder.
+    lines.extend(check_stray_root_log(workspace_root))
     bad = check_json_parse(workspace_root)
     for b in bad:
         lines.append(

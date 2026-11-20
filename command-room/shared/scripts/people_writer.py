@@ -1374,6 +1374,30 @@ class PersonNameCollisionError(ValueError):
             f"leave two records under one name")
 
 
+class PersonRecordNeedsRepairError(ValueError):
+    """Raised when a rename finds a value on the record it cannot read.
+
+    cr1#1430. A rename is judged only on what it writes (the name and its
+    spellings), so an older record missing `first_seen` is renamed. What is
+    left is a value that is present and wrong, such as a first-seen day that
+    is not a date: saving the record would carry it on, so nothing is
+    written. A ValueError subclass, so a caller already catching the
+    writer's ValueError keeps catching this. `line` is the one sentence a
+    surface says: why, and the next step.
+    """
+
+    def __init__(self, person_id: str, name: str, reason: str):
+        self.person_id = person_id
+        self.name = name or person_id
+        self.reason = reason
+        self.line = (f"{self.name}'s record on file holds a value that does "
+                     f"not read right, so the name was left as it was. Say "
+                     f"\"report this\" in a chat so the record can be "
+                     f"repaired, then rename again.")
+        super().__init__(f"rename refused: {person_id} needs a repair "
+                         f"first ({reason})")
+
+
 def _other_record_holding_name(people: list, person_id: str,
                                name: str) -> tuple:
     """The OTHER record already answering to `name`, how it matches, and the
@@ -1502,7 +1526,17 @@ def _apply_rename(
     if aliases or "aliases" in target:
         target["aliases"] = aliases
 
-    _validate_person(target)
+    # cr1#1430: a rename writes the name and its spellings and nothing else,
+    # so it is judged on those, as an alias write is (cr1#824). An older
+    # record (no `first_seen`, a legacy `first_seen_at` / `first_contact`, a
+    # retired key) is renamed and every other field is left as it was: no
+    # date is backfilled and no key is renamed or dropped. A value that is
+    # present and wrong still refuses, before any write, in plain words.
+    try:
+        _validate_for_alias(target, list(target.get("aliases") or []))
+    except ValueError as exc:
+        raise PersonRecordNeedsRepairError(person_id, previous_name,
+                                           str(exc)) from None
     _save_entities(workspace_root, data, source_skill)
 
     batch_id = None
@@ -1565,7 +1599,9 @@ def rename_person(
     `PersonNameCollisionError` (a ValueError) when the name, or a spelling of
     it, is already on file for somebody ELSE: refused with one sentence and
     no write, because merging two people is `merging duplicate people`'s act
-    and not this one's.
+    and not this one's. `PersonRecordNeedsRepairError` (a ValueError) when
+    the record holds a value that is present and wrong (cr1#1430); an older
+    record merely missing `first_seen` is renamed and otherwise left as is.
     """
     return _apply_rename(workspace_root, person_id,
                          canonical_name=canonical_name, reason=reason,
@@ -2722,6 +2758,14 @@ INTRO_CONFIDENCE = ("stated", "card_tag", "inferred")
 CARE_MAX_CHARS = 280
 EVIDENCE_MAX_CHARS = 500
 SETTABLE_PERSON_FIELDS = ("category", "introduced_by", "handle_with_care")
+#: cr1#1433: three record fields this writer also sets, through the same row
+#: and so the same registered reverser, for the Hub's edits (`hub_edit`):
+#: the role, the address shown for them, and the company on file. The chat's
+#: fact door does not take them; a chat still sets them through
+#: `door_update_person`.
+UNDOABLE_RECORD_FIELDS = ("role", "email", "primary_org_id")
+ROLE_MAX_CHARS = 120
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 FIELD_CHANGE_CLASS = "person_field_set"
 PHONE_CHANGE_CLASS = "person_phone_changed"
 FIELD_BATCH_PREFIX = "pfs_"
@@ -2738,7 +2782,13 @@ DOOR_BAD_VALUE_LINES = {
                       "and how sure that is (stated, card tag or inferred)."),
     "handle_with_care": (f"Nothing was saved, because that note is longer "
                          f"than {CARE_MAX_CHARS} characters."),
+    "role": (f"Nothing was saved, because a role is a few words, at most "
+             f"{ROLE_MAX_CHARS} characters."),
+    "email": "Nothing was saved, because that is not an email address.",
+    "primary_org_id": "Nothing was saved, because that company is not on file.",
 }
+DOOR_EMAIL_TAKEN_LINE = ("Nothing was saved, because that address is on file "
+                         "for someone else.")
 DOOR_BAD_PHONE_LINE = "Nothing was saved, because that is not a phone number."
 DOOR_FACT_FIELD_LINE = ("Nothing was saved. A person's category, who "
                         "introduced them and a care note each have their own "
@@ -2763,12 +2813,44 @@ def _fact_batch_id(prefix: str, now_iso: str | None, workspace_root) -> str:
 def _checked_field_value(people: list, person_id: str, field: str, value,
                          now_iso: str | None, workspace_root, *,
                          restoring: bool = False):
-    """The value to store, or None to clear; raises `PersonFieldRefused`."""
-    if field not in SETTABLE_PERSON_FIELDS:
+    """The value to store, or None to clear; raises `PersonFieldRefused`.
+    On a restore (an undo) a role or an address goes back exactly as it was,
+    never reshaped; an address held by someone else and a company that is no
+    longer on file are still refused (cr1#1433)."""
+    if field not in SETTABLE_PERSON_FIELDS + UNDOABLE_RECORD_FIELDS:
         raise PersonFieldRefused("bad_field", DOOR_BAD_FIELD_LINE)
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     bad = PersonFieldRefused("bad_value", DOOR_BAD_VALUE_LINES[field])
+    if field == "role":
+        if restoring and isinstance(value, str):
+            return value
+        text = " ".join(str(value).split()) if isinstance(value, str) else ""
+        if not text or len(text) > ROLE_MAX_CHARS:
+            raise bad
+        return text
+    if field == "email":
+        if restoring and isinstance(value, str):
+            text = value
+        else:
+            text = str(value).strip().lower() if isinstance(value, str) else ""
+            if not _EMAIL_SHAPE.match(text):
+                raise bad
+        # An address is one person's: never a second record's, on a restore
+        # too, so an undo cannot hand an address to two people.
+        for other in people:
+            if other.get("id") != person_id and text.strip().lower() in {
+                    e.lower() for e in get_person_emails(other)}:
+                raise PersonFieldRefused("email_taken", DOOR_EMAIL_TAKEN_LINE)
+        return text
+    if field == "primary_org_id":
+        org_id = str(value).strip() if isinstance(value, str) else ""
+        orgs = entities_collection(_load_entities(Path(workspace_root)), "orgs")
+        org = next((o for o in orgs if isinstance(o, dict) and o.get("id") == org_id), None)
+        if org is None or str(org.get("status") or "").lower() in (
+                "merged", "deleted", "archived"):
+            raise PersonFieldRefused("unknown_org", DOOR_BAD_VALUE_LINES[field])
+        return org_id
     if field == "category":
         if value not in PERSON_CATEGORIES:
             raise bad
@@ -2818,14 +2900,25 @@ def set_person_field(workspace_root: str | Path, person_id: str, *, field: str,
                      value, source_skill: str = "people_writer",
                      brain_batch_id: str | None = None,
                      now_iso: str | None = None, stamp_batch: bool = True,
-                     reversal_of: str | None = None) -> dict:
-    """Set (or, with `value=None`, clear) one of `SETTABLE_PERSON_FIELDS`.
+                     reversal_of: str | None = None,
+                     drop_emails: list | None = None) -> dict:
+    """Set (or, with `value=None`, clear) one of `SETTABLE_PERSON_FIELDS`, or
+    one of `UNDOABLE_RECORD_FIELDS` (cr1#1433: the Hub's role, email and
+    company edits).
 
     Returns `{status: "set"|"cleared"|"unchanged", person_id, field, value,
     batch_id, record}`. Raises `KeyError` for no such person and
     `PersonFieldRefused` for a field or value it will not save; nothing is
     written then. One `person_field_set` row carries the value it replaced
-    (`prior_value`, `prior_present`), which is what `undo` puts back."""
+    (`prior_value`, `prior_present`), which is what `undo` puts back.
+
+    cr1#1433: an `email` that replaces another keeps the replaced address on
+    the record's `emails` list (`emails_added` on the row), so mail from it
+    still finds this person; the undo passes those back as `drop_emails` and
+    takes them off again. A `role` or `primary_org_id` that moves from one
+    value to another writes the same history row `update_person` writes
+    (`person_role_changed` / `person_org_changed`), on an undo too, so the
+    history shows the move and the move back."""
     workspace_root = Path(workspace_root)
     data = _load_entities(workspace_root)
     people = entities_collection(data, "people")
@@ -2840,14 +2933,32 @@ def set_person_field(workspace_root: str | Path, person_id: str, *, field: str,
             new is not None and present and _same_fact(field, prior, new)):
         return {"status": "unchanged", "person_id": person_id, "field": field,
                 "value": prior, "batch_id": None, "record": target}
+    before_rec = dict(target)
     if new is None:
         del target[field]
     else:
         target[field] = new
+    emails_added: list = []
+    if field == "email":
+        listed = [e for e in (target.get("emails") or []) if isinstance(e, str)]
+        if drop_emails:
+            gone = {str(e).strip().lower() for e in drop_emails}
+            kept = [e for e in listed if e.strip().lower() not in gone]
+            if kept != listed:
+                if kept:
+                    target["emails"] = kept
+                else:
+                    target.pop("emails", None)
+        elif isinstance(prior, str) and prior.strip() and new is not None \
+                and prior.strip().lower() not in {e.strip().lower() for e in listed}:
+            target["emails"] = listed + [prior]
+            emails_added = [prior]
     _validate_person(target)
     _save_entities(workspace_root, data, source_skill)
     event_data = {"person_id": person_id, "field": field, "value": new,
                   "prior_value": prior, "prior_present": present}
+    if emails_added:
+        event_data["emails_added"] = emails_added
     if reversal_of is not None:
         event_data["reversal_of"] = reversal_of
     batch_id = None
@@ -2860,6 +2971,8 @@ def set_person_field(workspace_root: str | Path, person_id: str, *, field: str,
     append_event(_events_path(workspace_root),
                  [{"type": FIELD_CHANGE_CLASS, "source_skill": source_skill,
                    "data": event_data}], holder=source_skill)
+    if field in ("role", "primary_org_id"):
+        _emit_lineage_events(workspace_root, before_rec, target, source_skill)
     return {"status": "cleared" if new is None else "set", "person_id": person_id,
             "field": field, "value": new, "batch_id": batch_id, "record": target}
 
@@ -2990,7 +3103,11 @@ def door_set_person_field(workspace_root: str | Path, *, person_id: str,
                           field: str, value=None,
                           source_skill: str = DOOR_SOURCE_SKILL) -> dict:
     """`set_person_field` through the writer door: a person's category,
-    introducer or handle-with-care line, set or (`value` null) cleared."""
+    introducer or handle-with-care line, set or (`value` null) cleared. The
+    record fields the Hub sets through the same writer (cr1#1433) are not
+    this door's: they are refused here, as before."""
+    if field not in SETTABLE_PERSON_FIELDS:
+        return {"ok": False, "reason": "bad_field", "line": DOOR_BAD_FIELD_LINE}
     return _door_fact(lambda ws, pid: set_person_field(
         ws, pid, field=field, value=value, source_skill=source_skill),
         workspace_root, person_id)

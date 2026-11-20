@@ -3990,6 +3990,7 @@ def build_morning_brief_pack(workspace_root, *, mode: str = "scheduled",
     _thread_activity = _brief_thread_activity(ws)
     state = compute_and_log_brief_state(
         ws, open_commitments=opens, user_person_id=user_id, now_iso=_local_today,
+        snooze_now_iso=now_iso,  # cr1#1292: a snooze ends at an instant
         plate_open=brief_plate_open,
         # BRIEFSTATE1 — the substrate-derivable brief-state inputs, passed.
         # This call used to pass NONE of them, and two things followed
@@ -4778,6 +4779,7 @@ def build_end_of_day_pack(workspace_root, *, mode: str = "scheduled",
         state = compute_brief_state(
             open_commitments=opens, user_person_id=user_id,
             now_iso=_local_today, workspace_root=str(ws),
+            snooze_now_iso=now_iso,  # cr1#1292: a snooze ends at an instant
             # EODSTATE1 — the declared same-class sibling of the morning fix
             # in `build_morning_brief_pack`. This call used to pass NEITHER
             # substrate-derivable input, and two things followed on every

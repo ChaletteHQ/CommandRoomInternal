@@ -2346,6 +2346,11 @@ _NON_TOUCH_TYPES = {
     # a commitment's confirm/review state.
     "thread_split_executed": "a thread-split receipt naming child threads, "
                              "not a commitment adjudication",
+    # cr1#1463 — the owner taking back a note they added to an item. It is an
+    # undo of context, not a decision about the item, and the projector
+    # reports the item's state the same before and after.
+    "commitment_note_retracted": "a note's take back: an undo of context the "
+                                 "owner added, not a commitment adjudication",
 }
 
 

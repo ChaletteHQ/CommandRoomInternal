@@ -460,7 +460,7 @@ A family/personal relationship statement is a FIELD change, not a fact: ENTITY_R
 
 ### How someone works: `what do I know about how [name] works`, `how does [name] work`, `apply [name]'s method to this` (SPEC CRAFT1, cr1#397)
 
-A craft file is how a person, a business or the owner does a kind of work (review, decide, write, run a meeting, sell, or a scope the owner added), as numbered rules, each with its evidence. These two verbs read those files; neither writes anything, and creating a file is not this skill's job.
+A craft file is how a person, a business or the owner does a kind of work (review, decide, write, run a meeting, win business, follow up, prioritize, delegate, or a scope the owner added), as numbered rules, each with its evidence. These two verbs read those files; neither writes anything, and creating a file is not this skill's job.
 
 **Which verb.** Ask the matcher, through the read door, with the owner's words as typed:
 

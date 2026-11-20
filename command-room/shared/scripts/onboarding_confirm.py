@@ -441,10 +441,24 @@ def _check(root: Path, answers: Dict[str, Any]) -> tuple:
     if "name" in clean:
         if not pid or pid not in people:
             return None, _refuse("name", "There is no owner on file yet to name.")
-        want = clean["name"].casefold()
-        if any(str(p.get("canonical_name") or "").casefold() == want and i != pid
-               for i, p in people.items()):
+        # cr1#1447: the writer's own matcher, so a name that is only another
+        # person's spelling (in their `aliases`) is caught here too, with a
+        # plain line, rather than reaching `rename_person` as its error.
+        # Only when the name changes: an unchanged name never reaches the
+        # writer (see `_name` below), so it is not refused here either. The
+        # whole people list, as the writer walks it.
+        import people_writer
+        unchanged = str(people[pid].get("canonical_name") or "") == clean["name"]
+        other, how, on_file = (None, "", "") if unchanged else \
+            people_writer._other_record_holding_name(
+                [p for p in inner.get("people") or [] if isinstance(p, dict)],
+                pid, clean["name"])
+        if how == "name":
             return None, _refuse("name", f"\"{clean['name']}\" is already someone else on file.")
+        if how == "alias":
+            who = str(other.get("canonical_name") or "").strip() or "someone else"
+            return None, _refuse("name", f"\"{on_file}\" is already how {who} is spelled on file. "
+                                 "Pick another name.")
     if "business" in clean and not (root / BUSINESS_REL).is_file():
         return None, _refuse("business", "Your business file is not built yet (it comes from the scan).")
     if "never_wait" in clean or "off_limits" in clean:
@@ -489,6 +503,16 @@ def _set_business_line(root: Path, sentence: str) -> None:
     atomic_write_text(path, "\n".join(lines) + "\n")
 
 
+def _repair_line(exc: Exception) -> Optional[str]:
+    """The writer's plain refusal when the owner's record needs a repair
+    before a rename (cr1#1442, the line cr1#1441 added and the Hub shows),
+    else None and the caller keeps its own line."""
+    import people_writer
+    if isinstance(exc, people_writer.PersonRecordNeedsRepairError):
+        return exc.line
+    return None
+
+
 def apply_confirm(workspace_root, answers: Dict[str, Any], *,
                   by: str = "owner", now_iso: Optional[str] = None) -> Dict[str, Any]:
     """A WRITER. The owner's confirmed or edited step-5 answers, each written
@@ -513,8 +537,9 @@ def apply_confirm(workspace_root, answers: Dict[str, Any], *,
             line = fn()
             applied.append({"id": key, "line": line or ITEMS[key]["sets"]})
         except Exception as exc:  # noqa: BLE001 - name it, keep going
-            failed.append({"id": key, "line": f"{key.replace('_', ' ')} was not saved: "
-                                              f"{str(exc)[:160] or type(exc).__name__}"})
+            failed.append({"id": key, "line": _repair_line(exc) or
+                           f"{key.replace('_', ' ')} was not saved: "
+                           f"{str(exc)[:160] or type(exc).__name__}"})
 
     if "name" in clean:
         def _name():

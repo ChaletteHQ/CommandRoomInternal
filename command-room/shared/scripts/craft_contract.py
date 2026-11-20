@@ -49,7 +49,8 @@ Binding parts of the contract, each checked by `validate_craft`:
     across the file so outputs can cite them;
   - every item in Rules, Order of work and What they never do carries an
     `Evidence:` pointer (cite or drop). A rule with no pointer FAILS;
-  - the scope is on the fixed list or one the owner added (`add_scope`).
+  - the scope is one of the core eight or one the owner added
+    (`add_scope`); a file under a renamed scope (sell) reads as its new one.
 
 WHERE FILES LIVE (owner ruling 2026-10-24: the folder is the link)
 ------------------------------------------------------------------
@@ -100,9 +101,13 @@ from a method sentence needs a policy no ruling has set yet.
 PUBLIC API
 ----------
   SECTIONS, STATUSES, VERDICTS, CONSENT_VALUES, FIXED_SCOPES
+  CORE_DECLARATIONS, READERS, RENAMED_SCOPES
   scope_slug(label) -> str
   known_scopes(workspace_root=None) -> list[dict]
-  add_scope(workspace_root, label, *, user_confirmed) -> dict
+  canonical_scope(slug) -> str
+  check_declaration(label, readers, triggers=None, parent=None) -> dict
+  add_scope(workspace_root, label, *, user_confirmed, readers, rule,
+            triggers=None, parent=None) -> dict
   reverse_scope_added(workspace_root, seq, *, undone_by) -> dict
   parse_craft(text) -> dict
   validate_craft(text, *, workspace_root=None, entities=None, path=None) -> dict
@@ -171,14 +176,85 @@ SUPERSEDE_AFTER = 3
 EVERGREEN_MARK = "<!-- evergreen -->"
 _EVERGREEN_RE = re.compile(r"<!--\s*evergreen\s*-->", re.IGNORECASE)
 
-#: The fixed starting scopes (owner ruling 2026-10-24), as (slug, label).
+#: The core of eight, trade-neutral (owner ruling 2026-11-18, cr1#1391;
+#: the first five were the fixed list of 2026-10-24), as (slug, label).
+#: Win business replaced sell: it covers selling, fundraising, enrolment and
+#: referral. Every owner gets these; anything specific to one trade or one
+#: person arrives as a scope the owner adds (`add_scope`) or, later, one the
+#: nightly sweep proposes (cr1#400, part B of cr1#1391).
 FIXED_SCOPES = (
     ("review", "review"),
     ("decide", "decide"),
     ("write", "write"),
     ("run-a-meeting", "run a meeting"),
-    ("sell", "sell"),
+    ("win-business", "win business"),
+    ("follow-up", "follow up"),
+    ("prioritize", "prioritize"),
+    ("delegate", "delegate"),
 )
+CORE_SLUGS = tuple(s for s, _ in FIXED_SCOPES)
+#: A scope that was renamed: a file still filed under the old name reads as
+#: the new one until `craft_capture.move_renamed_scope_files` moves it (the
+#: move keeps the old file aside and can be undone). Nothing is lost either
+#: way: the old file keeps loading under its new name.
+RENAMED_SCOPES = {"sell": "win-business"}
+
+#: The skills that read craft (the reader tasks), and the one-word tasks the
+#: older callers pass for two of them. A reader is a skill's folder name;
+#: `apply` is the owner's own "apply [name]'s method to this" and every
+#: review ask of that shape, and reads every scope.
+TASK_ALIASES = {"draft": "email-writer", "memo": "memo-writer"}
+READERS = (
+    "email-writer", "memo-writer", "one-pager-composer", "follow-up-ritual",
+    "decision-memo-composer", "boardroom", "stress-test", "needs-your-call",
+    "decision-log", "check-deliverables", "contract-review", "call-prep",
+    "meeting-notes", "pipeline-tracker", "commitment-triage",
+    "morning-briefing", "objectives", "team-intelligence",
+)
+DECISION_SKILLS = ("decision-memo-composer", "boardroom", "stress-test",
+                   "needs-your-call", "decision-log")
+
+#: Where each core scope applies (cr1#1391 build item 2): the skills that
+#: read it, and the words that say a task is this kind of work. A draft and
+#: a memo also read the decide scope of the people and businesses they are
+#: for (the ruling on cr1#397); the owner's own decide file stays out of
+#: them (the ruling on cr1#399, `craft_recall.LEAD_SCOPES`).
+CORE_DECLARATIONS = {
+    "write": {
+        "readers": ("email-writer", "memo-writer", "one-pager-composer",
+                    "follow-up-ritual"),
+        "triggers": ("write", "draft", "email", "memo", "letter",
+                     "one-pager", "note")},
+    "decide": {
+        "readers": DECISION_SKILLS + ("email-writer", "memo-writer"),
+        "triggers": ("decide", "decision", "choose", "choice", "options",
+                     "tradeoff", "trade-off")},
+    "review": {
+        "readers": ("check-deliverables", "contract-review"),
+        "triggers": ("review", "check", "redline", "feedback", "audit")},
+    "run-a-meeting": {
+        "readers": ("call-prep", "meeting-notes"),
+        "triggers": ("meeting", "call", "session", "agenda", "standup",
+                     "huddle", "one on one", "check-in")},
+    "win-business": {
+        "readers": ("call-prep", "follow-up-ritual", "pipeline-tracker"),
+        "triggers": ("sales", "sell", "selling", "prospect", "pitch",
+                     "proposal", "demo", "discovery", "deal",
+                     "fundraising", "investor", "donor", "enrolment",
+                     "enrollment", "admissions", "referral", "intro",
+                     "new business")},
+    "follow-up": {
+        "readers": ("follow-up-ritual", "commitment-triage"),
+        "triggers": ("follow up", "follow-up", "chase", "nudge",
+                     "reminder", "close the loop")},
+    "prioritize": {
+        "readers": ("morning-briefing", "commitment-triage", "objectives"),
+        "triggers": ("priority", "priorities", "prioritize", "focus",
+                     "plan the day", "plan the week")},
+    "delegate": {
+        "readers": ("commitment-triage", "team-intelligence"),
+        "triggers": ("delegate", "assign", "hand off", "handoff")},
+}
 
 CRAFT_DIR = "craft"
 FIRM_DIR = "firm"
@@ -300,10 +376,18 @@ def _read_owner_scopes(workspace_root) -> list:
             continue
         if ev.get("type") == SCOPE_ADDED_EVENT:
             label = data.get("label")
+            parent = data.get("parent")
             live[slug] = {"slug": slug,
                           "label": label if isinstance(label, str) and label
                           else slug.replace("-", " "),
-                          "seq": ev.get("seq")}
+                          "seq": ev.get("seq"),
+                          # Declared where it applies (cr1#1391). A scope
+                          # added before the declaration existed has none:
+                          # it loads on "apply my method" only, as before.
+                          "readers": _str_tuple(data.get("readers")),
+                          "triggers": _str_tuple(data.get("triggers")),
+                          "parent": parent if parent in CORE_SLUGS
+                          else None}
         elif ev.get("type") == SCOPE_REMOVED_EVENT:
             live.pop(slug, None)
     out = list(live.values())
@@ -312,24 +396,84 @@ def _read_owner_scopes(workspace_root) -> list:
     return [dict(r) for r in out]
 
 
+def _str_tuple(value) -> tuple:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out = []
+    for v in value:
+        if isinstance(v, str) and v.strip() and v.strip() not in out:
+            out.append(v.strip())
+    return tuple(out)
+
+
 def known_scopes(workspace_root=None) -> list:
-    """The fixed list, then the scopes the owner added in this workspace, as
-    [{"slug", "label", "fixed"}]. Never raises."""
-    out = [{"slug": s, "label": lab, "fixed": True} for s, lab in FIXED_SCOPES]
-    seen = {s for s, _ in FIXED_SCOPES}
+    """The core of eight, then the scopes the owner added in this workspace,
+    as [{"slug", "label", "fixed", "readers", "triggers", "parent"}]: where
+    each applies (cr1#1391). A core scope has no parent. Never raises."""
+    out = [{"slug": s, "label": lab, "fixed": True,
+            "readers": CORE_DECLARATIONS[s]["readers"],
+            "triggers": CORE_DECLARATIONS[s]["triggers"], "parent": None}
+           for s, lab in FIXED_SCOPES]
+    seen = {s for s, _ in FIXED_SCOPES} | set(RENAMED_SCOPES)
     for row in _read_owner_scopes(workspace_root):
         if row["slug"] in seen:
             continue
         seen.add(row["slug"])
-        out.append({"slug": row["slug"], "label": row["label"], "fixed": False})
+        out.append({"slug": row["slug"], "label": row["label"],
+                    "fixed": False, "readers": row["readers"],
+                    "triggers": row["triggers"], "parent": row["parent"]})
     return out
 
 
+def canonical_scope(slug):
+    """The scope a file filed under `slug` reads as: a renamed scope's new
+    name (`RENAMED_SCOPES`, sell -> win-business), else `slug` itself."""
+    return RENAMED_SCOPES.get(slug, slug)
+
+
+def reader_of(task) -> str:
+    """The reader a task name stands for: `draft` is email-writer, `memo` is
+    memo-writer, any other name is itself."""
+    return TASK_ALIASES.get(task, task)
+
+
 def scope_label(slug, workspace_root=None) -> str:
+    slug = canonical_scope(slug)
     for row in known_scopes(workspace_root):
         if row["slug"] == slug:
             return row["label"]
     return str(slug or "").replace("-", " ")
+
+
+_TRIGGER_RE = re.compile(r"[a-z][a-z' -]{1,39}")
+
+
+def check_declaration(label, readers, triggers=None, parent=None) -> dict:
+    """Check where a new scope applies, before anything is written. Returns
+    {"slug", "label", "readers", "triggers", "parent"}; raises ValueError
+    with a plain reason when a reader is missing or unknown, or the parent is
+    not one of the core eight (cr1#1391: a scope with no declared reader is
+    refused). The triggers default to the scope's own words."""
+    slug = scope_slug(label)
+    rs = _str_tuple(readers)
+    if not rs:
+        raise ValueError("a new kind of work needs at least one skill that "
+                         "reads it (where it applies)")
+    bad = [r for r in rs if reader_of(r) not in READERS]
+    if bad:
+        raise ValueError("these are not skills that read craft: "
+                         + ", ".join(bad))
+    rs = tuple(dict.fromkeys(reader_of(r) for r in rs))
+    words = " ".join(label.strip().split()).lower()
+    ts = tuple(t.lower() for t in _str_tuple(triggers)) or (words,)
+    for t in ts:
+        if not _TRIGGER_RE.fullmatch(t):
+            raise ValueError(f"a trigger is a short phrase of letters: {t!r}")
+    if parent is not None and parent not in CORE_SLUGS:
+        raise ValueError("the parent of a kind of work is one of the core "
+                         "eight: " + ", ".join(CORE_SLUGS))
+    return {"slug": slug, "label": words, "readers": rs, "triggers": ts,
+            "parent": parent}
 
 
 def _scope_batch_id() -> str:
@@ -341,6 +485,7 @@ def _scope_batch_id() -> str:
 
 
 def add_scope(workspace_root, label, *, user_confirmed: bool = False,
+              readers=None, triggers=None, parent=None, rule=None,
               source_skill: str = "workspace-manager",
               batch_id: Optional[str] = None) -> dict:
     """The owner extends the scope list (owner ruling 2026-10-24). One
@@ -348,30 +493,59 @@ def add_scope(workspace_root, label, *, user_confirmed: bool = False,
     and no store is written (owner ruling A1, spec AC10).
 
     `user_confirmed=True` is the owner's word and is required: nothing adds a
-    scope on its own. The row carries `brain_batch_id` and
-    `brain_change_class: craft_scope`, so `brain_undo.undo_batch(ws,
-    result["batch_ref"], ...)` takes it back with an additive
-    `craft_scope_removed` row.
+    scope on its own. Every scope declares where it applies (cr1#1391):
+    `readers`, the skills that read it (at least one, from `READERS`), and
+    `triggers`, the words that say a task is this kind of work (the label's
+    words when none are given). `parent` is the core scope it sits on, if
+    any: it then loads on top of that parent, never instead of it. `rule` is
+    the first rule it holds, {"text", "evidence"}, both said: a scope is
+    created only with at least one cited rule, so no craft file is ever
+    empty. The rule's words pass the craft privacy refusal; its text is not
+    stored here (it lands in the file), only its evidence pointer.
+
+    The row carries `brain_batch_id` and `brain_change_class: craft_scope`,
+    so `brain_undo.undo_batch(ws, result["batch_ref"], ...)` takes it back
+    with an additive `craft_scope_removed` row.
 
     Returns {"slug", "status": "added" | "already_known", "seq",
-    "batch_ref"}; an already-known scope (fixed, or added and not taken back)
-    writes nothing. Raises ValueError on a bad label or a missing word."""
+    "batch_ref"}; an already-known scope (core, renamed, or added and not
+    taken back) writes nothing. Raises ValueError on a bad label, a missing
+    word, no reader, or no cited rule."""
     slug = scope_slug(label)
     if user_confirmed is not True:
         raise ValueError("adding a scope needs the owner's word "
                          "(user_confirmed=True)")
-    if slug in {s["slug"] for s in known_scopes(workspace_root)}:
+    if slug in {s["slug"] for s in known_scopes(workspace_root)} \
+            or slug in RENAMED_SCOPES:
         return {"slug": slug, "status": "already_known", "seq": None,
                 "batch_ref": None}
+    decl = check_declaration(label, readers, triggers, parent)
+    rule = rule if isinstance(rule, dict) else {}
+    rule_text = " ".join(str(rule.get("text") or "").split())
+    evidence = " ".join(str(rule.get("evidence") or "").split())
+    if not rule_text or not evidence:
+        raise ValueError("a new kind of work is added only with at least one "
+                         "rule that cites its evidence")
+    found = privacy_findings(
+        {"items": [{"section": "Rules", "index": 1, "id": "R1",
+                    "body": rule_text}]},
+        workspace_root=workspace_root)
+    if found:
+        raise ValueError("the first rule carries "
+                         + ", ".join(sorted({f["kind"] for f in found})))
     if not isinstance(source_skill, str) or not source_skill.strip():
         raise ValueError("add_scope needs a source_skill")
     from event_gate import append_event
     bid = str(batch_id).strip() if batch_id else _scope_batch_id()
-    text = " ".join(label.strip().split()).lower()
     written = append_event(_events_file(workspace_root), [{
         "type": SCOPE_ADDED_EVENT,
         "source_skill": source_skill,
-        "data": {"slug": slug, "label": text, "user_confirmed": True,
+        "data": {"slug": slug, "label": decl["label"],
+                 "user_confirmed": True,
+                 "readers": list(decl["readers"]),
+                 "triggers": list(decl["triggers"]),
+                 "parent": decl["parent"],
+                 "rule_evidence": evidence,
                  # The two undo stamps travel together (day_intent's rule).
                  "brain_batch_id": bid,
                  "brain_change_class": SCOPE_CHANGE_CLASS},
@@ -589,12 +763,15 @@ def _valid_date(value) -> bool:
 
 
 def validate_craft(text, *, workspace_root=None, entities=None,
-                   path=None) -> dict:
+                   path=None, extra_scopes=None) -> dict:
     """Check a craft file against the contract. Never raises.
 
     Returns {"ok", "errors", "warnings", "privacy", "consent", "header",
     "rules", "sections", "items"}. `ok` is True only when there is no shape
-    error and no privacy finding. Consent never makes it False."""
+    error and no privacy finding. Consent never makes it False. A file
+    filed under a renamed scope passes with a warning. `extra_scopes` are
+    slugs about to be added (capture checks a new kind's file before it adds
+    the kind)."""
     parsed = parse_craft(text)
     header = parsed["header"]
     errors = list(parsed["header_errors"])
@@ -606,8 +783,13 @@ def validate_craft(text, *, workspace_root=None, entities=None,
             errors.append("the header names no subject")
         scope = header.get("scope")
         slugs = {s["slug"] for s in known_scopes(workspace_root)}
+        slugs |= set(extra_scopes or ())
         if not scope:
             errors.append("the header names no scope")
+        elif scope in RENAMED_SCOPES:
+            warnings.append(f"the scope {scope} is now "
+                            f"{scope_label(canonical_scope(scope))}; the file "
+                            "reads as that until it is moved")
         elif scope not in slugs:
             errors.append(f"the scope {scope} is not on the scope list")
         status = header.get("status")
@@ -688,12 +870,13 @@ def validate_craft(text, *, workspace_root=None, entities=None,
 
 
 def gate_craft_text(text, *, workspace_root=None, entities=None,
-                    path=None) -> dict:
+                    path=None, extra_scopes=None) -> dict:
     """The write-time gate: return the validation result for a file that
     passes, raise CraftRefused for one that fails the shape or carries a
     figure, a third-party name or an email in its method text."""
     res = validate_craft(text, workspace_root=workspace_root,
-                         entities=entities, path=path)
+                         entities=entities, path=path,
+                         extra_scopes=extra_scopes)
     if res["ok"]:
         return res
     kinds = sorted({f["kind"] for f in res["privacy"]})
@@ -994,11 +1177,13 @@ def _subject_folder(entities, subject_id) -> Optional[str]:
 
 
 def craft_path(workspace_root, subject_id, scope, *,
-               entities=None) -> Optional[Path]:
+               entities=None, pending=None) -> Optional[Path]:
     """Where the craft file for (subject, scope) lives, or None when the
     subject is not on file or has no single folder. Raises ValueError on a
-    scope that is not on this workspace's list."""
-    if scope not in {s["slug"] for s in known_scopes(workspace_root)}:
+    scope that is not on this workspace's list (`pending` names one about to
+    be added, which capture places before it adds it)."""
+    if scope not in {s["slug"] for s in known_scopes(workspace_root)} \
+            and not (pending and scope == pending):
         raise ValueError(f"the scope {scope!r} is not on the scope list")
     ents = entities if entities is not None else load_entities(workspace_root)
     folder = _subject_folder(ents, subject_id)
@@ -1163,6 +1348,9 @@ __all__ = [
     "SECTIONS", "EVIDENCE_SECTIONS", "METHOD_SECTIONS", "STATUSES",
     "VERDICTS", "CONSENT_VALUES", "DEFAULT_CONSENT", "FIXED_SCOPES",
     "SCOPE_ADDED_EVENT", "SCOPE_REMOVED_EVENT", "SCOPE_CHANGE_CLASS",
+    "CORE_SLUGS", "RENAMED_SCOPES", "READERS", "TASK_ALIASES",
+    "DECISION_SKILLS", "CORE_DECLARATIONS", "canonical_scope", "reader_of",
+    "check_declaration",
     "CraftRefused", "reverse_scope_added",
     "scope_slug", "known_scopes", "scope_label", "add_scope",
     "parse_craft", "validate_craft", "gate_craft_text", "privacy_findings",

@@ -424,6 +424,22 @@ WHAT KILLS THIS DECISION  (stress-test integration — optional)
 - Re-litigate a previously-decided topic without surfacing the prior decision. If a `decision` event already exists for this exact topic in the last 90 days, the Phase 3 substrate pass surfaces it prominently as "you already decided this; this memo would supersede" — and the user has to explicitly confirm.
 - Capture user-edited weights silently. If user adjusts weights via "Edit weights," the new weights are saved in the `decision_memo_drafted` event for future-self reference.
 
+## Craft: how you decide (cr1#1391)
+
+A craft file is how you, or your firm, decide, as numbered rules. On EVERY run, load yours through the read door, one call, with `"subject_ids": []` (add the project or business id the decision is about when the resolver returned one):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"subject_ids": [], "task": "decision-memo-composer", "workspace_root": "<WS>"}, "name": "craft_recall:craft_for_task"}'
+```
+
+Apply the rules in `result.files` in the order given (yours first, then your firm's). Cite every rule the output used: pass their `cite_id`s to the helper and paste each of `result.lines` as one bullet of the `Sources:` section.
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"cite_ids": ["<cite_id>", "<cite_id>"], "workspace_root": "<WS>"}, "name": "craft_recall:cite_rules"}'
+```
+
+No file loaded, or no rule used: the turn says nothing about craft.
+
 ## The activity log is append-only (MANDATORY — CONTRACT Rule 31)
 
 This skill touches `_hq/data`. **The activity log is never rewritten by hand.**

@@ -343,9 +343,29 @@ def _unresolved_names(d: dict) -> dict:
 HOME_ORIGIN = "hub_assign"
 
 
-def homes_given(events) -> dict:
+def archived_thread_ids(entities) -> frozenset:
+    """cr1#1341: the ids of the threads the book holds as archived. Pure;
+    an unreadable book answers none, so nothing falls back on a bad read."""
+    from entities_io import entities_collection
+    if not isinstance(entities, dict):
+        return frozenset()
+    try:
+        recs = entities_collection(entities, "threads")
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    return frozenset(str(t.get("id")) for t in recs
+                     if isinstance(t, dict) and t.get("id")
+                     and str(t.get("status") or "").strip().lower() == "archived")
+
+
+def homes_given(events, archived=frozenset()) -> dict:
     """{promise id: thread id} from the Hub's own "Assign to" presses
-    (`HOME_ORIGIN` reclassifications), the newest per promise. Pure."""
+    (`HOME_ORIGIN` reclassifications), the newest per promise. Pure.
+
+    cr1#1341: a home on a thread in `archived` (`archived_thread_ids`)
+    answers "", so the promise falls back to no home and is listed under
+    No home yet again, never lost with its stream. The Hub's Undo after
+    Apply writes a home with no thread, which answers "" the same way."""
     out: dict = {}
     for ev in events or []:
         if not isinstance(ev, dict) or ev.get("type") != "reclassification":
@@ -357,7 +377,15 @@ def homes_given(events) -> dict:
         seq = ev.get("seq") if isinstance(ev.get("seq"), int) else -1
         if seq >= out.get(cid, ("", -2))[1]:
             out[cid] = (str(ev.get("primary_thread_id") or ""), seq)
-    return {cid: tid for cid, (tid, _s) in out.items()}
+    return {cid: ("" if tid in archived else tid) for cid, (tid, _s) in out.items()}
+
+
+def _archived_threads(ws: Path) -> frozenset:
+    from entities_io import read_entities_json
+    try:
+        return archived_thread_ids(read_entities_json(Path(ws) / "_hq" / "data" / "entities.json"))
+    except Exception:  # noqa: BLE001: an unreadable book drops no home
+        return frozenset()
 
 
 def build_rows(ws: Path, now: Optional[datetime] = None,
@@ -382,7 +410,7 @@ def build_rows(ws: Path, now: Optional[datetime] = None,
     snoozed = _snoozes(ws, now)
     from events_io import load_events_owner_scoped
     _owner_events = load_events_owner_scoped(str(ws))[0]
-    homes = homes_given(_owner_events)
+    homes = homes_given(_owner_events, _archived_threads(ws))
     waiting = _waits(ws, now, _owner_events)
     rows = []
     for ev in top:

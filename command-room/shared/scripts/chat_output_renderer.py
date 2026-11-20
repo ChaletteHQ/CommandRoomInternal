@@ -243,6 +243,38 @@ MEETING_STEP_SKIPPED_LINES = {
                     "you leave them unanswered."),
 }
 
+#: cr1#1357: the two guards every chat runs, and the plain sentence each says
+#: when the closing has no receipt for it. Unlike the steps above, a guard is
+#: never taken on the chat's word: `recap_closing(..., receipts=[...])` counts
+#: it only on a fresh receipt for exactly that guard (`turn_receipts`), which
+#: `connector_reads.chat_wall` and `output_check` hand back when they ran.
+GUARD_STEP_LINES = {
+    "chat_wall": ("I could not confirm which of your sources you keep personal "
+                  "before reading, so something personal may appear here."),
+    "output_check": ("This reply was not checked for internal details before "
+                     "it was sent, so some may appear here."),
+}
+
+#: cr1#1413: the door calls that ARE each recap step on a merged seat. With
+#: `recap_closing(..., door_receipts=[...])` a key here counts as run only
+#: when EVERY call listed for it has a fresh door receipt
+#: (`turn_receipts.door_names`), never on `ran` alone: deal signals ran only
+#: when the candidates found were also proposed. A step the skill leaves out
+#: because there is nothing for it (no decisions to log, no counterparty
+#: organisation, detection found nothing, no question on the card) is passed
+#: in `not_needed` instead. The card, the follow-up drafts and the objective
+#: review have no door call of their own, so they stay on `ran`.
+RECAP_STEP_DOORS = {
+    "closes": ("commitment_policy_pass:apply_meeting_closes",),
+    "entity_signals": ("entity_signal_detector:run_entity_signal_scan",),
+    "deal_signals": ("deal_signal_detector:detect_deal_signals",
+                     "deal_signal_detector:propose_candidates"),
+    "tracker": ("render_master_tracker:regenerate",),
+    "decision_log": ("render_decision_log:regenerate",),
+    "card_questions": ("attribution_doors:render_card_questions",),
+    "expiry_line": ("attribution_doors:card_expiry_sentence",),
+}
+
 #: The one sentence for a step that did not run and has no sentence above,
 #: printed once however many such steps there were.
 MEETING_STEP_SKIPPED_OTHER = ("Part of processing this call could not run "
@@ -279,7 +311,8 @@ def _skipped_lines(skipped) -> list:
 
 
 def recap_closing(sources, brief_label: str, brief_url: str, coverage=None,
-                  skipped=None, ran=None) -> str:
+                  skipped=None, ran=None, receipts=None,
+                  door_receipts=None, not_needed=None) -> str:
     """The meeting recap's closing block, composed in ONE call (cr1#178).
 
     Owner ruling 2026-10-23: one `Sources:` footer on the recap card, no
@@ -321,6 +354,25 @@ def recap_closing(sources, brief_label: str, brief_url: str, coverage=None,
     chat forgot to add to `skipped` is still named (the card, in all three
     runs). A label in `ran` with no sentence is ignored; a key in both lists
     is named. `ran` None keeps the old behaviour: only `skipped` is read.
+
+    `receipts` (cr1#1357) are the receipts the two guards handed back this
+    turn (`GUARD_STEP_LINES`: the personal-sources wall and the output check).
+    When it is given, each guard with no fresh receipt for exactly that guard
+    is named as not run, ABOVE the step sentences, whatever `ran` or
+    `skipped` say: a guard's key typed into `ran` counts for nothing, and a
+    stale, mismatched or made-up receipt counts for nothing. A named guard
+    drops a "complete" coverage line like any skipped step. `receipts` None
+    keeps the closing exactly as it was.
+
+    `door_receipts` (cr1#1413) are the `receipt` fields of the door envelopes
+    this turn got back, on a merged seat. When it is given, a key of
+    `RECAP_STEP_DOORS` counts as run only when one of its door calls has a
+    fresh receipt for every call listed for it; that key in `ran` alone is
+    named as not run. A key in `not_needed` (a step the skill leaves out
+    because there is nothing for it) counts as run with no receipt. A key
+    with no door call of its own still counts on `ran`. `door_receipts` None
+    (a seat whose files are local, where no door ran) keeps `ran` as the
+    record, and so does `ran` None.
     """
     target = str(brief_url or "").strip()
     if target and "://" not in target:
@@ -330,12 +382,31 @@ def recap_closing(sources, brief_label: str, brief_url: str, coverage=None,
     if isinstance(skipped, str):
         skipped = [skipped]
     skipped = list(skipped or [])
+    if door_receipts is not None and ran is not None:
+        import turn_receipts  # cr1#1413: a doored step counts on its receipt
+        doors_ran = turn_receipts.door_names(door_receipts)
+        if isinstance(ran, str):
+            ran = [ran]
+        if isinstance(not_needed, str):
+            not_needed = [not_needed]
+        idle = {str(k or "").strip() for k in (not_needed or [])}
+        ran = [k for k in ran if str(k or "").strip() not in RECAP_STEP_DOORS]
+        ran += [k for k, names in RECAP_STEP_DOORS.items()
+                if k in idle or all(n in doors_ran for n in names)]
     if ran is not None:
         if isinstance(ran, str):
             ran = [ran]
         confirmed = {str(k or "").strip() for k in ran}
         skipped += [k for k in MEETING_STEP_SKIPPED_LINES if k not in confirmed]
-    blocks: list[str] = _skipped_lines(skipped)
+    blocks: list[str] = []
+    if receipts is not None:
+        import turn_receipts  # cr1#1357: a guard counts only on its receipt
+        have = turn_receipts.confirmed(receipts)
+        blocks += [line for key, line in GUARD_STEP_LINES.items()
+                   if key not in have]
+        # a guard is said once, by its own sentence, never also as a label
+        skipped = [k for k in skipped if k not in GUARD_STEP_LINES]
+    blocks += _skipped_lines(skipped)
     any_skipped = bool(blocks)
     if isinstance(coverage, str):
         coverage = [coverage]
@@ -360,6 +431,28 @@ def recap_closing(sources, brief_label: str, brief_url: str, coverage=None,
     if headline:
         blocks.append(headline)
     return "\n\n".join(blocks) + "\n"
+
+
+def guard_closing(receipts, read_connector: bool = True) -> str:
+    """The closing line of a chat with no recap of its own (cr1#1413).
+
+    `receipts` are the receipts the two guards handed back this turn (the
+    personal-sources wall's `receipt`, the output check's answer). Answers
+    the plain sentence of `GUARD_STEP_LINES` for each guard with no fresh
+    receipt for exactly that guard, one per line, or "" when both ran. The
+    chat prints a non-empty answer verbatim as the last line of its reply.
+    `read_connector` False (a turn that read no connector, so the wall had
+    nothing to guard) leaves the wall out; the output check is always asked
+    for. Never raises: anything unreadable counts as no receipt."""
+    try:
+        import turn_receipts
+        have = turn_receipts.confirmed(receipts)
+    except Exception:  # noqa: BLE001 - no receipt read, so none counted
+        have = set()
+    if read_connector is False:
+        have.add("chat_wall")
+    return chr(10).join(line for key, line in GUARD_STEP_LINES.items()
+                     if key not in have)
 
 
 def doc_headline_link_h3(label: str, url: str) -> str:
@@ -1096,11 +1189,65 @@ _EMAIL_REGEX = _re_mod_send.compile(
 _SEND_CLASS_ACTIONS = frozenset({"send", "draft", "edit then send"})
 
 
+def _to_addresses_actionable(to_value: str) -> bool:
+    """True when every entry of a To value is one valid address (cr1#1464).
+
+    A reply-all row (cr1#936) carries everyone it goes to, comma or
+    semicolon separated, each bare or as `Name <address>`. Every entry must
+    read as one address; an empty entry, a placeholder or any entry that is
+    not an address makes the whole To unactionable, so the gate still refuses
+    exactly what it refused for a single address."""
+    value = str(to_value or "").strip()
+    if not value:
+        return False
+    # One `Name <address>` whose name has a comma or semicolon in it
+    # ("Doe, Jane <jane@example.com>") is ONE address, read whole as the
+    # gate always read it, before any split. Text after the `>` is not this
+    # form, so `Name <a@x>, junk` still goes through the list read below.
+    single = _re_mod_send.match(r"^[^<>]*<([^<>]+)>$", value)
+    if single and _EMAIL_REGEX.match(single.group(1).strip()):
+        return True
+    for part in _re_mod_send.split(r"[,;]", value):
+        inner = part.strip()
+        if "<" in inner and ">" in inner:
+            inner = inner.split("<", 1)[1].rsplit(">", 1)[0].strip()
+        if not _EMAIL_REGEX.match(inner):
+            return False
+    return True
+
+
+def send_class_to_issue(item: dict) -> Optional[str]:
+    """Gate 6 for ONE item: the reason its send-class chrome could not
+    succeed, or None when it has none or its To is actionable. The gate
+    below and the inbox page's per-row degrade (cr1#1464) both ask this, so
+    a row the page keeps can never be one the gate refuses."""
+    if not isinstance(item, dict):
+        return None
+    n = item.get("n", "?")
+    stripped_actions = set()
+    for a in item.get("actions", []) or []:
+        stripped_actions.add(_strip_n_prefix_for_validation(a, item.get("n", "")))
+    if not (stripped_actions & _SEND_CLASS_ACTIONS):
+        return None
+    to_value = ""
+    for key, value in item.get("metadata", []) or []:
+        if (key or "").lower() == "to" and value:
+            to_value = str(value).strip()
+            break
+    if _to_addresses_actionable(to_value):
+        return None
+    return (f"item {n!r} has send-class actions {sorted(stripped_actions & _SEND_CLASS_ACTIONS)!r} "
+            f"but To: value {to_value!r} is not a valid email. "
+            f"Use the canonical `add email then send` verb instead — it opens a "
+            f"single-field email input and transitions to enabled `send` on submit.")
+
+
 def _validate_send_class_email_addresses(data: dict) -> None:
     """Gate 6 (v3.13.8+ — Bug #44).
 
     Every item that exposes a send-class action (`send`, `draft`,
-    `edit then send`) must carry a valid email in its To: metadata. The
+    `edit then send`) must carry a valid email in its To: metadata, or a
+    list of them, every one valid (cr1#1464: a reply-all row, cr1#936). The
     fallback for degraded items (recipient identified but email unknown) is
     the canonical `add email then send` verb, which collects the address
     via a single-field input.
@@ -1112,33 +1259,9 @@ def _validate_send_class_email_addresses(data: dict) -> None:
     issues = []
     for section in data.get("sections", []):
         for item in section.get("items", []):
-            n = item.get("n", "?")
-            stripped_actions = set()
-            for a in item.get("actions", []) or []:
-                s = _strip_n_prefix_for_validation(a, item.get("n", ""))
-                stripped_actions.add(s)
-            if not (stripped_actions & _SEND_CLASS_ACTIONS):
-                continue
-
-            # Pull the To: value from metadata
-            to_value = ""
-            for key, value in item.get("metadata", []) or []:
-                if (key or "").lower() == "to" and value:
-                    to_value = str(value).strip()
-                    break
-
-            # Strip a single "Name <email@x>" wrapper to extract the address
-            inner = to_value
-            if "<" in inner and ">" in inner:
-                inner = inner.split("<", 1)[1].rsplit(">", 1)[0].strip()
-
-            if not _EMAIL_REGEX.match(inner):
-                issues.append(
-                    f"item {n!r} has send-class actions {sorted(stripped_actions & _SEND_CLASS_ACTIONS)!r} "
-                    f"but To: value {to_value!r} is not a valid email. "
-                    f"Use the canonical `add email then send` verb instead — it opens a "
-                    f"single-field email input and transitions to enabled `send` on submit."
-                )
+            issue = send_class_to_issue(item)
+            if issue:
+                issues.append(issue)
 
     if issues:
         raise DataShapeError(
@@ -1354,6 +1477,20 @@ def validate_chat_output(text_or_html, *, paths_text=None, workspace=None,
                 "into the composed text: that is what re-rots the saved copy."
             )
         raise LeakDetectedError("\n".join(msg_parts))
+
+
+def output_check(text_or_html, **scan_args) -> str:
+    """The output check on a chat's own prose, with its receipt (cr1#1357).
+
+    Runs `validate_chat_output` over exactly what it is given, with the same
+    keyword arguments (`paths_text`, `workspace`, `surface` and the rest), and, when the
+    text passes, answers the receipt the chat hands its closing
+    (`recap_closing(..., receipts=[...])`) to show the check ran this turn.
+    A leak raises `LeakDetectedError` exactly as `validate_chat_output` does,
+    so a reply that did not pass never has a receipt. Reads only."""
+    validate_chat_output(text_or_html, **scan_args)
+    import turn_receipts
+    return turn_receipts.issue("output_check")
 
 
 # ============================================================================

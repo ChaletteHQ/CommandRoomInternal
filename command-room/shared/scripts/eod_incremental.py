@@ -316,6 +316,142 @@ def _newest_first_head(mw) -> bool:
     return page_item_order(page) == ITEM_ORDER_NEWEST_FIRST
 
 
+#: cr1#1276: the surface a typed `run maintenance` names in
+#: `CR_TRIGGERED_BY` (`maintenance_dispatcher.TYPED_SURFACE`).
+TYPED_RUN_SURFACE = "run-maintenance"
+#: cr1#1276: a leg longer than this is not a leg of one pass (a start
+#: copied from another plan); it is not stamped.
+_MAX_LEG_MS = 6 * 60 * 60 * 1000
+
+
+def _typed_run() -> bool:
+    """A typed `run maintenance` (cr1#1276), by the variable its rendered
+    lines carry."""
+    try:
+        from receipts import _triggered_by_env
+        return _triggered_by_env() == TYPED_RUN_SURFACE
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _leg_ms(capture_leg_ms, capture_leg_start) -> Optional[int]:
+    """cr1#1276: the leg's milliseconds. From the plan's start when one is
+    handed (a `catchup.run_start_token` the plan stamped, computed now,
+    beside the data; a start that is not one is never stamped); else the
+    caller's measured value, except on a typed run, where a chat-supplied
+    number is refused."""
+    if isinstance(capture_leg_start, str) and capture_leg_start.strip():
+        from catchup import run_start_iso
+        iso = run_start_iso(capture_leg_start)
+        if iso is None:
+            return None
+        try:
+            start = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            if start.tzinfo is None:
+                start = start.astimezone()
+            ms = (_dt.datetime.now(_dt.timezone.utc)
+                  - start).total_seconds() * 1000
+        except (TypeError, ValueError):
+            return None
+        return int(round(ms)) if 0 <= ms <= _MAX_LEG_MS else None
+    if _typed_run():
+        return None
+    return capture_leg_ms
+
+
+#: cr1#979: what a merged-seat pass that handed no meeting count records.
+NO_COUNT_REASON = ("the pass handed no meeting count, so nothing says what "
+                   "it read")
+#: cr1#979: a merged-seat pass with no meetings connector declared and no
+#: proof of a read.
+UNDECLARED_REASON = ("nothing confirmed a read of the meeting-notes "
+                     "connector")
+
+
+def _count(value) -> int:
+    """A count as a fire hands it through JSON: an int, a whole float or a
+    numeric string; anything else is 0."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return int(number) if number == number and number >= 0 else 0
+
+
+def typed_run() -> bool:
+    """A run a person started in a chat (cr1#979): the door's line carries
+    `CR_FIRED_VIA=manual` or a `CR_TRIGGERED_BY` surface. Such a chat runs in
+    the desktop app, so a connection attached only there is reachable; the
+    reachability skip is a SCHEDULED cloud fire's."""
+    import os
+    via = (os.environ.get("CR_FIRED_VIA") or "").strip().lower()
+    return via == "manual" or bool((os.environ.get("CR_TRIGGERED_BY") or "").strip())
+
+
+def capture_read_outcome(workspace_root, *, n_meetings=None,
+                         connectors_read=None, fetch_blocked=None) -> tuple:
+    """`(left_due, blocked, unread)` for one capture pass (cr1#979), the
+    meeting leg's answer in the mail legs' words.
+
+    On the merged seat's Maintenance fire the pass wrote `complete` whatever
+    it read: nine scheduled receipts over four days said complete while the
+    book held no meeting from those days. So, as the mail legs do
+    (`connector_reads.read_outcome`, cr1#743), an empty answer is not taken
+    on trust there:
+      * `fetch_blocked` handed (an errored read): blocked, on any seat;
+      * a cloud fire that cannot reach a desktop-only meetings connection
+        and read nothing: `left_due` is the reason, and NO receipt lands,
+        so the job stays owed for a run that can reach it;
+      * zero meetings (or none counted) and no word from the fire that the
+        connector answered (`connectors_read`): blocked, naming the
+        connection, or `UNDECLARED_REASON` when none is declared;
+      * the connector answered but no `n_meetings` was handed at all:
+        blocked (`NO_COUNT_REASON`).
+    A count above zero is proof on its own. A seat that is not merged is
+    unchanged: its fires read the connector in their own process."""
+    blocked = str(fetch_blocked or "").strip()
+    if blocked:
+        return None, blocked, ["meetings"]
+    try:
+        from maintenance_dispatcher import merged_seat
+        if not merged_seat():
+            return None, None, []
+    except Exception:  # noqa: BLE001 - an unreadable seat is not merged
+        return None, None, []
+    try:
+        from connector_reads import for_category, read_outcome
+        read = for_category(workspace_root, "meetings", purpose="open")
+    except Exception:  # noqa: BLE001
+        return None, None, []
+    counted = _count(n_meetings) > 0
+    said = connectors_read
+    if isinstance(said, str):
+        said = [said]
+    proved = counted or "meetings" in {str(c).strip() for c in said or ()}
+    if read and read.get("skip_kind") == "reachability" and typed_run():
+        # A person's chat is in the desktop app: the connection is reachable
+        # there, so it is owed a read like any other.
+        read = dict(read, skip_kind=None, skip_reason=None)
+    if read and read.get("skip_kind") == "reachability" and not proved:
+        why = (read.get("skip_reason")
+               or "the meetings connection cannot be reached here")
+        return why, None, ["meetings"]
+    if read is None:
+        # Nothing declared (a seat from before cr1#667): the phases find the
+        # meeting-notes connector themselves, and the proof is the same.
+        if not proved:
+            return None, UNDECLARED_REASON, ["meetings"]
+        return None, (NO_COUNT_REASON if n_meetings is None else None), []
+    reason, unread, _unsure = read_outcome(
+        workspace_root, CAPTURE_JOB_ID, [read],
+        seen={"meetings"} if counted else set(), connectors_read=connectors_read)
+    if not reason and n_meetings is None:
+        return None, NO_COUNT_REASON, ["meetings"]
+    return None, (reason or None), unread
+
+
 def log_capture_pass_receipt(workspace_root, *,
                              # SPEC_NIGHTM3_LANES §5 P-2, fix pass 1 (review
                              # H-2): NOT `"scheduled"`. A literal default is
@@ -329,13 +465,16 @@ def log_capture_pass_receipt(workspace_root, *,
                              duration_ms: Optional[int] = None,
                              capture_leg_ms: Optional[int] = None,
                              window: Optional[dict] = None,
-                             n_meetings: int = 0,
+                             n_meetings: Optional[int] = None,
                              n_processed: int = 0,
                              n_skipped: int = 0,
                              window_incomplete_before: Optional[str] = None,
                              extra_data: Optional[dict] = None,
                              maintenance_window: Optional[dict] = None,
                              read_complete=None,
+                             capture_leg_start: Optional[str] = None,
+                             connectors_read=None,
+                             fetch_blocked: Optional[str] = None,
                              now=None) -> dict:
     """THE receipt for one incremental capture pass. A `pack_run` under task
     id `meeting-capture` — never under `past-meetings` (see the module
@@ -384,13 +523,29 @@ def log_capture_pass_receipt(workspace_root, *,
     caller that has not passed it, matching BRIEFFIX1 Item C: a caller
     whose OWN duration measurement failed still gets its receipt, just
     without the phase fields.
+
+    cr1#1276: `capture_leg_start`, the plan's own (`eod_helpers.
+    catchup_window` stamps it), times the leg here, from that start to this
+    call, so no caller supplies a duration. On a typed run
+    (`CR_TRIGGERED_BY` `run-maintenance`) a `capture_leg_ms` handed in is
+    refused and never stamped: a chat cannot time a leg, so any number it
+    passes is one it chose. Elsewhere a measured `capture_leg_ms` is read
+    as before when no start is handed.
     """
     from catchup import WINDOW_INCOMPLETE_FIELD
     from receipts import effective_fired_via, log_receipt
 
+    left_due, blocked, unread = capture_read_outcome(
+        workspace_root, n_meetings=n_meetings, connectors_read=connectors_read,
+        fetch_blocked=fetch_blocked)
+    if left_due:
+        return {"written": False, "left_due": True, "reason": left_due,
+                "connectors_unreachable": ["meetings"],
+                "line": (f"Meetings were not read on this run: {left_due}. "
+                         "The job stays due for a run that can reach it.")}
     data: dict = {
         "surface": "incremental-capture",
-        "n_meetings": int(n_meetings or 0),
+        "n_meetings": _count(n_meetings),
         "n_processed": int(n_processed or 0),
         "n_skipped": int(n_skipped or 0),
     }
@@ -401,6 +556,7 @@ def log_capture_pass_receipt(workspace_root, *,
             data["window_end"] = window.get("end")
     if window_incomplete_before:
         data[WINDOW_INCOMPLETE_FIELD] = window_incomplete_before
+    capture_leg_ms = _leg_ms(capture_leg_ms, capture_leg_start)
     if isinstance(capture_leg_ms, (int, float)) \
             and not isinstance(capture_leg_ms, bool) \
             and capture_leg_ms == capture_leg_ms and capture_leg_ms >= 0:
@@ -453,8 +609,17 @@ def log_capture_pass_receipt(workspace_root, *,
             data.update(paged)
     except Exception:  # noqa: BLE001, the page never costs the receipt
         pass
+    status = "complete"
+    if blocked:
+        status = "blocked"
+        data["blocked_reason"] = blocked
+        if unread:
+            data["connectors_unreachable"] = list(unread)
+        data["summary"] = (f"Meetings were not read: {blocked}. Nothing was "
+                           "captured; the same window is read next time.")
     return log_receipt(workspace_root, CAPTURE_JOB_ID,
                        receipt_type="pack_run",
+                       status=status,
                        # P-2 (review H-2): the seat decides when the caller
                        # did not; an explicit value always wins. `triggered_by`
                        # rides log_receipt's own `CR_TRIGGERED_BY` rule.

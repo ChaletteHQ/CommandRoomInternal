@@ -452,6 +452,7 @@ POST_REFUSED_PHRASES = {
     "operator-report": "show me the operator report",
     "accounts": "what accounts do I have",
     "undo": "undo",
+    "undo-reprocess": "undo",  # cr1#1417: the same phrase as the bare undo
     "maintenance": "run maintenance now",
     "decision-log": "what did I decide",
     "inbox": "triage my inbox",
@@ -737,6 +738,17 @@ COMPOSE_AND_POST_SURFACES = {
     "undo": {"composer": "undo_answer",
              "args": {"choice": "text", "phrase": "text", "undone_by": "text"},
              "one_of": frozenset({"choice", "phrase"})},
+    # "undo" right after a meeting was re-processed (cr1#1417). The same
+    # repair door `brain_undo.undo_after_reprocess` is on a local seat, run
+    # in this one writer process: it reverses the run whose receipt the
+    # owner saw, or says there is nothing to reverse. The meeting is
+    # required, so it can never fall through to some other meeting's run.
+    # `receipt` is that run's own `meeting_processed` seq (cr1#1457); left
+    # out, the composer refuses with its own line and writes nothing.
+    "undo-reprocess": {"composer": "reprocess_undo_answer",
+                       "args": {"meeting": "text", "receipt": "count",
+                                "undone_by": "text"},
+                       "required": frozenset({"meeting"})},
 }
 
 
@@ -1153,7 +1165,7 @@ def undo_answer(*, choice: Optional[str] = None, phrase: Optional[str] = None,
     """
     from brain_undo import (batch_ref_for_ordinal, phrase_door_lines,
                             recent_auto_batches, resolve_undo_phrase,
-                            undo_batch, undo_listing_lines, undo_receipt_lines)
+                            undo_batch, undo_listing_lines)
     ws = str(workspace)
     batches = recent_auto_batches(ws)
     lead: list = []
@@ -1170,6 +1182,10 @@ def undo_answer(*, choice: Optional[str] = None, phrase: Optional[str] = None,
             return {"text": say("\n".join(lines), workspace=ws),
                     "customer_rows": []}
         ref, batch = hit.get("batch_ref"), hit.get("batch")
+        if isinstance(batch, dict) and batch.get("reversed"):
+            from brain_undo import ALREADY_UNDONE_LINE  # cr1#1416
+            return {"text": say(ALREADY_UNDONE_LINE, workspace=ws),
+                    "customer_rows": []}
         if hit.get("widened"):
             lead = ["That one is from a while back."]
     elif choice is not None and choice.strip():
@@ -1180,33 +1196,127 @@ def undo_answer(*, choice: Optional[str] = None, phrase: Optional[str] = None,
             return {"text": say("\n".join(lines), workspace=ws),
                     "customer_rows": []}
         batch = _listed_batch(batches, ref)
+        if batch is not None and batch.get("reversed"):
+            # cr1#1416: a batch already undone is refused before anything
+            # runs. `undo_batch` would also write nothing for it; this says
+            # so in one line instead of a receipt.
+            from brain_undo import ALREADY_UNDONE_LINE
+            return {"text": say(ALREADY_UNDONE_LINE, workspace=ws),
+                    "customer_rows": []}
     else:
         lines = undo_listing_lines(batches)
         return {"text": say("\n".join(lines) if lines else UNDO_EMPTY_LINE,
                             workspace=ws), "customer_rows": []}
-    who = (undone_by or "").strip()
-    from event_types import is_person_actor
-    if not is_person_actor(who):
-        # Only a person id is stamped as a person's own act: a name or an
-        # unfilled placeholder falls back to the owner (cr1#1147 review).
-        from primary_user import resolve_primary_user
-        who = resolve_primary_user(ws) or ""
-    result = undo_batch(ws, ref, undone_by=who, source_skill="workspace-manager")
+    result = undo_batch(ws, ref, undone_by=_undoer(ws, undone_by),
+                        source_skill="workspace-manager")
     undone = [r["change"]["change_ref"] for r in result.get("results") or ()
               if r.get("status") == "undone"
               and (r.get("change") or {}).get("change_ref")]
+    text = undo_receipt_text(ws, result, batch=batch, lead=lead)
+    return {"text": text, "customer_rows": undone}
+
+
+def undo_receipt_text(workspace, result: dict, *, batch=None,
+                      lead: Sequence = ()) -> str:
+    """The gated receipt for a reversal that has ALREADY run (cr1#1147, cr1#1414).
+
+    `brain_undo.undo_receipt_lines` composes the receipt and it passes
+    through `say`. When the scan refuses it, the rows are already back, so
+    the answer must not turn into "it did not work", or into nothing at all:
+    it says how many came back (and how many did not), naming none of them,
+    from the counts `undo_batch` returned. The refused words are never shown
+    and the refusal is not weakened: the plain line goes through `say` too.
+    Used by the merged-seat `undo` form (`undo_answer`) and by
+    workspace-manager's local-seat receipt block. It reverses nothing.
+    """
+    from brain_undo import undo_receipt_lines
+    ws = str(workspace)
+    lead = list(lead or ())
     receipt = lead + undo_receipt_lines(ws, result, batch=batch)
     try:
-        text = say("\n".join(receipt), workspace=ws)
+        return say("\n".join(receipt), workspace=ws)
     except Exception:  # noqa: BLE001 - the rows are already back
         # The reversal has happened; a receipt that cannot pass must not
         # turn into "it did not work" (cr1#1147 review). Say how many came
         # back, naming none of them.
-        n_back = int(result.get("n_undone") or 0) + int(result.get("n_already") or 0)
+        # cr1#1416: a change an earlier undo already reversed did not come
+        # back now, so it is not counted as put back.
+        n_was = sum(1 for r in result.get("results") or ()
+                    if (r.get("result") or {}).get("status") == "already_undone")
+        n_back = (int(result.get("n_undone") or 0)
+                  + max(0, int(result.get("n_already") or 0) - n_was))
         lines = [f"Put {_count(n_back, 'thing')} back."]
         if int(result.get("n_errors") or 0):
             lines.append(f"{_count(int(result['n_errors']), 'change')} did not go back.")
-        text = say("\n".join(lead + lines), workspace=ws)
+        return say("\n".join(lead + lines), workspace=ws)
+
+
+REPROCESS_UNDO_NO_MEETING_LINE = ("Nothing to reverse: I need to know which "
+                                  "meeting was re-run, so nothing was changed.")
+
+
+def _undoer(ws: str, undone_by: Optional[str]) -> str:
+    """Who is undoing: `undone_by` when it is a person id, otherwise the
+    workspace's owner (cr1#1147 review: a name or an unfilled placeholder is
+    never stamped as a person's own act)."""
+    who = (undone_by or "").strip()
+    from event_types import is_person_actor
+    if not is_person_actor(who):
+        from primary_user import resolve_primary_user
+        who = resolve_primary_user(ws) or ""
+    return who
+
+
+def reprocess_undo_answer(*, meeting: str, receipt: Optional[int] = None,
+                          undone_by: Optional[str] = None,
+                          workspace=None) -> dict:
+    """`undo` after a meeting re-run, whole, in ONE process (cr1#1417).
+
+    The merged-seat form of meeting-notes' and workspace-manager's in-shell
+    `brain_undo.undo_after_reprocess` call. `brain_undo` is on neither door
+    list, so the reversal runs here, inside the writer `compose_and_post`
+    already is. It is that function, called with the same arguments, so it
+    keeps every one of its refusals: a meeting never processed, a run whose
+    receipt names no meeting, a run with no lower bound, and a run that
+    changed nothing all answer "nothing to reverse" and write nothing, and
+    only the changes inside the receipt's own run are reversed.
+
+    `meeting` is the re-run's source ref (`granola:<meeting_id>`, or a
+    pasted note's `pasted:` ref). `receipt` is the seq of the re-run's own
+    `meeting_processed` row, the receipt the owner saw (cr1#1457): the undo
+    reverses that run only while it is still the meeting's newest, and with
+    no receipt it refuses. Returns `{"text", "customer_rows"}`: the
+    function's own `line`, through `say`, and the refs of the rows it put
+    back.
+
+    It is stamped as the person's own undo, from workspace-manager, the same
+    way the `undo` surface is: the person typed it. (A `source_skill` of
+    `meeting-notes` resolves to the machine rail in `resolve_actor`, which
+    would credit a person's typed undo to the product.)
+    """
+    from brain_undo import undo_after_reprocess
+    ws = str(workspace)
+    ref = str(meeting or "").strip()
+    if not ref:
+        # A blank meeting would make `undo_after_reprocess` take the newest
+        # run of ANY meeting: a reversal nobody named. Refuse, write nothing.
+        return {"text": say(REPROCESS_UNDO_NO_MEETING_LINE, workspace=ws),
+                "customer_rows": []}
+    result = undo_after_reprocess(ws, ref, receipt_seq=receipt,
+                                  undone_by=_undoer(ws, undone_by),
+                                  source_skill="workspace-manager")
+    undone = [r["change"]["change_ref"] for r in result.get("results") or ()
+              if r.get("status") == "undone"
+              and (r.get("change") or {}).get("change_ref")]
+    try:
+        text = say(str(result.get("line") or ""), workspace=ws)
+    except Exception:  # noqa: BLE001 - the rows may already be back
+        # The line is this product's own words, so this is not expected;
+        # if it ever cannot pass, say how many came back, naming none.
+        n = int(result.get("n_undone") or 0)
+        text = say(f"Put back {_count(n, 'thing')} that re-run changed."
+                   if n else "Nothing to reverse, so nothing was changed.",
+                   workspace=ws)
     return {"text": text, "customer_rows": undone}
 
 

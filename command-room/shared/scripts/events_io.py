@@ -38,13 +38,69 @@ except ImportError:  # pragma: no cover
 _SHARD_RE = re.compile(r"^events-(\d{4})\.jsonl$")
 
 
+#: cr1#1376: the folder that makes a directory a WORKSPACE ROOT rather than a
+#: data folder handed in directly. A data folder (`_hq/data`, or a fixture's
+#: own folder of log files) never holds an `_hq/` of its own.
+WORKSPACE_HQ_DIRNAME = "_hq"
+
+
+def _holds_log(data_dir: Path) -> bool:
+    """True when `data_dir` holds the activity log: the live file or a year
+    shard. Read-only; an unreadable folder holds nothing."""
+    try:
+        if (data_dir / "events.jsonl").is_file():
+            return True
+        return any(_SHARD_RE.match(p.name) for p in data_dir.glob("events-*.jsonl"))
+    except OSError:
+        return False
+
+
+def is_workspace_root(root: str | Path) -> bool:
+    """cr1#1376: True when `root` is a workspace root (it holds `_hq/`), not a
+    data folder passed directly."""
+    try:
+        return (Path(root) / WORKSPACE_HQ_DIRNAME).is_dir()
+    except OSError:
+        return False
+
+
+def stray_root_log(root: str | Path) -> Optional[Path]:
+    """cr1#1376: the stray `events.jsonl` at a workspace root's top, or None.
+
+    Only a WORKSPACE ROOT (`is_workspace_root`) can hold a stray: a data
+    folder passed directly keeps its own log at its top by design."""
+    root = Path(root)
+    if root.name == "events.jsonl" or _SHARD_RE.match(root.name):
+        return None
+    stray = root / "events.jsonl"
+    try:
+        if is_workspace_root(root) and stray.is_file():
+            return stray
+    except OSError:
+        return None
+    return None
+
+
 def _data_dir(root: str | Path) -> Path:
     """Resolve the `_hq/data` dir. Accepts a workspace root, the data dir, or a path
-    to events.jsonl / a shard file itself."""
+    to events.jsonl / a shard file itself.
+
+    cr1#1376: a root-level `events.jsonl` never wins over the real log. A
+    folder with `events.jsonl` at its top is read as a data folder passed
+    directly ONLY when it is not a workspace root (no `_hq/`), or when it is
+    one whose data folder holds no log at all: that one case is left as it
+    was, pending the owner's ruling, because the stray may then be the only
+    log there is."""
     root = Path(root)
     if root.name == "events.jsonl" or _SHARD_RE.match(root.name):
         return root.parent
-    if (root / "events.jsonl").exists() or root.name == "data":
+    if root.name == "data":
+        return root
+    if (root / "events.jsonl").exists():
+        if is_workspace_root(root):
+            real = _resolve_data_root(root)
+            if _holds_log(real):
+                return real
         return root
     # SPEC SYNC1 B1 — route the workspace-root case through the (dormant)
     # resolver. Byte-identical to `root / "_hq" / "data"` with no override.
@@ -809,7 +865,8 @@ __all__ = ["shard_paths", "active_path", "iter_events", "load_all",
            "merged_lines", "open_merged",
            "load_events_owner_scoped",
            "load_events_org_scoped", "iter_events_org_scoped",
-           "shard_invariants"]
+           "shard_invariants",
+           "WORKSPACE_HQ_DIRNAME", "is_workspace_root", "stray_root_log"]
 
 
 if __name__ == "__main__":

@@ -5,11 +5,12 @@ the page saved, and how a saved choice reaches the book.
 WHAT THE COCKPIT IS
 -------------------
 
-One private artifact page the owner opens each morning. Eight tabs, option D's
-List view (cr1#1013), in two rows since cr1#1285: Today, Week, Settings over
-Inbox, Commitments, Priorities, Work streams, People (`HUB_TABS`; Overdue and
-Review are the Late and To confirm filters inside Commitments since cr1#946
-and cr1#1286), one Go button, one light per leg. The page
+One private artifact page the owner opens each morning. Nine tabs, option D's
+List view (cr1#1013), in two rows since cr1#1285: Today, Brief, Week, Settings
+over Inbox, Commitments, Priorities, Work streams, People (`HUB_TABS`; Brief is
+the morning brief as written, cr1#1310; Overdue and Review are the Late and To
+confirm filters inside Commitments since cr1#946 and cr1#1286), one Go button,
+one light per leg. The page
 keeps its own small database on claude.ai: the feeds a run writes for it, the
 status line per leg, and the choices the owner presses. Nothing on the page
 writes the book. A run of the `cockpit-apply` task reads the choices back and
@@ -141,8 +142,10 @@ GOAL_LINES_CAP = 3
 
 #: The page's verbs: a closed subset of the owning surface's own verbs.
 COMMITMENT_VERBS = frozenset({"done", "drop", "context", "confirm", "snooze", "reopen",
-                              # cr1#1289: the two presses on a "No home yet" row
-                              "assign", "notwork"})
+                              # cr1#1289: the presses on a "No home yet" row
+                              "assign", "notwork", "newstream",
+                              # cr1#1341: Undo after Apply of Assign to / New work stream
+                              "unassign"})
 INBOX_VERBS = frozenset({"send", "draft", "snooze"})
 #: cr1#1020: the inbox presses the owner's mail rules take (`mail_rules`),
 #: applied in code by `apply_mail_choices`, never through a mail handler:
@@ -174,10 +177,50 @@ NOT_WORK_LINE = "Set aside: not work."
 ASSIGN_REASON = "Given a home on the Command Room Hub"
 ASSIGN_NO_STREAM_LINE = "That work stream is not on your book any more; nothing was written. Pick another."
 ASSIGN_HAS_HOME_LINE = "That one already has a home; nothing was written."
-ASSIGN_HEARD_LINE = "A line that was only heard is not tracked yet, so it cannot be given a home from here; track it in a chat first."
+#: cr1#1289 part two: Assign to on a line only heard tracks it first,
+#: through the queue's own confirm; this is the line when that refuses.
+ASSIGN_HEARD_FAILED_LINE = "That line could not be tracked, so it was not given a home; nothing was written."
+#: cr1#1289 part two: New work stream, a name typed on a "No home yet" row.
+NEW_STREAM_NAME_CAP = 80
+NEW_STREAM_CHILD = "{name}: general"
+NEW_STREAM_NAME_LINE = "Type a name for the new work stream; nothing was written."
+NEW_STREAM_TAKEN_LINE = "{name} is already on your book and is not a work stream; nothing was written. Pick another name."
+NEW_STREAM_FAILED_LINE = "The new work stream could not be set up; nothing was written."
+#: cr1#1342: a name only an archived or closed namesake holds, never revived
+#: from the Hub (the owner's `revive` in a chat is the one door back).
+NEW_STREAM_ARCHIVED_LINE = ("{name} belongs to {what} you archived; nothing was written. "
+                            "Say revive {name} in a chat to bring it back, or pick another name.")
+NEW_STREAM_CLOSED_LINE = "{name} belongs to {what} that is closed; nothing was written. Pick another name."
+#: cr1#1342: the stream's record landed but the book could not record that
+#: the Hub made it, so it is neither finished nor claimed later.
+NEW_STREAM_HALF_LINE = ("{name} was added to your book but could not be finished, so this has no home yet. "
+                        "Ask in a chat to finish {name} or to put this elsewhere.")
+NEW_STREAM_UNSURE_LINE = ("The work stream {name} could not be set up, and part of it may be on your book; "
+                          "this has no home yet. Check {name} in a chat before pressing again.")
+#: A heard line already tracked when a later step refused (review of part two).
+HEARD_TRACKED_ONLY_LINE = "The line is now tracked, but it was not given a home; it waits under No home yet."
 NOT_WORK_FAILED_LINE = "That one could not be set aside; nothing was written."
+#: cr1#1341: Undo after Apply for Assign to and New work stream. The Undo is
+#: its own `unassign` choice naming the press it takes back.
+UNASSIGN_REASON = "Taken back on the Command Room Hub"
+UNASSIGN_ARCHIVE_REASON = "Started on the Command Room Hub, then taken back there"
+UNASSIGN_LINE = "Back under No home yet."
+UNASSIGN_TRACKED_LINE = " It stays tracked."
+UNASSIGN_ARCHIVED_LINE = "Back under No home yet; the work stream {name} the Hub started for it is archived."
+UNASSIGN_KEPT_LINE = "Back under No home yet; {name} stays, because other work is on it now."
+UNASSIGN_ARCHIVE_FAILED_LINE = "Back under No home yet; {name} could not be archived, so it stays."
+UNASSIGN_CHILD_FAILED_LINE = ("Back under No home yet; the work stream {name} is archived, "
+                              "but the thread under it could not be, so that thread stays.")
+UNASSIGN_NO_PRESS_LINE = "That move is not on your book; nothing was written."
+UNASSIGN_MOVED_LINE = "That one has moved since; nothing was written."
+UNASSIGN_ALREADY_LINE = "That one is already back under No home yet; nothing was written."
 CONFIRM_EVIDENCE = "Confirmed and closed on the Command Room Hub"
 REOPEN_REASON = "Reopened from the Command Room Hub"
+#: cr1#1462: a closing press made before the owner's latest reopen of the item.
+PRESSED_BEFORE_REOPEN_LINE = ("You reopened this item after that press, so it was not closed again; "
+                              "press it again if you meant it.")
+#: cr1#1462: the presses that close an item.
+_CLOSING_VERBS = ("done", "confirm", "drop", "notwork")
 SNOOZE_REASON = "pushed to a later date from the Command Room Hub"
 
 NO_ACCOUNT_LINE = ("This chat runs with no account of its own, so it cannot "
@@ -235,6 +278,20 @@ def _mail_platform(platform: Optional[str], workspace_root=None) -> str:
 UNKNOWN_VERB_LINE = "The page sent a verb this surface does not take ({verb}); nothing was written."
 NO_ACTOR_LINE = "No owner is on record for this workspace, so nothing was written."
 GONE_LINE = "That item is no longer on the book; nothing was written."
+#: cr1#1377: a commitment choice that names no item. Said as it is, never as
+#: gone: an empty id is a broken press, not a closed item.
+NO_ID_LINE = "That choice names no item, so nothing was written."
+NOT_COMMITMENT_LINE = "That choice is not on a commitment row ({kind}); nothing was written."
+ALREADY_APPLIED_LINE = "That choice was already applied; nothing was written."
+NO_CHOICE_ID_LINE = "That choice has no id of its own, so it cannot be marked applied; nothing was written."
+#: cr1#1377, the owner's ruling of 2026-11-19 (option b): a raw page choice
+#: another Apply run holds is refused here, and the press waits for that run
+#: or the next one.
+CLAIMED_ELSEWHERE_LINE = "Another Apply run holds this press, so nothing was written; it is applied by that run or the next one."
+#: cr1#1377 review: a claimed press handed over by a call that names no run.
+#: It waits, and the audit names it an error, so the Hub says Apply needs a
+#: look instead of the press waiting unseen for ever.
+NO_RUN_ID_LINE = "This Apply run did not say which run it is, so a claimed press was not applied; nothing was written."
 ALREADY_CLOSED_LINE = "That one was already closed; nothing was written."
 NOT_OPEN_LINE = "That one is not open; nothing to reopen."
 EMPTY_NOTE_LINE = "The note was empty; nothing was written."
@@ -320,14 +377,70 @@ def load_config(workspace_root) -> Dict[str, Any]:
 HUB_POINTER_LINE = "Your Command Room Hub has this morning's view and the three questions to answer: {url}"
 
 
+#: cr1#1389: the one line the Hub and the Morning Brief show when the installed
+#: plugin is newer than the version the Hub page was built from. The Hub's
+#: Finish update link opens a chat with `finish update` typed in.
+UPDATE_LINE = "Command Room updated to v{version}. Press Finish update."
+
+
+def _version_tuple(value) -> Optional[Tuple[int, ...]]:
+    """`6.2.1` or `v6.2.1` as numbers; anything else None."""
+    text = str(value or "").strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:]
+    if not text or not all(part.isdigit() for part in text.split(".")):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def update_notice(workspace_root, *, installed_version: Optional[str] = None,
+                  plugin_root=None) -> Dict[str, Any]:
+    """READ (cr1#1389). `{show, installed, built, line}`: whether the installed
+    plugin is newer than the version the Hub page was built from (the saved
+    Hub config's `plugin_version`, which `save_config` stamps at every
+    publish). `installed_version` is the installed plugin's, as the chat read
+    it; with none handed in, the `plugin.json` beside this module. A seat with
+    no Hub, or an install version that cannot be read, shows nothing. A Hub
+    with no saved version counts as older: nothing proves it current, and a
+    rebuild stamps it. Never raises."""
+    out: Dict[str, Any] = {"show": False, "installed": None, "built": None, "line": ""}
+    try:
+        cfg = load_config(workspace_root) if workspace_root else {"found": False}
+        installed = str(installed_version or "").strip() or plugin_version_here(plugin_root) or ""
+        out["installed"] = installed or None
+        out["built"] = cfg.get("plugin_version") if cfg.get("found") else None
+        have = _version_tuple(installed)
+        if not cfg.get("found") or have is None:
+            return out
+        built = _version_tuple(out["built"])
+        if built is not None:  # 6.2 and 6.2.0 are one version, as on the page
+            width = max(len(have), len(built))
+            have, built = have + (0,) * (width - len(have)), built + (0,) * (width - len(built))
+        if built is None or have > built:
+            shown = installed[1:] if installed[:1] in ("v", "V") else installed
+            out.update(show=True, line=UPDATE_LINE.format(version=shown))
+    except Exception:  # noqa: BLE001 - a read that fails shows nothing
+        return {"show": False, "installed": None, "built": None, "line": ""}
+    return out
+
+
 def hub_pointer(workspace_root) -> Dict[str, Any]:
-    """READ. `{found, url, line}` for the Morning Brief's last line (cr1#782):
-    the page address when `_hq/config/cockpit.json` holds one, else an empty
-    `line`, so a seat that never set up the Hub posts its brief exactly as
-    before. Never raises: an absent or corrupt record reads as not found."""
+    """READ. `{found, url, line, update_line, inbox_line}` for the Morning Brief's last
+    line (cr1#782): the page address when `_hq/config/cockpit.json` holds one,
+    else an empty `line`, so a seat that never set up the Hub posts its brief
+    exactly as before. `update_line` (cr1#1389) is `update_notice`'s line when
+    the installed plugin is newer than the page, else empty. `inbox_line`
+    (cr1#1464) is `inbox_stop`'s line when the Hub inbox run built no page
+    on its last run, else empty. Never raises: an absent or corrupt record
+    reads as not found."""
     cfg = load_config(workspace_root) if workspace_root else {"found": False, "url": None}
     url = cfg.get("url") if cfg.get("found") else None
-    return {"found": bool(url), "url": url, "line": HUB_POINTER_LINE.format(url=url) if url else ""}
+    update = update_notice(workspace_root) if url else {"line": ""}
+    # cr1#1464: an inbox run that built no page is said in the brief too.
+    stopped = inbox_stop(workspace_root) if url else None
+    return {"found": bool(url), "url": url, "line": HUB_POINTER_LINE.format(url=url) if url else "",
+            "update_line": update.get("line") or "",
+            "inbox_line": (stopped or {}).get("line") or ""}
 
 
 def save_config(workspace_root, *, url: str, trigger_id: Optional[str] = None,
@@ -473,6 +586,10 @@ def connector_display_name(server) -> str:
 #: `thread` shows the thread under a draft when the owner opens it (cr1#714;
 #: read live, never stored), `new_draft` makes a mail that answers no thread (a
 #: chase, cr1#219). A provider not listed here keeps Send on Apply.
+#: Microsoft 365 only (cr1#1250): `reply_all_draft` makes a reply to a group
+#: thread and `set_recipients` then sets its To and Cc to exactly the people
+#: the owner saw (Bcc cleared) before `send`; its plain reply tool answers the
+#: sender alone.
 MAIL_DIRECT = {
     "superhuman": {"server": "Superhuman Mail", "read": "get_thread",
                    "draft": "create_or_update_draft", "send": "send_draft", "thread": "get_thread",
@@ -481,7 +598,8 @@ MAIL_DIRECT = {
               "thread": "get_thread", "new_draft": "create_draft"},
     "outlook": {"server": "Microsoft 365", "read": "outlook_email_search",
                 "draft": "outlook_create_reply_draft", "send": "outlook_send_draft",
-                "thread": "read_resource", "new_draft": "outlook_create_draft"},
+                "thread": "read_resource", "new_draft": "outlook_create_draft",
+                "reply_all_draft": "outlook_create_reply_all_draft", "set_recipients": "outlook_update_draft"},
 }
 _UUIDISH_RE = re.compile(r"^[0-9a-f]{8}-", re.I)
 
@@ -601,12 +719,17 @@ def mail_direct(workspace_root=None) -> Optional[Dict[str, Any]]:
     sid = str(row.get("server_id") or "").strip()
     server = connector_display_name(sid) if sid and not _UUIDISH_RE.match(sid) else plan["server"]
     tools: List[str] = []
-    for t in (plan["read"], plan["draft"], plan["send"], plan.get("thread"), plan.get("new_draft")):
+    for t in (plan["read"], plan["draft"], plan["send"], plan.get("thread"), plan.get("new_draft"),
+              plan.get("reply_all_draft"), plan.get("set_recipients")):
         if t and t not in tools:
             tools.append(t)
-    return {"provider": provider, "server": server, "read": plan["read"],
-            "draft": plan["draft"], "send": plan["send"], "thread": plan.get("thread"),
-            "new_draft": plan.get("new_draft"), "tools": tools, "admin_line": MAIL_ADMIN_LINE.get(provider)}
+    out = {"provider": provider, "server": server, "read": plan["read"],
+           "draft": plan["draft"], "send": plan["send"], "thread": plan.get("thread"),
+           "new_draft": plan.get("new_draft"), "tools": tools, "admin_line": MAIL_ADMIN_LINE.get(provider)}
+    if plan.get("reply_all_draft") and plan.get("set_recipients"):
+        out["reply_all_draft"] = plan["reply_all_draft"]
+        out["set_recipients"] = plan["set_recipients"]
+    return out
 
 
 def capabilities(server: str, mail: Optional[Dict[str, Any]] = None,
@@ -1064,6 +1187,111 @@ def _maintenance_trouble(workspace_root) -> Dict[str, Any]:
             "silent": silent, "line": " ".join(b for b in bits if b)}
 
 
+#: cr1#1378: how far back the Hub looks for an Apply that failed. A failure
+#: older than this with no Apply since is not named any more.
+APPLY_TROUBLE_HOURS = 24
+#: cr1#1464: the Hub's sentence when its inbox run stopped without building
+#: the page (`inbox_helpers.PAGE_NOT_BUILT_CODE`), and no inbox run has
+#: landed a page since. The same look-back as an Apply that failed.
+INBOX_STOP_LINE = "Hub Inbox could not build your inbox page on its last run."
+#: The abort code that sentence answers (`inbox_helpers.PAGE_NOT_BUILT_CODE`,
+#: kept as a literal so this module does not import the inbox module).
+INBOX_PAGE_NOT_BUILT_CODE = "inbox_page_not_built"
+
+
+def inbox_stop(workspace_root, *, now_iso=None) -> Optional[Dict[str, Any]]:
+    """READ. cr1#1464: `{line, at}` when the Hub inbox run's newest stop
+    record (`fire_stopped`, task `cockpit-inbox`) is from the last
+    `APPLY_TROUBLE_HOURS` and no inbox receipt (`pack_run`) is newer, else
+    None. The Hub's note and the Morning Brief both say `line`. Never
+    raises: an unreadable book says nothing."""
+    if not workspace_root:
+        return None
+    try:
+        from events_io import load_events_org_scoped
+        import receipts as _rc
+
+        stop = _rc.last_fire_stop(workspace_root, "cockpit-inbox")
+        # Only the page-not-built stop is this sentence; any other stop of
+        # the inbox run (a bootloader gate) is said where it is said today.
+        if str((stop or {}).get("abort_code") or "") != INBOX_PAGE_NOT_BUILT_CODE:
+            return None
+        at = _parse((stop or {}).get("at"))
+        now = _now(now_iso)
+        # A minute's grace either side of now: a stop stamped by another
+        # computer's clock a moment ahead still counts.
+        if at is None or not (now - _dt.timedelta(hours=APPLY_TROUBLE_HOURS) <= at
+                              <= now + _dt.timedelta(minutes=1)):
+            return None
+        events, _skipped = load_events_org_scoped(workspace_root)
+        for ev in events:
+            if not isinstance(ev, dict) or ev.get("type") != "pack_run":
+                continue
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if str(d.get("task_id") or "") != "cockpit-inbox":
+                continue
+            ran = _parse(ev.get("ts"))
+            if ran is not None and ran > at:
+                return None
+    except Exception:  # noqa: BLE001 - the note keeps what it knows
+        return None
+    return {"line": INBOX_STOP_LINE, "at": _iso(at)}
+
+
+#: cr1#1378: the surface words that are a decision, never a failure: a close
+#: the fence held, a row already answered.
+_APPLY_NOT_FAILED = ("refused", "already", "waiting")  # cr1#1377: a held press waits
+
+
+def _apply_failed_rows(d: Dict[str, Any]) -> int:
+    """cr1#1378: the rows of one audit row that failed: recorded as an error
+    on a row the Hub writer answered, and not answered on the page as a
+    refusal or as already done. A row with no `said` (a folded copy a snooze
+    covered, or a row written before cr1#1378) is not counted: its error may
+    be a refusal on purpose, and the Hub never names a failure on a guess."""
+    return sum(1 for a in d.get("actions") or []
+               if isinstance(a, dict) and a.get("outcome") == "error"
+               and str(a.get("said") or "") and str(a.get("said")) not in _APPLY_NOT_FAILED)
+
+
+def _apply_trouble(workspace_root, now: _dt.datetime) -> Optional[Dict[str, Any]]:
+    """cr1#1378: the Hub's Apply runs that failed, off their own audit rows,
+    so a run where rows failed is seen on the Hub and not only in the book.
+    Reads the Hub's `apply_choices_applied` rows (a `cockpit` surface) from
+    the last `APPLY_TROUBLE_HOURS`, newest first, and counts the runs in a
+    row that had a failed row, stopping at the first clean one. Answers the
+    `failing` entry `{job_id, name, fires, since, at, n_failed, n_choices}`
+    for the newest such streak (`at` and the counts from the newest run,
+    cr1#1385), or None. READ
+    ONLY."""
+    from events_io import load_events_org_scoped
+    from schedule_config import task_display_name
+
+    events, _skipped = load_events_org_scoped(workspace_root)
+    start = now - _dt.timedelta(hours=APPLY_TROUBLE_HOURS)
+    runs = []
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("type") != "apply_choices_applied":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        at = _parse(ev.get("ts"))
+        if not str(d.get("surface") or "").startswith(SOURCE_SKILL) or at is None or not start <= at <= now:
+            continue
+        runs.append((at, d))
+    runs.sort(key=lambda t: t[0], reverse=True)
+    streak = []
+    for at, d in runs:
+        if not _apply_failed_rows(d):
+            break
+        streak.append((at, d))
+    if not streak:
+        return None
+    newest = streak[0][1]
+    return {"job_id": "cockpit-apply", "name": task_display_name("cockpit-apply"), "fires": len(streak),
+            "since": _iso(streak[-1][0]), "at": _iso(streak[0][0]), "n_failed": _apply_failed_rows(newest),
+            "n_choices": len([a for a in newest.get("actions") or [] if isinstance(a, dict)])}
+
+
 def schedule_holder_status(workspace_root, env: Optional[Dict[str, str]] = None
                            ) -> Optional[Dict[str, Any]]:
     """cr1#1138: which computer and account hold this folder's schedules, for
@@ -1105,7 +1333,10 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     (`maintenance_dispatcher.maintenance_staleness`, from the newest receipt,
     as of `now_iso`), `behind_hours`, the hours past which it counts as
     behind, and `failing` and `unread` (cr1#822), `left_unread` (cr1#979) and
-    `silent` (cr1#1007), which the line names too. It
+    `silent` (cr1#1007), which the line names too. A Hub Apply that failed
+    (cr1#1378) is a `failing` entry too, but never in the line: it is
+    `apply_line`, its own sentence, and `apply_at`, its own run's time
+    (cr1#1385), empty when none failed. It
     is data only: Start runs Maintenance on every press
     (cr1#682). A workspace with no Maintenance
     on record answers `idle` with nothing measured; an unreadable book
@@ -1114,12 +1345,18 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
     doc = status_doc(workspace_root, "maintenance", "idle", MAINTENANCE_NONE_LINE, now_iso=now)
     doc.update({"finished_at": None, "last_completed": {}, "hours_behind": None,
                 "behind_hours": START_MAINTENANCE_BEHIND_HOURS, "failing": [], "unread": [],
-                "left_unread": [], "silent": []})
+                "left_unread": [], "silent": [], "apply_line": "", "apply_at": None,
+                "inbox_line": "", "inbox_at": None})
     if not workspace_root or not (Path(str(workspace_root)) / "_hq" / "data").is_dir():
         return doc
     holder = schedule_holder_status(workspace_root)
     if holder:
         doc["holder"] = holder
+    # cr1#1464: an inbox run that built no page is its own sentence and time,
+    # like a failing Apply, whether or not Maintenance has run yet.
+    stopped = inbox_stop(workspace_root, now_iso=now)
+    if stopped:
+        doc.update({"inbox_line": stopped["line"], "inbox_at": stopped["at"]})
     try:
         import maintenance_dispatcher as md
 
@@ -1131,6 +1368,21 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         return doc
     finished = _parse((beat or {}).get("finished_at"))
     trouble = _maintenance_trouble(workspace_root)
+    try:
+        # cr1#1378: a Hub Apply whose rows failed is named with the jobs.
+        apply_bad = _apply_trouble(workspace_root, now)
+    except Exception:  # noqa: BLE001 - the note keeps what it knows
+        apply_bad = None
+    apply_line, apply_at = "", None
+    if apply_bad:
+        # cr1#1385: the Apply is its own sentence with its own run's time, never
+        # in Maintenance's line, so the page's "After <run>" clause (which names
+        # Maintenance's run) never reads as the cause of an Apply failure. The
+        # entry stays in `failing`, so the page still shows the note.
+        trouble = dict(trouble, failing=list(trouble["failing"]) + [apply_bad])
+        apply_line = (f"{apply_bad['name']} failing: {apply_bad['n_failed']} of "
+                      f"{apply_bad['n_choices']} choices failed on its last run.")
+        apply_at = apply_bad.get("at")
     # cr1#743: the document says which fire left it, and the page writes the
     # clause in the viewer's own time (one wording, on the page). A scheduled
     # fire's word reaches the page at the next Refresh or Start, as a typed run's.
@@ -1144,6 +1396,7 @@ def maintenance_status(workspace_root=None, *, now_iso=None) -> Dict[str, Any]:
         "failing": trouble["failing"], "unread": trouble["unread"],
         "left_unread": trouble["left_unread"], "silent": trouble["silent"],
         "fired_via": fired_via, "fired_at": fired_at,
+        "apply_line": apply_line, "apply_at": apply_at,
         "finished_at": _iso(finished or newest),
         "last_completed": {job: _iso(when) for job, when in sorted(last.items())},
         "hours_behind": float(hours) if isinstance(hours, (int, float)) else None,
@@ -1397,8 +1650,16 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     except Exception:  # noqa: BLE001 - the defaults name the homeless item
         seat = None
     no_home = "No " + _w.label(seat, "thread")
+    # cr1#1292 (decided under the owner's 2026-11-16 word): an item a Later
+    # moved is hidden from the lists until its date, but the board is a
+    # calendar of days, so it keeps the card, on its new day.
     try:
-        opens, today, _n, _from_log = tc._open_by_thread(root, _iso(now))
+        from mute_ledger import workspace_moved_ids
+        moved = workspace_moved_ids(root, _iso(now))
+    except Exception:  # noqa: BLE001 - no read: the board shows what the lists show
+        moved = set()
+    try:
+        opens, today, _n, _from_log = tc._open_by_thread(root, _iso(now), keep_ids=moved)
     except Exception:  # noqa: BLE001 - an unread open list leaves the board empty and says so
         out["errors"].append("open")
         opens, today = {}, now.astimezone(_workspace_tz(workspace_root)).date()
@@ -1440,7 +1701,7 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     # streams tab's "No home yet", confirmed promises only, like the rest.
     try:
         import loose_ends as le
-        view = le.loose_ends_view(root, _iso(now), kind=le.KIND_UNFILED)
+        view = le.loose_ends_view(root, _iso(now), kind=le.KIND_UNFILED, keep_ids=moved)
     except Exception:  # noqa: BLE001 - the homeless items stay off, and it says so
         out["errors"].append("no_home")
         view = {}
@@ -1491,7 +1752,8 @@ def feed_board(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             lane_days.append({"date": key, "cards": [{"id": c["id"], "title": c["title"], "late": c["late"]}
                                                      for c in on_day[key] if (on_threads.get(c["id"]) or {c["thread_id"]}) & threads]})
         out["priorities"].append({"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
-                                  "days": lane_days, "n": sum(len(x["cards"]) for x in lane_days)})
+                                  "days": lane_days, "n": sum(len(x["cards"]) for x in lane_days),
+                                  "last_action": _priority_last_action(p)})
     return _with_words(workspace_root, out)
 
 
@@ -1970,7 +2232,7 @@ def _thread_names(workspace_root) -> Dict[str, str]:
 #: The Work streams tab (cr1#660, rebuilt by cr1#1013 part 2): the order the
 #: status groups sort in, and how many rows travel. What counts as live is
 #: the thread cards' rule (`thread_cards.DONE_STATUSES`); `PROJECT_DONE` is
-#: kept for the Week tab's own reads.
+#: kept for the Done tab's own reads.
 PROJECT_LIVE_ORDER = ("active", "scoping", "paused", "dormant")
 PROJECT_DONE = ("archived", "completed", "resolved", "retired", "closed")
 PROJECTS_CAP = 200
@@ -1980,9 +2242,11 @@ PROJECTS_CAP = 200
 #: the labels here and nowhere else; the keys are wire names and never change
 #: (`projects` is the Work streams tab, whose feed is still `feed/projects`).
 #: Since cr1#1285 (owner ruling 2026-11-16) the page shows them in two rows:
-#: the small row (Today, Brief, Week, Settings), then the work row. Brief
-#: (cr1#1310) sits after Today: the morning's own text, read only.
-HUB_TABS = (("today", "Today"), ("brief", "Brief"), ("week", "Week"), ("settings", "Settings"),
+#: the small row (Today, Brief, Done, Settings), then the work row. Brief
+#: (cr1#1310) sits after Today: the morning's own text, read only. The
+#: `week` tab is labelled Done since cr1#1223: it holds what was done this
+#: month and what was done for the owner, not the week ahead.
+HUB_TABS = (("today", "Today"), ("brief", "Brief"), ("week", "Done"), ("settings", "Settings"),
             ("inbox", "Inbox"), ("plate", "Commitments"), ("priorities", "Priorities"),
             ("projects", "Work streams"), ("people", "People"))
 #: The tabs whose label is a seat's word (cr1#1017 part 1b), by the key in
@@ -2180,6 +2444,42 @@ def _goal_lines(workspace_root, now_iso: str) -> Dict[str, Any]:
     return {"rows": rows[:GOAL_LINES_CAP], "n": len(rows)}
 
 
+#: cr1#1459: what the newest action on a priority was, in a word or two, by
+#: its row's type. A type not named here falls back to its source in a word
+#: (`_card_source_word`), and to "activity" when even that is unknown.
+PRIORITY_ACTION_WORDS = {"email_sent": "email sent", "email_received": "email received",
+                         "meeting": "meeting", "meeting_processed": "meeting",
+                         "interaction": "contact", "note": "note added", "insight": "note added",
+                         "memo": "memo", "decision": "decision", "session_chapter": "chat",
+                         "thread_updated": "updated", "commitment_resolved": "closed",
+                         "reclassification": "item filed", "objective_report": "status report",
+                         "objective_review": "review"}
+#: A fallback source word that reads as a thing done, not a name.
+_PRIORITY_SOURCE_WORDS = {"You": "your own entry", "Captured": "activity"}
+
+
+def _priority_last_action(p: Dict[str, Any]) -> Dict[str, Any]:
+    """cr1#1459: the one line under a priority, as data the page words: the
+    newest action on it or its threads (`thread_cards._priority_card`'s
+    `last_moved`), `{what, on, title, at}`, names only, never an id or a
+    pointer. With nothing related: `{at: None, added}`, the day the
+    priority was set when known."""
+    mv = p.get("last_moved") if isinstance(p.get("last_moved"), dict) else {}
+    if not mv.get("day"):
+        return {"at": None, "added": str(p.get("opened") or "")[:10] or None}
+    etype = str(mv.get("type") or "")
+    what = PRIORITY_ACTION_WORDS.get(etype)
+    if not what:
+        word = _card_source_word(mv.get("source"), etype)
+        what = _PRIORITY_SOURCE_WORDS.get(word) or (word.lower() if word else "activity")
+    out: Dict[str, Any] = {"what": what, "at": str(mv["day"])[:10]}
+    if mv.get("thread_name"):
+        out["on"] = str(mv["thread_name"])[:160]
+    if mv.get("title"):
+        out["title"] = str(mv["title"])[:160]
+    return out
+
+
 def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
     """The Priorities tab: the confirmed priorities and the suggested ones,
     apart (ruling B2), from the priority cards. No money. cr1#1294: each
@@ -2191,7 +2491,8 @@ def _feed_priorities(tc, root: Path, now_iso: str) -> Dict[str, Any]:
                   "due": p.get("due") or None, "horizon": str(p.get("horizon") or "")[:80] or None,
                   "overdue": bool(p.get("overdue")),
                   "threads": list(p.get("built_from") or []), "says": str(p.get("says") or ""),
-                  "still_a_priority": (p.get("still_a_priority") or {}).get("ask")},
+                  "still_a_priority": (p.get("still_a_priority") or {}).get("ask"),
+                  "last_action": _priority_last_action(p)},
                  **({"n_open": counts.get(str(p.get("id") or ""), 0)} if counts is not None else {}))
             for p in pv.get("confirmed") or []]
     sugg = [{"id": str(p.get("id") or ""), "statement": str(p.get("statement") or "")[:200],
@@ -2395,12 +2696,14 @@ REVIEW_VERBS = frozenset(REVIEW_CLOSE_VERBS + REVIEW_ROW_VERBS + REVIEW_ACCEPT_V
 #: A yes the row's kind words for itself.
 REVIEW_YES_LABELS = {"learned_rule": "Yes", "archived_activity": "Bring it back",
                      "craft_amend": "Use the new text", "craft_rule": "Add the rule",
+                     "craft_kind": "Add this kind of work", "craft_retire": "Retire it",
                      "past_ruling": "Add to decisions"}
 #: cr1#401: a No on an amend keeps the rule, which is the owner confirming it.
-REVIEW_NO_LABELS = {"craft_amend": "Keep the rule"}
+REVIEW_NO_LABELS = {"craft_amend": "Keep the rule", "craft_retire": "Keep it"}
 #: cr1#400: at most this many craft questions (new rules and amends) on the
 #: tab at a time; the rest wait until these are answered or skipped.
-REVIEW_CRAFT_KINDS = ("craft_rule", "craft_amend")
+#: cr1#1391 part B: a new kind of work and a retirement offer count too.
+REVIEW_CRAFT_KINDS = ("craft_rule", "craft_amend", "craft_kind", "craft_retire")
 #: Why an accept is not on the row. The rest of the row still answers here.
 REVIEW_CHAT_WHY = {
     "project": "To accept this one, say `staff meeting` in a chat: a new project needs its folder and a first read of your connectors.",
@@ -2412,6 +2715,18 @@ REVIEW_PERSON_ON_FILE_LINE = "To accept this one, say `staff meeting` in a chat:
 REVIEW_PERSON_LIKE_LINE = "To accept this one, say `staff meeting` in a chat: someone with a name like this is on file, so it is add or same as."
 REVIEW_PERSON_MANY_LINE = "To say who this is, say `staff meeting` in a chat: more than one person with a name like this is on file, and the page never picks one."
 REVIEW_SAME_AS_GONE_LINE = "That row names nobody on file to link to; nothing was written."
+#: cr1#1222: on an identity row ("is this that person?") the owner can say who
+#: it really is. The registered `same as [existing]` verb with a typed name,
+#: offered by the Hub on `person_link` rows; any note follows a colon.
+REVIEW_SOMEONE_ELSE_LABEL = "Someone else"
+REVIEW_SOMEONE_ELSE_ASK = "Who it is, as on file (a note can follow a colon)"
+REVIEW_SOMEONE_NONE_LINE = ("Nobody on file is called {name}, so nothing was written. To add a new "
+                            "person, say `staff meeting` in a chat.")
+REVIEW_SOMEONE_MANY_LINE = ("More than one person on file is called {name}, so nothing was written. "
+                            "Say who it is in a chat with `staff meeting`.")
+REVIEW_SOMEONE_SAME_LINE = "That is the person it asked about; press Yes for that. Nothing was written."
+REVIEW_SOMEONE_NO_SIGHTINGS_LINE = ("This one has no sightings to move, so nothing was written. Say who "
+                                    "it is in a chat with `staff meeting`.")
 #: The keys the writers read, off the proposal event, onto the row.
 REVIEW_ROW_KEYS = ("proposed_money", "fact", "category", "proposed_role", "to_org_id",
                    "objective_id", "source_event_seq",
@@ -2515,7 +2830,17 @@ def _review_verbs(item: Dict[str, Any]) -> List[str]:
         keep += (REVIEW_SAME_AS_VERB,)
     if str(item.get("id") or "").split(":", 1)[0] in _REVIEW_LEGACY_DECLINES:
         keep += ("not relevant",)
-    return [v for v in own if v in keep]
+    out = [v for v in own if v in keep]
+    if _review_someone_else(item) and REVIEW_SAME_AS_VERB not in out:
+        out.append(REVIEW_SAME_AS_VERB)
+    return out
+
+
+def _review_someone_else(item: Dict[str, Any]) -> bool:
+    """cr1#1222: an identity row whose sightings can be pointed at the right
+    person: a `person_link` question with a spelling and sightings behind it."""
+    return (str(item.get("kind") or "") == "person_link" and bool(str(item.get("alias_name") or "").strip())
+            and bool(item.get("cluster_seqs") or item.get("cluster_fingerprints")))
 
 
 def _review_detail(item: Dict[str, Any], by_seq: Dict[Any, Dict[str, Any]]) -> Dict[str, Any]:
@@ -2566,6 +2891,8 @@ def _review_accepts(item: Dict[str, Any]) -> bool:
 def _review_ask(item: Dict[str, Any], verb: str) -> Dict[str, Any]:
     """What a verb asks on the row. `required` when its writer has nothing without it."""
     kind = str(item.get("kind") or "")
+    if verb == REVIEW_SAME_AS_VERB and kind == "person_link":
+        return {"ask": REVIEW_SOMEONE_ELSE_ASK, "required": True}
     if verb not in REVIEW_ACCEPT_VERBS or verb == "add person":
         return {}
     if kind == "org_money":
@@ -2574,7 +2901,7 @@ def _review_ask(item: Dict[str, Any], verb: str) -> Dict[str, Any]:
         return {"ask": "Different wording, if this is not right", "required": not item.get("fact")}
     if kind == "org":
         return {"ask": "A different name, if this one is wrong"}
-    if kind == "craft_rule":  # cr1#400: confirm, edit or dismiss
+    if kind in ("craft_rule", "craft_kind"):  # cr1#400, cr1#1391: confirm, edit or dismiss
         return {"ask": "Your own words for the rule, if these are not right"}
     if kind == "past_ruling":  # cr1#1073: the owner's wording replaces the file's
         return {"ask": "Your own words for the ruling, if these are not right"}
@@ -2688,9 +3015,10 @@ def feed_review(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         same_as = _review_same_as(full)
         verbs = [{"action": v,
                   "label": (REVIEW_YES_LABELS.get(kind, display_label(v) or v) if v == "confirm proposal"
+                            else (REVIEW_SOMEONE_ELSE_LABEL if v == REVIEW_SAME_AS_VERB and kind == "person_link"
                             else (("Same as " + str(same_as.get("value") or "").strip()).strip() if v == REVIEW_SAME_AS_VERB and same_as
                                   else (REVIEW_NO_LABELS.get(kind, display_label(v) or v) if v == "dismiss proposal"
-                                        else (display_label(v) or v)))),
+                                        else (display_label(v) or v))))),
                   **{k: w for k, w in _review_ask(full, v).items() if w}} for v in answers]
         # cr1#775: where the question came from, so a project question sits
         # beside the person questions from the same read.
@@ -2734,9 +3062,12 @@ def _review_close(workspace_root, c: Dict[str, Any], actor: str, now) -> Dict[st
     return res
 
 
-def _review_tombstones(events_path, row: Dict[str, Any], resolution: str, **kw) -> int:
+def _review_tombstones(events_path, row: Dict[str, Any], resolution: str, *, batch_id: Optional[str] = None,
+                       **kw) -> int:
     """One `person_proposal_resolved` per sighting behind a person row: the
-    cluster's seqs and seq-less fingerprints, else the row's own seq."""
+    cluster's seqs and seq-less fingerprints, else the row's own seq.
+    `batch_id` (cr1#1222) stamps them `person_proposal_tombstone` under one
+    batch, so one `undo` reopens every sighting."""
     from confirm_flow import build_person_proposal_resolved_event as build
     from event_gate import append_event
 
@@ -2744,12 +3075,15 @@ def _review_tombstones(events_path, row: Dict[str, Any], resolution: str, **kw) 
     prints = list(row.get("cluster_fingerprints") or [])
     if not seqs and not prints and isinstance(row.get("seq"), int) and not str(row.get("id")).startswith("bp_"):
         seqs = [row["seq"]]
-    for seq in seqs:
-        append_event(events_path, build(seq, resolution=resolution, source_skill=COMMITMENT_SRC, **kw), holder="cockpit_helpers")
-    for fp in prints:
-        append_event(events_path, build(None, resolution=resolution, source_skill=COMMITMENT_SRC,
-                                        proposal_fingerprint=fp, **kw), holder="cockpit_helpers")
-    return len(seqs) + len(prints)
+    built = ([build(seq, resolution=resolution, source_skill=COMMITMENT_SRC, **kw) for seq in seqs]
+             + [build(None, resolution=resolution, source_skill=COMMITMENT_SRC, proposal_fingerprint=fp, **kw)
+                for fp in prints])
+    for ev in built:
+        if batch_id:
+            ev["data"]["brain_batch_id"] = batch_id
+            ev["data"]["brain_change_class"] = "person_proposal_tombstone"
+        append_event(events_path, ev, holder="cockpit_helpers")
+    return len(built)
 
 
 def _accept_person(ws, row, text, actor, events_path, now):
@@ -2819,6 +3153,79 @@ def _accept_person_link(ws, row, text, actor, events_path, now):
         add_person_alias(ws, pid, alias, source_skill=COMMITMENT_SRC)
     _review_tombstones(events_path, row, "same_as", person_id=pid, alias=alias if write else None)
     return {"status": "linked"}, "applied", "Linked."
+
+
+#: Records a typed name never resolves to: gone, folded into another, or put away.
+_SOMEONE_DEAD_STATUSES = ("archived", "merged", "deleted")
+
+
+def _someone_on_file(ws, name: str) -> List[Dict[str, Any]]:
+    """Every live record whose own name, alias or nickname is exactly `name`,
+    read over the whole people list (no candidate cap, so a second match is
+    never cut off)."""
+    from entities_io import entities_collection
+    from people_writer import _load_entities, _normalize_name, get_person_display_names
+
+    want = _normalize_name(name)
+    if not want:
+        return []
+    return [p for p in entities_collection(_load_entities(Path(str(ws))), "people")
+            if isinstance(p, dict) and p.get("id") and p.get("status") not in _SOMEONE_DEAD_STATUSES
+            and any(_normalize_name(s) == want for s in get_person_display_names(p))]
+
+
+def _person_link_someone_else(ws, row, text, actor, events_path, now):
+    """cr1#1222: No, it is someone else. `text` names the right person as on
+    file, with any note after a colon. The sightings close as THAT person
+    (`same_as` tombstones under one Hub batch, so one `undo` reopens them);
+    no alias is written, so no spelling is re-pointed for good; the question
+    closes as declined, so the same pair is not asked again; the note is a
+    fact on the person it names (`people_writer.record_person_fact`). A name
+    that is nobody's, or two people's, or the person the row asked about,
+    writes nothing.
+
+    Order: every check, then the decline (a question already answered stops
+    here, nothing written), then the sightings, then the note. An `undo` of
+    the batch reopens the sightings; the No to the person it asked about and
+    the note stay, as a No pressed alone and a fact said in chat would."""
+    import brain_proposals as bp
+    from people_writer import record_person_fact
+
+    name, _sep, note = str(text or "").partition(":")
+    name, note = " ".join(name.split()), " ".join(note.split())[:500]
+    if not name:
+        return {"status": "needs_input"}, "refused", REVIEW_NEED_TEXT_LINE
+    if not _review_someone_else(row) or not str(row.get("id") or "").startswith("bp_"):
+        return {"status": "no_sightings"}, "refused", REVIEW_SOMEONE_NO_SIGHTINGS_LINE
+    found = _someone_on_file(ws, name)
+    if not found:
+        return {"status": "no_match"}, "refused", REVIEW_SOMEONE_NONE_LINE.format(name=name)
+    if len(found) > 1:
+        return {"status": "ambiguous"}, "refused", REVIEW_SOMEONE_MANY_LINE.format(name=name)
+    person = found[0]
+    pid = str(person.get("id") or "")
+    if pid == str(row.get("person_id") or ""):
+        return {"status": "same_person"}, "refused", REVIEW_SOMEONE_SAME_LINE
+    done = bp.resolve_proposal(str(ws), str(row.get("id")), "declined", resolved_by=actor,
+                               source_skill=COMMITMENT_SRC)
+    if (done or {}).get("status") != "resolved":
+        return {"status": (done or {}).get("status") or "not_resolved"}, "already", REVIEW_GONE_LINE
+    batch_id = f"hub_{now.strftime('%Y%m%dT%H%M%SZ')}_{secrets.token_hex(4)}"
+    n = _review_tombstones(events_path, row, "same_as", batch_id=batch_id, person_id=pid,
+                           note=f"hub review: someone else ({row.get('id')})")
+    shown = str(person.get("canonical_name") or name)
+    line = f"Linked to {shown}; the question is closed."
+    handler: Dict[str, Any] = {"status": "linked_elsewhere", "person_id": pid, "batch_id": batch_id,
+                               "n_sightings": n, "proposal": "declined"}
+    if note:
+        try:
+            noted = record_person_fact(ws, pid, note, f"hub:review:{row.get('id')}", source_skill=COMMITMENT_SRC)
+            handler["note_seq"] = (noted or {}).get("seq")
+            line += " Note saved."
+        except Exception as exc:  # noqa: BLE001 - the link stands; the note is said to be missing
+            handler["note_error"] = type(exc).__name__
+            line += " The note could not be saved; say it in a chat."
+    return handler, "applied", line
 
 
 def _accept_person_rename(ws, row, text, actor, events_path, now):
@@ -2926,7 +3333,7 @@ def _no_question(ws, row: Dict[str, Any], handler: Dict[str, Any], line: str, no
 def _accept_learned_rule(ws, row, text, actor, events_path, now):
     """The one yes `learning_pass` keeps for a voice question: it writes the
     rule and answers the row, so nothing else resolves it. The rule's Undo is on
-    the Week tab."""
+    the Done tab."""
     from learning_pass import confirm_asked_rule
 
     res = confirm_asked_rule(ws, str(row.get("id")), resolved_by=actor, source_skill=COMMITMENT_SRC)
@@ -2949,6 +3356,36 @@ def _accept_craft_rule(ws, row, text, actor, events_path, now):
 
     res = craft_sweep.confirm_rule(ws, str(row.get("id")), resolved_by=actor, edit=text or None,
                                    now_iso=_iso(now), source_skill=COMMITMENT_SRC)
+    handler = {"status": res.get("status"), "answered": True}
+    if res.get("ok"):
+        return handler, "applied", str(res.get("line") or "")
+    if res.get("status") == "already_resolved":
+        return handler, "already", REVIEW_GONE_LINE
+    return handler, "refused", str(res.get("line") or ROW_ERROR_LINE)
+
+
+def _accept_craft_kind(ws, row, text, actor, events_path, now):
+    """cr1#1391 part B: a kind of work the nightly sweep found is added
+    through `add_scope` with its first rule, saved by the capture writer.
+    `confirm_kind` reads the proposal from the book and answers the row."""
+    import craft_sweep
+
+    res = craft_sweep.confirm_kind(ws, str(row.get("id")), resolved_by=actor, edit=text or None,
+                                   now_iso=_iso(now), source_skill=COMMITMENT_SRC)
+    handler = {"status": res.get("status"), "answered": True}
+    if res.get("ok"):
+        return handler, "applied", str(res.get("line") or "")
+    if res.get("status") == "already_resolved":
+        return handler, "already", REVIEW_GONE_LINE
+    return handler, "refused", str(res.get("line") or ROW_ERROR_LINE)
+
+
+def _accept_craft_retire(ws, row, text, actor, events_path, now):
+    """cr1#1391 part B: the least used kind over the cap comes off the list;
+    every file stays. `retire_kind` reads the proposal from the book."""
+    import craft_sweep
+
+    res = craft_sweep.retire_kind(ws, str(row.get("id")), resolved_by=actor, source_skill=COMMITMENT_SRC)
     handler = {"status": res.get("status"), "answered": True}
     if res.get("ok"):
         return handler, "applied", str(res.get("line") or "")
@@ -3075,6 +3512,7 @@ _REVIEW_ACCEPTS = {
     "org": _accept_org, "config_drift": _accept_config_drift, "objective_link": _accept_objective_link,
     "learned_rule": _accept_learned_rule, "archived_activity": _accept_archived_activity,
     "craft_amend": _accept_craft_amend, "craft_rule": _accept_craft_rule,
+    "craft_kind": _accept_craft_kind, "craft_retire": _accept_craft_retire,
     "past_ruling": _accept_past_ruling,
 }
 #: The legacy rows whose `not relevant` is theirs, not a proposed close's.
@@ -3092,6 +3530,8 @@ def _review_queue_answer(ws, verb: str, row: Dict[str, Any], text: str, actor: s
     n = str(row.get("id"))
     kind = str(row.get("kind") or "")
     is_bp = n.startswith("bp_")
+    if verb == REVIEW_SAME_AS_VERB and kind == "person_link":  # cr1#1222: the Hub offers it here
+        return _person_link_someone_else(ws, row, text, actor, events_path, now)
     if verb not in bp._row_actions(row):
         return {"status": "not_this_row"}, "refused", UNKNOWN_VERB_LINE.format(verb=verb)
     if verb == REVIEW_SAME_AS_VERB:
@@ -3240,7 +3680,7 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
         results.append(r)
-        entry = {"n": n, "action": verb, "handler_result": handler}
+        entry = {"n": n, "action": verb, "handler_result": handler, "said": r.get("outcome")}  # cr1#1378
         if note:
             entry["note"] = note
         audit.append(entry)
@@ -3253,16 +3693,52 @@ def apply_review_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
     return {"ok": True, "results": results, "n_applied": n_applied, "n_errors": n_errors}
 
 
-#: The Week tab (cr1#780).
+#: The Done tab (cr1#780).
 WEEK_DAYS = 7
 WEEK_EMPTY_LINE = "Nothing was settled for you this week."
 WEEK_RULES_LINE = "Nothing else was settled for you this week."
 WEEK_PARTIAL_LINE = "Part of this could not be put back; say `undo` in a chat."
 WEEK_ALREADY_LINE = "That was already put back; nothing was written."
+#: cr1#1322: every change refused, because the item changed after it.
+WEEK_CHANGED_LINE = "That changed after, so it was left as it is; nothing was written."
+#: cr1#1356: every change refused, said by the refusal's own `why` (the keys
+#: `brain_undo._REFUSED_WHY` names). Refusals that give different reasons, or
+#: a reason not named here, get the plain line, which claims no reason.
+WEEK_REFUSED_LINES = {
+    "changed": WEEK_CHANGED_LINE,
+    "unrecorded": "What it held before is not on record, so it was left as it is; nothing was written.",
+    "newer_date": "It has a newer date now, so it was left as it is; nothing was written.",
+}
+WEEK_REFUSED_LINE = "That could not be put back exactly, so it was left as it is; nothing was written."
+#: cr1#1356: nothing went back because the change is no longer where it was
+#: written (`not_found`), so what it did still stands.
+WEEK_NOT_FOUND_LINE = "That is no longer where it was written, so it still stands; nothing was written."
 WEEK_VERBS = frozenset({"undo", "bring back", "archive"})
 WEEK_SURFACE = "cockpit-week"
 WEEK_ITEMS_CAP = 12
 WEEK_DECIDED_CAP = 40
+#: cr1#1368: the owner's own changes this week, capped on their own so a busy
+#: week of Laters never pushes the system's decisions out of view.
+WEEK_YOURS_CAP = 40
+def _owner_own_change(ev: Dict[str, Any]) -> bool:
+    """cr1#1368: True when this change row is shown to be the owner's own
+    act. It needs positive evidence, because a row that names no actor (a
+    learned rule, an older rail) is not the owner's: a person stamp, a
+    confirmed tap, a person named as the actor or as who gave the date, or a
+    Later's own hide (`via` "later", which only `apply_later` writes). The
+    one reader, `event_types.is_customer_act`, is asked first (CONTRACT Rule
+    32), so a person stamp wins over a background source as it does there."""
+    import event_types as et
+    from commitment_state import LATER_SNOOZE_VIA
+
+    if not et.is_customer_act(ev):
+        return False
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    return (d.get(et.ACTOR_KIND_KEY) == et.ACTOR_PERSON or d.get("user_confirmed") is True
+            or et.is_person_actor(et.act_actor(ev)) or et.is_person_actor(d.get("pushed_by"))
+            or (ev.get("type") == "chat_dismissal" and d.get("via") == LATER_SNOOZE_VIA))
+
+
 _WEEK_DORMANT_VERBS = [{"action": "bring back", "label": "Bring back"}, {"action": "archive", "label": "Archive"}]
 _WEEK_ARCHIVED_VERBS = _WEEK_DORMANT_VERBS[:1]
 
@@ -3279,7 +3755,7 @@ def _week_undone(events: List[Dict[str, Any]]) -> Dict[str, int]:
     return out
 
 
-#: The Week tab's month dashboard (cr1#1287, owner ruling 2026-11-16): what
+#: The Done tab's month dashboard (cr1#1287, owner ruling 2026-11-16): what
 #: was done this calendar month, in the workspace's zone, counted by kind,
 #: then each item newest first. Read only. The kinds in the order the page
 #: shows them, each with its words.
@@ -3441,14 +3917,18 @@ def _month_done(workspace_root, events: List[Dict[str, Any]], now: _dt.datetime)
 
 
 def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_iso=None) -> Dict[str, Any]:
-    """READ. The Week tab (cr1#780): every batch the system settled this week
+    """READ. The Done tab (cr1#780): every batch the system settled this week
     (`brain_undo.recent_auto_batches`), each named in its own words, with a way
     back where one is registered; each piece of work that went dormant and
     still is, with the owner's two steps; what the lifecycle pass archived on
     its own, shown and not hidden; and the recap. `sections` is what
     `friday_wrap_helpers:week_sections` answered: the run hands it in, because
     that module renders documents and this one must not import it. Its
-    `decided_for_you` narrates what no batch can carry. Never writes. `rules`
+    `decided_for_you` narrates what no batch can carry. Never writes. A batch
+    whose every change is the owner's own act (`_owner_own_change`: a Later,
+    a Hub date on their own item, a wait the owner set or ended) is listed
+    under `yours`, not
+    `decided`: it was not decided for them (cr1#1368). `rules`
     is every learned rule still in force with its own Undo (cr1#821), whatever
     its age; a batch shown there is not shown again under `decided`. `month`
     is what was done this calendar month, counted by kind and listed newest
@@ -3465,6 +3945,8 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
     errors: List[str] = []
     decided: List[Dict[str, Any]] = []
     n_decided = 0
+    yours: List[Dict[str, Any]] = []
+    n_yours = 0
     rules: List[Dict[str, Any]] = []
     try:
         for r in learn.learned_rules(str(workspace_root), now_iso=iso_now):
@@ -3500,21 +3982,31 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
                 continue
             items: List[str] = []
             classes = set()
+            n_rows = n_owner = 0
             for ev in events:
                 d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
                 if bid and d.get("brain_batch_id") == bid:
                     if d.get("brain_change_class"):
                         classes.add(d["brain_change_class"])
+                        n_rows += 1
+                        n_owner += 1 if _owner_own_change(ev) else 0
                     title = (d.get("title") or d.get("name") or asked.get(str(d.get("proposal_id")))
-                             or titled.get(str(d.get("commitment_id") or d.get("id"))) or "")
+                             or titled.get(str(d.get("commitment_id") or d.get("id")
+                                               or d.get("target_id"))) or "")
                     if title and title not in items:
                         items.append(str(title)[:160])
-            decided.append({"id": key, "label": str(b.get("label") or "")[:200], "n": n,
+            # cr1#1368: every change in it the owner's own act, so it was not
+            # decided for them. A batch with no change rows of its own (a run
+            # of groups, a sent-mail audit) stays under `decided`, as before.
+            lane = yours if ref.get("kind") == "brain_batch" and n_rows and n_owner == n_rows else decided
+            lane.append({"id": key, "label": str(b.get("label") or "")[:200], "n": n,
                             "at": str(b.get("ts") or "")[:10], "items": items[:WEEK_ITEMS_CAP],
                             "n_more": max(0, len(items) - WEEK_ITEMS_CAP),
                             "reversible": all(c in bu.REVERSERS for c in classes), "batch_ref": ref})
         n_decided = len(decided)
         decided = decided[:WEEK_DECIDED_CAP]
+        n_yours = len(yours)
+        yours = yours[:WEEK_YOURS_CAP]
     except Exception:  # noqa: BLE001 - said on the page, never shown as an empty week
         errors.append("decided")
     dormant: List[Dict[str, Any]] = []
@@ -3551,13 +4043,14 @@ def feed_week(workspace_root, *, sections: Optional[Dict[str, Any]] = None, now_
              "still_waiting": str(sec.get("still_waiting") or "")[:600],
              "objectives": [str(x)[:200] for x in (sec.get("objective_rows") or [])][:12],
              "open_proposals": sec.get("open_proposals")}
-    empty = not (decided or dormant or archived or recap["changes"] or recap["decided_lines"])
+    empty = not (decided or yours or dormant or archived or recap["changes"] or recap["decided_lines"])
     month: Optional[Dict[str, Any]] = None
     try:
         month = _month_done(workspace_root, events, now)   # cr1#1287: the month's dashboard
     except Exception:  # noqa: BLE001 - said on the page, never shown as an empty month
         errors.append("month")
-    return _with_words(workspace_root, {"generated_at": iso_now, "month": month, "decided": decided, "n_decided": n_decided, "dormant": dormant, "archived": archived,
+    return _with_words(workspace_root, {"generated_at": iso_now, "month": month, "decided": decided, "n_decided": n_decided,
+            "yours": yours, "n_yours": n_yours, "dormant": dormant, "archived": archived,
             "recap": recap, "rules": rules[:WEEK_DECIDED_CAP], "n_rules": len(rules),
             "line": (WEEK_RULES_LINE if rules else WEEK_EMPTY_LINE) if empty and not errors else "", "errors": errors})
 
@@ -3574,7 +4067,7 @@ def _bring_back(workspace_root, tid: str, actor: str) -> None:
 
 def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
                        *, resolved_by: str = "", now_iso=None) -> Dict[str, Any]:
-    """A WRITER. The Week tab's presses (cr1#780), each through its own rail,
+    """A WRITER. The Done tab's presses (cr1#780), each through its own rail,
     then ONE `apply_choices_applied` audit row:
 
       * `undo`: `brain_undo.undo_batch`, a reversal the owner pressed; a batch
@@ -3634,6 +4127,26 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
                         # Put back already, by a row that holds the same change.
                         r.update(outcome="already", line=WEEK_ALREADY_LINE)
                         handler = {"status": "already_resolved"}
+                    elif not int(out.get("n_undone") or 0) and (out.get("results") or []) and all(
+                            x.get("refused") for x in out.get("results") or [] if x.get("status") == "error"):
+                        # cr1#1356: said by the refusal's own why.
+                        # No refusal row at all keeps cr1#1322's line.
+                        whys = {str(x.get("why") or "") for x in out.get("results") or [] if x.get("refused")}
+                        why = "changed" if not whys else whys.pop() if len(whys) == 1 else ""
+                        # cr1#1371: a refusal because the item is gone reads
+                        # the not-found line, the same truth as below.
+                        r.update(outcome="error", line=WEEK_NOT_FOUND_LINE if why == "not_found"
+                                 else WEEK_REFUSED_LINES.get(why, WEEK_REFUSED_LINE))
+                        handler = {"status": "error", "error": "changed_since" if why == "changed" else
+                                   "not_found" if why == "not_found" else "refused_" + (why or "mixed")}
+                    elif not int(out.get("n_undone") or 0) and [
+                            x for x in out.get("results") or [] if x.get("status") == "error"] and all(
+                            (x.get("result") or {}).get("status") == "not_found"
+                            # cr1#1371: a refusal because the item is gone counts as gone too.
+                            or (x.get("refused") and x.get("why") == "not_found")
+                            for x in out.get("results") or [] if x.get("status") == "error"):
+                        r.update(outcome="error", line=WEEK_NOT_FOUND_LINE)
+                        handler = {"status": "error", "error": "not_found"}
                     else:
                         r.update(outcome="error", line=WEEK_PARTIAL_LINE)
                         handler = {"status": "error"}
@@ -3653,7 +4166,7 @@ def apply_week_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
         results.append(r)
-        audit.append({"n": n, "action": verb, "handler_result": handler})
+        audit.append({"n": n, "action": verb, "handler_result": handler, "said": r.get("outcome")})  # cr1#1378
     if audit:
         ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
         ev["data"]["surface"] = WEEK_SURFACE
@@ -3850,7 +4363,10 @@ def feed_settings(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         errors.append("guide")
     return _with_words(workspace_root, {"generated_at": iso_now, "rules": rules[:SETTINGS_RULES_CAP], "n_rules": len(rules), "guide": guide,
             "budget": budget, "connectors": connectors, "accounts": accounts, "caps": caps, "exits": exits,
-            "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors})
+            "learning": learning, "persona": persona, "voice": voice, "prep": prep, "errors": errors,
+            # cr1#1389: the installed plugin version, which the page compares
+            # with the version it was built from to show its Finish update bar.
+            "installed_version": plugin_version_here()})
 
 
 def _rule_live(workspace_root, rid: str, now_iso: str) -> Optional[Dict[str, Any]]:
@@ -3946,7 +4462,7 @@ def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]
     own writer, then ONE `apply_choices_applied` audit row:
 
       * `rule off`: `brain_undo.undo_batch` on the rule's own record, the
-        registered reverser (the Week tab's Undo);
+        registered reverser (the Done tab's Undo);
       * `rule delete`: the same, then one `learned_line_deleted` row per
         item the rule learned (its item fingerprints, the shape the learning
         job's reader excludes on), so THAT rule is not learned again from the
@@ -4030,7 +4546,7 @@ def apply_settings_choices(workspace_root, choices: Optional[List[Dict[str, Any]
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
         results.append(r)
-        audit.append({"n": n, "action": verb, "handler_result": handler})
+        audit.append({"n": n, "action": verb, "handler_result": handler, "said": r.get("outcome")})  # cr1#1378
     if audit:
         ev = build_apply_choices_applied_event(source=COMMITMENT_SRC, actions=audit)
         ev["data"]["surface"] = SETTINGS_SURFACE
@@ -4527,12 +5043,18 @@ def feed_inbox(workspace_root=None, page_html: str = "", *, fire_stamp: str = ""
         cc = [a for a in (_ih._addresses(meta.get("cc", "")) if own else []) + rcpt["cc"]
               if _ih._own_key(a) not in own and a not in to]
         cc = list(dict.fromkeys(cc))
+        draft = {"to": ", ".join(to) if to else meta.get("to", ""), "cc": ", ".join(cc),
+                 "subject": meta.get("subject", ""), "body": body, "blanks": blanks,
+                 "voice_block_sha256": (thread.get("voice_block_sha256") if thread else None)}
+        if not to and str(meta.get("to") or "").strip():
+            # cr1#1250: the page's To named no one but the owner, so the To
+            # above is that To unfiltered. The page never sends a Microsoft
+            # 365 group reply on it.
+            draft["to_unfiltered"] = True
         rows.append({
             "n": it["n"], "kind": kind, "name": it["name"][:120], "subject": subject[:200],
             "why": it["why"][:240],
-            "draft": {"to": ", ".join(to) if to else meta.get("to", ""), "cc": ", ".join(cc),
-                      "subject": meta.get("subject", ""), "body": body, "blanks": blanks,
-                      "voice_block_sha256": (thread.get("voice_block_sha256") if thread else None)},
+            "draft": draft,
             "actions": actions,
             "thread_id": str(thread.get("thread_id") or "") if thread else None,
             "message_id": str(thread.get("message_id") or "") if thread else None,
@@ -5045,6 +5567,62 @@ def sent_tokens_update(workspace_root=None, doc: Optional[Dict[str, Any]] = None
     return {"tokens": tokens[-SENT_TOKENS_CAP:], "already": already}
 
 
+def _choice_commitment_id(raw: Dict[str, Any]) -> str:
+    """The commitment a page choice names: its `n`. The one mapping, read by
+    `plan_apply` and by `apply_commitment_choices` for a raw page document
+    (cr1#1377)."""
+    return str(raw.get("n") or "").strip()
+
+
+def _commitment_row(c: Dict[str, Any], now: _dt.datetime,
+                    run_id: str = "") -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """cr1#1377: one choice as `apply_commitment_choices` reads it, as
+    `(row, refusal)`. A row that names its `commitment_id` (a `plan_apply`
+    row) is taken as it is. A raw page document names its item in `n`
+    instead, so it gets `plan_apply`'s mapping and the checks `plan_apply`
+    would have made on it: another kind's row, an applied document and an
+    expired one are refused, and a row naming no item at all is refused as
+    naming none, never as gone. A refusal writes nothing to any item; the
+    batch's audit row records it.
+
+    The owner's ruling of 2026-11-19 (option b): a raw document whose claim
+    is live (`_claim_live`, the guard `plan_claim` and `plan_apply` use,
+    cr1#675) and held by a run other than `run_id` is refused as
+    `claimed_elsewhere`, outcome `waiting`, so a stale overlapping run never
+    applies a press a second time. A writer call that names no run holds no
+    claim: its live-claimed press waits as `no_run_id`, which the audit
+    names an error so the Hub flags the broken call. A claim gone stale
+    holds nothing."""
+    if str(c.get("commitment_id") or "").strip():
+        return c, None
+    raw = _flat_choice(c) or {}
+    if str(raw.get("commitment_id") or "").strip():
+        return raw, None
+    verb = str(raw.get("action") or "").strip().lower()
+    base = {"id": raw.get("id"), "commitment_id": "", "action": verb}
+    if not str(raw.get("id") or "").strip():
+        # A document the page cannot mark applied would be applied again on
+        # every run; plan_apply skips it, and so does the writer.
+        return None, dict(base, outcome="error", reason="no_choice_id", line=NO_CHOICE_ID_LINE)
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind and kind != "commitment":
+        return None, dict(base, outcome="error", reason="not_commitment",
+                          line=NOT_COMMITMENT_LINE.format(kind=kind[:40]))
+    if raw.get("applied_at") or raw.get("applied") is True:
+        return None, dict(base, outcome="already", reason="already_applied", line=ALREADY_APPLIED_LINE)
+    if _expired(raw, now):
+        return None, dict(base, outcome="error", reason="expired",
+                          line=EXPIRED_LINE.format(days=CHOICE_EXPIRY_DAYS))
+    if _claim_live(raw, now) and str(raw.get("claimed_by") or "").strip() != str(run_id or "").strip():
+        if not str(run_id or "").strip():
+            return None, dict(base, outcome="waiting", reason="no_run_id", line=NO_RUN_ID_LINE)
+        return None, dict(base, outcome="waiting", reason="claimed_elsewhere", line=CLAIMED_ELSEWHERE_LINE)
+    cid = _choice_commitment_id(raw)
+    if not cid:
+        return None, dict(base, outcome="error", reason="no_id", line=NO_ID_LINE)
+    return dict(raw, commitment_id=cid, action=verb), None
+
+
 def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = None, *,
                inbox_fire_stamp: Optional[str] = None, now_iso=None,
                run_id: Optional[str] = None,
@@ -5101,7 +5679,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
                                 "reason": "unknown_verb"})
                 continue
-            commitment.append({"id": cid, "commitment_id": str(raw.get("n") or "").strip(),
+            commitment.append({"id": cid, "commitment_id": _choice_commitment_id(raw),
                                "action": verb, "input": raw.get("input"),
                                "created_at": str(raw.get("created_at") or ""),
                                "title": str(raw.get("title") or "")[:200]})
@@ -5189,7 +5767,7 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
                            "commitment_id": raw.get("commitment_id"), "seq": raw.get("seq"),
                            "thread_id": raw.get("thread_id"), "title": str(raw.get("title") or "")[:200]})
         elif kind == "week":
-            # cr1#780: the Week tab's press, for `apply_week_choices`.
+            # cr1#780: the Done tab's press, for `apply_week_choices`.
             if verb not in WEEK_VERBS:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
                                 "reason": "unknown_verb"})
@@ -5207,10 +5785,16 @@ def plan_apply(workspace_root=None, choices: Optional[List[Dict[str, Any]]] = No
             settings.append({"id": cid, "n": str(raw.get("n") or ""), "action": verb,
                              "input": str(typed.get("text") or "")[:NOTE_CAP],
                              "title": str(raw.get("title") or "")[:200]})
-        elif kind in ("reminder", "todo", "miss"):
+        elif kind in ("reminder", "todo", "miss") or kind in EDIT_KINDS:
             # cr1#662: the Today page's own lists, written by apply_hub_choices;
-            # cr1#1017: the header's "Missed something?", answered there too.
-            verbs = REMINDER_VERBS if kind == "reminder" else TODO_VERBS if kind == "todo" else MISS_VERBS
+            # cr1#1017: the header's "Missed something?", answered there too;
+            # cr1#1383: a work stream, person or priority added, renamed or
+            # taken back (`hub_edit`), written there as well; slice 4: a
+            # commitment's wording edited, or that edit taken back.
+            verbs = (REMINDER_VERBS if kind == "reminder" else TODO_VERBS if kind == "todo"
+                     else MISS_VERBS if kind == "miss" else COMMIT_EDIT_VERBS
+                     if kind == "commitment_edit" else CONTEXT_EDIT_VERBS
+                     if kind in CONTEXT_EDIT_KINDS else EDIT_VERBS)
             if verb not in verbs:
                 refused.append({"id": cid, "line": UNKNOWN_VERB_LINE.format(verb=verb or "none"),
                                 "reason": "unknown_verb"})
@@ -5246,7 +5830,7 @@ def apply_mail_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] =
     status = {"applied": "updated", "already": "already_resolved", "refused": "refused"}
     audit = [{"n": r.get("id"), "action": str(next((c.get("action") for c in choices or []
                                                      if isinstance(c, dict) and c.get("id") == r.get("id")), "") or ""),
-              "handler_result": {"status": status.get(r.get("outcome"), "error")}}
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}, "said": r.get("outcome")}
              for r in out.get("results") or []]
     if audit:
         try:
@@ -5275,7 +5859,7 @@ def apply_people_choices(workspace_root, choices: Optional[List[Dict[str, Any]]]
     by_id = {c.get("id"): c for c in choices or [] if isinstance(c, dict)}
     audit = [{"n": (by_id.get(r.get("id")) or {}).get("person_id") or r.get("id"),
               "action": str((by_id.get(r.get("id")) or {}).get("action") or ""),
-              "handler_result": {"status": status.get(r.get("outcome"), "error")}}
+              "handler_result": {"status": status.get(r.get("outcome"), "error")}, "said": r.get("outcome")}
              for r in out.get("results") or []]
     if audit:
         try:
@@ -5382,16 +5966,61 @@ def _brief_sections(lines: List[str], cap: int) -> Tuple[Optional[str], List[Dic
     return title, sections, cut
 
 
+def _brief_made_at(root: Path, rel: str) -> Optional[_dt.datetime]:
+    """When the saved brief at `rel` was made (cr1#1327): the time of the
+    newest Morning Brief `pack_run` receipt whose `digest_path` names that file
+    (the receipt `prep_leg.log_combined_receipt` writes, and
+    `end_of_day.read_morning_digest` joins on). A rerun saves the file again,
+    so the newest such receipt made the text shown; a receipt whose brief leg
+    did not run saved nothing and is passed over. None when no receipt names
+    it. The file's own time is never used: a sync or a copy can move it."""
+    try:
+        from receipts import iter_receipts
+        from workspace_paths import normalize_persisted_path
+
+        rows = iter_receipts(root, task_ids=["morning-brief"])
+    except Exception:  # noqa: BLE001 - a read never breaks the feed
+        return None
+    best: Optional[_dt.datetime] = None
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        at = r.get("dt")
+        if r.get("type") != "pack_run" or not isinstance(at, _dt.datetime):
+            continue
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+        named = data.get("digest_path")
+        if not isinstance(named, str) or not named.strip():
+            continue
+        legs = data.get("legs") if isinstance(data.get("legs"), dict) else {}
+        if "brief" in legs and legs.get("brief") != "ran":
+            continue  # a fire whose brief did not run saved no snapshot (cr1#148's rule)
+        try:
+            named = normalize_persisted_path(named, workspace_root=str(root)) or named
+        except Exception:  # noqa: BLE001 - an odd pointer is compared as written
+            pass
+        if str(named).replace("\\", "/") != rel:
+            continue
+        if best is None or at > best:
+            best = at
+    return best
+
+
 def feed_brief(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     """READ (cr1#1310). The Brief tab's feed: today's morning brief as the
     Morning Brief run saved it to `_hq/briefings/morning-<date>.md`, the
     same text it posted, so the tab shows nothing the brief did not (its
     account-scope rules were applied when it was written). `brief` is
     `{for_date, path, made_at, title, sections, truncated}`, or None when no
-    brief has run today; `last_for_date` names the newest saved one; `today`
+    brief has run today; `made_at` is the time of the newest Morning Brief
+    receipt that names that file (cr1#1327), or None when none does, never the
+    file's own time, which a sync or a copy can move; `last_for_date` names the
+    newest saved one; `today`
     and `tz` are the workspace's own date and zone, so the page tells a stale
     feed by the workspace's day, not the browser's. Reads
-    that one file and the folder's file names, nothing else. Never raises."""
+    that one file, the folder's file names and the Morning Brief's receipts,
+    nothing else. Never raises."""
     now = _now(now_iso)
     out: Dict[str, Any] = {"generated_at": _iso(now), "today": None, "tz": None, "brief": None,
                            "last_for_date": None, "empty_line": BRIEF_NONE_LINE}
@@ -5419,12 +6048,13 @@ def feed_brief(workspace_root, *, now_iso=None) -> Dict[str, Any]:
     path = folder / f"morning-{out['today']}.md"
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-        made = _dt.datetime.fromtimestamp(path.stat().st_mtime, tz=_dt.timezone.utc)
     except (OSError, ValueError):
         return _with_words(workspace_root, out)
+    rel = (BRIEF_DIR / path.name).as_posix()
+    made = _brief_made_at(root, rel)
     title, sections, cut = _brief_sections(text.splitlines(), BRIEF_TEXT_CAP)
-    out["brief"] = {"for_date": out["today"], "path": (BRIEF_DIR / path.name).as_posix(),
-                    "made_at": _iso(made), "title": title, "sections": sections, "truncated": cut}
+    out["brief"] = {"for_date": out["today"], "path": rel,
+                    "made_at": _iso(made) if made else None, "title": title, "sections": sections, "truncated": cut}
     return _with_words(workspace_root, out)
 
 
@@ -5433,6 +6063,18 @@ def feed_brief(workspace_root, *, now_iso=None) -> Dict[str, Any]:
 #: and the apply task writes, like every other press.
 REMINDER_VERBS = frozenset({"add", "done", "push", "delete"})  # delete: cr1#1221
 TODO_VERBS = frozenset({"add"})
+#: cr1#1383 part 2: add, rename and undo of a work stream, a person and a
+#: priority from the Hub, each through its owning writer (`hub_edit`).
+EDIT_KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
+EDIT_VERBS = frozenset({"add", "rename", "set", "undo"})  # set: cr1#1433
+#: cr1#1383 slice 4: a commitment's wording is edited (`rename`) or that edit
+#: taken back; a commitment is never added here.
+COMMIT_EDIT_VERBS = frozenset({"rename", "undo"})
+#: cr1#1383, Add context: a free note on a thread (`stream_edit`) or a person
+#: (`person_edit`), taken back by `undo`; never on a work stream, a priority
+#: or a commitment edit (named on cr1#1383).
+CONTEXT_EDIT_KINDS = ("stream_edit", "person_edit")
+CONTEXT_EDIT_VERBS = EDIT_VERBS | {"context"}
 TODO_SOURCE = "hub_todo"
 TODO_REF_SCHEME = "user:hub_todo"
 PRIORITY_NAMES = {1: "High", 2: "Medium", 3: "Low"}
@@ -5574,6 +6216,7 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
         reminders_out = []
         errors.append("reminders")
     todos: List[Dict[str, Any]] = []
+    todo_evs: Dict[str, Dict[str, Any]] = {}
     try:
         from cru_match import load_open_commitments
 
@@ -5586,13 +6229,108 @@ def feed_mine(workspace_root, *, now_iso=None) -> Dict[str, Any]:
             todos.append({"id": d["id"], "title": str(d.get("title") or "")[:240],
                           "priority": _priority(d.get("priority")), "due": d.get("due"),
                           "added": ev.get("ts") or ""})
+            todo_evs[str(d["id"])] = ev
     except Exception:  # noqa: BLE001
         todos = []
         errors.append("todos")
     todos.sort(key=lambda t: (t["priority"], str(t["added"])))
+    try:
+        _todo_last_actions(root, todos[:MINE_CAP], todo_evs)
+    except Exception:  # noqa: BLE001 - an unread last action leaves the line off, never the list
+        pass
     return _with_words(workspace_root, {"generated_at": _iso(now), "today": today.isoformat(),
             "reminders": reminders_out, "todos": todos[:MINE_CAP],
             "n_todos": len(todos), "n_reminders": n_reminders, "errors": errors})
+
+
+def _todo_threads(root: Path, evs: List[Dict[str, Any]]) -> Dict[int, str]:
+    """{a to-do's own seq: the thread a later correction tied it to}. A to-do
+    is made with no thread; the Hub's Assign, or "which project does this
+    belong to", ties it to one with a `reclassification` row naming its seq,
+    read as `thread_activity.apply_reclassifications` reads it (the newest
+    wins) over the org-scoped log above the confidence floor, as the thread
+    cards read it. The open fold does not apply those, so they are read
+    here, once, and only when there is a to-do. A correction back to no
+    thread answers ""."""
+    seqs = {e.get("seq") for e in evs
+            if isinstance(e, dict) and isinstance(e.get("seq"), int) and not isinstance(e.get("seq"), bool)}
+    if not seqs or not (root / "_hq" / "data" / "events.jsonl").exists():
+        return {}
+    import thread_cards as tc
+    from events_io import load_events_org_scoped
+
+    best: Dict[int, Tuple[int, str]] = {}
+    for e in load_events_org_scoped(root)[0]:
+        if not isinstance(e, dict) or e.get("type") != "reclassification" or not tc._above_floor(e):
+            continue
+        sup = e.get("supersedes_seq")
+        if sup is None:
+            d = e.get("data") if isinstance(e.get("data"), dict) else {}
+            sup = d.get("supersedes_seq")
+        if not isinstance(sup, int) or isinstance(sup, bool) or sup not in seqs:
+            continue
+        rseq = e.get("seq") if isinstance(e.get("seq"), int) else -1
+        if sup not in best or rseq >= best[sup][0]:
+            best[sup] = (rseq, str(e.get("primary_thread_id") or ""))
+    return {k: v[1] for k, v in best.items()}
+
+
+def _todo_thread_move(cards: Dict[str, Any], tid: str) -> Optional[Dict[str, Any]]:
+    """The newest move on the thread a to-do is tied to, as a thread card's
+    `last_moved` plus `thread_name`. A work stream (the Hub's Assign only
+    takes one) is the newest across its own card and its threads', named
+    for the thread that moved."""
+    threads = cards.get("threads") or {}
+    ids = [tid] + list(((cards.get("work_streams") or {}).get(tid) or {}).get("built_from") or [])
+    best = None
+    for i in ids:
+        card = threads.get(i)
+        mv = card.get("last_moved") if isinstance(card, dict) else None
+        if isinstance(mv, dict) and mv.get("day") and (best is None or str(mv["day"]) > best["day"]):
+            best = {"day": str(mv["day"]), "type": mv.get("type"), "source": mv.get("source"),
+                    "thread_name": card.get("name")}
+    return best
+
+
+def _todo_last_actions(root: Path, todos: List[Dict[str, Any]], evs: Dict[str, Dict[str, Any]]) -> None:
+    """cr1#1459 slice 2: each to-do on Today gets `last_action`, the same
+    shape as a priority's (`_priority_last_action`): the newest of a note the
+    owner added to it (`context_notes`, cr1#1463) and, when it was tied to a
+    thread or work stream later, that thread's last move by the day-count
+    rule (`thread_cards`), never one from before the to-do was added. On a
+    tie the note wins. With neither: `{at: None, added}`, the day it was
+    added. Names only, never an id. Writes nothing; a to-do whose line
+    cannot be read keeps its row and has no line."""
+    import open_list as ol
+    import thread_cards as tc
+
+    tz = ol._workspace_tz(root)
+    cards: Optional[Dict[str, Any]] = None
+    try:
+        rebound = _todo_threads(root, [evs.get(str(t.get("id"))) or {} for t in todos])
+    except Exception:  # noqa: BLE001 - an unread correction leaves the to-do's own thread, never the notes
+        rebound = {}
+    for t in todos:
+        try:
+            ev = evs.get(str(t.get("id"))) or {}
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            added = tc._local_day({"ts": t.get("added")}, tz) or ""
+            best: Optional[Dict[str, Any]] = None
+            for n in d.get("context_notes") or []:
+                day = tc._local_day({"ts": n.get("ts")}, tz) if isinstance(n, dict) else ""
+                if day and (best is None or day >= best["at"]):
+                    best = {"what": "note added", "at": day}
+            tid = (rebound[ev["seq"]] if ev.get("seq") in rebound
+                   else str(ev.get("primary_thread_id") or d.get("primary_thread_id") or ""))
+            if tid:
+                if cards is None:
+                    cards = tc.read_cards(root)[0]
+                mv = _todo_thread_move(cards, tid)
+                if mv and mv["day"] >= added and (best is None or mv["day"] > best["at"]):
+                    best = _priority_last_action({"last_moved": mv})
+            t["last_action"] = best or {"at": None, "added": added or None}
+        except Exception:  # noqa: BLE001 - one unread line never takes the list down
+            t.pop("last_action", None)
 
 
 PRIORITY_LEVELS = {"high": 1, "medium": 2, "low": 3}
@@ -6326,6 +7064,13 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
       * todo `add`: `commitment_state.create_personal_task` with the priority
         and `source = TODO_SOURCE`, owned by the owner, its pointer unique to
         the choice so the same words added twice are two items;
+      * stream_edit, person_edit, priority_edit `add` / `rename` / `undo`
+        (cr1#1383 part 2), commitment_edit `rename` / `undo` (slice 4,
+        the wording through `edit_commitment_wording`), and stream_edit and
+        person_edit `context` (Add context: a thread's notes through
+        `update_thread`, a person's fact through `record_person_fact`):
+        `hub_edit.apply_one`, through each record's own writer, judged
+        before any write;
       * miss `tell` (cr1#1017): the header's "Missed something?". The book is
         searched for the item (`_miss_find`); the answer says what was found
         and why the Hub did not show it; an item with no live row is filed as
@@ -6428,6 +7173,10 @@ def apply_hub_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = 
                         r.update(outcome="applied", line=f"Moved to {when}.")
             elif kind == "miss" and verb == "tell":
                 r.update(_apply_miss(root, c, actor, now, answered, live, inbox))
+            elif kind in EDIT_KINDS and (verb in EDIT_VERBS or (verb == "context" and kind in CONTEXT_EDIT_KINDS)):
+                import hub_edit
+
+                r.update(hub_edit.apply_one(root, c, actor))
             elif kind == "todo" and verb == "add":
                 text = str(inp.get("title") or "").strip()
                 ref = f"{TODO_REF_SCHEME}:{c.get('id')}"
@@ -6551,6 +7300,34 @@ def reply_reaches_everyone(workspace_root=None, platform: Optional[str] = None,
     return {"refuse": False, "reason": None, "line": "", "n_recipients": len(seen), "platform": plat or None}
 
 
+def _owner_reopens(workspace_root) -> Dict[str, _dt.datetime]:
+    """cr1#1462: the time of each item's latest reopen the owner made
+    (`event_types.is_customer_act`), read from the book once per batch: the
+    time the owner pressed it (`data.pressed_at`, a Hub reopen, on the
+    page's clock like the press it is compared with), else the time it was
+    written. A reopen a scheduled job made is left out. Never raises: an unreadable
+    book answers nothing, and every press is judged as before."""
+    out: Dict[str, _dt.datetime] = {}
+    try:
+        from event_types import is_customer_act
+        from events_io import load_events_org_scoped
+
+        events, _skipped = load_events_org_scoped(workspace_root)
+        for ev in events:
+            if not isinstance(ev, dict) or ev.get("type") != "commitment_reopened":
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            cid = str(data.get("commitment_id") or "").strip()
+            at = _parse(data.get("pressed_at")) or _parse(ev.get("ts"))
+            if not cid or at is None or not is_customer_act(ev):
+                continue
+            if cid not in out or at > out[cid]:
+                out[cid] = at
+    except Exception:  # noqa: BLE001 - the check only tightens; it never blocks the batch
+        return {}
+    return out
+
+
 def _commitment_seqs(workspace_root) -> Dict[str, int]:
     from events_io import load_events_org_scoped
 
@@ -6605,13 +7382,15 @@ def _not_work_queued(workspace_root, cid: str, actor: str) -> tuple:
 
 
 def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
-                 label: str, choice_id: str) -> tuple:
+                 label: str, choice_id: str, extra: Optional[Dict[str, Any]] = None,
+                 events: Optional[list] = None) -> tuple:
     """cr1#1289: "Assign to" on a "No home yet" row. The book picks the
     target: it must be a live work stream on the thread cards, never only
     the page's word. The promise must be open and on no thread (the open
     list's own row). One `reclassification` of its capture row, marked
     `open_list.HOME_ORIGIN`; a press already written answers from it.
-    Answers `(handler, outcome, line)`."""
+    `events` is the press's one read of the log (cr1#1342), read here when
+    not given. Answers `(handler, outcome, line)`."""
     import open_list as ol
     import thread_cards as tc
     from event_gate import append_event
@@ -6624,9 +7403,10 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
     if not target or target not in streams:
         return {"status": "refused", "error": "not_a_work_stream"}, "refused", ASSIGN_NO_STREAM_LINE
     events_path = root / "_hq" / "data" / "events.jsonl"
-    from events_io import load_events_owner_scoped
+    if events is None:
+        from events_io import load_events_owner_scoped
 
-    events = load_events_owner_scoped(str(root))[0]
+        events = load_events_owner_scoped(str(root))[0]
     for ev in events:
         d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
         if (ev.get("type") == "reclassification" and d.get("origin") == ol.HOME_ORIGIN
@@ -6650,6 +7430,10 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
             "reason": ASSIGN_REASON, "cockpit_batch": label}
     if choice_id:
         data["hub_choice"] = choice_id
+    if extra:
+        # cr1#1341: `created_stream` names the stream this press created, the
+        # one stream its Undo after Apply may archive.
+        data.update(extra)
     landed = append_event(events_path, {
         "type": "reclassification", "source_skill": COMMITMENT_SRC, "supersedes_seq": seq,
         "primary_thread_id": target, "related_thread_ids": new_related,
@@ -6660,19 +7444,529 @@ def _assign_home(workspace_root, cid: str, target: str, ledger_open: set, now,
             f"Moved to {name}." if name else "Given a home.")
 
 
-def _wait_typed(workspace_root, cid, c, actor, now) -> Optional[Dict[str, Any]]:
+def _home_written(root: Path, choice_id: str, events: Optional[list] = None) -> Optional[Dict[str, Any]]:
+    """cr1#1289 part two: the `hub_assign` home a press already wrote, read
+    before anything else so Apply twice tracks, creates and writes nothing.
+    `events` is the press's one read of the log (cr1#1342)."""
+    import open_list as ol
+
+    if not choice_id:
+        return None
+    if events is None:
+        from events_io import load_events_owner_scoped
+
+        events = load_events_owner_scoped(str(root))[0]
+    for ev in events:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if (ev.get("type") == "reclassification" and d.get("origin") == ol.HOME_ORIGIN
+                and d.get("hub_choice") == choice_id):
+            return ev
+    return None
+
+
+def _no_home_state(root: Path, cid: str, ledger_open: set, now) -> Optional[tuple]:
+    """None while the promise is open and on no thread; else the press's
+    `(handler, outcome, line)`, the same answers `_assign_home` gives, read
+    before a new work stream is created so a stale press creates nothing."""
+    import open_list as ol
+
+    if cid not in ledger_open:
+        return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
+    doc, _counted = ol.read_list(root, now)
+    row = next((x for x in doc.get("rows") or [] if str(x.get("id")) == cid), None)
+    if row is None:
+        return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
+    if str(row.get("thread_id") or "").strip():
+        return {"status": "has_home", "thread_id": row.get("thread_id")}, "already", ASSIGN_HAS_HOME_LINE
+    return None
+
+
+def _stream_name(value: Any) -> str:
+    """The typed name, spaces tidied, control characters out, capped."""
+    text = "".join(ch_ if ch_.isprintable() else " " for ch_ in str(value or ""))
+    return " ".join(text.split())[:NEW_STREAM_NAME_CAP].strip()
+
+
+def _stream_for_name(root: Path, name: str, events: Optional[list] = None) -> tuple:
+    """What a typed name means on this book, read only: `("existing", id)`
+    for a live work stream of that name (any case), `("resume", id)` for a
+    stream an earlier Apply left half made (a live thread of that name the
+    Hub created, with no thread under it yet), `("new", None)` when the name
+    is free, `("taken", record)` when a live thread that is not a work stream
+    holds it, and `("archived", record)` / `("closed", record)` when only
+    archived or closed threads do.
+
+    cr1#1342: every thread of that name is read, not only the first one the
+    book lists (`find_existing_thread`), so an archived namesake never hides a
+    live one, and a name only archived threads hold is said to be archived.
+    `events` is the press's one read of the log."""
+    import thread_cards as tc
+    import thread_writer as tw
+
+    cards, _from_log = tc.read_cards(root)
+    streams = cards.get("work_streams") or {}
+    key = tw._norm(name)
+    for sid, card in streams.items():
+        if tw._norm(card.get("name")) == key:
+            return "existing", sid
+    every = [t for t in tw._threads(tw._load_entities(root)) if isinstance(t, dict)]
+    namesakes = [t for t in every if tw._norm(t.get("canonical_name") or t.get("display_name")) == key]
+    if not namesakes:
+        return "new", None
+    for hit in namesakes:
+        if str(hit.get("id") or "") in streams:
+            return "existing", str(hit["id"])
+    if events is None:
+        from events_io import load_events_owner_scoped
+
+        events = load_events_owner_scoped(str(root))[0]
+    hub_made = {str((ev.get("data") or {}).get("primary_thread_id") or "") for ev in events
+                if isinstance(ev, dict) and ev.get("type") == "thread_created"
+                and ev.get("source_skill") == SOURCE_SKILL}
+    parents = {str(t.get("parent_thread_id") or "") for t in every}
+
+    def status(t):
+        return str(t.get("status") or "active").lower()
+
+    for hit in namesakes:
+        hid = str(hit.get("id") or "")
+        live = status(hit) not in ("archived", "resolved", "dormant")
+        # A thread under another (the stream's own first thread) is never a
+        # half-made stream (review of part two).
+        if live and hid in hub_made and hid not in parents and not hit.get("parent_thread_id"):
+            return "resume", hid
+    for hit in namesakes:
+        if status(hit) not in tc.DONE_STATUSES:
+            return "taken", hit
+    archived = next((t for t in namesakes if status(t) == "archived"), None)
+    return ("archived", archived) if archived is not None else ("closed", namesakes[0])
+
+
+def _writer_create(root: Path, **kwargs) -> dict:
+    """`thread_writer.create_thread`, finishing its own half write (cr1#1342).
+    The writer saves the record, then appends its `thread_created` event; when
+    that append fails the record is on the book with nothing saying who made
+    it, and no later press may claim it. So a failure is read back at once,
+    and the record counts as this call's only when all of these hold: the
+    writer refused nothing (a `ValueError` is its dedup or validation,
+    raised before any save), the book moved by exactly one save since the
+    call began and that save was this skill's (`version`, `last_writer`),
+    exactly one record of this name and parent is new, and no
+    `thread_created` names it yet (review of cr1#1342: a concurrent press or
+    another writer's record is never stamped as the Hub's). Then its missing
+    event is appended through the writer's own `_log_event`, once. Every
+    other failure is raised: `_HalfMadeStream` when this call's record stays
+    without its event, `_StreamUnsure` when the book cannot say."""
+    import thread_writer as tw
+    from events_io import load_events_owner_scoped
+
+    skill = kwargs.get("source_skill") or SOURCE_SKILL
+    key = tw._norm(kwargs.get("canonical_name"))
+    book = tw._load_entities(root)
+    try:
+        version = int(book.get("version", 0))  # as `_save_entities` counts it
+    except (TypeError, ValueError):
+        version = None
+    before = {str(t.get("id") or "") for t in tw._threads(book) if isinstance(t, dict)}
+    try:
+        return tw.create_thread(root, **kwargs)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - read back; this call's own record is finished, else unsure
+        first = exc
+    try:
+        now_book = tw._load_entities(root)
+        after = [t for t in tw._threads(now_book) if isinstance(t, dict)]
+        evs = load_events_owner_scoped(str(root))[0]
+    except Exception:  # noqa: BLE001 - the book cannot be read back
+        raise _StreamUnsure() from first
+    mine = [t for t in after if str(t.get("id") or "") not in before
+            and tw._norm(t.get("canonical_name") or t.get("display_name")) == key
+            and str(t.get("parent_thread_id") or "") == str(kwargs.get("parent_thread_id") or "")]
+    if not mine:
+        raise first  # nothing of this call's landed: the writer's own error stands
+    one_save = (isinstance(version, int) and now_book.get("version") == version + 1
+                and now_book.get("last_writer") == skill)
+    tid = str(mine[0].get("id") or "")
+    logged = any(isinstance(ev, dict) and ev.get("type") == "thread_created"
+                 and tid in (str((ev.get("data") or {}).get("primary_thread_id") or ""),
+                             str(ev.get("primary_thread_id") or ""))
+                 for ev in evs)
+    if len(mine) != 1 or not one_save or logged:
+        raise _StreamUnsure() from first
+    try:
+        tw._log_event(root, "thread_created", mine[0], skill)
+    except Exception as exc:  # noqa: BLE001 - the record stays; say so
+        raise _HalfMadeStream(tid) from exc
+    return mine[0]
+
+
+class _HalfMadeStream(Exception):
+    """cr1#1342: a stream record on the book whose `thread_created` could not
+    be written; it carries the record's id."""
+
+
+class _StreamUnsure(Exception):
+    """cr1#1342: the writer failed and the book cannot show whether part of
+    the stream landed, so nothing is claimed and nothing is said to be
+    unwritten."""
+
+
+def _own_org(root: Path) -> str:
+    """The org a new work stream belongs to: the owner's own company when the
+    book holds exactly one (`relationship_type: self`), else the writer's
+    unaffiliated sentinel."""
+    import thread_writer as tw
+    from entities_io import entities_collection
+
+    try:
+        orgs = entities_collection(tw._load_entities(root), "orgs")
+    except (OSError, ValueError):
+        orgs = []
+    own = [o for o in orgs or [] if isinstance(o, dict) and o.get("id")
+           and str(o.get("relationship_type") or "").strip().lower() == "self"]
+    return str(own[0]["id"]) if len(own) == 1 else tw.UNAFFILIATED_ORG_ID
+
+
+def _create_stream(root: Path, name: str, parent_id: Optional[str] = None) -> str:
+    """A work stream through the one thread writer: the parent with the
+    owner's name (unless an earlier Apply already wrote it) and one thread
+    under it, because a work stream is a parent thread. Answers its id."""
+    import thread_writer as tw
+
+    org = _own_org(root)
+    if not parent_id:
+        parent_id = _writer_create(root, canonical_name=name, status="active", org_id=org,
+                                   source_skill=SOURCE_SKILL)["id"]
+    elif any(isinstance(t, dict) and t.get("parent_thread_id") == parent_id
+             for t in tw._threads(tw._load_entities(root))):
+        return parent_id  # another Apply finished it just now
+    try:
+        _writer_create(root, canonical_name=NEW_STREAM_CHILD.format(name=name), status="active",
+                       org_id=org, parent_thread_id=parent_id, source_skill=SOURCE_SKILL,
+                       skip_dedup=True)
+    except _HalfMadeStream:
+        raise _HalfMadeStream(parent_id) from None
+    return parent_id
+
+
+def _track_heard(root: Path, cid: str) -> tuple:
+    """A line only heard, tracked through the queue's own confirm
+    (`needs_review_queue.confirm_items`, the path the owner's yes takes):
+    the observed tier's promotion, then the review flags cleared. The Hub
+    press on this one row is that yes, so the row is named on its own.
+    Answers `(promoted id, None)` or `("", (handler, outcome, line))`."""
+    from needs_review_queue import confirm_items
+
+    # `confirm_weak_ids` names this one row: the bulk guard holds rows a
+    # range or "all" reached, and a press on one row is that row named.
+    res = confirm_items(str(root), [cid], source_skill=COMMITMENT_SRC, confirm_weak_ids=[cid])
+    one = ((res or {}).get("results") or [{}])[0]
+    pid = str(one.get("promoted_id") or "")
+    if one.get("status") in ("confirmed", "not_pending") and pid:
+        return pid, None
+    return "", ({"status": "failed", "error": "not_tracked", "detail": str(one.get("detail") or "")[:200]},
+                "error", ASSIGN_HEARD_FAILED_LINE)
+
+
+def _home_press(workspace_root, cid: str, verb: str, value: Any, ledger_open: set, now,
+                label: str, choice_id: str, *, heard: bool = False) -> tuple:
+    """cr1#1289 part two: Assign to and New work stream, on a promise or on
+    a line only heard. Everything the book can refuse is read before
+    anything is written; then a heard line is tracked (`_track_heard`), a
+    new stream is created (`_create_stream`), and the home is written by
+    `_assign_home`, the one place a home is written. Answers
+    `(handler, outcome, line)`."""
+    import thread_cards as tc
+    from events_io import load_events_owner_scoped
+
+    root = Path(str(workspace_root))
+    # cr1#1342: the log is read once for the press and passed down; it is
+    # read again only after a heard line is tracked, whose capture row is new.
+    evs = load_events_owner_scoped(str(root))[0]
+    done = _home_written(root, choice_id, evs)
+    if done is not None:
+        return {"status": "already_written", "seq": done.get("seq")}, "already", "Already given that home."
+    target, how, name = "", "", ""
+    if verb == "newstream":
+        name = _stream_name(value)
+        if not name:
+            return {"status": "refused", "error": "no_name"}, "refused", NEW_STREAM_NAME_LINE
+        how, found = _stream_for_name(root, name, evs)
+        if how in ("taken", "archived", "closed"):
+            rec = found or {}
+            if how == "taken":
+                line = NEW_STREAM_TAKEN_LINE.format(name=name)
+            else:
+                import thread_writer as tw
+
+                rid = str(rec.get("id") or "")
+                was_stream = any(isinstance(t, dict) and str(t.get("parent_thread_id") or "") == rid
+                                 for t in tw._threads(tw._load_entities(root)))
+                what = "a work stream" if was_stream else "a thread"
+                held = str(rec.get("canonical_name") or rec.get("display_name") or name)
+                line = (NEW_STREAM_ARCHIVED_LINE if how == "archived" else NEW_STREAM_CLOSED_LINE).format(
+                    name=held, what=what)
+            return ({"status": "refused", "error": "name_taken" if how == "taken" else f"name_{how}",
+                     "thread_id": rec.get("id")}, "refused", line)
+        target = found or ""
+    else:
+        target = str(value or "").strip()
+        streams = (tc.read_cards(root)[0].get("work_streams") or {})
+        if not target or target not in streams:
+            return {"status": "refused", "error": "not_a_work_stream"}, "refused", ASSIGN_NO_STREAM_LINE
+    tracked = ""
+    if heard:
+        tracked, err = _track_heard(root, cid)
+        if err:
+            return err
+        cid = tracked
+        ledger_open.add(cid)
+        evs = load_events_owner_scoped(str(root))[0]
+    answered = None
+    half = ""
+    if how in ("new", "resume"):
+        answered = _no_home_state(root, cid, ledger_open, now)
+        if answered is None:
+            try:
+                target = _create_stream(root, name, target if how == "resume" else None)
+                # The stream's writes take a moment: the home's Apply-twice
+                # check reads the log as it stands now, so a second page
+                # pressing the same choice meanwhile is seen (review of cr1#1342).
+                evs = load_events_owner_scoped(str(root))[0]
+            except ValueError as exc:
+                answered = ({"status": "error", "error": "not_created", "detail": str(exc)[:200]}, "error",
+                            NEW_STREAM_FAILED_LINE)
+            except _HalfMadeStream as exc:
+                half = NEW_STREAM_HALF_LINE.format(name=name)
+                answered = ({"status": "error", "error": "half_made", "thread_id": str(exc)}, "error", half)
+            except _StreamUnsure:
+                half = NEW_STREAM_UNSURE_LINE.format(name=name)
+                answered = ({"status": "error", "error": "stream_unsure"}, "error", half)
+    if answered is None:
+        made = {"created_stream": target} if how in ("new", "resume") else None
+        answered = _assign_home(root, cid, target, ledger_open, now, label, choice_id, extra=made, events=evs)
+    handler, outcome, line = answered
+    handler = dict(handler or {})
+    if tracked:
+        handler["tracked_id"] = tracked
+    if how in ("new", "resume") and outcome == "applied":
+        handler["created_stream"] = target
+        line = f"Started the work stream {name} and moved this there."
+    elif how == "existing" and outcome == "applied":
+        line = line.rstrip(".") + ", the work stream you already have."
+    if tracked and outcome == "applied":
+        line = "Tracked. " + line
+    elif tracked:
+        # The tracking landed and stays (promotion is permanent), so the
+        # line never claims nothing was written.
+        line = HEARD_TRACKED_ONLY_LINE + (" " + half if half else "")
+    return handler, outcome, line
+
+
+def _home_events(evs: list) -> list:
+    """The Hub's own home reclassifications (`open_list.HOME_ORIGIN`), in
+    log order."""
+    import open_list as ol
+
+    out = []
+    for ev in evs:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "reclassification" and d.get("origin") == ol.HOME_ORIGIN:
+            out.append(ev)
+    return out
+
+
+def _made_stream_free(root: Path, sid: str, press_id: str, evs: list) -> tuple:
+    """cr1#1341: whether the stream a press created is still only that
+    press's, so its Undo may archive it. Read only. Answers `(verdict,
+    child ids)`: `free` when the stream and its one thread were both made on
+    the Hub and nothing else on the book names either (no other item's home,
+    no capture, no note, no thread under it, no change from elsewhere);
+    `archived` when it already is; `gone` when it is not on the book; else
+    `kept`. Every doubt answers `kept`: a stream is never archived on a
+    guess."""
+    import open_list as ol
+    import thread_writer as tw
+
+    data = tw._load_entities(root)
+    recs = [t for t in tw._threads(data) if isinstance(t, dict)]
+    rec = next((t for t in recs if str(t.get("id") or "") == sid), None)
+    if rec is None:
+        return "gone", []
+    if str(rec.get("status") or "").strip().lower() == "archived":
+        return "archived", []
+    kids = [t for t in recs if str(t.get("parent_thread_id") or "") == sid]
+    ours = set()
+    for ev in evs:
+        if isinstance(ev, dict) and ev.get("type") == "thread_created" and ev.get("source_skill") == SOURCE_SKILL:
+            ours.add(str((ev.get("data") or {}).get("primary_thread_id") or ""))
+    if sid not in ours or rec.get("parent_thread_id") or len(kids) > 1 \
+            or any(str(k.get("id") or "") not in ours for k in kids):
+        return "kept", []
+    ids = {sid} | {str(k.get("id")) for k in kids}
+    quoted = [json.dumps(i) for i in ids]
+    for ev in evs:
+        if not isinstance(ev, dict):
+            continue
+        typ, src = ev.get("type"), ev.get("source_skill")
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if typ == "apply_choices_applied":
+            continue  # the Hub's own receipts: never work
+        if typ in ("thread_created", "thread_updated", "status_change") and src == SOURCE_SKILL:
+            continue  # the Hub's own create and archive of these threads
+        if typ == "reclassification" and d.get("origin") == ol.HOME_ORIGIN and press_id \
+                and press_id in (d.get("hub_choice"), d.get("undoes_choice")):
+            continue  # this press and its Undo
+        blob = json.dumps(ev, ensure_ascii=False, default=str)
+        if any(q in blob for q in quoted):
+            return "kept", []
+    # The rest of the book, either shape, without the two records themselves
+    # (review of cr1#1341: a flat book kept its own record in the scan).
+    import copy
+    from entities_io import entities_collection
+
+    others = copy.deepcopy(data)
+    coll = entities_collection(others, "threads")
+    coll[:] = [t for t in coll if not (isinstance(t, dict) and str(t.get("id") or "") in ids)]
+    rest = json.dumps(others, ensure_ascii=False, default=str)
+    if any(q in rest for q in quoted):
+        return "kept", []
+    return "free", [str(k.get("id")) for k in kids]
+
+
+def _undo_home(workspace_root, cid_in: str, press_id: Any, undo_id: str, ledger_open: set,
+               label: str) -> tuple:
+    """cr1#1341: Undo after Apply of Assign to or New work stream, an
+    `unassign` choice naming the press it takes back. Through the existing
+    paths only: the item goes back to no home by a later `hub_assign`
+    reclassification of the same capture row (the newest home wins in
+    `open_list.homes_given`); a stream the press created, and its one
+    thread, are archived by `thread_archive.archive_thread`, the one archive
+    path, only while nothing else is on them (`_made_stream_free`). A heard
+    line the press tracked stays tracked. An Undo already written writes
+    nothing again, and a press the item has moved on from is left alone.
+    Answers `(handler, outcome, line)`."""
+    from event_gate import append_event
+    from events_io import load_events_owner_scoped
+
+    root = Path(str(workspace_root))
+    press_id = str(press_id or "").strip()
+    if not press_id:
+        return {"status": "refused", "error": "no_press"}, "refused", UNASSIGN_NO_PRESS_LINE
+    evs = load_events_owner_scoped(str(root))[0]
+    homes = _home_events(evs)
+    press = next((e for e in homes if (e.get("data") or {}).get("hub_choice") == press_id
+                  and not (e.get("data") or {}).get("undoes_choice")), None)
+    pd = (press or {}).get("data") or {}
+    cid = str(pd.get("commitment_id") or "")
+    target = str((press or {}).get("primary_thread_id") or "")
+    promoted_from = ""
+    for ev in evs:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if ev.get("type") == "commitment" and cid and str(d.get("id") or "") == cid:
+            promoted_from = str(d.get("promoted_from") or "")
+            break
+    if press is None or not target or not cid or cid_in not in (cid, promoted_from):
+        return {"status": "refused", "error": "no_press"}, "refused", UNASSIGN_NO_PRESS_LINE
+    mine = next((e for e in homes if undo_id and (e.get("data") or {}).get("hub_choice") == undo_id), None)
+    if mine is None and cid not in ledger_open:
+        return {"status": "already_resolved"}, "already", ALREADY_CLOSED_LINE
+    if mine is None:
+        newest = max((e for e in homes if (e.get("data") or {}).get("commitment_id") == cid),
+                     key=lambda e: e.get("seq") if isinstance(e.get("seq"), int) else -1)
+        if newest is not press:
+            if (newest.get("data") or {}).get("undoes_choice") != press_id:
+                return {"status": "moved_since"}, "already", UNASSIGN_MOVED_LINE
+            # Undone already: only a stream left standing by a failed
+            # archive is tried again below (review of cr1#1341).
+            mine = newest
+    seq = None
+    if mine is None:
+        old_related = list(pd.get("old_related_thread_ids") or [])
+        old_primary = str(pd.get("old_primary_thread_id") or "")
+        data = {"origin": pd.get("origin"), "commitment_id": cid, "target_thread_id": "",
+                "old_primary_thread_id": target, "new_primary_thread_id": old_primary or None,
+                "old_related_thread_ids": list(press.get("related_thread_ids") or []),
+                "new_related_thread_ids": old_related, "reason": UNASSIGN_REASON,
+                "cockpit_batch": label, "hub_choice": undo_id, "undoes_choice": press_id}
+        restoring = {"type": "reclassification", "source_skill": COMMITMENT_SRC,
+                     "supersedes_seq": press.get("supersedes_seq"), "related_thread_ids": old_related,
+                     "classification_confidence": 1.0, "data": data}
+        # The capture row had no thread: the key is left out, never stamped
+        # null (the binding backfill's restoring idiom).
+        if old_primary:
+            restoring["primary_thread_id"] = old_primary
+        landed = append_event(root / "_hq" / "data" / "events.jsonl", restoring, holder="cockpit_helpers")
+        seq = (landed[0] if isinstance(landed, list) and landed else {}).get("seq")
+        evs = load_events_owner_scoped(str(root))[0]
+    handler: Dict[str, Any] = {"status": "unassigned" if mine is None else "already_written",
+                               "commitment_id": cid, "thread_id": target}
+    if seq is not None:
+        handler["seq"] = seq
+    tracked = UNASSIGN_TRACKED_LINE if promoted_from else ""
+    line = UNASSIGN_LINE + tracked
+    name = target
+    if pd.get("created_stream") == target:
+        import thread_archive as ta
+        import thread_writer as tw
+
+        for t in tw._threads(tw._load_entities(root)):
+            if isinstance(t, dict) and str(t.get("id") or "") == target:
+                name = str(t.get("canonical_name") or t.get("display_name") or target)
+        verdict, kids = _made_stream_free(root, target, press_id, evs)
+        handler["stream"] = verdict
+        if verdict == "free":
+            # The stream first, so the line is true whichever write fails:
+            # until it lands nothing is archived and the stream stays; once
+            # it lands the stream is off the tab.
+            try:
+                ta.archive_thread(str(root), target, reason=UNASSIGN_ARCHIVE_REASON, source_skill=SOURCE_SKILL)
+            except Exception as exc:  # noqa: BLE001 - the item is back already; the stream stays, and says so
+                handler.update(stream="archive_failed", error=type(exc).__name__)
+                # An error, so the page offers the Undo again; that retry
+                # writes no second home and tries the archive once more.
+                return handler, "error", UNASSIGN_ARCHIVE_FAILED_LINE.format(name=name) + tracked
+            handler["stream"] = "archived_now"
+            line = UNASSIGN_ARCHIVED_LINE.format(name=name) + tracked
+            for tid in kids:
+                try:
+                    ta.archive_thread(str(root), tid, reason=UNASSIGN_ARCHIVE_REASON, source_skill=SOURCE_SKILL,
+                                      regenerate_view=False)
+                except Exception as exc:  # noqa: BLE001 - say which thread stays live
+                    handler.update(child_archive_failed=tid, error=type(exc).__name__)
+                    line = UNASSIGN_CHILD_FAILED_LINE.format(name=name) + tracked
+        elif verdict == "kept":
+            line = UNASSIGN_KEPT_LINE.format(name=name) + tracked
+        elif verdict == "archived":
+            line = UNASSIGN_ARCHIVED_LINE.format(name=name) + tracked
+    if mine is not None and handler.get("stream") != "archived_now":
+        return handler, "already", UNASSIGN_ALREADY_LINE
+    return handler, "applied", line
+
+
+def _wait_typed(workspace_root, cid, c, actor, now, label) -> Optional[Dict[str, Any]]:
     """cr1#1291: the Snooze box's words when they set or clear a wait on an
-    event rather than give a date (`commitment_wait.apply_wait_text`)."""
+    event rather than give a date (`commitment_wait.apply_wait_text`), under
+    the batch's own undo handle (cr1#1322)."""
     from commitment_wait import apply_wait_text
     return apply_wait_text(str(workspace_root), cid, str(c.get("input") or "")[:200],
-                           actor_id=actor, source_skill=COMMITMENT_SRC, now_iso=_iso(now))
+                           actor_id=actor, source_skill=COMMITMENT_SRC, now_iso=_iso(now),
+                           brain_batch_id=label)
 
 
 def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
                              *, resolved_by: str = "", now_iso=None,
-                             batch_id: Optional[str] = None) -> Dict[str, Any]:
+                             batch_id: Optional[str] = None,
+                             run_id: Optional[str] = None) -> Dict[str, Any]:
     """A WRITER. The page's commitment choices, each through the owning
-    writer, then ONE `apply_choices_applied` audit row for the batch:
+    writer, then ONE `apply_choices_applied` audit row for the batch.
+
+    `run_id` (cr1#1377, option b) is the Apply run's own id: a raw page
+    document another live run has claimed is refused as `waiting` and
+    nothing is written for it (`_commitment_row`).
+
+    The verbs:
 
       * `done`: `close_commitment(resolution="done", user_confirmed=True,
         resolved_by_match="id")`, the one closure path; a CONFIRM row still
@@ -6697,7 +7991,12 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         confirmed promise closes as dropped through `close_commitment`; one
         still waiting for a yes, or a line only heard, through
         `needs_review_queue.drop_items`, the queue's own drop. Reopen
-        undoes either.
+        undoes either;
+      * `unassign` (cr1#1341): Undo after Apply of Assign to or New work
+        stream, naming that press (`_undo_home`): the item goes back to no
+        home by a later `hub_assign` reclassification, and a stream the press
+        created is archived through the one archive path while nothing else
+        is on it.
 
     Context lands before Done on the same row, so a note and a close pressed
     together both land. A refusal of one row never stops the rest. Answers
@@ -6712,11 +8011,33 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
     import commitment_state as cs
 
     now = _now(now_iso)
+    # cr1#1377: a raw page document (its item named in `n`, as a scheduled run
+    # on a smaller model hands it over without `plan_apply`) is read with
+    # plan_apply's own mapping; a row that names no item, or is not a
+    # commitment's, is refused here and nothing is written to any item for it.
+    results: List[Dict[str, Any]] = []
+    mapped: List[Dict[str, Any]] = []
+    seen_raw = set()
+    for c in rows:
+        row, refusal = _commitment_row(c, now, run_id or "")
+        if refusal is not None:
+            results.append(refusal)
+        elif row is not c:
+            # A raw document passed twice is applied once, as plan_apply
+            # drops a repeated id (a second answer would overwrite the first).
+            did = str(row.get("id") or "").strip()
+            if did not in seen_raw:
+                seen_raw.add(did)
+                mapped.append(row)
+        else:
+            mapped.append(row)
+    rows = mapped
     seqs = _commitment_seqs(workspace_root)
+    reopens = _owner_reopens(workspace_root)  # cr1#1462
     open_rows = _open_rows(workspace_root, _iso(now))
     if open_rows is None:
         return {"ok": False, "reason": "plate_unreadable", "line": PLATE_UNREADABLE_LINE,
-                "results": [], "n_applied": 0, "n_errors": len(rows), "batch_id": label}
+                "results": [], "n_applied": 0, "n_errors": len(rows) + len(results), "batch_id": label}
     # Open or closed comes from the book itself (cr1#679): a row the plate
     # leaves out is not thereby closed.
     ledger_open = set()
@@ -6734,8 +8055,16 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
     # they were pressed, against the state the batch has written so far.
     order = {"context": 0, "snooze": 1}
     counted_now: Optional[set] = None  # the overdue verdict, read once if a snooze needs it
-    results: List[Dict[str, Any]] = []
-    audit: List[Dict[str, Any]] = []
+    # cr1#1377: each refusal above is on the batch's one audit row, with the
+    # page's word for it (cr1#1378), so a batch of broken presses is named on
+    # the Hub; an expired or already-applied document is a refusal on purpose.
+    audit: List[Dict[str, Any]] = [
+        {"n": r["commitment_id"], "action": r["action"],
+         "handler_result": ({"status": "already_resolved"} if r["reason"] == "already_applied"
+                            else {"status": "error", "error": r["reason"]}),
+         "said": {"expired": "refused", "already_applied": "already",
+                  "claimed_elsewhere": "waiting"}.get(r["reason"], "error"),
+         "note": f"cockpit {label}"} for r in results]
     for c in sorted(rows, key=lambda c: (order.get(str(c.get("action") or ""), 2),
                                          str(c.get("created_at") or ""))):
         cid = str(c.get("commitment_id") or "").strip()
@@ -6751,9 +8080,31 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 # cr1#1289: a heard line has no capture row of its own.
                 handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
                 r.update(outcome=outcome, line=line)
-            elif verb == "assign" and cid not in seqs and cid.startswith("obs_"):
-                r.update(outcome="refused", line=ASSIGN_HEARD_LINE)
-                handler = {"status": "refused", "error": "heard_line"}
+            elif verb == "unassign":
+                # cr1#1341: Undo after Apply of a home press; the input names
+                # that press, and a heard line's press names its obs id.
+                handler, outcome, line = _undo_home(workspace_root, cid, c.get("input"), str(c.get("id") or ""),
+                                                    ledger_open, label)
+                r.update(outcome=outcome, line=line)
+                if handler.get("seq") is not None:
+                    r["seq"] = handler["seq"]
+            elif verb in ("assign", "newstream") and cid not in seqs and cid.startswith("obs_"):
+                # cr1#1289 part two: a heard line is tracked through the
+                # queue's own confirm, then given its home.
+                handler, outcome, line = _home_press(workspace_root, cid, verb, c.get("input"), ledger_open,
+                                                     now, label, str(c.get("id") or ""), heard=True)
+                r.update(outcome=outcome, line=line)
+                if handler.get("seq") is not None:
+                    r["seq"] = handler["seq"]
+            elif (verb in _CLOSING_VERBS and cid in reopens
+                  and _parse(c.get("created_at")) is not None
+                  and _parse(c.get("created_at")) < reopens[cid]):
+                # cr1#1462: a press made before the owner's latest reopen is
+                # stale (a copy a run read before it): it never closes the
+                # item again. Nothing is written to the item.
+                r.update(outcome="refused", reason="pressed_before_reopen",
+                         line=PRESSED_BEFORE_REOPEN_LINE)
+                handler = {"status": "refused", "error": "pressed_before_reopen"}
             elif cid not in seqs:
                 r.update(outcome="error", line=GONE_LINE)
                 # cr1#1171: an error naming the id the book does not hold
@@ -6848,9 +8199,9 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 if r.get("outcome") == "applied":
                     open_rows.pop(cid, None)
                     ledger_open.discard(cid)
-            elif verb == "assign":
-                handler, outcome, line = _assign_home(workspace_root, cid, str(c.get("input") or "").strip(),
-                                                      ledger_open, now, label, str(c.get("id") or ""))
+            elif verb in ("assign", "newstream"):
+                handler, outcome, line = _home_press(workspace_root, cid, verb, c.get("input"), ledger_open,
+                                                     now, label, str(c.get("id") or ""))
                 r.update(outcome=outcome, line=line)
                 if handler.get("seq") is not None:
                     r["seq"] = handler["seq"]
@@ -6877,7 +8228,7 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 when = cs.parse_later_when(str(c.get("input") or "")[:80], _iso(now),
                                            workspace_path=str(workspace_root))
                 # cr1#1291: "waiting on <event>" holds it with no date.
-                waited = None if when else _wait_typed(workspace_root, cid, c, actor, now)
+                waited = None if when else _wait_typed(workspace_root, cid, c, actor, now, label)
                 if waited:
                     handler = waited
                     r.update(outcome="applied" if waited.get("status") in ("updated", "cleared")
@@ -6928,8 +8279,13 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     r.update(outcome="already", line="That one is already open.")
                     handler = {"status": "already_open"}
                 else:
+                    # cr1#1462 review: the reopen keeps the time the owner
+                    # pressed it, so a later press is judged against the
+                    # press, on the page's own clock, never the write.
+                    _pressed = str(c.get("created_at") or "").strip()
                     handler = cs.reopen_commitment(str(workspace_root), cid, reopened_by=actor,
-                                                   reason=REOPEN_REASON, source_skill=COMMITMENT_SRC)
+                                                   reason=REOPEN_REASON, source_skill=COMMITMENT_SRC,
+                                                   extra_data=({"pressed_at": _pressed} if _parse(_pressed) else None))
                     st = (handler or {}).get("status")
                     if st in ("reopened",):
                         r.update(outcome="applied", line="Reopened.",
@@ -6948,8 +8304,10 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
             r.update(_row_error(exc))
             handler = {"status": "error", "error": type(exc).__name__}
         results.append(r)
+        # cr1#1378: the row's own answer goes with it, so the audit can never
+        # say ok over a row this writer answered as an error.
         audit.append({"n": cid, "action": verb, "handler_result": handler,
-                      "note": f"cockpit {label}"})
+                      "said": r.get("outcome"), "note": f"cockpit {label}"})
     n_applied = sum(1 for r in results if r["outcome"] == "applied")
     n_errors = sum(1 for r in results if r["outcome"] == "error")
     if audit:

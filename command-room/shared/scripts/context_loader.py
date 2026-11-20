@@ -141,16 +141,45 @@ def _thread(ws: Path, thread: str, degraded: List[str]) -> Optional[dict]:
         return None
 
 
-def _craft(ws: Path, scope: str, degraded: List[str]) -> List[Dict[str, Any]]:
+def _reads_firm(skill: str, scope: str) -> bool:
+    """Does this skill read the firm's craft file for this scope? Yes,
+    except a scope `craft_recall.FIRM_SCOPES_KEPT_OUT` keeps out (contract
+    review never reads the firm's review file, its advisory review of a
+    client's business; cr1#1391 gap 3), so the two readers never disagree."""
+    try:
+        import craft_recall
+    except Exception:  # noqa: BLE001 - a stripped install keeps the old read
+        return True
+    return scope not in craft_recall.FIRM_SCOPES_KEPT_OUT.get(skill, ())
+
+
+def _craft(ws: Path, scope: str, degraded: List[str],
+           skill: str = "") -> List[Dict[str, Any]]:
     """The owner's stored method for one kind of task (train 5, cr1#381): the
     owner's own file first, `_hq/craft/<scope>.md`, then the firm's,
-    `_hq/craft/firm/<scope>.md`. Read on demand, bounded, never written."""
+    `_hq/craft/firm/<scope>.md` (not for contract review, `_reads_firm`).
+    Read on demand, bounded, never written."""
     name = str(scope or "").strip().lower()
     if not CRAFT_SCOPE_RE.fullmatch(name):
         degraded.append("craft: a scope is a short name of letters, digits and dashes")
         return []
     out: List[Dict[str, Any]] = []
-    for rel in (f"{CRAFT_DIR_REL}/{name}.md", f"{CRAFT_DIR_REL}/firm/{name}.md"):
+    # A file still filed under a renamed scope (sell, now win business)
+    # answers for its new name until it is moved (cr1#1391).
+    try:
+        import craft_contract
+        name = craft_contract.canonical_scope(name)
+        names = [name] + sorted(old for old, new in
+                                craft_contract.RENAMED_SCOPES.items()
+                                if new == name)
+    except Exception:  # noqa: BLE001
+        names = [name]
+    rels = []
+    for n in names:
+        rels.append(f"{CRAFT_DIR_REL}/{n}.md")
+        if _reads_firm(skill, name):
+            rels.append(f"{CRAFT_DIR_REL}/firm/{n}.md")
+    for rel in rels:
         path = ws / rel
         if not path.is_file():
             continue
@@ -196,7 +225,8 @@ def load_context(workspace_root, skill: str, *, thread: Optional[str] = None,
     for h in found_history:
         if h["file"] not in used:
             used.append(h["file"])
-    crafts: List[Dict[str, Any]] = _craft(ws, craft, degraded) if craft else []
+    crafts: List[Dict[str, Any]] = (_craft(ws, craft, degraded, name)
+                                    if craft else [])
     for c in crafts:
         used.append(c["rel"])
     payload = None

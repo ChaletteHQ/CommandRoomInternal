@@ -509,7 +509,7 @@ FIRST_INSTALL_TASK_IDS: frozenset[str] = frozenset({
 # 4.8; inbound mail, `orchestrator-inbox.md` Phase 4b), and a chat the update
 # has not removed yet still fires its file. The typed phrases and the Hub do
 # not read them: `show waiting` is `surface_drivers.py waiting-on` and the
-# Week tab is `friday_wrap_helpers:week_sections`. A shelved id is excluded
+# Done tab is `friday_wrap_helpers:week_sections`. A shelved id is excluded
 # from every first install, every later-add offer and every registration
 # re-run (`later_add_task_ids`, `registration_target_set`), refused by
 # `schedule_backend.plan_registration`, and refused on `add` with

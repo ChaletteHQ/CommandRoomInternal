@@ -2,6 +2,14 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.3.0 (2026-11-19)
+
+Change the Hub from the Hub: add context, edit a commitment's wording, set a person's role, email and company, and add or correct work streams, people and priorities, each with an Undo. Each priority and to-do says its last action and its day, every tab says what it is for, and Ask for a change sits below every tab. Items close less often on the wrong evidence, and the Hub Inbox page no longer breaks on a reply to several people.
+
+## v6.2.1 (2026-11-18)
+
+Fixes from a client seat's first week on 6.2: Apply carries out the choices made on the page, the Hub and Maintenance read the real log when a stray copy appears, Send on Microsoft 365 sends the right draft, Maintenance names a failing Apply in its own words, and a Finish update bar tells you when Command Room has updated and finishes the update in one press.
+
 ## v6.2.0 (2026-11-17)
 
 The Hub, reworked from your team's review: calendar and meeting prep at the top of Today, one Go button to start and refresh the day, a Brief tab with today's morning brief, Commitments filters in place of the Review tab, a Done this month view, Something wrong? to report a miss, and Assign to or Not work on items with no home.

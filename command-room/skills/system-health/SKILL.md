@@ -47,11 +47,17 @@ A scheduler tool you cannot see yet may only be waiting to be loaded. Load first
 
 ## Step 1 — Gather the two evidence sources
 
-1. The scheduler listing through `schedule_backend.plan_list` — the live scheduler records (taskId, lastRunAt, enabled, prompt).
+1. The scheduler listing through `schedule_backend.plan_list` — the live scheduler records (taskId, lastRunAt, enabled, prompt). It is ONE read beside the data (cr1#1278), handed the names of the scheduler tools that loaded:
+
+   ```bash
+   python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"tools": [<the loaded scheduler tool names, as plain strings>], "workspace_root": "<WS>"}, "name": "schedule_backend:plan_list"}'
+   ```
+
+   Its `tool` is the one host tool that lists the chats and `args` its arguments; `backend` is the selected backend's id. Call that tool once, and keep its rows whole, as the tool returned it (every row, every field, `folders` and the trigger id included): the helper in Step 2 places each one beside the data, by the one placement rule. `tool` null is no scheduler here: `line` says why. Render every call through the door like this one; never call a `task_watchdog` function, or `schedule_backend` by a name of your own, in this session.
 
    **Ask availability FIRST, and ask it of the code, never of a tool name (TRUTH1, SPEC_NIGHTM2_LANES §3 (a)).** Before planning any listing, run `schedule_config.scheduler_availability(<this session's tool names>)`. Two answers, two different facts, and they must never be blurred into one:
    - `available: False` with `reason: "scheduler_unavailable"` — there is no scheduler of any kind in this session. **Pass `task_records=None`** (the literal `None`, never `[]`) and pass `backend=None`. Do not attempt the listing; there is nothing to list from.
-   - anything else — execute `plan_list`, `normalize` the result, and pass that list, **plus `backend=<the selected backend's id>`** (`schedule_backend.select_backend(...)` already returned it), so an empty listing on a cloud seat is read as "set up in the older desktop app" rather than as a blind vantage.
+   - anything else (`no_account` and `registration_blocked` included: they refuse a registration, not a read) — run the `plan_list` read above, call its `tool`, and pass the rows, **plus `backend=<its backend>`**, so an empty listing on a cloud seat is read as "set up in the older desktop app" rather than as a blind vantage.
 
    `None` and `[]` are two different registry states and `health_verdict` renders a different sentence for each: `None` means "no scheduler tool here", `[]` means "the scheduler answered and holds nothing". Substituting one for the other tells the customer something that is not true about their own computer. Never probe for a tool by name to decide this — the availability helper is the one place that knows, and a name a session does not expose is exactly what this check is about.
 
@@ -132,7 +138,7 @@ eval "$([ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" 2>/dev/null && python3 shared
 WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_demo-framework" \) -prune -o -type d -name "_hq" -print 2>/dev/null | awk -F/ -v z=0 '{print NF, $z}' | sort -n | head -1 | cut -d" " -f2- | sed 's|/_hq$||'); [ "${CR_LOCAL_FS:-1}" = "1" ] && [ "${CR_ENV:-}" != "merged_cloud" ] || WORKSPACE=""
 [ -n "$PLUGIN_ROOT" ] && cd "$PLUGIN_ROOT" || true
 # <<< CR ACCESS PREAMBLE v6 <<<
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"backend": "<the selected backend's id (cloud / legacy), or null when Step 1 said no scheduler is available>", "records_known": <true, or false when Step 1 said no scheduler is available>, "task_records": [<the NORMALISED records from `schedule_backend.plan_list` (executed, then `normalize`), one task dict each>], "workspace_root": "<WS>"}, "name": "staff_meeting_helpers:health_report"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"backend": "<the selected backend's id (cloud / legacy), or null when Step 1 said no scheduler is available>", "records_known": <true, or false when Step 1 said no scheduler is available>, "task_records": [<every row the Step 1 listing tool returned, whole, as the tool returned it>], "workspace_root": "<WS>"}, "name": "staff_meeting_helpers:health_report"}'
 ```
 
 The verdict is computed where the data is, and the answer is one JSON object:

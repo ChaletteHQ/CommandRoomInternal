@@ -210,17 +210,25 @@ WORKSPACE=$(find "$SESSION_DIR/mnt" -maxdepth 5 \( -name "_archive" -o -name "_d
    ```python
    craft_candidates = [
      {"subject_id": "<person, org or project id whose method it is; the owner's own id for the owner>",
-      "scope": "<review | decide | write | run-a-meeting | sell, or a scope the owner added>",
+      "scope": "<review | decide | write | run-a-meeting | win-business | follow-up | prioritize | delegate, or a kind the owner added>",
       "text": "When <situation>, they <action>, because <reason>.",
       "section": "Rules",   # or "What they never do", or "Order of work"
       "evidence": ["session:<session id>"]},   # or "meeting:<seq>" for a processed meeting
      # new material that says a CONFIRMED rule is wrong: name the rule it contradicts
      {"text": "<what the rule should now say>", "evidence": ["meeting:<seq>"],
       "contradicts": "<craft file path>#R<n>"},
+     # a kind of work that recurs in their meetings, chats or documents and is not on the list
+     # (a recurring review, a monthly update, a board pack): one candidate per kind (cr1#1391)
+     {"subject_id": "<whose work it is>", "text": "<its first rule, same shape as above>",
+      "evidence": ["meeting:<seq>", "meeting:<seq>", "document:<path>"],  # every time it recurs
+      "new_kind": {"label": "<two to forty letters, no figures>",
+                   "parent": "<the core scope it sits under, e.g. decide>",
+                   "readers": ["<skills it applies in>"],   # omit: where its parent applies
+                   "triggers": ["<words that say a task is this kind>"]}},
    ]
    ```
 
-   Nothing is written to a craft file here. The write core turns each candidate into a question on the Hub's Review tab, always asking first: a new rule, or an amend shown beside the rule it contradicts. It drops a candidate with no evidence it can find, one carrying a figure or a tracked name, one already in its file, and one the owner dismissed in the last ninety days. No craft question is asked anywhere else. A window with no clean signal passes an empty list.
+   Nothing is written to a craft file here. The write core turns each candidate into a question under To confirm on the Hub's Commitments tab, always asking first: a new rule, an amend shown beside the rule it contradicts, or a new kind of work with its parent, where it applies and its evidence. It drops a candidate with no evidence it can find, one carrying a figure or a tracked name, one already in its file, and one the owner dismissed in the last ninety days. A new kind needs at least three sightings the write core can find, and one the owner declined is not asked again for a year (one taken back, never); mail is never cited here. Nothing is added to the list until the owner says yes. No craft question is asked anywhere else. A window with no clean signal passes an empty list.
 
 4. **Write + receipt — ONE call.** It dedups every item on its content hash through `.source_refs.idx`, appends the survivors via `append_event()`, composes+appends each session's narrative block via `session_narrative.compose_and_append` (Step 3.5's `sessions` list), and lands the `session_sweep_run` receipt — `n_narratives_composed` counts how many blocks actually landed:
 

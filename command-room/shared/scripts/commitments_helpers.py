@@ -299,6 +299,75 @@ def cru_window(workspace_root: str, *, now_iso: Optional[str] = None,
 # Phases 2.5 / 2.7 - the CRU passes, planned
 # ---------------------------------------------------------------------------
 
+class _CloseDial:
+    """cr1#756 (owner ruling 2026-11-19): the close dial of the connector a
+    Waiting On pass reads its evidence from (`email` for 2.5, `calendar` for
+    2.7), read through `close_mode_dial.close_mode_for` like every other job
+    that closes.
+
+      * `skip_reason` set: closes are off for that connector, so the pass
+        plans nothing at all (no close, no receipt, no proposal), as the
+        sent and calendar jobs do. Decided reversibly under the owner's
+        2026-11-16 word (recorded on cr1#756).
+      * `propose`: each close the matcher found becomes ONE proposal instead,
+        carrying the dial's reason and the stamp that keeps the timeout from
+        closing it; asked once per (commitment, evidence pointer), and never
+        while the commitment already has a proposal open.
+      * `close`, or no connector declared: unchanged.
+
+    An unreadable dial reads as undeclared, as in `close_mode_dial`."""
+
+    def __init__(self, workspace_root, category: str):
+        self.mode = None
+        self.skip_reason = None
+        self.reason = None
+        self._ws = workspace_root
+        self._already = None
+        self._asked = None
+        try:
+            from close_mode_dial import PROPOSE_REASON, close_mode_for
+            dial = close_mode_for(workspace_root, category)
+        except Exception:  # noqa: BLE001 - unreadable reads as undeclared
+            return
+        self.mode = dial.get("mode")
+        self.skip_reason = dial.get("skip_reason")
+        if self.mode == "propose":
+            self.reason = PROPOSE_REASON
+
+    @property
+    def propose(self) -> bool:
+        return self.reason is not None and not self.skip_reason
+
+    def stamp(self, counters: Dict[str, Any]) -> None:
+        counters["close_mode"] = self.mode
+        if self.skip_reason:
+            counters["close_skip_reason"] = str(self.skip_reason)
+        if self.propose:
+            counters.setdefault("n_close_mode_proposed", 0)
+
+    def wants(self, commitment_id, source_ref) -> bool:
+        """True when this (commitment, pointer) has not been asked and the
+        commitment has no proposal open; marks it asked for this plan."""
+        if self._already is None:
+            from close_mode_dial import asked_evidence
+            from cru_match import load_open_review_proposals
+            self._already = {
+                str((p.get("data") or {}).get("commitment_id"))
+                for p in load_open_review_proposals(_events_path(self._ws))}
+            self._asked = asked_evidence(self._ws)
+        cid = str(commitment_id)
+        if cid in self._already or (cid, str(source_ref or "")) in self._asked:
+            return False
+        self._already.add(cid)
+        return True
+
+    def proposal(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        from close_mode_dial import BLOCKED_FIELD
+        event["data"]["close_mode_reason"] = self.reason
+        event["data"][BLOCKED_FIELD] = True
+        return event
+
+
 def plan_sent_cru(workspace_root: str, *,
                   sends: Optional[List[Dict[str, Any]]] = None,
                   user_person_id: str = "",
@@ -321,6 +390,7 @@ def plan_sent_cru(workspace_root: str, *,
                                                resolve_mail_provider)
     from cru_match import (build_pending_review_event, load_open_commitments,
                            match_send_to_commitments)
+    from cru_match import _commitment_id as _cid
 
     writes: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
@@ -328,7 +398,13 @@ def plan_sent_cru(workspace_root: str, *,
     sends = list(sends or [])
     if not sends:
         return {"writes": writes, "rows": rows, "counters": counters}
+    dial = _CloseDial(workspace_root, "email")  # cr1#756
+    dial.stamp(counters)
+    if dial.skip_reason:
+        return {"writes": writes, "rows": rows, "counters": counters}
     opens = load_open_commitments(_events_path(workspace_root))
+    titles = {_cid(ev): str((ev.get("data") or {}).get("title") or "")
+              for ev in opens}
     resolved_provider = resolve_mail_provider(workspace_root, provider)
     for send in sends:
         counters["n_sends"] += 1
@@ -349,7 +425,25 @@ def plan_sent_cru(workspace_root: str, *,
             evidence = (f"Sent via native mail client at {send.get('ts')} — "
                         f"Subject: {send.get('subject')}")
             rec = r.get("recommendation")
-            if rec == "auto_resolve":
+            if rec == "auto_resolve" and dial.propose:
+                # cr1#756 - the mail connector asks before closing.
+                if dial.wants(r["commitment_id"], key):
+                    rows.append(dial.proposal(build_pending_review_event(
+                        commitment_id=r["commitment_id"],
+                        primary_thread_id=r.get("primary_thread_id") or "",
+                        source_skill=source_skill,
+                        proposed_resolution="auto_resolve",
+                        score=r.get("score") or 0.0,
+                        evidence=evidence,
+                        next_seq=None,
+                        title=(r.get("title")
+                               or titles.get(str(r["commitment_id"])) or ""),
+                        has_completion_signal=r.get("has_completion_signal"),
+                        evidence_ts=send.get("ts"),
+                        source_ref=key,
+                    )))
+                    counters["n_close_mode_proposed"] += 1
+            elif rec == "auto_resolve":
                 writes.append({"op": "close",
                                "commitment_id": r["commitment_id"],
                                "resolved_by": user_person_id,
@@ -401,6 +495,7 @@ def plan_calendar_cru(workspace_root: str, *,
     """
     from cru_match import (build_pending_review_event, load_open_commitments,
                            match_calendar_to_commitments)
+    from cru_match import _commitment_id as _cid
 
     writes: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
@@ -410,15 +505,43 @@ def plan_calendar_cru(workspace_root: str, *,
         return {"writes": writes, "rows": rows, "results": [],
                 "counters": counters}
     counters["n_events"] = len(events)
+    dial = _CloseDial(workspace_root, "calendar")  # cr1#756
+    dial.stamp(counters)
+    if dial.skip_reason:
+        return {"writes": writes, "rows": rows, "results": [],
+                "counters": counters}
     created_by_id = {str(e.get("calendar_event_id") or ""): e.get("created_ts")
                      for e in events}
     opens = load_open_commitments(_events_path(workspace_root))
+    titles = {_cid(ev): str((ev.get("data") or {}).get("title") or "")
+              for ev in opens}
     results = match_calendar_to_commitments(
         open_commitments=opens, user_person_id=user_person_id,
         calendar_events=events, workspace_root=workspace_root)
     for r in results:
         rec = r.get("recommendation")
-        if rec == "auto_resolve":
+        if rec == "auto_resolve" and dial.propose:
+            # cr1#756 - the calendar connector asks before closing.
+            cal = r.get("calendar_event_id")
+            ref = f"gcal:{cal}" if cal else None
+            if dial.wants(r["commitment_id"], ref):
+                rows.append(dial.proposal(build_pending_review_event(
+                    commitment_id=r["commitment_id"],
+                    primary_thread_id=r.get("primary_thread_id") or "",
+                    source_skill=source_skill,
+                    proposed_resolution="auto_resolve",
+                    score=r.get("score") or 0.0,
+                    evidence=r.get("evidence") or "",
+                    next_seq=None,
+                    title=(r.get("title")
+                           or titles.get(str(r["commitment_id"])) or ""),
+                    has_completion_signal=r.get("has_completion_signal"),
+                    evidence_ts=(created_by_id.get(str(cal or ""))
+                                 or r.get("created_ts")),
+                    source_ref=ref,
+                )))
+                counters["n_close_mode_proposed"] += 1
+        elif rec == "auto_resolve":
             cal = r.get("calendar_event_id")
             writes.append({"op": "close",
                            "commitment_id": r["commitment_id"],

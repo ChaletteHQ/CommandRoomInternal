@@ -113,7 +113,9 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
     commitment items. The capture's receipt carries the window, skip and
     all. Both the incremental pass (`meeting-capture`) and the End of Day
     close (`past-meetings`) read the dial here. With no `meetings`
-    connector declared the window is byte for byte today's.
+    connector declared the window is byte for byte today's, except that
+    the capture pass's answer names its plain search (cr1#979,
+    `connector_queries`).
 
     cr1#1163: a `meetings` connector the owner called PERSONAL is never
     read, not even to fetch: the window comes back EMPTY (start = end, on
@@ -127,9 +129,15 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
         kwargs["now"] = now
     out = _window(workspace_root, task_id, floor_hours=floor_hours,
                   cap_days=cap_days, **kwargs)
-    if normalize_task_id(task_id) == "meeting-capture":
+    capture = normalize_task_id(task_id) == "meeting-capture"
+    if capture:
         out = _capture_window(workspace_root, out, now=now)
     out = _jsonable(out)
+    if capture and isinstance(out, dict):
+        # cr1#1276: the leg's start, stamped here beside the data, so the
+        # receipt times the leg itself and no caller supplies a duration.
+        from catchup import run_start_token
+        out["capture_leg_start"] = run_start_token(_dt_utc_now_iso())
     read = None
     try:
         from connector_reads import for_category
@@ -146,7 +154,57 @@ def catchup_window(workspace_root: str, *, task_id: str = TASK_ID,
                     out[a] = out[b]
             if "days" in out:
                 out["days"] = 0
+    if capture and isinstance(out, dict):
+        out.update(_capture_connector_fields(read))
     return out
+
+
+#: cr1#979: the search a seat with no meetings connector declared runs.
+UNDECLARED_MEETINGS_QUERY = "meeting notes"
+
+
+def _typed_capture_run() -> bool:
+    try:
+        from eod_incremental import typed_run
+        return typed_run()
+    except Exception:  # noqa: BLE001 - unknown reads as a scheduled fire
+        return False
+
+
+def _capture_connector_fields(read: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """cr1#979: the meeting leg's connector answer, in the mail legs' words.
+
+    `connector_queries` is the host tool search the fire runs to load the
+    meetings connector (empty when it must not be read here). On a cloud
+    fire a desktop-only meetings connection is unreachable: the answer says
+    so under `meetings_unreachable_reason`, lists no search, and drops the
+    reason from `commitment_capture_skip_reason`, whose branch fetches every
+    meeting (a fire that cannot reach the connection fetched nothing and
+    recorded the pass complete, nine runs running). A person's typed run is
+    in the desktop app and reads it. With nothing declared the search is a
+    plain `UNDECLARED_MEETINGS_QUERY`."""
+    if not read:
+        # Nothing declared (a seat from before cr1#667): the fire still loads
+        # a meeting-notes connector, by a plain search.
+        return {"connector_queries": [UNDECLARED_MEETINGS_QUERY]}
+    kind = read.get("skip_kind")
+    out: Dict[str, Any] = {"connector_queries": []}
+    if kind == "reachability" and _typed_capture_run():
+        # A person's chat runs in the desktop app, where the connection is.
+        kind = None
+    if kind == "reachability":
+        out["meetings_unreachable_reason"] = read.get("skip_reason")
+        out["commitment_capture_skip_reason"] = None
+    elif kind != "personal":
+        out["connector_queries"] = [read.get("label") or read.get("category")
+                                    or "meetings"]
+    return out
+
+
+def _dt_utc_now_iso() -> str:
+    """The clock now, UTC ISO (cr1#1276: the capture leg's start)."""
+    import datetime as _dtm
+    return _dtm.datetime.now(_dtm.timezone.utc).isoformat()
 
 
 def _capture_window(workspace_root: str, out: Dict[str, Any], *,
@@ -488,14 +546,18 @@ def decision_rows(workspace_root: str, *,
                     primary_thread_id=r["primary_thread_id"],
                     source_skill="past-meetings", evidence=evidence,
                     next_seq=None))
-            elif rec == "decision_supersede_proposed":
+            elif rec == "decision_supersede_proposed" and r.get("evidence_line"):
+                # cr1#1280: a proposal carries the transcript line it rests
+                # on; one without a line is not written.
                 to_append.append(build_decision_supersede_proposal_event(
                     decision_id=r["decision_id"],
                     primary_thread_id=r["primary_thread_id"],
                     source_skill="past-meetings", evidence=evidence,
                     next_seq=None, score=r.get("score"),
                     title=r.get("title", ""),
-                    source_ref=transcript.get("source_ref")))
+                    source_ref=transcript.get("source_ref"),
+                    evidence_line=r.get("evidence_line", ""),
+                    evidence_line_no=r.get("evidence_line_no")))
     filtered = new_supersede_proposals(to_append, events_jsonl_path=events_path)
     rows = list(filtered["events"])
     return _jsonable({
@@ -928,7 +990,8 @@ EOD_TAP_DONE_LINE = "Marked that one done."
 EOD_TAP_DROPPED_LINE = "Let that one go. It is off your plate."
 EOD_TAP_ALREADY_CLOSED_LINE = ("That one was already closed, so nothing "
                                "changed.")
-EOD_TAP_DEFERRED_LINE = "Moved its due date to {day}."
+EOD_TAP_DEFERRED_LINE = ("Moved its due date to {day}. It is off your lists "
+                         "until then.")
 EOD_TAP_SNOOZED_LINE = ("It stays open, since the date is theirs, and "
                         "comes back on {day}.")
 EOD_TAP_NEEDS_DATE_LINE = ("That push needs a date, as a number of days or "
@@ -1519,9 +1582,20 @@ def inbound_mail_staged(workspace_root: str, *,
                         accounts: Optional[List[Any]] = None,
                         fire: str = "maintenance",
                         read_complete: Optional[bool] = None,
-                        page_until: Optional[str] = None) -> Dict[str, Any]:
+                        page_until: Optional[str] = None,
+                        maintenance_window: Optional[Dict[str, Any]] = None,
+                        **plan_keys: Any) -> Dict[str, Any]:
     """The inbound-mail job's writer, by path (cr1#664): a WRITER, on the
     write list only, the sibling of `reconcile_chat_staged`.
+
+    `maintenance_window` (cr1#1275): the plan's own window, taken so a file
+    that hands it back is not refused with a TypeError (a typed run did,
+    and the chat then rebuilt the batch by hand). It is not read: the leg
+    computes the window beside the data and stops it at `page_until`, as
+    before. Any other key of the plan's answer (`inbound_mail_leg.
+    PLAN_KEYS`) handed back is taken and not read, for the same reason; a
+    key the plan never answers is refused by name (ValueError), never a
+    bare TypeError.
 
     The inbox batch was staged raw (`stage_fire_input`, kind
     `inbound_messages`, the maintenance fire's own folder); this reads it
@@ -1532,8 +1606,13 @@ def inbound_mail_staged(workspace_root: str, *,
     mail backend) is the empty batch. Answers the job's receipt, unchanged.
     A batch in which no message keeps a `message_id` raises, like
     `_read_raw`: a read that kept nothing is never a quiet day."""
-    from inbound_mail_leg import run_inbound_mail
+    from inbound_mail_leg import PLAN_KEYS, run_inbound_mail
 
+    unknown = sorted(k for k in plan_keys if k not in PLAN_KEYS)
+    if unknown:
+        raise ValueError("inbound_mail_staged takes no "
+                         + ", ".join(unknown) + " (not a key of the "
+                         "inbound-mail plan's answer)")
     _stage_dir(fire)
     messages: List[Dict[str, Any]] = []
     if inbound_rel:

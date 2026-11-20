@@ -1474,7 +1474,8 @@ def _coverage_prose(receipt) -> str:
 # ---------------------------------------------------------------------------
 
 def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
-                    source_skill: str = SOURCE_SKILL, now_iso=None) -> dict:
+                    source_skill: str = SOURCE_SKILL, now_iso=None,
+                    review_actor=None) -> dict:
     """Phase B — carry out the user's choices from the digest. ONE batch per run.
 
     `decisions` is the apply-choices payload, already parsed:
@@ -1494,7 +1495,9 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
         `user_confirmed=True`. These two are the ONLY buckets that reach the
         UNCONFIRMED-EXTRACTION tier, and the reason is not caller-supplied: it
         is looked up from the bucket, so a row cannot arrive wearing a stamp of
-        its own choosing;
+        its own choosing. `review_actor` (cr1#1308) says WHO decided those
+        two: omitted, the owner's own confirmed act; the scheduled drain
+        passes `event_types.MACHINE`;
       * `merge`                   -> `supersede_commitment(user_confirmed=True)`
         per absorbed item, folding into the OLDEST item as the survivor. That
         writer already unions both sides' provenance into `merged_source_refs`,
@@ -1593,10 +1596,13 @@ def apply_decisions(workspace_root, decisions, *, user_person_id, batch_id=None,
             user_confirmed=True,
             # ATTRIB2 (CONTRACT Rule 32) — `user_confirmed=True` here is the
             # PERMISSION that lets an unconfirmed extraction close at all,
-            # not a report that anyone tapped. Without this the lapse drain
-            # would be stamped as the customer's and End of Day would say
-            # "N things you let go" about work nobody asked for.
-            actor=MACHINE_ACTOR)
+            # not a report that anyone tapped. So WHO decided is stated by
+            # the entry point, not by this leg (cr1#1308): the scheduled
+            # drain (`run_review_expiry_job`) passes `actor=MACHINE`, so End
+            # of Day never says "N things you let go" about work nobody
+            # asked for; the owner's own confirmed verbs pass nothing, and
+            # the close is theirs, as it was before.
+            actor=review_actor)
 
     merged: list = []
     for group in merges:
@@ -3140,7 +3146,7 @@ def _review_decisions(rows, *, bucket, pending_ids) -> list:
 
 
 def _apply_review(workspace_root, plan, *, bucket, user_person_id, batch_id,
-                  now_iso, empty_reason, verb) -> dict:
+                  now_iso, empty_reason, verb, actor=None) -> dict:
     """The shared apply half of both review verbs. Re-derives; trusts nothing.
 
     The plan arrives already re-derived by the caller (which is why neither
@@ -3192,7 +3198,10 @@ def _apply_review(workspace_root, plan, *, bucket, user_person_id, batch_id,
                                user_person_id=user_person_id,
                                batch_id=batch_id,
                                source_skill=REVIEW_SOURCE_SKILL,
-                               now_iso=now_iso))
+                               now_iso=now_iso,
+                               # cr1#1308: the entry point's actor, never
+                               # assumed here.
+                               review_actor=actor))
     n_applied = int(out.get("n_closed") or 0)
     # F-2 pattern — every cause on the receipt comes off the writer's OWN
     # per-row results. Nothing here asserts a cause the writer did not return:
@@ -3225,7 +3234,8 @@ def _apply_review(workspace_root, plan, *, bucket, user_person_id, batch_id,
 
 def apply_review_expiry(workspace_root, *, user_person_id,
                         older_than_days=None, batch_id=None,
-                        now_iso=None, include_reopened: bool = False) -> dict:
+                        now_iso=None, include_reopened: bool = False,
+                        actor=None) -> dict:
     """Lapse the unanswered half of the unconfirmed pile in ONE undoable batch.
 
     There is deliberately no `rows` / `plan` / `decisions` parameter, for the
@@ -3242,6 +3252,11 @@ def apply_review_expiry(workspace_root, *, user_person_id,
     by default. It is a keyword here for the same reason there is no `rows`
     parameter: the apply re-derives, so the flag has to be re-stated on the
     apply call and cannot be smuggled in on a plan object from a turn ago.
+
+    cr1#1308: `actor`: WHO decided the lapse, stamped on every close as
+    `actor_kind`. Omitted (the owner's own confirmed verb in chat), the close
+    is the owner's. The scheduled drain, `run_review_expiry_job`, passes
+    `actor=event_types.MACHINE`, because nobody was asked.
     """
     plan = review_expiry_plan(workspace_root, user_person_id=user_person_id,
                               older_than_days=older_than_days, now_iso=now_iso,
@@ -3266,7 +3281,7 @@ def apply_review_expiry(workspace_root, *, user_person_id,
         empty_reason=(f"Nothing in the unconfirmed pile has sat unanswered "
                       f"for {threshold}+ days, so there is nothing to clear. "
                       f"Nothing was changed."),
-        verb=f"nobody had answered in {threshold}+ days")
+        verb=f"nobody had answered in {threshold}+ days", actor=actor)
     out = dict(out)
     out["n_default_applied"] = len(defaults_applied)
     out["default_applied"] = defaults_applied
@@ -3319,13 +3334,17 @@ def _apply_lapse_defaults(workspace_root, plan, *, user_person_id, batch_id,
 
 
 def apply_ingest_kill(workspace_root, *, user_person_id, source_ref,
-                      batch_id=None, now_iso=None) -> dict:
+                      batch_id=None, now_iso=None, actor=None) -> dict:
     """Clear one ingest's unconfirmed cluster in ONE undoable batch.
 
     Same no-row-list contract and the same re-derivation as the expiry. The
     ONLY caller input is the ingest id — a name for a defect, not a list of
     rows — so the widest thing this verb can ever reach is one ingest's
     review-tier output.
+
+    cr1#1308: `actor` as on `apply_review_expiry`: omitted, the clear is the
+    owner's own confirmed act; an unattended caller passes
+    `actor=event_types.MACHINE`.
     """
     plan = ingest_kill_plan(workspace_root, source_ref,
                             user_person_id=user_person_id, now_iso=now_iso)
@@ -3335,7 +3354,7 @@ def apply_ingest_kill(workspace_root, *, user_person_id, source_ref,
         user_person_id=user_person_id, batch_id=batch_id, now_iso=now_iso,
         empty_reason=(f"Nothing unconfirmed is left from {label}, so there is "
                       f"nothing to clear. Nothing was changed."),
-        verb=f"from {label}")
+        verb=f"from {label}", actor=actor)
 
 
 # ---------------------------------------------------------------------------
@@ -3566,8 +3585,12 @@ def run_review_expiry_job(workspace_root, *, apply: bool = False,
     # trend to zero (the chip closed them); it is kept because it is the
     # honest measure of what the lapse is still swallowing.
     n_with_evidence = _lapsed_with_completion(workspace_root, plan)
+    # cr1#1308: the scheduled drain is the product's own judgment: nobody
+    # was asked, so the lapse is the machine's act whatever person id the
+    # row carries. ATTRIB2 (CONTRACT Rule 32) wants it stated here.
     out = dict(apply_review_expiry(workspace_root, user_person_id=uid,
-                                   batch_id=batch_id, now_iso=now_iso))
+                                   batch_id=batch_id, now_iso=now_iso,
+                                   actor=MACHINE_ACTOR))
     out["n_lapsed_with_completion_evidence"] = (
         n_with_evidence if out.get("applied") else 0)
     out["n_ttl_planned"] = int(chips.get("n_ttl_planned") or 0)

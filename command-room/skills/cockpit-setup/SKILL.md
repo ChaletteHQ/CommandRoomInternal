@@ -317,7 +317,7 @@ summary of what was registered.
 ## What the page does and does not do
 
 - **It never writes the book.** Done, Add context, Confirm, Snooze, Send,
-  Draft, Reopen and a press on the Review or Week tab are saved as choices in the page's database;
+  Draft, Reopen and a press under To confirm or on the Done tab are saved as choices in the page's database;
   `cockpit-apply`, the one writer from the page to the book, sends them
   through `cockpit_helpers:apply_commitment_choices`,
   `cockpit_helpers:apply_review_choices`, `cockpit_helpers:apply_week_choices`
@@ -360,7 +360,7 @@ summary of what was registered.
   2026-11-04). The Today tab opens with this morning's view, built from the
   feeds the page already holds: the calendar, the mail that needs a reply,
   what is overdue, one first action, and the day's top three open questions
-  with the Review tab's own buttons, answered through Apply. The scheduled
+  with the To confirm filter's own buttons, answered through Apply. The scheduled
   Morning Brief still runs with its settings and ends by pointing here
   (`cockpit_helpers:hub_pointer`); a seat with no Hub keeps its brief as is.
 - **Calendar answers go out from the page too** (cr1#723, owner ruling

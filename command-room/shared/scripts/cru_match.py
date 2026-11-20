@@ -680,7 +680,44 @@ def promise_tz(workspace_root=None):
         return None
 
 
-def promise_time_raw(ev: dict, tz=None) -> str:
+def _meeting_start_answer(d: dict, raw: str, tz=None) -> Optional[str]:
+    """cr1#1224 - the source meeting's own start, when the row carries one
+    from the projection (`MEETING_START_FIELD`), it predates the capture, and
+    it falls on the row's `meeting_date` when the row names one. Anything
+    else is None, and the caller keeps its older answer.
+
+    The start's own offset must be the workspace clock's offset at that
+    instant. A meeting time is written by whoever processed the meeting; a
+    local hour stamped with the wrong offset (10:00 written as 10:00Z) would
+    read hours early and let in evidence from before the meeting. With no
+    workspace clock to check against, nothing is trusted."""
+    if tz is None:
+        return None
+    start = _parse_ts(d.get(MEETING_START_FIELD))
+    cap = _parse_ts(raw) if raw else None
+    if start is None or cap is None or start >= cap:
+        return None
+    try:
+        if start.utcoffset() != start.astimezone(tz).utcoffset():
+            return None
+    except Exception:  # noqa: BLE001 - a clock that cannot answer trusts nothing
+        return None
+    md = str(d.get("meeting_date") or "").strip()[:10]
+    if md:
+        try:
+            day = datetime.date.fromisoformat(md)
+        except ValueError:
+            return None
+        # The meeting date is a day on the workspace's clock.
+        lo = datetime.datetime.combine(day, datetime.time.min, tzinfo=tz)
+        hi = datetime.datetime.combine(day + datetime.timedelta(days=1), datetime.time.min,
+                                       tzinfo=tz)
+        if not (lo <= start < hi):
+            return None
+    return start.astimezone(datetime.timezone.utc).isoformat()
+
+
+def promise_time_raw(ev: dict, tz=None, *, meeting_start: bool = True) -> str:
     """cr1#744 - WHEN THE PROMISE WAS MADE, as the row itself says it. The
     stale-evidence fence compares a send, a reply or a transcript against
     this, not against when the row was written: after a gap, a Monday promise
@@ -699,7 +736,17 @@ def promise_time_raw(ev: dict, tz=None) -> str:
     day might have gone out before the meeting, so it stays fenced, whether
     the row was captured that day or later. `tz` is `promise_tz`'s answer;
     without one the day runs to its end in the last zone on earth, which
-    fences at least as much as any workspace's own clock would."""
+    fences at least as much as any workspace's own clock would.
+
+    cr1#1224 - a meeting row whose source meeting is on file carries that
+    meeting's own START (`MEETING_START_FIELD`, joined by
+    `load_open_commitments` from the `meeting` event its `source_ref` names).
+    When it predates the capture it is the answer: work done after the meeting
+    began counts, however late the row was captured, and anything before it
+    still does not. Only the matching rules decide WHAT counts; this decides
+    only from WHEN. `meeting_start=False` keeps the older answer, for the
+    transcript rail, whose evidence is itself a meeting: a second recording of
+    the same meeting starts after this one's start and is not its delivery."""
     d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
     raw = event_time(ev)
     for key in ("item_created_at", "item_updated_at"):
@@ -708,6 +755,10 @@ def promise_time_raw(ev: dict, tz=None) -> str:
             a, b = _parse_ts(born), _parse_ts(raw)
             if a is not None:
                 return born.strip() if (b is None or a < b) else raw
+    if meeting_start:
+        began = _meeting_start_answer(d, raw, tz)
+        if began:
+            return began
     try:
         day = datetime.date.fromisoformat(str(d.get("meeting_date") or "").strip()[:10])
     except ValueError:
@@ -1228,6 +1279,78 @@ def _owner_adjudications(events) -> dict:
     return {cid: pair[1] for cid, pair in newest.items()}
 
 
+#: cr1#1224 - the projected field that carries the source meeting's own start
+#: time on a meeting-captured row. Written ONLY by `load_open_commitments`,
+#: from the `meeting` event the row's `source_ref` names; never stored.
+MEETING_START_FIELD = "meeting_start_at"
+
+
+def _trusted_meeting_start(raw):
+    """A meeting event's time as a START the fence may lean on, or None.
+
+    Trusted only when it carries its own offset (a naive value could be read
+    hours early) and is not exactly midnight on its own clock (a day written
+    as a time says nothing about the hour)."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return None
+    if (dt.hour, dt.minute, dt.second, dt.microsecond) == (0, 0, 0, 0):
+        return None
+    return dt
+
+
+def _meeting_start_index(events) -> dict:
+    """cr1#1224 - meeting ref key -> (instant, raw) for the latest trusted
+    start of that meeting. The raw string keeps its own offset, which
+    `_meeting_start_answer` checks against the workspace's clock.
+
+    Joined through `meeting_capture.meeting_ref_keys`, the one derivation of
+    "is this the same meeting". When two records of one meeting, or a
+    meeting's `data.start_ts` and its `ts`, disagree, the LATER time stands:
+    it never lets in evidence that any record places before the meeting."""
+    try:
+        from meeting_capture import meeting_ref_keys
+    except Exception:  # noqa: BLE001 - no index: every row keeps its capture time
+        return {}
+    index: dict = {}
+    for ev in events or []:
+        if not isinstance(ev, dict) or ev.get("type") != "meeting":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        starts = [(dt, str(raw).strip()) for raw in (d.get("start_ts"), ev.get("ts"))
+                  for dt in (_trusted_meeting_start(raw),) if dt is not None]
+        if not starts:
+            continue
+        start = max(starts, key=lambda pair: pair[0])
+        for key in meeting_ref_keys(d.get("source_ref")):
+            if key not in index or start[0] > index[key][0]:
+                index[key] = start
+    return index
+
+
+def _row_meeting_start(row, index) -> Optional[str]:
+    """The start of the meeting this row was captured from, as the meeting
+    event wrote it (offset kept), or None when its `source_ref` names no
+    meeting on file."""
+    if not index:
+        return None
+    try:
+        from meeting_capture import meeting_ref_keys
+    except Exception:  # noqa: BLE001
+        return None
+    d = row.get("data") if isinstance(row.get("data"), dict) else {}
+    hits = [index[k] for k in meeting_ref_keys(d.get("source_ref") or row.get("source_ref"))
+            if k in index]
+    if not hits:
+        return None
+    return max(hits, key=lambda pair: pair[0])[1]
+
+
 def _adjudicated_since(ev, evidence_at) -> bool:
     """Was this row reopened or skipped at or after the evidence's own time?
     A row with no such word is inert: the fence never invents a refusal. A
@@ -1499,6 +1622,7 @@ def load_open_commitments(
     from closure_index import build_closure_index, closer_target_id
     closure = build_closure_index(events)
     adjudicated = _owner_adjudications(events)  # cr1#740: see the helper
+    meeting_starts = _meeting_start_index(events)  # cr1#1224: see the helper
     # commitment id → latest due-shifting update (Stage A fold; see docstring).
     due_updates: dict[str, dict] = {}
     hint_updates: dict[str, dict] = {}   # POLICY1-B DD-6
@@ -1537,6 +1661,14 @@ def load_open_commitments(
     # seeing the ordinary open commitment it always saw. Latest wins per
     # target, so a park after a clear re-parks and vice versa.
     watch_marks: dict[str, dict] = {}
+    # cr1#1463 - commitment id -> the notes the owner added to it
+    # (`commitment_state.add_commitment_note`: a `note` row with
+    # data.via "commitment_context"), and the seqs of the notes taken back
+    # (`commitment_note_retracted`). ADDITIVE: an item with no note carries no
+    # `context_notes` key at all, so every reader written before this fold
+    # sees the row it always saw.
+    ctx_notes: dict[str, list] = {}
+    ctx_gone: set = set()
     # commitment id → latest OVERDUE-ASK mark (SPEC OVERDUE1 DD-2): a
     # commitment_updated carrying asked_set (commitment_state.mark_asked) or
     # asked_cleared (commitment_state.clear_asked). ADDITIVE, exactly like the
@@ -1602,6 +1734,12 @@ def load_open_commitments(
     for idx, ev in enumerate(events):
         et = ev.get("type") or ev.get("event") or ""
         d = ev.get("data") or {}
+        if et == "note" and d.get("via") == "commitment_context" and d.get("commitment_id"):
+            ctx_notes.setdefault(str(d["commitment_id"]), []).append(
+                {"text": str(d.get("summary") or ""), "seq": ev.get("seq"),
+                 "ts": str(ev.get("ts") or "")})
+        elif et == "commitment_note_retracted" and isinstance(d.get("retracts_seq"), int):
+            ctx_gone.add(d["retracts_seq"])
         if et in ("commitment_resolved", "thread_resolved", "commitment_superseded"):
             # Closure/reopen state itself folds in the shared closure_index
             # pre-pass above — this branch keeps only the C4 merge fold.
@@ -1936,6 +2074,11 @@ def load_open_commitments(
                                      and not isinstance(s, bool)]
         if adjudicated.get(cid):
             patch["adjudicated_at"] = adjudicated[cid]
+        # cr1#1224: the source meeting's own start, from the meeting event
+        # alone. A stored value is never trusted: no join, no field.
+        m_start = _row_meeting_start(c, meeting_starts)
+        if m_start or MEETING_START_FIELD in (c.get("data") or {}):
+            patch[MEETING_START_FIELD] = m_start
         upd = due_updates.get(cid)
         if upd:
             # In-memory copy with the EFFECTIVE due — data.due is first in
@@ -2143,6 +2286,10 @@ def load_open_commitments(
         # WATCHGATE §2.3 — the watch stamp, additive and last-writer-wins.
         # `data.watch` present == parked; absent == not parked. Nothing else
         # about the row changes, which is the whole back-compat contract.
+        # cr1#1463 - the owner's notes on the item that stand, oldest first.
+        cn = [dict(n) for n in ctx_notes.get(cid, ()) if n["seq"] not in ctx_gone]
+        if cn:
+            patch["context_notes"] = cn
         wm = watch_marks.get(cid)
         if wm is not None:
             if wm["watch"] is None:
@@ -3490,7 +3637,7 @@ def match_transcript_to_commitments(
         # (`promise_time_raw`: a task's board day, cr1#752; a late meeting
         # row's end of local day, cr1#744).
         if fire_start is not None:
-            captured = _parse_ts(promise_time_raw(ev, _promise_tz))
+            captured = _parse_ts(promise_time_raw(ev, _promise_tz, meeting_start=False))
             if captured is None or captured >= fire_start:
                 continue
         owner_id = _commitment_field(ev, "owner_id") or ""
@@ -3530,7 +3677,8 @@ def match_transcript_to_commitments(
         #     stop closing every ts-less item — far wider than the bug.
         #   * capture time PRESENT but unparseable → exclude, mirroring layer 2.
         if evidence_at is not None:
-            _raw_captured = promise_time_raw(ev, _promise_tz)  # cr1#744: the promise's own time
+            # cr1#744: the promise's own time; cr1#1224: not the meeting's start here
+            _raw_captured = promise_time_raw(ev, _promise_tz, meeting_start=False)
             if _raw_captured:
                 captured = _parse_ts(_raw_captured)
                 if captured is None or captured > evidence_at:
@@ -4195,6 +4343,10 @@ def match_calendar_to_commitments(
       - `created_ts` (str ISO, optional): when the event was created/updated. If
         present AND it clearly predates the commitment, the event can't have
         fulfilled it → skipped. Absent → treated as eligible (lenient).
+        cr1#1224: made after the row's source meeting began but before the
+        capture, it still counts when `start_ts` says the event starts after
+        it was made (a booking for later).
+      - `start_ts` (str ISO, optional): when the event itself starts.
       - `accepted_by` (list[str], optional): person_ids who have `accepted` the
         invite. Pure bonus confidence; never required.
       - `calendar_event_id` (str, optional): echoed back as evidence.
@@ -4248,7 +4400,11 @@ def match_calendar_to_commitments(
             continue
         title = _commitment_field(ev, "title") or ""
         has_sched = detect_scheduling_intent(title)
-        commit_ts = promise_time_raw(ev, _promise_tz)
+        commit_ts = promise_time_raw(ev, _promise_tz, meeting_start=False)
+        # cr1#1224: the meeting's own start, earlier than `commit_ts` only on
+        # a row whose source meeting is on file. It admits an event only as a
+        # FORWARD booking (see the skip below).
+        _began_dt = _parse_ts(promise_time_raw(ev, _promise_tz))
 
         best: Optional[dict] = None
         best_score = -1.0
@@ -4264,7 +4420,15 @@ def match_calendar_to_commitments(
             # that way, lenient on missing/unparseable data.
             _c_dt, _e_dt = _parse_ts(commit_ts), _parse_ts(created_ts)
             if _c_dt and _e_dt and _e_dt < _c_dt:
-                continue
+                # cr1#1224: made after the meeting began, before the capture,
+                # counts only when the event STARTS after it was made: a
+                # booking made for later. The source meeting's own event,
+                # touched during or after the meeting, starts before that
+                # touch and stays fenced; so does an event whose start the
+                # caller did not pass.
+                _s_dt = _parse_ts(cev.get("start_ts") or cev.get("start") or "")
+                if not (_began_dt and _e_dt >= _began_dt and _s_dt and _s_dt > _e_dt):
+                    continue
             summary = cev.get("summary") or ""
             accepted = bool(
                 {a for a in (cev.get("accepted_by") or []) if a} & counterparties

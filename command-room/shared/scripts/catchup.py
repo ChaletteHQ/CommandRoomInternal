@@ -435,7 +435,7 @@ def _incomplete_marker(data) -> Optional[_dt.datetime]:
     return _parse_iso_local(raw)
 
 
-def last_successful_point(workspace_root, task_id) -> dict:
+def last_successful_point(workspace_root, task_id, now=None) -> dict:
     """How far a task's processing has actually reached — the only honest
     basis for the next window's start.
 
@@ -460,6 +460,13 @@ def last_successful_point(workspace_root, task_id) -> dict:
     status, for a reader that wants to know the job fired; `held_by_status`
     is that receipt's status when it did not move the window, else None.
 
+    cr1#979: with `now` (machine-local naive), a window-moving receipt
+    stamped more than `BASIS_AHEAD_TOLERANCE` after it (its clock ran ahead
+    of this one) is not a basis: the newest receipt that is not ahead is
+    used instead, and `ahead_receipt_dt` names the newest one passed over.
+    Without this, every fire until the wall clock caught up read the ahead
+    receipt as newest and fell back to the floor window again.
+
     Raises nothing of its own, but lets a substrate read failure propagate to
     `catchup_window`, which owns the best-effort fallback.
     """
@@ -469,6 +476,7 @@ def last_successful_point(workspace_root, task_id) -> dict:
     newest_dt = None
     any_dt = None
     any_status = None
+    ahead_dt = None
     for r in iter_receipts(workspace_root, task_ids=accepted):
         dt = _to_local_naive(r.get("dt"))
         if dt is None:
@@ -478,6 +486,10 @@ def last_successful_point(workspace_root, task_id) -> dict:
         raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
         if not receipt_moves_window(r.get("status"), raw.get("data")):
             continue  # cr1#740: a run that read nothing holds the window
+        if now is not None and dt - now > BASIS_AHEAD_TOLERANCE:
+            if ahead_dt is None or dt > ahead_dt:
+                ahead_dt = dt  # cr1#979: stamped ahead of this clock
+            continue
         if newest_dt is None or dt >= newest_dt:
             newest, newest_dt = r, dt
     held = (any_status if (any_dt is not None
@@ -486,7 +498,8 @@ def last_successful_point(workspace_root, task_id) -> dict:
     if newest is None:
         return {"dt": None, "receipt_dt": None, "incomplete_before": None,
                 "receipt_seq": None, "page": None,
-                "newest_receipt_dt": any_dt, "held_by_status": held}
+                "newest_receipt_dt": any_dt, "held_by_status": held,
+                "ahead_receipt_dt": ahead_dt}
     raw = newest.get("raw") if isinstance(newest.get("raw"), dict) else {}
     data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
     marker = _incomplete_marker(data)
@@ -510,6 +523,7 @@ def last_successful_point(workspace_root, task_id) -> dict:
                  if isinstance(data.get(PAGE_FIELD), dict) else None),
         "newest_receipt_dt": any_dt,
         "held_by_status": held,
+        "ahead_receipt_dt": ahead_dt,
     }
 
 
@@ -583,7 +597,29 @@ def _window_dict(job_id, basis, *, now: _dt.datetime,
     return _from_basis(out, basis, now)
 
 
+#: cr1#979: how far ahead of this fire's own now a basis may sit and still be
+#: read as "just now" (two computers on one book disagree by seconds to a
+#: minute). Beyond it the basis is not trusted at all.
+BASIS_AHEAD_TOLERANCE = _dt.timedelta(minutes=5)
+#: The window's flag when its basis was stamped after this fire's own now.
+BASIS_AHEAD_FIELD = "basis_ahead"
+
+
 def _from_basis(out: dict, basis: _dt.datetime, now: _dt.datetime) -> dict:
+    """cr1#979: a window never starts after it ends. A basis stamped after
+    this fire's own now (the receipt's clock ran ahead of this one) opened a
+    window whose start was after its end: `days` negative, the page empty,
+    and the pass still landed complete. Within `BASIS_AHEAD_TOLERANCE` the
+    basis is read as now (an empty window, as before for a basis just
+    behind it); beyond it the cursor is not trusted and the window keeps
+    its floor (`out` as the caller built it, reading back the bound's days),
+    flagged `basis_ahead` with the basis it refused. Re-reading is harmless:
+    every leg skips what is already on the book."""
+    if basis > now:
+        if basis - now > BASIS_AHEAD_TOLERANCE:
+            out[BASIS_AHEAD_FIELD] = basis.isoformat()
+            return out
+        basis = now
     out["since"] = basis.isoformat()
     out["since_aware"] = to_connector_iso(basis)
     out["reason"] = WINDOW_REASON_CURSOR
@@ -626,13 +662,16 @@ def maintenance_window(workspace_root, job_id: str, *,
     """
     now = _parse_iso_local(now) or _now_local()
     try:
-        point = last_successful_point(workspace_root, job_id)
+        point = last_successful_point(workspace_root, job_id, now=now)
     except Exception as exc:  # noqa: BLE001 - best-effort by contract
         return _window_dict(job_id, None, now=now, error=repr(exc)[:200])
     out = _window_dict(job_id, point["dt"], now=now,
                        last_receipt=point["receipt_dt"],
                        incomplete_before=point["incomplete_before"],
                        since_seq=point.get("receipt_seq"))
+    if point.get("ahead_receipt_dt") is not None:
+        # cr1#979: a receipt stamped ahead of this clock was passed over.
+        out[BASIS_AHEAD_FIELD] = point["ahead_receipt_dt"].isoformat()
     # cr1#740: a newer receipt that did not move the window (a skip, a
     # blocked read) is named, so a plan can say why the window reaches back
     # past the job's newest receipt.
@@ -774,7 +813,8 @@ def paged_window(workspace_root, job_id: str, *, page_days=None,
     out = maintenance_window(workspace_root, job_id, now=now_dt)
     prev = None
     try:
-        prev = last_successful_point(workspace_root, job_id).get("page")
+        prev = last_successful_point(workspace_root, job_id,
+                                     now=now_dt).get("page")
     except Exception:  # noqa: BLE001 - a page is sized best-effort
         prev = None
     if page_days is not None:
@@ -1445,3 +1485,54 @@ __all__ = [
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# cr1#1276: a start a plan stamped, as a token a caller cannot type
+# ---------------------------------------------------------------------------
+
+#: A plan's own start (`maintenance_dispatcher.catch_up_plan`'s `run_start`,
+#: `eod_helpers.catchup_window`'s `capture_leg_start`) travels as
+#: `rs1:<iso>:<check>`, so a time a caller chose is told from one the plan
+#: stamped. Not a secret: it catches a chosen or edited time, not an attack.
+RUN_START_PREFIX = "rs1:"
+#: A token older than this is not this run's start (one copied from an
+#: earlier plan); it is refused.
+RUN_START_MAX_AGE_S = 24 * 60 * 60
+
+
+def _run_start_check(iso: str) -> str:
+    import hashlib
+    return hashlib.sha256(("cr1-run-start:" + iso).encode("utf-8")
+                          ).hexdigest()[:12]
+
+
+def run_start_token(iso: str) -> str:
+    """A plan's start `iso` as the token its writer or scorer reads."""
+    return RUN_START_PREFIX + iso + ":" + _run_start_check(iso)
+
+
+def run_start_iso(token, now=None) -> Optional[str]:
+    """The start a token carries, or None when `token` is not one a plan
+    minted (a bare time, an edited one) or is older than
+    `RUN_START_MAX_AGE_S` or later than now."""
+    text = str(token or "").strip()
+    if not text.startswith(RUN_START_PREFIX):
+        return None
+    iso, sep, check = text[len(RUN_START_PREFIX):].rpartition(":")
+    if not sep or not iso or check != _run_start_check(iso):
+        return None
+    try:
+        when = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.astimezone()
+    current = (now if isinstance(now, _dt.datetime)
+               else _dt.datetime.now(_dt.timezone.utc))
+    if current.tzinfo is None:
+        current = current.astimezone()
+    age = (current - when).total_seconds()
+    if age < -60 or age > RUN_START_MAX_AGE_S:
+        return None
+    return iso

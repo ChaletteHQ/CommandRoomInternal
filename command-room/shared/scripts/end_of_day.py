@@ -1899,7 +1899,12 @@ def read_morning_digest(workspace_root, morning: dict) -> dict:
         return out
     try:
         from workspace_paths import normalize_persisted_path
-        resolved = normalize_persisted_path(raw_path, workspace_root)
+        # cr1#1337: `workspace_root` is keyword-only. Passed positionally it
+        # raised TypeError here, the except swallowed it, and a legacy
+        # absolute path was never repaired. A value the normalizer cannot
+        # resolve ("") keeps the stored value, as before.
+        resolved = normalize_persisted_path(
+            raw_path, workspace_root=workspace_root) or raw_path
     except Exception:  # noqa: BLE001 — legacy absolute rows and odd shapes
         resolved = raw_path
     path = Path(resolved)
@@ -2212,7 +2217,9 @@ def todays_notes(workspace_root, since_ts, *, now_iso=None) -> list:
     since, _src = _window(workspace_root, since_ts, now_iso=now_iso)
     until = _parse_iso(now_iso) if now_iso else None
     out = []
-    for ev in _load_events(workspace_root):
+    from commitment_state import without_retracted_notes  # cr1#1463: a note taken back
+
+    for ev in without_retracted_notes(_load_events(workspace_root)):
         if ev.get("type") not in _NOTE_TYPES:
             continue
         _d = ev.get("data") if isinstance(ev.get("data"), dict) else {}

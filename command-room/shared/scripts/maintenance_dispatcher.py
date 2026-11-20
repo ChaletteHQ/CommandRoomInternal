@@ -3235,9 +3235,13 @@ def run_job(workspace_root, job_id: str, *, fired_via: Optional[str] = None,
         argv += ["--triggered-by", trig]
     plugin_root = Path(__file__).resolve().parent.parent.parent
     try:
+        # cr1#1413: the job inherits PYTHONIOENCODING=utf-8 from a door's
+        # writer child, so it is read in UTF-8 too, never the code page.
+        job_env = dict(os.environ)
+        job_env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run(argv, cwd=str(plugin_root), capture_output=True,
-                              text=True, timeout=RUN_JOB_TIMEOUT_S,
-                              env=dict(os.environ))
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=RUN_JOB_TIMEOUT_S, env=job_env)
     except subprocess.TimeoutExpired:
         return {"job_id": job_id, "ran": False, "reason": "timeout",
                 "timeout_s": RUN_JOB_TIMEOUT_S}
@@ -4088,6 +4092,11 @@ def _inbound_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "For each "
         "message fill the plan's `message_fields` (`labels` its labels or "
         "folders): "
+        "`body` the message's own text as the connector's message read "
+        "returns it (cr1#1275: never a search result's snippet or preview "
+        "in its place; when the fetch answered only previews, read each "
+        "message for its text), `sender_email` the sender's address as the "
+        "connector returned it, "
         "`account` the address that fetch was addressed to (the entry's "
         "`acting_email`; cr1#755: a message with no account, or from an "
         "account that does not file into the business book, is refused by "
@@ -4155,6 +4164,23 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "read first, then the older days a page per fire; its "
         "`maintenance_window` carries the page under `window_page`): read "
         "only that span, never the whole window. "
+        # cr1#979: the meeting leg answers like the mail legs.
+        "`meetings_unreachable_reason` set (a cloud fire, and the meetings "
+        "connection is attached only in the desktop app) -> fetch nothing, "
+        "run no phase, write no receipt and score nothing for this job: "
+        "leave it due and name `meetings` under `connectors_unreachable` in "
+        "M3; a run that can reach the connection reads this window. "
+        "Otherwise CONNECTOR (here): load the meetings connector with the "
+        "host's tool search for each of the plan's `connector_queries` "
+        "(with no meetings connector declared it is a plain `meeting notes` "
+        "search). No meetings tool loaded by those searches -> the same: "
+        "fetch nothing, no receipt, leave it due and name `meetings` under "
+        "`connectors_unreachable` in M3. A meetings tool that loaded is "
+        "never unreachable: when its FIRST read errored, refused or timed "
+        "out (nothing returned at all), that is not an empty answer: run no "
+        "phase and run the receipt line below with `n_meetings` 0, "
+        "`connectors_read` [] and `fetch_blocked` saying why in plain words "
+        "(the receipt lands blocked and the same window is read next time). "
         "CONNECTOR and WRITES: run skills/enable-command-room-schedules/"
         "references/orchestrator-past-meetings.md Phases 3 through 4.8 "
         "exactly as that file's merged-seat lines spell them - every line "
@@ -4164,8 +4190,7 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "SILENTLY: no chat, no widget, no push; Phase C, Phase 5's day-close "
         "receipt and Phase 6 do not run here. This pass is the seat's "
         "meeting capture: never leave it for an End of Day close, which a "
-        "seat may not have. No meeting-notes connector in this run -> leave "
-        "it due and name `meetings` under `connectors_unreachable` in M3. A "
+        "seat may not have. A "
         "connector that answered is never unreachable: a list or transcript "
         "read that stopped before the end of the page is a partial pass, "
         "written below with `read_complete` false (the receipt then holds "
@@ -4174,7 +4199,11 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
         "receipt (a pack_run under meeting-capture, never under "
         "past-meetings), whatever it got through:\n"
         + _m_line(pair, "run_writer",
-                  '{"args": {"capture_leg_ms": <ms>, "maintenance_window": '
+                  '{"args": {"capture_leg_start": "<the plan\'s '
+                  'capture_leg_start>", "connectors_read": <["meetings"] '
+                  'when a meetings read answered, even with no meeting, else '
+                  '[]>, "fetch_blocked": <null, or why the first meetings '
+                  'read errored>, "maintenance_window": '
                   '<the plan\'s maintenance_window>, "n_meetings": <n>, '
                   '"n_processed": <n>, "n_skipped": <n>, "read_complete": '
                   '<false when a meetings read stopped before the end of the '
@@ -4185,13 +4214,19 @@ def _capture_steps(pair: str, fire: str = MAINT_FIRE) -> str:
                   'handed back>, '
                   '"workspace_root": "<WS>"}, "name": '
                   '"eod_incremental:log_capture_pass_receipt"}') +
+        "      An answer with `left_due` true wrote no receipt: leave the "
+        "job due and name `meetings` under `connectors_unreachable` in M3. "
+        "`n_meetings` is always a number, 0 when the read returned none; a "
+        "receipt with no meeting counted and no `connectors_read` lands "
+        "blocked: nothing proves the meetings were read (cr1#979).\n"
         "      The receipt moves the window to where this pass stopped and "
         "says so when the pass was partial; the next fire carries on from "
         "there until the window reaches the present. Score it with "
         "score_door_job (SCORE below). "
         "The window carries the meetings connector's "
         "dials (`connector_read`, read first): its "
-        "`commitment_capture_skip_reason` set -> fetch and process every "
+        "`commitment_capture_skip_reason` set (the commitment dial is off) "
+        "-> fetch and process every "
         "meeting exactly as the phases say (its record, people, projects, "
         "transcript closes) but hand `meeting_capture:route_meeting_captures` "
         "an empty `items` list, so no commitment is captured; the receipt's "
@@ -4374,8 +4409,10 @@ def _cleanup_steps(pair: str) -> str:
         "and nothing is asked: the writer runs the cleanup passes that are "
         "code (the plan's `passes`) beside the data and lands the job's own "
         "cleanup_run receipt; the passes in the plan's `not_run` are not run "
-        "on this shape. WRITE (in a JSON file in this session's own "
-        "scratch):\n"
+        "on this shape, and never call one of the passes' own functions "
+        "yourself (cr1#1277): a pass that did not run is named in the "
+        "writer's `passes_failed`. WRITE (in a JSON file in this session's "
+        "own scratch):\n"
         + _m_line(pair, "run_writer",
                   '{"args": {"workspace_root": "<WS>"}, "args_file": "<your '
                   'scratch>/cr_cleanup.json", "name": '
@@ -4798,6 +4835,16 @@ def score_door_job(workspace_root, job_id="", since_iso=None, *,
     if did_refuse and not left_due_anyway:
         out["why"] = "refused"
         return out
+    # cr1#1276: the plan's `run_start` token is read for the run's start. On
+    # a typed run any other `since_iso` is a cutoff the caller chose: it is
+    # refused, no receipt is counted by it, and the job is left due (owed,
+    # never booked failed for work it may have done).
+    token_iso = run_start_iso(since_iso)
+    if token_iso is not None:
+        since_iso = token_iso
+    elif since_iso and _typed_run_env():
+        out.update(outcome="due", why="refused", detail=SINCE_REFUSED_DETAIL)
+        return out
     since = _score_since(workspace_root, since_iso)
     if since is not None:
         try:
@@ -4998,23 +5045,40 @@ def _m_line(pair: str, verb: str, payload: str) -> str:
     return f"    {pair}{_PLAN_HEAD} {verb} --json '{payload}'\n"
 
 
-#: cr1#977 - the registered task's run mode, decided at M0 by step 0.5's rule
+#: cr1#977 - the registered task's run mode, decided at M0 (`_run_mode_step`)
 #: and written where the legacy steps write it: `<fired_via>`.
 FIRE_RUN_MODE = "<fired_via>"
 FIRE_RUN_VARS = "CR_FIRED_VIA=" + FIRE_RUN_MODE
 
 
+#: cr1#977 (owner ruling 2026-11-19, fork C): the words M0 uses for a press.
+#: A press of the task's Run button or the Hub's Start reaches the session as
+#: the same prompt with no message (cr1#651 took the only text away: a fire
+#: that carries text starts without the device tools), so no run can tell a
+#: press from the scheduler's fire. The label is not claimed: a run with no
+#: person's message is this task's own fire, `scheduled`, and the receipt's
+#: slot fields say where it landed against its slot. A fire more than 20
+#: minutes after its slot is never that slot's twin (`_check_min_gap`), so a
+#: press then runs; inside the window it stands down behind the served slot,
+#: and behind a fire still in flight, until the in-flight ruling on cr1#1464.
+PRESS_UNTOLD = (
+    "A press of this task's Run button or the Hub's Start sends no message, "
+    "so this run cannot tell it from the scheduler's fire and never guesses "
+    "one: it is `scheduled`, this task's own fire, and the receipt's "
+    "`fired_at_slot` and `slot_delta_minutes` (measured when the receipt "
+    "lands) say where it landed against its slot.")
+
+
 def _run_mode_step() -> str:
-    """M0 - the run mode, before any line is rendered (cr1#977). The legacy
-    steps' step 0.5 rule, for the merged branch, which skips steps 0-4."""
+    """M0 - the run mode, before any line is rendered (cr1#977). On the
+    merged branch, which skips steps 0-4: `manual` only for a session with a
+    person's message in it; otherwise this task's own fire (`PRESS_UNTOLD`)."""
     return (
-        "M0. THE RUN MODE, before any line below is rendered (step 0.5's "
-        "rule; this prompt is not evidence of it either way): `manual` if a "
-        "human-authored message exists anywhere in this session, or a person "
-        "started this run by hand (the task's Run button, the Hub's Start) or "
-        "asked for a re-run, OR YOU CANNOT TELL; "
-        "`scheduled` only if the scheduler started this session with no "
-        "human message AND you are sure. Hold the word as `" + FIRE_RUN_MODE
+        "M0. THE RUN MODE, before any line below is rendered (this prompt is "
+        "not evidence of it either way): `manual` only if a person's own "
+        "message exists anywhere in this session (typed in this chat); "
+        "otherwise `scheduled`. " + PRESS_UNTOLD + " Hold the word as `"
+        + FIRE_RUN_MODE
         + "` and write it wherever `" + FIRE_RUN_MODE + "` stands below: in "
         "front of python3 on every rendered line, in M1's args and on M3's "
         "receipt.\n"
@@ -5032,10 +5096,12 @@ def _baked_branch_text(pair: str) -> str:
         `skill` left due;
       * M3 composes with `skipped_min_gap` from the verdict.
 
-    cr1#977: the run mode is decided first (M0, step 0.5's rule) and rides
-    every line - in front of python3, in M1's args and on M3's receipt -
-    instead of a fixed `scheduled`, so a person's Run Now is a `manual` run;
-    a manual run lands no start marker, so its scorer reads the plan's now.
+    cr1#977: the run mode is decided first (M0) and rides every line - in
+    front of python3, in M1's args and on M3's receipt - instead of a fixed
+    `scheduled`. A run with a person's own message in it is `manual`; a
+    press of the Run button or the Hub's Start sends none and is this task's
+    own fire (`PRESS_UNTOLD`, owner ruling 2026-11-19). A manual run lands no
+    start marker, so its scorer reads the plan's now.
     """
     return (
         "ACCESS PREAMBLE (CONTRACT Rule 22 v6) - run this block first, on "
@@ -5154,7 +5220,35 @@ TYPED_RUN_VARS = "CR_FIRED_VIA=manual CR_TRIGGERED_BY=" + TYPED_SURFACE
 
 #: cr1#929 - the placeholder the typed branch's scorer is handed: the plan's
 #: own `now`, the run's start. A typed run lands no start marker.
-TYPED_SINCE_PLACEHOLDER = "<the plan's now>"
+TYPED_SINCE_PLACEHOLDER = "<the plan's run_start>"
+
+#: cr1#1276: a manual plan's `run_start` is this run's start as a token the
+#: scorer can tell from a time a caller typed (`catchup.run_start_token`). A
+#: typed run's scorer refuses any other `since_iso`, so no cutoff is chosen.
+#: The scorer's `detail` when it refuses one.
+SINCE_REFUSED_DETAIL = "since_iso_not_from_plan"
+
+
+def run_start_token(iso: str) -> str:
+    """The plan's `run_start` for a manual run (cr1#1276)."""
+    from catchup import run_start_token as _token
+    return _token(iso)
+
+
+def run_start_iso(token) -> Optional[str]:
+    """The start a `run_start` token carries, or None (`catchup.
+    run_start_iso`: not minted by a plan, edited, or too old)."""
+    from catchup import run_start_iso as _iso
+    return _iso(token)
+
+
+def _typed_run_env() -> bool:
+    """A typed `run maintenance` (cr1#1276), by `CR_TRIGGERED_BY`."""
+    try:
+        from receipts import _triggered_by_env
+        return _triggered_by_env() == TYPED_SURFACE
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _typed_branch_text() -> str:
@@ -5200,8 +5294,9 @@ def _typed_branch_text() -> str:
         "`refused_line` set -> say it once, plainly, in step 5. `catch_up` "
         "false (`reason` nothing_due, root_blocked or a refusal) -> run "
         "nothing and write NO receipt: step 5 with `receipt` None. "
-        "`catch_up` true -> T2, keeping the plan's `now` (this run's start; "
-        "the scorer reads it).\n"
+        "`catch_up` true -> T2, keeping the plan's `run_start` (this run's "
+        "start, a token; the scorer reads it, copied exactly, never a time "
+        "of your own).\n"
         "T2. The registered task's M2, exactly as it runs there, but every "
         "staged batch lands in this run's own folder (`\"fire\": \""
         + TYPED_FIRE + "\"` on each stage, write and clear line, as "
@@ -5352,7 +5447,9 @@ def catch_up_plan(workspace_root, surface,
 
     A PERSON'S PRESS OF THE REGISTERED TASK (cr1#977). The registered task's
     merged branch names its run mode in the args: `fired_via` `manual` when a
-    person started the run. That fire gets the same one-verdict plan under
+    person's own message is in the run (a press of the Run button or the
+    Hub's Start sends none and records `scheduled`, `PRESS_UNTOLD`). That
+    fire gets the same one-verdict plan under
     the manual rules: no gap guard and no served gate (a person who asks gets
     a fire, as on the typed run), no fire-start marker (FIREGAP2 ruling 2),
     and `manual` on every job's leg. A run mode carried only by the
@@ -5427,6 +5524,8 @@ def catch_up_plan(workspace_root, surface,
         "mode": mode,
         "fired_via": "manual",
         "now": now.isoformat(),
+        # cr1#1276: the run's start, as the token the scorer reads.
+        "run_start": run_start_token(now.isoformat()),
         "catch_up": False,
         "jobs": [],
         "held_sunday": [],
@@ -5582,8 +5681,9 @@ def _scheduled_catch_up_plan(workspace_root, canonical: str, *,
     the fire lands it through the write door (`mark_fire_start`) before its
     first job.
 
-    `run_mode` `manual` (cr1#977) is the same task's fire started by a
-    person (Run Now, the Hub's Start): `fired_via: manual`, gates 2 and 3 do
+    `run_mode` `manual` (cr1#977) is the same task's fire with a person's own
+    message in it (a press sends none, `PRESS_UNTOLD`): `fired_via: manual`,
+    gates 2 and 3 do
     not bind (`_check_min_gap` exempts manual; nothing runnable is
     `nothing_due`, never `skip_served`), no fire-start marker is held or
     written and no `fire_id` is minted (FIREGAP2 ruling 2), and each job's
@@ -5620,6 +5720,9 @@ def _scheduled_catch_up_plan(workspace_root, canonical: str, *,
         # CHATSON1 (#98): every roster chat, the same way; M1b reads this one.
         "chats": chats_state(workspace_root),
     }
+    if manual:
+        # cr1#1276: the run's start, as the token the scorer reads.
+        base["run_start"] = run_start_token(base["now"])
     staleness = maintenance_staleness(workspace_root, now=now)
     base["staleness"] = staleness
     min_gap = _check_min_gap(workspace_root, now=now,

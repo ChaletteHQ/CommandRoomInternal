@@ -646,7 +646,7 @@ def _compose_pull(workspace_root, *, apply: bool,
             rows.append(row)
     n = len(rows)
     line = (f"{n} past ruling{'s' if n != 1 else ''} "
-            f"{'put' if apply else 'would go'} on the Review tab to confirm"
+            f"{'put' if apply else 'would go'} under To confirm on the Hub's Commitments tab"
             + (f", up to {PER_DAY} a day." if n > PER_DAY else ".")
             if n else "No past ruling to add: each one found is already a decision or waiting for you.")
     if not rulings:

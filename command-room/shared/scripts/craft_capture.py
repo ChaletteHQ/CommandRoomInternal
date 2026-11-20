@@ -167,6 +167,7 @@ _LOCK_RE = re.compile(r"^\s*lock\s+(?:this|that|it)\s+in\s*[?.]?\s*$",
 #: follow the verb, so "capture how I review this contract" is not a capture.
 _OWNER_VERB_RE = re.compile(
     r"^\s*capture\s+how\s+(?P<name>i)\s+(?P<scope>decide|review|write|sell"
+    r"|win\s+business|follow\s+up|prioriti[sz]e|delegate"
     r"|run\s+(?:a\s+|my\s+)?(?:meeting|session)s?)\s*[?.]?\s*$",
     re.IGNORECASE)
 #: "capture my craft": the owner is the subject, the kind of work is asked.
@@ -187,7 +188,20 @@ _SCOPE_WORDS = {
     "a session": "run-a-meeting", "run a session": "run-a-meeting",
     "runs a session": "run-a-meeting",
     "running a session": "run-a-meeting",
-    "sells": "sell", "selling": "sell", "sales": "sell",
+    # sell became win business (cr1#1391): the old words land on the new one
+    "sell": "win-business", "sells": "win-business",
+    "selling": "win-business", "sales": "win-business",
+    "wins business": "win-business", "winning business": "win-business",
+    "business development": "win-business",
+    "fundraising": "win-business", "enrolment": "win-business",
+    "enrollment": "win-business", "referrals": "win-business",
+    "follows up": "follow-up", "following up": "follow-up",
+    "follow ups": "follow-up", "follow-ups": "follow-up",
+    "prioritise": "prioritize", "prioritises": "prioritize",
+    "prioritizes": "prioritize", "prioritizing": "prioritize",
+    "prioritising": "prioritize", "priorities": "prioritize",
+    "delegates": "delegate", "delegating": "delegate",
+    "delegation": "delegate",
 }
 _LEADING = re.compile(r"^(?:the|their|his|her|my|our|a|an)\s+", re.I)
 
@@ -522,13 +536,16 @@ def _refuse(reason: str, line: str, **extra) -> dict:
 
 
 def _existing_view(root: Path, target: Path, sid: str, ents: dict,
-                   scope: str) -> dict:
+                   scope: str, pending: bool = False) -> dict:
     try:
         text = target.read_text(encoding="utf-8")
     except OSError:
         return {"error": "the file could not be read"}
+    # A kind about to be added again (one taken back or retired, cr1#1391
+    # part B) reads its file kept from before as the kind it is.
     res = cc.validate_craft(text, workspace_root=root, entities=ents,
-                            path=target)
+                            path=target,
+                            extra_scopes=[scope] if pending else None)
     if res["errors"]:
         return {"error": res["errors"][0]}
     if res["header"].get("subject") != sid:
@@ -548,9 +565,43 @@ def _existing_view(root: Path, target: Path, sid: str, ents: dict,
     }
 
 
+def _pending_scope(root: Path, scope, new_scope) -> Optional[dict]:
+    """A new kind of work the owner said to add, checked but not yet added:
+    it is added only when its first rule is saved (cr1#1391: a scope is
+    created only with at least one cited rule). None when `new_scope` is not
+    a declaration for exactly this slug; raises ValueError with the reason
+    when its declaration is refused (no reader, a bad parent)."""
+    if not isinstance(new_scope, dict) or not new_scope.get("label"):
+        return None
+    if scope in cc.RENAMED_SCOPES or scope in cc.CORE_SLUGS:
+        raise ValueError("that is already a kind of work, or an old name "
+                         "for one")
+    decl = cc.check_declaration(new_scope.get("label"),
+                                new_scope.get("readers"),
+                                new_scope.get("triggers"),
+                                new_scope.get("parent"))
+    if decl["slug"] != scope:
+        raise ValueError("the new kind of work does not match the one asked "
+                         "for")
+    return {"label": decl["label"], "readers": list(decl["readers"]),
+            "triggers": list(decl["triggers"]), "parent": decl["parent"]}
+
+
+def _renamed_sibling(target: Path, scope) -> Optional[Path]:
+    """The file still filed under an old name of `scope` beside `target`
+    (craft/sell.md beside craft/win-business.md), when `target` is not
+    there yet."""
+    if target.exists():
+        return None
+    for old, new in cc.RENAMED_SCOPES.items():
+        if new == scope and (target.parent / f"{old}.md").is_file():
+            return target.parent / f"{old}.md"
+    return None
+
+
 def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
                    mail_items=None, transcript_hits=None, added=None,
-                   entities=None) -> dict:
+                   entities=None, new_scope=None) -> dict:
     """Every source the workspace holds about one subject, listed, not read.
 
     Sources by subject: documents in the subject's own folder (their work);
@@ -570,12 +621,27 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
     rule cites), a `date`, a `label` and `read` (what to open), never any
     content. On a scope not on the list, a subject not on file, a subject
     with no single folder, or an existing file that does not read as a craft
-    file, {"ok": False, "reason", "line", ...}. Writes nothing."""
+    file, {"ok": False, "reason", "line", ...}. Writes nothing.
+
+    `new_scope` is a kind of work the owner said to add, {"label",
+    "readers", "parent", "triggers"} (cr1#1391): it is checked here and
+    added by `write_craft` with the first rule it saves, never before. A
+    capture into a kind whose file is still filed under its old name (a
+    sell file, for win business) is refused until the file is moved
+    (`move_renamed_scope_files`), so the two never split."""
     root = Path(workspace_root)
     ents = entities if isinstance(entities, dict) else cc.load_entities(root)
     idx = _Index(ents)
     scopes = cc.known_scopes(root)
-    if scope not in {s["slug"] for s in scopes}:
+    try:
+        pending = (_pending_scope(root, scope, new_scope)
+                   if scope not in {s["slug"] for s in scopes} else None)
+    except ValueError as exc:
+        return _refuse("scope_declaration",
+                       f"That new kind of work cannot be added: {exc}. Say "
+                       "which skills it applies in.", scopes=scopes,
+                       readers=list(cc.READERS))
+    if scope not in {s["slug"] for s in scopes} and pending is None:
         labels = ", ".join(s["label"] for s in scopes)
         return _refuse("scope_unknown",
                        f"That kind of work is not on your list ({labels}). "
@@ -588,7 +654,8 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
                        "keep how they work. Add them first.")
     name = idx.name(subject_id)
     try:
-        target = cc.craft_path(root, subject_id, scope, entities=ents)
+        target = cc.craft_path(root, subject_id, scope, entities=ents,
+                               pending=scope if pending else None)
     except ValueError:
         target = None
     if target is None:
@@ -605,6 +672,14 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
                        f"{name} has no folder yet, so there is nowhere to keep "
                        "this. Create the project first.")
 
+    old_file = _renamed_sibling(target, scope)
+    if old_file is not None:
+        return _refuse("renamed_scope_file",
+                       f"{name} still has this kept under its old name "
+                       f"({old_file.stem}), so nothing will be split in two. "
+                       "Say to move your craft files to the new names "
+                       "first; it can be undone.",
+                       rel=_rel(root, old_file))
     existing = None
     if target.exists():
         if not cc.is_safe_path(root, target) or not target.is_file():
@@ -612,7 +687,8 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
                            "There is already something at that place that "
                            "is not a craft file, so nothing will be written "
                            "over it.", rel=_rel(root, target))
-        existing = _existing_view(root, target, subject_id, ents, scope)
+        existing = _existing_view(root, target, subject_id, ents, scope,
+                                  pending=pending is not None)
         if "error" in existing:
             return _refuse("existing_unreadable",
                            "The file already kept for this does not read as "
@@ -724,7 +800,9 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
         "subject_kind": kind,
         "subject_name": name,
         "scope": scope,
-        "scope_label": cc.scope_label(scope, root),
+        "scope_label": (pending["label"] if pending
+                        else cc.scope_label(scope, root)),
+        "new_scope": pending,
         "target": _rel(root, target),
         "action": "amend" if existing else "create",
         "existing": existing,
@@ -746,6 +824,7 @@ def gather_sources(workspace_root, subject_id, scope, *, mail_named=False,
             "transcript_hits": [h for h in transcript_hits or []
                                 if isinstance(h, dict)],
             "added": [a for a in added or [] if isinstance(a, dict)],
+            "new_scope": pending,
         },
     }
 
@@ -939,6 +1018,13 @@ def _card_lines(pv: dict) -> list:
     head = _title_phrase(name, label)
     lines = [f"{head}: {'changes to the file' if pv['action'] == 'amend' else 'a first draft'}, "
              f"{len(pv['rules'])} rule(s) to check."]
+    new = (pv.get("gather_inputs") or {}).get("new_scope")
+    if isinstance(new, dict) and new.get("label"):
+        # the owner confirms where a new kind applies with its first rule
+        lines.append(f"New kind of work: {new['label']}, read in "
+                     + ", ".join(new.get("readers") or [])
+                     + (f", under {cc.scope_label(new['parent'])}"
+                        if new.get("parent") else "") + ".")
     for r in pv["rules"]:
         where = {"Rules": "", "Order of work": " (a step in their order of "
                  "work)", "What they never do": " (something they never do)"
@@ -1235,8 +1321,15 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
     ents = entities if isinstance(entities, dict) else cc.load_entities(root)
     today = _today(now_iso)
     subject, scope = preview.get("subject_id"), preview.get("scope")
+    inputs = preview.get("gather_inputs") if isinstance(
+        preview.get("gather_inputs"), dict) else {}
+    new_scope = inputs.get("new_scope") if isinstance(
+        inputs.get("new_scope"), dict) else None
+    known = {s["slug"] for s in cc.known_scopes(root)}
     try:
-        target = cc.craft_path(root, subject, scope, entities=ents)
+        target = cc.craft_path(root, subject, scope, entities=ents,
+                               pending=scope if new_scope
+                               and scope not in known else None)
     except ValueError:
         target = None
     if target is None or _rel(root, target) != preview.get("target"):
@@ -1268,10 +1361,8 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
     # handed) and refuse a rule citing anything not gathered. Dates, kinds
     # and the starting confidence come from this gather, never the preview
     # (review of b7f4ca04, finding 3).
-    inputs = preview.get("gather_inputs") if isinstance(
-        preview.get("gather_inputs"), dict) else {}
     again = gather_sources(
-        root, subject, scope, entities=ents,
+        root, subject, scope, entities=ents, new_scope=new_scope,
         mail_named=inputs.get("mail_named") is True,
         mail_items=inputs.get("mail_items") if isinstance(
             inputs.get("mail_items"), list) else None,
@@ -1355,8 +1446,12 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
             return {"ok": False, "refused": "existing_unreadable",
                     "line": "The existing file could not be read, so nothing "
                             "was saved."}
-        check = cc.validate_craft(existing_text, workspace_root=root,
-                                  entities=ents, path=target)
+        # A kind being added again reads its kept file as that kind
+        # (cr1#1391 part B), as the gather did.
+        check = cc.validate_craft(
+            existing_text, workspace_root=root, entities=ents, path=target,
+            extra_scopes=[scope] if new_scope and scope not in known
+            else None)
         if check["errors"] or check["header"].get("subject") != subject:
             return {"ok": False, "refused": "existing_unreadable",
                     "line": "The existing file does not read as a craft "
@@ -1423,9 +1518,11 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
         today=today, tested=kept_tested, verdict=kept_verdict, status=status,
         consent=consent)
 
+    pending = again.get("new_scope") if scope not in known else None
     try:
         res = cc.gate_craft_text(text, workspace_root=root, entities=ents,
-                                 path=target)
+                                 path=target,
+                                 extra_scopes=[scope] if pending else None)
     except cc.CraftRefused as exc:
         kind = "privacy" if exc.findings else "shape"
         named = sorted({f"{f.get('item')} carries a {f.get('kind')}"
@@ -1436,8 +1533,32 @@ def write_craft(workspace_root, preview, decisions, *, answers=None,
                         f"check ({what}).",
                 "errors": exc.errors, "findings": exc.findings}
 
+    added_scope = None
+    if pending:
+        # The new kind of work is added now, with the first rule it holds
+        # (cr1#1391), on the owner's word given at Step 1 and again at the
+        # confirm. A save that then fails takes the kind back.
+        first = kept[0]
+        try:
+            added_scope = cc.add_scope(
+                root, pending["label"], user_confirmed=True,
+                readers=pending["readers"], triggers=pending["triggers"],
+                parent=pending["parent"], source_skill=source_skill,
+                rule={"text": first["text"],
+                      "evidence": first["evidence"][0]["ref"]})
+        except ValueError as exc:
+            return {"ok": False, "refused": "scope_declaration",
+                    "line": "Nothing was saved: the new kind of work could "
+                            f"not be added ({exc})."}
     landed = _land(root, rel, text, before_mtime)
     if not landed.get("ok"):
+        if added_scope and added_scope.get("seq"):
+            try:
+                cc.reverse_scope_added(root, added_scope["seq"],
+                                       undone_by=WRITER,
+                                       source_skill=source_skill)
+            except Exception:  # noqa: BLE001 - the refusal below is the answer
+                pass
         return {"ok": False, "refused": "not_landed",
                 "line": landed.get("line") or "The file could not be saved "
                         "to your folder, so nothing changed.",
@@ -1558,9 +1679,308 @@ def _land(root: Path, rel: str, text: str, expected_mtime) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Moving files filed under a renamed scope (sell -> win business, cr1#1391)
+# ---------------------------------------------------------------------------
+
+MOVE_EVENT = "craft_scope_moved"
+MOVE_REVERSED_EVENT = "craft_scope_move_reversed"
+MOVE_CHANGE_CLASS = "craft_scope_move"
+#: Where a moved file's old copy is kept, beside the new one. A subfolder of
+#: `craft/` is never read as a craft file, and no scope can be named this.
+MOVED_DIR = "_moved"
+_SCOPE_IN_HEAD_RE = re.compile(r"(<!--\s*craft:[^>]*?\bscope=)(\S+)")
+
+
+def _sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _stamp(now_iso) -> str:
+    try:
+        when = _dt.datetime.fromisoformat(str(now_iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        when = _dt.datetime.now(_dt.timezone.utc)
+    return when.strftime("%Y%m%dT%H%M%S")
+
+
+def _with_history(text: str, line: str) -> str:
+    """`text` with one History item added at the end of that section."""
+    lines = text.splitlines()
+    at = next((i for i, ln in enumerate(lines)
+               if re.match(r"^##\s+History\s*$", ln.strip())), None)
+    if at is None:
+        return text
+    end = next((i for i in range(at + 1, len(lines))
+                if lines[i].startswith("## ")), len(lines))
+    while end > at + 1 and not lines[end - 1].strip():
+        end -= 1
+    lines.insert(end, line)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _door(root: Path):
+    import workspace_access as wa
+    ctx = wa.resolve(start=root)
+    vm = ctx.get("vm_path")
+    if not vm or Path(vm).resolve() != root.resolve():
+        return wa, None
+    return wa, ctx
+
+
+def _wrote(out: dict) -> bool:
+    return bool(out.get("ok") and out.get("verified"))
+
+
+def _renamed_files(root: Path) -> list:
+    """Every craft file still filed under a renamed scope: its header names
+    the old scope and its file is named for it."""
+    out = []
+    for path in cc.find_craft_files(root):
+        head = cc.parse_craft(_safe_text(path))["header"]
+        old = head.get("scope")
+        if old in cc.RENAMED_SCOPES and path.stem == old:
+            out.append((path, old, cc.RENAMED_SCOPES[old]))
+    return out
+
+
+def _safe_text(path: Path) -> str:
+    """The file's text exactly as stored (line endings kept), so a copy kept
+    aside is the same bytes."""
+    try:
+        return path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def move_renamed_scope_files(workspace_root, *, apply=False,
+                             user_confirmed=False, now_iso=None,
+                             source_skill=WRITER) -> dict:
+    """Move every craft file still filed under a renamed scope to its new
+    name (sell -> win business, cr1#1391), through the write door.
+
+    Until it is moved, such a file already loads under its new name
+    (`craft_contract.canonical_scope`), so nothing is lost by waiting. The
+    move is for the long run: a capture into win business is refused while
+    the sell file sits beside it, so the two never split.
+
+    `apply=False` (the default) lists the moves and writes nothing. With
+    `apply=True` and `user_confirmed=True` (the owner's word), for each file:
+    its old text is kept, byte for byte, at `craft/_moved/<old>.<stamp>.md`;
+    the new file is written with its header renamed and one History line;
+    then the old file is removed. A file whose new name is already taken,
+    or whose renamed text would not pass the craft check, is left alone and
+    named in `skipped`. One `craft_scope_moved` row records every move with
+    the undo stamps, so `brain_undo` takes it back
+    (`reverse_scope_move`), which restores each old file and keeps the new
+    one aside, never deleting either.
+
+    Returns {"ok", "moves": [{"from", "to", "kept_at"}], "skipped": [{"rel",
+    "reason"}], "seq", "batch_ref", "line"}."""
+    root = Path(workspace_root)
+    today = _today(now_iso)
+    stamp = _stamp(now_iso)
+    plan, skipped = [], []
+    ents = cc.load_entities(root)
+    for path, old, new in _renamed_files(root):
+        rel = _rel(root, path)
+        target = path.parent / f"{new}.md"
+        if target.exists():
+            skipped.append({"rel": rel, "reason": "a file under the new name "
+                            "is already there, so this one is left as it is"})
+            continue
+        text = _safe_text(path)
+        new_text = _SCOPE_IN_HEAD_RE.sub(lambda m: m.group(1) + new, text,
+                                         count=1)
+        new_text = _with_history(
+            new_text, f"- {today} moved from {cc.scope_label(old)}"
+            f" ({old}) to {cc.scope_label(new)} by {WRITER}; the old file is "
+            f"kept in {MOVED_DIR}.")
+        try:
+            cc.gate_craft_text(new_text, workspace_root=root, entities=ents,
+                               path=target)
+        except cc.CraftRefused as exc:
+            skipped.append({"rel": rel, "reason": "it does not pass the craft "
+                            "check (" + "; ".join(exc.errors[:2]
+                                                  or [str(exc)]) + ")"})
+            continue
+        plan.append({"from": rel, "to": _rel(root, target),
+                     "kept_at": _rel(root, path.parent / MOVED_DIR
+                                     / f"{old}.{stamp}.md"),
+                     "_old_text": text, "_new_text": new_text})
+    public = [{k: v for k, v in m.items() if not k.startswith("_")}
+              for m in plan]
+    if not apply:
+        n = len(plan)
+        return {"ok": True, "applied": False, "moves": public,
+                "skipped": skipped, "seq": None, "batch_ref": None,
+                "line": (f"{n} craft file{'' if n == 1 else 's'} to move to "
+                         "the new name. Nothing was changed yet."
+                         if n else "No craft file is under an old name.")}
+    if user_confirmed is not True:
+        return {"ok": False, "refused": "not_confirmed",
+                "line": "Moving craft files needs your word, so nothing was "
+                        "changed."}
+    if not plan:
+        return {"ok": True, "applied": True, "moves": [], "skipped": skipped,
+                "seq": None, "batch_ref": None,
+                "line": "No craft file is under an old name."}
+    wa, ctx = _door(root)
+    if ctx is None:
+        return {"ok": False, "refused": "workspace_mismatch",
+                "line": "This run is not working in that folder, so nothing "
+                        "was changed."}
+    done = []
+    for m in plan:
+        kept = wa.write(m["kept_at"], m["_old_text"], None,
+                        create_parents=True, holder="craft_capture", ctx=ctx)
+        if not _wrote(kept):
+            skipped.append({"rel": m["from"], "reason": "its old text could "
+                            "not be kept aside, so it was not moved"})
+            continue
+        landed = wa.write(m["to"], m["_new_text"], None,
+                          create_parents=False, holder="craft_capture",
+                          ctx=ctx)
+        if not _wrote(landed):
+            skipped.append({"rel": m["from"], "reason": "the new file could "
+                            "not be saved, so the old one stays"})
+            continue
+        gone = wa.remove(m["from"], holder="craft_capture", ctx=ctx)
+        if not (gone.get("removed") or gone.get("moved_to")):
+            # The old file would not go: take the new one back out, so the
+            # rules never load twice. The old file is untouched either way.
+            back_out = wa.remove(m["to"], holder="craft_capture", ctx=ctx)
+            skipped.append({"rel": m["from"], "reason": (
+                "the old file could not be removed, so it was not moved"
+                if back_out.get("removed") or back_out.get("moved_to") else
+                "the old file could not be removed and the new one is still "
+                "there too; remove one of them by hand")})
+            continue
+        done.append({"from": m["from"], "to": m["to"],
+                     "kept_at": m["kept_at"], "sha_new": _sha(m["_new_text"]),
+                     "old_removed": True})
+    if not done:
+        return {"ok": False, "refused": "not_landed", "moves": [],
+                "skipped": skipped,
+                "line": "No craft file could be moved, so nothing changed."}
+    bid = f"csm_{stamp}-{_sha(stamp + str(done))[:8]}"
+    from event_gate import append_event
+    written = append_event(_events_file(root), [{
+        "type": MOVE_EVENT, "source_skill": source_skill,
+        "data": {"moves": done, "user_confirmed": True,
+                 "brain_batch_id": bid,
+                 "brain_change_class": MOVE_CHANGE_CLASS},
+    }], holder=f"craft_capture:{source_skill}")
+    try:
+        import render_craft_view
+        render_craft_view.regenerate(root)
+    except Exception:  # noqa: BLE001 - the view is rebuilt weekly too
+        pass
+    n = len(done)
+    return {"ok": True, "applied": True,
+            "moves": [{k: d[k] for k in ("from", "to", "kept_at")}
+                      for d in done],
+            "skipped": skipped,
+            "seq": written[0].get("seq") if written else None,
+            "batch_ref": {"kind": "brain_batch", "batch_id": bid},
+            "line": f"Moved {n} craft file{'' if n == 1 else 's'} to the new "
+                    "name. The old copies are kept, and this can be undone."}
+
+
+def reverse_scope_move(workspace_root, seq, *, undone_by: str,
+                       source_skill: str = WRITER) -> dict:
+    """Take back ONE `craft_scope_moved` row (the `brain_undo` reverser for
+    the `craft_scope_move` class). For each move: the old file is written
+    back from the copy kept aside, and the new file is kept aside in its
+    turn, then removed. Nothing is deleted. A move whose new file changed
+    since (a capture amended it) or whose old name is taken again is left
+    as it is and named in `skipped`. Additive: one
+    `craft_scope_move_reversed` row naming the move's seq."""
+    root = Path(workspace_root)
+    try:
+        target_seq = int(seq)
+    except (TypeError, ValueError):
+        raise ValueError(f"a move reversal needs a seq, got {seq!r}")
+    events = _load_events(root)
+    row = next((ev for ev in events if ev.get("type") == MOVE_EVENT
+                and ev.get("seq") == target_seq), None)
+    if row is None:
+        raise ValueError(f"no craft file move at seq {target_seq}")
+    # Moves an earlier reversal already restored are not reversed twice; a
+    # reversal that restored nothing never blocks a later one.
+    restored_before = {r for ev in events
+                       if ev.get("type") == MOVE_REVERSED_EVENT
+                       and (ev.get("data") or {}).get("reversal_of")
+                       == target_seq
+                       for r in (ev.get("data") or {}).get("restored") or []}
+    moves = [m for m in (row.get("data") or {}).get("moves") or []
+             if isinstance(m, dict) and m.get("from") not in restored_before]
+    if not moves:
+        return {"status": "already_reversed", "seq": target_seq}
+    wa, ctx = _door(root)
+    if ctx is None:
+        raise ValueError("this run is not working in that folder")
+    stamp = _stamp(None)
+    restored, skipped = [], []
+    for m in moves:
+        new_p = root / str(m.get("to") or "")
+        old_p = root / str(m.get("from") or "")
+        kept_p = root / str(m.get("kept_at") or "")
+        if not (m.get("to") and m.get("from") and m.get("kept_at")):
+            continue
+        if old_p.exists():
+            skipped.append({"rel": m["from"], "reason": "the old name is "
+                            "taken again"})
+            continue
+        if not kept_p.is_file():
+            skipped.append({"rel": m["from"], "reason": "the kept copy is "
+                            "not there"})
+            continue
+        now_new = _safe_text(new_p) if new_p.is_file() else None
+        if now_new is not None and _sha(now_new) != m.get("sha_new"):
+            skipped.append({"rel": m["to"], "reason": "it changed after the "
+                            "move, so it stays"})
+            continue
+        back = wa.write(m["from"], _safe_text(kept_p), None,
+                        create_parents=False, holder="craft_capture", ctx=ctx)
+        if not _wrote(back):
+            skipped.append({"rel": m["from"], "reason": "the old file could "
+                            "not be written back"})
+            continue
+        if now_new is not None:
+            new_name = Path(m["to"]).stem
+            aside = (Path(m["to"]).parent / MOVED_DIR
+                     / f"{new_name}.{stamp}.md").as_posix()
+            if _wrote(wa.write(aside, now_new, None, create_parents=True,
+                               holder="craft_capture", ctx=ctx)):
+                wa.remove(m["to"], holder="craft_capture", ctx=ctx)
+        restored.append(m["from"])
+    if not restored:
+        # Nothing put back: say so as a refusal, write no row, so the undo
+        # is not reported done and can be tried again once fixed.
+        raise ValueError("nothing was put back: " + "; ".join(
+            f"{s['rel']}: {s['reason']}" for s in skipped))
+    from event_gate import append_event
+    written = append_event(_events_file(root), [{
+        "type": MOVE_REVERSED_EVENT, "source_skill": source_skill,
+        "data": {"reversal_of": target_seq, "undone_by": undone_by,
+                 "restored": restored, "skipped": skipped},
+    }], holder=f"craft_capture:{source_skill}")
+    try:
+        import render_craft_view
+        render_craft_view.regenerate(root)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"status": "reversed", "seq": target_seq, "restored": restored,
+            "skipped": skipped,
+            "reversal_seq": written[0].get("seq") if written else None}
+
+
 __all__ = [
     "NOTICE", "TEST_QUESTION", "MAX_QUESTIONS", "SOURCE_KINDS",
     "START_CONFIDENCE_OWN_WORK", "START_CONFIDENCE_SAID", "EVENT_TYPE",
     "match_capture_ask", "gather_sources", "build_preview", "write_craft",
-    "last_capture",
+    "last_capture", "move_renamed_scope_files", "reverse_scope_move",
+    "MOVE_EVENT", "MOVE_REVERSED_EVENT", "MOVE_CHANGE_CLASS",
 ]

@@ -72,6 +72,11 @@
   .missbox .missacts { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
   .missbox .missrow { margin-top: 8px; }
   .missbox a.act.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  /* cr1#1383: "Ask for a change", one line below every tab. */
+  .askbox { border-top: 1px solid var(--rule); padding: 14px 0 4px; margin-top: 18px; }
+  .askbox .askrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .askbox input { flex: 1 1 260px; min-width: 0; font: 14px var(--font-sans); padding: 6px 8px; box-sizing: border-box; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); color: var(--ink); }
+  .askbox a.act.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
   .start { display: flex; align-items: center; gap: 36px; padding: 6px 0 22px; flex-wrap: wrap; }
   .readout { flex: 1 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
@@ -230,6 +235,8 @@
   .firstcard .t { font-size: 17px; font-weight: 600; margin-top: 2px; }
   .firstcard .why { font-size: 13px; color: var(--ink-soft); margin-top: 2px; }
   .lanehint { color: var(--ink-soft); font-size: 13px; margin: -4px 0 4px; }
+  /* cr1#1383: one plain line at the top of each tab, saying what it is for. */
+  .tabhelp { color: var(--ink-soft); font-size: 13px; margin: 0 0 10px; }
   nav.tabs .count.late { color: #f0b4a8; }
   nav.tabs .count:empty { display: none; }
   .applyn { font-weight: 500; opacity: .85; margin-left: 4px; }
@@ -269,6 +276,7 @@
   .lanes { margin-top: 18px; }
   .lane { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
   .lane .ln { grid-column: 1 / -1; font-weight: 600; font-size: 13px; color: var(--ink); }
+  .lane .lastact { grid-column: 1 / -1; font-size: 12px; color: var(--ink-soft); margin-top: -4px; }
   .lane .cell { font-size: 11px; color: var(--ink); min-height: 18px; border-top: 1px solid var(--rule); padding-top: 4px; overflow-wrap: anywhere; }
   .lane .cell .cd { display: none; color: var(--ink-soft); }
   @media (max-width: 820px) {
@@ -353,7 +361,7 @@
   <div class="tabrow small" role="none">
   <button role="tab" aria-selected="true" aria-controls="tab-today" data-tab="today">Today</button>
   <button role="tab" aria-selected="false" aria-controls="tab-brief" tabindex="-1" data-tab="brief">Brief</button>
-  <button role="tab" aria-selected="false" aria-controls="tab-week" tabindex="-1" data-tab="week">Week</button>
+  <button role="tab" aria-selected="false" aria-controls="tab-week" tabindex="-1" data-tab="week">Done</button>
   <button role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1" data-tab="settings">Settings</button>
   </div>
   <div class="tabrow work" role="none">
@@ -368,17 +376,21 @@
 </div></section>
 
 <div class="page">
+<!-- cr1#1389: shown only when the installed plugin is newer than this page. The link opens a chat with "finish update" typed in; nothing runs until the owner sends it. -->
+<div class="banner" id="updatebar" hidden><span id="updatetext"></span> <a class="act primary" id="finishUpdate" href="#" target="_blank" rel="noopener" title="Open a chat with finish update typed in. Nothing runs until you send it.">Finish update</a></div>
 <div id="banners" role="status" aria-live="polite"></div>
 
 <section class="tab on" id="tab-today" role="tabpanel">
   <div class="daysent" id="daysentence" hidden></div>
   <div class="sentdetail" id="sentdetail" hidden></div>
+  <p class="tabhelp">Your meetings, to-dos, reminders and who owes you a reply, as a list or as a week.</p>
   <div class="viewtoggle" role="group" aria-label="Show Today as a list or as a week"><button type="button" data-view="list" aria-pressed="true" title="Today as a list (press W to switch)">List</button><button type="button" data-view="week" aria-pressed="false" title="Today as a week (press W to switch)">Week</button></div>
   <div id="todayWeek" hidden><div class="board" id="board"></div><div class="quiet" id="boardnote"></div><div class="lanes" id="boardLanes"></div></div>
   <div id="todayList">
   <div class="cols cal">
     <div class="col">
       <h2>Calendar</h2>
+      <div class="lanehint">Your meetings today, with a brief to open once it is ready</div>
       <div id="meetings"></div>
     </div>
   </div>
@@ -390,11 +402,13 @@
   <div class="cols mine">
     <div class="col">
       <h2>My to-dos</h2>
+      <div class="lanehint">Things you mean to do, in your own words, with no date set</div>
       <div class="addrow"><input class="when" id="todoText" placeholder="Add a to-do" aria-label="Add a to-do"><label class="prio-label" for="todoPrio">Importance</label><select class="prio" id="todoPrio" title="How much this matters; it sets no date"><option value="1">High</option><option value="2" selected>Medium</option><option value="3">Low</option></select><button class="act primary" id="todoAdd" type="button">Add</button></div>
       <div id="todos"></div>
     </div>
     <div class="col">
       <h2>Reminders</h2>
+      <div class="lanehint">Things to bring back to you on the day you pick</div>
       <div class="addrow"><input class="when" id="remText" placeholder="Remind me to" aria-label="Remind me to"><input class="when" id="remDate" type="date" aria-label="Day"><button class="act primary" id="remAdd" type="button">Add</button></div>
       <div id="reminders"></div>
     </div>
@@ -415,10 +429,12 @@
 </section>
 
 <section class="tab" id="tab-brief" role="tabpanel">
+  <p class="tabhelp">Your morning brief for today, to read only.</p>
   <div id="briefbody" class="briefdoc"></div>
 </section>
 
 <section class="tab" id="tab-inbox" role="tabpanel">
+  <p class="tabhelp">Mail that may need you, to reply to, put in your drafts or set aside.</p>
   <div class="parts">
     <button class="act" data-part="inbox" disabled>Check inbox</button>
     <button class="act primary" data-part="apply" disabled>Apply</button>
@@ -430,11 +446,13 @@
 </section>
 
 <section class="tab" id="tab-priorities" role="tabpanel">
+  <p class="tabhelp">The goals you are working toward, to add one or change the wording of yours, and the ones suggested for your yes.</p>
   <div id="priorityhead" class="quiet"></div>
   <div id="priorityrows" class="col"></div>
 </section>
 
 <section class="tab" id="tab-projects" role="tabpanel">
+  <p class="tabhelp">Your ongoing work, such as a client or a deal, with its meetings, emails and promises, to add, rename or add context.</p>
   <div class="filters">
     <input class="search" id="psearch" placeholder="Search work streams and threads" aria-label="Search work streams and threads">
     <select class="prio" id="pcompany" aria-label="Show one company's threads"><option value="">Every company</option></select>
@@ -444,12 +462,14 @@
 </section>
 
 <section class="tab" id="tab-people" role="tabpanel">
+  <p class="tabhelp">The people in your book, to find, add or rename someone, add context, set their role, email or company, or star them.</p>
   <input class="search" id="peoplesearch" placeholder="Search people" aria-label="Search people">
   <div id="peoplehead" class="quiet"></div>
   <div id="peoplerows" class="col"></div>
 </section>
 
 <section class="tab" id="tab-week" role="tabpanel">
+  <p class="tabhelp">What was done this month, then this week's changes for you and by you, with Put it back on any you disagree with.</p>
   <div class="parts">
     <button class="act primary" data-part="apply" disabled title="Send your choices to your book">Apply</button>
   </div>
@@ -460,6 +480,7 @@
 </section>
 
 <section class="tab" id="tab-settings" role="tabpanel">
+  <p class="tabhelp">How Command Room works for you: what it learned, its connectors and how it talks to you.</p>
   <div class="parts">
     <button class="act primary" data-part="apply" disabled title="Send your changes to your book">Apply</button>
   </div>
@@ -469,6 +490,7 @@
 </section>
 
 <section class="tab" id="tab-plate" role="tabpanel">
+  <p class="tabhelp">Promises you made and promises made to you, to mark done, snooze, drop or edit before you press Apply.</p>
   <!-- cr1#1286: Overdue and Review are filters here, in the owner's order. Only a filter that needs the owner carries a count. -->
   <div class="overdueswitch" role="group" aria-label="Show part of your commitments"><button class="act" id="showOverdue" type="button">Late <span id="overdueCount">0</span></button><button class="act" id="showConfirm" type="button">To confirm <span id="reviewCount">0</span></button><button class="act" id="showWaiting" type="button">Waiting on</button><button class="act on" id="showAll" type="button">All open</button></div>
   <div id="platewrap">
@@ -495,6 +517,13 @@
   </div>
 </section>
 
+<div class="askbox" id="askbox">
+  <label for="askText">Ask for a change</label>
+  <div class="askrow"><input id="askText" type="text" maxlength="600" aria-describedby="askHelp" placeholder="For example: show what is late before anything else"><a class="act primary" id="askGo" href="#" target="_blank" rel="noopener">Ask</a></div>
+  <div class="quiet" id="askNote" role="status"></div>
+  <div class="quiet" id="askHelp">A new chat opens with your words typed in. Nothing changes until you send it there and say yes.</div>
+</div>
+
 <footer class="foot" id="foot">Command Room {{PLUGIN_VERSION}}{{RUNTIME_VERSION_LINE}} · published {{PUBLISHED_AT}}</footer>
 </div>
 
@@ -509,7 +538,10 @@
     mail: {{MAIL_DIRECT_JSON}},
     // The seat's calendar connector for Accept and Decline on a meeting row
     // (cr1#723); null shows no calendar answers.
-    calendar: {{CALENDAR_DIRECT_JSON}}
+    calendar: {{CALENDAR_DIRECT_JSON}},
+    // The plugin version this page was built from (cr1#1389), against the
+    // installed one the Settings feed carries.
+    version: {{PLUGIN_VERSION_JSON}}
   };
   var LEGS = [["prep", "Meeting prep"], ["inbox", "Inbox"], ["apply", "Apply"], ["refresh", "Refresh"]];
   var TASKS = { prep: "Hub Prep", inbox: "Hub Inbox", apply: "Hub Apply", refresh: "Hub Refresh" };
@@ -655,15 +687,41 @@
   }
   function maintLine(mt) {
     mt = mt || {};
-    if (!((mt.failing || []).length || (mt.unread || []).length)) return "";
-    // cr1#743: the fire that left the note, scheduled or typed, with its time
-    // in the viewer's own words; the line's own clause stays as the record wrote it.
-    var line = String(mt.line || "");
-    if (mt.fired_at) {
-      var who = mt.fired_via === "scheduled" ? "the scheduled run" : (mt.fired_via === "manual" ? "the run you typed" : "the last run");
-      line += " After " + who + " " + (fmtWhen(mt.fired_at) || mt.fired_at) + ".";
+    // cr1#1385: a failing Hub Apply is its own sentence with its own time, so
+    // Maintenance's part (and its run clause) speaks only for Maintenance's own
+    // findings. A document from before cr1#1385 has no apply_line and keeps
+    // the Apply in its line, so it reads as it did.
+    var found = maintFindings(mt), apply = found.apply, own = found.own, inbox = found.inbox;
+    if (!own && !apply && !inbox) return "";
+    var line = "";
+    if (own) {
+      // cr1#743: the fire that left the note, scheduled or typed, with its time
+      // in the viewer's own words; the line's own clause stays as the record wrote it.
+      line = String(mt.line || "");
+      if (mt.fired_at) {
+        var who = mt.fired_via === "scheduled" ? "the scheduled run" : (mt.fired_via === "manual" ? "the run you typed" : "the last run");
+        line += " After " + who + " " + (fmtWhen(mt.fired_at) || mt.fired_at) + ".";
+      }
+    }
+    if (apply) {
+      if (mt.apply_at) apply = apply.replace(/\.$/, "") + ", " + (fmtWhen(mt.apply_at) || mt.apply_at) + ".";
+      line = line ? line + " " + apply : apply;
+    }
+    // cr1#1464: a Hub inbox run that built no page, its own sentence and time.
+    if (inbox) {
+      if (mt.inbox_at) inbox = inbox.replace(/\.$/, "") + ", " + (fmtWhen(mt.inbox_at) || mt.inbox_at) + ".";
+      line = line ? line + " " + inbox : inbox;
     }
     return line;
+  }
+  // cr1#1394: one test for "Maintenance's own finding" against the Hub Apply
+  // entry, shared by the note (maintLine) and the day line (statusLine).
+  function maintFindings(mt) {
+    mt = mt || {};
+    var apply = String(mt.apply_line || "");
+    var isApply = function (f) { return !!apply && !!f && f.job_id === "cockpit-apply"; };
+    var own = (mt.failing || []).filter(function (f) { return !isApply(f); }).length || (mt.unread || []).length;
+    return { own: own, apply: apply, inbox: String(mt.inbox_line || "") };
   }
   function renderLights() {
     var h = "", i = 0;
@@ -737,7 +795,15 @@
       line = last ? "Last run " + (fmtWhen(last) || last) + "." : "Not run yet. Press Go to run the morning.";
     }
     if (bad.length) line += " " + bad.join(", ") + (bad.length === 1 ? " needs" : " need") + " a look.";
-    if (maint) line += " Maintenance needs a look.";
+    // cr1#1394: a failing Hub Apply alone is named as itself; any finding of
+    // Maintenance's own (with or without the Apply) keeps Maintenance's words.
+    if (maint) {
+      // cr1#1464: a Hub inbox run that built no page is named as itself.
+      var found = maintFindings(S.status.maintenance), hub = [];
+      if (found.apply) hub.push("Hub Apply");
+      if (found.inbox) hub.push("Hub Inbox");
+      line += !found.own && hub.length ? " " + hub.join(" and ") + (hub.length === 1 ? " needs" : " need") + " a look." : " Maintenance needs a look.";
+    }
     if (bad.length || maint) line += " Open Run details.";
     return line;
   }
@@ -1430,8 +1496,12 @@
     todos.forEach(function (t, i) {
       ids[t.id] = true;
       var pr = PRIO[num(t.priority)] ? num(t.priority) : 2;
+      // cr1#1459 slice 2: the to-do's last action, in the priority line's words
+      var last = typeof lastActionLine === "function" ? lastActionLine(t.last_action) : "";
       h += plateRow({ id: t.id, title: t.title, project: PRIO[pr] + " priority", horizon: t.due ? "due " + fmtDate(t.due) : "" }, true, i)
-        .replace('<div class="title">', '<div class="title"><span class="prio p' + pr + '"></span>');
+        .replace('<div class="title">', '<div class="title"><span class="prio p' + pr + '"></span>')
+        // a function, never a string: a thread named with "$'" must not paste the row into itself
+        .replace('<div class="sub">', function (m) { return (last ? '<div class="sub lastact">' + esc(last) + "</div>" : "") + m; });
     });
     landedAdds("todo", ids).forEach(function (c) { h += waitRow(c, "added · shows after the next refresh", "ok"); });
     var errs = (m && m.errors) || [];
@@ -1536,7 +1606,7 @@
         + '<button class="act" data-cact="remind" data-cid="' + esc(cid) + '" title="Put this on your reminders, with a day or without">Remind</button>'
         + (r.pending ? "" : '<button class="act" data-cact="drop" data-cid="' + esc(cid) + '" title="Take this off your list without marking it done">Drop</button>');
     }
-    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc(plainSub([r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon])) + "</div>" + (compact ? "" : originBox(r)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass("c" + cid) + (shut ? " closed" : "") + '" data-row="' + esc(cid) + '" style="animation-delay:' + ((i || 0) * 60) + 'ms"><div class="main"><div class="title">' + esc(cap(r.title)) + tag + '</div><div class="sub">' + esc(plainSub([r.project, r.context, (r.horizon === "past_due" || (r.horizon === "overdue" && "counted" in r && !r.counted)) ? "" : r.horizon])) + "</div>" + (compact ? "" : originBox(r)) + (compact || shut || typeof cEdMore !== "function" || /^obs_/.test(String(cid)) ? "" : cEdMore(cid, r.title)) + (overdue && !w && !shut ? chaseBox(r) : "") + '<div class="slot">' + (!w && !shut && !compact ? slotHtml(cid) : "") + '</div></div><div class="acts">' + acts + "</div></div>";
   }
   // cr1#1285 item 7: plain rows. One short line under the title: no row
   // number, no machine date ("captured Nov 16", "2026-11-16"), each word
@@ -2023,8 +2093,18 @@
     }
     if (act === "send") {
       // cr1#936: Microsoft 365's reply tool answers the sender alone, so a
-      // reply with anyone else on it is never sent from here.
-      if (dropsOthers(d)) { banner(dropsLine(d, "send"), true, ""); return; }
+      // reply with anyone else on it is never sent from here, unless the
+      // seat's plan carries the reply-all tools (cr1#1250).
+      if (dropsOthers(d, "send")) { banner(dropsLine(d, "send"), true, ""); return; }
+      // cr1#1250: a Microsoft 365 group reply whose people cannot all be read
+      // as clean addresses is refused before the first press counts.
+      // A group reply the page cannot send itself is refused here too: the
+      // Apply run's gate (cr1#1251) would refuse it after both presses.
+      if (canReplyAll()) {
+        var rap = replyAllPlan(d);
+        if (rap.unreadable) { banner(RECIPIENTS_LINE, true, ""); return; }
+        if (rap.group && !canDirect(it)) { banner(GROUP_NOT_DIRECT_LINE, true, ""); return; }
+      }
       var first = S.pendingSend[k];
       if (!first) { S.pendingSend[k] = Date.now(); renderInbox(); setTimeout(function () { if (S.pendingSend[k]) { delete S.pendingSend[k]; renderInbox(); } }, 20000); return; }
       // A double-click is one press, never the confirmation (cr1#677).
@@ -2036,8 +2116,16 @@
       if (canDirect(it)) { sendDirect(base, it); return; }
       saveChoice(base); return;
     }
+    // cr1#1464: Draft on a Microsoft 365 group reply is drafted here, the way
+    // Send is (cr1#1250), when the page can draft this row itself; recipients
+    // it cannot read still make nothing.
+    if (act === "draft" && canReplyAll() && canDraftDirect(it)) {
+      var drap = replyAllPlan(d);
+      if (drap.unreadable) { banner(draftErrLine({ code: "recipients_unreadable" }, "draft"), true, ""); return; }
+      if (drap.group) { base.action = "draft"; draftDirect(base, it); return; }
+    }
     // cr1#936: on Microsoft 365 the same tool would make a draft that answers the sender alone.
-    if (act === "draft" && dropsOthers(d)) { banner(dropsLine(d, "draft"), true, ""); return; }
+    if (act === "draft" && dropsOthers(d, "draft")) { banner(dropsLine(d, "draft"), true, ""); return; }
     if (act === "draft") { base.action = "draft"; if (canDraftDirect(it)) { draftDirect(base, it); return; } saveChoice(base); return; }
     if (act === "snooze") { base.action = "snooze"; saveChoice(base); return; }
     // cr1#1020: Reply opens a box on a row with no draft; Drop takes the
@@ -2084,11 +2172,60 @@
   // the sender alone. A reply to one person still goes on.
   var NO_BACKEND_GROUP_LINE = "The Hub does not know which mail service this seat replies through, so it cannot be sure this reply reaches everyone on it. Reply from your mail app so nobody is left off. Nothing was sent.";
   var NO_BACKEND_GROUP_DRAFT_LINE = "The Hub does not know which mail service this seat replies through, so it cannot be sure this draft reaches everyone on it. Reply from your mail app so nobody is left off. No draft was made.";
-  function dropsOthers(d) {
+  function dropsOthers(d, act) {
     // each person once, whatever the case, as the Apply run's gate counts them
     var seen = {}; addrList(d && d.to).concat(addrList(d && d.cc)).forEach(function (a) { seen[a.toLowerCase()] = true; });
     if (Object.keys(seen).length <= 1) return false;
+    // cr1#1250: Send (not Draft) on a Microsoft 365 seat whose plan carries
+    // the reply-all tools reaches everyone; see replyAllPlan and sendCalls.
+    if (act === "send" && canReplyAll()) return false;
     return !MAIL || MAIL.provider === "outlook";
+  }
+  // cr1#1250: Send on a Microsoft 365 group reply. Its plain reply tool
+  // answers the sender alone, so a group reply is made with the reply-all
+  // draft tool, then its To and Cc are set to exactly the people on the row
+  // (the owner already left out by the feed, cr1#936) and its Bcc cleared,
+  // then it is sent by the id that same press's draft call handed back
+  // (sendDraftId, cr1#1387). Every address must read as one clean address
+  // and the To must name someone; otherwise nothing is made or sent. A
+  // reply to one person keeps the plain reply tool, as before. A plan
+  // without both tools keeps the cr1#936 refusal.
+  var RECIPIENTS_LINE = "The Hub could not read exactly who this reply goes to, so it made no draft. Reply from Outlook so nobody is left off. Nothing was sent.";
+  var RECIPIENTS_NOT_SET_LINE = "Microsoft 365 could not set who this reply goes to, so nothing was sent. A reply draft may be left in your Drafts folder; delete it before you reply again.";
+  // cr1#1464: the same failure on Draft. The reply-all draft may be there, so
+  // the line never says no draft was made.
+  var RECIPIENTS_NOT_SET_DRAFT_LINE = "Microsoft 365 could not set who this reply goes to. A reply draft may be in your Drafts folder without the right people on it; delete it and reply from Outlook.";
+  var GROUP_NOT_DIRECT_LINE = "The Hub cannot check this thread in Microsoft 365 from here, so it cannot send this reply to everyone. Reply from Outlook so nobody is left off. Nothing was sent.";
+  var GROUP_UNREAD_LINE = "Could not check this thread in Microsoft 365 for newer mail from everyone on it, so nothing was sent. Press Send again.";
+  var GROUP_UNREAD_DRAFT_LINE = "Could not check this thread in Microsoft 365 for newer mail from everyone on it, so no draft was made. Press Draft again.";
+  var REPLY_ALL_MAX = 50;
+  var RCPT_ADDR_RE = /^[^\s@<>,;:"()\[\]\\]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+  function canReplyAll() { return !!(MAIL && MAIL.provider === "outlook" && MAIL.reply_all_draft && MAIL.set_recipients); }
+  function strictAddrs(s) {
+    var out = [], parts = String(s || "").split(/[,;]/);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim(); if (!p) continue;
+      var m = p.match(/^[^<>]*<([^<>]+)>$/), a = (m ? m[1] : p).trim();
+      if (!RCPT_ADDR_RE.test(a)) return null;
+      out.push(a.toLowerCase());
+    }
+    return out;
+  }
+  function replyAllPlan(d) {
+    // The feed found no one but the owner on the landed page's To and fell
+    // back to that To unfiltered: never a group reply's To.
+    if (d && d.to_unfiltered) return { unreadable: true };
+    var pieces = String((d && d.to) || "").split(/[,;]/).concat(String((d && d.cc) || "").split(/[,;]/))
+      .filter(function (p) { return p.trim(); });
+    if (pieces.length <= 1) return { one: true };
+    var to = strictAddrs(d && d.to), cc = strictAddrs(d && d.cc);
+    if (!to || !cc) return { unreadable: true };
+    var seen = {}, T = [], C = [];
+    to.forEach(function (a) { if (!seen[a]) { seen[a] = true; T.push(a); } });
+    cc.forEach(function (a) { if (!seen[a]) { seen[a] = true; C.push(a); } });
+    if (!T.length || T.length + C.length > REPLY_ALL_MAX) return { unreadable: true };
+    if (T.length + C.length <= 1) return { one: true };
+    return { group: { to: T, cc: C } };
   }
   function dropsLine(d, act) {
     if (!MAIL) return act === "draft" ? NO_BACKEND_GROUP_DRAFT_LINE : NO_BACKEND_GROUP_LINE;
@@ -2112,6 +2249,21 @@
   }
   // true: newer mail; false: none; null: the answer could not be read, so
   // the page cannot vouch for the thread and hands the press to Apply.
+  // cr1#1250: a Microsoft 365 group reply checks for newer mail from every
+  // person it goes to, one search each, in turn. Any newer mail stops it; an
+  // answer that cannot be read makes the whole check unreadable.
+  function readGroupNewer(g, it) {
+    var people = g.to.concat(g.cc), found = false, unread = false;
+    return people.reduce(function (p, a) {
+      return p.then(function () {
+        if (found) return;
+        return mcp.callTool(MAIL.server, MAIL.read, { sender: a, afterDateTime: it.message_ts, limit: 5 }, { cache: false }).then(function (r) {
+          var nw = newerIn(r && r.payload, it.message_ts);
+          if (nw === null) unread = true; else if (nw) found = true;
+        });
+      });
+    }, Promise.resolve()).then(function () { return found ? true : (unread ? null : false); });
+  }
   function newerIn(p, baseIso) {
     var base = Date.parse(baseIso || ""); if (isNaN(base)) return null;
     p = p || {};
@@ -2141,6 +2293,158 @@
     if (MAIL.provider === "superhuman") return (p.draft && (p.draft.draft_id || p.draft.id)) || p.draft_id || null;
     return p.id || p.messageId || p.message_id || (p.draft && (p.draft.id || p.draft.messageId)) || null;
   }
+  // cr1#1380: Microsoft 365's draft tools say they return "the draft's
+  // immutable message id and a webLink", and a press on a client seat came
+  // back with no id the reader above knew. On Microsoft 365 the Draft and
+  // Chase presses read the id the old way first, then under the other names
+  // a draft reply uses, inside the wrappers a connector puts round it, and in
+  // a reply that came back as plain text. A value not shaped like a mail id
+  // is never taken, a cut-off one never is, a conversation, thread or
+  // original message's id never is, and two different draft ids give none.
+  // The web link's id is a different form of the id, so it is never taken.
+  // Superhuman and Gmail read as before. Drafts only: Send keeps draftIdOf,
+  // so this reader never feeds a send.
+  var DRAFT_ID_RE = /^[A-Za-z0-9+\/=_-]{8,512}$/;
+  var DRAFT_ID_KEYS = ["id", "draftId", "draft_id", "messageId", "message_id", "immutableId", "itemId"];
+  var DRAFT_WRAP_KEYS = ["draft", "message", "result", "data", "value"];
+  var DRAFT_LABEL_RANK = { draft: 4, immutable: 3, message: 2, "": 1 };
+  var DRAFT_NOT_OURS = /(internet|original|source|parent|conversation|thread|reply to|replying to|in reply to)[ \t_-]*$/i;
+  function idText(v) { return typeof v === "string" && DRAFT_ID_RE.test(v.trim()) ? v.trim() : null; }
+  function idInText(t, depth) {
+    t = String(t || "").trim().slice(0, 20000); if (!t) return null;
+    if (/^[\[{]/.test(t)) { try { return idInObj(JSON.parse(t), depth + 1); } catch (e) { /* not JSON: read it as text */ } }
+    var re = /(^|[\s"'{,;(\[])([A-Za-z]{0,24})[ \t_-]*id["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9+\/=_-]{8,512})(?![A-Za-z0-9+\/=_%@-]|\.[A-Za-z0-9])/gi;
+    var m, best = null, rank = 0, tie = false;
+    while ((m = re.exec(t))) {
+      var r = DRAFT_LABEL_RANK[m[2].toLowerCase()];
+      if (!r || DRAFT_NOT_OURS.test(t.slice(Math.max(0, m.index + m[1].length - 24), m.index + m[1].length))) continue;
+      if (r > rank) { best = m[3]; rank = r; tie = false; } else if (r === rank && m[3] !== best) tie = true;
+    }
+    return tie ? null : best;
+  }
+  function idInObj(p, depth) {
+    if (p == null || depth > 4) return null;
+    if (typeof p === "string") return idInText(p, depth);
+    if (Array.isArray(p)) return p.length === 1 ? idInObj(p[0], depth + 1) : null;
+    if (typeof p !== "object") return null;
+    for (var i = 0; i < DRAFT_ID_KEYS.length; i++) { var v = idText(p[DRAFT_ID_KEYS[i]]); if (v) return v; }
+    for (var j = 0; j < DRAFT_WRAP_KEYS.length; j++) { var w = idInObj(p[DRAFT_WRAP_KEYS[j]], depth + 1); if (w) return w; }
+    if (p.structuredContent != null) { var s = idInObj(p.structuredContent, depth + 1); if (s) return s; }
+    if (Array.isArray(p.content)) { var tx = p.content.filter(function (b) { return b && b.type === "text"; }).map(function (b) { return b.text; }).join("\n"); if (tx) return idInText(tx, depth); }
+    return null;
+  }
+  function draftReplyId(r) {
+    if (!MAIL) return null;
+    if (MAIL.provider !== "outlook") return draftIdOf(r && r.payload);
+    var p = r && r.payload !== undefined ? r.payload : r;
+    var old = p && typeof p === "object" && !Array.isArray(p) ? draftIdOf(p) : null;
+    if (old) return old;
+    return idInObj(p, 0) || (r && p !== r ? idInObj({ structuredContent: r.structuredContent, content: r.content }, 0) : null);
+  }
+  // cr1#1387: Send on Microsoft 365 makes a reply draft, then sends it by the
+  // id that same call handed back. Its real reply is plain text (an "id:"
+  // line and a web link, cr1#1380), which the old reader never read, so Send
+  // stopped with nothing sent. A send takes the id only from this press's own
+  // reply-draft answer, and only when that answer names exactly one id of a
+  // mail id's shape. Anything in doubt stops the send and nothing goes out:
+  // no id, two different ids, an id under a label it does not know, a value
+  // that does not end cleanly or is too short or too long, an answer nested
+  // too deep to read whole, the web link's id, or the id of the message being
+  // answered.
+  var SEND_ID_RE = /^[A-Za-z0-9+\/=_-]{1,512}$/;
+  var SEND_TEXT_ID_RE = /^[A-Za-z0-9+\/=_-]{8,512}$/;
+  var SEND_NOT_OURS_LABEL = /^(internet|original|source|parent|parentfolder|folder|conversation|thread|change|changekey)$/i;
+  var SEND_DOUBT = { doubt: true };
+  function sendIdsIn(p, depth, out) {
+    if (p == null) return out;
+    if (depth > 4) { out.push(SEND_DOUBT); return out; }
+    if (typeof p === "string") {
+      var t = p.trim();
+      if (t.length > 20000) { out.push(SEND_DOUBT); return out; }
+      if (/^[\[{]/.test(t)) { try { return sendIdsIn(JSON.parse(t), depth + 1, out); } catch (e) { /* not JSON: read it as text */ } }
+      var re = /(^|[\s"'{,;(\[])([A-Za-z]{0,24})[ \t_-]*id(["']?)[ \t]*[:=][ \t]*(["']?)([^\s"',;}\])]{0,600})/gi, m;
+      while ((m = re.exec(t))) {
+        var label = m[2], before = t.slice(Math.max(0, m.index + m[1].length - 24), m.index + m[1].length);
+        if (SEND_NOT_OURS_LABEL.test(label) || DRAFT_NOT_OURS.test(before)) continue;
+        if (!DRAFT_LABEL_RANK[label.toLowerCase()] && label.toLowerCase() !== "item") { out.push(SEND_DOUBT); continue; }
+        var v = m[5], end = m.index + m[0].length, nx = t.charAt(end);
+        // A sentence's closing period is not part of the id; any other run-on is.
+        if (v.charAt(v.length - 1) === "." && !/[^\s]/.test(t.charAt(end))) v = v.slice(0, -1);
+        if (m[4] && nx !== m[4]) { out.push(SEND_DOUBT); continue; }
+        out.push(SEND_TEXT_ID_RE.test(v) ? v : SEND_DOUBT);
+      }
+      return out;
+    }
+    if (Array.isArray(p)) { p.forEach(function (x) { sendIdsIn(x, depth + 1, out); }); return out; }
+    if (typeof p !== "object") return out;
+    DRAFT_ID_KEYS.forEach(function (k) { if (p[k] != null && p[k] !== "") out.push(p[k]); });
+    DRAFT_WRAP_KEYS.forEach(function (k) { sendIdsIn(p[k], depth + 1, out); });
+    if (p.structuredContent != null) sendIdsIn(p.structuredContent, depth + 1, out);
+    if (Array.isArray(p.content)) p.content.forEach(function (b) { if (b && b.type === "text") sendIdsIn(b.text, depth + 1, out); });
+    return out;
+  }
+  function sendDraftId(r, it) {
+    var p = r && r.payload != null ? r.payload : r;
+    var ids = sendIdsIn(p, 0, []);
+    if (r && p !== r) sendIdsIn({ structuredContent: r.structuredContent, content: r.content }, 0, ids);
+    if (ids.indexOf(SEND_DOUBT) !== -1) return null;
+    var seen = {}, one = [];
+    ids.forEach(function (v) { var k = (typeof v) + ":" + (typeof v === "string" ? v.trim() : String(v)); if (!seen[k]) { seen[k] = true; one.push(v); } });
+    if (one.length !== 1 || typeof one[0] !== "string") return null;
+    var id = one[0].trim();
+    if (!SEND_ID_RE.test(id) || (it && it.message_id && id === String(it.message_id))) return null;
+    return id;
+  }
+  // cr1#1464: the recipients a Microsoft 365 draft update answered with, as
+  // lower-case lists { to, cc, bcc } (null where the answer names none), from
+  // the payload, its structured content or a JSON text block. Graph records
+  // ({ emailAddress: { address } }) and plain strings both read.
+  function rcptListIn(v) {
+    if (!Array.isArray(v)) return null;
+    var out = [];
+    for (var i = 0; i < v.length; i++) {
+      var r = v[i], a = typeof r === "string" ? r : (r && r.emailAddress ? r.emailAddress.address : (r && (r.address || r.email)));
+      if (typeof a !== "string" || !a.trim()) return [null];
+      out.push(a.trim().toLowerCase());
+    }
+    return out;
+  }
+  function draftRcptIn(p, depth) {
+    if (depth > 3 || p == null) return null;
+    if (typeof p === "string") { var t = p.trim(); if (t.charAt(0) !== "{") return null; try { return draftRcptIn(JSON.parse(t), depth + 1); } catch (e) { return null; } }
+    if (typeof p !== "object" || Array.isArray(p)) return null;
+    var to = rcptListIn(p.toRecipients || p.to), cc = rcptListIn(p.ccRecipients || p.cc), bcc = rcptListIn(p.bccRecipients || p.bcc);
+    if (to || cc || bcc) return { to: to, cc: cc, bcc: bcc };
+    var keys = ["payload", "draft", "message", "structuredContent"];
+    for (var k = 0; k < keys.length; k++) { var hit = draftRcptIn(p[keys[k]], depth + 1); if (hit) return hit; }
+    if (Array.isArray(p.content)) for (var b = 0; b < p.content.length; b++) { var c = p.content[b]; if (c && c.type === "text") { var h = draftRcptIn(c.text, depth + 1); if (h) return h; } }
+    return null;
+  }
+  function sameRcpts(got, want) {
+    if (!got) return true;
+    if (got.indexOf(null) !== -1 || got.length !== want.length) return false;
+    var a = got.slice().sort(), b = want.slice().sort();
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  // cr1#1250 / cr1#1464: a Microsoft 365 group reply's draft, for Send and for
+  // Draft: the reply-all draft, then exactly the row's To and Cc with no Bcc,
+  // then a check of what the update answered. An answer that names the
+  // draft's recipients must name exactly these people and no Bcc; an answer
+  // in plain words is taken at its word, as before. Answers the draft's id.
+  function groupDraft(it, d, g) {
+    return mcp.callTool(MAIL.server, MAIL.reply_all_draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" }).then(function (r) {
+      var id = sendDraftId(r, it);
+      if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
+      function notSet(cause) { var x = new Error("recipients not set"); x.code = "recipients_not_set"; x.cause = cause; return x; }
+      return mcp.callTool(MAIL.server, MAIL.set_recipients, { messageId: id, to: g.to.slice(), cc: g.cc.slice(), bcc: [] }).then(function (s) {
+        if (s && s.isError) throw notSet(s);
+        var seen = draftRcptIn(s, 0);
+        if (seen && !(sameRcpts(seen.to, g.to) && sameRcpts(seen.cc, g.cc) && sameRcpts(seen.bcc, []))) throw notSet("recipients differ");
+        return id;
+      }, function (e) { throw notSet(e); });
+    });
+  }
   function sendCalls(it, d) {
     var to = addrList(d.to), cc = addrList(d.cc);
     if (MAIL.provider === "superhuman") {
@@ -2157,8 +2461,17 @@
       if (to.length) g.to = to; if (cc.length) g.cc = cc;
       return mcp.callTool(MAIL.server, MAIL.send, g).then(function (r) { return draftIdOf(r && r.payload); }, function (e) { throw { stage: "send", err: e }; });
     }
+    var plan = canReplyAll() ? replyAllPlan(d) : { one: true };
+    if (plan.unreadable) { var u = new Error("recipients unreadable"); u.code = "recipients_unreadable"; return Promise.reject(u); }
+    if (plan.group) {
+      // cr1#1250: reply-all draft, then exactly the row's To and Cc, no Bcc,
+      // checked on the draft (cr1#1464), then send.
+      return groupDraft(it, d, plan.group).then(function (id) {
+        return mcp.callTool(MAIL.server, MAIL.send, { messageId: id }).then(function () { return id; }, function (e) { throw { stage: "send", err: e }; });
+      });
+    }
     return mcp.callTool(MAIL.server, MAIL.draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" }).then(function (r) {
-      var id = draftIdOf(r && r.payload);
+      var id = sendDraftId(r, it);
       if (!id) { var e = new Error("no draft id"); e.code = "no_draft_id"; throw e; }
       return mcp.callTool(MAIL.server, MAIL.send, { messageId: id }).then(function () { return id; }, function (e) { throw { stage: "send", err: e }; });
     });
@@ -2175,6 +2488,8 @@
     if (stage === "send" && (code === "blocked_by_policy" || /forbidden|insufficient|not authorized|AADSTS/i.test(e && e.message ? String(e.message) : "")) && CFG.mail && CFG.mail.admin_line) return CFG.mail.admin_line;
     if (code === "blocked_by_policy") return "Your organization does not let this page send through " + name + ". Nothing was sent.";
     if (code === "no_draft_id") return name + " made no reply to send. Check your Drafts; nothing was sent.";
+    if (code === "recipients_unreadable") return RECIPIENTS_LINE;
+    if (code === "recipients_not_set") return RECIPIENTS_NOT_SET_LINE;
     if (stage === "send") {
       if (code === "tool_error") return name + " did not send it" + (e.message ? ": " + String(e.message).slice(0, 160) : "") + ". Check your Drafts and Sent before pressing again.";
       return "The send may have gone out. Check your Sent folder before pressing Send again.";
@@ -2200,8 +2515,12 @@
         if (outcome === "error") banner(line, true, err ? errText(err) : "");
       }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "Sent, but the page could not note it; do not press Send again." : line, true, errText(e)); });
     }
-    mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) {
-      var newer = newerIn(r && r.payload, it.message_ts);
+    var grp = canReplyAll() ? replyAllPlan(base.draft || {}).group : null;
+    var reading = grp ? readGroupNewer(grp, it)
+      : mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) { return newerIn(r && r.payload, it.message_ts); });
+    reading.then(function (newer) {
+      // cr1#1250: Apply refuses a Microsoft 365 group reply, so the page says so itself.
+      if (newer === null && grp) return land("error", GROUP_UNREAD_LINE);
       if (newer === null) {
         // The page cannot vouch for the thread: the Apply run sends it,
         // after its own check.
@@ -2292,6 +2611,7 @@
   function draftedAlready(res) { return !!(res && res.action === "draft" && res.result && res.result.outcome === "applied"); }
   function canDraftDirect(it) { return !!(MAIL && MAIL.draft) && canDirect(it); }
   function draftErrLine(e, stage) {
+    if (e && e.code === "recipients_not_set") return RECIPIENTS_NOT_SET_DRAFT_LINE;
     return sendErrLine(e, stage).replace("Nothing was sent", "No draft was made").replace("nothing was sent", "no draft was made").replace("Press Send again", "Press Draft again").replace("press Send again", "press Draft again");
   }
   function draftCall(it, d) {
@@ -2300,6 +2620,10 @@
       if (to.length) inp.to = to; if (cc.length) inp.cc = cc;
       return mcp.callTool(MAIL.server, MAIL.draft, inp);
     }
+    // cr1#1464: a Microsoft 365 group reply is drafted the way Send drafts it.
+    var plan = MAIL.provider === "outlook" && canReplyAll() ? replyAllPlan(d) : { one: true };
+    if (plan.unreadable) { var u = new Error("recipients unreadable"); u.code = "recipients_unreadable"; return Promise.reject(u); }
+    if (plan.group) return groupDraft(it, d, plan.group).then(function (id) { return { payload: { id: id } }; });
     return mcp.callTool(MAIL.server, MAIL.draft, { messageId: it.message_id, body: "<p>" + htmlBody(d.body) + "</p>", bodyType: "html" });
   }
   function draftDirect(base, it) {
@@ -2320,13 +2644,19 @@
         if (outcome === "error") banner(line, true, err ? errText(err) : "");
       }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "The draft is made, but the page could not note it; check your Drafts before pressing Draft again." : line, true, errText(e)); });
     }
-    mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) {
-      var newer = newerIn(r && r.payload, it.message_ts);
+    // cr1#1464: a Microsoft 365 group reply checks every person on it for
+    // newer mail, as Send does (cr1#1250), and Apply refuses a group reply,
+    // so an answer the page cannot read is refused here, never handed on.
+    var grp = canReplyAll() ? replyAllPlan(base.draft || {}).group : null;
+    var reading = grp ? readGroupNewer(grp, it)
+      : mcp.callTool(MAIL.server, MAIL.read, readInput(it), { cache: false }).then(function (r) { return newerIn(r && r.payload, it.message_ts); });
+    reading.then(function (newer) {
+      if (newer === null && grp) return land("error", GROUP_UNREAD_DRAFT_LINE);
       if (newer === null) { delete S.sending[k]; saveChoice(base); return; }
       if (newer) return land("error", NEWER_DRAFT_LINE);
       return draftCall(it, base.draft || {}).then(function (r) {
         // The same proof Send asks for: no id back, no claim it is in Drafts.
-        var id = draftIdOf(r && r.payload);
+        var id = draftReplyId(r);
         if (!id) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Draft again.");
         row.native_id = String(id);
         return land("applied", "In your Drafts.");
@@ -2376,7 +2706,7 @@
       }, function (e) { delete S.sending[k]; renderAll(); banner(outcome === "applied" ? "The draft is made, but the page could not note it; check your Drafts before pressing Chase again." : line, true, errText(e)); });
     }
     return chaseCall(row.draft).then(function (res) {
-      var id = draftIdOf(res && res.payload);
+      var id = draftReplyId(res);
       if (!id) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing Chase again.");
       row.native_id = String(id);
       return land("applied", "In your Drafts.");
@@ -2525,7 +2855,13 @@
       + panelSection("Last decision", p.last_decision ? [esc(p.last_decision.text) + " " + fromWords(p.last_decision.from === "Decision" ? "" : p.last_decision.from, p.last_decision.day)] : [])
       + panelSection("Last moved", p.moved ? [esc(fmtDate(p.moved.day)) + " " + fromWords(p.moved.from)] : [])
       + panelSection("Status", p.status ? [esc(cap1(p.status))] : []);
-    return '<div class="panel" role="region" aria-label="' + esc(r.name) + '">' + h + '<div class="sub"><span class="cfind" role="button" tabindex="0" data-panel-close="1">Close</span></div></div>';
+    // cr1#1383 part 2: Rename sits on the card, so the row keeps its one button.
+    var ren = typeof edActs === "function" ? '<div class="parts">' + edActs("stream_edit", r.id, r.name) + "</div>" : "";
+    // cr1#1383, Add context: under More on the card, beside Rename (the row
+    // keeps its one button), never on a work stream's own card.
+    var ws = ((S.projects || {}).work_streams || []).some(function (w) { return w.id === r.id; });
+    if (typeof ctxFold === "function" && !ws) ren += ctxFold("stream_edit", r.id, []);
+    return '<div class="panel" role="region" aria-label="' + esc(r.name) + '">' + h + ren + '<div class="sub"><span class="cfind" role="button" tabindex="0" data-panel-close="1">Close</span></div></div>';
   }
   function workStreamPanel(w, ts, byId) {
     var open = 0, late = 0; ts.forEach(function (t) { open += num(byId[t].open); late += num(byId[t].overdue); });
@@ -2543,7 +2879,7 @@
     var stands = (r.stands || []).map(function (l) { return esc(l.text) + (l.day ? " · " + esc(fmtDate(l.day)) : ""); });
     var dec = r.last_decision ? "Last decision: " + esc(r.last_decision.text) + (r.last_decision.day ? " · " + esc(fmtDate(r.last_decision.day)) : "") : "";
     var on = S.panel === r.id;
-    return '<div class="row' + riseClass("p" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title"><span class="tlink" role="button" tabindex="0" aria-expanded="' + (on ? "true" : "false") + '" data-panel="' + esc(r.id) + '" title="Open this ' + esc(word("thread")) + '\'s card">' + esc(r.name) + '</span></div><div class="sub">' + quiet + "</div>"
+    return '<div class="row' + riseClass("p" + r.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title"><span class="tlink" role="button" tabindex="0" aria-expanded="' + (on ? "true" : "false") + '" data-panel="' + esc(r.id) + '" title="Open this ' + esc(word("thread")) + '\'s card">' + esc(r.name) + "</span>" + (typeof edTag === "function" ? edTag("stream_edit", r.id) : "") + '</div><div class="sub">' + quiet + "</div>"
       + moreFold([nxt, who].concat(stands.length ? ["Where it stands:"] : [], stands, [dec])) + '</div><div class="acts">' + btn + "</div></div>" + (on ? threadPanel(r) : "");
   }
   function companyRows(rows) {
@@ -2567,33 +2903,105 @@
   // press; the book checks the work stream before anything is written.
   // "Not work" closes an open promise as dropped, so Undo reopens
   // it; a line only heard has no promise of its own to reopen.
+  // Part two: New work stream opens a name box on the row; Save keeps a
+  // `newstream` choice that waits for Apply like every press (Undo takes it
+  // back), and the book creates the stream on Apply. A line only heard
+  // gets Assign to as well: Apply tracks it first, through the queue's own
+  // confirm, then gives it the home.
   function reopenableNotWork(c) { return !!c && c.action === "notwork" && c.from !== "heard"; }
   var NEW_STREAM = "__new";
-  var NEW_STREAM_LINE = "A new work stream is set up in a chat: ask for it there, then assign this row to it.";
+  var NEW_STREAM_CAP = 80;
+  // The open name boxes and what is typed in them, kept in the page's state
+  // so a redraw keeps both (like the Snooze box).
+  function nhNew() { if (!S.nhNew) S.nhNew = {}; return S.nhNew; }
   function noHomeStreams() { return ((S.projects && S.projects.work_streams) || []).filter(function (w) { return w && w.id; }); }
+  // cr1#1341: Undo after Apply of Assign to or New work stream is its own
+  // `unassign` choice naming the press it takes back. It waits for Apply like
+  // every press, with its own Undo before Apply; once it lands the move
+  // leaves the list, and the item is under No home yet on the next read.
+  function isHomePress(c) { return !!c && c.kind === "commitment" && (c.action === "assign" || c.action === "newstream") && !!c.applied && !!c.result && c.result.outcome === "applied"; }
+  function unassignOf(press) {
+    var best = null;
+    (S.choices || []).forEach(function (c) { if (c.kind === "commitment" && c.action === "unassign" && String(c.input) === String(press.id) && (!best || (c.created_at || "") > (best.created_at || ""))) best = c; });
+    return best;
+  }
+  function homeUndone(press) { var u = unassignOf(press); return !!u && !!u.applied && !!u.result && (u.result.outcome === "applied" || u.result.outcome === "already"); }
+  function homeUndoActs(press) {
+    var u = unassignOf(press);
+    if (u && !u.applied) return { tag: waitTag(u, "undo waiting"), acts: undoBtn(u, "Keep the move: take the Undo back before it reaches your book") };
+    return { tag: u && u.applied ? resultTag(u) : "", acts: '<button class="act undo" data-nhact="unassign" data-nhid="' + esc(press.id) + '" title="Put it back under No home yet; it is done when you press Apply">Undo</button>' };
+  }
+  function movedFromPage(shown, q) {
+    // The moves this page applied and has not taken back, whose item is no
+    // longer on the No home yet rows read last.
+    return (S.choices || []).filter(function (c) { return isHomePress(c) && !homeUndone(c) && !shown[String(c.n)] && (!q || String(c.title || "").toLowerCase().indexOf(q) >= 0); })
+      .sort(function (a, b) { return (a.created_at || "") < (b.created_at || "") ? -1 : 1; });
+  }
+  function movedSection(nh, q) {
+    var shown = {}; ((nh && nh.rows) || []).forEach(function (r) { shown[String(r.id)] = true; });
+    var h = "";
+    movedFromPage(shown, q).forEach(function (c) {
+      var a = homeUndoActs(c);
+      h += '<div class="row closed"><div class="main"><div class="title">' + esc(cap(c.title || c.n)) + resultTag(c) + a.tag + '</div></div><div class="acts">' + a.acts + "</div></div>";
+    });
+    return h ? "<h2>Given a home from this page</h2>" + h : "";
+  }
   function noHomeActs(r) {
     var w = choiceFor("commitment", r.id), res = latestResult("commitment", r.id);
-    if (w) return { tag: waitTag(w, w.action === "assign" ? "move waiting" : "not work waiting"), acts: undoBtn(w, "Take this back before it reaches your book") };
-    var tag = res && (res.action === "assign" || res.action === "notwork") ? resultTag(res) : "";
-    if (res && res.result && res.result.outcome === "applied" && (res.action === "assign" || res.action === "notwork")) {
+    if (w) return { tag: waitTag(w, w.action === "assign" ? "move waiting" : w.action === "newstream" ? "new " + word("work_stream") + " " + String(w.input || "") + " waiting" : w.action === "unassign" ? "undo waiting" : "not work waiting"), acts: undoBtn(w, "Take this back before it reaches your book") };
+    var homeRes = res && (res.action === "assign" || res.action === "notwork" || res.action === "newstream");
+    var tag = homeRes || (res && res.action === "unassign") ? resultTag(res) : "";
+    if (homeRes && isHomePress(res)) { var hu = homeUndoActs(res); return { tag: tag + hu.tag, acts: hu.acts }; }
+    if (homeRes && res.result && res.result.outcome === "applied") {
       return { tag: tag, acts: reopenableNotWork(res) && !reopenedAfter(r.id, res) ? '<button class="act undo" data-cact="reopen" data-cid="' + esc(r.id) + '" title="Put it back on your list">Undo</button>' : "" };
     }
-    var opts = r.from === "heard" ? "" : noHomeStreams().map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name || s.id) + "</option>"; }).join("");
-    var pick = r.from === "heard" ? "" : '<select class="act" data-nhassign="' + esc(r.id) + '" aria-label="Assign to a ' + esc(word("work_stream")) + '" title="Give this a home"><option value="">Assign to</option>' + opts + '<option value="' + NEW_STREAM + '">New ' + esc(word("work_stream")) + "</option></select>";
+    var box = nhNew();
+    if (Object.prototype.hasOwnProperty.call(box, r.id)) {
+      return { tag: tag, acts: '<input class="when" data-nhname="' + esc(r.id) + '" maxlength="' + NEW_STREAM_CAP + '" aria-label="Name of the new ' + esc(word("work_stream")) + '" placeholder="Name of the new ' + esc(word("work_stream")) + '" value="' + esc(box[r.id]) + '">'
+        + '<button class="act primary" data-nhact="newsave" data-nhid="' + esc(r.id) + '" title="Keep this; it is set up when you press Apply">Save</button>'
+        + '<button class="act" data-nhact="newcancel" data-nhid="' + esc(r.id) + '">Cancel</button>' };
+    }
+    var opts = noHomeStreams().map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name || s.id) + "</option>"; }).join("");
+    var pick = '<select class="act" data-nhassign="' + esc(r.id) + '" aria-label="Assign to a ' + esc(word("work_stream")) + '" title="Give this a home"><option value="">Assign to</option>' + opts + '<option value="' + NEW_STREAM + '">New ' + esc(word("work_stream")) + "</option></select>";
     return { tag: tag, acts: pick + '<button class="act" data-nhact="notwork" data-nhid="' + esc(r.id) + '" data-nhfrom="' + esc(r.from || "") + '" title="Not a work item: take it off the list">Not work</button>' };
   }
   function noHomeChoice(r, action, value) {
     // The doc a press saves; null when there is nothing to save.
     if (!r || !r.id) return null;
-    if (action === "notwork") return { kind: "commitment", src: "commitment-triage", n: r.id, action: "notwork", from: r.from === "heard" ? "heard" : "open", title: r.title || "" };
-    if (action === "assign" && value && value !== NEW_STREAM && r.from !== "heard") return { kind: "commitment", src: "commitment-triage", n: r.id, action: "assign", input: value, title: r.title || "" };
+    var from = r.from === "heard" ? "heard" : "open";
+    if (action === "notwork") return { kind: "commitment", src: "commitment-triage", n: r.id, action: "notwork", from: from, title: r.title || "" };
+    if (action === "assign" && value && value !== NEW_STREAM) return { kind: "commitment", src: "commitment-triage", n: r.id, action: "assign", input: value, from: from, title: r.title || "" };
+    if (action === "newstream" && value) return { kind: "commitment", src: "commitment-triage", n: r.id, action: "newstream", input: value, from: from, title: r.title || "" };
     return null;
   }
   function noHomeRowOf(id) { var rows = ((S.projects && S.projects.no_home) || {}).rows || []; for (var i = 0; i < rows.length; i++) if (String(rows[i].id) === String(id)) return rows[i]; return null; }
+  function focusNoHomeName(id) {
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    var all = document.querySelectorAll("input[data-nhname]");
+    for (var i = 0; i < all.length; i++) if (all[i].getAttribute("data-nhname") === String(id)) { all[i].focus(); return; }
+  }
+  function onNoHomeName(el) { var id = el.getAttribute("data-nhname"), box = nhNew(); if (id != null && Object.prototype.hasOwnProperty.call(box, id)) box[id] = String(el.value || ""); }
   function onNoHomePress(el) {
-    var id = el.getAttribute("data-nhassign") || el.getAttribute("data-nhid"), r = noHomeRowOf(id);
+    var id = el.getAttribute("data-nhassign") || el.getAttribute("data-nhid"), r = noHomeRowOf(id), box = nhNew();
     var action = el.hasAttribute("data-nhassign") ? "assign" : el.getAttribute("data-nhact");
-    if (action === "assign" && el.value === NEW_STREAM) { el.value = ""; banner(NEW_STREAM_LINE.replace("work stream", word("work_stream"))); return; }
+    if (action === "unassign") {
+      var press = (S.choices || []).filter(function (c) { return c.id === id; })[0];
+      // One Undo at a time: none while one waits, none once one landed.
+      var u0 = press ? unassignOf(press) : null;
+      if (isHomePress(press) && !homeUndone(press) && !(u0 && !u0.applied)) saveChoice({ kind: "commitment", src: "commitment-triage", n: press.n, action: "unassign", input: press.id, from: press.from || "open", title: press.title || "" });
+      return;
+    }
+    if (action === "assign" && el.value === NEW_STREAM) { el.value = ""; if (r) { box[r.id] = ""; renderProjects(); focusNoHomeName(r.id); } return; }
+    if (action === "newcancel") { delete box[id]; renderProjects(); return; }
+    if (action === "newsave") {
+      var name = String(box[id] || "").replace(/\s+/g, " ").trim().slice(0, NEW_STREAM_CAP);
+      if (!name) return;
+      delete box[id];
+      var nd = noHomeChoice(r, "newstream", name);
+      if (nd) saveChoice(nd);
+      renderProjects();
+      return;
+    }
     var doc = noHomeChoice(r, action, el.value);
     if (doc) saveChoice(doc);
   }
@@ -2618,9 +3026,144 @@
     if ((pj && pj.errors || []).indexOf("no_home") >= 0) return '<h2>No home yet</h2><div class="quiet">' + NO_HOME_UNREAD.replace("no thread", function () { return "no " + esc(word("thread")); }) + "</div>";
     var rows = (nh.rows || []).filter(function (r) { return !q || String(r.title || "").toLowerCase().indexOf(q) >= 0; });
     var h = "<h2>No home yet (" + num(nh.n) + ")</h2>";
-    if (!rows.length) return h + '<div class="quiet">' + (num(nh.n) ? "Nothing here matches." : "Nothing without a home.") + "</div>";
+    if (!rows.length) return h + '<div class="quiet">' + (num(nh.n) ? "Nothing here matches." : "Nothing without a home.") + "</div>" + movedSection(nh, q);
     rows.forEach(function (r, i) { h += noHomeRow(r, i); });
-    return h + (num(nh.n_hidden) ? '<div class="quiet">And ' + num(nh.n_hidden) + " more; ask for your loose ends in a chat.</div>" : "");
+    return h + (num(nh.n_hidden) ? '<div class="quiet">And ' + num(nh.n_hidden) + " more; ask for your loose ends in a chat.</div>" : "") + movedSection(nh, q);
+  }
+  // ---- add and edit from the page (cr1#1383 part 2) ------------------------
+  // A work stream or thread renamed, a work stream, person or priority
+  // added, a person renamed and a priority's wording changed. Each press is
+  // a choice that waits for Apply like every press (Undo takes it back
+  // before then); Apply writes it through the record's own writer. Once it
+  // has landed, Undo is its own choice naming the press it takes back, and
+  // the book judges it before anything is written.
+  var ED_CAP = { stream_edit: 80, person_edit: 80, priority_edit: 240, commitment_edit: 300 };
+  function edBox() { if (!S.edBox) S.edBox = {}; return S.edBox; }
+  function edKey(kind, n) { return kind + "|" + String(n || ""); }
+  function edHas(k) { return Object.prototype.hasOwnProperty.call(edBox(), k); }
+  function edNewest(a, b) { return (a.created_at || "") < (b.created_at || "") ? 1 : -1; }
+  function edPresses(kind, n) { return (S.choices || []).filter(function (c) { return c.kind === kind && c.action !== "undo" && c.action !== "set" && c.action !== "context" && String(c.n || "") === String(n || ""); }); }
+  // cr1#1433: a person's role, email and company, each its own press (`set`)
+  // with its own box, its own state and its own Undo.
+  var ED_FIELDS = { role: "Role", email: "Email", company: "Company" }, ED_FIELD_CAP = 200;
+  function edSetPresses(n, f) { return (S.choices || []).filter(function (c) { return c.kind === "person_edit" && c.action === "set" && String(c.n || "") === String(n || "") && c.input && c.input.field === f; }); }
+  function edFieldActs(n, f, current) {
+    var last = edSetPresses(n, f).sort(edNewest)[0], tag = "";
+    if (last && (!last.applied || (edLanded(last) && !edUndone(last)))) return edPressActs(last);
+    if (last) tag = edPressActs(last);
+    if (edHas(edKey("person_edit", n + "|" + f))) return tag + edInput("person_edit", n, "The " + ED_FIELDS[f].toLowerCase(), f);
+    return tag + '<button class="act" data-edact="open" data-edkind="person_edit" data-edn="' + esc(n) + '" data-edfield="' + f + '" data-edval="' + esc(current || "") + '" title="Change their ' + ED_FIELDS[f].toLowerCase() + '; it is written when you press Apply">' + ED_FIELDS[f] + "</button>";
+  }
+  function edLanded(c) { return !!c && !!c.applied && !!c.result && c.result.outcome === "applied"; }
+  function edUndoOf(press) {
+    var best = null;
+    (S.choices || []).forEach(function (c) { if (c.kind === press.kind && c.action === "undo" && c.input && c.input.press === press.id && (!best || (c.created_at || "") > (best.created_at || ""))) best = c; });
+    return best;
+  }
+  function edUndone(press) { var u = edUndoOf(press); return !!u && !!u.applied && !!u.result && (u.result.outcome === "applied" || u.result.outcome === "already"); }
+  function edUndoBtn(press) { return '<button class="act undo" data-edact="undo" data-edid="' + esc(press.id) + '" title="Put it back as it was; it is done when you press Apply">Undo</button>'; }
+  function edPressActs(c) {
+    // What one press shows: waiting with its Undo, its result, and after it
+    // landed the Undo that takes it back (one at a time).
+    if (!c.applied) return waitTag(c, c.action === "add" ? "add waiting" : "change waiting") + undoBtn(c, "Take this back before it reaches your book");
+    if (!edLanded(c)) return resultTag(c);
+    var u = edUndoOf(c);
+    if (!u) return resultTag(c) + edUndoBtn(c);
+    if (!u.applied) return resultTag(c) + waitTag(u, "undo waiting") + undoBtn(u, "Keep the change: take the Undo back before it reaches your book");
+    if (u.result && u.result.outcome === "error") return resultTag(c) + resultTag(u) + edUndoBtn(c);
+    return resultTag(u);
+  }
+  function edInput(kind, n, label, field) {
+    var k = edKey(kind, field ? n + "|" + field : n), fa = field ? '" data-edfield="' + field : "";
+    return '<input class="when" data-edname="' + esc(k) + (field ? '" data-edfield="' + field : "") + '" maxlength="' + (field ? ED_FIELD_CAP : ED_CAP[kind]) + '" aria-label="' + esc(label) + '" placeholder="' + esc(label) + '" value="' + esc(edBox()[k]) + '">'
+      + '<button class="act primary" data-edact="save" data-edkind="' + kind + '" data-edn="' + esc(n || "") + fa + '" title="Keep this; it is written when you press Apply">Save</button>'
+      + '<button class="act" data-edact="cancel" data-edkind="' + kind + '" data-edn="' + esc(n || "") + fa + '">Cancel</button>';
+  }
+  function edActs(kind, n, current) {
+    // A row's Rename (or Edit wording): the newest press on the row while it
+    // waits or stands, else the box while it is open, else the button.
+    var last = edPresses(kind, n).sort(edNewest)[0], tag = "";
+    if (last && (!last.applied || (edLanded(last) && !edUndone(last)))) return edPressActs(last);
+    if (last) tag = edPressActs(last);
+    var label = kind === "priority_edit" ? "Edit wording" : kind === "commitment_edit" ? "Edit" : "Rename";
+    if (edHas(edKey(kind, n))) return tag + edInput(kind, n, kind === "priority_edit" ? "The priority in your words" : kind === "commitment_edit" ? "The commitment in your words" : "The new name");
+    return tag + '<button class="act" data-edact="open" data-edkind="' + kind + '" data-edn="' + esc(n) + '" data-edval="' + esc(current || "") + '">' + label + "</button>";
+  }
+  function edTag(kind, n) {
+    // On a row whose Rename sits on its card: the press's state, seen without opening it.
+    var last = edPresses(kind, n).sort(edNewest)[0];
+    if (!last) return "";
+    if (!last.applied) return waitTag(last, "change waiting");
+    return edLanded(last) && !edUndone(last) ? resultTag(last) : "";
+  }
+  function edAddBar(kind, label, placeholder) {
+    // The tab's Add, and every add this page pressed, each with its Undo.
+    var h = '<div class="parts">' + (edHas(edKey(kind, "")) ? edInput(kind, "", placeholder)
+      : '<button class="act" data-edact="open" data-edkind="' + kind + '" data-edn="">' + esc(label) + "</button>") + "</div>";
+    edPresses(kind, "").sort(edNewest).reverse().forEach(function (c) {
+      h += '<div class="row closed"><div class="main"><div class="title">' + esc(cap((c.input && c.input.name) || c.title || "")) + '</div></div><div class="acts">' + edPressActs(c) + "</div></div>";
+    });
+    return h;
+  }
+  function edRedraw(kind) { if (kind === "person_edit") renderPeople(); else if (kind === "priority_edit") renderPriorities(); else if (kind === "commitment_edit") renderPlate(); else renderProjects(); }
+  // cr1#1383 slice 4: a Commitments row's Edit sits under its More. The open
+  // box and a press waiting or standing show outside the fold.
+  function cEdMore(cid, title) {
+    var last = edPresses("commitment_edit", cid).sort(edNewest)[0], acts = edActs("commitment_edit", cid, title);
+    if (edHas(edKey("commitment_edit", cid)) || (last && (!last.applied || (edLanded(last) && !edUndone(last))))) return '<div class="parts">' + acts + "</div>";
+    return '<details class="more"><summary>More</summary><div class="parts">' + acts + "</div></details>";
+  }
+  // cr1#1383, Add context: a free note on a thread or a person, under the
+  // row's More. The open line, a note waiting and a note that stands show
+  // outside the fold: "You told it: <note>" with Take back, the note's Undo.
+  var CTX_LABEL = "Add context";
+  function ctxPresses(kind, n) { return (S.choices || []).filter(function (c) { return c.kind === kind && c.action === "context" && String(c.n || "") === String(n || ""); }); }
+  function ctxTakeBack(c) { return '<button class="act undo" data-edact="undo" data-edid="' + esc(c.id) + '" title="Take the note off your book; it is done when you press Apply">Take back</button>'; }
+  function ctxActs(c) {
+    if (!c.applied) return waitTag(c, "note waiting") + undoBtn(c, "Take this back before it reaches your book");
+    if (!edLanded(c)) return resultTag(c);
+    var u = edUndoOf(c);
+    if (!u) return resultTag(c) + ctxTakeBack(c);
+    if (!u.applied) return resultTag(c) + waitTag(u, "take back waiting") + undoBtn(u, "Keep the note: take this back before it reaches your book");
+    if (u.result && u.result.outcome === "error") return resultTag(c) + resultTag(u) + ctxTakeBack(c);
+    return resultTag(u);
+  }
+  function ctxFold(kind, n, lines) {
+    var k = edKey(kind, n + "|context"), shown = "";
+    ctxPresses(kind, n).sort(edNewest).reverse().forEach(function (c, i, all) { if (!c.applied || (edLanded(c) && !edUndone(c)) || i === all.length - 1) shown += '<div class="parts">' + ctxActs(c) + "</div>"; });
+    var inner = (lines || []).filter(Boolean).map(function (l) { return '<div class="sub">' + l + "</div>"; }).join("")
+      + (edHas(k) ? "" : '<div class="parts"><button class="act" data-edact="open" data-edkind="' + kind + '" data-edn="' + esc(n) + '" data-edfield="context" title="A note for your book; it is written when you press Apply">' + CTX_LABEL + "</button></div>");
+    return '<details class="more"><summary>More</summary>' + inner + "</details>"
+      + (edHas(k) ? '<div class="parts">' + edInput(kind, n, "What should it know?", "context") + "</div>" : "") + shown;
+  }
+  function edFocus(k) {
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    var all = document.querySelectorAll("input[data-edname]");
+    for (var i = 0; i < all.length; i++) if (all[i].getAttribute("data-edname") === k) { all[i].focus(); return; }
+  }
+  function onEditPress(b) {
+    var act = b.getAttribute("data-edact"), kind = b.getAttribute("data-edkind"), n = b.getAttribute("data-edn") || "", box = edBox();
+    if (act === "undo") {
+      var press = (S.choices || []).filter(function (c) { return c.id === b.getAttribute("data-edid"); })[0];
+      var u0 = press ? edUndoOf(press) : null;
+      if (edLanded(press) && !edUndone(press) && !(u0 && !u0.applied)) saveChoice({ kind: press.kind, src: "cockpit", n: press.n || "", action: "undo", input: { press: press.id }, title: press.title || "" });
+      return;
+    }
+    if (!ED_CAP[kind]) return;
+    var cx = b.getAttribute("data-edfield") === "context" && (kind === "stream_edit" || kind === "person_edit");
+    var f = cx ? "context" : kind === "person_edit" && ED_FIELDS[b.getAttribute("data-edfield") || ""] ? b.getAttribute("data-edfield") : "";
+    var k = edKey(kind, f ? n + "|" + f : n);
+    if (act === "open") { box[k] = b.getAttribute("data-edval") || ""; edRedraw(kind); edFocus(k); return; }
+    if (act === "cancel") { delete box[k]; edRedraw(kind); return; }
+    if (act === "save") {
+      var v = String(box[k] || "").replace(/\s+/g, " ").trim().slice(0, f ? ED_FIELD_CAP : ED_CAP[kind]);
+      if (!v) return;
+      delete box[k];
+      if (cx) saveChoice({ kind: kind, src: "cockpit", n: n, action: "context", input: { text: v }, title: v });
+      else if (f) saveChoice({ kind: kind, src: "cockpit", n: n, action: "set", input: { field: f, value: v }, title: v });
+      else saveChoice({ kind: kind, src: "cockpit", n: n, action: n ? "rename" : "add", input: { name: v }, title: v });
+      edRedraw(kind);
+    }
   }
   function renderProjects() {
     var pj = S.projects;
@@ -2632,7 +3175,8 @@
     var openTotal = 0; (pj.rows || []).forEach(function (r) { openTotal += num(r.open); });
     var coName = ""; (pj.companies || []).forEach(function (c) { if (c.id === S.pcompany) coName = c.name || c.id; });
     $("projecthead").innerHTML = '<div class="summary"><b>' + num(pj.n_rows) + "</b> live " + esc(word("thread", true)) + " · <b>" + openTotal + "</b> open commitments across them" + (pj.n_hidden ? " · showing the first " + (pj.rows || []).length : "") + (coName ? " · " + esc(coName) + " only" : "") + (q ? " · " + rows.length + " match" : "") + ((pj.errors || []).indexOf("no_home") >= 0 ? " · items with no " + esc(word("thread")) + " not read" : " · <b>" + num((pj.no_home || {}).n) + "</b> with no home yet") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>"
-      + ((pj.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "");
+      + ((pj.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "")
+      + (typeof edAddBar !== "function" ? "" : edAddBar("stream_edit", "New " + word("work_stream"), "Name of the new " + word("work_stream")));
     // Grouped by work stream (a parent thread, ruling A3); threads under no
     // work stream after them. A thread shows once, under its own parent.
     var byId = {}; rows.forEach(function (r) { byId[r.id] = r; });
@@ -2664,7 +3208,8 @@
       // cr1#1294: a priority with nothing open behind it asks for its next step
       var quiet = [when, p.n_open === 0 ? "nothing open behind it; name its next step in a chat" : "", esc(p.still_a_priority || "")].filter(Boolean).join(" · ");
       var ts = (p.threads || []).map(function (t) { return esc(names[t] || t); });
-      h += '<div class="row' + riseClass("pr" + p.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(p.statement) + '</div><div class="sub">' + quiet + "</div>" + moreFold([esc(p.says)].concat(ts.length ? [esc(capW(word("thread", true))) + ": " + ts.join(", ")] : [])) + '</div><div class="acts"></div></div>';
+      var last = lastActionLine(p.last_action);
+      h += '<div class="row' + riseClass("pr" + p.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(p.statement) + "</div>" + (last ? '<div class="sub lastact">' + esc(last) + "</div>" : "") + '<div class="sub">' + quiet + "</div>" + moreFold([esc(p.says)].concat(ts.length ? [esc(capW(word("thread", true))) + ": " + ts.join(", ")] : [])) + '</div><div class="acts">' + (typeof edActs === "function" ? edActs("priority_edit", p.id, p.statement) : "") + "</div></div>";
     });
     var sug = (pr.suggested || []).filter(function (p) { return !S.pcompany || p.company_id === S.pcompany; });
     if (sug.length) {
@@ -2673,8 +3218,20 @@
         h += '<div class="row' + riseClass("ps" + p.id) + '" style="animation-delay:' + (i * 40) + 'ms"><div class="main"><div class="title">' + esc(p.statement) + '</div><div class="sub">' + esc(cap1(p.why)) + " · waits for your yes</div>" + moreFold(["To make it a priority, say `confirm objective` in a chat."]) + '</div><div class="acts"></div></div>';
       });
     }
-    $("priorityhead").innerHTML = '<div class="summary"><b>' + num(pr.n_confirmed) + "</b> priorities" + ((pr.suggested || []).length ? " · " + (pr.suggested || []).length + " suggested" : "") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>";
+    $("priorityhead").innerHTML = '<div class="summary"><b>' + num(pr.n_confirmed) + "</b> priorities" + ((pr.suggested || []).length ? " · " + (pr.suggested || []).length + " suggested" : "") + " · read " + esc(fmtWhen(pj.generated_at)) + "</div>"
+      + (typeof edAddBar !== "function" ? "" : edAddBar("priority_edit", "Add a priority", "The priority in your words"));
     $("priorityrows").innerHTML = h || '<div class="quiet">No priorities yet. Say `new objective` in a chat to set one.</div>';
+  }
+  // cr1#1459: the one line under a priority: its newest action and the day
+  // ("Last: email sent on <thread>, Nov 17"), or "No action yet" with the
+  // day it was set. Plain text; the caller escapes it. Self-contained, so a
+  // lane and a row word it alike.
+  function lastActionLine(la) {
+    function day(iso) { if (!iso) return ""; var d = new Date(String(iso).slice(0, 10) + "T12:00:00"); return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" }); }
+    if (!la || typeof la !== "object") return "";
+    if (!la.at) return day(la.added) ? "No action yet · added " + day(la.added) : "No action yet";
+    var what = String(la.what || "activity") + (la.title ? ' "' + la.title + '"' : "");
+    return "Last: " + what + (la.on ? " on " + la.on : "") + (day(la.at) ? ", " + day(la.at) : "");
   }
   // ---- the seat's words and first-time notes (cr1#1017 behaviour 8) -----
   // No Command Room vocabulary is needed to use the Hub. The tab labels and
@@ -2685,7 +3242,7 @@
   // on the next, remembered in this browser only. A page with no storage
   // still renders, with its notes.
   var DEFAULT_WORDS = { thread: { one: "thread", many: "threads" }, work_stream: { one: "work stream", many: "work streams" } };
-  var WORD_FEEDS = ["projects", "today", "plate", "inbox", "review", "week", "settings", "people", "mine", "mailrules"];
+  var WORD_FEEDS = ["projects", "today", "plate", "inbox", "review", "week", "settings", "people", "mine", "mailrules", "brief"];
   function seatWords() {
     for (var i = 0; i < WORD_FEEDS.length; i++) { var f = S[WORD_FEEDS[i]]; if (f && f.words && typeof f.words === "object") return f.words; }
     return null;
@@ -2777,11 +3334,13 @@
     var nu = num(p.n_unlinked), unl = !home && nu ? '<div class="sub">' + nu + (nu === 1 ? " more item names them" : " more items name them") + " without being linked to them</div>" : "";
     var acts = (w ? undoBtn(w, "Take this back before it is applied") : "")
       + (w ? "" : '<button class="act' + (on ? " primary" : "") + '" data-pact="' + (on ? "unstar" : "star") + '" data-pid="' + esc(p.id) + '" aria-pressed="' + (on ? "true" : "false") + '" title="' + (on ? "Take them off Home" : "Pin them to Home") + '">' + (on ? "Starred" : "Star") + "</button>")
-      + (!home && listed ? '<button class="act" data-popen="' + esc(p.id) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide open items" : "What is open") + "</button>" : "");
+      + (!home && listed ? '<button class="act" data-popen="' + esc(p.id) + '" aria-expanded="' + (open ? "true" : "false") + '">' + (open ? "Hide open items" : "What is open") + "</button>" : "")
+      + (home || typeof edActs !== "function" ? "" : edActs("person_edit", p.id, p.name))
+      + (home || typeof edFieldActs !== "function" ? "" : edFieldActs(p.id, "role", p.role) + edFieldActs(p.id, "email", p.email) + edFieldActs(p.id, "company", p.company));
     var tag = w ? waitTag(w, (w.action === "star" ? "star" : "unstar") + " waiting") : "";
     // cr1#1017 part A: "Send them their list" sits with the open items, on the People tab only.
     var sendList = open && !home ? listBox(p) : "";
-    return '<div class="row' + riseClass((home ? "h" : "p") + p.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(p.name) + tag + '</div><div class="sub">' + esc(who || p.email || "") + "</div>" + known + seen + '<div class="sub">' + esc(counts) + "</div>" + nxt + unl + list + sendList + '</div><div class="acts">' + acts + "</div></div>";
+    return '<div class="row' + riseClass((home ? "h" : "p") + p.id) + '" style="animation-delay:' + ((i || 0) * 40) + 'ms"><div class="main"><div class="title">' + esc(p.name) + tag + '</div><div class="sub">' + esc(who || p.email || "") + "</div>" + known + seen + '<div class="sub">' + esc(counts) + "</div>" + nxt + unl + list + sendList + '</div><div class="acts">' + acts + (home || typeof ctxFold !== "function" ? "" : ctxFold("person_edit", p.id, [])) + "</div></div>";
   }
   function renderPeople() {
     var pp = S.people;
@@ -2792,7 +3351,8 @@
     var rows = (pp.people || []).filter(function (p) { return !q || (p.name + " " + p.company + " " + p.role + " " + p.email).toLowerCase().indexOf(q) >= 0; });
     var nStar = (pp.people || []).filter(isStarred).length;
     $("peoplehead").innerHTML = '<div class="summary"><b>' + num(pp.n_people) + "</b> people" + (nStar ? " · " + nStar + " starred to Home" : "") + (num(pp.n_people) > (pp.people || []).length ? " · showing the first " + (pp.people || []).length : "") + (q ? " · " + rows.length + " match" : "") + " · read " + esc(fmtWhen(pp.generated_at)) + "</div>"
-      + ((pp.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "");
+      + ((pp.errors || []).indexOf("open") >= 0 ? '<div class="quiet">What is open could not be read on the last run; the next refresh tries again.</div>' : "")
+      + (typeof edAddBar !== "function" ? "" : edAddBar("person_edit", "Add a person", "Their first and last name"));
     var h = "";
     rows.forEach(function (p, i) { h += personRow(p, i, false); });
     $("peoplerows").innerHTML = h || '<div class="quiet">' + (q ? "Nothing matches." : "No people on file yet.") + "</div>";
@@ -2865,7 +3425,7 @@
       }, function (e) { delete S.sending[sk]; renderAll(); banner(outcome === "applied" ? "The draft is made, but the page could not note it; check your Drafts before pressing again." : line, true, errText(e)); });
     }
     return chaseCall(row.draft).then(function (res) {
-      var id = draftIdOf(res && res.payload);
+      var id = draftReplyId(res);
       if (!id) return land("error", MAIL.server + " gave no draft back. Check your Drafts before pressing again.");
       row.native_id = String(id);
       return land("applied", "In your Drafts.");
@@ -2993,16 +3553,20 @@
     renderMeasure();
     var wk = S.week;
     renderMonth();
-    if (!wk) { $("weekhead").textContent = isRunning("refresh") ? "Reading your week." : "No week read yet. Press Go."; $("weekrows").innerHTML = ""; return; }
-    $("weekhead").textContent = wk.errors && wk.errors.length ? "Part of your week could not be read just now; the next refresh tries again." : (wk.line || "");
+    if (!wk) { $("weekhead").textContent = isRunning("refresh") ? "Reading what was done." : "Nothing read yet. Press Go."; $("weekrows").innerHTML = ""; return; }
+    $("weekhead").textContent = wk.errors && wk.errors.length ? "Part of what was done could not be read just now; the next refresh tries again." : (wk.line || "");
     var h = "";
-    if ((wk.decided || []).length) {
-      h += "<h2>Decided for you" + (num(wk.n_decided) > wk.decided.length ? " (first " + wk.decided.length + " of " + num(wk.n_decided) + ")" : "") + "</h2>";
-      wk.decided.forEach(function (d) {
+    // cr1#1368: what the system settled, then the owner's own changes, each
+    // under its own heading with the same Put it back.
+    [["decided", "n_decided", "Decided for you"], ["yours", "n_yours", "What you changed this week"]].forEach(function (lane) {
+      var rows = wk[lane[0]] || [];
+      if (!rows.length) return;
+      h += "<h2>" + lane[2] + (num(wk[lane[1]]) > rows.length ? " (first " + rows.length + " of " + num(wk[lane[1]]) + ")" : "") + "</h2>";
+      rows.forEach(function (d) {
         var a = weekActs(d.id, d.reversible ? [{ action: "undo", label: "Put it back" }] : []);
         h += '<div class="row"><div class="main"><div class="title">' + esc(cap(d.label)) + a.tag + '</div><div class="sub">' + esc(d.at ? fmtDate(d.at) : "") + (d.reversible ? "" : " · cannot be put back from here") + "</div>" + ((d.items || []).length ? '<div class="sub">' + esc(d.items.join(" · ")) + (d.n_more ? " and " + num(d.n_more) + " more" : "") + "</div>" : "") + '</div><div class="acts">' + a.acts + "</div></div>";
       });
-    }
+    });
     if ((wk.rules || []).length) {
       h += "<h2>Rules it learned" + (num(wk.n_rules) > wk.rules.length ? " (first " + wk.rules.length + " of " + num(wk.n_rules) + ")" : "") + "</h2>";
       wk.rules.forEach(function (d) {
@@ -3035,7 +3599,7 @@
     $("weekrows").innerHTML = h;
   }
   function weekItem(n) {
-    var wk = S.week || {}, all = (wk.decided || []).concat(wk.rules || [], wk.dormant || [], wk.archived || []);
+    var wk = S.week || {}, all = (wk.decided || []).concat(wk.rules || [], wk.yours || [], wk.dormant || [], wk.archived || []);
     for (var i = 0; i < all.length; i++) if (String(all[i].id) === String(n)) return all[i];
     return null;
   }
@@ -3118,7 +3682,7 @@
   // cr1#1017 behaviour 3), and nothing later moves that. A morning that never
   // reaches zero finishes at the last item handled within MORNING_MAX_MS of
   // its start. A morning with nothing handled has a start and no length; a
-  // zero with no Start pressed keeps its finish and has no length. The Week tab's line counts the last
+  // zero with no Start pressed keeps its finish and has no length. The Done tab's line counts the last
   // MEASURE_DAYS days from these documents, never estimated.
   var MEASURE_DAYS = 7, MORNING_MAX_MS = 3 * 60 * 60 * 1000;
   // What is not an item handled: a press that takes back an earlier one, a
@@ -3197,7 +3761,7 @@
   }
   if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("hub:morning-finished", function (e) { var d = e && e.detail; if (d && d.at) measureMorningFinished(d.at, d.day); });
   // Behaviour 6's hook ("Missed something", "Something wrong?" since cr1#1288):
-  // the header entry calls this once per report, and the Week tab counts it.
+  // the header entry calls this once per report, and the Done tab counts it.
   // `at` is when the miss was reported (the choice's own time), so a press
   // just before midnight counts on its own day.
   function recordMiss(id, at) {
@@ -3439,7 +4003,98 @@
     setTimeout(function () { if (a) a.href = "#"; }, 0);
   }
   // ---- end missed something ---------------------------------------------------
-  function renderAll() { renderWords(); renderExplain(); renderLights(); renderWaiting(); renderToday(); renderBriefTab(); renderDone(); renderInbox(); renderPlate(); renderPriorities(); renderProjects(); renderPeople(); renderReview(); renderWeek(); renderSettings(); renderBoard(); renderMiss(); }
+  // ---- ask for a change (cr1#1383) ------------------------------------------
+  // One line below every tab: the owner types the change they want and Ask
+  // opens a new chat with those words typed in and not sent, through the same
+  // claude://claude.ai/new link as Something wrong? (PROBLEM_HREF). It saves
+  // no choice, counts nothing and writes nothing; the chat it opens does the
+  // work and asks first.
+  var ASK_LEAD = "A change I'd like on my Command Room Hub: ";
+  var ASK_CLOSE = "Tell me what you would change, and ask me before you change, file or send anything.";
+  // The tab the owner was on, so the chat knows where they were looking.
+  function askTab() {
+    var d = typeof document !== "undefined" ? document : null;
+    var tab = d && d.querySelector ? d.querySelector('nav.tabs button[data-tab][aria-selected="true"]') : null;
+    return tab && tab.firstChild && tab.firstChild.nodeValue ? clip(tab.firstChild.nodeValue, 40) : "";
+  }
+  function askMessage(said, bare) {
+    var lines = [ASK_LEAD + said], where = bare ? "" : askTab();
+    if (where) lines.push("I was on the " + where + " tab.");
+    lines.push(ASK_CLOSE);
+    return wellFormed(lines.join("\n"));
+  }
+  // The link for that text, or "" when none can be built. Past the ceiling
+  // the owner's words are shortened, never the encoding.
+  function askHref(said) {
+    try {
+      var n = said.length, href = "";
+      for (var k = 0; k < 7; k++) {
+        href = PROBLEM_HREF + encodeURIComponent(askMessage(n < said.length ? said.slice(0, n).trim() + "\u2026" : said, k === 6));
+        if (href.length <= PROBLEM_URL_MAX) return href;
+        if (k < 5) n = Math.floor(n / 2);
+      }
+    } catch (e) {}
+    return "";
+  }
+  // The press is the link's own click, as Something wrong?'s is.
+  function askChat(e) {
+    var t = $("askText"), a = $("askGo"), note = $("askNote");
+    var said = clip(wellFormed((t && t.value) || ""), PROBLEM_CAP);
+    var href = said ? askHref(said) : "";
+    if (!href) {
+      if (e && e.preventDefault) e.preventDefault();
+      if (a) a.href = "#";
+      // Said in the box itself: a banner sits at the top of a long tab, out of sight (review).
+      if (note) note.textContent = said ? "That could not be opened as a chat; shorten it and try again." : "Type the change you want first.";
+      if (t && t.focus) t.focus();
+      return;
+    }
+    if (note) note.textContent = "";
+    if (a) a.href = href;
+    // The words stay in the box, so nothing is lost where the app does not take the link.
+    setTimeout(function () { if (a) a.href = "#"; }, 0);
+  }
+  if ($("askGo") && $("askGo").addEventListener) {
+    $("askGo").addEventListener("click", askChat);
+    $("askGo").addEventListener("auxclick", askChat);
+  }
+  // Enter in the box asks, as Enter adds a to-do (review).
+  if ($("askText") && $("askText").addEventListener) {
+    $("askText").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); $("askGo").click(); } });
+  }
+  // ---- end ask for a change ---------------------------------------------------
+  // ---- the update bar (cr1#1389) --------------------------------------------
+  // The installed plugin (the Settings feed's installed_version) against the
+  // version this page was built from (CFG.version). Newer installed: one line
+  // and a Finish update link, the same new-chat link as the problem report,
+  // with "finish update" typed in and not sent. A page with no version counts
+  // as older; a match, an older install or no feed yet shows nothing.
+  var FINISH_UPDATE_TEXT = "finish update";
+  function verParts(v) {
+    var t = String(v == null ? "" : v).replace(/^\s+|\s+$/g, "").replace(/^[vV]/, "");
+    if (!/^\d+(\.\d+)*$/.test(t)) return null;
+    return t.split(".").map(function (x) { return parseInt(x, 10); });
+  }
+  function verNewer(a, b) {
+    var x = verParts(a), y = verParts(b); if (!x) return false; if (!y) return true;
+    for (var i = 0; i < Math.max(x.length, y.length); i++) {
+      var p = x[i] || 0, q = y[i] || 0; if (p !== q) return p > q;
+    }
+    return false;
+  }
+  function finishHref() {
+    try { return PROBLEM_HREF + encodeURIComponent(wellFormed(FINISH_UPDATE_TEXT)); } catch (e) { return "#"; }
+  }
+  function renderUpdate() {
+    var bar = $("updatebar"), txt = $("updatetext"), a = $("finishUpdate"); if (!bar || !txt || !a) return;
+    var inst = S.settings && S.settings.installed_version;
+    var show = !!inst && verNewer(inst, CFG.version);
+    bar.hidden = !show;
+    txt.textContent = show ? "Command Room updated to v" + String(inst).replace(/^\s+|\s+$/g, "").replace(/^[vV]/, "") + ". Press Finish update." : "";
+    a.href = show ? finishHref() : "#";
+  }
+  // ---- end of the update bar ------------------------------------------------
+  function renderAll() { renderWords(); renderExplain(); renderLights(); renderWaiting(); renderToday(); renderBriefTab(); renderDone(); renderInbox(); renderPlate(); renderPriorities(); renderProjects(); renderPeople(); renderReview(); renderWeek(); renderSettings(); renderBoard(); renderMiss(); renderUpdate(); }
 
   // ---- the Week view on Today (cr1#1017, option D) --------------------------
   // Today reads as a list or as a week: a two-button group, W switches, the
@@ -3602,7 +4257,8 @@
     if (lanes.length) {
       l += "<h2>Priorities, across the same seven days</h2>";
       lanes.forEach(function (p) {
-        l += '<div class="lane"><div class="ln">' + esc(cap(p.statement)) + "</div>";
+        var last = lastActionLine(p.last_action);
+        l += '<div class="lane"><div class="ln">' + esc(cap(p.statement)) + "</div>" + (last ? '<div class="lastact">' + esc(last) + "</div>" : "");
         (p.days || []).forEach(function (d, i) {
           var cs = d.cards || [];
           l += '<div class="cell' + (cs.length ? "" : " none") + '"><span class="cd">' + esc(days[i] ? days[i].name : fmtDate(d.date)) + ": </span>"
@@ -3693,6 +4349,18 @@
   // A review row's typed value, under To confirm or in the morning section (cr1#782).
   document.body.addEventListener("input", function (ev) { var lk = ev.target.getAttribute && ev.target.getAttribute("data-listkey"); if (lk) S.listText[lk] = ev.target.value; });
   document.body.addEventListener("input", function (ev) { var id = ev.target.getAttribute && ev.target.getAttribute("data-rtext"); if (id) { S.reviewText = S.reviewText || {}; S.reviewText[id] = ev.target.value; } });
+  // cr1#1383 part 2: Rename, Add and their Undo; Enter keeps the typed words, Escape closes the box.
+  // The row builders call these through a typeof guard, so the suites that
+  // run one tab's code on its own still run it.
+  document.body.addEventListener("click", function (ev) { var eb = ev.target.closest("button[data-edact]"); if (eb) onEditPress(eb); });
+  document.body.addEventListener("input", function (ev) { var ek = ev.target.getAttribute && ev.target.getAttribute("data-edname"); if (ek && edHas(ek)) edBox()[ek] = String(ev.target.value || ""); });
+  document.body.addEventListener("keydown", function (ev) {
+    var nm = ev.target.closest && ev.target.closest("input[data-edname]"); if (!nm || (ev.key !== "Enter" && ev.key !== "Escape")) return;
+    // cr1#1433: several boxes can be open in one row; press this box's own button.
+    var nf = nm.getAttribute("data-edfield") || "", b = null;
+    (nm.parentNode ? nm.parentNode.querySelectorAll('button[data-edact="' + (ev.key === "Enter" ? "save" : "cancel") + '"]') : []).forEach(function (x) { if (!b && (x.getAttribute("data-edfield") || "") === nf) b = x; });
+    if (b) { ev.preventDefault(); edBox()[nm.getAttribute("data-edname")] = String(nm.value || ""); onEditPress(b); }
+  });
   $("settingsrows").addEventListener("input", function (ev) { var id = ev.target.getAttribute("data-stext"); if (id) { S.settingsText = S.settingsText || {}; S.settingsText[id] = ev.target.value; } });
   $("reviewrows").addEventListener("toggle", function (ev) { if (ev.target.id === "reviewmore") S.reviewMore = ev.target.open; }, true);
   // cr1#1286: one view at a time; `showOverdue(false)` is All open, as before.
@@ -3715,6 +4383,13 @@
   });
   $("pcompany").addEventListener("change", function () { S.pcompany = this.value; renderProjects(); renderPriorities(); });
   $("tab-projects").addEventListener("change", function (ev) { var sel = ev.target.closest && ev.target.closest("select[data-nhassign]"); if (sel) onNoHomePress(sel); });
+  $("tab-projects").addEventListener("input", function (ev) { var nm = ev.target.closest && ev.target.closest("input[data-nhname]"); if (nm) onNoHomeName(nm); });
+  // Enter keeps the typed name, Escape closes the box (review of cr1#1289 part two).
+  $("tab-projects").addEventListener("keydown", function (ev) {
+    var nm = ev.target.closest && ev.target.closest("input[data-nhname]"); if (!nm || (ev.key !== "Enter" && ev.key !== "Escape")) return;
+    var b = nm.parentNode && nm.parentNode.querySelector('button[data-nhact="' + (ev.key === "Enter" ? "newsave" : "newcancel") + '"]');
+    if (b) { ev.preventDefault(); onNoHomeName(nm); onNoHomePress(b); }
+  });
   $("peoplesearch").addEventListener("input", function () { S.peoplequery = this.value; renderPeople(); });
   $("tab-projects").addEventListener("click", function (ev) {
     // cr1#1013 part 4: a title opens its thread's card, a heading its work
@@ -4016,7 +4691,7 @@
       db.doc("feed/brief").onSnapshot(function (snap) { S.brief = snap.exists ? snap.data() : null; renderBriefTab(); }, onErr);
       db.doc("feed/week").onSnapshot(function (snap) { S.week = snap.exists ? snap.data() : null; renderWeek(); }, onErr);
       db.doc("feed/review").onSnapshot(function (snap) { S.review = snap.exists ? snap.data() : null; renderReview(); renderBrief(); }, onErr);
-      db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); }, onErr);
+      db.doc("feed/settings").onSnapshot(function (snap) { S.settings = snap.exists ? snap.data() : null; renderSettings(); renderUpdate(); }, onErr);
       db.doc("feed/mine").onSnapshot(function (snap) { S.mine = snap.exists ? snap.data() : null; renderToday(); }, onErr);
       db.doc("feed/mail_rules").onSnapshot(function (snap) { S.mailrules = snap.exists ? snap.data() : null; renderInbox(); }, onErr);
       db.doc("feed/people").onSnapshot(function (snap) { S.people = snap.exists ? snap.data() : null; renderPeople(); }, onErr);
@@ -4050,7 +4725,7 @@
   // The card for the call that just ended moves on with the clock, not the feed.
   // Only when it changes: a redraw would throw an open brief back to its top.
   setInterval(function () { if (S.today && justEnded(S.today.meetings || [], Date.now()) !== SEQ.endedAt) renderToday(); }, 60000);
-  // The Week tab's seven days move on at midnight without a new write.
+  // The Done tab's seven days move on at midnight without a new write.
   setInterval(renderMeasure, 60000);
 })();
 </script>

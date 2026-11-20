@@ -1142,6 +1142,8 @@ FIRE_STOP_REASONS: dict = {
                                  "runs your scheduled chats"),
     "contract_marker": "its instructions failed their integrity check",
     "migration_gate": "its chain has not moved onto the workspace access layer yet",
+    # cr1#1464: the Hub inbox run read the mail but could not build its page.
+    "inbox_page_not_built": "it could not build your inbox page",
 }
 
 _ABORT_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")

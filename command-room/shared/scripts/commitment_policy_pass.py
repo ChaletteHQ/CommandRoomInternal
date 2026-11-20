@@ -465,11 +465,12 @@ def apply_transcript_results(
                            load_open_commitments, promise_time_raw, promise_tz)
     evidence_at = (_normalize_fire_start(transcript_ts, "transcript_ts")
                    if transcript_ts else None)
-    # cr1#744 - the same promise time the matcher's fence reads.
+    # cr1#744 - the same promise time the matcher's fence reads; cr1#1224:
+    # on this rail that is never the meeting's start (see `promise_time_raw`).
     tz = promise_tz(workspace_root)
     open_rows_by_id = {_commitment_id(r): r
                        for r in load_open_commitments(events_path, events=events)}
-    capture_ts_by_id = {cid: promise_time_raw(r, tz)
+    capture_ts_by_id = {cid: promise_time_raw(r, tz, meeting_start=False)
                         for cid, r in open_rows_by_id.items()}
     # cr1#882 — the tight gate's inputs, read once per transcript.
     from exit_doors import transcript_close_tight

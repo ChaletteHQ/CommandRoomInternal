@@ -7,7 +7,8 @@ description: "Captures how a person, a business or you do a kind of work, as a c
 # craft-capture
 
 A craft file is how a person, a business or the owner does one kind of work
-(review, decide, write, run a meeting, sell, or a kind the owner added), as
+(review, decide, write, run a meeting, win business, follow up, prioritize,
+delegate, or a kind the owner added), as
 numbered rules in the shape "when this, they do that, because", each pointing
 at the evidence it came from (SPEC CRAFT1 section 1, `shared/scripts/craft_contract.py`).
 This skill makes one from what the workspace already holds, and proves it on
@@ -48,8 +49,10 @@ Read `shared/WORKSPACE_API.md` first.
 - **Writes:** the craft file at `<subject folder>/craft/<scope>.md` through
   `craft_capture:write_craft` on the write door, and nothing else by hand.
   That writer appends ONE `craft_captured` row and regenerates
-  `_hq/views/CRAFT.md`. A new kind of work goes on the list through
-  `craft_contract:add_scope`, on the owner's word only.
+  `_hq/views/CRAFT.md`. A new kind of work goes on the list through the
+  same writer, with its first saved rule and where it applies, on the
+  owner's word only. Moving sell files to win business is
+  `craft_capture:move_renamed_scope_files`, on the owner's word.
 - **Never writes:** during the gather or the preview; `CLAUDE.md` or any
   always-loaded file.
 
@@ -80,11 +83,14 @@ python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"t
   one line and stop.
 - `result.scope` null: ask one question with the kinds of work on the list
   (`result.scope_text` is what the owner said). When the owner names a kind
-  that is not on the list and says to add it, add it on that word, then go on:
-
-```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"label": "<the kind of work, in the owner words>", "source_skill": "craft-capture", "user_confirmed": true, "workspace_root": "<WS>"}, "name": "craft_contract:add_scope"}'
-```
+  that is not on the list and says to add it, ask one more question: where
+  it applies (which skills read it, from `readers` on the refusal or the
+  core list: drafts, memos, decisions, call prep, meeting notes and so on)
+  and which core kind it sits under, if any. Then gather with `new_scope`
+  set to `{"label": "<the kind, in the owner words>", "readers": [...],
+  "parent": "<a core kind, or null>"}` and `scope` to its slug (cr1#1391).
+  It is added only when its first confirmed rule is saved, never before, so
+  a kind of work never exists without a cited rule.
 
 ## Step 2: Gather, and list it before reading anything
 
@@ -102,12 +108,20 @@ First collect the pointers the helper cannot see, without reading content:
   pasted text.
 
 ```bash
-python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"added": [], "mail_items": [], "mail_named": false, "scope": "<the scope slug>", "subject_id": "<the subject id>", "transcript_hits": [], "workspace_root": "<WS>"}, "name": "craft_capture:gather_sources"}'
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"added": [], "mail_items": [], "mail_named": false, "new_scope": null, "scope": "<the scope slug>", "subject_id": "<the subject id>", "transcript_hits": [], "workspace_root": "<WS>"}, "name": "craft_capture:gather_sources"}'
 ```
 
 `ok` false: say its `line` and stop; on `scope_unknown` ask Step 1's scope
-question with `scopes`, on `no_single_folder` ask which of `projects` it is
-for and gather for that project.
+question with `scopes`, on `scope_declaration` ask where it applies, on
+`no_single_folder` ask which of `projects` it is for and gather for that
+project. On `renamed_scope_file` (a sell file still sits where win business
+goes), say the line; on the owner's yes, move the files, then gather again:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"apply": true, "source_skill": "craft-capture", "user_confirmed": true, "workspace_root": "<WS>"}, "name": "craft_capture:move_renamed_scope_files"}'
+```
+
+Say its `line`; the move keeps each old file aside and `undo` takes it back.
 
 `ok` true: before reading anything, say one line naming the subject and the
 kind of work (`subject_name`, `scope_label`; "a first capture" when `action`

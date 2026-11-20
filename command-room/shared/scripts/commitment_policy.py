@@ -1157,6 +1157,49 @@ def _row_party_ids(row: dict) -> set:
     return out
 
 
+def _row_calendar_parties(row: dict, user_id="") -> tuple:
+    """cr1#765 UAT fail: `(party ids, named)`. The people a meeting must
+    include to finish the row are its other side, not everyone the row
+    lists: a meeting capture lists the meeting's attendees, so any of them
+    sitting in a later meeting closed it. The other side is
+    `counterparty_id(s)`; the owner only when no counterparty is named or
+    the counterparty is the user (the other side owes it), so a delegated
+    owner is never read as the other side. A row that names no other side
+    keeps every id on file (`named` False): its caller proposes, not closes,
+    when that is more than one person."""
+    d = (row or {}).get("data") or {}
+    uid = str(user_id or "")
+    cps = set()
+    v = d.get("counterparty_ids")
+    if isinstance(v, list):
+        cps.update(str(x) for x in v if x)
+    v = d.get("counterparty_id")
+    if isinstance(v, str) and v.strip():
+        cps.add(v.strip())
+    cps.discard(uid)
+    if not cps:
+        v = d.get("owner_id")
+        if isinstance(v, str) and v.strip() and v.strip() != uid:
+            cps.add(v.strip())
+    if cps:
+        return cps, True
+    return _row_party_ids(row), False
+
+
+def _meeting_ref_keys(ref) -> set:
+    """`meeting_capture.meeting_ref_keys`, the one reading of "is this the
+    same meeting". An import failure raises: a fence that switched itself
+    off would close items on their own meeting again, silently."""
+    from meeting_capture import meeting_ref_keys
+    return meeting_ref_keys(ref)
+
+
+# cr1#765 review: a second recording of the item's own meeting carries its
+# own `source_ref` and starts minutes later. The window opens this long after
+# the item's own meeting starts, so no recording of it finishes the item.
+OWN_MEETING_MARGIN_HOURS = 2
+
+
 def _meeting_party_ids(ev: dict) -> set:
     """The meeting's party ids. On the operator's book `person_ids` rides
     the TOP level of the `meeting` event (405 of 439) and `data.person_ids`
@@ -1185,7 +1228,8 @@ def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
     scheduling row — the caller decides which tier it hands in) MATCHES a
     `meeting` event when the meeting's time (`data.start_ts`, else `ts`)
     lies inside (capture ts, capture ts + window_days], at least one
-    NON-USER party id on the row appears in the meeting's `person_ids`, and
+    NON-USER party on the row (its other side, `_row_calendar_parties`)
+    appears in the meeting's `person_ids`, and
     the meeting is ABOUT the item (cr1#765, `calendar_subject`): an item
     whose title names a subject beyond meeting its parties needs that
     subject in the meeting's title or notes; one that only says "meet" is
@@ -1193,7 +1237,9 @@ def calendar_matches(rows, meeting_events, *, user_id="", now_iso=None,
     no calendar party (its creator is who asked, not who the meeting is
     with): any meeting with someone else in it counts, and only when it is
     surely about the item (`owed_task_grade`). `calendar_proposals` holds
-    the ones that are not sure. Never `data.status`. The earliest matching
+    the ones that are not sure. Never `data.status`. The meeting the row
+    was captured from (same `source_ref`) never counts, and the window opens
+    no earlier than its start (cr1#765 UAT fail). The earliest matching
     meeting wins. `people_names` ({person id: [names]}) lets the subject
     read set the parties' names aside; without it only the names the row
     carries are.
@@ -1235,19 +1281,35 @@ def _calendar_pairs(rows, meeting_events, *, user_id, now_iso, window_days,
             continue
         meetings.append((when, ev))
     meetings.sort(key=lambda t: t[0])
+    keyed = [(when, ev, _meeting_ref_keys((ev.get("data") or {}).get("source_ref")))
+             for when, ev in meetings]
     for row in rows or []:
         d = (row or {}).get("data") or {}
         cap = _parse_ts(event_time(row))
         if cap is None:
             continue
+        # cr1#765 UAT fail: the meeting a row was captured from is about it by
+        # construction, and capture paths can stamp the row before that
+        # meeting's recorded start. That meeting never counts, and the window
+        # opens no earlier than its start.
+        own = _meeting_ref_keys(d.get("source_ref"))
+        own_starts = [when for when, _ev, keys in keyed if own & keys]
+        if own_starts:
+            cap = max([cap] + [w + timedelta(hours=OWN_MEETING_MARGIN_HOURS)
+                               for w in own_starts])
         owed_task = is_owed_task(row, user_id)
-        parties = calendar_parties(row, user_id, party_ids=_row_party_ids(row))
+        party_ids, named = _row_calendar_parties(row, user_id)
+        parties = calendar_parties(row, user_id, party_ids=party_ids)
         if not parties and not owed_task:
             continue
+        # cr1#765 review: no other side named and several people on file
+        # (an unresolved counterparty on a group meeting): any one of them
+        # attending is a guess, so it is asked about, never closed.
+        guess = not named and len(parties) > 1
         limit = cap + timedelta(days=max(1, int(window_days)))
         first_unsure = None
-        for when, ev in meetings:
-            if not (cap < when <= limit):
+        for when, ev, keys in keyed:
+            if not (cap < when <= limit) or (own & keys):
                 continue
             others = _meeting_party_ids(ev) - {str(user_id or "")}
             if not (others if owed_task else parties & others):
@@ -1262,6 +1324,8 @@ def _calendar_pairs(rows, meeting_events, *, user_id, now_iso, window_days,
                      else 0)
             if not grade:
                 continue
+            if guess and grade == SURE:
+                grade = UNSURE
             md = ev.get("data") or {}
             pair = {
                 "commitment_id": _cid_of(row) or str(d.get("id") or ""),

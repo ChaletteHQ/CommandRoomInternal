@@ -141,7 +141,50 @@ def _reverse_commitment_due(workspace_root, change, *, undone_by, source_skill):
         actor_id=undone_by,
         reason=change.get("reason") or "brain undo — due date put back",
         source_skill=source_skill,
+        # cr1#1322: never under a newer wait, and never apart from the wait
+        # end its own batch wrote.
+        keep_wait=True, undoing_batch=change.get("brain_batch_id"),
+        # cr1#1344: this move, by its seq, so a newer date is never erased.
+        undoing_seq=_seq_of_change_ref(change),
     )
+
+
+def _reverse_commitment_due_set(workspace_root, change, *, undone_by, source_skill):
+    """cr1#1383 (owner ruling 2026-11-19, option B): a due date set on its
+    own (`due_set.set_due`). Refused whole when anything newer touched the
+    item; else the date it replaced goes back, or no date
+    (`due_set.undo_set_due`)."""
+    from due_set import STATUS_UNDO_REFUSED, undo_set_due
+
+    seq = _seq_of_change_ref(change)
+    if seq is None:
+        return {"status": STATUS_UNDO_REFUSED, "commitment_id": change.get("commitment_id"),
+                "why": "unrecorded"}
+    return undo_set_due(workspace_root, seq, undone_by=undone_by, source_skill=source_skill)
+
+
+def _reverse_commitment_wait(workspace_root, change, *, undone_by, source_skill):
+    """cr1#1322: a wait on an event the owner set. The item goes back to
+    exactly what it held before (`commitment_wait.undo_wait`)."""
+    from commitment_wait import STATUS_UNDO_REFUSED, UNDO_UNRECORDED, undo_wait
+
+    seq = _seq_of_change_ref(change)
+    if seq is None:
+        return {"status": STATUS_UNDO_REFUSED, "commitment_id": change.get("commitment_id"),
+                "why": UNDO_UNRECORDED}
+    return undo_wait(workspace_root, seq, undone_by=undone_by, source_skill=source_skill)
+
+
+def _reverse_commitment_wait_end(workspace_root, change, *, undone_by, source_skill):
+    """cr1#1322: a wait ended (by "not waiting", or by a date). The wait
+    comes back exactly (`commitment_wait.undo_wait_end`)."""
+    from commitment_wait import STATUS_UNDO_REFUSED, UNDO_UNRECORDED, undo_wait_end
+
+    seq = _seq_of_change_ref(change)
+    if seq is None:
+        return {"status": STATUS_UNDO_REFUSED, "commitment_id": change.get("commitment_id"),
+                "why": UNDO_UNRECORDED}
+    return undo_wait_end(workspace_root, seq, undone_by=undone_by, source_skill=source_skill)
 
 
 def _reverse_commitment_close_from_observed(workspace_root, change, *, undone_by,
@@ -171,7 +214,10 @@ def _reverse_counter_evidence_reopen(workspace_root, change, *, undone_by,
     prior_by = str(change.get("prior_resolved_by") or "")
     prior_skill = str(change.get("prior_source_skill") or "")
     if not prior_by or not prior_skill:
-        return {"status": "refused", "commitment_id": change.get("commitment_id"),
+        # cr1#1346: the cr1#1322 refusal, so `undo_batch` neither counts it
+        # nor writes a marker, and the receipt names the item and says why.
+        return {"status": _UNDO_REFUSED, "why": "unrecorded",
+                "commitment_id": change.get("commitment_id"),
                 "detail": "the closure this put back was not recorded"}
     # EXIT1 FIX ROUND 3 (review L-1) — and WHICH ROUTE closed it. Without it
     # the re-closed row fell out of its own route's count and was filed
@@ -204,17 +250,30 @@ def _reverse_counter_evidence_unrest(workspace_root, change, *, undone_by,
 
     reason = str(change.get("prior_park_reason") or "")
     parked_by = str(change.get("prior_parked_by") or "")
+    # cr1#1346: every refusal here is the cr1#1322 one, so `undo_batch`
+    # neither counts it nor writes a marker, and the receipt says why.
+    refused = {"status": _UNDO_REFUSED, "why": "unrecorded",
+               "commitment_id": change.get("commitment_id")}
     if not reason or not parked_by:
-        return {"status": "refused", "commitment_id": change.get("commitment_id"),
-                "detail": "the rest this undid was not recorded"}
+        return dict(refused, detail="the rest this undid was not recorded")
     res = park_commitments(
         workspace_root,
         [{"commitment_id": change["commitment_id"], "reason": reason,
           "extra_data": {"exit_route": "silence", "re_rested": True,
                          "undone_by": undone_by}}],
         parked_by=parked_by, source_skill=parked_by)
-    return res[0] if res else {"status": "refused",
-                               "commitment_id": change.get("commitment_id")}
+    got = res[0] if res else None
+    # cr1#1371: the rest IS on record here (checked above), so a park that
+    # cannot find the row says the item is gone, not that its record is
+    # missing. Still the cr1#1322 refusal: nothing written, nothing counted.
+    if got and got.get("status") == "not_found":
+        return dict(refused, why="not_found",
+                    detail="the item this rested is no longer in the book")
+    # The park wrote nothing for a blank reason (or answered nothing); the
+    # row is then not on record as it was, so that is a refusal too.
+    if not got or got.get("status") == "refused":
+        return dict(refused, detail="the rest this undid could not be put back")
+    return got
 
 
 def _reverse_commitment_park(workspace_root, change, *, undone_by, source_skill):
@@ -223,7 +282,8 @@ def _reverse_commitment_park(workspace_root, change, *, undone_by, source_skill)
 
     return unpark_commitment(
         workspace_root, change["commitment_id"], unparked_by=undone_by,
-        source_skill=source_skill, reason="brain undo — un-parked")
+        source_skill=source_skill, reason="brain undo — un-parked",
+        keep_wait=True)  # cr1#1322: a newer wait is never un-parked
 
 
 def _reverse_commitment_parks(workspace_root, changes, *, undone_by, source_skill):
@@ -235,7 +295,7 @@ def _reverse_commitment_parks(workspace_root, changes, *, undone_by, source_skil
     ids = [c["commitment_id"] for c in changes]
     by_id = {r["commitment_id"]: r for r in unpark_commitments(
         workspace_root, ids, unparked_by=undone_by, source_skill=source_skill,
-        reason="brain undo — un-parked")}
+        reason="brain undo — un-parked", keep_wait=True)}  # cr1#1322
     return [by_id.get(c["commitment_id"], {"status": "not_found",
                                              "commitment_id": c["commitment_id"]})
             for c in changes]
@@ -399,17 +459,31 @@ def _reverse_commitment_done(workspace_root, change, *, undone_by,
 
 
 def _reverse_chat_dismissal(workspace_root, change, *, undone_by, source_skill):
-    from mute_ledger import clear_dismissals
+    from mute_ledger import STATUS_NEWER_CHANGE, STATUS_NEWER_HIDE, clear_dismissals
 
+    # cr1#1322: a mute stamped at write time cannot name its own seq; its
+    # change ref is that seq.
+    seq = change.get("dismissal_seq")
+    # cr1#1364: a newer hide on the same row refuses the clear before anything
+    # is written. The clear is keyed by target as well as by seq, so it would
+    # take the newer hide out too; and on a waiting item the wait end's own
+    # undo is refused for the same newer hide, so the batch goes back whole
+    # or not at all.
     results = clear_dismissals(
         workspace_root,
-        [change["dismissal_seq"]],
+        [seq if seq is not None else _seq_of_change_ref(change)],
         cleared_by=undone_by,
         source_skill=source_skill,
         reason="brain undo — batch reversal",
         via="brain_undo",
+        as_undo=True,
     )
-    return results[0] if results else {"status": "error", "error": "no result"}
+    res = results[0] if results else {"status": "error", "error": "no result"}
+    # cr1#1366: so does a newer date or wait on the item since the hide.
+    if res.get("status") in (STATUS_NEWER_HIDE, STATUS_NEWER_CHANGE):
+        return {"status": _UNDO_REFUSED, "commitment_id": str(res.get("target_id") or ""),
+                "why": "changed"}
+    return res
 
 
 def _reverse_person_org_creation(workspace_root, change, *, undone_by, source_skill):
@@ -542,7 +616,8 @@ def _reverse_person_field_set(workspace_root, change, *, undone_by,
             f"{field} has changed again since; that later change is left as it is")
     res = set_person_field(workspace_root, person_id, field=field, value=prior,
                            source_skill=source_skill, stamp_batch=False,
-                           reversal_of=_seq_of_change_ref(change))
+                           reversal_of=_seq_of_change_ref(change),
+                           drop_emails=change.get("emails_added") or None)
     if res.get("status") == "unchanged":
         return {"status": "already_put_back", "person_id": person_id, "field": field}
     return {"status": "put_back", "person_id": person_id, "field": field}
@@ -794,6 +869,28 @@ def _reverse_reminder_deleted(workspace_root, change, *, undone_by,
                             source_skill=source_skill)
 
 
+def _reverse_commitment_note(workspace_root, change, *, undone_by, source_skill):
+    """cr1#1463 - take back a note the owner added to a commitment. ADDITIVE:
+    one `commitment_note_retracted` lands after the note, which stays in
+    history (`commitment_state.retract_commitment_note`). The verdict comes
+    first, by seq: any newer write on the item refuses it, writing nothing
+    (the cr1#1364 contract)."""
+    from commitment_state import STATUS_UNDO_REFUSED, retract_commitment_note
+
+    # THE OWNER'S WORD ONLY, as a deleted reminder's restore: the note is the
+    # owner's own, so a reversal the machine makes on its own judgment is
+    # refused and the note stands. NEVER ADD THIS CLASS TO AUTO_ALLOWED.
+    if not _undo_actor_is_person(undone_by):
+        raise BrainUndoError(
+            "a note on a commitment is taken back on the owner's own undo only")
+    seq = _seq_of_change_ref(change)
+    if seq is None:
+        return {"status": STATUS_UNDO_REFUSED, "why": "unrecorded",
+                "commitment_id": str(change.get("commitment_id") or "")}
+    return retract_commitment_note(workspace_root, seq, undone_by=undone_by,
+                                   source_skill=source_skill)
+
+
 def _reverse_craft_scope(workspace_root, change, *, undone_by, source_skill):
     # CRAFT1 (cr1#396) - take back a kind of work the owner added to the
     # craft scope list. ADDITIVE: `craft_contract.reverse_scope_added`
@@ -813,6 +910,30 @@ def _reverse_craft_scope(workspace_root, change, *, undone_by, source_skill):
         return reverse_scope_added(workspace_root, target_seq,
                                    undone_by=undone_by,
                                    source_skill=source_skill)
+    except ValueError as exc:
+        raise BrainUndoError(str(exc)) from exc
+
+
+def _reverse_craft_scope_move(workspace_root, change, *, undone_by,
+                              source_skill):
+    # cr1#1391 - take back the move of craft files filed under a renamed
+    # scope (sell -> win business). ADDITIVE and never a delete:
+    # `craft_capture.reverse_scope_move` writes each old file back from the
+    # copy kept aside, keeps the new one aside in turn, and appends
+    # `craft_scope_move_reversed` naming the move's seq. Owner-only.
+    from craft_capture import reverse_scope_move
+
+    ref = str(change.get("change_ref") or "")
+    try:
+        target_seq = int(ref.split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise BrainUndoError(
+            "craft_scope_move reversal needs a seq-bearing change_ref, "
+            f"got {ref!r}")
+    try:
+        return reverse_scope_move(workspace_root, target_seq,
+                                  undone_by=undone_by,
+                                  source_skill=source_skill)
     except ValueError as exc:
         raise BrainUndoError(str(exc)) from exc
 
@@ -1865,12 +1986,38 @@ REVERSERS: dict[str, dict] = {
         "description": "put a counterparty back where it was before a "
                        "default was applied — including back to nobody",
     },
+    # cr1#1322: a wait on an event, set or ended by the owner (the Hub's
+    # Snooze box, End of Day's push, the chat verb, a date on a waiting
+    # item). User gestures: never in AUTO_ALLOWED.
+    "commitment_wait": {
+        "reverse": _reverse_commitment_wait,
+        "reverses_via": "commitment_updated (reversal_of: the park hint and "
+                        "date the wait replaced, copied from the book)",
+        "description": "take back a wait on an event - the item holds what "
+                       "it held before, its date included",
+    },
+    "commitment_wait_end": {
+        "reverse": _reverse_commitment_wait_end,
+        "reverses_via": "commitment_updated (reversal_of: the wait it ended, "
+                        "copied from the book, and the date before)",
+        "description": "bring back a wait on an event that was ended, with "
+                       "its event and its 14 days as they were",
+    },
     "commitment_due": {
         "reverse": _reverse_commitment_due,
         "reverses_via": "commitment_updated (new_due = prior_due, or "
                         "new_due null + due_cleared)",
         "description": "put a deferred due date back exactly where it was — "
                        "including back to no date",
+    },
+    # cr1#1383 (owner ruling 2026-11-19, option B), in the SAME commit as
+    # `due_set.set_due` (the step-10 mandate).
+    "commitment_due_set": {
+        "reverse": _reverse_commitment_due_set,
+        "reverses_via": "commitment_updated through restore_due (the date the "
+                        "set replaced, or none; reversal_of: the set), refused "
+                        "whole when anything newer touched the item",
+        "description": "put back the due date a date edit replaced",
     },
     "commitment_confirm": {
         "reverse": _reverse_commitment_confirm,
@@ -1931,6 +2078,15 @@ REVERSERS: dict[str, dict] = {
                        "otherwise the day goes quiet again; the original "
                        "stays in history",
     },
+    # cr1#1463: a note the owner added to a commitment. Owner-only, never auto.
+    "commitment_note": {
+        "reverse": _reverse_commitment_note,
+        "reverses_via": "commitment_note_retracted (retracts_seq: the note's "
+                        "seq; the note stays in history)",
+        "description": "take back a note you added to a commitment - it no "
+                       "longer shows on the item; refused when anything "
+                       "newer touched the item",
+    },
     # cr1#1221: "delete the reminder" (chat or a Hub Delete press). The
     # owner's own gesture; the reverser refuses the machine. Never auto.
     "reminder_deleted": {
@@ -1948,6 +2104,14 @@ REVERSERS: dict[str, dict] = {
         "description": "take back a kind of work you added to the list your "
                        "craft files are filed under; the record of adding it "
                        "stays in history",
+    },
+    # cr1#1391: craft files moved from a renamed scope. Owner-only.
+    "craft_scope_move": {
+        "reverse": _reverse_craft_scope_move,
+        "reverses_via": "craft_scope_move_reversed",
+        "description": "put your craft files back under their old kind of "
+                       "work; the moved copies are kept aside, nothing is "
+                       "deleted",
     },
     # T2.2 (FS-11b-extended backlog sweep): the sweep's expire tombstones are
     # undoable — the reverser appends person_proposal_reopened (additive; the
@@ -2020,8 +2184,8 @@ REVERSERS: dict[str, dict] = {
         "reverses_via": "person_field_set (the prior value put back, or the "
                         "field cleared when there was none, carrying "
                         "`reversal_of` and no batch keys)",
-        "description": "put a person's category, introducer or care note "
-                       "back to what it was",
+        "description": "put a person's category, introducer, care note, "
+                       "role, email or company back to what it was",
     },
     "person_phone_changed": {
         "reverse": _reverse_person_phone_changed,
@@ -2588,6 +2752,7 @@ def _changes_for_brain_batch(events: list[dict], batch_id: str) -> list[dict]:
         for key in ("commitment_id", "dismissal_seq", "person_id", "org_id",
                     # train 2 part 3b: a person's fact and its number
                     "field", "value", "prior_value", "prior_present",
+                    "emails_added",  # cr1#1433: the address an email change kept
                     "phone", "phone_action",
                     "proposal_seq", "proposal_fingerprint",
                     # TTL1 — the Living-Brain proposal id an expiry
@@ -2792,6 +2957,72 @@ def batch_ref_label(batch_ref: dict) -> str:
             f"{(batch_ref or {}).get('seq', (batch_ref or {}).get('batch_id'))}")
 
 
+#: cr1#1416: what an undo says when every change in the chosen batch was
+#: already reversed. Nothing is written, so the line says so.
+ALREADY_UNDONE_LINE = "That one is already undone, so nothing was changed."
+
+
+def _real_seq_ref(ref) -> bool:
+    """True when `ref` is `seq:<a real integer>`. A change with no seq mints
+    `seq:None`, and every such change would share that one key (cr1#1416
+    review), so it is never matched: it goes to its reverser as before."""
+    from event_seq import coerce_seq
+
+    s = str(ref or "")
+    return s.startswith("seq:") and coerce_seq(s[4:]) is not None
+
+
+def undone_index(events) -> dict:
+    """What an undo has already reversed, for `change_already_undone`
+    (cr1#1416). Read-only.
+
+    One `brain_change_undone` marker is written per change that went back,
+    and only for a change that went back: a refused, missing or already-open
+    change writes none. A marker carries the change's ref, its reverser (the
+    change class) and the batch label the undo was given. Matching on the ref
+    ALONE is not enough (review): two computers can hand out one seq twice,
+    so a marker for one change could block an unrelated change with the same
+    number. So a change counts as reversed only when ref AND class match, and
+    a marker given a `brain_batch` label names the change's own batch or the
+    run it sits under. A change with no real seq never matches."""
+    marks: dict = {}
+    parents: dict = {}
+    for ev in events or ():
+        if not isinstance(ev, dict):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        bid, parent = data.get("brain_batch_id"), data.get(PARENT_BATCH_KEY)
+        if bid and parent and str(parent) != str(bid):
+            parents[str(bid)] = str(parent)
+        if ev.get("type") != "brain_change_undone":
+            continue
+        ref = str(data.get("change_ref") or "")
+        if not _real_seq_ref(ref):
+            continue
+        label = str(data.get("batch_ref") or "")
+        marks.setdefault((ref, str(data.get("reverser") or "")), []).append(label)
+    return {"marks": marks, "parents": parents}
+
+
+def change_already_undone(change: dict, index: dict) -> bool:
+    """Has an undo already reversed `change`? See `undone_index`."""
+    ref = str((change or {}).get("change_ref") or "")
+    if not _real_seq_ref(ref):
+        return False
+    labels = (index or {}).get("marks", {}).get(
+        (ref, str((change or {}).get("change_class") or "")))
+    if not labels:
+        return False
+    own = str((change or {}).get("brain_batch_id") or "")
+    lineage = {own, (index or {}).get("parents", {}).get(own, "")} - {""}
+    for label in labels:
+        if not label.startswith("brain_batch:"):
+            return True  # a sent-mail audit or a re-run window: ref + class
+        if batch_id_from_ref(label) in lineage:
+            return True
+    return False
+
+
 def batch_id_from_ref(label) -> str:
     """The batch id inside an undo marker's `batch_ref` label, or "".
 
@@ -2900,15 +3131,135 @@ def reprocess_undo_line(result: dict) -> str:
     return "Nothing to reverse — that re-run didn't change anything." + tail
 
 
+# cr1#1457 (ruled on cr1#1417): the undo is PINNED to the receipt the owner
+# saw. "That meeting's newest run" was the old target, and a capture of the
+# same meeting landing between the re-run and the undo made the undo reverse
+# THAT later run instead. Now the re-run's own `meeting_processed` seq travels
+# with the undo (`receipt_seq`, or a `meeting_reprocess` `batch_ref`), and the
+# undo refuses, writing nothing, unless that receipt is still the meeting's
+# newest run. With no receipt at all it refuses too: there is then no way to
+# prove which run the owner saw, and guessing is how the wrong run went back.
+# Every line here only adds a refusal; none turns a refusal into a write.
+NO_RECEIPT_LINE = ("Nothing to reverse: I can't tell which run's receipt you "
+                   "saw, so I won't guess at it.")
+RECEIPT_NOT_FOUND_LINE = ("Nothing to reverse: I can't find the receipt of "
+                          "that run, so nothing was changed.")
+RECEIPT_OTHER_MEETING_LINE = ("Nothing to reverse: that receipt is for a "
+                              "different meeting, so nothing was changed.")
+NEWER_RUN_LINE = ("Nothing to reverse: that meeting has been processed again "
+                  "since that receipt, so I won't undo a run you didn't see. "
+                  "Nothing was changed.")
+REPROCESS_ALREADY_UNDONE_LINE = ("Nothing to reverse: that re-run was already "
+                                 "undone, so nothing was changed.")
+
+
+def _receipt_pin_seq(receipt_seq, batch_ref):
+    """The pinned receipt's seq, `None` when nothing pins it, or the string
+    `"bad"` when what was handed cannot name one receipt (a non-integer, a
+    batch of another kind, or a receipt and a batch that disagree)."""
+    def _one(value):
+        # A whole number, or its plain digits; never a bool, a float or a
+        # word, which cannot name the one receipt the owner saw.
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if (isinstance(value, str) and value.strip().isascii()
+                and value.strip().isdecimal()):
+            return int(value.strip()) or None
+        return None
+
+    pins = []
+    if receipt_seq is not None:
+        seq = _one(receipt_seq)
+        if seq is None:
+            return "bad"
+        pins.append(seq)
+    if batch_ref is not None:
+        if (not isinstance(batch_ref, dict)
+                or batch_ref.get("kind") != "meeting_reprocess"):
+            return "bad"
+        seq = _one(batch_ref.get("seq"))
+        if seq is None:
+            return "bad"
+        pins.append(seq)
+    if not pins:
+        return None
+    if len(set(pins)) != 1:
+        return "bad"
+    return pins[0]
+
+
+def _receipt_pin_refusal(events: list, pin: int, source_ref) -> Optional[str]:
+    """The refusal line for a pinned receipt, or `None` when the pin holds:
+    the receipt exists, names the meeting the undo names, and no later run of
+    that meeting is on the book. "Later" is read both ways, by seq AND by
+    position in the ledger, and a same-meeting receipt with no readable seq
+    after the pinned one counts as later: an unplaced run stays at risk."""
+    from event_seq import event_seq
+
+    at = None
+    for i, ev in enumerate(events):
+        if (isinstance(ev, dict) and ev.get("type") == "meeting_processed"
+                and event_seq(ev) == pin):
+            at = i
+            break
+    if at is None:
+        return RECEIPT_NOT_FOUND_LINE
+    keys = _event_meeting_keys(events[at])
+    if source_ref is not None and str(source_ref).strip():
+        want = _meeting_ref_keys(source_ref)
+        if not (keys & want):
+            return RECEIPT_OTHER_MEETING_LINE
+    if not keys:
+        # A keyless receipt keeps its own refusal (F-3) further down.
+        return None
+    for i, ev in enumerate(events):
+        if i == at or not isinstance(ev, dict):
+            continue
+        if not (_event_meeting_keys(ev) & keys):
+            continue
+        seq = event_seq(ev)
+        if ev.get("type") == "meeting_processed":
+            # A later receipt of this meeting, by seq or by position, or a
+            # second receipt sharing the pin's seq (two computers out of
+            # sync): the pin no longer names one run the owner saw.
+            if (seq is not None and seq >= pin) or i > at:
+                return NEWER_RUN_LINE
+        elif (i > at and seq is not None and seq <= pin
+              and isinstance(ev.get("data"), dict)
+              and ev["data"].get("brain_change_class")):
+            # Review F1: a change to this meeting written AFTER the receipt
+            # but numbered inside its window (a run still in progress, or a
+            # seq collision) belongs to a later run, and the window is read
+            # by seq alone. Refuse rather than drop it: tightening only.
+            return NEWER_RUN_LINE
+    return None
+
+
+def _refused_reprocess_undo(line: str, ref, why: str) -> dict:
+    return {"status": "empty", "n_undone": 0, "n_errors": 0,
+            "n_already": 0, "results": [], "n_captured": 0,
+            "nothing_to_reverse": True, "batch_ref": ref,
+            "refused": why, "line": line}
+
+
 def undo_after_reprocess(workspace_root, source_ref=None, *,
                          undone_by: str, source_skill: str,
-                         batch_ref: Optional[dict] = None) -> dict:
+                         batch_ref: Optional[dict] = None,
+                         receipt_seq=None) -> dict:
     """`undo` after a meeting re-run, with exactly one meaning (LEDGERFENCE1;
     ATTENDED_TEST_v5.29.0 B1.2): reverse THAT run's own batch, or say nothing
     to reverse. Never a drop, never a supersede, never a file edit.
 
     Returns the `undo_batch` shape plus `n_captured`, `nothing_to_reverse`
     and `line` — relay `line` verbatim.
+
+    THAT run is the receipt the owner saw (cr1#1457): `receipt_seq` is the
+    seq of the re-run's own `meeting_processed` row (or hand the same seq as
+    a `meeting_reprocess` `batch_ref`). It refuses, writing nothing, when no
+    receipt is handed, when the receipt is not on the book or names another
+    meeting, and when that meeting has a later run than the receipt.
 
     A run whose receipt names no meeting REFUSES (fix round 1, F-3): the
     answer is that there is nothing to reverse because the run left no trace
@@ -2917,13 +3268,21 @@ def undo_after_reprocess(workspace_root, source_ref=None, *,
     themselves — the one case where M's standing rule (a reversible wrong
     action beats a question) does not apply, because the wrong action IS the
     reversal."""
-    ref = batch_ref or reprocess_batch_ref(workspace_root, source_ref)
-    if ref is None:
-        return {"status": "empty", "n_undone": 0, "n_errors": 0,
-                "n_already": 0, "results": [], "n_captured": 0,
-                "nothing_to_reverse": True, "batch_ref": None,
-                "line": "Nothing to reverse — that re-run didn't change "
-                        "anything."}
+    pin = _receipt_pin_seq(receipt_seq, batch_ref)
+    if pin is None:
+        # Decided under the owner's 2026-11-16 word (cr1#1457): no receipt, no
+        # reversal. The newest run cannot be proved to be the one shown.
+        return _refused_reprocess_undo(NO_RECEIPT_LINE, None, "no receipt")
+    if pin == "bad":
+        return _refused_reprocess_undo(RECEIPT_NOT_FOUND_LINE, None,
+                                       "receipt unreadable")
+    ref = {"kind": "meeting_reprocess", "seq": pin}
+    stale = _receipt_pin_refusal(_load_events(workspace_root), pin, source_ref)
+    if stale is not None:
+        why = {NEWER_RUN_LINE: "a later run exists",
+               RECEIPT_OTHER_MEETING_LINE: "receipt names another meeting",
+               }.get(stale, "no such receipt")
+        return _refused_reprocess_undo(stale, ref, why)
     try:
         report = reprocess_report(workspace_root, ref)
     except BrainUndoError as exc:
@@ -2952,6 +3311,11 @@ def undo_after_reprocess(workspace_root, source_ref=None, *,
     out["nothing_to_reverse"] = out.get("n_undone", 0) == 0
     out["batch_ref"] = ref
     out["line"] = reprocess_undo_line(out)
+    if (not out.get("n_undone") and not out.get("n_errors")
+            and out.get("n_already")):
+        # cr1#1457: the run was put back once already (cr1#1416 guards the
+        # write); say so instead of "didn't change anything".
+        out["line"] = REPROCESS_ALREADY_UNDONE_LINE
     return out
 
 
@@ -2983,6 +3347,8 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
     now = parse_ts(now_iso) if now_iso else _now_utc()
     cutoff = now - _timedelta(days=days) if now else None
     events = _load_events(workspace_root)
+    # cr1#1416: what an undo already reversed, over the whole book.
+    undone = undone_index(events)
 
     batches: dict = {}
     for ev in events:
@@ -3030,17 +3396,45 @@ def recent_auto_batches(workspace_root, *, days: int = RECENT_BATCH_LIST_DAYS,
             if audit_seq is None:
                 continue
             key = f"sent_reconcile:{audit_seq}"
-            n = len(_changes_for_sent_reconcile(events, audit_seq))
+            sent_changes = _changes_for_sent_reconcile(events, audit_seq)
+            n = len(sent_changes)
             if not n:
                 continue
             batches[key] = {"batch_ref": {"kind": "sent_reconcile",
                                           "seq": audit_seq},
                             "kind": "sent_reconcile", "n_changes": n,
                             "ts": event_time(ev), "classes": {"commitment_close"},
-                            "parent_ref": None, "group": None, "children": []}
+                            "parent_ref": None, "group": None, "children": [],
+                            "changes": sent_changes}
+
+    # cr1#1416: each listed batch's WHOLE set of changes, read off the whole
+    # book (the window decides which batches are listed, never which of their
+    # changes count: `undo_batch` reverses them all), in the same shape
+    # `_changes_for_brain_batch` mints.
+    whole: dict = {}
+    for ev in events:
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        bid, cls = data.get("brain_batch_id"), data.get("brain_change_class")
+        if not (bid and cls):
+            continue
+        change = {"change_class": cls, "change_ref": f"seq:{event_seq(ev)}",
+                  "brain_batch_id": str(bid)}
+        for key in {str(bid), str(data.get(PARENT_BATCH_KEY) or "")} - {""}:
+            if key in batches:
+                whole.setdefault(key, []).append(change)
 
     out = []
-    for slot in batches.values():
+    for key, slot in batches.items():
+        # cr1#1416: a batch every change of which an undo already reversed
+        # stays on the list, in its place, marked: the numbers a person read
+        # off an earlier listing must keep naming the same batches.
+        changes = slot.pop("changes", None)
+        if changes is None:
+            changes = whole.get(key, [])
+        n_done = sum(1 for c in changes if change_already_undone(c, undone))
+        slot["n_undone"] = n_done
+        slot["reversed"] = bool(changes) and n_done >= len(changes)
+        slot["partly_reversed"] = 0 < n_done < len(changes)
         classes = sorted(slot.pop("classes"))
         slot["label"] = _batch_label(classes, slot["n_changes"])
         rule = slot.pop("rule", None)
@@ -3129,15 +3523,26 @@ def phrase_door_lines(resolution: dict) -> List[str]:
 def undo_listing_lines(batches: List[dict]) -> List[str]:
     """The bare-`undo` listing, numbered newest first, one line per run and
     one indented line per group under it (DD-5 / DD-10). `1` reverses the
-    run, `1a` / `1b` reverse one group. Labels, never class names."""
+    run, `1a` / `1b` reverse one group. Labels, never class names.
+
+    cr1#1416: a batch an undo already reversed keeps its number and says
+    `(already undone)`; one reversed in part says `(partly undone)`. It is
+    marked rather than dropped so a number read off an earlier listing still
+    names the same batch. Pure: it reads the flags `recent_auto_batches`
+    set and writes nothing."""
     lines: List[str] = []
     for i, b in enumerate(batches, 1):
         day = str(b.get("ts") or "")[:10]
-        lines.append(f"{i}. {b['label']} — {day}")
+        mark = (" (already undone)" if b.get("reversed")
+                else " (partly undone)" if b.get("partly_reversed") else "")
+        lines.append(f"{i}. {b['label']} — {day}{mark}")
         kids = b.get("children") or []
         for j, c in enumerate(kids):
             letter = chr(ord("a") + j) if j < 26 else str(j + 1)
-            lines.append(f"   {i}{letter}. {c['label']} (undo just this group)")
+            tail = ("already undone" if c.get("reversed")
+                    else "partly undone" if c.get("partly_reversed")
+                    else "undo just this group")
+            lines.append(f"   {i}{letter}. {c['label']} ({tail})")
     return lines
 
 
@@ -3146,12 +3551,26 @@ def undo_listing_lines(batches: List[dict]) -> List[str]:
 #: there is one vocabulary and no class name can reach a surface through here.
 _UNDO_PUT_BACK = {
     "commitment_close": "back on your list",
+    "commitment_wait_end": "waiting again",
     "commitment_park": "back on your list",
     "commitment_merge": "split apart again",
     "commitment_close_from_observed": "back where it was",
     "org_promotion": "back to a prospect",
     "deal_won": "open again",
     "voice_block_update": "taken back",
+}
+
+
+#: cr1#1322: a reverser that would not put an item back exactly wrote
+#: nothing and answers this status, with `why`; the receipt's words for each.
+_UNDO_REFUSED = "undo_refused"
+_REFUSED_WHY = {
+    "changed": "it changed after that",
+    "unrecorded": "what it held before is not on record",
+    # cr1#1344: a date undo that would erase a newer date.
+    "newer_date": "it has a newer date",
+    # cr1#1371: the item the change names no longer resolves in the book.
+    "not_found": "it is no longer where it was written",
 }
 
 
@@ -3172,8 +3591,75 @@ _UNDO_PUT_BACK = {
 #: carries `person_id`, and by the time this composer runs the record is
 #: back on the OLD spelling — so the index answers with the name the undo
 #: RESTORED, which is the destination half of the sentence M reads.
+#:
+#: cr1#1415 — a change to a person's field or phone joins them. Both carry
+#: `person_id` and nothing else nameable, so the receipt for a category
+#: undo read "an item with no name on file" for a person whose name IS on
+#: file. The id is looked up, never printed, as above.
+#:
+#: cr1#1449 — a dropped nickname and a split join them on the same terms.
+#: A nickname drop carries the person it was dropped from; a split carries
+#: the record it gave the second person (archived again by the undo, and
+#: still in the index), and nothing about the record it was split out of.
 _UNDO_NAMED_BY = {"org_promotion": "org_id", "deal_won": "deal_thread_id",
-                  "person_renamed": "person_id"}
+                  "person_renamed": "person_id",
+                  "person_field_set": "person_id",
+                  "person_phone_changed": "person_id",
+                  "person_alias_dropped": "person_id",
+                  "person_split": "person_id"}
+
+#: cr1#1415, cr1#1449 — the person-record classes whose receipt names the
+#: person from the name index, where a placeholder name falls back.
+_PERSON_RECORD_CLASSES = frozenset({"person_field_set", "person_phone_changed",
+                                    "person_alias_dropped", "person_split"})
+
+#: cr1#1449 — what the undo put back, after the person's own name. The
+#: nickname itself never prints: it is the owner's own word for someone,
+#: and no receipt or listing prints an alias today.
+_PERSON_RECORD_SAID = {
+    "person_alias_dropped": "'s nickname is back",
+    "person_split": " is back on the record they were split out of",
+}
+
+#: cr1#1415 — what `name_index` prints for a record with no name. It is a
+#: placeholder, not a name: a receipt says the honest fallback instead.
+_UNNAMED_PLACEHOLDERS = frozenset({"(unnamed person)", "(unnamed company)",
+                                   "(unnamed thread)"})
+
+#: The honest fallback a receipt line says for a row with no usable name.
+_NO_NAME_LINE = "an item with no name on file"
+
+#: cr1#1415 — `people_writer.SETTABLE_PERSON_FIELDS` and
+#: `UNDOABLE_RECORD_FIELDS` (cr1#1433) in the words a person reads them in.
+#: A field missing here says "detail". None of their values print.
+_PERSON_FIELD_WORDS = {"category": "category",
+                       "introduced_by": "introduction",
+                       "handle_with_care": "care note",
+                       "role": "role",
+                       "email": "email",
+                       "primary_org_id": "company"}
+
+
+def _person_field_clause(change: dict) -> str:
+    """cr1#1415: what a person-field undo put back, after "<name>'s".
+
+    Only the category's VALUE is ever printed, and only when it is one of
+    `people_writer.PERSON_CATEGORIES` - the product's own fixed words. An
+    introduction is a structured record and a care note is the owner's own
+    words about someone; neither value reaches a receipt."""
+    field = str(change.get("field") or "")
+    words = _PERSON_FIELD_WORDS.get(field, "detail")
+    if not change.get("prior_present"):
+        return f"{words} is cleared again"
+    prior = change.get("prior_value")
+    if field == "category" and isinstance(prior, str):
+        try:
+            from people_writer import PERSON_CATEGORIES
+        except Exception:  # pragma: no cover
+            PERSON_CATEGORIES = ()
+        if prior in PERSON_CATEGORIES:
+            return f"{words} is back to {prior.lower()}"
+    return f"{words} is back the way it was"
 
 #: The deal stages `thread_writer` allows, in the words a person reads them
 #: in. The stored spelling is snake_case machine text; a receipt says
@@ -3273,6 +3759,25 @@ def _row_titles(events: List[dict]) -> dict:
     return out
 
 
+def _hidden_row_id(change: dict, events: List[dict], titles: dict) -> Optional[str]:
+    """cr1#1364: the commitment a hide (`chat_dismissal`) change names, as a
+    key of `titles`, or None. A hide's change record carries no
+    `commitment_id`: the row is the mute's own `target_id`, in any spelling
+    the ledger reads (`mute_ledger._item_keys`)."""
+    if str(change.get("change_class") or "") != "chat_dismissal":
+        return None
+    seq = change.get("dismissal_seq")
+    if seq is None:
+        seq = _seq_of_change_ref(change)
+    ev = next((e for e in events or [] if e.get("type") == "chat_dismissal"
+               and seq is not None and e.get("seq") == seq), None)
+    raw = ((ev or {}).get("data") or {}).get("target_id")
+    if raw in (None, ""):
+        return None
+    from mute_ledger import _item_keys
+    return next((k for k in sorted(_item_keys(events, raw)) if k in titles), None)
+
+
 def undo_receipt_lines(workspace_root, undo_result: dict, *,
                        batch: Optional[dict] = None) -> List[str]:
     """THE composer for what an undo says back. Plain sentences, nothing else.
@@ -3320,7 +3825,9 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
     n_marker = sum(1 for r in results
                    if r.get("status") == "error" and r.get("reversed") is True)
     lost = [r for r in results if r.get("not_found")]
-    n_err = max(0, int((undo_result or {}).get("n_errors") or 0) - n_marker - len(lost))
+    refused = [r for r in results if r.get("refused")]  # cr1#1322
+    n_err = max(0, int((undo_result or {}).get("n_errors") or 0) - n_marker - len(lost)
+                - len(refused))
     events = _load_events(workspace_root) if results else []
     titles = _row_titles(events)
     renamed_to = _rename_new_names(events)
@@ -3342,15 +3849,27 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
             return fallback
         return _USER_MARK_RE.sub("", line)
 
+    n_was_undone = sum(1 for r in results if r.get("status") == "already"
+                       and (r.get("result") or {}).get("status") == "already_undone")
+    if (not n_ok and not lost and not refused and not n_err and n_was_undone
+            and n_was_undone == len(results)):
+        # cr1#1416: every change was already reversed and nothing was
+        # written; "Put 0 things back" read as a failure.
+        return [ALREADY_UNDONE_LINE]
+
     lines: List[str] = []
     label = (batch or {}).get("label")
     head_n = f"{n_ok} thing{'' if n_ok == 1 else 's'}"
     head = (f"Put {head_n} back — {label}." if label
             else f"Put {head_n} back.")
-    if n_ok or not lost:
+    if n_ok or not (lost or refused):
         lines.append(_gated(head, f"Put {head_n} back."))
+        if n_ok and n_was_undone:
+            # cr1#1416 review: a run whose group was undone before says so.
+            lines.append("The rest was already undone.")
 
     name_idx = None
+    said_named: set = set()  # cr1#1455
     # Which stage each deal went back to. It is reported by whichever leg
     # actually ran the restore — a `mark won` batch carries BOTH handles and
     # the second one finds the deal already open — so it is collected across
@@ -3366,7 +3885,8 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
             continue
         change = r.get("change") if isinstance(r.get("change"), dict) else {}
         cls = str(change.get("change_class") or "")
-        cid = change.get("commitment_id") or change.get("id")
+        cid = (change.get("commitment_id") or change.get("id")
+               or _hidden_row_id(change, events, titles))  # cr1#1364
         raw = titles.get(str(cid)) if cid else None
         if cls == "voice_block_update":
             raw = str(change.get("rule") or change.get("delta") or "").rstrip(".")
@@ -3381,6 +3901,9 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
                     from narration_names import name_index
                     name_idx = name_index(workspace_root)
                 raw = name_idx.get(str(ent_id))
+                if (cls in _PERSON_RECORD_CLASSES
+                        and raw in _UNNAMED_PLACEHOLDERS):
+                    raw = None  # cr1#1415: a placeholder is not a name
         where = _UNDO_PUT_BACK.get(cls, "back the way it was")
         if (r.get("result") or {}).get("gone"):
             # cr1#784: it reads known shapes only, so it says what it knows.
@@ -3405,18 +3928,34 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
                          + _mark_field({"name": back_to}, "name", back_to,
                                        surface="widget"))
             raw = renamed_to.get(str(change.get("change_ref") or "")) or raw
-        title = safe_name(_never_an_id(raw),
-                          fallback="an item with no name on file")
+        title = safe_name(_never_an_id(raw), fallback=_NO_NAME_LINE)
         if cls == "deal_won":
             stage = stage_by_thread.get(
                 str(change.get("deal_thread_id") or ""))
             if stage in _STAGE_WORDS:
                 tail = f", at {_STAGE_WORDS[stage]}"
         marked = _mark_field({"name": title}, "name", title, surface="widget")
-        lines.append(_gated(
-            f"  {marked} — {where}{tail}.",
-            f"  one item — {_UNDO_PUT_BACK.get(cls, 'back the way it was')}.",
-            raw_title=title))
+        said = f"  {marked} — {where}{tail}."
+        if cls == "person_field_set" and title != _NO_NAME_LINE:
+            # cr1#1415: "Sam Sample's category is back to prospect." Only
+            # when the person's own name printed; the fallback keeps the
+            # plain line, which never reads "an item ...'s category".
+            said = f"  {marked}'s {_person_field_clause(change)}."
+        elif cls in _PERSON_RECORD_SAID and title != _NO_NAME_LINE:
+            # cr1#1449: "Sam Sample's nickname is back." The same rule: only
+            # when the person's own name printed.
+            said = f"  {marked}{_PERSON_RECORD_SAID[cls]}."
+        vague = f"  one item — {_UNDO_PUT_BACK.get(cls, 'back the way it was')}."
+        line = _gated(said, vague, raw_title=title)
+        # cr1#1455: two nicknames dropped from one person read "Sam Sample's
+        # nickname is back." twice. A NAMED line already said collapses to
+        # the first; a vague line stays one per item, and the count line
+        # above still carries every reversal.
+        if title != _NO_NAME_LINE and line != vague:
+            if line in said_named:
+                continue
+            said_named.add(line)
+        lines.append(line)
 
     for r in lost:
         change = r.get("change") if isinstance(r.get("change"), dict) else {}
@@ -3443,6 +3982,26 @@ def undo_receipt_lines(workspace_root, undo_result: dict, *,
             fallback = ("The rest of one rule still stands: its line was edited "
                         "and I cannot find it, so nothing changed.")
         lines.append(_gated(said, fallback, raw_title=title) if title else fallback)
+    said_for: set = set()
+    for r in refused:
+        # cr1#1322: nothing was written. Say which item and why, never retry.
+        change = r.get("change") if isinstance(r.get("change"), dict) else {}
+        cid = change.get("commitment_id") or _hidden_row_id(change, events, titles)
+        why_key = str(r.get("why") or "")
+        # cr1#1364: one line per item. A batch whose legs are all refused
+        # (a date or a hide, and the wait end) refuses the one item twice.
+        if cid:
+            if str(cid) in said_for:
+                continue
+            said_for.add(str(cid))
+        title = safe_name(_never_an_id(titles.get(str(cid)) if cid else None),
+                          fallback="an item with no name on file")
+        from chat_output_renderer import mark_field as _mark_field
+        marked = _mark_field({"name": title}, "name", title, surface="widget")
+        why = _REFUSED_WHY.get(why_key, _REFUSED_WHY["changed"])
+        lines.append(_gated(f"  {marked}: not put back, because {why}, so I left it as it is.",
+                            f"  One item was not put back, because {why}, so I left it as it is.",
+                            raw_title=title))
     if n_err:
         lines.append(f"{n_err} could not go back — say `undo` again to retry.")
     if n_marker:
@@ -3693,7 +4252,7 @@ def resolve_undo_phrase(workspace_root, text, *,
 # "commitment_merge ×1" is not a thing anyone said or saw happen.
 _CLASS_PHRASES = {
     # Train 2 part 3b - what the person saw change on someone's record.
-    "person_field_set": "changed a note on someone's record",
+    "person_field_set": "changed a detail on someone's record",
     "person_phone_changed": "changed a phone number on someone's record",
     # SPEC_LEARN1 — what the person actually saw happen. Never a class name,
     # never a skill name, never a store.
@@ -3710,6 +4269,10 @@ _CLASS_PHRASES = {
     # USER's own batch. A class name is not a thing anyone said or saw happen.
     "commitment_confirm": "confirmed a captured item",
     "commitment_due": "moved a due date",
+    "commitment_due_set": "changed a due date",
+    # cr1#1322 - the owner's own wait on an event, set or ended.
+    "commitment_wait": "set an item to wait on an event",
+    "commitment_wait_end": "ended a wait on an event",
     "commitment_reassign": "put a name on an item",
     "commitment_park": "parked a resting item",
     "commitment_close_from_observed": "closed a set-aside scheduling guess",
@@ -3720,8 +4283,11 @@ _CLASS_PHRASES = {
     "day_intent": "set what the day is about",
     # CRAFT1 (cr1#396) - the owner's own gesture, never an auto detector's.
     "craft_scope": "added a kind of work to your craft list",
+    "craft_scope_move": "moved craft files to a renamed kind of work",
     # cr1#1221 - the owner's own delete, never an auto detector's.
     "reminder_deleted": "deleted a reminder",
+    # cr1#1463 - the owner's own note on a commitment, never an auto detector's.
+    "commitment_note": "added a note to a commitment",
     "person_link": "linked a name to an existing contact",
     "person_org_creation_structured_fact": "added a contact",
     "entity_fact_structured": "noted a fact",
@@ -3785,6 +4351,12 @@ _COMPOSED_ACTS: dict = {
     # three-way fork this lane exists to remove.
     frozenset({"chat_persona_correction", "voice_correction"}):
         "made my answers shorter because you said so",
+    # cr1#1322 - a date typed for a waiting item writes the date and ends
+    # the wait under one batch: one act.
+    frozenset({"commitment_due", "commitment_wait_end"}):
+        "gave a waiting item a date",
+    frozenset({"chat_dismissal", "commitment_wait_end"}):
+        "hid a waiting item until a date",
 }
 
 
@@ -3859,12 +4431,42 @@ def undo_batch(
     n_errors = 0
     n_already = 0   # F-9 (review): a row already in the restored state is not "undone"
 
+    refused_keys: set = set()
+    _batch_events: list = []
+
+    def _change_item_keys(change) -> set:
+        """Every spelling of the row a change names (cr1#1364): its
+        commitment id, or a hide's own target."""
+        from mute_ledger import _item_keys
+        if not _batch_events:
+            _batch_events.extend(_load_events(workspace_root))
+        cid = change.get("commitment_id")
+        if not cid and str(change.get("change_class") or "") == "chat_dismissal":
+            seq = change.get("dismissal_seq")
+            if seq is None:
+                seq = _seq_of_change_ref(change)
+            ev = next((e for e in _batch_events if e.get("type") == "chat_dismissal"
+                       and seq is not None and e.get("seq") == seq), None)
+            cid = ((ev or {}).get("data") or {}).get("target_id")
+        return _item_keys(_batch_events, cid) if cid not in (None, "") else set()
+
     def _record(change, cls, reversed_result):
         nonlocal n_undone, n_already, n_errors
         # REVIEW_POLICY1B F-9 — a reverser answering `already_open` /
         # `already_unconfirmed` / `already_undone` / `not_open` reversed
         # nothing: count it apart, write no marker for it.
         st = (reversed_result or {}).get("status") if isinstance(reversed_result, dict) else None
+        # cr1#1322: a reverser that could not put the item back EXACTLY wrote
+        # nothing; no marker, and the receipt says why rather than "retry".
+        if st == _UNDO_REFUSED:
+            refused_keys.update(_change_item_keys(change))  # cr1#1364
+            # cr1#1356: the error text says the refusal's own why.
+            why = _REFUSED_WHY.get(str(reversed_result.get("why") or ""), _REFUSED_WHY["changed"])
+            results.append({"status": "error", "change": change, "refused": True,
+                            "why": reversed_result.get("why"), "result": reversed_result,
+                            "error": f"not put back, because {why}, so it was left as it is"})
+            n_errors += 1
+            return
         if isinstance(st, str) and (st.startswith("already_") or st == "not_open"):
             results.append({"status": "already", "change": change, "result": reversed_result})
             n_already += 1
@@ -3913,11 +4515,41 @@ def undo_batch(
     # confirm", and the restore written first would be that touch.
     # F-6 — a RUN of same-class changes whose reverser offers `reverse_many`
     # goes through it as one call (one lock, one scan), still newest-first.
+    # cr1#1416: a change an undo already reversed is never reversed again.
+    # It is counted as already, writes nothing and gets no second marker,
+    # whichever batch ref reached it (a run holding an undone group, a
+    # number picked off an old listing, a second `undo` in the same chat).
+    # This only ever removes a write: a change with no marker goes on to its
+    # reverser, and the reverser's own refusals stand exactly as before.
+    undone = undone_index(_load_events(workspace_root)) if changes else {}
+    todo = []
+    for change in changes:
+        if change_already_undone(change, undone):
+            results.append({"status": "already", "change": change,
+                            "result": {"status": "already_undone"}})
+            n_already += 1
+        else:
+            todo.append(change)
+    all_changes, changes = changes, todo
     ordered = list(reversed(changes))  # F-9: LIFO
     i = 0
     while i < len(ordered):
         change = ordered[i]
         cls = change["change_class"]
+        # cr1#1364: one item's legs go back together or not at all. Once a
+        # leg of this batch was refused for an item (a wait end under a newer
+        # wait or hide, a date under a newer date), its older legs are refused
+        # too, before their reverser writes anything; a hide lifted beside a
+        # refused wait end left the item half put back.
+        keys = _change_item_keys(change) if refused_keys else set()
+        if keys & refused_keys:
+            first = next((r for r in results if r.get("refused")
+                          and _change_item_keys(r.get("change") or {}) & keys), {})
+            _record(change, cls, {"status": _UNDO_REFUSED,
+                                  "commitment_id": str(change.get("commitment_id") or ""),
+                                  "why": first.get("why") or "changed"})
+            i += 1
+            continue
         entry = REVERSERS.get(cls)
         if entry is None:
             results.append({"status": "error", "change": change,
@@ -3958,7 +4590,7 @@ def undo_batch(
         _record(change, cls, reversed_result)
         i += 1
     status = "undone" if n_undone and not n_errors else (
-        "partial" if n_undone else ("empty" if not changes else
+        "partial" if n_undone else ("empty" if not all_changes else
                                     ("already" if n_already and not n_errors else "error")))
     return {"status": status, "n_undone": n_undone, "n_errors": n_errors,
             "n_already": n_already, "results": results}
@@ -3976,11 +4608,15 @@ __all__ = [
     "undone_auto_merges",
     "batch_ref_label",
     "batch_id_from_ref",
+    "undone_index", "change_already_undone", "ALREADY_UNDONE_LINE",
     "resolve_batch",
     "undo_batch",
     # LEDGERFENCE1 — `undo` after a meeting re-run has one meaning.
     "reprocess_batch_ref", "reprocess_report", "reprocess_undo_line",
     "undo_after_reprocess", "KEYLESS_RECEIPT_LINE",
     "UNBOUNDED_WINDOW_LINE",
+    # cr1#1457: the undo is pinned to the receipt the owner saw.
+    "NO_RECEIPT_LINE", "RECEIPT_NOT_FOUND_LINE", "RECEIPT_OTHER_MEETING_LINE",
+    "NEWER_RUN_LINE", "REPROCESS_ALREADY_UNDONE_LINE",
     "BrainUndoError",
 ]

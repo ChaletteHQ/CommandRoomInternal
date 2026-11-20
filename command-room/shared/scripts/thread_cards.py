@@ -55,6 +55,13 @@ overdue; one with a date shows overdue only when the date is past. After
 `QUIET_DAYS` days without movement the card asks whether it is still a
 priority.
 
+A priority card's `last_moved` (cr1#1459) is the newest action on it or on
+any thread it is tied to: a thread moving by the day-count rule, or a
+commitment there the owner closed as done (`is_customer_act`). Only the
+priority card counts that close; thread and work-stream cards keep the
+day-count rule alone. It names the day, the kind of row, its source, the
+thread it happened on and, for a close, the commitment's title.
+
 Rulings, owner, 2026-11-10:
   A3  a work stream is a parent thread; a priority is today's objective.
   A4  a field shows only when a named job fills it: a section nothing fills
@@ -106,7 +113,7 @@ from atomic_write import atomic_write_json  # noqa: E402
 
 CARDS_DIR_REL = "_hq/data/now/threads"
 CARDS_FILE = "cards.json"
-CARDS_VERSION = 1
+CARDS_VERSION = 2  # 2: a priority's last_moved names what moved it (cr1#1459)
 
 #: Thread statuses that have no card (the Hub's Projects tab's own list).
 DONE_STATUSES = ("archived", "completed", "resolved", "retired", "closed",
@@ -241,6 +248,21 @@ def _above_floor(ev: dict) -> bool:
                 and conf < CONFIDENCE_FLOOR)
 
 
+#: cr1#1459: rows a priority writes about itself that are not action on it.
+#: Setting a priority up (its `thread_created` and `objective_created` rows;
+#: the second also lands on its anchor thread) and rewording it
+#: (`objective_updated`) never read as its last action, so a new priority
+#: says "No action yet".
+PRIORITY_SKIP_TYPES = frozenset({"thread_created", "objective_created", "objective_updated"})
+
+
+def _owner_closed(ev: dict) -> bool:
+    """cr1#1459: a close the owner made, never the system's own (a drain,
+    an age-out, a rail): `event_types.is_customer_act`."""
+    from event_types import is_customer_act
+    return is_customer_act(ev)
+
+
 def _counts_as_moved(ev: dict) -> bool:
     """The day-count rule: the bookend type set, so the system's own
     bookkeeping about a promise never reads as the thread moving."""
@@ -273,9 +295,26 @@ def _text_of(ev: dict) -> str:
 
 def _fold(events: list, owner: str, tzinfo) -> dict:
     """{thread id: {"stands": [...], "people": {pid: {...}}, "decision": ev,
-    "moved": (day, ev), "days": set}} from one pass over the rows."""
+    "moved": (day, ev), "pmoved": (day, ev), "closed": (day, ev), "days": set}}
+    from one pass over the rows. Read by priority cards only (cr1#1459):
+    `pmoved` is `moved` without a priority's own bookkeeping
+    (`PRIORITY_SKIP_TYPES`), and `closed` the newest commitment on the
+    thread the owner closed as done and did not open again."""
+    from closure_index import closer_target_id
     from event_refs import persons_of, threads_of
+    from hub_edit import undo_seqs
     out: Dict[str, dict] = {}
+    # cr1#1383: the writer rows a Hub undo made are not the thread moving
+    # (an undo is not a touch).
+    undone = undo_seqs(events)
+    # cr1#1459: a close the owner took back (an Undo of Done, or a reopen)
+    # writes a `commitment_reopened` after it; that close no longer counts.
+    reopened: Dict[str, int] = {}
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("type") == "commitment_reopened" and isinstance(ev.get("seq"), int):
+            cid = closer_target_id(ev)
+            if cid:
+                reopened[cid] = max(reopened.get(cid, -1), ev["seq"])
     for ev in events:
         if not _above_floor(ev):
             continue
@@ -291,16 +330,26 @@ def _fold(events: list, owner: str, tzinfo) -> dict:
         is_decision = (etype == "decision" and not d.get("pending_review")
                        and bool(text))
         people = persons_of(ev) - ({owner} if owner else set())
-        moved = _counts_as_moved(ev)
+        moved = _counts_as_moved(ev) and ev.get("seq") not in undone
+        # A close with no resolution reads as done, as every close reader does.
+        closed = (etype == "commitment_resolved" and str(d.get("resolution") or "done") == "done"
+                  and ev.get("seq") not in undone and _owner_closed(ev)
+                  and not (isinstance(ev.get("seq"), int)
+                           and reopened.get(closer_target_id(ev), -1) > ev["seq"]))
+        pmoved = moved and etype not in PRIORITY_SKIP_TYPES
         for tid in tids:
             f = out.setdefault(tid, {"stands": [], "people": {},
                                      "decision": None, "moved": None,
-                                     "days": set()})
+                                     "pmoved": None, "closed": None, "days": set()})
             key = (day, ev.get("seq") if isinstance(ev.get("seq"), int) else -1)
             if moved:
                 f["days"].add(day)
                 if f["moved"] is None or key >= f["moved"][0]:
                     f["moved"] = (key, ev)
+            if pmoved and (f.get("pmoved") is None or key >= f["pmoved"][0]):
+                f["pmoved"] = (key, ev)
+            if closed and (f.get("closed") is None or key >= f["closed"][0]):
+                f["closed"] = (key, ev)
             if text:
                 f["stands"].append((key, text, ev))
             if is_decision and (f["decision"] is None or key >= f["decision"][0]):
@@ -386,7 +435,12 @@ def _neg_day(day: str) -> str:
     return "".join(chr(0x7F - ord(c)) if c.isdigit() else c for c in day)
 
 
-def _priority_card(row: dict, thread_cards: dict, moved_of: dict) -> dict:
+def _priority_card(row: dict, thread_cards: dict, moved_of: dict,
+                   thread_names: Optional[dict] = None) -> dict:
+    """`moved_of`: {thread id: ((day, seq), event)}, the newest action on each
+    thread (movement or the owner's close). `thread_names` names a tied
+    thread that has no card (archived or done), so the line never reads as
+    if the action happened on the priority itself."""
     from objective_math import _linked_ids
     obj = row.get("objective") if isinstance(row.get("objective"), dict) else {}
     tid = str(row.get("thread_id") or "")
@@ -408,10 +462,24 @@ def _priority_card(row: dict, thread_cards: dict, moved_of: dict) -> dict:
     built = [i for i in linked if i in thread_cards]
     card["built_from"] = built
     card["says"] = _says(len(built))
-    days = [moved_of.get(i) for i in [tid] + linked]
-    days = [d for d in days if d]
-    if days:
-        card["last_moved"] = {"day": max(days), "job": JOB_MOVED}
+    best = None
+    for i in [tid] + linked:
+        m = moved_of.get(i)
+        if m and (best is None or m[0] > best[1][0]):
+            best = (i, m)
+    if best:
+        i, (key, ev) = best
+        mv: Dict[str, Any] = {"day": key[0], "type": ev.get("type"), "source": _source(ev),
+                              "thread_id": i, "job": JOB_MOVED}
+        name = (thread_cards.get(i) or {}).get("name") or (thread_names or {}).get(i)
+        if i != tid and name:
+            mv["thread_name"] = name
+        if ev.get("type") == "commitment_resolved":
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            title = _one_line(d.get("title"), 160)
+            if title:
+                mv["title"] = title
+        card["last_moved"] = mv
     return card
 
 
@@ -471,11 +539,16 @@ def build_cards(ws) -> dict:
         if days:
             card["last_moved"] = {"day": max(days), "job": JOB_CHILDREN}
         ws_cards[pid] = card
-    moved_of = {tid: f["moved"][0][0] for tid, f in folded.items() if f.get("moved")}
+    moved_of = {}
+    for tid, f in folded.items():
+        got = [x for x in (f.get("pmoved"), f.get("closed")) if x]
+        if got:
+            moved_of[tid] = max(got, key=lambda x: x[0])
     prios = {}
     for row in list_open_objectives(root):
         if row.get("thread_id"):
-            prios[str(row["thread_id"])] = _priority_card(row, cards, moved_of)
+            prios[str(row["thread_id"])] = _priority_card(
+                row, cards, moved_of, {k: _thread_name(t) for k, t in by_id.items()})
     return {"threads": cards, "work_streams": ws_cards, "priorities": prios}
 
 
@@ -525,10 +598,11 @@ def read_cards(ws) -> tuple:
     return build_cards(ws), True
 
 
-def _open_by_thread(ws, now_iso=None):
+def _open_by_thread(ws, now_iso=None, *, keep_ids=None):
     """({thread id: {you_owe, owed_to_you, unowned, to_confirm}}, today,
     now, counted_from_log): the open list's default view per thread, read
-    once."""
+    once. `keep_ids` (cr1#1292, the Week board): snoozed rows to keep."""
+    keep = {str(k) for k in (keep_ids or ())}
     import open_list as ol
     import open_list_index as oli
     ws = Path(ws)
@@ -542,7 +616,8 @@ def _open_by_thread(ws, now_iso=None):
         v = {"to_confirm": []}
         for key in ("you_owe", "owed_to_you", "unowned"):
             shaped = [r for r in oli._shape(by_id, e.get(key) or [], today, now)
-                      if oli._visible(r)]
+                      if oli._visible(r)
+                      or (str(r.get("id")) in keep and not r.get("observed"))]
             v[key] = [r for r in shaped if r.get("confirmed")]
             v["to_confirm"] += [r for r in shaped if not r.get("confirmed")]
         out[str(tid)] = v

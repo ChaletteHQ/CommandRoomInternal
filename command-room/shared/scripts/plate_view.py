@@ -1683,8 +1683,9 @@ def build_plate(workspace_root, *, user_person_id: Optional[str] = None,
                                   workspace_root=str(ws))
     # cr1#1289: a home the owner gave a promise on the Hub ("Assign to"),
     # the same fold the open list makes, so both name one thread.
-    from open_list import homes_given
-    homes = homes_given(all_events)
+    # cr1#1341: a home on a stream archived since falls back to no project.
+    from open_list import archived_thread_ids, homes_given
+    homes = homes_given(all_events, archived_thread_ids(_entities(ws)))
     # D5 — the observed tier is never a row on any plate surface, and the
     # header counts are `count_commitments` over the SAME input the rows come
     # from (F-56): drop the tier before counting, not after.

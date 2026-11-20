@@ -522,7 +522,8 @@ LATER_PAST_STATUS = "in_the_past"
 LATER_PAST_ACK = "{day} has already passed, so nothing moved. Pick today or a later date."
 
 
-def _live_hold_until(events_path, target_id: str, now_iso: str):
+def _live_hold_until(events_path, target_id: str, now_iso: str, *,
+                     include_due_moves: bool = True):
     """The latest expiry among the LIVE mutes on `target_id` at `now_iso`,
     as a UTC datetime, or None when nothing live hides it. Read through the
     ledger's own liveness rule (`mute_ledger.live_mutes`: unexpired and
@@ -538,7 +539,8 @@ def _live_hold_until(events_path, target_id: str, now_iso: str):
     if not p.exists():
         return None
     events, _skipped = load_events_defensively(p)
-    until = item_snoozes(events, now_iso).get(str(target_id))
+    until = item_snoozes(events, now_iso,
+                         include_due_moves=include_due_moves).get(str(target_id))
     if not until:
         return None
     try:
@@ -561,8 +563,14 @@ def apply_later(
     surface: str = "",
     brain_batch_id: Optional[str] = None,
     now_iso: Optional[str] = None,
+    hide_batch_id: Optional[str] = None,
 ) -> dict:
     """THE `push to [date]` writer (APPLYAUDIT1 part 3).
+
+    cr1#1366: the hiding leg always carries a batch, `brain_batch_id` when
+    the surface has one, else `hide_batch_id` (one batch a caller minted for
+    a line and the copies folded under it, so one undo takes them back
+    together), else one minted here. The date leg is batched as before.
 
     POLICY1-B (b) — ATTENDED_TEST_v5.27.0 B2.4: the deferral carries
     `prior_due` (the row's EFFECTIVE due at write time, `None` when it had
@@ -571,8 +579,8 @@ def apply_later(
     no date. Before this the product said, verbatim, "there's no sanctioned
     way to clear a due date, only to set one." `brain_batch_id` is optional:
     a surface that batches its taps may stamp it so a bare `undo` lists the
-    deferral; a per-item undo calls `restore_due(prior_due=...)` directly
-    off this writer's return.
+    deferral; a per-item undo hands this writer's `undo` handle to
+    `undo_later`, which undoes the move by its seq (cr1#1355).
 
     `later_route` decides WHERE a Later… click lands; until now nothing
     performed the landing. Every surface that offers the verb — commitment
@@ -587,7 +595,9 @@ def apply_later(
       {"status": "deferred", ...}  the item is the user's OWN, so its due date
         moves: a `commitment_updated` carrying `data.new_due`, which
         `cru_match.load_open_commitments` folds read-side (history is never
-        rewritten). Classified OK.
+        rewritten). It also carries `data.hidden_until`, so the item is
+        hidden on every surface until that day (owner ruling 2026-11-17 on
+        cr1#1292, read by `mute_ledger.item_snoozes`). Classified OK.
       {"status": "snoozed", ...}   the item is owed TO the user (or unowned),
         so the date the counterparty owns is NOT touched: a `chat_dismissal`
         carrying `data.target_id` + `data.snooze_until`, the mute-ledger
@@ -602,7 +612,9 @@ def apply_later(
         would bring nothing back sooner while the receipt said it had.
         Nothing is written; the result carries `held_until` (the live hold's
         expiry, UTC) and `ack`, the plain sentence the surface relays.
-        Classified as a refusal, so the receipt never books it ok.
+        Classified as a refusal, so the receipt never books it ok. Since
+        cr1#1292 the defer leg refuses the same way when a live mute runs
+        past the new date.
 
     `when_iso` is REQUIRED and must already be RESOLVED — this writer does no
     date parsing, deliberately: `parse_later_when` owns the deterministic
@@ -668,7 +680,25 @@ def apply_later(
         if _currently_closed(index, cid, target.get("seq")):
             return {"status": "not_open", "commitment_id": cid}
         route = later_route(target, actor_id)
+        asked = datetime.datetime.strptime(
+            utc_stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
         if route == "defer":
+            # cr1#1292 (owner ruling 2026-11-17): the owner's own item is
+            # hidden until its new date too, so a live mute that runs past
+            # that date is refused here as on the snooze leg (cr1#166). Only
+            # the mute ledger counts: the item's own earlier date change is
+            # replaced by this one, so a nearer date is still allowed.
+            held = _live_hold_until(events_path, cid, now_iso or _now_iso(),
+                                    include_due_moves=False)
+            if held is not None and asked < held:
+                return {"status": LATER_NOT_SOONER_STATUS,
+                        "commitment_id": cid, "route": route,
+                        "when": calendar_day,
+                        "held_until": held.astimezone(
+                            datetime.timezone.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%SZ"),
+                        "ack": LATER_NOT_SOONER_ACK}
             # (b) — the row's EFFECTIVE due right now, read through the ONE
             # projection (the loader's fold: capture due + every later
             # deferral + any clear), so the reverser can restore it exactly.
@@ -682,6 +712,9 @@ def apply_later(
                 "pushed_by": actor_id,
                 "reason": (reason or "")[:200],
                 "brain_change_class": DUE_CHANGE_CLASS,
+                # cr1#1292 (owner ruling 2026-11-17): hidden until that day,
+                # on every surface, through `mute_ledger.item_snoozes`.
+                "hidden_until": utc_stamp,
             }
             if brain_batch_id:
                 data["brain_batch_id"] = str(brain_batch_id)
@@ -696,10 +729,8 @@ def apply_later(
         else:
             # cr1#166: an earlier date than the live hold is refused here,
             # inside the lock and before anything is written.
-            held = _live_hold_until(events_path, cid, now_iso or _now_iso())
-            asked = datetime.datetime.strptime(
-                utc_stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=datetime.timezone.utc)
+            held = _live_hold_until(events_path, cid, now_iso or _now_iso(),
+                                    include_due_moves=False)
             if held is not None and asked < held:
                 return {"status": LATER_NOT_SOONER_STATUS,
                         "commitment_id": cid, "route": route,
@@ -743,18 +774,51 @@ def apply_later(
             }
         # cr1#1291: a date given to an item that waits on an event replaces
         # the wait, in the same append, so the item is back in its own lane.
-        from commitment_wait import end_wait_event
+        # cr1#1322: the end rides the date's own batch, so its undo brings the
+        # wait back. On the hidden leg the mute joins that batch too (class
+        # `chat_dismissal`), so the undo lifts it as well; a mute that ends no
+        # wait stays as it was.
+        # A surface with no batch of its own (End of Day, a chat Later) gets
+        # one minted for the pair, so a bare undo puts the wait back too.
+        # cr1#1366 (owner's reversible word, 2026-11-16): a mute that ends no
+        # wait gets a batch and the class too (the surface's own, or one
+        # minted for it), so a bare undo, the merged seat and the Hub's Put
+        # it back can take it back, as triage's own undo can.
+        from commitment_wait import end_wait_event, item_waits, mint_batch_id, _load
+        pair = brain_batch_id
+        waits = cid in item_waits(_load(events_path), now_iso or _now_iso())
+        if route != "defer":
+            # A hide that ends a wait keeps a batch of its own (cr1#1345: its
+            # per-item undo takes the batch, which must hold this one Later).
+            pair = pair or (None if waits else hide_batch_id) or mint_batch_id(
+                now_iso or _now_iso())
+            ev["data"]["brain_batch_id"] = pair
+            ev["data"]["brain_change_class"] = "chat_dismissal"
+        elif waits:
+            pair = pair or mint_batch_id(now_iso or _now_iso())
+            ev["data"]["brain_batch_id"] = pair
         ending = end_wait_event(events_path, target, cid, actor_id=actor_id,
                                 source_skill=source_skill, reason="given a date",
-                                now_iso=now_iso or _now_iso())
+                                now_iso=now_iso or _now_iso(), brain_batch_id=pair)
         from event_gate import append_event
-        append_event(events_path, [ev] + ([ending] if ending else []), holder=source_skill)
+        stamped = append_event(events_path, [ev] + ([ending] if ending else []),
+                               holder=source_skill)
+    from event_seq import event_seq
+    move_seq = event_seq(stamped[0]) if stamped else None
     out = {"status": "deferred" if route == "defer" else "snoozed",
            "commitment_id": cid, "route": route,
            "when": calendar_day if route == "defer" else utc_stamp,
            "event": ev}
     if route == "defer":
         out["prior_due"] = ev["data"].get("prior_due")
+    # cr1#1345: what a surface's own per-item undo hands to `undo_later`: the
+    # move's seq (cr1#1355), and, when this Later ended a wait, the batch the
+    # date (or the hiding) and the wait end share, so the undo brings both
+    # back together.
+    out["undo"] = {"commitment_id": cid, "route": route, "seq": move_seq,
+                   "wait_batch": pair if ending else None}
+    if route == "defer":
+        out["undo"]["prior_due"] = out["prior_due"]
     # CUT-C item 5 (ATTENDED_TEST_v5.28.0 B2.5 — "Friday, Sep 13" for a
     # Sunday): the ack RELAYS this string; it never composes a weekday. Both
     # legs name the calendar day the user NAMED (the `new_due` written on the
@@ -764,13 +828,13 @@ def apply_later(
     from due_reanchor import render_moved_phrase
     out["moved_phrase"] = render_moved_phrase(calendar_day, workspace_root)
     # cr1#1292: the product reads the snooze back, naming the item and the
-    # day: "<title>, back <day>." on the snooze leg (hidden until then),
-    # "<title>, now due <day>." on the defer leg (its date moved). A
-    # surface relays `ack` as given.
+    # day: "<title>, back <day>." on both legs, since both hide the item
+    # until then (owner ruling 2026-11-17; the defer leg also moves its due
+    # date to that day). A surface relays `ack` as given.
     title = " ".join(str(_commitment_field(target, "title")
                          or (target.get("data") or {}).get("summary") or "").split())[:80]
     day = out["moved_phrase"] or calendar_day
-    said = (f"now due {day}." if route == "defer" else f"back {day}.")
+    said = f"back {day}."
     out["ack"] = f"{title}, {said}" if title else said[:1].upper() + said[1:]
     return out
 
@@ -866,9 +930,17 @@ def apply_later_covering_folded(
             counted_ids = _counted(workspace_root, now_iso)
         except Exception:  # noqa: BLE001 - no verdict: cover no copy
             counted_ids = set()
+    # cr1#1366 (review round): a surface with no batch of its own gets one
+    # for the line's hide and its copies' hides, so one undo takes the whole
+    # Later back instead of one listing entry per copy.
+    hide_batch = None
+    if not brain_batch_id and folded_ids:
+        from commitment_wait import mint_batch_id
+        hide_batch = mint_batch_id(now_iso or _now_iso())
     res = apply_later(workspace_root, commitment_id, when_iso=when_iso,
                       actor_id=actor_id, source_skill=source_skill, reason=reason,
-                      surface=surface, brain_batch_id=brain_batch_id, now_iso=now_iso)
+                      surface=surface, brain_batch_id=brain_batch_id, now_iso=now_iso,
+                      hide_batch_id=hide_batch)
     out = dict(res or {})
     out["covered"], out["copies"] = [], []
     if out.get("status") not in ("deferred", "snoozed") or not folded_ids:
@@ -881,7 +953,8 @@ def apply_later_covering_folded(
             fh = apply_later(workspace_root, str(fid), when_iso=when_iso,
                              actor_id=actor_id, source_skill=source_skill,
                              reason=reason, surface=surface,
-                             brain_batch_id=brain_batch_id, now_iso=now_iso)
+                             brain_batch_id=brain_batch_id, now_iso=now_iso,
+                             hide_batch_id=hide_batch)
         except Exception as exc:  # noqa: BLE001 - the line's write stands
             fh = {"status": "error", "error": type(exc).__name__}
         out["copies"].append({"id": str(fid), "result": fh})
@@ -1059,11 +1132,14 @@ def unpark_commitment(
     source_skill: str,
     reason: str = "movement",
     movement_ref: Optional[str] = None,
+    keep_wait: bool = False,
 ) -> dict:
     """DD-6 — un-park: one `commitment_updated` with `status_hint: null`
     (an explicit null, so the fold sees the hint END); the movement that
     caused it rides in `reason` (no separate field — G29: a field nobody
-    reads is a dead field). `already_open` when the row is not parked."""
+    reads is a dead field). `already_open` when the row is not parked.
+    `keep_wait` (an undo, cr1#1322): a row that now waits on an event is
+    the owner's later word, so it is refused (`undo_refused`), not un-parked."""
     from pathlib import Path as _Path
     from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
@@ -1075,6 +1151,10 @@ def unpark_commitment(
             return {"status": "not_open", "commitment_id": cid}
         if effective_status_hint(events_path, cid) != STATUS_HINT_PARKED:
             return {"status": "already_open", "commitment_id": cid}
+        if keep_wait:
+            from commitment_wait import UNDO_CHANGED, STATUS_UNDO_REFUSED, waiting_ids
+            if cid in waiting_ids(events_path):
+                return {"status": STATUS_UNDO_REFUSED, "commitment_id": cid, "why": UNDO_CHANGED}
         why = str(reason or "movement").strip()
         if movement_ref:
             why = f"{why} ({movement_ref})"
@@ -1153,10 +1233,11 @@ def park_commitments(workspace_root, rows, *, parked_by: str, source_skill: str)
 
 def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
                        source_skill: str, reason: str = "movement",
-                       extra_data: Optional[dict] = None) -> list:
+                       extra_data: Optional[dict] = None, keep_wait: bool = False) -> list:
     """F-6 — the batch twin of `unpark_commitment`: one lock, one scan, one
     open-set read, N `status_hint: null` events in one append. Statuses per
-    row: `unparked` / `not_open` / `already_open` / `not_found`."""
+    row: `unparked` / `not_open` / `already_open` / `not_found`, and with
+    `keep_wait` (an undo, cr1#1322) `undo_refused` for a row that waits."""
     from pathlib import Path as _Path
     from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     from event_gate import append_event
@@ -1165,6 +1246,10 @@ def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
     with events_writer_lock(events_path, holder=f"unpark_commitments:{source_skill}"):
         index = _scan_commitment_index(events_path)
         hints = _effective_status_hints(events_path)
+        waits: set = set()
+        if keep_wait:
+            from commitment_wait import UNDO_CHANGED, STATUS_UNDO_REFUSED, waiting_ids
+            waits = waiting_ids(events_path)
         evs: list = []
         for rid in commitment_ids or []:
             try:
@@ -1178,6 +1263,10 @@ def unpark_commitments(workspace_root, commitment_ids, *, unparked_by: str,
                 continue
             if hints.get(cid) != STATUS_HINT_PARKED:
                 results.append({"status": "already_open", "commitment_id": cid})
+                continue
+            if cid in waits:
+                results.append({"status": STATUS_UNDO_REFUSED, "commitment_id": cid,
+                                "why": UNDO_CHANGED})
                 continue
             # EXIT1 FIX ROUND 2 (review R-5) — `extra_data` first, so a
             # caller can carry its change class, its batch id and what the
@@ -1389,15 +1478,191 @@ def effective_due(events_jsonl_path, commitment_id):
     return None
 
 
+#: cr1#1344: an undo of a date move that would erase a newer date writes
+#: nothing and answers `undo_refused` with this `why` (`brain_undo` words it).
+DUE_UNDO_NEWER = "newer_date"
+#: ...and when the book holds no record of the move being undone.
+DUE_UNDO_UNRECORDED = "unrecorded"
+#: cr1#1355: `restore_due(prior_due=DUE_FROM_MOVE, undoing_seq=<seq>)` puts
+#: back the date the move at that seq recorded, read from the book.
+DUE_FROM_MOVE = object()
+
+
+def _due_already_ack(title: str) -> str:
+    """The plain line for an undo of a date move already put back (cr1#1355)."""
+    return f"{title or 'That item'}: that change was already put back, so nothing was written."
+
+
+def _due_set(d: dict) -> Optional[str]:
+    """The date a `commitment_updated` sets, by the loader's own chain, or
+    None (a clear, or no date at all)."""
+    v = d.get("new_due") or d.get("due") or d.get("due_date")
+    return str(v) if v else None
+
+
+def _writes_due(d: dict) -> bool:
+    """True when the update moves the item's date, as the loader folds it:
+    a date, or the sanctioned clear (`cru_match.load_open_commitments`)."""
+    return _due_set(d) is not None or d.get(DUE_CLEARED_KEY) is True
+
+
+def _same_day(a, b) -> bool:
+    if a in (None, "") or b in (None, ""):
+        return a in (None, "") and b in (None, "")
+    if str(a) == str(b):
+        return True
+    try:
+        return _later_when(str(a))[0] == _later_when(str(b))[0]
+    except ValueError:
+        return False
+
+
+def _due_undo_ack(title: str, why: str) -> str:
+    """The plain line for a refused date undo, naming the item (cr1#1344)."""
+    name = title or "That item"
+    if why == DUE_UNDO_UNRECORDED:
+        return f"{name}: the date move is not on record, so I left it."
+    return f"{name} has a newer date, so I left it."
+
+
+def _due_undo_verdict(events_path, cid: str, *, undoing_seq, prior_due,
+                      undoing_batch: Optional[str], current) -> dict:
+    """cr1#1344: may an undo put `cid`'s date back to `prior_due` without
+    erasing a newer date? Read inside the events lock.
+
+    The item's date moves are walked in book order as a stack: a reversal
+    (`reversal_of`) takes its own move out, a move a `brain_change_undone`
+    marker names is already out, and an older put-back with no `reversal_of`
+    takes out the newest move it exactly inverts. The move being undone is
+    the one at `undoing_seq` (the change ref), or, for a surface's per-item
+    undo that holds only the `prior_due` the move returned, the one live
+    `commitment_due` move that recorded that `prior_due`; two such moves,
+    or none, and it is not on record (review round: taking the newest of
+    several picked another surface's move).
+
+    {"act_seq": <seq>} when the move still holds the item (it is the newest
+    live move and the date on the item is the one it set). Otherwise
+    {"why": ...}: `newer_date` when a later move or a different date stands,
+    `unrecorded` when the book holds no such move, `already` when it was
+    undone before."""
+    from commitment_wait import _load, _target
+    from event_seq import coerce_seq, event_seq
+
+    events = _load(events_path)
+    marked: set = set()
+    moves: list = []
+    batch_of: dict = {}
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("type") or ev.get("event")
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if et == "brain_change_undone":
+            ref = str(d.get("change_ref") or "")
+            if ref.startswith("seq:"):
+                try:
+                    n = float(ref[4:])
+                    marked.add(int(n) if n.is_integer() else n)
+                except ValueError:
+                    pass
+            continue
+        sq = event_seq(ev)
+        if et != "commitment_updated" or sq is None or _target(d, ev) != cid:
+            continue
+        if d.get("brain_batch_id"):
+            batch_of[sq] = d["brain_batch_id"]
+        moves.append((sq, d))
+    chain: list = []
+    sibling_put_back = False
+    for sq, d in moves:
+        rv = coerce_seq(d.get("reversal_of")) if d.get("reversal_of") is not None else None
+        if rv is not None:
+            chain = [(s, x) for s, x in chain if s != rv]
+            if (undoing_batch and batch_of.get(rv) == undoing_batch
+                    and undoing_seq is not None and sq > undoing_seq):
+                sibling_put_back = True   # this undo's own batch, already reversed
+            continue
+        if not _writes_due(d):
+            continue
+        if "restored_by" in d:
+            # An older put-back with no `reversal_of`: it undid the newest
+            # live move it exactly inverts.
+            for i in range(len(chain) - 1, -1, -1):
+                s, x = chain[i]
+                if (_same_day(_due_set(x), d.get("prior_due"))
+                        and _same_day(x.get("prior_due"), _due_set(d))):
+                    del chain[i]
+                    break
+            continue
+        if sq in marked:
+            continue
+        chain.append((sq, d))
+    if undoing_seq is None:
+        live = [(s, x) for s, x in chain
+                if x.get("brain_change_class") == DUE_CHANGE_CLASS
+                and "prior_due" in x and _same_day(x.get("prior_due"), prior_due)]
+        if len(live) != 1:
+            return {"why": DUE_UNDO_UNRECORDED}
+        undoing_seq = live[0][0]
+    act = next((x for s, x in moves if s == undoing_seq), None)
+    if act is None or not _writes_due(act):
+        return {"why": DUE_UNDO_UNRECORDED}
+    if not any(s == undoing_seq for s, _x in chain):
+        return {"why": "already"}
+    if chain[-1][0] != undoing_seq:
+        return {"why": DUE_UNDO_NEWER}
+    if not _same_day(current, _due_set(act)):
+        # The date on the item is not the one this move set. Only this
+        # undo's own batch may already have put it back (a date given to a
+        # waiting item, whose wait end's undo restored the date first).
+        if not (sibling_put_back and _same_day(current, act.get("prior_due"))):
+            return {"why": DUE_UNDO_NEWER}
+    return {"act_seq": undoing_seq, "act": act}
+
+def _restored_hide(events_path, cid: str, new_due: str):
+    """The `hidden_until` a restore carries back (cr1#1292), or None.
+
+    Undoing the newest of two Laters puts the date back to the one the
+    earlier Later set, and that Later hid the item until then: the restore
+    copies its `hidden_until`, so the undo does not bring the item back
+    early. Read as the loader keys a due change (`str(target)`): the due
+    change before the newest one, when it set this same date."""
+    from cru_match import load_events_defensively
+    from pathlib import Path as _Path
+    p = _Path(events_path)
+    if not p.exists():
+        return None
+    events, _skipped = load_events_defensively(p)
+    changes = []
+    for ev in events:
+        if (ev.get("type") or ev.get("event")) != "commitment_updated":
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        target = d.get("commitment_id") or d.get("target_id") or ev.get("commitment_id")
+        if not target or str(target) != str(cid):
+            continue
+        if d.get("new_due") or d.get("due") or d.get("due_date") or d.get("due_cleared") is True:
+            changes.append(d)
+    if len(changes) < 2:
+        return None
+    prev = changes[-2]
+    if (prev.get("new_due") or prev.get("due") or prev.get("due_date")) != new_due:
+        return None
+    return prev.get("hidden_until") or None
+
+
 def restore_due(
     workspace_root,
     commitment_id,
     *,
-    prior_due,
+    prior_due=DUE_FROM_MOVE,
     actor_id: str,
     source_skill: str,
     reason: str = "due date put back",
     brain_batch_id: Optional[str] = None,
+    keep_wait: bool = False,
+    undoing_batch: Optional[str] = None,
+    undoing_seq=None,
 ) -> dict:
     """POLICY1-B (b) — put a row's due back EXACTLY: to `prior_due` (a
     calendar day) or, when `prior_due` is None, to NO DATE. The sanctioned
@@ -1409,13 +1674,36 @@ def restore_due(
     per-item undo calls with the `prior_due` the deferral returned. A row
     that is closed moves nothing (`not_open`). An unparseable `prior_due`
     refuses before the lock — a restore must never write a date it cannot
-    read back."""
+    read back. `keep_wait` (an undo of batch `undoing_batch`, cr1#1322):
+    refused (`undo_refused`, nothing written) while the item waits on an
+    event, unless that wait is the one this batch ended and its undo has
+    just put back; and refused when this batch also ended a wait whose undo
+    was refused, so the date and the wait go back together or not at all.
+
+    cr1#1344: a restore is always an undo of one date move, and it never
+    erases a newer date. The move is the one at `undoing_seq` (the change
+    ref `brain_undo` holds) or, for a surface's per-item undo, the one live
+    move that recorded this `prior_due` (two or none: refused). When a later move stands on
+    the item, or its date is no longer the one that move set, nothing is
+    written: `undo_refused` with `why: newer_date` and an `ack` naming the
+    item. A move undone before answers `already_undone`. The restore
+    carries `reversal_of: <the move's seq>`, so the next undo of an older
+    move sees this one taken out.
+
+    cr1#1355: an undo by seq puts back the date THAT move recorded, read
+    from the book, so two moves on one item, or two that recorded the same
+    earlier date, each undo exactly their own. `prior_due` may be left out
+    (`DUE_FROM_MOVE`) when `undoing_seq` is given; a `prior_due` the caller
+    passes that disagrees with the move's own is refused as `unrecorded`,
+    nothing written (a stale or crossed handle never writes its date). An
+    undo of a move already put back answers `already_undone` with an `ack`."""
     from pathlib import Path as _Path
     from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
-    new_due = None
-    if prior_due not in (None, ""):
-        calendar_day, _utc = _later_when(str(prior_due))
-        new_due = calendar_day
+    from_move = prior_due is DUE_FROM_MOVE
+    if from_move and undoing_seq is None:
+        raise ValueError("restore_due needs prior_due, or undoing_seq to read it from the move")
+    if not from_move and prior_due not in (None, ""):
+        _later_when(str(prior_due))   # an unparseable date refuses before the lock
     events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
     with events_writer_lock(events_path, holder=f"restore_due:{source_skill}"):
         index = _scan_commitment_index(events_path)
@@ -1423,7 +1711,44 @@ def restore_due(
         target = index["by_id"][cid]
         if _currently_closed(index, cid, target.get("seq")):
             return {"status": "not_open", "commitment_id": cid}
+        if keep_wait:
+            from commitment_wait import UNDO_CHANGED, STATUS_UNDO_REFUSED, batch_wait_end, waiting_ids
+            ended, put_back = batch_wait_end(events_path, cid, undoing_batch)
+            if (ended and not put_back) or (cid in waiting_ids(events_path) and not put_back):
+                return {"status": STATUS_UNDO_REFUSED, "commitment_id": cid, "why": UNDO_CHANGED}
         current = effective_due(events_path, cid)
+        verdict = _due_undo_verdict(events_path, cid, undoing_seq=undoing_seq,
+                                    prior_due=prior_due, undoing_batch=undoing_batch,
+                                    current=current)
+        title = " ".join(str(_commitment_field(target, "title")
+                             or (target.get("data") or {}).get("summary") or "").split())[:80]
+        if verdict.get("why") == "already":
+            return {"status": "already_undone", "commitment_id": cid,
+                    "ack": _due_already_ack(title)}
+        act = verdict.get("act") or {}
+        if verdict.get("why"):
+            pass   # refused above: newer date or not on record
+        elif undoing_seq is not None:
+            # cr1#1355: by seq, the date to put back is the move's own. A move
+            # that recorded none, or a caller's date that disagrees, writes
+            # nothing.
+            if "prior_due" not in act or (
+                    not from_move and not _same_day(prior_due, act.get("prior_due"))):
+                verdict = {"why": DUE_UNDO_UNRECORDED}
+            else:
+                prior_due = act.get("prior_due")
+        if verdict.get("why"):
+            return {"status": "undo_refused", "commitment_id": cid, "why": verdict["why"],
+                    "due": current,
+                    "ack": _due_undo_ack(title, verdict["why"])}
+        new_due = None
+        if prior_due not in (None, ""):
+            try:
+                new_due = _later_when(str(prior_due))[0]
+            except ValueError:
+                return {"status": "undo_refused", "commitment_id": cid,
+                        "why": DUE_UNDO_UNRECORDED, "due": current,
+                        "ack": _due_undo_ack(title, DUE_UNDO_UNRECORDED)}
         data: dict = {
             "commitment_id": cid,
             "new_due": new_due,
@@ -1431,9 +1756,14 @@ def restore_due(
             "restored_by": actor_id,
             "reason": (reason or "")[:200],
             "brain_change_class": DUE_CHANGE_CLASS,
+            "reversal_of": verdict["act_seq"],  # cr1#1344: the move this undoes
         }
         if new_due is None:
             data[DUE_CLEARED_KEY] = True
+        else:
+            hide = _restored_hide(events_path, cid, new_due)
+            if hide:
+                data["hidden_until"] = hide
         if brain_batch_id:
             data["brain_batch_id"] = str(brain_batch_id)
         if isinstance(target.get("seq"), int):
@@ -1448,6 +1778,190 @@ def restore_due(
         append_event(events_path, [ev], holder=source_skill)
     return {"status": "restored", "commitment_id": cid, "due": new_due,
             "cleared": new_due is None, "event": ev}
+
+
+def _event_seq_of(ev):
+    """The event's seq, normalized (`event_seq.event_seq`)."""
+    from event_seq import event_seq
+    return event_seq(ev)
+
+
+def _later_undo_ack(title: str) -> str:
+    """The plain line for a refused Later undo that ended a wait (cr1#1345)."""
+    return f"{title or 'That item'} changed after that, so I left it."
+
+
+def _own_hide_batch(events_path, cid: str, hide_seq) -> Optional[str]:
+    """cr1#1366: the batch the hide at `hide_seq` carries, when every change
+    in it is on `cid` (a per-item undo must never reverse another item), or
+    None. Read only."""
+    from commitment_wait import _load, _target
+    events = [ev for ev in _load(events_path) if isinstance(ev, dict)]
+    own = next((ev for ev in events if ev.get("type") == "chat_dismissal"
+                and _event_seq_of(ev) == hide_seq), None)
+    bid = ((own or {}).get("data") or {}).get("brain_batch_id")
+    if not bid:
+        return None
+    mine = [ev for ev in events if isinstance(ev.get("data"), dict)
+            and ev["data"].get("brain_batch_id") == bid and ev["data"].get("brain_change_class")]
+    keys = {cid}
+    try:
+        from mute_ledger import _item_keys
+        keys = _item_keys(events, cid)
+    except Exception:  # noqa: BLE001 - the plain id is the floor
+        pass
+    if not mine or any(str(_target(ev["data"], ev)).strip() not in keys for ev in mine):
+        return None
+    return str(bid)
+
+
+def undo_later(workspace_root, handle, *, actor_id: str, source_skill: str,
+               reason: str = "triage undo") -> dict:
+    """cr1#1345: a surface's own per-item undo of one Later, off the `undo`
+    handle `apply_later` answered (`{commitment_id, route, seq, wait_batch,
+    prior_due}`), under the reverser contract a bare `undo` uses.
+
+    A Later that ended a wait (`wait_batch` set) is undone through
+    `brain_undo.undo_batch` for that batch, so the date (or the hiding, on an
+    item owed to the owner) and the wait come back together or not at all
+    (cr1#1322). A plain date move goes through `restore_due` by the move's
+    seq (cr1#1355), never under a newer date or a newer wait (cr1#1344). A
+    plain hiding is lifted by its seq (`mute_ledger.clear_dismissal`). A
+    handle cached before this change (no seq) falls back to the move that
+    recorded its `prior_due`.
+
+    Answers `restored` (the item reads as before the Later), `already_undone`,
+    or `undo_refused` with `why` and an `ack` naming the item; nothing is
+    written on a refusal. `partial` would mean the batch put back only part
+    of it; it is booked a refusal too, and its `ack` says so."""
+    h = handle if isinstance(handle, dict) else {}
+    if isinstance(h.get("undo"), dict):
+        h = h["undo"]
+    cid = str(h.get("commitment_id") or "")
+    if not cid:
+        raise ValueError("undo_later needs the Later's undo handle (its commitment_id)")
+    from pathlib import Path as _Path
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    index = _scan_commitment_index(events_path)
+    cid = normalize_commitment_id(cid, index)
+    target = index["by_id"][cid]
+    title = " ".join(str(_commitment_field(target, "title")
+                         or (target.get("data") or {}).get("summary") or "").split())[:80]
+
+    def _refused(why: str) -> dict:
+        ack = (_due_undo_ack(title, why) if why in (DUE_UNDO_UNRECORDED, DUE_UNDO_NEWER)
+               else _later_undo_ack(title))
+        return {"status": "undo_refused", "commitment_id": cid, "why": why, "ack": ack}
+
+    if (h.get("seq") is None and not h.get("wait_batch") and h.get("route") != "snooze"
+            and "prior_due" in h):
+        # A handle cached before cr1#1345 holds only `prior_due`: find the one
+        # live move that recorded it, and when that move's batch also ended a
+        # wait, undo the two together (review round: the bare restore lost the
+        # wait and answered `restored`).
+        found = _due_undo_verdict(events_path, cid, undoing_seq=None,
+                                  prior_due=h.get("prior_due"), undoing_batch=None,
+                                  current=effective_due(events_path, cid))
+        if found.get("act_seq") is not None:
+            from commitment_wait import _load as _wload, batch_wait_end
+            act = next((ev for ev in _wload(events_path) if isinstance(ev, dict)
+                        and _event_seq_of(ev) == found["act_seq"]), None)
+            bid = ((act or {}).get("data") or {}).get("brain_batch_id")
+            h = {**h, "seq": found["act_seq"], "route": "defer"}
+            if bid and batch_wait_end(events_path, cid, bid)[0]:
+                h["wait_batch"] = bid
+
+    batch = h.get("wait_batch")
+    if not batch and h.get("route") == "snooze" and h.get("seq") is not None:
+        # cr1#1366: a plain hiding carries its own batch now; when that batch
+        # holds this Later and nothing else, it is undone through the batch,
+        # so the marker is written and no other door offers it again. A hide
+        # from a run that holds other items, or one written before the batch
+        # (none), is lifted by its seq below.
+        batch = _own_hide_batch(events_path, cid, h.get("seq"))
+    if batch:
+        from commitment_wait import _load, _target
+        mine = [ev for ev in _load(events_path) if isinstance(ev, dict)
+                and isinstance(ev.get("data"), dict)
+                and ev["data"].get("brain_batch_id") == batch
+                and ev["data"].get("brain_change_class")]
+        # The batch must hold this one Later and nothing else: undoing a
+        # surface's whole run from a per-item undo would reverse other items.
+        if not mine or any(_target(ev["data"], ev) != cid for ev in mine):
+            return _refused(DUE_UNDO_UNRECORDED)
+        if h.get("route") != "snooze":
+            # Review round: the wait end's own reverser accepts the date its
+            # batch set, even when a newer move set that same date since; the
+            # batch would then put the wait back and clear the newer date,
+            # with the date's own reverser refusing after. So the date move
+            # must still hold the item before anything is written.
+            seq = h.get("seq")
+            if seq is None:
+                seq = next((_event_seq_of(ev) for ev in mine
+                            if ev["data"].get("brain_change_class") == DUE_CHANGE_CLASS), None)
+            if seq is None:
+                return _refused(DUE_UNDO_UNRECORDED)
+            pre = _due_undo_verdict(events_path, cid, undoing_seq=seq,
+                                    prior_due=h.get("prior_due"), undoing_batch=None,
+                                    current=effective_due(events_path, cid))
+            # "already": the date is back; the batch undo answers for the rest.
+            if pre.get("why") and pre["why"] != "already":
+                return _refused(pre["why"])
+        from brain_undo import undo_batch
+        out = undo_batch(workspace_root, {"kind": "brain_batch", "batch_id": str(batch)},
+                         undone_by=actor_id, source_skill=source_skill, user_confirmed=True)
+        st = out.get("status")
+        if st == "undone":
+            res = {"status": "restored", "commitment_id": cid,
+                   "due": effective_due(events_path, cid),
+                   "wait_restored": bool(h.get("wait_batch")), "batch": out}
+            if h.get("route") == "snooze":
+                res["lifted"] = True
+            return res
+        if st == "already":
+            return {"status": "already_undone", "commitment_id": cid,
+                    "ack": _due_already_ack(title)}
+        if out.get("n_undone"):
+            return {"status": "partial", "commitment_id": cid, "batch": out,
+                    "ack": f"{title or 'That item'}: only part of it went back. Check it on your plate."}
+        refused = next((r for r in out.get("results") or [] if r.get("refused")), None)
+        res = _refused((refused or {}).get("why") or "changed")
+        res["batch"] = out
+        return res
+    if h.get("route") == "snooze":
+        seq = h.get("seq")
+        if seq is None:
+            return _refused(DUE_UNDO_UNRECORDED)
+        from mute_ledger import (STATUS_NEWER_CHANGE, STATUS_NEWER_HIDE, DismissalNotFoundError,
+                                 clear_dismissal)
+        try:
+            # cr1#1364: never under a newer hide on the item; the clear is
+            # keyed by target too, so it would take the newer hide out.
+            cl = clear_dismissal(workspace_root, seq, cleared_by=actor_id,
+                                 source_skill=source_skill, reason=reason,
+                                 as_undo=True)
+        except DismissalNotFoundError:
+            return _refused(DUE_UNDO_UNRECORDED)
+        # cr1#1366: nor under a newer date or wait on it.
+        if cl.get("status") in (STATUS_NEWER_HIDE, STATUS_NEWER_CHANGE):
+            return _refused("changed")
+        if cl.get("status") == "cleared":
+            return {"status": "restored", "commitment_id": cid, "lifted": True}
+        return {"status": "already_undone", "commitment_id": cid,
+                "ack": _due_already_ack(title)}
+    if "prior_due" not in h and h.get("seq") is None:
+        return _refused(DUE_UNDO_UNRECORDED)
+    # cr1#1355: by the move's seq, the date put back is the one that move
+    # recorded; the cached `prior_due` is only the fallback for a handle
+    # cached without a seq (found above), never a second source of truth.
+    out = restore_due(workspace_root, cid,
+                      prior_due=DUE_FROM_MOVE if h.get("seq") is not None else h.get("prior_due"),
+                      actor_id=actor_id, source_skill=source_skill, reason=reason,
+                      keep_wait=True, undoing_batch=None, undoing_seq=h.get("seq"))
+    if out.get("status") == "undo_refused" and not out.get("ack"):
+        # A newer wait stands on the item (cr1#1322's refusal carries no line).
+        out = {**out, "ack": _later_undo_ack(title)}
+    return out
 
 
 def _within_recent_window(activity_iso: Optional[str], now_iso: str,
@@ -2140,6 +2654,7 @@ def compute_brief_state(
     todays_meetings: Optional[Iterable[dict]] = None,
     commitment_movement: Optional[dict] = None,
     workspace_root=None,
+    snooze_now_iso: Optional[str] = None,
 ) -> dict:
     """Compute the deterministic commitment state for a brief / commitments fire.
 
@@ -2212,6 +2727,20 @@ def compute_brief_state(
     """
     threads = threads or {}
     thread_activity = thread_activity or {}
+    # cr1#1292: a snoozed item (any surface's snooze or hold on it, and the
+    # owner's own item a Later moved, ruling 2026-11-17) is not on the brief
+    # or the End of Day bookend until its date, the same set the plate
+    # leaves out. Read here, where every caller holding the workspace
+    # (the brief writer, the composed brief pack, the End of Day) passes.
+    # A snooze ends at an instant, so it is read at `snooze_now_iso`, the
+    # caller's real clock, when given: the drivers hand `now_iso` over as a
+    # bare local day, and reading a snooze at that day's midnight UTC would
+    # disagree with the Hub for hours.
+    _snz_at = snooze_now_iso or now_iso
+    if workspace_root is not None and open_commitments and _snz_at:
+        from mute_ledger import drop_snoozed, workspace_item_snoozes
+        open_commitments = drop_snoozed(
+            open_commitments, workspace_item_snoozes(workspace_root, _snz_at))[0]
     # Deterministic Bug #98 floor: is sent-mail reconciliation behind?
     reconcile_stale = reconcile_is_stale(sent_reconcile_cursor, now_iso)
 
@@ -2666,13 +3195,7 @@ def compute_and_log_brief_state(workspace_root, *, source_skill="morning-briefin
     # the brief/commitments fires rather than sitting behind a parameter nothing
     # fills. `setdefault`, so an explicit caller value still wins.
     kwargs.setdefault("workspace_root", workspace_root)
-    # cr1#1292: a snoozed item (any surface's snooze or hold on it) is not
-    # on the brief until its date, the same set the plate leaves out.
-    if kwargs.get("open_commitments") and kwargs.get("now_iso"):
-        from mute_ledger import drop_snoozed, workspace_item_snoozes
-        kwargs["open_commitments"] = drop_snoozed(
-            kwargs["open_commitments"],
-            workspace_item_snoozes(workspace_root, kwargs["now_iso"]))[0]
+    # cr1#1292: `compute_brief_state` leaves a snoozed item out itself.
     state = compute_brief_state(**kwargs)
     # cr1#1012 (train 2): the brief's overdue number is the open list's, the
     # same number the Hub's Today strip and Commitments badge show (the
@@ -4355,6 +4878,312 @@ def edit_commitment_wording(
     return {"status": "updated", "commitment_id": cid, "event": ev}
 
 
+# ---------------------------------------------------------------------------
+# cr1#1463: add context to a commitment, and take it back
+# ---------------------------------------------------------------------------
+#
+# The note is a `note` row, the shape `orphan_note.reroute_orphan_note`
+# writes (`data.summary` + `data.via`), so history and the readers that know
+# `note` read it as they always have. It names the item the way every
+# commitment row does (`data.commitment_id` + `data.commitment_seq`), so the
+# Hub's wording Undo and any other "has anything touched it since" verdict
+# see it as a hand on the item. It carries its own undo handle
+# (`brain_batch_id` + `brain_change_class`), so a bare `undo`, even in a fresh
+# chat, can take it back through `brain_undo.REVERSERS["commitment_note"]`.
+#
+# Take back APPENDS one `commitment_note_retracted` naming the note by seq;
+# the note row stays in history, as a person fact does under
+# `entity_fact_retracted`. The retraction names the item under its own key
+# (`note_commitment_id`), never `commitment_id`, so it is not itself a hand
+# on the item for any other undo: an undo is not a touch.
+
+NOTE_VIA = "commitment_context"
+NOTE_CHANGE_CLASS = "commitment_note"
+NOTE_RETRACT_TYPE = "commitment_note_retracted"
+NOTE_BATCH_PREFIX = "ctx_"
+#: The Hub's own cap on a typed note (`cockpit_helpers.NOTE_CAP`).
+NOTE_CAP = 2000
+NOTE_SOURCE_REF = "user:commitment_context"
+STATUS_UNDO_REFUSED = "undo_refused"   # the word brain_undo's receipt reads
+
+NOTE_ADDED_LINE = "Added your note to {title}."
+NOTE_SAME_LINE = "{title} already has that note; nothing was written."
+NOTE_EMPTY_LINE = "The note was empty; nothing was written."
+NOTE_CLOSED_LINE = "{title} is closed, so the note was not added; nothing was written."
+NOTE_UNKNOWN_LINE = "That commitment is not on your book; nothing was written."
+
+#: The rows that are the book's own bookkeeping about a gesture, never a hand
+#: on an item: an undo's marker, a note's take back, an Apply receipt.
+_NOT_A_HAND = frozenset({"brain_change_undone", NOTE_RETRACT_TYPE, "apply_choices_applied"})
+
+
+def _note_text(note) -> str:
+    """The typed words, control characters out, spaces tidied, capped."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(note or ""))
+    return " ".join(text.split())[:NOTE_CAP].strip()
+
+
+def _note_batch_id() -> str:
+    import secrets
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{NOTE_BATCH_PREFIX}{stamp}-{secrets.token_hex(4)}"
+
+
+def _retracted_note_seqs(events: Iterable[dict]) -> set:
+    out: set = set()
+    for ev in events or []:
+        if isinstance(ev, dict) and ev.get("type") == NOTE_RETRACT_TYPE:
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            if isinstance(d.get("retracts_seq"), int):
+                out.add(d["retracts_seq"])
+    return out
+
+
+def without_retracted_notes(events: Iterable[dict]) -> list:
+    """READ. `events` with every commitment note that was taken back left out
+    (cr1#1463), for a reader of `note` rows that shows them as current: the
+    end-of-day notes, a thread's recent activity. Every other row, and every
+    note no take back names, passes through unchanged. Pure."""
+    events = [e for e in events or [] if isinstance(e, dict)]
+    gone = _retracted_note_seqs(events)
+    if not gone:
+        return events
+    return [e for e in events if not (_is_context_note(e) and e.get("seq") in gone)]
+
+
+def _is_context_note(ev: dict) -> bool:
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    return ev.get("type") == "note" and d.get("via") == NOTE_VIA and bool(d.get("commitment_id"))
+
+
+def commitment_notes(events: Iterable[dict], commitment_id) -> list:
+    """READ. The notes on `commitment_id` that stand, oldest first, as
+    `[{text, seq, ts, by}]`. A note taken back is left out; it stays in the
+    log. Pure."""
+    events = [e for e in events or [] if isinstance(e, dict)]
+    gone = _retracted_note_seqs(events)
+    cid = str(commitment_id or "")
+    out = []
+    for ev in events:
+        if not _is_context_note(ev) or ev.get("seq") in gone:
+            continue
+        d = ev["data"]
+        if str(d.get("commitment_id")) != cid:
+            continue
+        out.append({"text": str(d.get("summary") or ""), "seq": ev.get("seq"),
+                    "ts": str(ev.get("ts") or ""), "by": str(d.get("noted_by") or "")})
+    return out
+
+
+def _on_open_view(events_path, cid: str) -> bool:
+    """Whether the projector shows `cid` as open now. A failed read is no."""
+    try:
+        from cru_match import _commitment_id, load_open_commitments
+
+        return any(_commitment_id(r) == cid for r in load_open_commitments(events_path))
+    except Exception:  # noqa: BLE001 - unsure is not open
+        return False
+
+
+def _open_title(events_path, cid: str, target: dict) -> str:
+    """The words the item shows now (its wording folded), else its capture's."""
+    try:
+        from cru_match import _commitment_id, load_open_commitments
+
+        row = next((r for r in load_open_commitments(events_path) if _commitment_id(r) == cid), None)
+    except Exception:  # noqa: BLE001 - the capture's own words then
+        row = None
+    for src in (row, target):
+        d = (src or {}).get("data") if isinstance((src or {}).get("data"), dict) else {}
+        words = " ".join(str(d.get("title") or d.get("summary") or "").split())
+        if words:
+            return words[:120]
+    return "That commitment"
+
+
+def add_commitment_note(
+    workspace_root,
+    commitment_id,
+    note,
+    *,
+    noted_by: str,
+    source_skill: str,
+    source_ref: Optional[str] = None,
+) -> dict:
+    """WRITE. cr1#1463: record ONE note on an OPEN commitment, as the owner's
+    own word ("add context to <commitment>: <note>").
+
+    Answers `{status, line, commitment_id, ...}`:
+      `noted`         one `note` row written; carries `seq` and `batch_ref`,
+                      the handle `brain_undo.undo_batch` takes it back by;
+      `already_noted` this note already stands on the item; nothing written;
+      `needs_input`   the note was empty; nothing written;
+      `not_open`      the item is closed; nothing written;
+      `not_found`     no commitment answers to the id; nothing written.
+
+    The verdict and the append happen inside the writer lock, so a close that
+    lands between the read and the write cannot be missed. The text is stored
+    as typed (control characters out, spaces tidied, capped at NOTE_CAP), the
+    way the orphan-note path stores its own; the event gate's rules apply to
+    it as to every row.
+    """
+    from pathlib import Path as _Path
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3
+
+    text = _note_text(note)
+    if not text:
+        return {"status": "needs_input", "line": NOTE_EMPTY_LINE,
+                "commitment_id": str(commitment_id or "")}
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"commitment_note:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        try:
+            cid = normalize_commitment_id(commitment_id, index)
+        except CommitmentIdError:
+            return {"status": "not_found", "line": NOTE_UNKNOWN_LINE,
+                    "commitment_id": str(commitment_id or "")}
+        target = index["by_id"][cid]
+        seq = target.get("seq") if isinstance(target.get("seq"), int) else None
+        title = _open_title(events_path, cid, target)
+        # Closed by the closure chain, or left off the open view by the
+        # projector (a capture whose own status is not open, an id twin): a
+        # note there would land where nothing shows it, so it is refused.
+        if _currently_closed(index, cid, seq) or not _on_open_view(events_path, cid):
+            return {"status": "not_open", "line": NOTE_CLOSED_LINE.format(title=title),
+                    "commitment_id": cid}
+        from events_io import load_all
+
+        standing = commitment_notes(load_all(workspace_root), cid)
+        same = next((n for n in standing if n["text"] == text), None)
+        if same is not None:
+            return {"status": "already_noted", "line": NOTE_SAME_LINE.format(title=title),
+                    "commitment_id": cid, "seq": same["seq"]}
+        bid = _note_batch_id()
+        data: dict = {
+            "summary": text,
+            "via": NOTE_VIA,
+            "commitment_id": cid,
+            "noted_by": noted_by,
+            "source_ref": source_ref or NOTE_SOURCE_REF,
+            "brain_batch_id": bid,
+            "brain_change_class": NOTE_CHANGE_CLASS,
+        }
+        if seq is not None:
+            data["commitment_seq"] = seq
+        ev = {
+            "type": "note",
+            "source_skill": source_skill,
+            "primary_thread_id": target.get("primary_thread_id") or "",
+            "data": data,
+        }
+        from event_gate import append_event
+
+        landed = append_event(events_path, [ev], holder=source_skill)
+    row = (landed[0] if isinstance(landed, list) and landed else {}) or {}
+    return {"status": "noted", "line": NOTE_ADDED_LINE.format(title=title), "commitment_id": cid,
+            "seq": row.get("seq"), "batch_ref": {"kind": "brain_batch", "batch_id": bid}}
+
+
+def _note_hand(ev: dict, keys: set, capture_seq, undo_rows: set) -> bool:
+    """Whether a log row is a write on the item a note sits on (cr1#1463).
+
+    A hand is any row naming the item, in any spelling of its id or by its
+    capture seq, through the chains the loader and the closers read: a close,
+    a reopen, a date or a hide, a wording fix, a reassign, another note, a
+    reminder pinned to it (`data.ref`), a Hub press on it. Not a hand: the
+    rows an undo wrote (they carry `reversal_of` or `undone_by`, or sit on a
+    Hub undo's `wrote_seqs`), the undo's own marker, a note's take back, an
+    Apply receipt, and a pure bookkeeping mark the product files about an
+    item nobody touched (a watch, an overdue ask, a park hint), which
+    `commitment_activity` rules is not movement."""
+    import commitment_activity as ca
+    import hub_edit
+    from closure_index import closer_target_id
+
+    etype = ev.get("type") or ev.get("event")
+    if etype in _NOT_A_HAND or ev.get("seq") in undo_rows:
+        return False
+    d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    if d.get("reversal_of") is not None or d.get("undone_by"):
+        return False
+    # Two undo doors stamp neither mark: a hide lifted by an undo
+    # (`mute_ledger.clear_dismissal(as_undo=True)` writes `seq_only`), and a
+    # counterparty put back by `restore_counterparty`.
+    if etype == "chat_dismissal_cleared" and d.get("seq_only"):
+        return False
+    if etype == "commitment_reassigned" and d.get(COUNTERPARTY_RESTORED_KEY):
+        return False
+    if etype == hub_edit.EVENT:
+        return d.get("action") != "undo" and str(d.get("target_id") or "") in keys
+    if etype in ("reminder", "reminder_updated") and str(d.get("ref") or "") in keys:
+        return True
+    ids, seqs = ca.event_commitment_refs(ev)
+    named = any(str(i) in keys for i in ids) or closer_target_id(ev) in keys
+    if not named and not (isinstance(capture_seq, int) and capture_seq in seqs):
+        return False
+    return not ca._is_bookkeeping_update(ev)
+
+
+def retract_commitment_note(workspace_root, note_seq, *, undone_by: str, source_skill: str,
+                            reason: str = "the note was taken back") -> dict:
+    """WRITE. Take back one note `add_commitment_note` wrote, by its seq (the
+    `brain_undo.REVERSERS["commitment_note"]` writer, cr1#1463).
+
+    The verdict comes first, judged by seq, before anything is written (the
+    cr1#1364 contract):
+      `undo_refused` + why `not_found`  no such note on the book;
+      `already_undone`                  it was already taken back;
+      `undo_refused` + why `changed`    a newer write landed on the item
+                                        (`_note_hand`); the note stands.
+    Otherwise ONE `commitment_note_retracted` row is appended and the answer
+    is `retracted`. The note leaves the item's current view; the note row
+    stays in history."""
+    from pathlib import Path as _Path
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3
+    from events_io import load_all
+    from mute_ledger import _item_keys
+
+    try:
+        want = int(note_seq)
+    except (TypeError, ValueError):
+        return {"status": STATUS_UNDO_REFUSED, "why": "not_found", "commitment_id": ""}
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    with events_writer_lock(events_path, holder=f"commitment_note_undo:{source_skill}"):
+        events = [e for e in load_all(workspace_root) if isinstance(e, dict)]
+        note = next((e for e in events if e.get("seq") == want and _is_context_note(e)), None)
+        if note is None:
+            return {"status": STATUS_UNDO_REFUSED, "why": "not_found", "commitment_id": ""}
+        cid = str(note["data"].get("commitment_id") or "")
+        if want in _retracted_note_seqs(events):
+            return {"status": "already_undone", "commitment_id": cid}
+        keys = _item_keys(events, cid)
+        capture_seq = note["data"].get("commitment_seq")
+        if isinstance(capture_seq, int):
+            keys.update({str(capture_seq), f"seq_{capture_seq}", f"event_{capture_seq}",
+                         f"commitment_seq_{capture_seq}"})
+        import hub_edit
+
+        undo_rows = hub_edit.undo_seqs(events)  # a Hub undo's own writer rows
+        for e in events:
+            s = e.get("seq")
+            if isinstance(s, int) and s > want and _note_hand(e, keys, capture_seq, undo_rows):
+                return {"status": STATUS_UNDO_REFUSED, "why": "changed", "commitment_id": cid,
+                        "newer_seq": s}
+        ev = {
+            "type": "commitment_note_retracted",  # NOTE_RETRACT_TYPE
+            "source_skill": source_skill,
+            "data": {"retracts_seq": want, "note_commitment_id": cid, "undone_by": undone_by,
+                     "reason": (reason or "")[:200],
+                     "source_ref": f"undo:{source_skill}:seq:{want}"},
+        }
+        from event_gate import append_event
+
+        landed = append_event(events_path, [ev], holder=source_skill)
+    row = (landed[0] if isinstance(landed, list) and landed else {}) or {}
+    return {"status": "retracted", "commitment_id": cid, "retracts_seq": want, "seq": row.get("seq")}
+
+
 def reassign_commitment(
     workspace_root,
     commitment_id,
@@ -5700,6 +6529,12 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
                 # be a plausible-looking lie on N-1 of them.
                 source_ref=c.get("source_ref"),
                 mint_now_iso=batch_mint_iso,
+                # cr1#1308: ATTRIB2's per-row actor. Dropping it here let a
+                # machine batch that carries the permission flag and a person
+                # id be stamped as the person's act (the review-expiry drain,
+                # the sweep's auto tier). Absent, None keeps the writer's own
+                # fallback, so a row without one writes what it wrote before.
+                actor=c.get("actor"),
             ))
         except (CommitmentIdError, PendingReviewError, OpenSubitemsError,
                 SourceRefError, AmbiguousTargetError) as e:
@@ -6236,6 +7071,7 @@ __all__ = [
     "later_route",
     "parse_later_when",
     "apply_later",
+    "undo_later",
     "apply_later_covering_folded", "folded_under", "folded_covered_line",
     "LATER_SNOOZE_VIA",
     # CUT-C item 5 — the date-less Later… refusal

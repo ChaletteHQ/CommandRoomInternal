@@ -435,6 +435,18 @@ def fetch_ceiling(window) -> str:
     return end.date().isoformat()
 
 
+#: cr1#1275: every key `plan_inbound_mail` answers. Its writer
+#: (`eod_helpers.inbound_mail_staged`) takes any of them handed back, so a
+#: file that copies the plan whole is never a TypeError. INMAIL plan-keys
+#: test pins this against the plan's answer.
+PLAN_KEYS = frozenset({
+    "job_id", "provider", "skip_reason", "after", "before", "page_until",
+    "maintenance_window", "intent", "query", "accounts", "connector_queries",
+    "user_person_id", "message_fields", "capture_fields", "close_mode",
+    "connector_read", "include", "exclude", "open_skip_reason",
+    "close_skip_reason", "fire_start", "ready", "blocked_reason"})
+
+
 def plan_inbound_mail(workspace_root, now=None) -> dict:
     """The inbound-mail job PLANNED beside the data - READ ONLY (on
     `workspace_access.RUN_HELPER_ALLOWLIST`).
