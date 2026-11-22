@@ -151,6 +151,10 @@ RUN_HELPER_ALLOWLIST = frozenset({
     # cr1#1179: what a chat must never read (personal connectors and the
     # mailboxes whose surface dial is off); reads, writes nothing
     "connector_reads:chat_wall",
+    # cr1#1577: what an import may write about a person (the off-limits list
+    # and the personal lane, fail closed); hands back the kept items and a
+    # count, writes nothing
+    "import_wall:screen_import",
     # cr1#1014 (train 4): keyword search over the log; reads, writes nothing
     "log_search:search_log",
     # cr1#1017 (train 8): the per-seat word list and the advisor's sheet; reads, writes nothing
@@ -428,6 +432,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:feed_board",  # cr1#1017 - the Week view's board on Today: due cards and priority lanes, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
     "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
+    "cockpit_helpers:apply_repin",  # cr1#1608 - an Apply batch the page refused, pinned again to the versions read, never by hand
     "cockpit_helpers:plan_apply",  # COCKPIT1 (cr1#608) - the cockpit page's engine, read or compute
     "cockpit_helpers:newer_message_arrived",  # COCKPIT1 (cr1#608) - the send gate: did the thread move after the draft
     "cockpit_helpers:reply_reaches_everyone",  # cr1#1251 - the reply-all gate: a group reply a mail service cannot carry is refused, computed not written
@@ -742,6 +747,8 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "lifecycle_pass:bring_back",  # cr1#753 - see the writer table row
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:refresh_all",  # cr1#1530 - the whole refresh in one process (it builds the plate); see the writer table row
+    "cockpit_helpers:prep_all",  # cr1#1603 - the Prep run after call-prep in one process (it keeps its feed in a scratch folder outside the workspace); see the writer table row
+    "cockpit_helpers:inbox_all",  # cr1#1603 - the Inbox run after the fetch in one process (the chain's writer, then its feed); see the writer table row
     "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
     "morning_message:plan_send",  # cr1#1017 - the morning message planned (it builds the plate); see the writer table row
@@ -754,6 +761,9 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "cockpit_helpers:apply_people_choices",  # cr1#1020 - see the writer table row
     "cockpit_helpers:record_page_sends",  # cr1#817 - see the writer table row
     "cockpit_helpers:record_calendar_changes",  # cr1#1539 - see the writer table row
+    "cockpit_helpers:apply_start",  # cr1#1608 - see the writer table row
+    "cockpit_helpers:apply_run",  # cr1#1608 - see the writer table row
+    "cockpit_helpers:apply_finish",  # cr1#1608 - see the writer table row
     "cockpit_helpers:save_config",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:land_registration",  # cr1#734 - see the writer table row
     "cockpit_helpers:log_run_receipt",  # COCKPIT1 (cr1#608) - see the writer table row

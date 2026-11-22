@@ -33,6 +33,7 @@ wall is a privacy filter, not a new corruption vector.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -502,6 +503,59 @@ def _from_off_limits_sender(ev: dict, off_limits: set, person_ids: Optional[set]
     return False
 
 
+#: cr1#1577: the skills that bring material in from outside the owner's
+#: sources. Their screen (`import_wall.screen_import`) leaves out everything
+#: about a person the owner keeps off limits or on the personal lane; this
+#: set is the backstop behind it, on the append path and the record wall.
+IMPORT_SKILLS = frozenset({"workspace-ingest", "intel-intake"})
+
+
+def import_walled_ids(workspace_root) -> set:
+    """cr1#1577: the people an import row may never link: the people on file
+    whose address is off limits, and the people marked personal. The
+    backstop's answer, read the gate's way (a store that cannot be read
+    answers what it can; the screen, not this, is the fail-closed fence).
+    Never raises."""
+    try:
+        off = off_limits_senders(workspace_root)
+        ids = {str(i) for i in off_limits_person_ids(workspace_root, off)} if off else set()
+        try:
+            from personal_leak import personal_tie_ids
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from personal_leak import personal_tie_ids
+        ids |= {str(i) for i in personal_tie_ids(workspace_root) if i}
+        return ids
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _source_skill_of(ev: dict) -> Optional[str]:
+    s = ev.get("source_skill") or _data(ev).get("source_skill")
+    return s if isinstance(s, str) else None
+
+
+_LINK_STRIP = "()[]{}<>\"'.:"
+
+
+def _links_any(value, ids: set) -> bool:
+    """cr1#1577: True iff any value in the row (a dict key included), or a
+    token of a joined list, is one of `ids`."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if item.strip() in ids or any(
+                    t.strip(_LINK_STRIP) in ids for t in re.split(r"[\s,;|]+", item)):
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return False
+
+
 def _workspace_root_from_path(path) -> Optional[Path]:
     if not path:
         return None
@@ -517,8 +571,10 @@ def enforce_scope(events: List[dict], *, path=None, workspace_root=None,
     AccountScopeError on the first violation. No-op unless the account map is
     populated (R4), a declared connector is personal (cr1#1179, which walls
     that connector's captures on every book), or a sender is off limits
-    (cr1#1181, walled on every book too). Defensive: any internal error →
-    allow the write."""
+    (cr1#1181, walled on every book too). A row an import skill writes
+    (`IMPORT_SKILLS`) that links a person off limits or on the personal lane
+    is refused on every book (cr1#1577, the backstop behind the import's own
+    screen). Defensive: any internal error → allow the write."""
     try:
         if workspace_root is None:
             workspace_root = _workspace_root_from_path(path)
@@ -529,7 +585,10 @@ def enforce_scope(events: List[dict], *, path=None, workspace_root=None,
         off_limits = off_limits_senders(workspace_root)
         off_pids = off_limits_person_ids(workspace_root, off_limits) if off_limits else set()
         mail_sources = _mail_sources(workspace_root) if off_pids else set()
-        if not populated and not personal and not off_limits:
+        imported = any(isinstance(ev, dict) and _source_skill_of(ev) in IMPORT_SKILLS
+                       for ev in events)
+        import_ids = import_walled_ids(workspace_root) if imported else set()
+        if not populated and not personal and not off_limits and not import_ids:
             return events
     except Exception:
         return events
@@ -538,6 +597,14 @@ def enforce_scope(events: List[dict], *, path=None, workspace_root=None,
         if not isinstance(ev, dict):
             continue
         try:
+            if import_ids and _source_skill_of(ev) in IMPORT_SKILLS and _links_any(ev, import_ids):
+                raise AccountScopeError(
+                    f"event {i} type={ev.get('type')!r} was written by an import "
+                    f"(holder={holder}) and links a person the owner keeps off "
+                    "limits or on the personal lane (cr1#1577). An import leaves "
+                    "everything about them out: pass what it writes through "
+                    "import_wall.screen_import and write only what comes back."
+                )
             if _from_personal_connector(ev, personal):
                 raise AccountScopeError(
                     f"event {i} type={ev.get('type')!r} was captured from a "
@@ -715,7 +782,8 @@ def filter_masked_events(events, *, masks=None, workspace_root=None):
 def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
                          source_ref: Optional[str] = None,
                          account_address: Optional[str] = None,
-                         holder: str = "people_writer") -> None:
+                         holder: str = "people_writer",
+                         person_id: Optional[str] = None) -> None:
     """The CRM record wall (review fix 7): walls entities.json / _people record
     writes (people_writer.create_person / update_person, org_writer.create_org)
     the same way enforce_scope walls events.jsonl — a record whose payload
@@ -725,7 +793,19 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
     A payload with NO connector provenance passes (manual "add Dustin" stays
     frictionless). An unresolvable account passes (back-compat, §4b). Same
     never-brick posture as enforce_scope: empty map → no-op; any INTERNAL error
-    (corrupt entities.json, broken map) → allow the write."""
+    (corrupt entities.json, broken map) → allow the write.
+
+    cr1#1577: a write by an import skill (`holder` in `IMPORT_SKILLS`) to the
+    record of a person off limits or on the personal lane (`person_id`) is
+    refused on every book, before anything is written: the backstop behind
+    the import's own screen, for its spellings and record changes."""
+    if person_id and holder in IMPORT_SKILLS and workspace_root is not None \
+            and str(person_id) in import_walled_ids(workspace_root):
+        raise AccountScopeError(
+            f"record write by an import (holder={holder}) to a person the "
+            "owner keeps off limits or on the personal lane (cr1#1577): an "
+            "import writes nothing about them."
+        )
     try:
         if workspace_root is None:
             return
@@ -769,5 +849,6 @@ def enforce_record_scope(workspace_root, *, provenance: Optional[dict] = None,
 
 __all__ = ["AccountScopeError", "enforce_scope", "enforce_record_scope",
            "off_limits_senders", "off_limits_person_ids", "sender_off_limits",
+           "IMPORT_SKILLS", "import_walled_ids",
            "live_masks", "live_masks_from_events", "filter_masked_events",
            "ORIGIN_CONNECTOR", "ORIGIN_USER_STATED"]

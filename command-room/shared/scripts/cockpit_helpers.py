@@ -9446,6 +9446,10 @@ def _wait_typed(workspace_root, cid, c, actor, now, label) -> Optional[Dict[str,
                            brain_batch_id=label)
 
 
+#: cr1#1608: the verbs whose plain close waits for the run's one write.
+ONE_WRITE_VERBS = ("done", "confirm", "drop", "notwork")
+
+
 def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, Any]]] = None,
                              *, resolved_by: str = "", now_iso=None,
                              batch_id: Optional[str] = None,
@@ -9515,6 +9519,19 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
     together both land. A refusal of one row never stops the rest. Answers
     `{ok, results: [{id, commitment_id, action, outcome, line, seq?}],
     n_applied, n_errors, batch_id}`."""
+    # cr1#1608: one read of the log serves every reader of this run (the
+    # plate, the ids, the reopens, the closure index, the gate), refreshed
+    # whenever a write grows the log (`events_io.OneLogRead`).
+    from events_io import OneLogRead
+
+    with OneLogRead():
+        return _apply_commitment_choices_run(workspace_root, choices, resolved_by=resolved_by,
+                                             now_iso=now_iso, batch_id=batch_id, run_id=run_id)
+
+
+def _apply_commitment_choices_run(workspace_root, choices, *, resolved_by, now_iso,
+                                  batch_id, run_id) -> Dict[str, Any]:
+    """`apply_commitment_choices`' work, inside its one log read."""
     actor = str(resolved_by or "").strip() or _owner_id(workspace_root)
     rows = [c for c in (choices or []) if isinstance(c, dict)]
     label = batch_id or f"cockpit:{_iso(_now(now_iso)).replace(':', '')}"
@@ -9586,10 +9603,72 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
          "said": {"expired": "refused", "already_applied": "already",
                   "claimed_elsewhere": "waiting"}.get(r["reason"], "error"),
          "note": f"cockpit {label}"} for r in results]
+    # cr1#1608: the plain closes of a run land in ONE locked write through the
+    # one closure path (`commitment_state.close_commitments_one_write`), not
+    # in one lock span and two whole-log reads each. A close waits here and is
+    # written before anything else is written (another verb, a pile's row, the
+    # review queue's own writers) and at the end, so the book gets the rows N
+    # single closes write, in the same order.
+    pending_closes: List[Dict[str, Any]] = []
+
+    def _flush_closes() -> None:
+        if not pending_closes:
+            return
+        batch = list(pending_closes)
+        pending_closes.clear()
+        try:
+            answers = cs.close_commitments_one_write(
+                str(workspace_root), [p["closure"] for p in batch], source_skill=COMMITMENT_SRC)
+        except Exception:  # noqa: BLE001 - the lock or the write failed, wholly or in part
+            # cr1#1608 review: never one failure reported against every row. Each
+            # row goes through the single close instead, whose in-lock re-check
+            # answers `already` for a row the failed write did land, and a row
+            # that fails again fails alone.
+            answers = []
+            for p_ in batch:
+                cl = dict(p_["closure"])
+                try:
+                    answers.append(cs.close_commitment(str(workspace_root), cl.pop("commitment_id"),
+                                                       source_skill=COMMITMENT_SRC, **cl))
+                except Exception as exc:  # noqa: BLE001 - this row alone
+                    answers.append({"status": "error", "error": type(exc).__name__, "exception": exc})
+        landed = False
+        for p, ans in zip(batch, answers):
+            r_, ans = p["r"], (ans or {})
+            st = ans.get("status")
+            exc = ans.get("exception")
+            if st in ("not_open", "already_resolved"):
+                r_.update(outcome="already", line=ALREADY_CLOSED_LINE)
+                handler_ = {k: v for k, v in ans.items() if k != "exception"}
+            elif st == "error" and isinstance(exc, cs.OpenSubitemsError):
+                r_.update(outcome="error", line=SUBITEMS_LINE)
+                handler_ = {"status": "error", "error": "open_subitems"}
+            elif st == "error" and isinstance(exc, cs.CommitmentIdError):
+                r_.update(outcome="error", line=GONE_LINE)
+                handler_ = {"status": "error", "error": "unknown_id"}
+            elif st == "error":
+                r_.update(_row_error(exc if isinstance(exc, BaseException)
+                                     else RuntimeError(str(ans.get("detail") or ""))))
+                handler_ = {"status": "error", "error": str(ans.get("error") or "error")}
+            else:
+                r_.update(outcome="applied", line=p["line"], seq=(ans.get("event") or {}).get("seq"))
+                open_rows.pop(p["cid"], None)
+                ledger_open.discard(p["cid"])
+                handler_ = ans
+                landed = True
+            p["audit"]["handler_result"] = handler_
+            p["audit"]["said"] = r_.get("outcome")
+        if landed:
+            # the next pile row is judged against the book as these writes left it
+            pile_memo.pop("sets", None)
+
     for c in sorted(rows, key=lambda c: (order.get(str(c.get("action") or ""), 2),
                                          str(c.get("created_at") or ""))):
         cid = str(c.get("commitment_id") or "").strip()
         verb = str(c.get("action") or "").strip().lower()
+        deferred: Optional[Dict[str, Any]] = None
+        if pending_closes and (verb not in ONE_WRITE_VERBS or c.get("pile")):
+            _flush_closes()
         r: Dict[str, Any] = {"id": c.get("id"), "commitment_id": cid, "action": verb}
         handler: Any = None
         piled = ""
@@ -9612,7 +9691,10 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 r.update(outcome=held[0], line=held[1], reason=held[2].get("error") or held[2].get("status"))
                 handler = held[2]
             elif verb == "notwork" and cid not in seqs and cid.startswith("obs_"):
-                # cr1#1289: a heard line has no capture row of its own.
+                # cr1#1289: a heard line has no capture row of its own. Its drop
+                # (the queue's own writer) lands after the closes pressed before
+                # it, as N single closes would (cr1#1608 review).
+                _flush_closes()
                 handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
                 r.update(outcome=outcome, line=line)
             elif verb == "unassign":
@@ -9664,6 +9746,7 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 elif row.get("pending"):
                     from needs_review_queue import done_items
 
+                    _flush_closes()
                     res = done_items(str(workspace_root), [cid], resolved_by=actor,
                                      source_skill="apply-choices", attested_ids=[cid],
                                      now_iso=_iso(now))
@@ -9677,6 +9760,12 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     if done:
                         open_rows.pop(cid, None)
                         ledger_open.discard(cid)
+                elif not piled:
+                    deferred = {"cid": cid, "line": "Closed.", "closure": {
+                        "commitment_id": cid, "resolved_by": actor,
+                        "evidence": CONFIRM_EVIDENCE if verb == "confirm" else DONE_EVIDENCE,
+                        "resolution": "done", "user_confirmed": True, "resolved_by_match": "id",
+                        "extra_data": {"cockpit_batch": label}}}
                 else:
                     handler = cs.close_commitment(
                         str(workspace_root), cid, resolved_by=actor,
@@ -9705,6 +9794,11 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                 elif row.get("pending"):
                     r.update(outcome="error", line=DROP_PENDING_LINE)
                     handler = {"status": "needs_confirm"}
+                elif not piled:
+                    deferred = {"cid": cid, "line": "Dropped.", "closure": {
+                        "commitment_id": cid, "resolved_by": actor, "evidence": DROP_EVIDENCE,
+                        "resolution": "dropped", "user_confirmed": True, "resolved_by_match": "id",
+                        "extra_data": {"cockpit_batch": label}}}
                 else:
                     handler = cs.close_commitment(
                         str(workspace_root), cid, resolved_by=actor,
@@ -9727,8 +9821,14 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
                     r.update(outcome="already", line=ALREADY_CLOSED_LINE)
                     handler = {"status": "already_resolved"}
                 elif row.get("pending"):
+                    _flush_closes()
                     handler, outcome, line = _not_work_queued(workspace_root, cid, actor)
                     r.update(outcome=outcome, line=line)
+                elif not piled:
+                    deferred = {"cid": cid, "line": NOT_WORK_LINE, "closure": {
+                        "commitment_id": cid, "resolved_by": actor, "evidence": NOT_WORK_EVIDENCE,
+                        "resolution": "dropped", "user_confirmed": True, "resolved_by_match": "id",
+                        "extra_data": {"cockpit_batch": label}}}
                 else:
                     handler = cs.close_commitment(
                         str(workspace_root), cid, resolved_by=actor,
@@ -9935,8 +10035,12 @@ def apply_commitment_choices(workspace_root, choices: Optional[List[Dict[str, An
         results.append(r)
         # cr1#1378: the row's own answer goes with it, so the audit can never
         # say ok over a row this writer answered as an error.
-        audit.append({"n": cid, "action": verb, "handler_result": handler,
-                      "said": r.get("outcome"), "note": f"cockpit {label}"})
+        entry = {"n": cid, "action": verb, "handler_result": handler,
+                 "said": r.get("outcome"), "note": f"cockpit {label}"}
+        audit.append(entry)
+        if deferred is not None:
+            pending_closes.append({**deferred, "r": r, "audit": entry})
+    _flush_closes()
     n_applied = sum(1 for r in results if r["outcome"] == "applied")
     n_errors = sum(1 for r in results if r["outcome"] == "error")
     if audit:
@@ -9989,6 +10093,375 @@ def log_run_receipt(workspace_root, *, fired_via: str = "scheduled",
                      status=status, fired_via=fired_via, duration_ms=duration_ms,
                      extra_data=extra, now=now_iso)
     return {"ok": True, "receipt": ev}
+
+
+# ---------------------------------------------------------------------------
+# Apply in two calls (cr1#1608)
+# ---------------------------------------------------------------------------
+#
+# A real Apply run on a long book took seven minutes for 18 closes: one locked
+# write per item, about thirty tool calls built one at a time in the chat, and
+# six steps the run had to improvise. Two calls now carry the whole leg:
+# `apply_start` claims what waits (or, with nothing waiting, records the run and
+# stops), and `apply_run` plans and writes every choice this run claimed and
+# hands back the page's writes, ready to send as they are. Every id, version,
+# plan and time comes from code; the run passes the answers through.
+
+#: The light's line when nothing waits.
+APPLY_NOTHING_LINE = "Nothing waiting."
+#: A choice this run claimed that no writer answered for.
+APPLY_NO_RESULT_LINE = "This press was not written; press it again on the page."
+#: The prefix of the run id `apply_start` mints for an Apply run.
+APPLY_RUN_PREFIX = "apply-"
+#: One ArtifactData `batch` carries at most this many writes.
+APPLY_BATCH_MAX = CLAIM_BATCH_MAX
+#: The feeds a kind's landed press refreshes (cockpit-apply-detail.md says how).
+APPLY_FEEDS = {"hub": ("feed/mine",), "review": ("feed/review",),
+               "settings": ("feed/settings", "feed/week"), "mail": ("feed/mail_rules",),
+               "people": ("feed/people",)}
+#: The Hub's add and edit presses that also refresh their own tab (cr1#1431).
+APPLY_EDIT_FEEDS = {"stream_edit": ("feed/projects", "feed/board"),
+                    "priority_edit": ("feed/projects", "feed/board"),
+                    "person_edit": ("feed/people",)}
+
+
+def _apply_run_id(run_id: str = "") -> str:
+    rid = str(run_id or "").strip()
+    return rid if len(rid) >= 8 else APPLY_RUN_PREFIX + secrets.token_hex(6)
+
+
+def _apply_counts(applied: int = 0, refused: int = 0, failed: int = 0,
+                  recorded: int = 0) -> Dict[str, int]:
+    return {"applied": int(applied), "refused": int(refused), "failed": int(failed),
+            "recorded": int(recorded)}
+
+
+def _chunks(writes: List[Dict[str, Any]], size: int = APPLY_BATCH_MAX) -> List[List[Dict[str, Any]]]:
+    return [writes[i:i + size] for i in range(0, len(writes), size)]
+
+
+def _pinned(doc_id: str, data: Dict[str, Any], version: Any, collection: str = "choices",
+            op: str = "update") -> Dict[str, Any]:
+    w: Dict[str, Any] = {"op": op, "collection": collection, "doc_id": doc_id, "data": data}
+    if version is not None:
+        w["if_version"] = version
+    return w
+
+
+def _apply_light(workspace_root, status: Optional[Dict[str, Any]], run_id: str, line: str,
+                 failed: bool, now_s: str) -> Dict[str, Any]:
+    """The `set` of `status/apply`, pinned to the light the run read, on this
+    call's clock: `error` with its line as the stop reason, else `done`."""
+    st = _flat_choice(status) if isinstance(status, dict) else None
+    return _pinned("apply", status_doc(workspace_root, "apply", "error" if failed else "done", line,
+                                       now_iso=now_s, run_id=run_id or None,
+                                       stop_reason=line if failed else None),
+                   (st or {}).get("_version") if st else None, collection="status", op="set")
+
+
+def apply_start(workspace_root, waiting: Optional[List[Any]] = None,
+                page: Optional[List[Any]] = None, status: Optional[Dict[str, Any]] = None, *,
+                run_id: str = "", fired_via: str = "scheduled", now_iso=None) -> Dict[str, Any]:
+    """A WRITER (its one write is the run's receipt, and only when nothing
+    waits). The first of Apply's two calls (cr1#1608).
+
+    `waiting` is the `choices` query with `applied == false`, `page` the one
+    with `by_page == true`, both as read. Mints the run's id (`run_id` given
+    back keeps it, for a run that re-reads after a refused batch) and plans
+    the claim of every waiting choice and every page send or meeting change
+    with no book record, as ONE batch (`plan_claim`, `plan_page_records`).
+
+    Nothing to claim and nothing this run already holds: the run's receipt is
+    written here (a run that writes none reads as a run that never happened)
+    and the answer is `{ok, stop: true, line: "Nothing waiting.", light}`:
+    the run sets `light` (the done light, pinned to `status`, the
+    `status/apply` read beside the queries; a page press set it running),
+    says that line and stops, reading and writing nothing else. Otherwise
+    `{ok, stop: false, run_id, writes, n_more, line}`: `writes` go out as ONE
+    `batch`, exactly as they came back."""
+    rid = _apply_run_id(run_id)
+    now = _now(now_iso)
+    claim = plan_claim(workspace_root, waiting, run_id=rid, now_iso=_iso(now))
+    rec = plan_page_records(workspace_root, page, run_id=rid, now_iso=_iso(now))
+    held = list(claim.get("held") or []) + list(rec.get("held") or [])
+    writes = list(claim.get("writes") or [])
+    room = max(0, APPLY_BATCH_MAX - len(writes))
+    rec_writes = list(rec.get("writes") or [])
+    writes += rec_writes[:room]
+    n_more = int(claim.get("n_more") or 0) + int(rec.get("n_more") or 0) + max(0, len(rec_writes) - room)
+    if not writes and not held:
+        receipt = log_run_receipt(workspace_root, fired_via=fired_via, legs=["apply"],
+                                  counts={"apply": _apply_counts()}, task_id="cockpit-apply",
+                                  now_iso=_iso(now))
+        return {"ok": True, "stop": True, "run_id": rid, "writes": [], "n_more": 0,
+                "line": APPLY_NOTHING_LINE, "receipt_written": bool(receipt.get("ok")),
+                "light": _apply_light(workspace_root, status, rid, APPLY_NOTHING_LINE, False, _iso(now))}
+    return {"ok": True, "stop": False, "run_id": rid, "writes": writes, "n_more": n_more,
+            "line": CLAIM_MORE_LINE.format(n=n_more) if n_more else ""}
+
+
+def _apply_line(applied: int, refused: int, failed: List[str], recorded: int, more: str) -> str:
+    line = f"Applied {applied}, refused {refused}"
+    if failed:
+        line += f", failed {len(failed)}"
+    if recorded:
+        line += f", recorded {recorded} from the page"
+    line += f": {failed[0]}" if failed else "."
+    return (line + (" " + more if more else "")).strip()
+
+
+def apply_run(workspace_root, waiting: Optional[List[Any]] = None,
+              page: Optional[List[Any]] = None, status: Optional[Dict[str, Any]] = None, *,
+              run_id: str = "", fired_via: str = "scheduled", n_more: int = 0,
+              now_iso=None) -> Dict[str, Any]:
+    """A WRITER. The second of Apply's two calls (cr1#1608): everything the
+    old leg did one step at a time, in one call under one read of the log.
+
+    `waiting` and `page` are the same two `choices` queries read again after
+    the claim landed, `status` the `status/apply` document read beside them
+    (or null), `run_id` the id `apply_start` answered, `n_more` its count.
+
+    Plans the claimed choices (`plan_apply`, this run's own claims only) and
+    the claimed page records (`plan_page_records`), then writes each list
+    through its owning writer: commitments (their closes in one locked write,
+    `apply_commitment_choices`), review, week, settings, mail rules, people,
+    the Today page's own presses, the page's sends and drafts and its meeting
+    changes. Answers `{ok, run_id, batches, light, line, counts, next,
+    connectors, feeds, results}`:
+
+      * `batches`: the page's writes, each a list to send as ONE `batch`, in
+        order, exactly as they came back: every result on its choice
+        (`result`, `applied`, `applied_at`) and every page record, pinned to
+        the version read. A press another run holds (`waiting`) is not
+        written, so it stays for the run that holds it;
+      * `light`: the `set` of `status/apply`, sent on its own after the
+        batches, so a light the page changed never holds back a result;
+      * `next`: `done` (the run says `line` and stops) or `detail`: a mail
+        send or draft (`connectors.inbox`), a "Missed something?" search
+        (`connectors.miss`) or a feed to refresh (`feeds`) is left, by its
+        choice id, for `cockpit-apply-detail.md`, which writes the light and
+        the receipt at its end; nothing is written for those here;
+      * the receipt is written here when `next` is `done`.
+
+    No time is passed in by the run: every stamp is this call's own clock."""
+    rid = str(run_id or "").strip()
+    now = _now(now_iso)
+    now_s = _iso(now)
+    if len(rid) < 8:
+        bad = "A claim needs this run's own id (8 characters or more)."
+        return {"ok": False, "run_id": rid, "batches": [], "next": "done", "line": bad,
+                "light": _apply_light(workspace_root, status, rid, bad, True, now_s),
+                "counts": _apply_counts(), "connectors": {"inbox": [], "miss": []}, "feeds": [],
+                "results": {}}
+    docs: Dict[str, Dict[str, Any]] = {}
+    for raw in list(waiting or []) + list(page or []):
+        c = _flat_choice(raw)
+        if c and str(c.get("id") or "").strip():
+            docs[str(c["id"]).strip()] = c
+    plan = plan_apply(workspace_root, waiting, now_iso=now_s, run_id=rid)
+    recs = plan_page_records(workspace_root, page, run_id=rid, now_iso=now_s)
+    held_recs = set(recs.get("held") or [])
+    results: Dict[str, Dict[str, Any]] = {}
+    for r in plan.get("refused") or []:
+        if isinstance(r, dict) and r.get("id"):
+            results[str(r["id"])] = {"outcome": "refused", "line": r.get("line") or ""}
+
+    def _take(kind: str, rows: List[Dict[str, Any]], answer: Dict[str, Any]) -> None:
+        got = {str(x.get("id")): x for x in (answer.get("results") or [])
+               if isinstance(x, dict) and x.get("id") is not None}
+        for row in rows:
+            did = str(row.get("id") or "")
+            if not did:
+                continue
+            if answer.get("ok") is False and did not in got:
+                results[did] = {"outcome": "error", "line": str(answer.get("line") or ROW_ERROR_LINE)}
+            elif did in got:
+                results[did] = dict(got[did])
+            else:
+                results[did] = {"outcome": "error", "line": APPLY_NO_RESULT_LINE}
+            results[did]["_kind"] = kind
+
+    writers = (("commitment", apply_commitment_choices), ("review", apply_review_choices),
+               ("week", apply_week_choices), ("settings", apply_settings_choices),
+               ("mail", apply_mail_choices), ("people", apply_people_choices))
+    hub_rows = [r for r in plan.get("hub") or [] if str(r.get("kind") or "") != "miss"]
+    miss_ids = [str(r.get("id")) for r in plan.get("hub") or [] if str(r.get("kind") or "") == "miss"]
+    inbox_ids = [str(r.get("id")) for r in plan.get("inbox") or [] if r.get("id")]
+    rec_entries = [e for e in recs.get("entries") or [] if str(e.get("id")) in held_recs]
+    cal_entries = [e for e in recs.get("calendar") or [] if str(e.get("id")) in held_recs]
+    rec_results: Dict[str, Dict[str, Any]] = {}
+    from events_io import OneLogRead
+
+    with OneLogRead():
+        for kind, fn in writers:
+            rows = list(plan.get(kind) or [])
+            if not rows:
+                continue
+            kw: Dict[str, Any] = {"resolved_by": "", "now_iso": now_s}
+            if kind == "commitment":
+                kw["run_id"] = rid
+            try:
+                ans = fn(workspace_root, rows, **kw)
+            except Exception as exc:  # noqa: BLE001 - this list failed; the others still land
+                ans = {"ok": False, "line": ROW_ERROR_LINE, "error": f"{type(exc).__name__}: {exc}"[:240]}
+            _take(kind, rows, ans or {})
+        if hub_rows:
+            try:
+                ans = apply_hub_choices(workspace_root, hub_rows, resolved_by="", now_iso=now_s)
+            except Exception as exc:  # noqa: BLE001
+                ans = {"ok": False, "line": ROW_ERROR_LINE, "error": f"{type(exc).__name__}: {exc}"[:240]}
+            _take("hub", hub_rows, ans or {})
+        for entries, fn in ((rec_entries, record_page_sends), (cal_entries, record_calendar_changes)):
+            if not entries:
+                continue
+            try:
+                ans = fn(workspace_root, entries, now_iso=now_s) or {}
+            except Exception as exc:  # noqa: BLE001
+                ans = {"ok": False, "line": ROW_ERROR_LINE}
+            got = {str(x.get("id")): x for x in (ans.get("results") or []) if isinstance(x, dict)}
+            for e in entries:
+                did = str(e.get("id"))
+                x = got.get(did) or {"outcome": "error", "line": str(ans.get("line") or APPLY_NO_RESULT_LINE)}
+                rec_results[did] = dict(x, _cal=fn is record_calendar_changes)
+
+    writes: List[Dict[str, Any]] = []
+    applied = refused = recorded = 0
+    failed: List[str] = []
+    feeds: List[str] = []
+    for did, res in results.items():
+        kind = res.pop("_kind", "")
+        out = res.get("outcome")
+        if out == "waiting":
+            continue  # cr1#1377: another run holds this press; it stays waiting
+        doc = docs.get(did) or {}
+        writes.append(_pinned(did, {"result": res, "applied": True, "applied_at": now_s},
+                              doc.get("_version")))
+        if out == "error":
+            failed.append(str(res.get("line") or ROW_ERROR_LINE))
+        elif out == "refused":
+            refused += 1
+        else:  # applied, or already as pressed
+            applied += 1
+            for f in APPLY_FEEDS.get(kind, ()) + APPLY_EDIT_FEEDS.get(str(doc.get("kind") or ""), ()):
+                if f not in feeds:
+                    feeds.append(f)
+            if kind == "review" and str(doc.get("review_kind") or "") == "learned_rule" and "feed/week" not in feeds:
+                feeds.append("feed/week")
+    for did, x in rec_results.items():
+        doc = docs.get(did) or {}
+        out = x.get("outcome")
+        if out in ("applied", "already", "refused"):
+            rec = ({"event_seq": x.get("seq")} if x.get("_cal")
+                   else {"drafted_seq": x.get("drafted_seq"), "sent_seq": x.get("sent_seq")})
+            writes.append(_pinned(did, {"book_recorded": True, "book_recorded_at": now_s, "book_record": rec,
+                                        "book_record_line": str(x.get("line") or "")}, doc.get("_version")))
+            recorded += 1
+        else:
+            failed.append(str(x.get("line") or ROW_ERROR_LINE))
+            writes.append(_pinned(did, {"book_record_line": str(x.get("line") or "")}, doc.get("_version")))
+    more = CLAIM_MORE_LINE.format(n=int(n_more)) if int(n_more or 0) > 0 else ""
+    line = _apply_line(applied, refused, failed, recorded, more)
+    counts = _apply_counts(applied, refused, len(failed), recorded)
+    left = bool(inbox_ids or miss_ids or feeds)
+    light = None
+    if not left:
+        light = _apply_light(workspace_root, status, rid, line, bool(failed), now_s)
+        log_run_receipt(workspace_root, fired_via=fired_via, legs=["apply"], counts={"apply": counts},
+                        task_id="cockpit-apply", now_iso=now_s)
+    return {"ok": True, "run_id": rid, "batches": _chunks(writes), "light": light,
+            "next": "detail" if left else "done", "line": line, "counts": counts,
+            "connectors": {"inbox": inbox_ids, "miss": miss_ids}, "feeds": feeds,
+            "results": {k: v for k, v in results.items()}}
+
+
+def apply_finish(workspace_root, prior: Optional[Dict[str, Any]] = None,
+                 results: Optional[Dict[str, Any]] = None, status: Optional[Dict[str, Any]] = None, *,
+                 run_id: str = "", error: str = "", n_more: int = 0, fired_via: str = "scheduled",
+                 now_iso=None) -> Dict[str, Any]:
+    """A WRITER (the run's receipt). Every way an Apply run ends that is not
+    `apply_start`'s stop or `apply_run`'s `next: done` (cr1#1608 review): the
+    end of `cockpit-apply-detail.md`, and any answer with `ok: false` (or a call
+    that failed) from `apply_start` or `apply_run`. The light leaves "running"
+    on every path, so the Hub never waits on a run that ended.
+
+    `prior` is `apply_run`'s `counts` (or null), `results` the `{choice id:
+    result}` the detail steps wrote (or null), `status` the `status/apply`
+    document as read, `error` the line of an `ok: false` answer or a failed
+    call. Counts in code; answers `{ok, light, line, counts}` with `light` the
+    pinned `done` or `error` light on this call's clock, and writes the run's
+    receipt with the counts."""
+    now_s = _iso(_now(now_iso))
+    c = _apply_counts(**{k: int((prior or {}).get(k) or 0)
+                         for k in ("applied", "refused", "failed", "recorded")})
+    failed = [ROW_ERROR_LINE] * c["failed"]
+    for res in (results or {}).values():
+        out = (res or {}).get("outcome") if isinstance(res, dict) else None
+        if out == "error":
+            failed.insert(0, str(res.get("line") or ROW_ERROR_LINE))
+        elif out == "refused":
+            c["refused"] += 1
+        elif out in ("applied", "already"):
+            c["applied"] += 1
+    err = str(error or "").strip()
+    if err:
+        failed.insert(0, err)
+    more = CLAIM_MORE_LINE.format(n=int(n_more)) if int(n_more or 0) > 0 else ""
+    line = _apply_line(c["applied"], c["refused"], failed, c["recorded"], more)
+    counts = _apply_counts(c["applied"], c["refused"], len(failed), c["recorded"])
+    log_run_receipt(workspace_root, fired_via=fired_via, legs=["apply"], counts={"apply": counts},
+                    task_id="cockpit-apply", now_iso=now_s,
+                    status="partial" if err else "complete")
+    return {"ok": True, "light": _apply_light(workspace_root, status, run_id, line, bool(failed), now_s),
+            "line": line, "counts": counts}
+
+
+def apply_repin(workspace_root=None, writes: Optional[List[Dict[str, Any]]] = None,
+                docs: Optional[List[Any]] = None, status: Optional[Dict[str, Any]] = None,
+                results: Optional[Dict[str, Any]] = None, now_iso=None) -> Dict[str, Any]:
+    """READ/COMPUTE. A batch from `apply_run` the page refused because a
+    document changed since it was read (cr1#1608): the same writes, pinned
+    again to the versions in `docs` (the two `choices` queries read again)
+    and `status` (`status/apply` read again), so the run never re-pins by
+    hand. A result write whose choice already carries an applied result, and
+    a record write whose row is already recorded, are dropped (another run
+    wrote them). `results` (`{choice id: its result}`, from the parts
+    `cockpit-apply-detail.md` carries out) become result writes the same way,
+    `applied_at` on this call's own clock. Answers `{ok, writes, dropped}`;
+    send `writes` as one batch."""
+    stamp = _iso(_now(now_iso))
+    writes = list(writes or []) + [
+        {"op": "update", "collection": "choices", "doc_id": str(k),
+         "data": {"result": v, "applied": True, "applied_at": stamp}}
+        for k, v in (results or {}).items() if isinstance(v, dict)]
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for raw in docs or []:
+        c = _flat_choice(raw)
+        if c and str(c.get("id") or "").strip():
+            by_id[str(c["id"]).strip()] = c
+    st = _flat_choice(status) if isinstance(status, dict) else None
+    out: List[Dict[str, Any]] = []
+    dropped: List[str] = []
+    for w in writes or []:
+        if not isinstance(w, dict):
+            continue
+        w = dict(w)
+        did = str(w.get("doc_id") or "")
+        if w.get("collection") == "status":
+            w.pop("if_version", None)
+            if st and st.get("_version") is not None:
+                w["if_version"] = st["_version"]
+            out.append(w)
+            continue
+        doc = by_id.get(did)
+        data = w.get("data") if isinstance(w.get("data"), dict) else {}
+        if doc is None or ("result" in data and (doc.get("applied") is True or doc.get("applied_at")))                 or ("book_recorded" in data and doc.get("book_recorded")):
+            dropped.append(did)
+            continue
+        w.pop("if_version", None)
+        if doc.get("_version") is not None:
+            w["if_version"] = doc["_version"]
+        out.append(w)
+    return {"ok": True, "writes": out, "dropped": dropped}
 
 
 # ---------------------------------------------------------------------------
@@ -10365,6 +10838,28 @@ REFRESH_PLATE_FAILED_LINE = "The plate could not be read, so the Hub was not ref
 #: Every document a refresh may write, and no other (never another task's light).
 REFRESH_DOCS: Tuple[str, ...] = (("feed/plate",) + tuple(d for d, _n in REFRESH_READS)
                                  + ("feed/week", "status/maintenance"))
+#: cr1#1603: the scheduled Prep and Inbox runs build their documents the same
+#: way, each task in its own scratch folder, handed back by the same part
+#: reader. The documents each task may hand back, and no other.
+ONE_CALL_DOCS: Dict[str, Tuple[str, ...]] = {
+    "refresh": REFRESH_DOCS, "prep": ("feed/today",), "inbox": ("feed/inbox",)}
+#: Every document a pulled part may carry, whichever task built it.
+PULL_DOCS: Tuple[str, ...] = REFRESH_DOCS + ("feed/today", "feed/inbox")
+ONE_CALL_SCRATCH_PREFIX = "cr-hub-"
+PREP_ALL_FAILED_LINE = "Meeting prep could not finish here, so the Today tab was not refreshed."
+INBOX_FEED_FAILED_LINE = "The inbox page is saved, but the Inbox tab could not be built from it."
+#: cr1#1614 review: the Today feed was not built or could not be kept.
+PREP_FEED_FAILED_LINE = "Meeting prep ran, but the Today tab could not be built."
+#: cr1#1614 review: the run's answers could not be kept in its scratch folder.
+ONE_CALL_KEEP_FAILED_LINE = "The run could not keep its answers on this computer."
+#: cr1#1614 review: a superseded token, said per task. The Inbox one must
+#: never invite a second run of its writer chain.
+ONE_CALL_GONE_LINES: Dict[str, str] = {
+    "refresh": "That refresh is no longer on this computer: run it again.",
+    "prep": "That prep run's answers were replaced by a newer run: do not prep again; the newer run's light says how it went.",
+    "inbox": ("That inbox run's answers were replaced by a newer run: do not run the inbox chain again; "
+              "the newer run's light says how it went."),
+}
 
 
 def _one_log_read():
@@ -10408,6 +10903,16 @@ def _refresh_scratch(workspace_root) -> Path:
     return _refresh_base() / (REFRESH_SCRATCH_PREFIX + key)
 
 
+def _task_scratch(workspace_root, task: str = "refresh") -> Path:
+    """cr1#1603: the scratch folder of one task's one-call run. The refresh
+    keeps its own (`_refresh_scratch`); Prep and Inbox each have their own,
+    named the same way, so a run of one never writes over another's."""
+    if task == "refresh":
+        return _refresh_scratch(workspace_root)
+    key = hashlib.sha256(str(Path(str(workspace_root)).resolve()).encode("utf-8")).hexdigest()[:16]
+    return _refresh_base() / (ONE_CALL_SCRATCH_PREFIX + task + "-" + key)
+
+
 def _refresh_file(scratch: Path, doc: str) -> Path:
     return scratch / (doc.replace("/", "__") + ".json")
 
@@ -10432,6 +10937,64 @@ def _refresh_parts(sizes: List[Tuple[str, int]]) -> List[List[str]]:
         parts[-1].append(doc)
         room -= n
     return parts
+
+
+def _one_call_build(built: Dict[str, Dict[str, Any]], report: List[Dict[str, Any]], doc: str, fn) -> None:
+    """Build one document of a one-call run: its answer in `built`, its row
+    (built or not, and its seconds) in `report`. A failed build is named and
+    left out, never raised, except the write door's own refusal."""
+    import time
+
+    t0 = time.monotonic()
+    row: Dict[str, Any] = {"doc": doc, "ok": True}
+    try:
+        val = fn()
+        if not isinstance(val, dict):
+            raise ValueError("the answer is not an object")
+        built[doc] = val
+    except Exception as exc:  # noqa: BLE001 - one failed read never stops the others
+        if getattr(exc, "cr_refusal_reason", None) or type(exc).__name__ == "WriterIdentityRequired":
+            raise  # the write door's own refusal, with its line and cause
+        row = {"doc": doc, "ok": False, "error": type(exc).__name__}
+    row["seconds"] = round(time.monotonic() - t0, 2)
+    report.append(row)
+
+
+def _keep_built(workspace_root, task: str, report: List[Dict[str, Any]],
+                built: Dict[str, Dict[str, Any]]) -> Tuple[str, List[Tuple[str, int]]]:
+    """Keep a one-call run's documents in the task's scratch folder OUTSIDE
+    the workspace, the manifest last, and answer `(token, sizes)`. A document
+    over `REFRESH_DOC_LIMIT` is marked too large on its report row and not
+    kept. Raises OSError when the folder cannot be used (or would be inside
+    the workspace)."""
+    token = secrets.token_hex(8)
+    scratch = _task_scratch(workspace_root, task)
+    sizes: List[Tuple[str, int]] = []
+    try:
+        scratch.resolve().relative_to(Path(str(workspace_root)).resolve())
+    except ValueError:
+        pass  # outside the workspace, as it must be
+    else:
+        raise OSError("the scratch folder would be inside the workspace")
+    scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for row in report:
+        doc = row["doc"]
+        if doc not in built:
+            continue
+        text = json.dumps(built[doc], separators=(",", ":"), default=str)
+        row["chars"] = len(text)
+        if len(text) > REFRESH_DOC_LIMIT:
+            row["ok"] = False
+            row["error"] = "too_large"
+            continue
+        _refresh_file(scratch, doc).write_text(text, encoding="utf-8")
+        sizes.append((doc, len(text)))
+    # Written last: the manifest names this run and exactly what it built,
+    # so a file an earlier run left for a document this run did not build
+    # is never handed back.
+    (scratch / REFRESH_MANIFEST).write_text(
+        json.dumps({"token": token, "sizes": sizes}), encoding="utf-8")
+    return token, sizes
 
 
 def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
@@ -10459,19 +11022,7 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
     report: List[Dict[str, Any]] = []
 
     def _run(doc: str, fn) -> None:
-        t0 = time.monotonic()
-        row: Dict[str, Any] = {"doc": doc, "ok": True}
-        try:
-            val = fn()
-            if not isinstance(val, dict):
-                raise ValueError("the answer is not an object")
-            built[doc] = val
-        except Exception as exc:  # noqa: BLE001 - one failed read never stops the others
-            if getattr(exc, "cr_refusal_reason", None) or type(exc).__name__ == "WriterIdentityRequired":
-                raise  # the write door's own refusal, with its line and cause
-            row = {"doc": doc, "ok": False, "error": type(exc).__name__}
-        row["seconds"] = round(time.monotonic() - t0, 2)
-        report.append(row)
+        _one_call_build(built, report, doc, fn)
 
     statuses = [s for s in (_flat_status(d) for d in (status_docs or [])) if s]
     # This run wrote its own light to running before this call; settling the
@@ -10511,34 +11062,8 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
             if row["doc"] == "status/maintenance":
                 row["kept_page"] = True
 
-    token = secrets.token_hex(8)
-    scratch = _refresh_scratch(workspace_root)
-    sizes: List[Tuple[str, int]] = []
     try:
-        try:
-            scratch.resolve().relative_to(Path(str(workspace_root)).resolve())
-        except ValueError:
-            pass  # outside the workspace, as it must be
-        else:
-            raise OSError("the scratch folder would be inside the workspace")
-        scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for row in report:
-            doc = row["doc"]
-            if doc not in built:
-                continue
-            text = json.dumps(built[doc], separators=(",", ":"), default=str)
-            row["chars"] = len(text)
-            if len(text) > REFRESH_DOC_LIMIT:
-                row["ok"] = False
-                row["error"] = "too_large"
-                continue
-            _refresh_file(scratch, doc).write_text(text, encoding="utf-8")
-            sizes.append((doc, len(text)))
-        # Written last: the manifest names this run and exactly what it built,
-        # so a file an earlier run left for a document this run did not build
-        # is never handed back.
-        (scratch / REFRESH_MANIFEST).write_text(
-            json.dumps({"token": token, "sizes": sizes}), encoding="utf-8")
+        token, sizes = _keep_built(workspace_root, "refresh", report, built)
     except OSError as exc:
         return {"ok": False, "line": "The refresh could not keep its answers on this computer.",
                 "error": type(exc).__name__, "pages": report}
@@ -10578,24 +11103,28 @@ def refresh_all(workspace_root, *, now_iso=None, since_iso=None,
     }
 
 
-def refresh_part(workspace_root=None, token: str = "", part: int = 0) -> Dict[str, Any]:
+def refresh_part(workspace_root=None, token: str = "", part: int = 0,
+                 task: str = "refresh") -> Dict[str, Any]:
     """READ. One part of what `refresh_all` built, by its token:
     `{ok, token, part, parts, pages: {"feed/plate": {...}, ...}}`. It reads the
     scratch folder that call left and nothing in the workspace. A token that
-    is not the last refresh's is refused: a newer run wrote over it."""
+    is not the last refresh's is refused: a newer run wrote over it. `task`
+    (cr1#1603) names whose run to read: `prep_all` and `inbox_all` keep their
+    documents the same way, each in its own folder."""
     tok = str(token or "")
-    if not _REFRESH_TOKEN_RE.match(tok):
+    allowed = ONE_CALL_DOCS.get(str(task or ""))
+    if not _REFRESH_TOKEN_RE.match(tok) or allowed is None:
         return {"ok": False, "line": "No refresh to read: run the refresh first."}
     if not workspace_root:
         return {"ok": False, "line": "No refresh to read: run the refresh first."}
-    scratch = _refresh_scratch(workspace_root)
+    scratch = _task_scratch(workspace_root, str(task))
     manifest = _refresh_manifest(scratch)
     if str(manifest.get("token") or "") != tok:
-        # another refresh of this workspace ran since, or none did
-        return {"ok": False, "line": "That refresh is no longer on this computer: run it again."}
+        # another run of this task ran since, or none did
+        return {"ok": False, "line": ONE_CALL_GONE_LINES[str(task)]}
     sizes: List[Tuple[str, int]] = [
         (str(row[0]), int(row[1])) for row in manifest.get("sizes") or []
-        if isinstance(row, list) and len(row) == 2 and str(row[0]) in REFRESH_DOCS
+        if isinstance(row, list) and len(row) == 2 and str(row[0]) in allowed
         and _refresh_file(scratch, str(row[0])).is_file()]
     parts = _refresh_parts(sizes)
     try:
@@ -10608,6 +11137,153 @@ def refresh_part(workspace_root=None, token: str = "", part: int = 0) -> Dict[st
     docs = {doc: json.loads(_refresh_file(scratch, doc).read_text(encoding="utf-8"))
             for doc in parts[idx]}
     return {"ok": True, "token": tok, "part": idx, "parts": len(parts), "pages": docs}
+
+
+def _one_call_answer(workspace_root, task: str, leg: str, report, built, *, state: str, line: str,
+                     now_s: str, run_id: Optional[str], started: float,
+                     extra: Dict[str, Any], doc: str, not_kept_line: str) -> Dict[str, Any]:
+    """The small answer of a one-call Prep or Inbox run: the documents kept
+    (or the refusal to keep them), the parts to pull, and the light.
+
+    cr1#1614 review: `ok` says the documents were KEPT, so the parts are
+    pulled and the batch is sent whenever there are parts; the light alone
+    carries an error (a degraded prep leg, a blocked inbox read). The light is
+    decided after keeping, from what was kept: a `done` never stands over a
+    document that was not built or could not be kept, and a run that could
+    not keep its answers at all has the error light too."""
+    import time
+
+    try:
+        token, sizes = _keep_built(workspace_root, task, report, built)
+    except OSError as exc:
+        light = status_doc(workspace_root, leg, "error", ONE_CALL_KEEP_FAILED_LINE, now_iso=now_s,
+                           run_id=run_id, stop_reason=ONE_CALL_KEEP_FAILED_LINE)
+        return dict(extra, ok=False, line=ONE_CALL_KEEP_FAILED_LINE, error=type(exc).__name__,
+                    pages=report, light=light, seconds=round(time.monotonic() - started, 2))
+    if doc not in {d for d, _n in sizes} and state != "error":
+        state, line = "error", not_kept_line
+    light = status_doc(workspace_root, leg, state, line, now_iso=now_s, run_id=run_id,
+                       stop_reason=line if state == "error" else None)
+    return dict(extra, ok=bool(sizes), token=token, task=task, pages=report,
+                parts=_refresh_parts(sizes), failed=[r["doc"] for r in report if not r["ok"]],
+                light=light, line=line, seconds=round(time.monotonic() - started, 2))
+
+
+def prep_all(workspace_root, *, meetings: Optional[List[Dict[str, Any]]] = None,
+             generated: Optional[Dict[str, Any]] = None, started_at: str = "",
+             discover_error: Optional[str] = None,
+             week: Optional[List[Dict[str, Any]]] = None, now_iso=None,
+             device_workspace: Optional[str] = None,
+             run_id: Optional[str] = None) -> Dict[str, Any]:
+    """A WRITER (cr1#1603) only because it keeps its document in a scratch
+    folder outside the workspace; it writes nothing to the book. The Prep
+    run's work after call-prep, in one process with the event log read once:
+    the leg's result (`morning_brief_helpers.prep_leg_result`, exactly as the
+    step-by-step run calls it) and the Today feed (`feed_today` over the
+    seven-day read). Answers `{ok, token, task, parts, pages, failed, leg,
+    light, line, seconds}`; `refresh_part` with `task: "prep"` hands the feed
+    back. The light is `done` with "Prepped N, reused M.", or `error` with
+    the leg's banner when the leg itself could not run."""
+    import time
+
+    import morning_brief_helpers as mbh
+    import prep_leg as pl
+
+    started = time.monotonic()
+    now_s = _iso(_now(now_iso))
+    built: Dict[str, Dict[str, Any]] = {}
+    report: List[Dict[str, Any]] = []
+    with _one_log_read():
+        leg = mbh.prep_leg_result(str(workspace_root), meetings, generated, started_at=started_at,
+                                  discover_error=discover_error)
+        _one_call_build(built, report, "feed/today",
+                        lambda: feed_today(workspace_root, week, now_iso=now_s, device_workspace=device_workspace))
+    if not isinstance(leg, dict) or leg.get("error"):
+        state, line = "error", PREP_ALL_FAILED_LINE
+    elif leg.get("status") == pl.STATUS_DEGRADED and leg.get("banner"):
+        state, line = "error", str(leg["banner"])
+    else:
+        counts = leg.get("counts") or {}
+        state = "done"
+        line = f"Prepped {int(counts.get(pl.OUTCOME_RAN) or 0)}, reused {int(counts.get(pl.OUTCOME_REUSED) or 0)}."
+    return _one_call_answer(workspace_root, "prep", "prep", report, built, state=state, line=line,
+                            now_s=now_s, run_id=run_id, started=started, extra={"leg": leg},
+                            doc="feed/today", not_kept_line=PREP_FEED_FAILED_LINE)
+
+
+def inbox_all(workspace_root, *, items: Optional[List[Dict[str, Any]]] = None,
+              fire_started_at: Optional[str] = None, fired_via: Optional[str] = None,
+              n_accounts: Optional[int] = None, provider: Optional[str] = None,
+              task_id: str = "cockpit-inbox", tools: Optional[List[Any]] = None,
+              fetch_blocked: Optional[str] = None, now_iso=None,
+              run_id: Optional[str] = None) -> Dict[str, Any]:
+    """A WRITER (cr1#1603). The Inbox run after the fetch, in one process with
+    the event log read once: the chain (`inbox_helpers.run_inbox_surface`,
+    the writer it always was: the page, the capture and reconcile rows, the
+    read row and the receipt), then the Inbox feed (`feed_inbox`) built from
+    the page that call just landed, read here and never carried through the
+    chat. The feed is kept in a scratch folder outside the workspace and
+    handed back by `refresh_part` with `task: "inbox"`.
+
+    Answers `{ok, token, task, parts, pages, failed, result, light, line,
+    seconds}`; `result` is the chain's own answer without the page text,
+    which this run never posts. A refusal of the chain is `ok: false` with
+    the chain's answer and the error light naming its first line, and no
+    feed: the page keeps what it has. The light is `done` with "N threads,
+    M drafted." from the feed's own counts."""
+    import time
+
+    import inbox_helpers as ih
+
+    started = time.monotonic()
+    now_s = _iso(_now(now_iso))
+    built: Dict[str, Dict[str, Any]] = {}
+    report: List[Dict[str, Any]] = []
+    kw: Dict[str, Any] = {"items": items, "n_accounts": n_accounts, "fired_via": fired_via,
+                          "task_id": task_id, "tools": tools, "fire_started_at": fire_started_at,
+                          "provider": provider}
+    if fetch_blocked:
+        kw["fetch_blocked"] = fetch_blocked
+    with _one_log_read():
+        res = ih.run_inbox_surface(str(workspace_root), **kw)
+        if isinstance(res, dict) and res.get("ok") and res.get("page_rel"):
+            rel = str(res["page_rel"])
+
+            def _feed() -> Dict[str, Any]:
+                html = (Path(str(workspace_root)) / rel).read_text(encoding="utf-8")
+                return feed_inbox(workspace_root, html, fire_stamp=str(fire_started_at or ""),
+                                  items=items, page_rel=rel, now_iso=now_s)
+
+            _one_call_build(built, report, "feed/inbox", _feed)
+    # cr1#1614 review: the page text and the delivery calls are the Inbox
+    # chat's to post; this run posts neither, so neither rides its answer.
+    result = ({k: v for k, v in (res or {}).items() if k not in ("text", "html", "calls")}
+              if isinstance(res, dict) else {})
+    if not (isinstance(res, dict) and res.get("ok")):
+        line = str(((res or {}).get("lines") or [""])[0] or (res or {}).get("line") or "") if isinstance(res, dict) else ""
+        light = status_doc(workspace_root, "inbox", "error", line, now_iso=now_s, run_id=run_id,
+                           stop_reason=line)
+        return {"ok": False, "result": result, "light": light, "line": line,
+                "seconds": round(time.monotonic() - started, 2)}
+    feed = built.get("feed/inbox")
+    # cr1#1614 review: a read that was blocked is never a clean zero. The
+    # light says the blocked line: `done` only when the owner marked every
+    # mailbox personal (their own setting), `error` for every other block
+    # (Phase 9: no mail connector, unreadable account settings).
+    try:
+        blocked = str(fetch_blocked or "") or str(ih.fetch_wall(str(workspace_root)) or "")
+    except Exception:  # noqa: BLE001 - an unreadable wall reads as blocked, as the chain's own
+        blocked = str(fetch_blocked or "") or ih.ACCOUNTS_UNREADABLE_LINE
+    if feed is None:
+        state, line = "error", INBOX_FEED_FAILED_LINE
+    elif blocked:
+        state, line = ("done" if blocked == ih.PERSONAL_ONLY_LINE else "error"), blocked
+    else:
+        state = "done"
+        line = f"{int(feed.get('n_items') or 0)} threads, {int(feed.get('n_drafted') or 0)} drafted."
+    return _one_call_answer(workspace_root, "inbox", "inbox", report, built, state=state, line=line,
+                            now_s=now_s, run_id=run_id, started=started, extra={"result": result},
+                            doc="feed/inbox", not_kept_line=INBOX_FEED_FAILED_LINE)
 
 
 def _json_values(text: str) -> List[Any]:
@@ -10707,7 +11383,7 @@ def unpack_refresh(files: List[str], out_dir: str, versions_dir: str = "", *,
     docs: Dict[str, Any] = {}
     for ans in found:
         for doc, body in ans["pages"].items():
-            if isinstance(body, dict) and str(doc) in REFRESH_DOCS:
+            if isinstance(body, dict) and str(doc) in PULL_DOCS:
                 docs[str(doc)] = body
     if not docs:
         return {"ok": False, "line": "No refresh answer was found in those files."}
@@ -10800,6 +11476,8 @@ __all__ = [
     "render_from_recipe", "RECIPE_MISMATCH_LINE", "RECIPE_UNREADABLE_LINE",
     "refresh_all", "refresh_part", "unpack_refresh", "REFRESH_READS", "REFRESH_PART_BUDGET",
     "REFRESH_DOC_LIMIT", "REFRESH_BATCH_BUDGET", "REFRESH_PLATE_FAILED_LINE", "REFRESH_DOCS",
+    "prep_all", "inbox_all", "ONE_CALL_DOCS", "PULL_DOCS", "PREP_ALL_FAILED_LINE", "INBOX_FEED_FAILED_LINE",
+    "PREP_FEED_FAILED_LINE", "ONE_CALL_KEEP_FAILED_LINE", "ONE_CALL_GONE_LINES",
 ]
 
 

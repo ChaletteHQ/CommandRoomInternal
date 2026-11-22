@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.6.0 (2026-11-22)
+
+Apply is faster and comes sooner. A press you save on the Hub reaches your records about a minute later, not at the next hourly run; a confirmed send still waits for the hourly Apply or Go, so you keep time to take it back. Apply writes its closes in one go and stops at once when nothing waits. Hub prep and the Hub inbox each run in one step, and every import checks your off-limits list before writing about anyone. After updating, say "update my hub" and allow anything new it asks for once.
+
 ## v6.5.0 (2026-11-22)
 
 The Hub is finished and says less. Week now places your late items and to-dos into free time, in your priority order, and every meeting has Prep and Jump in. Every tab uses fewer words, with each summary one press away behind a small icon, and titles read clean. You can change a commitment's date or take back a note you added, Slack direct and group messages list on the Inbox, and a refresh runs in one call. After updating, say "update my hub" and allow anything new it asks for once.

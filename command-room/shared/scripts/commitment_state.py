@@ -3655,6 +3655,9 @@ def _scan_commitment_index(events_jsonl_path) -> dict:
         pending_by_id = {}
     out = _index_dict()
     out["pending_by_id"] = pending_by_id
+    # cr1#1608: where a row this process folds in after the read sits in
+    # append order (`close_commitments_one_write`).
+    out["n_events"] = len(events)
     return out
 
 
@@ -4102,288 +4105,25 @@ def close_commitment(
 
     with events_writer_lock(events_path, holder=f"close_commitment:{source_skill}"):
         index = _scan_commitment_index(events_path)
-        cid = normalize_commitment_id(commitment_id, index)
-        target = index["by_id"][cid]
-
-        # CLOSEID1 DD-2 — a target picked by NAME does not get to close itself.
-        # This sits BEFORE the already-closed check on purpose: a caller that
-        # guessed at the target should be told it guessed, not handed a cheerful
-        # "already done" about an item it never identified.
-        if resolved_by_match == "title":
-            # F-3 — an empty-but-PRESENT query is not "no query". `""` and
-            # `"   "` are falsy, and letting them fall through to the
-            # caller-asserted count would hand the door straight back to the
-            # honor system this guard exists to replace — a caller whose match
-            # produced nothing would look identical to one that never matched.
-            # Present-and-blank is its own refusal; only None means "not
-            # supplied".
-            if title_query is not None and not str(title_query).strip():
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}: resolved_by_match='title' "
-                    "with an EMPTY query. A blank string is not the absence of "
-                    "a name match, it is a name match that resolved nothing — "
-                    "pass the user's actual words, or do not claim a title "
-                    "resolution.",
-                    candidates=[], query="")
-            derived = (resolve_commitment_by_title(index, title_query)
-                       if title_query else None)
-            # TITLEQUERY1 (cr1#154): a candidate count with NO query is a
-            # count nobody here can re-check. Re-running the name search is
-            # the whole safety of this lane; a caller that passes
-            # title_candidates alone would skip it and hand the door back to
-            # the honour system. Only the user's words make a count checkable.
-            if derived is None and title_candidates is not None:
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}: resolved_by_match='title' "
-                    f"with title_candidates={title_candidates!r} but no "
-                    "title_query. A count without the user's words cannot be "
-                    "re-checked here — pass title_query (the words the match "
-                    "was made from) so the search runs again, or do not claim "
-                    "a title resolution.",
-                    candidates=[], query="")
-            candidates = list(derived["candidates"]) if derived else []
-            n_hits = (len(candidates) if derived is not None
-                      else title_candidates)
-            named = f" for {title_query!r}" if title_query else ""
-            if not user_confirmed:
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}{named}: the target was resolved "
-                    "from a NAME and nobody confirmed it. A name match may "
-                    "propose (propose_ambiguous_close) — only an explicit user "
-                    "confirmation may close one.",
-                    candidates=candidates, query=title_query or "")
-            if n_hits is None:
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}{named}: resolved_by_match="
-                    "'title' but the caller reported no candidate count. Pass "
-                    "title_candidates AND title_query (the user's words) from "
-                    "resolve_commitment_by_title — an unmeasured name match is "
-                    "the first-hit close by another name, and a count without "
-                    "the words cannot be re-checked (cr1#154).",
-                    candidates=candidates, query=title_query or "")
-            if int(n_hits) != 1:
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}{named}: the name matched "
-                    f"{int(n_hits)} open items, not one. Nothing was written — "
-                    "propose them instead (propose_ambiguous_close) and let "
-                    "the user say which they meant.",
-                    candidates=candidates, query=title_query or "")
-            if derived is not None and derived.get("id") != cid:
-                raise AmbiguousTargetError(
-                    f"refusing to close {cid!r}{named}: the caller's own words "
-                    f"resolve to {derived.get('id')!r}, not to the id it asked "
-                    "to close. The target and the evidence disagree — this is "
-                    "the 2026-08-22 wrong-close shape exactly.",
-                    candidates=candidates, query=title_query or "")
-
-        # Order-aware, cross-keyed CURRENT state (Stage C seq-alias mirror +
-        # Stage D reopen awareness): a closed-then-reopened commitment is open
-        # again and MAY be re-closed.
-        if _currently_closed(index, cid, target.get("seq")):
-            return {"status": "already_resolved", "commitment_id": cid}
-
-        # CLOSEID2 — the rule, named: a close whose ids were resolved by the
-        # SESSION rather than by a rendered surface requires the same
-        # one-question path a name match does. The 2026-08-24 chat turn
-        # scanned the substrate itself, rendered its own picker, and Skip —
-        # the decline-to-answer control — closed all three candidates,
-        # because an unstated resolved_by_match inherited the id-keyed door
-        # by default. Two clauses close that — and they sit AFTER the
-        # already-closed check, unlike the title guard above: a name-picked
-        # close is a GUESS about identity and must be told so, but a bare or
-        # session-labeled id is a missing/failed label on a target the caller
-        # named exactly, and the documented already_resolved no-op ("that one
-        # was already closed") stays reachable for the session lane's
-        # legitimate double-tap retries. Nothing is written on either path.
-        if resolved_by_match == "session":
-            raise AmbiguousTargetError(
-                f"refusing to close {cid!r}: the session resolved this id "
-                "itself, and a session-resolved id never inherits the "
-                "pre-confirmed status of a surface-resolved one (CLOSEID2). "
-                "Route the user's words through resolve_commitment_by_title "
-                "and close on its singular confirmed answer, or ask the one "
-                "question (propose_ambiguous_close, passing "
-                "resolved_by_match='session' so the row says what it is). A "
-                "decline on that question — Skip, dismiss, timeout, empty "
-                "submit — is NO ACTION, never a close.",
-                candidates=[], query="")
-        if resolved_by_match is None and source_skill in SESSION_RESOLVED_SOURCES:
-            raise AmbiguousTargetError(
-                f"refusing to close {cid!r}: {source_skill!r} is the session "
-                "lane, where an unstated resolved_by_match means the model "
-                "picked the target itself (CLOSEID2) — silence does not "
-                "inherit surface trust here. State the door ONLY IF IT IS "
-                "TRUE: resolved_by_match='id' (a widget embedded this id), "
-                "'number' (the user said a row number from a receipt this "
-                "session rendered), or 'title' with title_query=<the user's "
-                "words>. An id you resolved yourself has no door — declare "
-                "'session' or take the one-question path "
-                "(propose_ambiguous_close) instead; never claim a surface "
-                "that did not render.",
-                candidates=[], query="")
-
-        # POLICY1-A F1 — the SAME projection the matcher read (see
-        # `_projected_pending_review`): a row the user confirmed ("Mine" /
-        # "Keep both") is not pending here either.
-        #
-        # M ruling 2026-09-03 — TWO doors lift this guard now: an explicit
-        # user action (`user_confirmed`) and named evidence (`confirmed_by`,
-        # validated above: a quote and a pointer). Silence still refuses.
-        if (_projected_pending_review(index, cid, target)
-                and not user_confirmed and not confirmed_by):
-            raise PendingReviewError(
-                f"commitment {cid!r} is pending_review — extraction flagged it as "
-                "uncertain, so it may only close on an explicit user confirmation "
-                "(pass user_confirmed=True from a user-initiated action) or on "
-                "named evidence (confirmed_by=, with the quote and its source). "
-                "Surface it for review instead of auto-resolving."
-            )
-
-        # SUB1 D3 — no silent cascade, no silently-orphaned children.
-        open_kids = _live_children(index, cid)
-        closed_subitem_ids: list[str] = []
-        if open_kids:
-            if not close_subitems:
-                titles = ", ".join(
-                    repr(_commitment_field(k, "title") or _commitment_id(k))
-                    for k in open_kids[:3]
-                )
-                raise OpenSubitemsError(
-                    f"commitment {cid!r} has {len(open_kids)} open "
-                    f"sub-item(s) ({titles}{'…' if len(open_kids) > 3 else ''}) "
-                    "— closing the parent also closes them. Confirm with the "
-                    "user, then pass close_subitems=True; or close/drop the "
-                    "sub-items individually first."
-                )
-            # Pre-check EVERY child before writing anything (atomic refuse):
-            # a pending_review child blocks an unconfirmed cascade, and the
-            # ack must say WHICH child blocked and why (F-59).
-            if not user_confirmed:
-                for k in open_kids:
-                    if _projected_pending_review(index, _commitment_id(k), k):
-                        raise PendingReviewError(
-                            f"sub-item {_commitment_id(k)!r} "
-                            f"({(_commitment_field(k, 'title') or '')!r}) of "
-                            f"commitment {cid!r} is pending_review — the "
-                            "cascade may only close it on an explicit user "
-                            "confirmation (pass user_confirmed=True). Nothing "
-                            "was closed."
-                        )
-            # Children FIRST (crash-safe: a mid-cascade failure leaves closed
-            # children + an open parent — recoverable — never a closed parent
-            # with open children), then the parent, all in this lock span.
-            from event_gate import append_event as _append_ev
-            child_closers: list[dict] = []
-            for k in open_kids:
-                k_cid = _commitment_id(k)
-                closed_subitem_ids.append(k_cid)
-                child_closers.append({
-                    "type": "commitment_resolved",
-                    "source_skill": source_skill,
-                    "primary_thread_id": k.get("primary_thread_id") or "",
-                    "data": {
-                        "commitment_id": k_cid,
-                        "resolved_by": resolved_by,
-                        "evidence": "parent closed",
-                        "resolution": resolution,
-                        # EODFIX1 — the title SNAPSHOT (see the parent's note).
-                        **_title_snapshot(k),
-                        # PROV1 — a cascade child is closed on the PARENT's
-                        # evidence, so it carries the parent's pointer (or the
-                        # parent's missing-marker). A child tombstone with no
-                        # provenance at all would be the least auditable close
-                        # in the system: nobody typed it and nothing cites it.
-                        **pointer_fields,
-                    },
-                })
-            _append_ev(events_path, child_closers, holder=source_skill)
-
-        data = dict(extra_data) if isinstance(extra_data, dict) else {}
-        # ATTRIB2 — WHO acted, stamped BESIDE `resolved_by` (never instead of
-        # it). Popped first for the same reason the door and the pointer are:
-        # this is a statement THIS writer makes about how it was called, so a
-        # caller must not be able to smuggle one in through extra_data and make
-        # the product's own drop read as the customer's.
-        from event_types import ACTOR_KIND_KEY as _AKK
-        from event_types import resolve_actor as _resolve_actor
-        data.pop(_AKK, None)
-        # The "explicit user action" flag wins over the source: a tap is the
-        # customer's whatever surface carried it. FIX ROUND 1: it does NOT
-        # win over a call site that says `actor=event_types.MACHINE`, and it
-        # does not turn a rail's own name into a person. On the backlog
-        # sweep's review tier `user_confirmed=True` is a PERMISSION — the
-        # module's own words, "what lets an unconfirmed extraction close at
-        # all" — not a report that anybody tapped, so a drain close was
-        # stamping `person` and End of Day would have said "N things you let
-        # go" about the lapse drain again (B2.2, one tier over).
-        _actor_kind = _resolve_actor(
-            resolved_by if actor is None else actor,
-            source_skill=source_skill,
-            user_confirmed=(user_confirmed is True))[1]
-        data.update({
-            "commitment_id": cid,
-            "resolved_by": resolved_by,
-            _AKK: _actor_kind,
-            "evidence": clip(evidence),
-            "resolution": resolution,
-            # EODFIX1 — the title SNAPSHOT. Additive, never required: every
-            # other win writer stamps the name of the thing it moved, and this
-            # one did not, so the End of Day's wins block could only ever see
-            # a close by joining back to the commitment. The join stays (it is
-            # the half that covers the closes already on disk and any writer
-            # that is not this function); the snapshot is what makes a close
-            # written from here legible without one.
-            **_title_snapshot(target),
-        })
-        # CLOSEID1 — HOW identity was established, recorded beside the close.
-        # Popped first for the same reason the PROV1 pointer is: this is a
-        # statement THIS writer makes about how it was called, so a caller must
-        # not be able to smuggle one in through extra_data and make a
-        # name-picked close read as an id-keyed one. Omitted entirely when the
-        # caller did not state it, so every existing closer writes the
-        # byte-identical event it wrote before.
-        data.pop(MATCH_KEY, None)
-        if resolved_by_match is not None:
-            data[MATCH_KEY] = resolved_by_match
-        # POLICY1-A — WHO/WHAT confirmed it. Popped first for the same reason
-        # the door is: this is a statement THIS writer makes about how it was
-        # called, so a caller must not be able to smuggle one in through
-        # extra_data and make an ordinary close read as a confirmed one.
-        data.pop("confirmed_by", None)
-        if confirmed_by:
-            data["confirmed_by"] = confirmed_by
-        # EXIT1 FIX ROUND 3 (review L-4) — the ROUTE label, kept only for the
-        # rail that owns it. Same reason as the two pops above: this is a
-        # statement about WHO closed the row, so a caller must not be able to
-        # hand one in and have an ordinary tap-close counted as an automatic
-        # exit. The close still happens; only the borrowed label goes.
-        _route = str(data.get(_EXIT_ROUTE_KEY) or "").strip()
-        if _route and str(source_skill or "").strip().lower() not in \
-                _EXIT_ROUTE_OWNERS.get(_route, ()):
-            data.pop(_EXIT_ROUTE_KEY, None)
-        # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
-        # through extra_data, and the marker can never sit next to a real ref.
-        # PROVMINT1: the GRAIN marker is popped with them — it is a statement
-        # this writer makes about its OWN pointer, so a caller must not be able
-        # to hand one in beside a real ref and make an artifact pointer read as
-        # a mint (or the reverse).
-        data.pop(PROVENANCE_MISSING_KEY, None)
-        data.pop(SOURCE_REF_KEY, None)
-        data.pop(REF_GRAIN_KEY, None)
-        data.update(pointer_fields)
-        ev = {
-            "type": "commitment_resolved",
-            "source_skill": source_skill,
-            "primary_thread_id": (
-                primary_thread_id
-                if primary_thread_id is not None
-                else target.get("primary_thread_id") or ""
-            ),
-            "data": data,
-        }
-
+        plan = _close_plan(
+            index, commitment_id, resolved_by=resolved_by, evidence=evidence,
+            source_skill=source_skill, resolution=resolution,
+            primary_thread_id=primary_thread_id, user_confirmed=user_confirmed,
+            confirmed_by=confirmed_by, extra_data=extra_data,
+            close_subitems=close_subitems, resolved_by_match=resolved_by_match,
+            title_candidates=title_candidates, title_query=title_query,
+            pointer_fields=pointer_fields, actor=actor, source_ref=source_ref)
+        if plan["status"] != "closed":
+            return plan
         from event_gate import append_event
+        if plan["children"]:
+            # Children FIRST (crash-safe), as their own append, then the
+            # parent, all in this lock span.
+            append_event(events_path, plan["children"], holder=source_skill)
+        ev = plan["event"]
         append_event(events_path, [ev], holder=source_skill)
+    cid = plan["commitment_id"]
+    closed_subitem_ids = plan["closed_subitems"]
     result = {"status": "closed", "commitment_id": cid, "event": ev}
     if closed_subitem_ids:
         # SUB1 D3 — the cascade's child ids, in close order: the dispatch
@@ -4391,6 +4131,309 @@ def close_commitment(
         # the whole family (reopen is per-item; see reopen_commitment).
         result["closed_subitems"] = closed_subitem_ids
     return result
+
+
+def _close_plan(index: dict, commitment_id, *, resolved_by: str, evidence: str,
+                source_skill: str, resolution: str, primary_thread_id,
+                user_confirmed: bool, confirmed_by, extra_data, close_subitems: bool,
+                resolved_by_match, title_candidates, title_query, pointer_fields,
+                actor, source_ref=None) -> dict:
+    """THE closure path's decision and its rows, with nothing written (cr1#1608).
+
+    `close_commitment` takes the lock, reads the index and calls this, then
+    appends what it answers; `close_commitments_one_write` calls it once per
+    row under ONE lock and ONE index read, folding each answer into the index
+    before the next row, and appends every row in one write. One function
+    decides, so the batch and N single closes write the same rows in the same
+    order. Raises exactly what `close_commitment` raises, before anything is
+    written. Answers `{status: "already_resolved", commitment_id}`, or
+    `{status: "closed", commitment_id, children, event, closed_subitems}`.
+
+    PROV1: `pointer_fields` is what `_close_pointer_fields` resolved from the
+    caller's `source_ref` before the lock (a malformed ref refuses with no
+    lock held). Given none, the plan resolves `source_ref` itself."""
+    if pointer_fields is None:
+        pointer_fields = _close_pointer_fields(source_ref, extra_data, mint_for=source_skill)
+    cid = normalize_commitment_id(commitment_id, index)
+    target = index["by_id"][cid]
+
+    # CLOSEID1 DD-2 — a target picked by NAME does not get to close itself.
+    # This sits BEFORE the already-closed check on purpose: a caller that
+    # guessed at the target should be told it guessed, not handed a cheerful
+    # "already done" about an item it never identified.
+    if resolved_by_match == "title":
+        # F-3 — an empty-but-PRESENT query is not "no query". `""` and
+        # `"   "` are falsy, and letting them fall through to the
+        # caller-asserted count would hand the door straight back to the
+        # honor system this guard exists to replace — a caller whose match
+        # produced nothing would look identical to one that never matched.
+        # Present-and-blank is its own refusal; only None means "not
+        # supplied".
+        if title_query is not None and not str(title_query).strip():
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}: resolved_by_match='title' "
+                "with an EMPTY query. A blank string is not the absence of "
+                "a name match, it is a name match that resolved nothing — "
+                "pass the user's actual words, or do not claim a title "
+                "resolution.",
+                candidates=[], query="")
+        derived = (resolve_commitment_by_title(index, title_query)
+                   if title_query else None)
+        # TITLEQUERY1 (cr1#154): a candidate count with NO query is a
+        # count nobody here can re-check. Re-running the name search is
+        # the whole safety of this lane; a caller that passes
+        # title_candidates alone would skip it and hand the door back to
+        # the honour system. Only the user's words make a count checkable.
+        if derived is None and title_candidates is not None:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}: resolved_by_match='title' "
+                f"with title_candidates={title_candidates!r} but no "
+                "title_query. A count without the user's words cannot be "
+                "re-checked here — pass title_query (the words the match "
+                "was made from) so the search runs again, or do not claim "
+                "a title resolution.",
+                candidates=[], query="")
+        candidates = list(derived["candidates"]) if derived else []
+        n_hits = (len(candidates) if derived is not None
+                  else title_candidates)
+        named = f" for {title_query!r}" if title_query else ""
+        if not user_confirmed:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}{named}: the target was resolved "
+                "from a NAME and nobody confirmed it. A name match may "
+                "propose (propose_ambiguous_close) — only an explicit user "
+                "confirmation may close one.",
+                candidates=candidates, query=title_query or "")
+        if n_hits is None:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}{named}: resolved_by_match="
+                "'title' but the caller reported no candidate count. Pass "
+                "title_candidates AND title_query (the user's words) from "
+                "resolve_commitment_by_title — an unmeasured name match is "
+                "the first-hit close by another name, and a count without "
+                "the words cannot be re-checked (cr1#154).",
+                candidates=candidates, query=title_query or "")
+        if int(n_hits) != 1:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}{named}: the name matched "
+                f"{int(n_hits)} open items, not one. Nothing was written — "
+                "propose them instead (propose_ambiguous_close) and let "
+                "the user say which they meant.",
+                candidates=candidates, query=title_query or "")
+        if derived is not None and derived.get("id") != cid:
+            raise AmbiguousTargetError(
+                f"refusing to close {cid!r}{named}: the caller's own words "
+                f"resolve to {derived.get('id')!r}, not to the id it asked "
+                "to close. The target and the evidence disagree — this is "
+                "the 2026-08-22 wrong-close shape exactly.",
+                candidates=candidates, query=title_query or "")
+
+    # Order-aware, cross-keyed CURRENT state (Stage C seq-alias mirror +
+    # Stage D reopen awareness): a closed-then-reopened commitment is open
+    # again and MAY be re-closed.
+    if _currently_closed(index, cid, target.get("seq")):
+        return {"status": "already_resolved", "commitment_id": cid}
+
+    # CLOSEID2 — the rule, named: a close whose ids were resolved by the
+    # SESSION rather than by a rendered surface requires the same
+    # one-question path a name match does. The 2026-08-24 chat turn
+    # scanned the substrate itself, rendered its own picker, and Skip —
+    # the decline-to-answer control — closed all three candidates,
+    # because an unstated resolved_by_match inherited the id-keyed door
+    # by default. Two clauses close that — and they sit AFTER the
+    # already-closed check, unlike the title guard above: a name-picked
+    # close is a GUESS about identity and must be told so, but a bare or
+    # session-labeled id is a missing/failed label on a target the caller
+    # named exactly, and the documented already_resolved no-op ("that one
+    # was already closed") stays reachable for the session lane's
+    # legitimate double-tap retries. Nothing is written on either path.
+    if resolved_by_match == "session":
+        raise AmbiguousTargetError(
+            f"refusing to close {cid!r}: the session resolved this id "
+            "itself, and a session-resolved id never inherits the "
+            "pre-confirmed status of a surface-resolved one (CLOSEID2). "
+            "Route the user's words through resolve_commitment_by_title "
+            "and close on its singular confirmed answer, or ask the one "
+            "question (propose_ambiguous_close, passing "
+            "resolved_by_match='session' so the row says what it is). A "
+            "decline on that question — Skip, dismiss, timeout, empty "
+            "submit — is NO ACTION, never a close.",
+            candidates=[], query="")
+    if resolved_by_match is None and source_skill in SESSION_RESOLVED_SOURCES:
+        raise AmbiguousTargetError(
+            f"refusing to close {cid!r}: {source_skill!r} is the session "
+            "lane, where an unstated resolved_by_match means the model "
+            "picked the target itself (CLOSEID2) — silence does not "
+            "inherit surface trust here. State the door ONLY IF IT IS "
+            "TRUE: resolved_by_match='id' (a widget embedded this id), "
+            "'number' (the user said a row number from a receipt this "
+            "session rendered), or 'title' with title_query=<the user's "
+            "words>. An id you resolved yourself has no door — declare "
+            "'session' or take the one-question path "
+            "(propose_ambiguous_close) instead; never claim a surface "
+            "that did not render.",
+            candidates=[], query="")
+
+    # POLICY1-A F1 — the SAME projection the matcher read (see
+    # `_projected_pending_review`): a row the user confirmed ("Mine" /
+    # "Keep both") is not pending here either.
+    #
+    # M ruling 2026-09-03 — TWO doors lift this guard now: an explicit
+    # user action (`user_confirmed`) and named evidence (`confirmed_by`,
+    # validated above: a quote and a pointer). Silence still refuses.
+    if (_projected_pending_review(index, cid, target)
+            and not user_confirmed and not confirmed_by):
+        raise PendingReviewError(
+            f"commitment {cid!r} is pending_review — extraction flagged it as "
+            "uncertain, so it may only close on an explicit user confirmation "
+            "(pass user_confirmed=True from a user-initiated action) or on "
+            "named evidence (confirmed_by=, with the quote and its source). "
+            "Surface it for review instead of auto-resolving."
+        )
+
+    # SUB1 D3 — no silent cascade, no silently-orphaned children.
+    open_kids = _live_children(index, cid)
+    closed_subitem_ids: list[str] = []
+    child_closers: list[dict] = []
+    if open_kids:
+        if not close_subitems:
+            titles = ", ".join(
+                repr(_commitment_field(k, "title") or _commitment_id(k))
+                for k in open_kids[:3]
+            )
+            raise OpenSubitemsError(
+                f"commitment {cid!r} has {len(open_kids)} open "
+                f"sub-item(s) ({titles}{'…' if len(open_kids) > 3 else ''}) "
+                "— closing the parent also closes them. Confirm with the "
+                "user, then pass close_subitems=True; or close/drop the "
+                "sub-items individually first."
+            )
+        # Pre-check EVERY child before writing anything (atomic refuse):
+        # a pending_review child blocks an unconfirmed cascade, and the
+        # ack must say WHICH child blocked and why (F-59).
+        if not user_confirmed:
+            for k in open_kids:
+                if _projected_pending_review(index, _commitment_id(k), k):
+                    raise PendingReviewError(
+                        f"sub-item {_commitment_id(k)!r} "
+                        f"({(_commitment_field(k, 'title') or '')!r}) of "
+                        f"commitment {cid!r} is pending_review — the "
+                        "cascade may only close it on an explicit user "
+                        "confirmation (pass user_confirmed=True). Nothing "
+                        "was closed."
+                    )
+        # Children FIRST (crash-safe: a mid-cascade failure leaves closed
+        # children + an open parent — recoverable — never a closed parent
+        # with open children), then the parent, all in this lock span.
+        for k in open_kids:
+            k_cid = _commitment_id(k)
+            closed_subitem_ids.append(k_cid)
+            child_closers.append({
+                "type": "commitment_resolved",
+                "source_skill": source_skill,
+                "primary_thread_id": k.get("primary_thread_id") or "",
+                "data": {
+                    "commitment_id": k_cid,
+                    "resolved_by": resolved_by,
+                    "evidence": "parent closed",
+                    "resolution": resolution,
+                    # EODFIX1 — the title SNAPSHOT (see the parent's note).
+                    **_title_snapshot(k),
+                    # PROV1 — a cascade child is closed on the PARENT's
+                    # evidence, so it carries the parent's pointer (or the
+                    # parent's missing-marker). A child tombstone with no
+                    # provenance at all would be the least auditable close
+                    # in the system: nobody typed it and nothing cites it.
+                    **pointer_fields,
+                },
+            })
+
+    data = dict(extra_data) if isinstance(extra_data, dict) else {}
+    # ATTRIB2 — WHO acted, stamped BESIDE `resolved_by` (never instead of
+    # it). Popped first for the same reason the door and the pointer are:
+    # this is a statement THIS writer makes about how it was called, so a
+    # caller must not be able to smuggle one in through extra_data and make
+    # the product's own drop read as the customer's.
+    from event_types import ACTOR_KIND_KEY as _AKK
+    from event_types import resolve_actor as _resolve_actor
+    data.pop(_AKK, None)
+    # The "explicit user action" flag wins over the source: a tap is the
+    # customer's whatever surface carried it. FIX ROUND 1: it does NOT
+    # win over a call site that says `actor=event_types.MACHINE`, and it
+    # does not turn a rail's own name into a person. On the backlog
+    # sweep's review tier `user_confirmed=True` is a PERMISSION — the
+    # module's own words, "what lets an unconfirmed extraction close at
+    # all" — not a report that anybody tapped, so a drain close was
+    # stamping `person` and End of Day would have said "N things you let
+    # go" about the lapse drain again (B2.2, one tier over).
+    _actor_kind = _resolve_actor(
+        resolved_by if actor is None else actor,
+        source_skill=source_skill,
+        user_confirmed=(user_confirmed is True))[1]
+    data.update({
+        "commitment_id": cid,
+        "resolved_by": resolved_by,
+        _AKK: _actor_kind,
+        "evidence": clip(evidence),
+        "resolution": resolution,
+        # EODFIX1 — the title SNAPSHOT. Additive, never required: every
+        # other win writer stamps the name of the thing it moved, and this
+        # one did not, so the End of Day's wins block could only ever see
+        # a close by joining back to the commitment. The join stays (it is
+        # the half that covers the closes already on disk and any writer
+        # that is not this function); the snapshot is what makes a close
+        # written from here legible without one.
+        **_title_snapshot(target),
+    })
+    # CLOSEID1 — HOW identity was established, recorded beside the close.
+    # Popped first for the same reason the PROV1 pointer is: this is a
+    # statement THIS writer makes about how it was called, so a caller must
+    # not be able to smuggle one in through extra_data and make a
+    # name-picked close read as an id-keyed one. Omitted entirely when the
+    # caller did not state it, so every existing closer writes the
+    # byte-identical event it wrote before.
+    data.pop(MATCH_KEY, None)
+    if resolved_by_match is not None:
+        data[MATCH_KEY] = resolved_by_match
+    # POLICY1-A — WHO/WHAT confirmed it. Popped first for the same reason
+    # the door is: this is a statement THIS writer makes about how it was
+    # called, so a caller must not be able to smuggle one in through
+    # extra_data and make an ordinary close read as a confirmed one.
+    data.pop("confirmed_by", None)
+    if confirmed_by:
+        data["confirmed_by"] = confirmed_by
+    # EXIT1 FIX ROUND 3 (review L-4) — the ROUTE label, kept only for the
+    # rail that owns it. Same reason as the two pops above: this is a
+    # statement about WHO closed the row, so a caller must not be able to
+    # hand one in and have an ordinary tap-close counted as an automatic
+    # exit. The close still happens; only the borrowed label goes.
+    _route = str(data.get(_EXIT_ROUTE_KEY) or "").strip()
+    if _route and str(source_skill or "").strip().lower() not in \
+            _EXIT_ROUTE_OWNERS.get(_route, ()):
+        data.pop(_EXIT_ROUTE_KEY, None)
+    # PROV1 last: the CANONICAL pointer wins over whatever spelling arrived
+    # through extra_data, and the marker can never sit next to a real ref.
+    # PROVMINT1: the GRAIN marker is popped with them — it is a statement
+    # this writer makes about its OWN pointer, so a caller must not be able
+    # to hand one in beside a real ref and make an artifact pointer read as
+    # a mint (or the reverse).
+    data.pop(PROVENANCE_MISSING_KEY, None)
+    data.pop(SOURCE_REF_KEY, None)
+    data.pop(REF_GRAIN_KEY, None)
+    data.update(pointer_fields)
+    ev = {
+        "type": "commitment_resolved",
+        "source_skill": source_skill,
+        "primary_thread_id": (
+            primary_thread_id
+            if primary_thread_id is not None
+            else target.get("primary_thread_id") or ""
+        ),
+        "data": data,
+    }
+
+    return {"status": "closed", "commitment_id": cid, "children": child_closers,
+            "event": ev, "closed_subitems": closed_subitem_ids}
 
 
 def ambiguous_close_sentence(query: str, candidates: list) -> str:
@@ -6601,6 +6644,97 @@ def close_commitments(workspace_root, closures, *, source_skill: str) -> list[di
                 "error": type(e).__name__,
                 "detail": str(e),
             })
+    return results
+
+
+def close_commitments_one_write(workspace_root, closures, *, source_skill: str) -> list[dict]:
+    """N closes through THE closure path, in ONE locked write (cr1#1608).
+
+    The Hub's Apply closed 18 items as 18 single closes: 18 lock spans, each
+    reading the whole log twice (the index here and the gate's own read), so
+    one press of Apply on a long book took over a minute. This takes the lock
+    once, reads the index once, asks `_close_plan` (the one function that
+    decides every close, single or batched) for each row in the order given,
+    folds each row's closers into the index before the next row is decided,
+    and appends every closer in one append. The rows written are the rows N
+    single `close_commitment` calls in the same order write: the same
+    decisions (a second close of an item answers `already_resolved`, a
+    cascade's children land before their parent), the same events, the same
+    order; only the number of appends differs.
+
+    Each closure is a dict of `close_commitment`'s keywords plus
+    `commitment_id`. A row that refuses answers `{"status": "error",
+    "commitment_id", "error": <the exception's class name>, "detail",
+    "exception": <the exception>}` and writes nothing; the other rows still
+    land. Answers one result per closure, in order, each shaped as
+    `close_commitment` answers (`event` is the row as stamped, `seq`
+    included). Nothing is written when every row refuses or is already
+    closed."""
+    from pathlib import Path as _Path
+    from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
+    events_path = _Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+    rows = [c for c in (closures or []) if isinstance(c, dict)]
+    results: list[dict] = []
+    if not rows:
+        return results
+    # PROV1 before the lock, per row; PROVMINT1: one gesture, one receipt.
+    batch_mint_iso = _now_iso()
+    pointers: list = []
+    for c in rows:
+        try:
+            pointers.append(_close_pointer_fields(c.get("source_ref"), c.get("extra_data"),
+                                                  mint_for=source_skill, now_iso=batch_mint_iso))
+        except Exception as e:  # noqa: BLE001 - this row refuses; the others still land
+            pointers.append(e)
+    planned: list = []  # (result index, [events]) for the rows that close
+    with events_writer_lock(events_path, holder=f"close_commitments_one_write:{source_skill}"):
+        index = _scan_commitment_index(events_path)
+        at = int(index.get("n_events") or 0)
+        for c, pf in zip(rows, pointers):
+            cid_in = c.get("commitment_id")
+            if isinstance(pf, Exception):
+                results.append({"status": "error", "commitment_id": cid_in,
+                                "error": type(pf).__name__, "detail": str(pf), "exception": pf})
+                continue
+            try:
+                plan = _close_plan(
+                    index, cid_in, resolved_by=c.get("resolved_by") or "",
+                    evidence=c.get("evidence") or "", source_skill=source_skill,
+                    resolution=c.get("resolution") or "done",
+                    primary_thread_id=c.get("primary_thread_id"),
+                    user_confirmed=bool(c.get("user_confirmed")),
+                    confirmed_by=c.get("confirmed_by"), extra_data=c.get("extra_data"),
+                    close_subitems=bool(c.get("close_subitems")),
+                    resolved_by_match=c.get("resolved_by_match"),
+                    title_candidates=c.get("title_candidates"),
+                    title_query=c.get("title_query"), pointer_fields=pf,
+                    actor=c.get("actor"), source_ref=c.get("source_ref"))
+            except Exception as e:  # noqa: BLE001 - decided before any write: this row refuses
+                results.append({"status": "error", "commitment_id": cid_in,
+                                "error": type(e).__name__, "detail": str(e), "exception": e})
+                continue
+            if plan["status"] != "closed":
+                results.append(plan)
+                continue
+            evs = list(plan["children"]) + [plan["event"]]
+            for ev in evs:
+                # the next row is decided against the book as this one leaves it
+                index["closure"].fold(at, ev)
+                at += 1
+            res = {"status": "closed", "commitment_id": plan["commitment_id"], "event": plan["event"]}
+            if plan["closed_subitems"]:
+                res["closed_subitems"] = plan["closed_subitems"]
+            planned.append((len(results), evs))
+            results.append(res)
+        if planned:
+            from event_gate import append_event
+            stamped = append_event(events_path, [ev for _i, evs in planned for ev in evs],
+                                   holder=source_skill)
+            k = 0
+            for i, evs in planned:
+                k += len(evs)
+                if isinstance(stamped, list) and len(stamped) >= k:
+                    results[i]["event"] = stamped[k - 1]
     return results
 
 

@@ -2,7 +2,43 @@
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this run preps the owner's next meetings and writes the cockpit page's Today feed. It writes the book only through call-prep's own writers and the feed through the artifact database tool. It posts NO widget and lands NO page of its own: the chat turn is one line, then STOP. The page is the surface; this run is one of its four engines (COCKPIT1, cr1#608; four tasks per cr1#619).
 
-Read `cockpit-shared.md` in this folder first and do its shared step 0 and shared step 1 with leg `prep`. Then this leg, then the shared last step.
+Read `cockpit-shared.md` in this folder first and do its shared step 0 and shared step 1 with leg `prep`. Then the whole run in one call (the next section). The leg after it is the same work in steps, for a run where the one call is refused; then the shared last step.
+
+## The whole run in one call (cr1#1603)
+
+This section IS the prep run when its one call is answered. The leg below describes the same work one step at a time; it is used only when the one call here is refused (the last paragraph of this section says when). The reads a script cannot make stay yours: the two calendar reads and call-prep's own run for each meeting. Everything after call-prep, the leg's result and the Today feed, is built in one process beside the data, with the record log read once, and pulled back in sized parts.
+
+**1. The two calendar reads,** exactly as the leg below describes them, nothing added and nothing dropped: the next four meetings of the next 24 hours, with morning-brief Step A's filters (each `{"meeting_id", "title", "time_label", "start"}`), and the seven days from the start of today, with the Today feed's own rules (every event with its `others` and, where the calendar says them, `event_id`, `link`, `attendees`, `organiser`, `recurring`, `answer` and `tz`; each `title` exactly as the connector returned it).
+
+**2. Morning-brief Step B and the first half of Step C,** exactly as the leg below says: the `auto_fire` knob, `morning_brief_helpers:prep_leg_plan` over the four meetings, then `skills/call-prep/SKILL.md` end to end for every meeting in its `generate` (with `generated_by="morning-brief"` and `fired_via` from shared step 0). Keep the plan's `started_at` and what each call-prep run returned.
+
+**3. One writer call** (the leg's result and the Today feed, together):
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"device_workspace": "<WORKSPACE_ABSOLUTE_PATH, when known>", "generated": {"<meeting_id>": <the dict call-prep returned, null for a deliberate skip, or {"error": "<why>"}>}, "meetings": [<the four meetings, as handed to the plan>], "now_iso": "<now ISO>", "run_id": "<this session id>", "started_at": "<the plan's started_at>", "week": [<every event of the seven days, each {"meeting_id", "title", "start", "end", "calendar", "place", "others"} with the read's other fields>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:prep_all"}'
+```
+
+When the calendar read itself failed, add `"discover_error": "<what failed, in plain words>"` in its sorted place: the leg degrades to its one banner, as Step C's second half does. The answer is small and carries no feed: `leg` (the leg's result, the same one `prep_leg_result` returns), `token` and `parts` (what to pull next), `pages` (the document, whether it was built, its size and its seconds), `failed`, and `light` and `line` (the finish).
+
+**4. Pull each part, one call per part,** numbered from 0 to one less than the length of `parts`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "task": "prep", "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
+```
+
+A part must reach a file in this session's own scratch WHOLE, exactly as the refresh step says (`orchestrator-cockpit-refresh.md`, its step 3): never retyped, shortened or re-composed, and never saved in the workspace.
+
+**5. Unpack the parts HERE, in this shell,** and send the batch, exactly as the refresh step's step 4 says, with `--versions` pointing at a `list` of `feed` saved with `out_dir` in this session's scratch and no `--pin`:
+
+```bash
+python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
+```
+
+It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE ArtifactData `batch`, exactly as printed.
+
+**6. The finish.** Send the batch whenever `parts` has a part, even when the answer's `light` is an error: a leg that degraded (a failed calendar read) still built its Today feed, and only the light carries the error. When `parts` is empty (`ok` false), nothing was kept and nothing is sent. When the batch landed, or there was none to send, `set` the answer's `light` on `status/prep`, pinned to the version the running write returned. When a batch could not be sent, write the light through shared step 1's helper as `error` with one sentence saying the Today feed did not land, never the answer's `done` light. Then the shared last step. The final response is the light's sentence.
+
+**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed), or one with no `token` and no `light`, means the one call cannot run here. Only then, do the leg below in its order: Step C's second half (`morning_brief_helpers:prep_leg_result`) and the Today feed as their own calls. The calendar reads and call-prep's runs are already done: never read or prep twice.
 
 ## The leg: the next four meetings
 

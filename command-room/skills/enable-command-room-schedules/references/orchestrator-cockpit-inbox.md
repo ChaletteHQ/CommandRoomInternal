@@ -182,7 +182,7 @@ Parse response: list of threads with messages, dates, senders, subjects, snippet
 
 # Phase 4 — Read each fetched thread (your judgement; no verb)
 
-**After the fetch there is ONE verb in this file (INBOXDRIVE1, ruling R-RW3-1 (a)).** Everything that used to be Phases 4 through 8 — the learned rules, the sibling-reply cut, the learned suppressions, the capture and reconcile rows, the page, the text, the delivery plan, the read row and the receipt — runs inside `inbox_helpers:run_inbox_surface`, beside the customer's data, in one call. What only you can do is READ each thread and fill in one dict for it. Do that for EVERY thread the fetch returned (all accounts), then make the one call in Phase 5. There is no other step between the fetch and that call: no helper to ask, no row to append, no page to write.
+**After the fetch there is ONE verb in this file (INBOXDRIVE1, ruling R-RW3-1 (a)).** Everything that used to be Phases 4 through 8 — the learned rules, the sibling-reply cut, the learned suppressions, the capture and reconcile rows, the page, the text, the delivery plan, the read row and the receipt — runs inside `inbox_helpers:run_inbox_surface`, beside the customer's data, in one call. What only you can do is READ each thread and fill in one dict for it. Do that for EVERY thread the fetch returned (all accounts), then make the one call (the section before Phase 5; Phase 5 itself when that one is refused). There is no other step between the fetch and that call: no helper to ask, no row to append, no page to write.
 
 One dict per fetched thread — the connector's own values, never reformatted:
 
@@ -268,6 +268,39 @@ printf '%s' "$DRAFT_BODY" | python3 "$PLUGIN_ROOT/shared/scripts/voice_tell_dete
    Then the date scan (DRAFTDATE1, below): a draft never states a day the row does not hold.
 
 A `calendar_invite` gets no draft. A thread the owner is only copied on gets no draft.
+
+
+# The chain and the feed in one call (cr1#1603)
+
+This section IS Phase 5 and Phase 6 when its one call is answered. Those two phases below are the same work in two steps; they are used only when the one call here is refused (the last paragraph of this section says when). Everything up to here is unchanged and stays yours: the fetch, one dict per thread, the drafts and their gates. The chain after the fetch and the Inbox feed are built in one process beside the data, with the record log read once; the feed is built from the page the chain just landed, read there and never carried through this chat, and pulled back in sized parts.
+
+**1. One writer call,** with exactly the arguments Phase 5 names (the same `items` list, the same `fire_started_at`, `fired_via`, `n_accounts`, `provider`, `task_id`, `tools`, and `fetch_blocked` only when the seam answer has one), plus `now_iso` and `run_id`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"fetch_blocked": "<the seam answer's fetch_blocked line; OMIT the key when it has none>", "fire_started_at": "<fire_start>", "fired_via": "<scheduled or manual, from shared step 0>", "items": [<one dict per fetched thread, Phase 4>], "n_accounts": <n_accounts from the seam answer, else 1>, "now_iso": "<now ISO>", "provider": "<the declared mail backend>", "run_id": "<this session id>", "task_id": "cockpit-inbox", "tools": [<this session's tool list, {name} each>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:inbox_all"}'
+```
+
+Phase 5's rules hold for it word for word: `fired_via` is never guessed, the receipt is the chain's own row under `cockpit-inbox` (skip the receipt call of the shared last step), and a blocked read passes `"items": []` with `fetch_blocked`. The answer is small and carries no feed: `result` (the chain's own answer, without the page text this run never posts), `token` and `parts` (what to pull next), `pages`, `failed`, and `light` and `line` (the finish). `ok: false` with no `token` and a `light` is a stop: either the chain refused (NOTHING after the refusal point was written) or the chain landed but its answers could not be kept (its rows and page are written, the light says the feed was not kept). Either way its `light` is the error light, the feed is left as it was, no part is pulled, and Phase 5 is never run. If the door itself answers `writer_identity_required`, its `line` is the whole final response.
+
+**2. Pull each part, one call per part,** numbered from 0 to one less than the length of `parts`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "task": "inbox", "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
+```
+
+A part must reach a file in this session's own scratch WHOLE, exactly as the refresh step says (`orchestrator-cockpit-refresh.md`, its step 3): never retyped, shortened or re-composed, and never saved in the workspace.
+
+**3. Unpack the parts HERE, in this shell,** and send the batch, exactly as the refresh step's step 4 says, with `--versions` pointing at a `list` of `feed` saved with `out_dir` in this session's scratch and no `--pin`:
+
+```bash
+python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" "<each saved part file>"
+```
+
+It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. Then send each batch as ONE ArtifactData `batch`, exactly as printed. The feed carries each row's number from the landed page and `fire_stamp`, exactly as Phase 6's does.
+
+**4. The finish.** Send the batch whenever `parts` has a part, even when the answer's `light` is an error (a blocked read still built its Inbox tab; the light says the blocked line). When `parts` is empty, send nothing. Then `set` the answer's `light` on `status/inbox`, pinned to the version the running write returned. When a batch could not be sent, write the light through shared step 1's helper as `error` with one sentence saying the Inbox tab did not land, never the answer's `done` light. Then the shared last step's final response only. Nothing here sends mail.
+
+**When the one call is refused.** Fall back to Phase 5 and Phase 6 below ONLY when the door refused the call before anything ran: its `reason` is `not_allowed_writer` (a runtime staged before this call existed), `not_in_manifest` or `bad_args`. Any other answer without a `light` (a `timeout`, a `helper_failed`, a cut-off answer) is a STOP: the chain may already have run and written its rows, so write the light through shared step 1's helper as `error` with one sentence saying the inbox run did not finish, and never run Phase 5. Never run the chain twice: a refusal that carries the chain's own `result` is that chain's answer, not a reason to run Phase 5. A part refused because a newer run replaced it is the same: its line says not to run the chain again.
 
 
 # Phase 5 — ONE call: the chain after the fetch

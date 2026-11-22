@@ -1759,8 +1759,69 @@
     if (ab && ab.setAttribute) { ab.hidden = !w.length; ab.setAttribute("aria-label", w.length ? "Apply, " + w.length + (w.length === 1 ? " choice" : " choices") + " waiting" : "Apply"); }
     if (!w.length) { el.textContent = dbMissing ? "This view cannot reach the page's data." : (dbReady ? "Nothing waiting." : "Connecting to the page's data."); el.className = "waiting none"; return; }
     var oldest = w.map(function (c) { return c.created_at || ""; }).sort()[0];
-    el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". Apply sends them to your book.";
+    el.textContent = w.length + (w.length === 1 ? " choice" : " choices") + " waiting since " + fmtTime(oldest) + ". " + applySoonLine(w);
     el.className = "waiting";
+  }
+  // cr1#1604: a saved press reaches the book about a minute after the last
+  // press of a burst, not at the next hourly Apply. Each press this page saves
+  // (re)starts one timer; when a minute passes with no new press, the page
+  // starts the registered Apply task once (then the day's refresh, when that
+  // task is on), across every open view of the page (one holds the claim; a
+  // view that does not get it waits a minute again). Nothing starts when
+  // nothing waits, when the page is not connected to its tasks, while a run
+  // is going (the timer waits again), while Apply is paused (a press never
+  // switches a paused task back on, cr1#914: the timer never calls
+  // `enableIfOff`), or while a confirmed send waits (a send keeps its undo
+  // window until the hourly Apply or Go, as before; a send press does not
+  // start the timer). The hourly Apply stays the backstop. A fire carries no
+  // text (cr1#651).
+  var APPLY_SOON_MS = 60 * 1000;
+  S.soon = { timer: null, fired: null };
+  function isSend(c) { return !!c && c.action === "send"; }
+  function sendWaits() { return waitingChoices().some(isSend); }
+  function taskOn(leg) { var t = trig(TASKS[leg]); return !!(t && t.enabled); }
+  function applySoonArm(row) {
+    if (isSend(row)) { renderWaiting(); return; }
+    if (S.soon.timer) clearTimeout(S.soon.timer);
+    S.soon.timer = waitingChoices().length ? setTimeout(applySoonFire, APPLY_SOON_MS) : null;
+    renderWaiting();
+  }
+  function applySoonFire() {
+    S.soon.timer = null;
+    if (!waitingChoices().length || !wired || !taskOn("apply") || sendWaits()) { renderWaiting(); return; }
+    if (SEQ.starting || isRunning("apply") || isRunning("refresh")) { applySoonArm(); return; }
+    var doc = db ? db.doc("config/apply_soon") : null;
+    if (!doc || !doc.acquire) { applySoonGo(); return; }
+    doc.acquire({ holder: TAB_ID, ttlMs: APPLY_SOON_MS }).then(function (r) { if (r && r.acquired) applySoonGo(); else applySoonArm(); },
+      function () { applySoonArm(); });
+  }
+  // The Apply button's part (Apply, then the refresh it arms), without ever
+  // switching a task on: Apply fires as it is, and the refresh follows only
+  // when its own task is on.
+  function applySoonGo() {
+    var t = trig(TASKS.apply), stamp = nowIso();
+    if (!t) { renderWaiting(); return; }
+    if (taskOn("refresh")) armRefreshAfterApply();
+    if (!SEQ.startedAt || !SEQ.full || runProgress() === LEGS.length) beginRun(stamp, false);
+    S.soon.fired = stamp;
+    markRunning(["apply"]).then(function () { return fire(t); }).then(function () { banner("Started apply."); },
+      function (e) { failLeg("apply", e); banner(errLine(e, "Could not start apply"), true, errText(e)); });
+    renderWaiting();
+  }
+  // What the waiting line says about when the choices go: soon, on their way,
+  // or why they wait (not connected, Apply paused, a send waiting, the
+  // computer did not answer the last Apply).
+  function applySoonLine(w) {
+    if (!wired) return "Apply sends them to your book once the page is connected to your tasks.";
+    if (!taskOn("apply")) return "Apply is paused; press Apply to run it.";
+    if (w.some(isSend)) return "A send is waiting, so they go at the next hourly Apply or when you press Go.";
+    var a = legState("apply"), aAt = new Date(a.at || "");
+    var stuck = a.state === "no_answer" && !isNaN(aAt)
+      && w.some(function (c) { return (c.created_at || "") <= (a.at || ""); });
+    if (stuck && !S.soon.timer) return "Your computer did not answer the last Apply, so they are saved here. They go at the next hourly Apply, or press Apply.";
+    if (isRunning("apply")) return "Apply is running; any still waiting go next.";
+    if (S.soon.timer) return "They go to your book about a minute after your last press.";
+    return "Apply sends them to your book.";
   }
   function undoChoice(id) {
     // Undo before the book has it: the waiting choice is removed, so the next
@@ -1813,6 +1874,7 @@
     return db.collection("choices").doc(row.id).set(row).then(function () {
       var exists = S.choices.some(function (c) { return c.id === row.id; }); if (!exists) S.choices.push(row); renderAll();
       if (typeof noteHandled === "function") noteHandled(row);
+      if (typeof applySoonArm === "function") applySoonArm(row);
       return row;
     }, function (e) { banner("That press was not saved; try again.", true, errText(e)); return null; });
   }
@@ -9941,6 +10003,9 @@
   function tickClock() { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
   tickClock();
   setInterval(function () { renderLights(); maybeFireRefresh(); }, 1000);
+  // cr1#1604: the waiting line reads the Apply light's time-based state (a
+  // fired run the computer never answered), so it is redrawn as the lights are.
+  setInterval(function () { if (waitingChoices().length) renderWaiting(); }, 1000);
   setInterval(tickClock, 1000);
   // The card for the call that just ended moves on with the clock, not the feed.
   // Only when it changes: a redraw would throw an open brief back to its top.

@@ -119,6 +119,10 @@ Once the shape is detected, announce it to the CEO in PLAIN labels — never the
 
 Wait for explicit confirmation ("yes" / "go" / "proceed"). If no, exit without writing.
 
+### Phase 1.5: The off-limits wall can be read (hard gate, cr1#1577)
+
+**Off limits and personal, before any write about a person (cr1#1577).** Before Phase 2 writes anything, render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>"}}'`, paste what it prints and run that (on a seat whose files are local the same call runs in this shell, `screen_import("<WORKSPACE>")`). With no items it only checks that the two lists the owner sets can be read: the people kept off limits and the people on the personal lane. `result.stop` true, or `ok` false: say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", write nothing at all, and end the run. Ask the owner nothing about who is off limits: the lists are the owner's to set, never this skill's to ask about.
+
 ### Phase 2: Size gate, then backup source
 
 **Size gate (v2.7.4+ — runs BEFORE the backup copy, not after).** Count the source folder's files and total bytes first. If the count exceeds **500 files** OR total bytes exceeds **500 MB** (whichever hits first), pause and ask the CEO before copying anything:
@@ -127,7 +131,7 @@ Wait for explicit confirmation ("yes" / "go" / "proceed"). If no, exit without w
 
 Default recommendation is (b). If the CEO picks (b), restrict BOTH the backup below AND the Phase 5 discovery pass to files with `mtime ≥ now - 365d`. If (c), ask for the narrower path and re-run Phase 1 from the new root. Gating before the copy is the point — a 500 MB folder must not get fully backed up before the CEO has chosen a scope.
 
-Then copy the (scoped) source folder tree into `_archive/ingest_source_YYYY-MM-DD/` (today's date). Include every in-scope file — even ones the parser won't read — because the CEO may want to reference them later.
+Then copy the (scoped) source folder tree into `_archive/ingest_source_YYYY-MM-DD/` (today's date). Include every in-scope file — even ones the parser won't read — because the CEO may want to reference them later. This backup is a copy of the owner's own folder, kept in the archive: it is not the book, nothing that reads the book reads it (Phase 5 skips `_archive/`), and the screens below decide what enters the book (cr1#1577).
 
 Write `_archive/ingest_source_YYYY-MM-DD/.ingest-marker` with:
 - `source_path` (the path the CEO pointed at)
@@ -183,6 +187,19 @@ Before any JSON is written, verify the parser didn't silently drop entries. This
 
 **Output:** either a clean "Parse completeness verified — N people, M threads, P aliases, Q events" log line, or a hard-abort with the diff prompt above. Never silently write incomplete data.
 
+**Off limits and personal, before any write about a person (cr1#1577).** An abort's diff names people. Before it is written, build `{"items": {"notes": [<each heading and record name the diff would list>]}}`, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json"}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen. List only what comes back, with `result.line` beside it. `result.stop` true, or `ok` false: write no diff at all, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run.
+
+### Phase 3.8: Leave out who is off limits or personal (hard gate, cr1#1577)
+
+**Off limits and personal, before any write about a person (cr1#1577).** The owner keeps some people off limits and some on the personal lane; nothing about them enters the book through an import, and the reply names none of them. After Phase 3.5 has checked the parse against the source, and before Phase 3.9 or any write, build `{"items": {"orgs": [...], "people": [...], "threads": [...], "events": [...], "aliases": [...]}}`, the parser's five collections whole, as they would be written; land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "same_ids": false}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen. Set `"same_ids": true` when the source is an older workspace of this same book (Parsers A and B): its ids are the book's, so an id alone walls. On a seat whose files are local the same call runs in this shell, `screen_import("<WORKSPACE>", {"orgs": orgs, "people": people, "threads": threads, "events": events, "aliases": aliases}, same_ids=<as above>)`.
+
+- **`result.stop` true, or `ok` false:** the wall could not be read, or the items could not be checked. Say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", write nothing (no snapshot, no record, no event, no spelling, no report), and end the run.
+- **Otherwise write only what comes back:** the five collections ARE `result.items` from here to the end of the run. Phase 4's records, events, alias rows and person spellings, the connector inference, and Phase 9's counts come from those and nothing else. Never write an item the screen left out, never put one back by hand, and never name a left-out person anywhere: not in a report line, a warning, a queue note or the run summary.
+- **The dedupe never lands on a walled person.** Before Phase 3.9, run Phase 4's AUGMENT match (email, then name, then alias) for each kept person. A match on an id in `result.walled_ids` means the screen and the dedupe disagree: write nothing, say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Those ids are never said or written; the append path and the record wall refuse an import row or spelling that links one in any case.
+- **Keep `result.left_out`.** Every later screen in this run passes it as `"carried"`, so the run ends with one line. When the run's last screen's `result.line` is not empty, say it once in the run summary and put it under Warnings in the report, word for word. It names no one; add no name, count or hint to it.
+
+The screen reads the same lists the rest of the product reads (the off-limits senders and the people they belong to, and the people marked personal); it asks the owner nothing and matches no topic.
+
 ### Phase 3.9: Snapshot the target substrate (hard gate — nothing writes before this)
 
 Before ANY Phase 4 write, snapshot the target workspace's data directory:
@@ -197,6 +214,8 @@ Before ANY Phase 4 write, snapshot the target workspace's data directory:
 This snapshot — not the source backup in `_archive/ingest_source_*` (which backs up the SOURCE folder, not the target) — is what Rollback and Undo restore from. The snapshot is archived, never deleted; retention follows the workspace archive policy.
 
 ### Phase 4: Write JSON sources (mode-aware — v2.14.20+)
+
+Phase 4 writes only the collections Phase 3.8 handed back (cr1#1577); a run that skipped Phase 3.8 writes nothing here.
 
 All writes use `shared/scripts/atomic_write.py` (`atomic_write_json` for JSON files, `atomic_append_jsonl` for events.jsonl) — consistent with every other writer in the plugin (v2.14.20 retired the last hand-rolled tmp+rename holdout — see references/HISTORY.md in the staging repo).
 
@@ -294,6 +313,8 @@ Produce an in-memory `migration_plan[]` with one row per file: `{source_path, de
 
 ### Phase 6.5: Registration gate (v3.16+)
 
+**Off limits and personal, before any write about a person (cr1#1577).** File and folder names name people too. Before this gate asks about new project folders, before the Phase 7 preview is shown, and before any `_hq/_unrouted/` folder is named, build `{"items": {"notes": [<each implied project name and each file name the buckets, the preview, the queue or the report would show>]}}`, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Show and file only what comes back. A file whose name was left out, or whose implied project was, is held out of the whole migration: it stays at its source and is not copied, queued or merged, nothing lists it, and no `_hq/_unrouted/` folder is made for it. `result.stop` true, or `ok` false: copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out` for the next screen.
+
 **Why this exists.** A destination of the form `[Project]/…` will *create that folder on disk as a side effect of the copy* even when no thread record exists for it. That is how orphan project folders appear — a folder full of deliverables that the substrate has no record of, invisible to every daily flow and to `go [project]`. Filing must never bring a project folder into existence without the thread that owns it.
 
 For every `migration_plan[]` row whose `dest_path` is under a top-level `[Project]/` folder (i.e. NOT under `_hq/`, `_archive/`, or an `_ingest-queue`/`_unrouted` bucket), confirm the destination project is **registered**: its `project_id` resolves to a thread in `entities.json`, OR the folder name exactly matches a thread `folder_name`. Then:
@@ -344,6 +365,8 @@ Allow three responses:
 If the CEO wants to reclassify a specific file before execution, accept "move [file] to [project]" or "queue [file]" and update `migration_plan[]` accordingly.
 
 ### Phase 7.5: Smart merge for context-bearing docs (v2.7.4+)
+
+**Off limits and personal, before any write about a person (cr1#1577).** A merge writes a document's words into a live file. Before any merge, build `{"items": {"documents": [{"ref": "<its row in migration_plan>", "text": "<its whole text>"}, ...]}}` with every context-bearing file, land it as ONE text with `plan write` at rel `_hq/.system/import/screen_items.json` (the read door caps what an argument may carry, and an import is bigger, so the items travel by that rel), render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"name": "import_wall:screen_import", "args": {"workspace_root": "<WS>", "items_rel": "_hq/.system/import/screen_items.json", "carried": 0}}'`, paste what it prints and run that, then take the landed file away with `plan remove` (`{"rel": "_hq/.system/import/screen_items.json"}`) whatever the answer: it holds the items before the screen, with `"carried"` set to the last screen's `result.left_out`. Merge only what comes back: a document left out stays at its source and is not merged, copied or queued, and nothing lists it. `result.stop` true, or `ok` false: merge and copy nothing, say `result.line`; when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.", and end the run. Keep `result.left_out`; its `line` is the run's line.
 
 Before the generic copy loop runs in Phase 8, a dedicated merge pass runs for files classified as **context-bearing**: `session_notes`, `meeting_transcript`, `project_context`, `project_brain`, `decision_doc`.
 
@@ -402,7 +425,7 @@ After all file operations complete, append one `onboarding_step` event to `event
 
 ### Phase 9: Write INGEST_REPORT + finish
 
-Create `_hq/INGEST_REPORT.md` per the template in `references/ingest-report-template.md` (covers both data ingest and file migration). Append one final `onboarding_step` event:
+Create `_hq/INGEST_REPORT.md` per the template in `references/ingest-report-template.md` (covers both data ingest and file migration). It names nothing a screen left out, and its Warnings carry the run's last screen `line` word for word (cr1#1577). Append one final `onboarding_step` event:
 
 ```json
 {"ts": "<now>", "type": "onboarding_step", "source_skill": "workspace-ingest",
@@ -501,6 +524,7 @@ A failure between Phase 2 and Phase 3.9 needs no data restore (nothing wrote yet
 
 ## What It Doesn't Do
 
+- **Does not write anything about a person the owner keeps off limits or on the personal lane** (Phase 3.8): no record, fact, spelling, promise or entry, and the reply names none of them. Copied documents are filed as they are.
 - **Does not modify the source folder.** Source stays pristine. Every file operation is a copy.
 - **Does not move files.** Ever. Only copies. "Move" semantics belong to the CEO after they verify the migration.
 - **Does not delete files.** The CEO decides if/when to delete the source folder after they're confident in the migration.

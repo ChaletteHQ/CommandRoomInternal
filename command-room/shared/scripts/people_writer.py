@@ -128,10 +128,13 @@ def _clock_now(workspace_root=None):
 
 
 def _enforce_record_scope(workspace_root, *, provenance=None, source_ref=None,
-                          account_address=None, holder="people_writer") -> None:
+                          account_address=None, holder="people_writer",
+                          person_id=None) -> None:
     """The CRM record wall (ACCOUNT_SCOPE §2, review fix 7) — delegate to
     account_scope_gate.enforce_record_scope. Import defensively: a missing
-    module must never brick a person write (never-brick posture)."""
+    module must never brick a person write (never-brick posture). `person_id`
+    names the record a write lands on, so an import's write to a person the
+    owner keeps off limits or personal is refused first (cr1#1577)."""
     try:
         from account_scope_gate import enforce_record_scope, AccountScopeError
     except ImportError:
@@ -139,7 +142,8 @@ def _enforce_record_scope(workspace_root, *, provenance=None, source_ref=None,
     try:
         enforce_record_scope(workspace_root, provenance=provenance,
                              source_ref=source_ref,
-                             account_address=account_address, holder=holder)
+                             account_address=account_address, holder=holder,
+                             person_id=person_id)
     except AccountScopeError:
         raise
     except Exception:
@@ -1256,7 +1260,7 @@ def update_person(
     _enforce_record_scope(workspace_root, provenance=provenance,
                           source_ref=source_ref,
                           account_address=account_address,
-                          holder=source_skill)
+                          holder=source_skill, person_id=person_id)
     data = _load_entities(workspace_root)
     people = entities_collection(data, "people")
 
@@ -1709,7 +1713,7 @@ def _write_record_aliases(workspace_root: Path, person_id: str, aliases: list,
     """Save one record's `aliases` and log `person_updated`. Callers ask
     `_validate_for_alias` before their first write. The account wall runs here
     as it does in `update_person`."""
-    _enforce_record_scope(workspace_root, holder=source_skill)
+    _enforce_record_scope(workspace_root, holder=source_skill, person_id=person_id)
     data = _load_entities(workspace_root)
     people = entities_collection(data, "people")
     target = next((p for p in people if p.get("id") == person_id), None)
@@ -1794,6 +1798,9 @@ def add_person_alias(
     target = next((p for p in people if p.get("id") == person_id), None)
     if target is None:
         raise KeyError(f"no person with id {person_id!r}")
+    # cr1#1577: an import's spelling for a person off limits or personal is
+    # refused here, before the map is touched (the record wall asks again).
+    _enforce_record_scope(workspace_root, holder=source_skill, person_id=person_id)
 
     # --- aliases.json mapping ------------------------------------------------
     apath = _aliases_path(workspace_root)

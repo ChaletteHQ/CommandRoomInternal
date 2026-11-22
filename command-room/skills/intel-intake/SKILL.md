@@ -112,6 +112,8 @@ Confidence labels are always rendered in plain English — "verified / likely ac
 - Cap at the top 5 entity hits per piece of intel. More than that is noise.
 - Never write to entities.json from this skill. Surface suggestions; let `workspace-manager` or `people-crm` execute on the next turn.
 
+**Off limits and personal, before any write about a person (cr1#1577).** The owner keeps some people off limits and some on the personal lane; this skill never names them in what it shows or saves. Once the entity hits are in hand, and before Step 4, write ONE JSON object into THIS SESSION'S OWN scratch (never under the workspace), `{"items": {"entity_hits": [<each hit, as held>]}}`, then render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_import_wall.json", "name": "import_wall:screen_import"}'`, paste what it prints and run that (on a seat whose files are local the same call runs in this shell, `screen_import("<WORKSPACE>", {"entity_hits": hits})`). A hit is left out when its id is a walled person's, or its name or any spelling equals a name or spelling on a walled person's record, one word included. `result.stop` true, or `ok` false: say `result.line` (when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything."), save nothing and stop. Otherwise work from only what comes back: the hits are `result.items.entity_hits` and nothing else, and a hit it left out is never mentioned, not even as "no match". Keep `result.left_out` for Step 5. Ask the owner nothing about who is off limits: the lists are the owner's to set.
+
 ## Step 4: Analyze
 
 Run the content through these five lenses. Skip any that aren't relevant, but always consider all five. **For Lenses 2, 3, and 4: every recommendation must name a specific entity from Step 3 when one matched. If no entity matched, say so explicitly ("no specific entity match — recommendation is at category level") rather than glossing over.**
@@ -133,7 +135,9 @@ Education layer. Concepts, patterns, or mental models that make the user a more 
 
 ## Step 5: Present Private Analysis
 
-This is the user's full, unfiltered output. Present in this order:
+**Off limits and personal, before any write about a person (cr1#1577).** Compose the analysis below, the Step 6a header's title, author and link, the Step 6b index line, the knowledge-base entries Step 6c would add and, when a shared channel is configured, the Step 7 draft. Then, before any of it is shown or saved, screen it all in one call: write `{"items": {"notes": [<each paragraph and bullet of the analysis, in order>, <the index line>, <each knowledge-base entry>, <each paragraph of the shared-channel draft>], "fields": [{"title": "<title>"}, {"author": "<author>"}, {"url": "<link>"}], "events": [<the Step 6d event>]}, "carried": <Step 3's result.left_out>}` into THIS SESSION'S OWN scratch, render `cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_helper --json '{"args": {"workspace_root": "<WS>"}, "args_file": "<your scratch>/cr_import_wall.json", "name": "import_wall:screen_import"}'`, paste what it prints and run that (locally, `screen_import("<WORKSPACE>", {"notes": notes, "fields": fields, "events": [event]}, carried=<Step 3's left_out>)` in this shell). Show and save only what comes back: the analysis is the kept paragraphs in their order, Step 6a saves that, Step 6b writes the index line only when it was kept, Step 6c adds only the kept entries, Step 6d appends the kept event (none, when it was left out), and Step 7 offers only the kept draft paragraphs. A field that does not come back is replaced: the title by the date and the source type (`<YYYY-MM-DD> article`), the author by a blank, the link by `link left out`; the Step 6a file name is built from the kept or replaced title, and the index line uses the same. `result.stop` true, or `ok` false: say `result.line` (when the door refused the call there is no `line`, so say "I could not check this import against the people you keep off limits or personal, so I stopped before writing anything.") and save nothing. When `result.line` is not empty, say it once at the end of the reply, word for word; it counts Step 3's items too and names no one.
+
+This is the user's full output. Present in this order:
 
 **Source metadata**: Type, title, author/channel, date, URL
 
@@ -451,6 +455,7 @@ anyone else to.
 - Does not draft polished deliverables from intel — that's `one-pager-composer` or `memo-writer`.
 - Does not replace the CEO's original sources — stores references + summaries, never the raw content.
 - Does not auto-share or post intel anywhere — output lives in `_hq/intel/` until the CEO acts on it.
+- Does not name, link or save anything about a person the owner keeps off limits or on the personal lane (the screens at the end of Step 3 and the top of Step 5, cr1#1577).
 - Does not fire on the CEO's own outputs (session notes, briefings) — only external content.
 
 ## Routing (full trigger corpus)
