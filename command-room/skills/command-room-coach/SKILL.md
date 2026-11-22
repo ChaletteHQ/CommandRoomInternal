@@ -30,7 +30,7 @@ The catalog of deliverable shapes coach picks from lives in `references/delivera
 
 ## "how do I use this": the usage guide (cr1#187)
 
-This phrase skips the three phases. Run the Access preamble, then the read helper `usage_guide:guide` with `{"workspace_root": "<WS>"}`. Say the answer's `text` as it came back, and STOP. It is the section on the Hub's Settings tab, word for word. A "how do I use" about anything else, a template or a report, is not this: answer that plainly.
+This phrase skips the three phases. Run the Access preamble, then the read helper `usage_guide:guide` with `{"workspace_root": "<WS>"}`. Say the answer's `text` as it came back, and STOP. It is the section in the Hub's Settings, behind the gear, word for word. A "how do I use" about anything else, a template or a report, is not this: answer that plainly.
 
 ## When this fires
 

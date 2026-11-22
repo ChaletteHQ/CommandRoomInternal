@@ -23,7 +23,7 @@ If the user's phrasing is ambiguous ("get my commitments going"), prefer this sk
 
 ## Why this exists
 
-The Hub's Commitments tab and `triage my commitments` aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (History: every sidebar dashboard is retired — the People Network + Commitments Tracker pair in v2.9.0, the Workspace Map in Night M3.)
+Commitments in the Hub's Work tab and `triage my commitments` aggregate from `type: commitment` events in `events.jsonl`. If there are zero such events, those surfaces look empty — even when the user has dozens of historical meetings + active email threads where commitments are obvious. (History: every sidebar dashboard is retired — the People Network + Commitments Tracker pair in v2.9.0, the Workspace Map in Night M3.)
 
 Earlier releases expected `meeting-notes` to write commitments but the contract was implicit (no schema doc, no explicit step). Many transcripts were processed without producing commitment events. `scan-for-commitments` is the one-shot fix.
 

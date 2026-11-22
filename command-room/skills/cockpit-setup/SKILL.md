@@ -1,7 +1,7 @@
 ---
 name: cockpit-setup
 surfaces: both
-description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings tab: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
+description: "Sets up the owner's Command Room Hub (formerly the cockpit). Fires on: 'set up my hub', 'rebuild my hub', 'update my hub', 'where is my hub', 'show my settings' (the Hub's Settings, behind the gear: everything learned and every setting), and the older 'set up my cockpit', 'rebuild my cockpit', 'update my cockpit', 'where is my cockpit'. One private page with a Go button whose first press each day switches every scheduled task back on, preps the next meetings, drafts the inbox, shows the plate and sends the page's choices to the book; a later press refreshes the day. Publishes the page, registers the four Hub tasks, reconfirms Morning Brief and Maintenance, and records the page address in the folder. Does NOT fire on 'brief me on today' (morning-briefing), 'triage my inbox' (inbox-triage), 'show my day', or 'set up command room schedules' (enable-command-room-schedules)."
 ---
 
 # cockpit-setup
@@ -359,15 +359,15 @@ summary of what was registered.
   (cr1#817: the same `email_drafted`, voice snapshot and `email_sent` rows a
   press through Apply writes), once however many runs overlap, with no
   delay to the press.
-- **The Overdue tab lists every open promise past its date** (cr1#877): what
+- **Late, under Commitments in Work, lists every open promise past its date** (cr1#877): what
   the owner owes, what is owed to the owner, and what has nobody on it yet,
-  oldest first, from the feed the Commitments tab reads. Its presses are
+  oldest first, from the feed Work's Commitments view reads. Its presses are
   Commitments' own, through Apply.
 - **Settings, behind the Hub's gear, ends with the usage guide** (cr1#187): one habit per way
   of working and phrases that route well (`usage_guide:guide`), the same text
   a typed `how do I use this` says (`command-room-coach` answers it).
 - **A late row owed to the owner offers a chase** (cr1#219, owner ruling
-  2026-11-07): one press on the Overdue tab makes a draft to the person who
+  2026-11-07): one press on Late, under Commitments in Work, makes a draft to the person who
   owes it, through the seat's mail connector, citing where the promise came
   from. Nothing is drafted before the press and nothing is sent. The row holds
   back the press for someone just heard from, inside their usual reply time.

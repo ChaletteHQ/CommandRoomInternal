@@ -709,5 +709,80 @@ def _same_owner(state: Dict[str, str], new_id: str, new_name: str, item: dict) -
                                    + list(item.get("assignee_ids") or [])]
 
 
+def held_owner_questions(workspace_root) -> Optional[List[dict]]:
+    """READ. cr1#913: the cr1#901 question, still open. One entry per open
+    commitment whose owner the owner set by hand (`_owner_acts`) while the
+    board, as last read, names someone else on file: a value the follow has
+    already said once (`owner_held`). Each is `{commitment_id, board_id,
+    owner_id, row, capture, act_seq}`, `row` the commitment as folded now,
+    `capture` its first row, `act_seq` the seq of the owner's newest hand
+    act on it (so an answer pressed before a later act reads as no longer
+    open).
+
+    Nothing is written for it and nothing pending goes on the row, so the
+    board keeps following it and no review expiry drops it. Off limits and
+    the personal lane (`hub_work.fence`): a commitment on the personal lane,
+    or with an off-limits person as its owner or on its other side, as shown
+    now or as captured, or named by the board, has no question. A board
+    value not on file has none either: only a person on file can be given
+    the row. The "left the boards" marker (cr1#900) is not a board value.
+    With no board note in the book it answers [] after one read; None when
+    the fence or the book cannot be read (fail closed)."""
+    try:
+        import hub_work
+        from commitment_parties import counterparty_ids
+        from cru_match import load_open_commitments
+        from events_io import iter_events_org_scoped
+
+        board: Dict[str, Dict[str, Any]] = {}
+        held: Dict[str, set] = {}
+        captured: Dict[str, dict] = {}
+        for ev in iter_events_org_scoped(workspace_root):
+            d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else None
+            if d and ev.get("type") == "commitment":
+                captured.setdefault(_commitment_id(ev), ev)
+                continue
+            if (not d or ev.get("type") != "commitment_updated" or not d.get("board_followed")
+                    or not isinstance(d.get("board_state"), dict) or d.get("left_boards")):
+                continue
+            cid = _s(d.get("commitment_id"))
+            board[cid] = d["board_state"]
+            if d.get("owner_held") and _s(d["board_state"].get("owner_id")):
+                held.setdefault(cid, set()).add(_s(d["board_state"]["owner_id"]))
+        if not held:
+            return []  # no board, or no held owner: nothing more to read
+        wall = hub_work.fence(workspace_root)
+        if wall is None:
+            return None
+        events_path = Path(workspace_root) / "_hq" / "data" / "events.jsonl"
+        opens = {_commitment_id(r): r for r in (load_open_commitments(
+            events_path, workspace_root=workspace_root) if events_path.exists() else [])}
+        acts = _owner_acts(workspace_root)
+    except Exception:  # noqa: BLE001 - fail closed: no question
+        return None
+    out: List[dict] = []
+    for cid, st in board.items():
+        row = opens.get(cid)
+        bid = _s(st.get("owner_id"))
+        if row is None or cid not in acts or not bid or bid not in held.get(cid, set()):
+            continue
+        data = row.get("data") if isinstance(row.get("data"), dict) else {}
+        cur = _s(data.get("owner_id"))
+        if bid == cur or cid in wall["personal"]:
+            continue
+        who = {bid, cur}
+        for ev in (row, captured.get(cid)):
+            if isinstance(ev, dict):
+                d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+                who |= {_s(v) for v in (d.get("owner_id"), ev.get("owner_id"), ev.get("counterparty_id"))}
+                who |= {_s(i) for i in list(counterparty_ids(ev)) + list(counterparty_ids(d)) if i}
+        if (who - {""}) & wall["off"]:
+            continue
+        act = acts[cid]
+        out.append({"commitment_id": cid, "board_id": bid, "owner_id": cur, "row": row,
+                    "capture": captured.get(cid), "act_seq": act.get("seq") if isinstance(act, dict) else None})
+    return sorted(out, key=lambda q: q["commitment_id"])
+
+
 __all__ = ["EMPTY", "follow_items", "board_seen", "board_state", "board_closed", "left_boards",
-           "OWNER_SET_BY_HAND", "LEFT_BOARDS_NOTE"]
+           "held_owner_questions", "OWNER_SET_BY_HAND", "LEFT_BOARDS_NOTE"]

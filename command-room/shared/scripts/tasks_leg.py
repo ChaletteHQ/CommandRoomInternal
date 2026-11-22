@@ -829,6 +829,7 @@ def capture_tasks_and_receipt(workspace_root, items, *, user_person_id,
         # window), so the next fire's window starts there and reads the rest.
         receipt[WINDOW_INCOMPLETE_FIELD] = hold_marker(
             window, oldest=_resume_point(held_times))
+    _mark_on_hub(workspace_root, receipt)
     receipt["summary"] = _capture_summary(receipt)
     note_waiting(receipt)
     note_unread(workspace_root, receipt, unread, unsure)
@@ -869,6 +870,29 @@ def _resume_point(times) -> Optional[str]:
     return (min(whens) - _dt.timedelta(seconds=1)).isoformat()
 
 
+def _mark_on_hub(workspace_root, receipt: dict) -> None:
+    """cr1#913: mark each board-versus-owner note whose question the Hub holds
+    (`cockpit_helpers.board_owner_questions`: not one already kept), so the
+    receipt says where it waits. A question the Hub does not hold (a name
+    not on file, off limits, the personal lane, an unreadable fence), or a
+    seat with no Hub set up (`cockpit_helpers.hub_pointer`), is said as
+    before."""
+    held = [f for f in receipt.get("followed") or [] if f.get("why") == "owner_set_by_hand"]
+    if not held:
+        return
+    try:
+        from cockpit_helpers import board_owner_questions, hub_pointer
+
+        if not hub_pointer(workspace_root).get("found"):
+            return
+        on_hub = {q["commitment_id"] for q in board_owner_questions(workspace_root) or []}
+    except Exception:  # noqa: BLE001 - the receipt is said as before
+        return
+    for f in held:
+        if str(f.get("commitment_id") or "") in on_hub:
+            f["on_hub"] = True
+
+
 def _capture_summary(r: dict) -> str:
     if not r.get("n_scanned"):
         return "No new task items since the last check."
@@ -906,9 +930,16 @@ def _capture_summary(r: dict) -> str:
     if held:
         which = ", ".join(f"{f.get('title') or 'an item'} (the board names "
                           f"{f.get('to_name') or 'someone else'})" for f in held)
+        # cr1#913: where the Hub holds the question, the receipt says so.
+        hub = sum(1 for f in held if f.get("on_hub"))
+        place = "on the Hub, in Work, under Commitments, To confirm"
+        where = ("" if not hub else
+                 f", and the question waits {place}" if hub == len(held) == 1 else
+                 f", and the questions wait {place}" if hub == len(held) else
+                 f", and {hub} of them {'waits' if hub == 1 else 'wait'} {place}")
         bits.append(f"{len(held)} item{'s' if len(held) != 1 else ''} whose owner you set "
                     f"yourself {'are' if len(held) != 1 else 'is'} named for someone else "
-                    f"on the board: {which}; your choice stands until you change it")
+                    f"on the board: {which}; your choice stands until you change it{where}")
     # cr1#900: the one "left the boards" marker.
     left = r.get("n_followed_left") or 0
     if left:

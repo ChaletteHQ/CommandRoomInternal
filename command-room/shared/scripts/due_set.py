@@ -28,6 +28,15 @@ event (`waiting`: a waiting item holds no date), a day already gone
 (ValueError before the lock). A live hide carried over is never lengthened:
 a nearer date shortens it to the new day.
 
+`check_due` (cr1#1383 slice 4, PR 2) answers what `set_due` would do,
+writing nothing: the Hub's Edit runs it before it writes the wording of a
+press that also carries a date, so a press is refused whole, never half
+applied. `set_due` itself runs the same `_verdict` inside its lock.
+
+NO ROW, NO "SET" (corrects PR #1467). When the event gate lands no row,
+`set_due` answers `not_recorded`, naming the item, and never `set` with an
+event that is not on the book.
+
 THE UNDO. `undo_set_due(seq)`, which the registered reverser for
 `commitment_due_set` calls (`brain_undo`). It refuses whole when ANY later
 row names the item (a wording fix, a wait, a snooze, another date, a close),
@@ -45,7 +54,7 @@ import json
 import secrets
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -59,6 +68,10 @@ STATUS_NOT_OPEN = "not_open"
 STATUS_PAST = "in_the_past"
 STATUS_UNDO_REFUSED = "undo_refused"
 STATUS_WAITING = "waiting"
+#: cr1#1383 (corrects PR #1467): no row landed, so nothing was set.
+STATUS_NOT_RECORDED = "not_recorded"
+#: `check_due`'s answer when `set_due` would write.
+STATUS_OK = "ok"
 #: Rows that name an item without changing it: an undo marker, a Hub press.
 NOT_A_TOUCH = frozenset({"brain_change_undone", "hub_edit"})
 CHAT_SOURCE_SKILL = "apply-choices"
@@ -75,6 +88,7 @@ NO_SUCH_ROW_ACK = "No item carries the number {n}; nothing was written."
 GONE_ACK = "That item is no longer on your list; nothing was written."
 BAD_DATE_ACK = "That is not a date I can set; nothing was written."
 BAD_SURFACE_ACK = "Nothing was written: that list has no numbers to go by."
+NOT_RECORDED_ACK = "{title}: the new date could not be recorded, so nothing changed. Try again."
 
 
 def _events_path(workspace_root) -> Path:
@@ -152,6 +166,64 @@ def _day_words(day: str, workspace_root) -> str:
         return day
 
 
+def _past(workspace_root, commitment_id, calendar_day: str, now: str) -> Optional[Dict[str, Any]]:
+    """The `in_the_past` answer when the day is gone, else None."""
+    import commitment_state as cs
+    today = cs._now_calendar_day(now, str(workspace_root))
+    if today is not None and calendar_day < today.isoformat():
+        return {"status": STATUS_PAST, "commitment_id": str(commitment_id), "due": calendar_day,
+                "ack": PAST_ACK.format(day=_day_words(calendar_day, workspace_root))}
+    return None
+
+
+def _verdict(workspace_root, path: Path, commitment_id, calendar_day: str, now: str) -> Dict[str, Any]:
+    """What a date write on the item would meet, read only: `{status: ok,
+    cid, target, title, prior}`, or `{status, answer}` with the refusal
+    `set_due` answers. Raises `commitment_state.CommitmentIdError` on no
+    such item. Called inside `set_due`'s lock, and by `check_due` outside it."""
+    import commitment_state as cs
+    index = cs._scan_commitment_index(path)
+    cid = cs.normalize_commitment_id(commitment_id, index)
+    target = index["by_id"][cid]
+    title = _title(target)
+    if cs._currently_closed(index, cid, target.get("seq")):
+        return {"status": STATUS_NOT_OPEN,
+                "answer": {"status": STATUS_NOT_OPEN, "commitment_id": cid, "ack": NOT_OPEN_ACK}}
+    from commitment_wait import waiting_ids
+    if cid in waiting_ids(path, now):
+        # A waiting item holds no date (`wait_on` clears it); setting one
+        # beside the wait would be a date no list shows. Nothing written.
+        return {"status": STATUS_WAITING, "answer": {"status": STATUS_WAITING, "commitment_id": cid,
+                                                     "ack": WAITING_ACK.format(title=title)}}
+    prior = cs.effective_due(path, cid)
+    if prior and str(prior)[:10] == calendar_day:
+        return {"status": STATUS_UNCHANGED, "answer": {
+            "status": STATUS_UNCHANGED, "commitment_id": cid, "due": calendar_day,
+            "ack": UNCHANGED_ACK.format(title=title, day=_day_words(calendar_day, workspace_root))}}
+    return {"status": STATUS_OK, "cid": cid, "target": target, "title": title, "prior": prior}
+
+
+def check_due(workspace_root, commitment_id, *, when_iso: str,
+              now_iso: Optional[str] = None) -> Dict[str, Any]:
+    """READ. What `set_due` would answer for this date, writing nothing:
+    `{status: "ok", commitment_id, due, prior_due, title}` when it would set
+    the date, else the very refusal `set_due` answers (`in_the_past`,
+    `not_open`, `waiting`, `unchanged`). Raises as `set_due` does on a date
+    it cannot read or no such item. Read without the lock, so `set_due`
+    judges again when it writes."""
+    import commitment_state as cs
+    calendar_day, _stamp = cs._later_when(str(when_iso))
+    now = now_iso or cs._now_iso()
+    past = _past(workspace_root, commitment_id, calendar_day, now)
+    if past:
+        return past
+    v = _verdict(workspace_root, _events_path(workspace_root), commitment_id, calendar_day, now)
+    if v["status"] != STATUS_OK:
+        return v["answer"]
+    return {"status": STATUS_OK, "commitment_id": v["cid"], "due": calendar_day, "prior_due": v["prior"],
+            "title": v["title"]}
+
+
 def set_due(workspace_root, commitment_id, *, when_iso: str, actor_id: str,
             source_skill: str, reason: str = "due date set",
             brain_batch_id: Optional[str] = None,
@@ -167,28 +239,15 @@ def set_due(workspace_root, commitment_id, *, when_iso: str, actor_id: str,
 
     calendar_day, _stamp = cs._later_when(str(when_iso))
     now = now_iso or cs._now_iso()
-    today = cs._now_calendar_day(now, str(workspace_root))
-    if today is not None and calendar_day < today.isoformat():
-        return {"status": STATUS_PAST, "commitment_id": str(commitment_id), "due": calendar_day,
-                "ack": PAST_ACK.format(day=_day_words(calendar_day, workspace_root))}
+    past = _past(workspace_root, commitment_id, calendar_day, now)
+    if past:
+        return past
     path = _events_path(workspace_root)
     with events_writer_lock(path, holder=f"set_due:{source_skill}"):
-        index = cs._scan_commitment_index(path)
-        cid = cs.normalize_commitment_id(commitment_id, index)
-        target = index["by_id"][cid]
-        title = _title(target)
-        if cs._currently_closed(index, cid, target.get("seq")):
-            return {"status": STATUS_NOT_OPEN, "commitment_id": cid, "ack": NOT_OPEN_ACK}
-        from commitment_wait import waiting_ids
-        if cid in waiting_ids(path, now):
-            # A waiting item holds no date (`wait_on` clears it); setting one
-            # beside the wait would be a date no list shows. Nothing written.
-            return {"status": STATUS_WAITING, "commitment_id": cid,
-                    "ack": WAITING_ACK.format(title=title)}
-        prior = cs.effective_due(path, cid)
-        if prior and str(prior)[:10] == calendar_day:
-            return {"status": STATUS_UNCHANGED, "commitment_id": cid, "due": calendar_day,
-                    "ack": UNCHANGED_ACK.format(title=title, day=_day_words(calendar_day, workspace_root))}
+        v = _verdict(workspace_root, path, commitment_id, calendar_day, now)
+        if v["status"] != STATUS_OK:
+            return v["answer"]
+        cid, target, title, prior = v["cid"], v["target"], v["title"], v["prior"]
         batch = str(brain_batch_id or (BATCH_PREFIX + datetime.datetime.now(datetime.timezone.utc)
                                        .strftime("%Y%m%dT%H%M%SZ") + "_" + secrets.token_hex(3)))
         data: Dict[str, Any] = {
@@ -212,10 +271,31 @@ def set_due(workspace_root, commitment_id, *, when_iso: str, actor_id: str,
               "primary_thread_id": target.get("primary_thread_id") or "", "data": data}
         from event_gate import append_event
         landed = append_event(path, [ev], holder=source_skill)
-    row = (landed[0] if isinstance(landed, list) and landed else ev) or ev
+    row = landed[0] if isinstance(landed, list) and landed and isinstance(landed[0], dict) else None
+    if row is None or _seq(row) is None:
+        # Corrects PR #1467: a row the gate did not land is not a date set.
+        return {"status": STATUS_NOT_RECORDED, "commitment_id": cid,
+                "ack": NOT_RECORDED_ACK.format(title=title)}
     return {"status": STATUS_SET, "commitment_id": cid, "due": calendar_day, "prior_due": prior,
-            "batch_id": batch, "seq": _seq(row) if isinstance(row, dict) else None, "event": row,
+            "batch_id": batch, "seq": _seq(row), "event": row,
             "ack": SET_ACK.format(title=title, day=_day_words(calendar_day, workspace_root))}
+
+
+def _plan_before(events: List[Dict[str, Any]], cid: str, seq, prior_due) -> Optional[Dict[str, Any]]:
+    """Review of #1606 (coordinator decision): the Week plan block of the
+    move this date replaced, so its Undo brings the block back. The newest
+    date move on the item before `seq`; its block when it planned the very
+    day being put back, else None."""
+    prev = None
+    for e in events:
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        if ((_seq(e) or 0) < seq and e.get("type") == "commitment_updated"
+                and str(d.get("commitment_id") or "") == cid and ("new_due" in d or d.get("due_cleared"))):
+            prev = d
+    if not prev or "plan_at" not in prev or str(prev.get("new_due") or "")[:10] != str(prior_due or "")[:10]:
+        return None
+    return {"plan_at": prev.get("plan_at"), "plan_minutes": prev.get("plan_minutes"),
+            "plan_batch_id": str(prev.get("brain_batch_id") or prev.get("plan_batch_id") or "")}
 
 
 def undo_set_due(workspace_root, seq, *, undone_by: str, source_skill: str) -> Dict[str, Any]:
@@ -246,7 +326,8 @@ def undo_set_due(workspace_root, seq, *, undone_by: str, source_skill: str) -> D
             return {"status": STATUS_UNDO_REFUSED, "commitment_id": cid, "why": "changed"}
         out = cs.restore_due(str(workspace_root), cid, prior_due=cs.DUE_FROM_MOVE,
                              actor_id=undone_by, source_skill=source_skill,
-                             reason="due date put back", undoing_seq=seq)
+                             reason="due date put back", undoing_seq=seq,
+                             plan=_plan_before(events, cid, seq, d.get("prior_due")))
     if out.get("status") == "undo_refused" and out.get("why") == "newer_date":
         out = dict(out, why="changed")
     out.pop("event", None)

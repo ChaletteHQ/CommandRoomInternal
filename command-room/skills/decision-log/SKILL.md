@@ -277,7 +277,7 @@ The log lives at `[WORKSPACE_ROOT]/_hq/views/DECISION_LOG.md` (v3.13.0+ canonica
 "Show me all decisions on [project] in [timeframe]"
 ```
 
-**Pulling in past rulings (cr1#1015).** On `pull in my past rulings` (or `import my rulings`), run the one-time pull. It reads the rulings files (the workspace brief, any file whose name says ruling or decision, and any file the owner names) and puts each dated ruling under To confirm on the Hub's Commitments tab as a proposed decision, naming the older ruling it would replace. Nothing counts as a decision until the owner confirms it there or in `staff meeting`. Run it once without `apply` and say how many it found, then with `apply: true` when the owner says go:
+**Pulling in past rulings (cr1#1015).** On `pull in my past rulings` (or `import my rulings`), run the one-time pull. It reads the rulings files (the workspace brief, any file whose name says ruling or decision, and any file the owner names) and puts each dated ruling on the Hub, in Work, under Commitments, To confirm, as a proposed decision, naming the older ruling it would replace. Nothing counts as a decision until the owner confirms it there or in `staff meeting`. Run it once without `apply` and say how many it found, then with `apply: true` when the owner says go:
 
 ```bash
 cd "$PLUGIN_ROOT" && python3 shared/scripts/workspace_access.py plan run_writer --json '{"name": "past_rulings:pull_past_rulings", "args": {"workspace_root": "<WS>", "apply": false}}'

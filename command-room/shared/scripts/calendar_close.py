@@ -478,7 +478,7 @@ def proposal_line(n: int) -> str:
     if not n:
         return ""
     return (f"{n} task{'' if n == 1 else 's'} may be done: a meeting looks related, but I "
-            f"am not sure, so {'it is' if n == 1 else 'they are'} under To confirm on the Hub's Commitments tab.")
+            f"am not sure, so {'it is' if n == 1 else 'they are'} on the Hub, in Work, under Commitments, To confirm.")
 
 
 def propose_line(n: int) -> str:

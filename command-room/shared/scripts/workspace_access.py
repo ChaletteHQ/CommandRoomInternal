@@ -424,6 +424,7 @@ RUN_HELPER_ALLOWLIST = frozenset({
     "cockpit_helpers:miss_chat_plan",  # cr1#1315 - what report-bug does with the "Something wrong?" chat's message: the route and the one search, computed not written
     "cockpit_helpers:miss_chat_answer",  # cr1#1315 - where that chat's missing item was found and why the Hub missed it, before anything is filed; read only
     "cockpit_helpers:feed_people",  # cr1#1020 - the People tab and the starred people on Home, read only
+    "cockpit_helpers:refresh_part",  # cr1#1530 - one part of what the one-call refresh built, read from its scratch folder outside the workspace
     "cockpit_helpers:feed_board",  # cr1#1017 - the Week view's board on Today: due cards and priority lanes, read only
     "cockpit_helpers:plan_claim",  # cr1#675, cr1#691 - the claim an Apply run writes before it acts, planned and not written here
     "cockpit_helpers:plan_page_records",  # cr1#817 - the page's own sends and drafts with no book record yet, claimed for one run, planned not written here
@@ -740,6 +741,7 @@ RUN_WRITER_ALLOWLIST = frozenset({
     "deliverables:export_claude_doc",  # DOCS lane (DOCS1 D-2): a Claude Doc landed in the folder + its receipt row
     "lifecycle_pass:bring_back",  # cr1#753 - see the writer table row
     "cockpit_helpers:feed_plate",  # COCKPIT1 (cr1#608) - see the writer table row
+    "cockpit_helpers:refresh_all",  # cr1#1530 - the whole refresh in one process (it builds the plate); see the writer table row
     "cockpit_helpers:apply_commitment_choices",  # COCKPIT1 (cr1#608) - see the writer table row
     "cockpit_helpers:apply_hub_choices",  # cr1#662 - see the writer table row
     "morning_message:plan_send",  # cr1#1017 - the morning message planned (it builds the plate); see the writer table row

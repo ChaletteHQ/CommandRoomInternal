@@ -2,6 +2,10 @@
 
 What changed in each update, newest first. This file is generated from the release manifests by the maintainer's tooling and is not edited by hand.
 
+## v6.5.0 (2026-11-22)
+
+The Hub is finished and says less. Week now places your late items and to-dos into free time, in your priority order, and every meeting has Prep and Jump in. Every tab uses fewer words, with each summary one press away behind a small icon, and titles read clean. You can change a commitment's date or take back a note you added, Slack direct and group messages list on the Inbox, and a refresh runs in one call. After updating, say "update my hub" and allow anything new it asks for once.
+
 ## v6.4.0 (2026-11-21)
 
 The Hub has a new layout and does more from the page. Six tabs: Today, Inbox, Week, People, Work and Record. Today shows your calendar to scale beside what needs you. Inbox is a list with a reader, and new mail shows while the page is open, without waiting for a scheduled run. You can book a meeting, move one and cancel one from the Hub; nothing changes on your calendar without your press, and the note to the other person is drafted for you, never sent. Work opens on Triage: your whole plate at a glance, piles you can clear in one press with one Undo, lanes named for what each item wants next, threads with dated updates, and up to five priorities in your own order. After updating, say "update my hub" and allow the new tools once.

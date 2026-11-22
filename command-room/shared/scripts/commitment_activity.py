@@ -475,8 +475,17 @@ def derive_commitment_movement(
     # itself).
     _CHILD_CLOSURE_TYPES = frozenset(
         {"commitment_resolved", "thread_resolved", "commitment_superseded"})
+    # cr1#1383 slice 4, PR 2: a Hub Edit press that was taken back, and the
+    # Undo that took it back, changed nothing on the item: neither is a move.
+    try:
+        from hub_edit import taken_back_seqs
+        taken_back = taken_back_seqs(events)
+    except Exception:  # noqa: BLE001 - no Hub rows read: every row counts, as before
+        taken_back = set()
     for ev in events:
         et = ev.get("type") or ev.get("event") or ""
+        if taken_back and ev.get("seq") in taken_back:
+            continue
         is_movement = et in types and not _is_bookkeeping_update(ev)
         is_closure = et in _CHILD_CLOSURE_TYPES
         if not (is_movement or is_closure):

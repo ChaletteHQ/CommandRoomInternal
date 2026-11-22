@@ -2,7 +2,45 @@
 
 **OUTPUT CONTRACT (v2.13.0+ — MANDATORY):** this run writes the cockpit page's plate feed from the book. It writes the book nothing but the plate's display numbers (building the plate mints them), and the feed through the artifact database tool. It posts NO widget and lands NO page of its own: the chat turn is one line, then STOP. The page is the surface; this run is one of its four engines (COCKPIT1, cr1#608; four tasks per cr1#619).
 
-Read `cockpit-shared.md` in this folder first and do its shared step 0. Then settle the lights (below), then shared step 1 with leg `refresh`, then this leg, then the shared last step.
+Read `cockpit-shared.md` in this folder first and do its shared step 0. Then the whole run in one call (the next section). The sections after it (settle the lights, clear the old choices, the leg one feed at a time: shared step 1 with leg `refresh` between the first two and the leg, then the shared last step) are the same work in steps, for a run where the one call is refused.
+
+## The whole run in one call (cr1#1530)
+
+This section IS the refresh. Every section after it describes the same work one step at a time; those are used only when the one call here is refused (the last paragraph of this section says when). A refresh that ran each feed as its own call took about 35 tool calls, and a combined read of every feed was cut off at the device answer limit; here every feed is built in one process beside the data, pulled back in a few sized parts, and written to the page in one batch.
+
+**1. Read the page without carrying it through the chat.** Three reads: `list` on `status`; `query` on `choices` with `where: [["applied", "==", true]]`; and `list` on `feed` WITH `out_dir` set to a new folder in this session's own scratch (`<scratch>/page`). With `out_dir` the feeds are saved there as files and only their names come back: they are read for their versions, never for their content.
+
+**2. Shared step 1 with leg `refresh`** (the light to running), **then one writer call:**
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"choices": [<the applied choices as read>], "now_iso": "<now ISO>", "run_id": "<this session id>", "status_docs": [<every status document, as read>], "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_all"}'
+```
+
+Its answer is small and carries no feed. It holds: `settle` (the lights a dead run left: `set` each on its own `status/<leg>`, pinned by the version rule in `cockpit-shared.md`; this is the one place a task writes another task's light, and this task's own light is never among them); `prune` (send its `writes` as ONE ArtifactData `batch`, exactly as they came back; an empty list means nothing to clear); `token` and `parts` (what to pull next); `pages` (each document, whether it was built, its size and its seconds); `failed` (the documents left out); `light`, `counts` and `line` (the finish).
+
+**3. Pull each part, one call per part,** numbered from 0 to one less than the length of `parts`:
+
+```bash
+python3 "$RT/shared/scripts/workspace_access.py" run_helper --json '{"args": {"part": <the part's number>, "token": "<the token>", "workspace_root": "<WS>"}, "name": "cockpit_helpers:refresh_part"}'
+```
+
+One part per call, never two in one call: each part is sized to pass the answer limit by itself, and two together are cut off. A part's answer is large by design and must reach a file in this session's own scratch WHOLE: when the tool saved the answer to a file, that file is the part; when the answer came back in the turn, save it to a file exactly as it came. Never retype, shorten or re-compose a part, and never save one in the workspace.
+
+**4. Unpack the parts HERE, in this shell,** never on the owner's computer (the files are here, and so is the page's database tool):
+
+```bash
+python3 "$RT/shared/scripts/cockpit_helpers.py" unpack-refresh --out "<scratch>/out" --token "<the token>" --parts <how many parts> --versions "<scratch>/page" --pin "status/maintenance=<its version from step 1's read of status>" "<each saved part file>"
+```
+
+Leave the `--pin` out when `status/maintenance` is not on the page yet. It answers `ok: false` with `missing` when a part did not arrive whole: pull that part again and run this again; send nothing until it answers ok. When it does, it has written one file per document and prints `batches`. A document it lists under `no_version` that DOES exist on the page needs its pin first: run the command once more with one more `--pin "<document>=<version>"` for each, the version taken from step 1's own results. A document that does not exist on the page yet takes no pin. Then send each batch as ONE ArtifactData `batch`, exactly as printed.
+
+A batch refused because a document changed names that entry: another run wrote that document a moment ago, so it is current. Send the batch again WITHOUT that entry, once per named entry; the document left out never changes the light. Any other refusal is left alone and named in the light's line. Never drop a pin to force a write.
+
+**5. The finish.** When every batch landed, `set` the answer's `light` on `status/refresh`, pinned to the version the running write returned. When the answer's `ok` is false the plate could not be read: its `light` is already the error light with its sentence, and no batch is sent. When a batch could not be sent for any reason but a document another run had just written, write the light through shared step 1's helper as `error` with one sentence naming the documents that did not land, never the answer's `done` light. Then the shared last step, with the answer's `counts` as the leg's counts. The final response is the light's sentence.
+
+A document under `failed` was not built or was too large to pull; the page keeps its old copy, it never changes the light, and it is NOT retried one call at a time in this run.
+
+**When the one call is refused.** An answer that says the name is not on the list (a runtime staged before this call existed), or one with no `token` and no `light`, means the one call cannot run here. Only then, do the sections below in their order, one call per feed. Never put two feed reads in one call: that is what was cut off.
 
 ## First: settle the lights a dead run left
 

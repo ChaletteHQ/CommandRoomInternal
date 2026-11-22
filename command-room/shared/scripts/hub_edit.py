@@ -26,10 +26,18 @@ already owns the record.
   * a priority's wording, edited: `objective_state.update_objective`;
   * a commitment's wording,
     edited (slice 4):            `commitment_state.edit_commitment_wording`
-    (its `new_title`, the field the row shows). Its due date is not edited
-    here: `apply_later` also hides the owner's own item until that day, and
-    on an item owed to the owner it moves no date at all, so no writer sets
-    a due date as the Edit form would ask (named on cr1#1383).
+    (its `new_title`, the field the row shows);
+  * a commitment's due date,
+    set (slice 4, PR 2):         `due_set.set_due`, the writer the owner
+    ruled for on 2026-11-19 (option B): it sets the date and nothing else,
+    never hides the item, and carries a running Later hide without
+    lengthening it. Snooze stays Snooze (it hides the item until the day).
+    The same Edit press may carry new words, a new date or both: the
+    verdict on both halves comes first (`due_set.check_due`, and the Hub's
+    own fence on an item about a person the owner put off limits), so a
+    press is refused whole, never half written. The words are written
+    first and the date last, because the date's undo refuses when any newer
+    row names the item; the Undo takes the date back first, then the words.
   * context on a thread (Add context): `thread_writer.update_thread(notes=)`,
     the thread's free-text notes, the new note kept after any already there;
   * context on a person (Add context): `people_writer.record_person_fact`,
@@ -37,10 +45,17 @@ already owns the record.
     the registered retraction (`brain_undo.REVERSERS["entity_fact_structured"]`,
     which appends `entity_fact_retracted`; the person card and history leave
     a retracted fact out).
-  Work streams, priorities and commitments take no context here: a work
-  stream and a priority have no note writer the Hub may use, and a
-  commitment's note (`orphan_note.reroute_orphan_note`) has no writer that
-  takes it back (named on cr1#1383).
+  * context on a commitment (Add context, cr1#1383): `commitment_state.
+    add_commitment_note`, the one commitment-note writer with a registered
+    reverser (cr1#1463, PR #1475); its Take back is that reverser
+    (`brain_undo.REVERSERS["commitment_note"]`, which appends
+    `commitment_note_retracted`; the note stays in history). An older page
+    still sends the old `commitment` `context` row, which keeps its own
+    path (`orphan_note.reroute_orphan_note`, from `apply_commitment_choices`)
+    exactly as before. An item about a person the owner put off limits takes
+    no note from the Hub; a note already on it can still be taken back.
+  Work streams and priorities take no context here: they have no note
+  writer the Hub may use.
 
 Each press that lands appends ONE `hub_edit` row through the event gate:
 what was pressed, the record it reached, and the value it replaced. That row
@@ -80,7 +95,9 @@ EVENT = "hub_edit"
 KINDS = ("stream_edit", "person_edit", "priority_edit", "commitment_edit")
 VERBS = frozenset({"add", "rename", "set", "undo", "context", "update", "order", "star"})
 #: Add context (cr1#1383): the kinds that take a free note, a thread's
-#: (`stream_edit` on a thread that is not a work stream) and a person's.
+#: (`stream_edit` on a thread that is not a work stream) and a person's. A
+#: commitment's note (`commitment_edit` `context`) has its own path,
+#: `_commit_context`, through the commitment-note writer.
 CONTEXT_KINDS = ("stream_edit", "person_edit")
 #: cr1#1433: the person fields a Hub `set` press edits, as the press names
 #: them, with the record field each writes and the word its line uses.
@@ -118,8 +135,37 @@ NEEDS_COMMIT_WORDS_LINE = "Type the commitment in a few words; nothing was writt
 COMMIT_LONG_LINE = ("{name} is longer than Edit can put back exactly, so it was left as it is; "
                     "nothing was written. Fix its wording in a chat.")
 COMMIT_CLOSED_LINE = "{name} is closed, so it was not changed; nothing was written."
-COMMIT_DATE_LINE = ("{name}: a date is not changed from Edit; use Snooze on the row for that. "
-                    "Nothing was written.")
+#: cr1#1383 slice 4, PR 2: the date on the Edit form, through `due_set`.
+COMMIT_DUE_REASON = "Due date changed on the Command Room Hub"
+COMMIT_PAST_LINE = "{name}: {day} has already passed, so the date was not changed; nothing was written."
+COMMIT_WAITING_LINE = ("{name} is waiting on something, so its date was not changed; nothing was written. "
+                       "Say it is not waiting first.")
+COMMIT_BAD_DATE_LINE = "{name}: that is not a date the Hub can set; nothing was written."
+COMMIT_SAME_DUE_LINE = "{name} is already due then; nothing was written."
+COMMIT_OFF_LIMITS_LINE = ("{name} is about someone you put off limits, so its date is not changed from the Hub; "
+                          "nothing was written.")
+COMMIT_DUE_LINE = "{name}: the date could not be set; nothing was written. Try again, or say it in a chat."
+#: Review of #1606: who an item is about cannot be told (the wall or the mail
+#: rules unreadable), so the fence says no (fail closed). Names no one.
+COMMIT_FENCE_UNREAD_LINE = ("{name}: the Hub cannot tell right now who this is about, so its date was not "
+                            "changed; nothing was written. Try again later.")
+#: Review of #1606 (coordinator decision, reversible): an item the same Apply
+#: run already planned on the Week keeps the plan; the Edit's date is refused.
+COMMIT_JUST_PLANNED_LINE = "{name} was just planned for {day}, so its date was not changed. Edit it again if you meant to."
+COMMIT_DUE_FAILED_WHY = "it could not be written. Try again, or say it in a chat."
+COMMIT_DUE_PART_LINE = "The date was not changed: {why}"
+#: cr1#1383, Add context on a commitment. The off-limits line names no one:
+#: the item's own words may carry the walled person's name.
+COMMIT_NOTE_OFF_LIMITS_LINE = ("That item is about someone you put off limits, so no note is added to it "
+                               "from the Hub; nothing was written.")
+COMMIT_NOTE_FENCE_UNREAD_LINE = ("{name}: the Hub cannot tell right now who this is about, so no note was "
+                                 "added; nothing was written. Try again later.")
+COMMIT_NOTE_REASON = "Note taken back on the Command Room Hub"
+#: Review of #1611: a Take back refused because the item had other changes
+#: after the note. Said without blaming one: a change since may itself have
+#: been put back, and it still stands in the way.
+COMMIT_NOTE_STALE_LINE = ("{name} had other changes after this note, so the note was left as it is; "
+                          "nothing was written.")
 FAILED_LINE = "{name} could not be written; nothing changed. Try again, or say it in a chat."
 NEEDS_VALUE_LINE = "Type the {what}; nothing was written. To clear it, say so in a chat."
 NO_FIELD_LINE = "That is not something the Hub edits on a person; nothing was written."
@@ -149,7 +195,7 @@ NEEDS_NOTE_LINE = "Type the note; nothing was written."
 CONTEXT_SAME_LINE = "{name} already has that note; nothing was written."
 CONTEXT_STREAM_LINE = ("{name} is a work stream, so a note goes on one of its threads, or say it in a chat. "
                        "Nothing was written.")
-CONTEXT_NO_TARGET_LINE = "A note goes on a thread or a person; nothing was written."
+CONTEXT_NO_TARGET_LINE = "A note goes on a thread, a person or a commitment; nothing was written."
 
 #: cr1#1540: an update the owner posts on a thread, the order he keeps his
 #: priorities in, and a thread starred into a priority.
@@ -315,12 +361,17 @@ def apply_one(workspace_root, c: Dict[str, Any], actor: str) -> Dict[str, Any]:
             return _thread_context(root, target, inp, choice_id, before)
         if kind == "person_edit":
             return _person_context(root, target, inp, choice_id, before)
+        if kind == "commitment_edit":
+            return _commit_context(root, target, inp, choice_id, actor, before)
         return _no(CONTEXT_NO_TARGET_LINE)
     if kind == "commitment_edit":
         if verb == "undo":
             return _commit_undo(root, str(inp.get("press") or "").strip(), choice_id, actor, evs)
         if verb == "rename":
-            return _commit_rename(root, target, inp, choice_id, actor, before)
+            return _commit_rename(root, target, inp, choice_id, actor, before,
+                                  pressed_at=str(c.get("created_at") or ""))
+        if verb == "context":
+            return _commit_context(root, target, inp, choice_id, actor, before)
         return _no(NO_TARGET_LINE)
     if verb == "undo":
         return _undo(root, kind, str(inp.get("press") or "").strip(), choice_id, actor, evs)
@@ -824,37 +875,168 @@ def _commit_words(row: Optional[dict]) -> str:
     return " ".join(str(d.get("title") or d.get("summary") or "").split())
 
 
-def _commit_rename(root: Path, raw: str, inp: dict, choice_id: str, actor: str, before: int) -> Dict[str, Any]:
+def _off_limits_item(root: Path, cid: str, row: Optional[dict], capture: Optional[dict]) -> Optional[bool]:
+    """Whether the item is about a person the owner put off limits: its
+    owner or any of its counterparties (`commitment_parties.counterparty_ids`,
+    the scalar and the list), as shown now or as captured. The fence is the
+    Hub piles' own (`hub_work.fence`); None when it cannot be read (the wall
+    or the mail rules store unreadable), which the caller refuses on: an
+    unreadable store is no answer, never "nobody is off limits"."""
+    import hub_work
+    from commitment_parties import counterparty_ids
+
+    wall = hub_work.fence(root)
+    if wall is None:
+        return None
+    off = {str(i) for i in wall.get("off") or set()}
+    if not off:
+        return False
+    who = set()
+    for ev in (row, capture):
+        if not isinstance(ev, dict):
+            continue
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        who |= {str(v) for v in (d.get("owner_id"), ev.get("owner_id"), ev.get("counterparty_id")) if v}
+        who |= {str(v) for v in counterparty_ids(ev) if v}
+    return bool(who & off)
+
+
+def _just_planned(root: Path, cid: str, pressed_at: str) -> Optional[str]:
+    """The day the Week planned this item for, when its newest date move is a
+    planned one (`plan_at`, `commitment_state.apply_later`) that landed after
+    the Edit press was made: in one Apply run the plan's step runs before the
+    Hub's, so a plan saved beside this press, in either order, has landed
+    first. None otherwise, and when the press carries no time of its own."""
+    import datetime as _dt
+    from events_io import load_events_owner_scoped
+
+    try:
+        pressed = _dt.datetime.fromisoformat(str(pressed_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if pressed.tzinfo is None:
+        return None
+    newest = None
+    for ev in load_events_owner_scoped(str(root))[0]:
+        d = ev.get("data") if isinstance(ev, dict) and isinstance(ev.get("data"), dict) else {}
+        if (ev.get("type") == "commitment_updated" and str(d.get("commitment_id") or "") == cid
+                and ("new_due" in d or d.get("due_cleared"))):
+            newest = ev
+    d = (newest or {}).get("data") or {}
+    if not newest or "plan_at" not in d:
+        return None
+    try:
+        at = _dt.datetime.fromisoformat(str(newest.get("ts") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None or at <= pressed:
+        return None
+    return str(d.get("new_due") or "")[:10] or None
+
+
+def _commit_rename(root: Path, raw: str, inp: dict, choice_id: str, actor: str, before: int,
+                   pressed_at: str = "") -> Dict[str, Any]:
+    """One Edit press: new words, a new date, or both. The verdict on both
+    halves comes before any write; a refusal writes nothing and names the item.
+    A press with a date and no `name` leaves the words alone (the page sends
+    the words only when they changed, so a title the plate shortened is never
+    written back shortened)."""
     import commitment_state as cs
+    import due_set as ds
 
     cid, capture = _commit_resolve(root, raw)
     if cid is None:
         return _no(NO_TARGET_LINE)
     row = _commit_open(root, cid)
     old = _commit_words(row) or _commit_words(capture) or cid
-    if str(inp.get("due") or inp.get("when") or "").strip():
-        # The due half is not built (no writer sets a due date as asked):
-        # a press that carries a date is refused whole, never half applied.
-        return _no(COMMIT_DATE_LINE.format(name=old))
+    raw_due = str(inp.get("due") or inp.get("when") or "").strip()
     if row is None:
         return _no(COMMIT_CLOSED_LINE.format(name=old))
-    if len(old) > COMMIT_CAP:
+    if "name" in inp or not raw_due:
+        if not raw_due and len(old) > COMMIT_CAP:
+            # An older page's words-only press keeps its old order: too long
+            # to put back is said before an empty box is.
+            return _no(COMMIT_LONG_LINE.format(name=old[:80].rstrip() + "..."))
+        text = _clean(inp.get("name"), COMMIT_CAP)
+        if not text:
+            return _no(NEEDS_COMMIT_WORDS_LINE)
+    else:
+        text = old  # a date alone: the words stay as they are
+    new_words = text != old
+    if new_words and len(old) > COMMIT_CAP:
         # Review round 1: the writer caps a title, so the Undo could not put
         # longer words back as they were; such a row is left to a chat.
         return _no(COMMIT_LONG_LINE.format(name=old[:80].rstrip() + "..."))
-    text = _clean(inp.get("name"), COMMIT_CAP)
-    if not text:
-        return _no(NEEDS_COMMIT_WORDS_LINE)
-    if text == old:
-        return _no(SAME_LINE.format(name=old), "already")
-    try:
-        cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
-                                   new_title=text, reason=COMMIT_REASON)
-    except ValueError:
-        return _no(FAILED_LINE.format(name=old), "error")
-    line = f"Changed {old} to {text}." + REFRESH
-    ev = _record(root, before, {"hub_choice": choice_id, "kind": "commitment_edit", "action": "rename",
-                                "target_id": cid, "field": "title", "old": old, "new": text, "line": line})
+    due = None
+    if raw_due:
+        fenced = _off_limits_item(root, cid, row, capture)
+        if fenced is None:
+            return _no(COMMIT_FENCE_UNREAD_LINE.format(name=old))
+        if fenced:
+            return _no(COMMIT_OFF_LIMITS_LINE.format(name=old))
+        planned = _just_planned(root, cid, pressed_at)
+        if planned:
+            return _no(COMMIT_JUST_PLANNED_LINE.format(name=old, day=planned))
+        try:
+            v = ds.check_due(str(root), cid, when_iso=raw_due)
+        except cs.CommitmentIdError:
+            return _no(NO_TARGET_LINE)
+        except ValueError:
+            return _no(COMMIT_BAD_DATE_LINE.format(name=old))
+        status = v.get("status")
+        if status == ds.STATUS_PAST:
+            return _no(COMMIT_PAST_LINE.format(name=old, day=v.get("due") or raw_due))
+        if status == ds.STATUS_NOT_OPEN:
+            return _no(COMMIT_CLOSED_LINE.format(name=old))
+        if status == ds.STATUS_WAITING:
+            return _no(COMMIT_WAITING_LINE.format(name=old))
+        if status == ds.STATUS_OK:
+            due = v
+        elif status != ds.STATUS_UNCHANGED:
+            return _no(COMMIT_DUE_LINE.format(name=old), "error")
+    if not new_words and due is None:
+        return _no((COMMIT_SAME_DUE_LINE if raw_due else SAME_LINE).format(name=old), "already")
+    data: Dict[str, Any] = {"hub_choice": choice_id, "kind": "commitment_edit", "action": "rename",
+                            "target_id": cid}
+    parts, said = [], []
+    if new_words:
+        try:
+            cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
+                                       new_title=text, reason=COMMIT_REASON)
+        except ValueError:
+            return _no(FAILED_LINE.format(name=old), "error")
+        parts.append("title")
+        data.update(old=old, new=text)
+        said.append(f"Changed {old} to {text}.")
+    if due is not None:
+        try:
+            s = ds.set_due(str(root), cid, when_iso=raw_due, actor_id=actor, source_skill=UNDO_SOURCE,
+                           reason=COMMIT_DUE_REASON)
+        except ValueError:
+            s = {"status": "error", "ack": COMMIT_BAD_DATE_LINE.format(name=text)}
+        except Exception:  # noqa: BLE001 - review of #1606: a failed date write after the words landed
+            # is said as such, with the words' Undo; with no words it wrote nothing.
+            s = {"status": "error", "ack": (COMMIT_DUE_FAILED_WHY if parts else COMMIT_DUE_LINE.format(name=old))}
+        if s.get("status") == ds.STATUS_SET:
+            parts.append("due")
+            # `old_due` "" when the item had no date: the payload schema keeps
+            # it a string. The Undo puts back exactly what the date row
+            # replaced, read from that row (`undo_set_due`), not from here.
+            data.update(old_due=str(s.get("prior_due") or "")[:10], new_due=str(s.get("due") or ""),
+                        due_seq=s.get("seq"))
+            said.append(str(s.get("ack") or ""))
+        elif not parts:
+            # Nothing landed: the writer judged again under its lock and refused.
+            return _no(str(s.get("ack") or COMMIT_DUE_LINE.format(name=old)),
+                       "refused" if s.get("status") != "error" else "error")
+        else:
+            # The words landed and the date did not: the press records only
+            # what it wrote, so its Undo takes back exactly that.
+            said.append(COMMIT_DUE_PART_LINE.format(why=str(s.get("ack") or "")))
+    data["field"] = ",".join(parts)
+    line = " ".join(x for x in said if x) + REFRESH
+    data["line"] = line
+    ev = _record(root, before, data)
     return _ok(line, target_id=cid, seq=ev.get("seq"))
 
 
@@ -890,6 +1072,8 @@ def _commit_undo(root: Path, press_id: str, undo_id: str, actor: str, evs: List[
     pd = press["data"]
     if any(e["data"].get("undoes_choice") == press_id for e in edits):
         return _no(UNDO_ALREADY_LINE, "already")
+    if pd.get("action") == "context":
+        return _commit_note_undo(root, press, undo_id, actor, evs)
     cid, capture = _commit_resolve(root, str(pd.get("target_id") or ""))
     name = str(pd.get("new") or pd.get("target_id") or "")
     if cid is None:
@@ -907,22 +1091,125 @@ def _commit_undo(root: Path, press_id: str, undo_id: str, actor: str, evs: List[
             continue
         if _touches(ev, cid, cap_seq):
             return _no(UNDO_CHANGED_LINE.format(name=now_value))
+    parts = str(pd.get("field") or "title").split(",")
+    words_part, due_part = "title" in parts, "due" in parts
     old = str(pd.get("old") or "").strip()
-    if row is None or _commit_words(row) != pd.get("new"):
+    if row is None or (words_part and _commit_words(row) != pd.get("new")):
         return _no(UNDO_CHANGED_LINE.format(name=now_value))
-    if not old:
+    if due_part and (str(cs.effective_due(_events_path(root), cid) or "")[:10] != str(pd.get("new_due") or "")
+                     or not isinstance(pd.get("due_seq"), int)):
+        return _no(UNDO_CHANGED_LINE.format(name=now_value))
+    if words_part and not old:
         return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
     before = _max_seq(evs)
-    try:
-        # The same writer puts the old words back as the title; a row that
-        # showed its summary reads exactly as before.
-        cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
-                                   new_title=old, reason=COMMIT_UNDO_REASON)
-    except ValueError:
-        return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
-    line = f"Put back the wording {old}."
+    if due_part:
+        # The date first: its undo refuses when any newer row names the
+        # item, and the words' put-back would be one. A refusal here is the
+        # first write the Undo would make, so nothing is written.
+        import due_set as ds
+
+        back = ds.undo_set_due(str(root), pd["due_seq"], undone_by=actor, source_skill=UNDO_SOURCE)
+        if back.get("status") == "already_undone":
+            return _no(UNDO_ALREADY_LINE, "already")
+        if back.get("status") != "restored":
+            return _no(UNDO_CHANGED_LINE.format(name=now_value))
+    if words_part:
+        try:
+            # The same writer puts the old words back as the title; a row that
+            # showed its summary reads exactly as before.
+            cs.edit_commitment_wording(str(root), cid, edited_by=actor, source_skill=UNDO_SOURCE,
+                                       new_title=old, reason=COMMIT_UNDO_REASON)
+        except ValueError:
+            return _no(UNDO_FAILED_LINE.format(name=now_value), "error")
+    if words_part and due_part:
+        line = f"Put back the wording {old} and the date it had."
+    elif due_part:
+        line = f"Put back the date on {now_value}."
+    else:
+        line = f"Put back the wording {old}."
     ev = _record(root, before, {"hub_choice": undo_id, "kind": "commitment_edit", "action": "undo",
                                 "target_id": cid, "undoes_choice": press_id, "line": line})
+    return _ok(line, target_id=cid, seq=ev.get("seq"))
+
+
+def _commit_context(root: Path, raw: str, inp: dict, choice_id: str, actor: str, before: int) -> Dict[str, Any]:
+    """Add context on a commitment (cr1#1383): one note through the
+    commitment-note writer that has a reverser. The fence first: an item
+    about a person the owner put off limits takes no note from the Hub, and
+    the line names no one. A refusal writes nothing."""
+    import commitment_state as cs
+
+    cid, capture = _commit_resolve(root, raw)
+    if cid is None:
+        return _no(NO_TARGET_LINE)
+    row = _commit_open(root, cid)
+    name = _commit_words(row) or _commit_words(capture) or cid
+    fenced = _off_limits_item(root, cid, row, capture)
+    if fenced is None:
+        # Review of #1606: who the item is about cannot be told, so no note
+        # (fail closed), as for the date.
+        return _no(COMMIT_NOTE_FENCE_UNREAD_LINE.format(name=name))
+    if fenced:
+        return _no(COMMIT_NOTE_OFF_LIMITS_LINE)
+    # Review of #1611: a commitment note holds what chat's does (NOTE_CAP),
+    # not a thread note's CONTEXT_CAP.
+    text = _clean(inp.get("text"), cs.NOTE_CAP)
+    if not text:
+        return _no(NEEDS_NOTE_LINE)
+    out = cs.add_commitment_note(str(root), cid, text, noted_by=actor, source_skill=UNDO_SOURCE,
+                                 source_ref=f"{CONTEXT_REF}:{choice_id}" if choice_id else CONTEXT_REF)
+    status = out.get("status")
+    if status == "already_noted":
+        return _no(CONTEXT_SAME_LINE.format(name=name), "already")
+    if status == "not_open":
+        return _no(COMMIT_CLOSED_LINE.format(name=name))
+    if status == "needs_input":
+        return _no(NEEDS_NOTE_LINE)
+    if status != "noted" or not isinstance(out.get("seq"), int):
+        return _no(NO_TARGET_LINE if status == "not_found" else FAILED_LINE.format(name=name),
+                   "refused" if status == "not_found" else "error")
+    line = CONTEXT_LINE.format(note=text)
+    ev = _record(root, before, {"hub_choice": choice_id, "kind": "commitment_edit", "action": "context",
+                                "target_id": cid, "new": text, "note_seq": out["seq"], "line": line})
+    return _ok(line, target_id=cid, seq=ev.get("seq"))
+
+
+def _commit_note_undo(root: Path, press: dict, undo_id: str, actor: str, evs: List[dict]) -> Dict[str, Any]:
+    """Take back a note added on a commitment from the Hub, through the
+    registered reverser (`brain_undo.REVERSERS["commitment_note"]`), whose
+    verdict comes first by seq: refused, writing nothing, when anything
+    newer touched the item. Allowed on an item whose person went off limits
+    after the note (coordinator ruling): it only removes the owner's own
+    note. The retraction is the only row it writes besides this press's
+    own record."""
+    import brain_undo as bu
+
+    pd = press["data"]
+    cid, capture = _commit_resolve(root, str(pd.get("target_id") or ""))
+    name = _commit_words(_commit_open(root, cid) if cid else None) or _commit_words(capture) \
+        or str(pd.get("target_id") or "")
+    note_seq = pd.get("note_seq")
+    if cid is None or not isinstance(note_seq, int):
+        return _no(UNDO_NO_PRESS_LINE)
+    if any(_seq(e) > _seq(press) and e["data"].get("target_id") == cid
+           and e["data"].get("action") not in ("undo",) for e in _edits(evs)):
+        return _no(COMMIT_NOTE_STALE_LINE.format(name=name))
+    before = _max_seq(evs)
+    try:
+        back = bu.REVERSERS["commitment_note"]["reverse"](
+            str(root), {"commitment_id": cid, "change_ref": f"seq:{note_seq}", "reason": COMMIT_NOTE_REASON},
+            undone_by=actor, source_skill=UNDO_SOURCE)
+    except Exception:  # noqa: BLE001 - nothing claimed; the note stays, and says so
+        return _no(UNDO_FAILED_LINE.format(name=name), "error")
+    status = (back or {}).get("status")
+    if status == "already_undone":
+        return _no(UNDO_ALREADY_LINE, "already")
+    if status != "retracted":
+        return _no(COMMIT_NOTE_STALE_LINE.format(name=name))
+    line = CONTEXT_TAKEN_LINE.format(name=name)
+    ev = _record(root, before, {"hub_choice": undo_id, "kind": "commitment_edit", "action": "undo",
+                                "target_id": cid, "undoes_choice": str(pd.get("hub_choice") or ""),
+                                "line": line})
     return _ok(line, target_id=cid, seq=ev.get("seq"))
 
 
@@ -1221,6 +1508,22 @@ def _priority_star(root: Path, tid: str, choice_id: str, before: int) -> Dict[st
     ev = _record(root, before, {"hub_choice": choice_id, "kind": "priority_edit", "action": "star",
                                 "target_id": pid, "thread_id": tid, "new": name, "line": line}, ids={pid})
     return _ok(line, target_id=pid, seq=ev.get("seq"))
+
+
+def taken_back_seqs(events: List[dict]) -> set:
+    """cr1#1383 slice 4, PR 2: the writer rows of a commitment Edit press
+    that was taken back, and of the Undo that took it back. Together they
+    changed nothing on the item, so the item's quiet clock
+    (`commitment_activity.derive_commitment_movement`) skips them: after an
+    Undo the item is exactly as stuck, late or quiet as before the press."""
+    rows = [e for e in _edits(events) if e["data"].get("kind") == "commitment_edit"]
+    undone = {str(e["data"].get("undoes_choice") or "") for e in rows if e["data"].get("action") == "undo"}
+    out: set = set()
+    for e in rows:
+        d = e["data"]
+        if d.get("action") == "undo" or str(d.get("hub_choice") or "") in undone:
+            out |= {s for s in d.get("wrote_seqs") or [] if isinstance(s, int)}
+    return out
 
 
 def undo_seqs(events: List[dict]) -> set:

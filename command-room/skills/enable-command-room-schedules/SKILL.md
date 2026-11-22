@@ -1089,7 +1089,7 @@ The predecessor, for auditors recognising an existing registration — a descrip
 
 ### Schedule 6 — Friday Wrap (v3.11.0+, NEW)
 
-- `taskId: "friday-wrap"` (SHELVED since cr1#618: never registered. The section stays for a chat still on a seat, which fires this file; neither the Hub's Done tab nor the typed `weekly recap` reads it.)
+- `taskId: "friday-wrap"` (SHELVED since cr1#618: never registered. The section stays for a chat still on a seat, which fires this file; neither the Hub's Record tab nor the typed `weekly recap` reads it.)
 - `description`: **`"Friday Wrap - Command Room"`** (v2.14.25+ canonical display name format)
 - `cronExpression`: from config (default `"0 13 * * 5"`, 1 PM Fridays — Phase 3/R4 moved the default off the routinely-slept-through 4 PM slot for NEW installs; existing registrations keep their live cron per the custom-cron preservation rule). First weekly-rhythm scheduled task; all prior tasks are daily.
 - `notifyOnCompletion: true`

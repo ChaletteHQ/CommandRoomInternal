@@ -839,9 +839,27 @@ def _old_empty(data: dict) -> bool:
     return data.get("status", "complete") == "complete" and not _read_happened(data)
 
 
+def _short_day(iso: Optional[str]) -> str:
+    """cr1#1590: an ISO day as the Hub's short words say it ("Oct 3"), in
+    fixed English month names; the day itself when it does not parse."""
+    try:
+        import datetime as _dtm
+
+        d = _dtm.date.fromisoformat(str(iso)[:10])
+    except (TypeError, ValueError):
+        return str(iso or "")
+    return f"{_MONTHS[d.month - 1]} {d.day}"
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def chats_unread(workspace_root) -> dict:
     """cr1#1489, READ ONLY, for the Hub's maintenance note: `{}` when the
-    chat capture is reading, else `{line, unread_since, gap}`.
+    chat capture is reading, else `{line, unread_since, gap, notes}`.
+    cr1#1590: `notes` holds one `{kind, short, act, line}` per sentence of
+    `line`, for the Hub's note rows: a few words, the one thing to type (a
+    new chat opens with it typed in) and that sentence, word for word.
 
       * the newest sweep is skipped or blocked: chats are not being read, and
         the line says what to type on the computer (`unread_since` is the day
@@ -912,6 +930,7 @@ def chats_unread(workspace_root) -> dict:
     if not unread and not gap:
         return {}
     bits = []
+    notes = []
     since = rows[last_read][0].date().isoformat() if last_read is not None else None
     if status == "blocked":
         bits.append(("Chats are not being read" + (f" since {since}" if since else "")
@@ -923,6 +942,10 @@ def chats_unread(workspace_root) -> dict:
                      + ": the last run could not open them, and a cloud run cannot "
                      "reach the chats on your computer. Type `sweep my chats` in the "
                      "desktop app on your computer."))
+    if bits:
+        notes.append({"kind": "look", "short": ("Chats not read since " + _short_day(since)) if since
+                      else "Chats not being read",
+                      "act": {"label": "Sweep my chats", "chat": "sweep my chats"}, "line": bits[-1]})
     if gap:
         if gap["last_day"] >= now.date().isoformat():
             bits.append((f"Chats from {gap['from']} to {gap['to']} were never read. Type "
@@ -933,7 +956,9 @@ def chats_unread(workspace_root) -> dict:
                          "`catch up my chat history` in the desktop app on your computer "
                          f"to recover the ones from the last {BACKFILL_DAYS} days; older "
                          "ones are past its reach."))
-    return {"line": " ".join(bits), "unread_since": since if unread else None, "gap": gap}
+        notes.append({"kind": "look", "short": f"Chats {_short_day(gap['from'])} to {_short_day(gap['to'])} never read",
+                      "act": {"label": "Catch up my chat history", "chat": "catch up my chat history"}, "line": bits[-1]})
+    return {"line": " ".join(bits), "unread_since": since if unread else None, "gap": gap, "notes": notes}
 
 
 def last_sweep(workspace_root, *, receipt_type: str = RECEIPT_SWEEP) -> Optional[dict]:

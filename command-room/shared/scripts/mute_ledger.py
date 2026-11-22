@@ -369,16 +369,19 @@ def workspace_item_snoozes(workspace_root, now_iso: str, *,
         return {}
 
 
-def workspace_moved_ids(workspace_root, now_iso: str) -> set:
+def workspace_moved_ids(workspace_root, now_iso: str, events: Optional[list] = None) -> set:
     """The commitments hidden now ONLY because a Later moved their date
     (cr1#1292): hidden from the lists until that date, but placed on its
     day by a calendar of days (the Hub's Week board). An item also under a
-    live mute stays hidden. Read only; empty when the ledger cannot be read."""
-    try:
-        from events_io import load_events_owner_scoped
-        events = load_events_owner_scoped(str(workspace_root))[0]
-    except Exception:  # noqa: BLE001 - no ledger read: nothing is known moved
-        return set()
+    live mute stays hidden. Read only; empty when the ledger cannot be read.
+    cr1#1541: `events`, the owner-scoped ledger a caller already read
+    (`events_io.load_events_owner_scoped`), saves reading it a second time."""
+    if events is None:
+        try:
+            from events_io import load_events_owner_scoped
+            events = load_events_owner_scoped(str(workspace_root))[0]
+        except Exception:  # noqa: BLE001 - no ledger read: nothing is known moved
+            return set()
     every = item_snoozes(events, now_iso)
     muted = item_snoozes(events, now_iso, include_due_moves=False)
     return {str(k) for k in every if k not in muted}

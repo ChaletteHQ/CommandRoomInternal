@@ -520,6 +520,29 @@ LATER_NOT_SOONER_ACK = (
 #: counts days from, so an evening push west of UTC is judged on its own day.
 LATER_PAST_STATUS = "in_the_past"
 LATER_PAST_ACK = "{day} has already passed, so nothing moved. Pick today or a later date."
+#: cr1#1541: the time of day the owner planned an item for, on the Hub's
+#: Week. A commitment has a date and no time; a planned move carries the time
+#: as two optional fields on the move's own row (`plan_at`, "HH:MM" on the
+#: quarter hour, and `plan_minutes`), so the Week draws the item where he put
+#: it. Every other reader ignores them.
+PLAN_MINUTES = (30, 60, 120)
+_PLAN_AT_RE = re.compile(r"^([01]\d|2[0-3]):(00|15|30|45)$")
+
+
+def plan_fields(plan) -> dict:
+    """`{"plan_at", "plan_minutes"}` from a planned time `{"at": "HH:MM",
+    "minutes": n}`, or {} for no plan. Raises ValueError on a time this
+    cannot read back, before anything is written."""
+    if plan is None:
+        return {}
+    if not isinstance(plan, dict):
+        raise ValueError("a planned time is {at, minutes}")
+    at, mins = plan.get("at"), plan.get("minutes")
+    if not isinstance(at, str) or not _PLAN_AT_RE.match(at):
+        raise ValueError("a planned time is HH:MM on the quarter hour")
+    if isinstance(mins, bool) or mins not in PLAN_MINUTES:
+        raise ValueError("a planned length is 30, 60 or 120 minutes")
+    return {"plan_at": at, "plan_minutes": int(mins)}
 
 
 def _live_hold_until(events_path, target_id: str, now_iso: str, *,
@@ -564,8 +587,16 @@ def apply_later(
     brain_batch_id: Optional[str] = None,
     now_iso: Optional[str] = None,
     hide_batch_id: Optional[str] = None,
+    plan: Optional[dict] = None,
 ) -> dict:
     """THE `push to [date]` writer (APPLYAUDIT1 part 3).
+
+    cr1#1541: `plan` (`{"at": "HH:MM", "minutes": n}`, optional) is the
+    time of day the owner planned the item for on the Hub's Week. It rides
+    the move's own row as `plan_at` and `plan_minutes` (`plan_fields`), on
+    either leg, and changes nothing else this writer does: the date, the hide
+    and the batch are as for any move. A time this cannot read refuses
+    before the lock (ValueError), so nothing half-planned is written.
 
     cr1#1366: the hiding leg always carries a batch, `brain_batch_id` when
     the surface has one, else `hide_batch_id` (one batch a caller minted for
@@ -657,6 +688,7 @@ def apply_later(
     the writer lock (R1c).
     """
     calendar_day, utc_stamp = _later_when(when_iso)
+    planned = plan_fields(plan)   # cr1#1541: refuses an unreadable time first
     # cr1#849 - a date already gone moves nothing, on either leg.
     today = _now_calendar_day(now_iso or _now_iso(), workspace_root)
     if today is not None and calendar_day < today.isoformat():
@@ -716,6 +748,7 @@ def apply_later(
                 # on every surface, through `mute_ledger.item_snoozes`.
                 "hidden_until": utc_stamp,
             }
+            data.update(planned)   # cr1#1541: the planned time of day, when one
             if brain_batch_id:
                 data["brain_batch_id"] = str(brain_batch_id)
             if isinstance(target.get("seq"), int):
@@ -745,6 +778,7 @@ def apply_later(
                 "reason": (reason or "")[:200],
                 "via": LATER_SNOOZE_VIA,
             }
+            data.update(planned)   # cr1#1541: the planned time of day, when one
             if surface:
                 data["surface"] = surface
             # NO Loop-2 suppression identity here, and that is deliberate.
@@ -887,8 +921,13 @@ def apply_later_covering_folded(
     now_iso: Optional[str] = None,
     folded_ids: Optional[list] = None,
     counted_ids: Optional[set] = None,
+    plan: Optional[dict] = None,
 ) -> dict:
-    """`apply_later` on a plate line, and on the copies folded under it
+    """cr1#1541: `plan`, a planned time of day, goes on the line's own move
+    only (`apply_later`'s `plan`): the line is the block the Week draws, and
+    a copy folded under it moves with it as any copy does, with no time.
+
+    `apply_later` on a plate line, and on the copies folded under it
     (owner ruling of 2026-11-12 on cr1#1012, option (b)): every surface that
     snoozes or pushes a folded line (the Hub's Snooze, commitment-triage's
     Later…, End of Day's push to [date], My Plate's push) calls this, so no
@@ -940,7 +979,7 @@ def apply_later_covering_folded(
     res = apply_later(workspace_root, commitment_id, when_iso=when_iso,
                       actor_id=actor_id, source_skill=source_skill, reason=reason,
                       surface=surface, brain_batch_id=brain_batch_id, now_iso=now_iso,
-                      hide_batch_id=hide_batch)
+                      hide_batch_id=hide_batch, plan=plan)
     out = dict(res or {})
     out["covered"], out["copies"] = [], []
     if out.get("status") not in ("deferred", "snoozed") or not folded_ids:
@@ -1663,6 +1702,7 @@ def restore_due(
     keep_wait: bool = False,
     undoing_batch: Optional[str] = None,
     undoing_seq=None,
+    plan: Optional[dict] = None,
 ) -> dict:
     """POLICY1-B (b) — put a row's due back EXACTLY: to `prior_due` (a
     calendar day) or, when `prior_due` is None, to NO DATE. The sanctioned
@@ -1696,7 +1736,13 @@ def restore_due(
     (`DUE_FROM_MOVE`) when `undoing_seq` is given; a `prior_due` the caller
     passes that disagrees with the move's own is refused as `unrecorded`,
     nothing written (a stale or crossed handle never writes its date). An
-    undo of a move already put back answers `already_undone` with an `ack`."""
+    undo of a move already put back answers `already_undone` with an `ack`.
+
+    Review of #1606: `plan` (`{plan_at, plan_minutes, plan_batch_id}`,
+    optional) is the Week plan block of the move whose date this puts back,
+    carried on the put-back row so the block stands again. The plan's batch
+    rides as `plan_batch_id`, never `brain_batch_id`: a row in the plan's
+    batch would be reversed by the plan's own Put it back."""
     from pathlib import Path as _Path
     from atomic_write import events_write_section as events_writer_lock  # LEASE3: flock, then lease
     from_move = prior_due is DUE_FROM_MOVE
@@ -1766,6 +1812,11 @@ def restore_due(
                 data["hidden_until"] = hide
         if brain_batch_id:
             data["brain_batch_id"] = str(brain_batch_id)
+        if plan and new_due is not None and "plan_at" in plan:
+            data["plan_at"] = plan["plan_at"]
+            data["plan_minutes"] = plan.get("plan_minutes")
+            if plan.get("plan_batch_id"):
+                data["plan_batch_id"] = str(plan["plan_batch_id"])
         if isinstance(target.get("seq"), int):
             data["commitment_seq"] = target["seq"]
         ev = {
@@ -5115,7 +5166,9 @@ def _note_hand(ev: dict, keys: set, capture_seq, undo_rows: set) -> bool:
     if etype == "commitment_reassigned" and d.get(COUNTERPARTY_RESTORED_KEY):
         return False
     if etype == hub_edit.EVENT:
-        return d.get("action") != "undo" and str(d.get("target_id") or "") in keys
+        # cr1#1383: a Hub Add context press's own record is not a hand: the
+        # note it made is its own row, judged as one (another note is a hand).
+        return d.get("action") not in ("undo", "context") and str(d.get("target_id") or "") in keys
     if etype in ("reminder", "reminder_updated") and str(d.get("ref") or "") in keys:
         return True
     ids, seqs = ca.event_commitment_refs(ev)

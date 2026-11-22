@@ -40,6 +40,8 @@ except Exception:  # pragma: no cover
 
 STARS_REL = Path("_hq") / "data" / "hub-stars.json"
 PEOPLE_CAP = 300
+#: People added this many days back sort after the starred (cr1#1591 review).
+NEW_DAYS = 7
 OPEN_CAP = 12
 TITLE_CAP = 200
 #: The events that count as being in touch with someone.
@@ -354,10 +356,30 @@ def lean_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in row.items() if k in ROW_ALWAYS or (v and k not in ROW_NEVER)}
 
 
+def _added_lately(workspace_root, today) -> Dict[str, int]:
+    """READ. `{person_id: YYYYMMDD}` for everyone whose record says they were
+    added (`first_seen`, or the older `first_seen_at` / `first_contact`) in the
+    last `NEW_DAYS` days, `today` included. Empty when the record cannot be
+    read: the order then falls back to last contact alone."""
+    try:
+        since = (today - _dt.timedelta(days=NEW_DAYS)).isoformat()
+        ppl, _orgs = _entities(workspace_root)
+    except Exception:  # noqa: BLE001 - no date or no record leaves the order by last contact
+        return {}
+    out: Dict[str, int] = {}
+    for p in ppl:
+        day = _day(p.get("first_seen") or p.get("first_seen_at") or p.get("first_contact"))
+        if day and since <= day <= today.isoformat():
+            out[str(p["id"])] = int(day.replace("-", ""))
+    return out
+
+
 def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
     """READ. `{generated_at, people: [...], starred: [ids], n_people}`: every
-    person on file but the owner, most recently in touch first, each with
-    their open items. Never writes; a missing entities.json answers no one.
+    person on file but the owner, the starred first, then anyone added in the
+    last `NEW_DAYS` days (newest first), then most recently in touch first,
+    each with their open items. Never writes; a missing entities.json answers
+    no one.
 
     cr1#1012 part 3d: the tab reads the person cards (`person_cards`) for who
     they are, where they work, how they are known and when they were last in
@@ -439,7 +461,12 @@ def people(workspace_root, *, now_iso: Optional[str] = None) -> Dict[str, Any]:
                            "overdue": bool(nxt.get("overdue")), "direction": nxt["direction"]}
                           if nxt else None),
         })
-    out.sort(key=lambda r: (not r["starred"], -(int(r["last_contact"].replace("-", "")) if r["last_contact"] else 0),
+    # Coordinator ruling on cr1#1591: someone added in the last NEW_DAYS days
+    # sorts after the starred and before the rest, newest first, so a person
+    # just added (no contact date yet) is never past the cap or the page's 20.
+    fresh = _added_lately(root, today or _now(now_iso).date())
+    out.sort(key=lambda r: (not r["starred"], r["id"] not in fresh, -fresh.get(r["id"], 0),
+                            -(int(r["last_contact"].replace("-", "")) if r["last_contact"] else 0),
                             r["name"].lower()))
     return {"generated_at": _iso(_now(now_iso)), "people": [lean_row(r) for r in out[:PEOPLE_CAP]], "n_people": len(out),
             "starred": [s for s in stars if s in cards], "errors": errors,

@@ -875,3 +875,96 @@ if __name__ == "__main__":
     print("shards:", [p.name for p in shard_paths(root)])
     v = shard_invariants(root)
     print("invariants:", "clean" if not v else v)
+
+
+# ---- one read of the log for many readers in one process (cr1#1530) ----
+
+class OneLogRead:
+    """While open, the defensive log read answers from one in-process copy
+    instead of parsing the whole log again for every caller. The copy is keyed
+    on the size and change time of every file the read covers, so an append
+    during the run is seen. Each caller gets its own list; the entries are
+    shared and no reader changes them (`run_hub_refresh_all_test` proves the
+    answers equal the uncached ones)."""
+
+    def __enter__(self):
+        import sys
+
+        import atomic_write
+        import cru_match
+
+        events_io = sys.modules[__name__]
+        self._mod = cru_match
+        self._events_io = events_io
+        self._atomic = atomic_write
+        self._real = real = cru_match.load_events_defensively
+        self._real_iter = real_iter = events_io.iter_events
+        self._real_max = real_max = atomic_write._file_max_seq
+        memo: dict = {}
+        self.memo = memo
+
+        def cached(events_jsonl_path, since_ts=None):
+            try:
+                path = Path(events_jsonl_path)
+                if path.name == "events.jsonl":
+                    files = log_files(path, since_ts=since_ts)
+                else:
+                    files = [path]
+                sig = []
+                for f in files:
+                    if f.exists():
+                        st = f.stat()
+                        sig.append((str(f), st.st_size, st.st_mtime_ns))
+                key = (str(path), repr(since_ts), tuple(sig))
+            except Exception:  # noqa: BLE001 - an unreadable signature is a plain read
+                return real(events_jsonl_path, since_ts=since_ts)
+            if key not in memo:
+                memo[key] = real(events_jsonl_path, since_ts=since_ts)
+            events, skipped = memo[key]
+            return list(events), list(skipped)
+
+        # The two other whole-log readers a refresh repeats: the plain
+        # iterator (about 25 passes) and the stale-read check's scan for the
+        # highest number in the file (about 40). Same key, same rule.
+        def _sig(files) -> tuple:
+            out = []
+            for f in files:
+                f = Path(f)
+                if f.exists():
+                    st = f.stat()
+                    out.append((str(f), st.st_size, st.st_mtime_ns))
+            return tuple(out)
+
+        def cached_iter(root, since_ts=None):
+            try:
+                key = ("iter", str(root), repr(since_ts),
+                       _sig(events_io.log_files(root, since_ts=since_ts)))
+            except Exception:  # noqa: BLE001
+                return real_iter(root, since_ts=since_ts)
+            if key not in memo:
+                memo[key] = (list(real_iter(root, since_ts=since_ts)), [])
+            return iter(list(memo[key][0]))
+
+        def cached_max(events_path, existing_text=None):
+            if existing_text is not None:
+                return real_max(events_path, existing_text)
+            try:
+                key = ("max", str(events_path), _sig([events_path]))
+            except Exception:  # noqa: BLE001
+                return real_max(events_path)
+            if key not in memo:
+                memo[key] = real_max(events_path)
+            return memo[key]
+
+        # Every name is in hand before the first one is replaced, so a
+        # failure above leaves all three as they were.
+        cru_match.load_events_defensively = cached
+        events_io.iter_events = cached_iter
+        atomic_write._file_max_seq = cached_max
+        return self
+
+    def __exit__(self, *exc):
+        self._mod.load_events_defensively = self._real
+        self._events_io.iter_events = self._real_iter
+        self._atomic._file_max_seq = self._real_max
+        return False

@@ -6304,6 +6304,35 @@ def silent_sources_line(rows) -> str:
     return " ".join(out)
 
 
+#: cr1#1590: what a silent source's note offers: a new chat with the health
+#: check typed in, never sent. It reads each connector's runs; the connector
+#: walk (cr1#1235) sets roles and would not check the connection.
+SILENT_SOURCES_ACT = {"label": "Is everything running?", "chat": "is everything running"}
+
+
+def silent_sources_note(rows) -> dict:
+    """cr1#1590: the Hub's note row for the silent sources, `{kind, short,
+    act, line}`, or `{}` for none: a few words ("Mail read nothing, 3 runs"),
+    the one thing to do, and `silent_sources_line`'s sentences, word for
+    word, for behind the note's icon."""
+    line = silent_sources_line(rows)
+    if not line:
+        return {}
+    named = []
+    for row in rows or []:
+        job = row.get("job_id") if isinstance(row, dict) else None
+        name = SOURCE_SILENT_WORDS.get(job, (str(job or ""), "its"))[0]
+        if name:
+            named.append((name, int(row.get("runs") or 0)))
+    if len(named) == 1:
+        short = f"{named[0][0]} read nothing, {named[0][1]} {'run' if named[0][1] == 1 else 'runs'}"
+    elif len(named) == 2:
+        short = f"{named[0][0]}, {named[1][0]} read nothing"
+    else:
+        short = f"{len(named)} sources read nothing"
+    return {"kind": "look", "short": short, "act": dict(SILENT_SOURCES_ACT), "line": line}
+
+
 #: The jobs whose window comes from a cursor at their newest MESSAGE, not from
 #: their last run: a quiet seat's cursor ages with nothing unread (cr1#746).
 CURSOR_WINDOW_JOBS = frozenset({"reconcile-sent", "reconcile-chat"})

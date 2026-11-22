@@ -302,8 +302,13 @@ def _fold(events: list, owner: str, tzinfo) -> dict:
     thread the owner closed as done and did not open again."""
     from closure_index import closer_target_id
     from event_refs import persons_of, threads_of
+    from commitment_state import without_retracted_notes
     from hub_edit import undo_seqs
     out: Dict[str, dict] = {}
+    # cr1#1383 (review of #1611): a commitment note taken back, from the Hub
+    # or from chat (cr1#1463), is not on the thread: its row leaves the
+    # stands and the activity.
+    events = without_retracted_notes(events)
     # cr1#1383: the writer rows a Hub undo made are not the thread moving
     # (an undo is not a touch).
     undone = undo_seqs(events)

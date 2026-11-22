@@ -214,13 +214,22 @@ def _held(row: Dict[str, Any], wall: Dict[str, set]) -> bool:
 
 def _owner_dated(events: List[Dict[str, Any]]) -> set:
     """The commitments whose date the owner moved himself: a
-    `commitment_updated` that sets a date and is his own act."""
+    `commitment_updated` that sets a date and is his own act, and was not
+    taken back with the Hub press that wrote it."""
     import cockpit_helpers as ch
+    import hub_edit
     from commitment_state import _due_set
+    from event_seq import event_seq
 
+    # Review of #1606: a Hub Edit press that was taken back, and the Undo that
+    # took it back, are not the owner dating the item (`hub_edit.taken_back_seqs`,
+    # as the movement clock reads it), so the pair leaves the piles as they were.
+    gone = hub_edit.taken_back_seqs(events)
     out = set()
     for ev in events:
         if not isinstance(ev, dict) or ev.get("type") != "commitment_updated":
+            continue
+        if event_seq(ev) in gone:
             continue
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         if d.get("commitment_id") and _due_set(d) is not None and ch._owner_own_change(ev):

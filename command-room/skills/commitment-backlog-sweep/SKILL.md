@@ -199,7 +199,7 @@ unchanged: what each pile means, the confirms, the one-batch `undo`.
 
 **When a step cannot run here, one sentence and stop.** An envelope with
 `ok: false` (or a `result` with `ok: false`) says its own `line` when it has
-one. Without one, say exactly: "The commitment clean-up could not run here, so nothing was read, closed or changed; your open and overdue commitments are on the Hub's Commitments and Overdue tabs."
+one. Without one, say exactly: "The commitment clean-up could not run here, so nothing was read, closed or changed; your open commitments are on the Hub, in Work, under Commitments; Late shows the overdue ones."
 Never send the owner to `triage my commitments` or to a Claude Code session on their own computer (owner ruling, cr1#938).
 
 ### Step 1 — settings, and the window
@@ -817,7 +817,7 @@ Does NOT fire on: 'show my list', 'whats on my list', 'my list' — show-my-remi
 
 Does NOT fire on: 'reconcile my sent mail', 'catch up my sent mail' — reconcile-sent, the daily forward pass over new mail since the cursor.
 
-Does NOT fire on: 'scan for commitments', 'what am i waiting on' — scan-for-commitments creates items from sources; 'show waiting' (or the Hub's Commitments tab) renders the actionable subset. This skill settles what is already open.
+Does NOT fire on: 'scan for commitments', 'what am i waiting on' — scan-for-commitments creates items from sources; 'show waiting' (or Commitments in the Hub's Work tab) renders the actionable subset. This skill settles what is already open.
 
 **Why the fence with commitment-triage is a real line and not a coin toss.** Both
 surfaces touch the open set, and they answer different questions.

@@ -71,7 +71,8 @@ def digest(value: Any) -> str:
 
 def _closed(line: str) -> Dict[str, Any]:
     return {"ok": False, "plan": [], "blocked": line, "walled": [], "off_limits": [],
-            "off_limits_names": [], "hashed": "sha256", "own": [], "own_names": [], "chat_ok": False}
+            "off_limits_names": [], "known_names": [], "hashed": "sha256", "own": [], "own_names": [],
+            "chat_ok": False}
 
 
 def _full_names(person: Dict[str, Any]) -> set:
@@ -135,8 +136,8 @@ def _own_names(workspace_root) -> List[str]:
 
 
 def wall(workspace_root) -> Dict[str, Any]:
-    """`{ok, plan, blocked, walled, off_limits, off_limits_names, hashed,
-    own, own_names, chat_ok}`.
+    """`{ok, plan, blocked, walled, off_limits, off_limits_names,
+    known_names, hashed, own, own_names, chat_ok}`.
 
     `plan` is the mail fetch, one entry per mailbox to list (`acting_email`
     None for the connector's one unaddressed mailbox); empty with `blocked`
@@ -145,7 +146,11 @@ def wall(workspace_root) -> Dict[str, Any]:
     (`digest`; `hashed` names the method). `own` and `own_names` are the
     owner's own addresses and names (a message the owner wrote is nothing
     that arrived). `chat_ok` is False when the chat connector is marked
-    personal or the wall could not be read."""
+    personal or the wall could not be read. `known_names` (cr1#1571) are
+    hashes of the full names of everyone on file who is not off limits: a
+    chat group names its members by name alone, and while anyone is off
+    limits a group is listed only when every member is someone known;
+    left out when the list is too long to carry (then no group lists)."""
     if not workspace_root:
         return _closed(UNREADABLE_LINE)
     try:
@@ -178,6 +183,12 @@ def wall(workspace_root) -> Dict[str, Any]:
         chat_ok = not any(str(c.get("category") or "") == "chat" for c in cwall.get("connectors") or [])
         own = sorted(_norm(a) for a in inbox_helpers.own_addresses(str(workspace_root)) if a)
         own_names = _own_names(workspace_root)
+        known: set = set()
+        for person in _people(workspace_root):
+            full = _full_names(person)
+            if not full & names:
+                known |= full
+        known -= names
         if max(len(walled), len(addrs), len(names), len(own), len(own_names), len(plan)) > LIST_CAP:
             return _closed(TOO_MANY_LINE)
         return {"ok": True,
@@ -186,6 +197,7 @@ def wall(workspace_root) -> Dict[str, Any]:
                 "walled": sorted(walled),
                 "off_limits": sorted(digest(a) for a in addrs),
                 "off_limits_names": sorted(digest(n) for n in names),
+                "known_names": sorted(digest(n) for n in known) if len(known) <= LIST_CAP else None,
                 "hashed": "sha256",
                 "own": own, "own_names": own_names, "chat_ok": chat_ok}
     except Exception:  # noqa: BLE001 - fail closed: the page lists nothing of its own

@@ -24,9 +24,9 @@ Half the bugs fixed in v3.x have been one-keypress user-side fixes (fully quit a
 
 ## Behavior
 
-### Step 0: the Hub's "Something wrong?" message (cr1#1315)
+### Step 0: the Hub's Ask, Something is wrong message (cr1#1315)
 
-When the message starts `Something's wrong on my Command Room Hub:`, the Hub's "Something wrong?" opened this chat (cr1#1288): the owner's words, then what the Hub was showing, then the page's own ask. Any other message starts at Step 1.
+When the message starts `Something's wrong on my Command Room Hub:`, the Hub's Ask, Something is wrong opened this chat (cr1#1288; the top bar's one Ask since cr1#1591, "Something wrong?" before it): the owner's words, then what the Hub was showing, then the page's own ask. The prefix is unchanged. Any other message starts at Step 1.
 
 1. **Plan.** One helper call reads the message:
 
@@ -187,7 +187,7 @@ python3 "$RT/shared/scripts/workspace_access.py" run_writer --json '{"args": {"r
 ## Rules
 
 1. **One question, never two.** The user already hit a frustrating bug — don't make them answer a quiz. One sentence each for trying / happened is the whole user-input surface.
-   - On the Hub's "Something wrong?" message (Step 0) the owner's words already answer it; that route's one question is whether to add the item.
+   - On the Hub's Ask, Something is wrong message (Step 0) the owner's words already answer it; that route's one question is whether to add the item.
 2. **Never invent fields.** If `plugin.json` isn't readable, write `(not detected)`. If `events.jsonl` is empty, write `(no events captured)`. Fabricated diagnoses are worse than honest gaps.
 3. **Pre-fill, don't pre-send.** The user reviews the draft in Gmail before it goes. The maintainer respects them; never auto-send.
 4. **Pattern file is the moat.** Every bug the maintainer fixes from real customer feedback should be added to `{SKILL_DIR}/references/known-issue-patterns.md` so the next customer hits a one-line self-fix instead of an email.

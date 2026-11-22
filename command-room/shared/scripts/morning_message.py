@@ -34,6 +34,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# cr1#1591: every title in the day's words reads as the page's `showTitle`
+# shows it (one rule, one case table for both); `_cap` stays for the sentence.
+from title_display import display_title
+
 PURPOSE = "morning_message"
 SENT_TYPE = "morning_message_sent"
 CLAIM_TYPE = "morning_message_claimed"
@@ -156,7 +160,7 @@ def _block_words(blocks: List[Dict[str, Any]]) -> str:
     else:
         h = math.floor(mins / 30 + 0.5) / 2
         span = (str(int(h)) if h == int(h) else str(h)) + (" hour" if h == 1 else " hours")
-    return span + " blocked for " + (_cap(blocks[0].get("title")) if len(blocks) == 1 else "your own work")
+    return span + " blocked for " + (display_title(blocks[0].get("title"), kind="meeting", empty="") if len(blocks) == 1 else "your own work")
 
 
 def _day_clash(today, plate, day: str, now: _dt.datetime, tz) -> Optional[Dict[str, Any]]:
@@ -188,13 +192,13 @@ def _lead_words(lead: List[Dict[str, Any]]) -> str:
     week is what the week is about, and the next ones are what today moves;
     a top item due today, past its date or undated is today's."""
     top = lead[0] or {}
-    rest = [_cap((r or {}).get("title")) for r in lead[1:]]
+    rest = [display_title((r or {}).get("title"), empty="") for r in lead[1:]]
     left = top.get("days_left")
     if isinstance(left, int) and not isinstance(left, bool) and left > 0:
-        return ("This week is about " + _cap(top.get("title"))
+        return ("This week is about " + display_title(top.get("title"), empty="")
                 + (", due " + str(top["due_day"]) if top.get("due_day") else "")
                 + (", and today moves " + _words(rest) if rest else ""))
-    return "Today is about " + _words([_cap(top.get("title"))] + rest)
+    return "Today is about " + _words([display_title(top.get("title"), empty="")] + rest)
 
 
 def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, Any]],
@@ -238,7 +242,7 @@ def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, An
             if about["said"]:
                 a = _words(about["items"])
             elif about.get("focus"):
-                a = _cap((about["focus"][0] or {}).get("title"))
+                a = display_title((about["focus"][0] or {}).get("title"), empty="")
             else:
                 n = len(about["meetings"])
                 w = [f"{n} meeting" + ("" if n == 1 else "s")] if n else []
@@ -251,15 +255,16 @@ def sentence_parts(today: Optional[Dict[str, Any]], plate: Optional[Dict[str, An
                     if need else "nothing needs you"})
     if clash:
         if clash["kind"] == "overlap":
-            t = (_cap(clash["a"].get("title")) + " overlaps " + _cap(clash["b"].get("title"))
+            t = (display_title(clash["a"].get("title"), kind="meeting", empty="") + " overlaps "
+                 + display_title(clash["b"].get("title"), kind="meeting", empty="")
                  + " at " + _fmt_time(clash["b"].get("start"), tz))
         else:
-            t = _cap(clash["row"].get("title")) + " is due on a day of " + str(len(clash["meetings"])) + " meetings"
+            t = display_title(clash["row"].get("title"), empty="") + " is due on a day of " + str(len(clash["meetings"])) + " meetings"
         out.append({"part": "clash", "text": t})
     if goals:
         n = plate.get("n_goals")
         n = n if isinstance(n, int) and not isinstance(n, bool) and n >= len(goals) else len(goals)
-        out.append({"part": "goal", "text": _cap(goals[0].get("statement")) + " has nothing open"
+        out.append({"part": "goal", "text": display_title(goals[0].get("statement"), empty="") + " has nothing open"
                     if n == 1 else f"{n} priorities have nothing open"})
     if out:
         out[0]["text"] = _cap(out[0]["text"])
@@ -393,6 +398,19 @@ def _clip(s: Any) -> str:
     return s if len(s) <= LINE_CAP else s[:LINE_CAP - 1].rstrip() + "…"
 
 
+def _list_titles(items: List[Dict[str, Any]]) -> List[str]:
+    """The "Needs you" lines: each title as the Hub shows it (an Inbox line
+    is mail, the rest are the owner's own words), and where two would read
+    the same, those show their stored titles, so no two lines look alike
+    (cr1#1591 review round 1)."""
+    clean = [display_title(i.get("title"), kind="mail" if i.get("source") == "inbox" else "item", empty=NO_TITLE)
+             for i in items]
+    seen: Dict[str, int] = {}
+    for t in clean:
+        seen[t.lower()] = seen.get(t.lower(), 0) + 1
+    return [(_cap(i.get("title") or "") or NO_TITLE) if seen[t.lower()] > 1 else t for i, t in zip(items, clean)]
+
+
 def compose(parts: List[Dict[str, str]], items: List[Dict[str, Any]], url: str,
             brain_name: str = "") -> Dict[str, str]:
     """`{subject, body}`: the sentence first, then what needs the owner, then
@@ -406,8 +424,8 @@ def compose(parts: List[Dict[str, str]], items: List[Dict[str, Any]], url: str,
         lines.append(_clip("; ".join(p["text"] for p in parts) + "."))
     if items:
         lines += ["", "Needs you:"]
-        for i in items[:ITEM_CAP]:
-            title = PERSONAL_ITEM if i.get("personal") else (_cap(i.get("title") or "") or NO_TITLE)
+        for i, t in zip(items[:ITEM_CAP], _list_titles(items[:ITEM_CAP])):
+            title = PERSONAL_ITEM if i.get("personal") else t
             lines.append("- " + _clip(title))
         if len(items) > ITEM_CAP:
             lines.append(f"- and {len(items) - ITEM_CAP} more")

@@ -301,6 +301,9 @@ _REFUSED_STATUSES = frozenset({
     # waiting item holds no date, a number no row carries, a date it cannot
     # read, a list with no numbers.
     "waiting", "no_such_row", "bad_date", "bad_surface",
+    # cr1#1383 slice 4 PR 2 (corrects PR #1467): `due_set.set_due` when the
+    # event gate landed no row. Nothing was set, so it is an error outcome.
+    "not_recorded",
     # DONE1 v5.9.3: the rest of the needs-your-call queue's refusal/failure
     # vocabulary. "error" is already the right outcome for each, but by
     # FALL-THROUGH — and a fall-through is indistinguishable from a status the
